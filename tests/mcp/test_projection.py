@@ -117,6 +117,25 @@ def test_available_paths_lists_canonical_spellings_only() -> None:
     )
 
 
+def test_resume_on_timeout_is_still_offered_where_it_is_inert_but_says_so() -> None:
+    """A flag no command reads is still part of the surface until it is retired.
+
+    ``agent`` owns the bounded resume behavior. Flow and fanout inherit the
+    flag from their shared parser arguments and never consume it. Dropping it
+    outright would break callers whose invocations parse today, so it keeps
+    being accepted and the description carries the notice instead. An MCP
+    caller reading the schema is the one consumer that cannot see the
+    parse-time warning, which is why the text has to say it here.
+    """
+    for surface in ("orchestrate flow", "orchestrate fanout"):
+        described = project(surface).schema["properties"]["resume_on_timeout"]["description"]
+        assert described.lower().startswith("deprecated"), surface
+        assert "ignored" in described.lower(), surface
+
+    agent_described = project("agent").schema["properties"]["resume_on_timeout"]["description"]
+    assert "deprecated" not in agent_described.lower()
+
+
 # ── the seam ─────────────────────────────────────────────────────────────────
 
 

@@ -207,6 +207,8 @@ its area block.
   idleness is not its completion (sequential number; see Numbering)
 - [ADR-0117](ADR-0117-normalized-progression-membership-and-online-cutover.md) — Normalized
   progression membership and online cutover (sequential number; see Numbering)
+- [ADR-0118](ADR-0118-declared-entity-schema-as-single-authority.md) — Declared entity schema as
+  the single authority for state and studio persistence (sequential number; see Numbering)
 
 ### cli-surface (0062-0067)
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -1503,10 +1503,10 @@ async def test_synthesize_returns_dict_with_model_key(tmp_path):
         ],
         n_spawned=0,
         t_exec_elapsed=1.0,
+        engine_run=SimpleNamespace(
+            run_dag=AsyncMock(return_value={"operation_results": {"node-0": "synthesized content"}})
+        ),
     )
-
-    # session.flow returns a synthesis response.
-    env.session.flow = _make_flow_returning("node-1", "synthesized content")
 
     result = await _synthesize(
         env,
@@ -1522,6 +1522,67 @@ async def test_synthesize_returns_dict_with_model_key(tmp_path):
     assert "model" in result
     assert "response" in result
     assert "time_ms" in result
+
+
+@pytest.mark.asyncio
+async def test_synthesize_reuses_execution_engine_lifecycle_bridge(tmp_path):
+    """Synthesis must use the same engine run that executed the worker DAG."""
+    env = _make_env(tmp_path)
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-worker"],
+        known_nodes={"node-worker"},
+        deps_by_node={"node-worker": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {
+                "id": "researcher",
+                "agent_id": "researcher",
+                "name": "researcher",
+                "response": "findings",
+            }
+        ],
+        n_spawned=0,
+        t_exec_elapsed=1.0,
+    )
+    engine_run = SimpleNamespace(
+        run_dag=AsyncMock(
+            return_value={"operation_results": {"node-0": "synthesized through engine"}}
+        )
+    )
+    exec_result.engine_run = engine_run
+    env.session.flow = _make_flow_returning("node-0", "direct session result")
+
+    result = await _synthesize(
+        env,
+        "task",
+        plan_result,
+        dag_state,
+        exec_result,
+        synthesis_model=None,
+        model_spec="codex/gpt-5.5",
+    )
+
+    engine_run.run_dag.assert_awaited_once_with(
+        env.builder.get_graph(),
+        verbose=env.verbose,
+        # The synthesis node is the only node in this graph, so there is no
+        # earlier pass whose nodes have to be kept quiet.
+        skip_signal_ops=set(),
+    )
+    assert result is not None
+    assert result["response"] == "synthesized through engine"
 
 
 @pytest.mark.asyncio
@@ -1563,9 +1624,10 @@ async def test_synthesize_includes_spawned_artifact_dir(tmp_path):
         ],
         n_spawned=1,
         t_exec_elapsed=1.0,
+        engine_run=SimpleNamespace(
+            run_dag=AsyncMock(return_value={"operation_results": {"node-0": "synthesized content"}})
+        ),
     )
-
-    env.session.flow = _make_flow_returning("node-1", "synthesized content")
 
     await _synthesize(
         env,
@@ -2010,3 +2072,134 @@ def _make_flow_returning(node_id: str, response: str):
         return {"operation_results": {node_id: response}}
 
     return _flow
+
+
+@pytest.mark.asyncio
+async def test_synthesize_keeps_already_executed_workers_out_of_the_signal_pass(tmp_path):
+    """Synthesis re-runs the whole graph, because the executor resolves the new
+    node's dependencies from it. The worker nodes already ran, so they are named
+    as skipped: signalling them here would record their work a second time and a
+    checkpointed resume rebuilt from those events would treat the replay as real.
+    """
+    env = _make_env(tmp_path)
+    # Two workers that the execution phase already ran.
+    worker_a = env.builder.add_operation("operate", branch=env.orc_branch, depends_on=[])
+    worker_b = env.builder.add_operation("operate", branch=env.orc_branch, depends_on=[worker_a])
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[worker_a, worker_b],
+        known_nodes={worker_a, worker_b},
+        deps_by_node={worker_a: [], worker_b: [worker_a]},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {"id": "researcher", "agent_id": "researcher", "name": "researcher", "response": "f"}
+        ],
+        n_spawned=0,
+        t_exec_elapsed=1.0,
+    )
+    exec_result.engine_run = SimpleNamespace(
+        run_dag=AsyncMock(return_value={"operation_results": {}})
+    )
+
+    await _synthesize(
+        env,
+        "task",
+        plan_result,
+        dag_state,
+        exec_result,
+        synthesis_model=None,
+        model_spec="codex/gpt-5.5",
+    )
+
+    kwargs = exec_result.engine_run.run_dag.await_args.kwargs
+    skipped = kwargs["skip_signal_ops"]
+    assert skipped == {worker_a, worker_b}, (
+        f"the executed workers must be kept out of the synthesis signal pass: {skipped}"
+    )
+    # The synthesis node is the work this pass actually does, so it must not be
+    # skipped -- suppressing it would make the run's own synthesis invisible.
+    graph_ids = {str(n.id) for n in env.builder.get_graph().internal_nodes.values()}
+    synth_ids = graph_ids - skipped
+    assert len(synth_ids) == 1, f"exactly one unskipped (synthesis) node expected: {synth_ids}"
+
+
+async def test_synthesize_declares_its_node_as_uncheckpointable(tmp_path):
+    """The synthesis node must be named before the pass that runs it.
+
+    The checkpoint observer built during execution routes by a node set fixed
+    at that time, so it treats this later node as a reactive spawn. Declaring
+    it is what keeps it out of the checkpoint; ordering matters because the
+    observer fires while run_dag is running, not after it returns.
+    """
+    env = _make_env(tmp_path)
+    worker = env.builder.add_operation("operate", branch=env.orc_branch, depends_on=[])
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[worker],
+        known_nodes={worker},
+        deps_by_node={worker: []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {"id": "researcher", "agent_id": "researcher", "name": "researcher", "response": "f"}
+        ],
+        n_spawned=0,
+        t_exec_elapsed=1.0,
+    )
+
+    declared_when_called: set[str] = set()
+
+    async def _capture_run_dag(*_args, **_kw):
+        # Read the set as run_dag sees it: a declaration made after this
+        # returns would be too late for the observer.
+        declared_when_called.update(exec_result.checkpoint_skip_ids)
+        return {"operation_results": {}}
+
+    exec_result.engine_run = SimpleNamespace(run_dag=_capture_run_dag)
+
+    await _synthesize(
+        env,
+        "task",
+        plan_result,
+        dag_state,
+        exec_result,
+        synthesis_model=None,
+        model_spec="codex/gpt-5.5",
+    )
+
+    graph_ids = {str(n.id) for n in env.builder.get_graph().internal_nodes.values()}
+    synth_ids = graph_ids - {str(worker)}
+    assert len(synth_ids) == 1, f"expected exactly one synthesis node: {synth_ids}"
+    synth_id = synth_ids.pop()
+
+    assert synth_id in declared_when_called, (
+        "the synthesis node must be declared uncheckpointable BEFORE run_dag, "
+        f"since the observer fires during it. declared={declared_when_called}"
+    )
+    assert str(worker) not in declared_when_called, (
+        "only the synthesis node belongs in the skip set; skipping the planned "
+        f"worker would drop its checkpoint entry. declared={declared_when_called}"
+    )

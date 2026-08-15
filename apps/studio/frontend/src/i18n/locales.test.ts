@@ -202,15 +202,17 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  // 1092 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
+  // 1097 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
   // (library.filterHooks + 29 library.hooks.* leaves) when the shared hook
   // library and per-agent assembly landed, + history.detail token-usage stats
-  // (statTokensIn/statTokensOut, natively translated in all 16 locales).
+  // (statTokensIn/statTokensOut, natively translated in all 16 locales), + 5
+  // for the Operator model picker's provider groups, legacy selection, and
+  // effort-transport explanation (also natively translated in all 16).
   // autoAllow and the hooks leaves are natively translated in
   // zh/ja/ko/es/fr/de/pt-BR/ru and English-copied in the remaining 7 locales
   // — that debt is attributed in the identity-leak baseline below.
-  it("en.json has 1092 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1092);
+  it("en.json has 1097 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1097);
   });
 
   it.each(LOCALES.map((l) => l.code))(

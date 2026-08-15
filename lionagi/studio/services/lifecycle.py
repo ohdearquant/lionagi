@@ -13,11 +13,24 @@ from lionagi.state.db import StateDB, state_db_known_absent
 from lionagi.state.reasons import RunReasons, SessionReasons, ShowReasons
 
 from . import admin as admin_svc
-from .admin import _artifacts_path, _ps_snapshot, process_identity_is_foreign, process_liveness
+from .admin import (
+    _artifacts_path,
+    process_identity_is_foreign,
+    process_liveness,
+    resolve_process_liveness_probe,
+)
 from .shows import _SHOW_TERMINAL_STATUSES, _play_dirs
 from .shows import _read_json as _read_show_json
 
 _log = logging.getLogger(__name__)
+
+
+async def _resolve_liveness(session: dict, artifacts: Path | None) -> bool | None:
+    """Preserve the module's liveness seam while sharing the host-wide fallback."""
+    return await resolve_process_liveness_probe(
+        lambda snapshot: process_liveness(session, artifacts, snapshot)
+    )
+
 
 # Phantom PhantomReason → SessionReasons code (mirrors admin._PHANTOM_REASON_CODES).
 _PHANTOM_REASON_CODES: dict[str, str] = {
@@ -217,14 +230,11 @@ async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
                 "FROM sessions WHERE status IS NULL"
             )
 
-        ps_snapshot: str | None = None
         for row in rows:
             sid = row["id"]
             artifacts = _artifacts_path(row)
             session = {"id": sid, "node_metadata": row.get("node_metadata")}
-            if ps_snapshot is None:
-                ps_snapshot = _ps_snapshot()
-            if process_liveness(session, artifacts, ps_snapshot) is True:
+            if await _resolve_liveness(session, artifacts) is True:
                 # Process still alive — skip, it may write its own status.
                 continue
             if process_identity_is_foreign(session):
@@ -413,7 +423,6 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
                 tuple(sorted(_REAPABLE_PLAY_STATUSES)),
             )
 
-        ps_snapshot: str | None = None
         for cand in candidates:
             play_id = cand["id"]
             try:
@@ -441,13 +450,8 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
                             (session_id,),
                         )
                         if srow is not None:
-                            if ps_snapshot is None:
-                                ps_snapshot = _ps_snapshot()
                             session = {"id": srow["id"], "node_metadata": srow.get("node_metadata")}
-                            if (
-                                process_liveness(session, _artifacts_path(srow), ps_snapshot)
-                                is True
-                            ):
+                            if await _resolve_liveness(session, _artifacts_path(srow)) is True:
                                 continue
                             # Child session hosted elsewhere: this machine
                             # cannot tell a dead runner from a working one, so
@@ -665,7 +669,6 @@ async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
                 tuple(sorted(_SHOW_TERMINAL_STATUSES)),
             )
 
-        ps_snapshot: str | None = None
         for cand in candidates:
             show_id = cand["id"]
             try:
@@ -700,10 +703,8 @@ async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
                         )
                         if srow is None:
                             continue
-                        if ps_snapshot is None:
-                            ps_snapshot = _ps_snapshot()
                         session = {"id": srow["id"], "node_metadata": srow.get("node_metadata")}
-                        if process_liveness(session, _artifacts_path(srow), ps_snapshot) is True:
+                        if await _resolve_liveness(session, _artifacts_path(srow)) is True:
                             live = True
                             break
                         # A child hosted on another machine is unmeasurable from
@@ -730,7 +731,7 @@ async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
                         if play_pid <= 1:
                             continue
                         session = {"id": "", "node_metadata": {"pid": play_pid}}
-                        if process_liveness(session, None, ps_snapshot) is True:
+                        if await _resolve_liveness(session, None) is True:
                             live = True
                             break
                     if live:

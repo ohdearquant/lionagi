@@ -70,12 +70,32 @@ def test_catalog_carries_a_signature_not_a_bare_name():
     assert all(e["summary"] for e in entries.values())
 
 
-def test_catalog_names_an_unavailable_verb_with_its_reason():
+def test_catalog_names_an_unavailable_verb_and_routes_it():
     # Hiding it would make "not built" and "cannot be built yet" the same answer.
+    # The catalog states that it cannot run and where it does run; the paragraph
+    # on why is one targeted call away, so every caller does not pay for it.
     entries = {e["verb"]: e for e in call(help=True)["verbs"]}
     absent = entries["schedule.apply"]
     assert absent["available"] is False
-    assert "machine result" in absent["reason"]
+    assert absent["cli_path"] == "schedule apply"
+    assert "reason" not in absent
+    assert "machine result" in call(help="schedule.apply")["reason"]
+
+
+def test_catalog_omits_available_and_required_at_their_defaults():
+    # Both are paid on every entry of a 70-verb listing. Absent means the
+    # default, which the catalog's own help_usage states. Asserted over the
+    # whole listing rather than one entry: the cost is per-entry, so a single
+    # example would not show that the default is omitted everywhere.
+    catalog = call(help=True)
+    entries = catalog["verbs"]
+    assert entries, "an empty catalog would pass every assertion below"
+    assert [e["verb"] for e in entries if e.get("available") is True] == []
+    assert [e["verb"] for e in entries if e.get("required") == []] == []
+    # and the key still carries its non-default value where it applies
+    assert any(e.get("available") is False for e in entries)
+    assert any(e.get("required") for e in entries)
+    assert catalog["available_count"] == sum(1 for e in entries if e.get("available", True))
 
 
 def test_catalog_never_advertises_a_previous_surface_name():

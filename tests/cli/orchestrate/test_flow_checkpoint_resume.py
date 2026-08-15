@@ -2212,3 +2212,116 @@ def test_flow_resume_dispatch_maps_resume_error_to_failed_exit_code(caplog):
         code = run_orchestrate(args)
 
     assert code == 1
+
+
+async def test_checkpoint_observer_skips_a_declared_node_and_still_records_a_real_spawn(
+    tmp_path: Path,
+):
+    """A node a later phase adds to the graph must not reach the checkpoint.
+
+    The observer routes by membership in the execution phase's node set, which
+    is fixed before that phase runs. Synthesis adds its node afterwards and
+    reuses the same engine run, so its completion arrives at an observer that
+    has never heard of it and is recorded as a reactive spawn. Resume then
+    rebuilds it into the fresh graph as pre-completed work, and none of the
+    spawn soundness checks stop it: they are written for role-spawned nodes,
+    and this node has no assignee and no parent, so each check passes without
+    ever applying.
+
+    The second half of this test is the part that makes the first half mean
+    anything. An empty `spawned` list is also what a dead checkpoint path
+    produces, so an undeclared node is completed in the same run and must
+    still be recorded.
+    """
+    env = _make_resume_env(tmp_path)
+    env.session = Session(default_branch=Branch(name="orchestrator"))
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="research", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["node-0"],
+        known_nodes={"node-0"},
+        deps_by_node={"node-0": []},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["claude"],
+    )
+
+    synth_node_id = str(uuid4())
+    real_spawn_id = str(uuid4())
+    # Seeded here because the observer's writes are drained inside
+    # _execute_dag; _synthesize adds to this same set object in production.
+    skip_ids = {synth_node_id}
+
+    fake_executor = SimpleNamespace(context=SimpleNamespace(content={}), results={})
+
+    async def _run_dag_result(*args, executor_ref=None, **_kw):
+        executor_ref["executor"] = fake_executor
+        await env.session.emit(
+            NodeCompleted(op_id="node-0", name="worker", elapsed=0.1, parent_id=None, depends_on=[])
+        )
+        # The synthesis node: declared, and shaped exactly like the case that
+        # slips every soundness check -- no assignee, no parent.
+        await env.session.emit(
+            NodeCompleted(
+                op_id=synth_node_id, name="synthesis", elapsed=0.1, parent_id=None, depends_on=[]
+            )
+        )
+        # A genuine reactive spawn in the same run: undeclared, so it must
+        # still land in `spawned`.
+        await env.session.emit(
+            NodeCompleted(
+                op_id=real_spawn_id,
+                name="spawned-child",
+                elapsed=0.1,
+                parent_id="node-0",
+                depends_on=[],
+            )
+        )
+        return {
+            "operation_results": {"node-0": "result-A"},
+            "spawned_operations": 1,
+            "escalated_operations": [],
+        }
+
+    fake_engine_run = MagicMock()
+    fake_engine_run.run_dag = _run_dag_result
+
+    from lionagi.engines import PlanningEngine
+
+    with patch.object(PlanningEngine, "new_run", return_value=fake_engine_run):
+        await _execute_dag(
+            env,
+            plan_result,
+            dag_state,
+            max_concurrent=1,
+            max_ops=0,
+            checkpoint_prompt="write the brief",
+            checkpoint_plan=[{"agent_id": "worker"}],
+            checkpoint_config={"model_spec": "claude"},
+            checkpoint_skip_ids=skip_ids,
+        )
+
+    data = load_checkpoint(env.run.checkpoint_path)
+    spawned_ids = {e["node_id"] for e in data.get("spawned", [])}
+
+    assert synth_node_id not in spawned_ids, (
+        "a declared node must not be checkpointed as a reactive spawn; resume "
+        f"would rebuild it as pre-completed work. spawned={spawned_ids}"
+    )
+    assert real_spawn_id in spawned_ids, (
+        "the control failed: an undeclared spawn was not recorded either, so "
+        "this test cannot tell a working skip from a dead checkpoint path. "
+        f"spawned={spawned_ids}"
+    )
+    # The planned op is unaffected, and the skipped node did not leak into the
+    # planned keyspace by the other branch.
+    assert data["ops"]["worker"]["status"] == "completed"
+    assert "synthesis" not in data["ops"]

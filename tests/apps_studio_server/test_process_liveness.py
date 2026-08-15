@@ -123,29 +123,6 @@ async def test_identity_complete_runs_page_does_not_capture_process_table(monkey
     snapshot.assert_not_awaited()
 
 
-async def test_concurrent_legacy_pages_share_one_process_table_capture(monkeypatch):
-    import lionagi.studio.services.admin as admin_mod
-
-    admin_mod.reset_process_snapshot_cache()
-    calls = 0
-
-    def capture() -> str:
-        nonlocal calls
-        calls += 1
-        time.sleep(0.03)
-        return "123 li agent --resume legacy-session"
-
-    monkeypatch.setattr(admin_mod, "_ps_snapshot", capture)
-
-    snapshots = await asyncio.gather(*(admin_mod.cached_ps_snapshot() for _ in range(12)))
-
-    assert snapshots == ["123 li agent --resume legacy-session"] * 12
-    assert calls == 1
-    metrics = admin_mod.process_snapshot_metrics()
-    assert metrics["fallback_rows"] == 0
-    assert metrics["captures"] == 1
-
-
 async def test_explicit_nonlocal_run_is_unverifiable_without_legacy_snapshot(monkeypatch):
     import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.run_tags as run_tags_mod

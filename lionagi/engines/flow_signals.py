@@ -43,12 +43,26 @@ def _build_node_edge_meta(graph: Any) -> dict[str, dict]:
 
 @contextlib.asynccontextmanager
 async def flow_progress_signals(
-    session: Any, graph: Any
+    session: Any, graph: Any, *, skip_ops: set[Any] | None = None
 ) -> AsyncIterator[Callable[[str, str, str, float, bool], None]]:
     """Yield an ``on_progress`` callback that persists node-lifecycle signals; awaits
-    every emitted signal on exit so observers finish before the caller reads what they wrote."""
+    every emitted signal on exit so observers finish before the caller reads what they wrote.
+
+    ``skip_ops`` names ops that already ran in an earlier pass. A pass over a graph
+    whose nodes already ran reports those nodes again, and signalling them a second
+    time writes terminal events for work this pass did not do; a resume rebuilt from
+    those events treats the replay as completed. Naming what to *skip* rather than
+    what to signal is what keeps a node created during the pass audible: a spawn is
+    absent from the set because it did not exist when the caller named it, and its
+    first signal is emitted in the same synchronous admission call as the spawn
+    notification, so there is no moment at which a caller could have added it.
+    """
     emits: list[asyncio.Future] = []
     node_edge_meta = _build_node_edge_meta(graph)
+    # Normalised to str: node ids travel as UUID in the builder's return values and
+    # as str on the signals, so an un-normalised set matches nothing and silently
+    # replays every node it was given to suppress.
+    skipped: set[str] = set() if skip_ops is None else {str(op) for op in skip_ops}
 
     def _on_progress(
         op_id: str,
@@ -57,6 +71,8 @@ async def flow_progress_signals(
         elapsed: float,
         name_is_fallback: bool,
     ) -> None:
+        if op_id in skipped:
+            return
         meta = node_edge_meta.setdefault(op_id, {})
         parent_id = meta.get("parent_id")
         depends_on = meta.get("depends_on", [])

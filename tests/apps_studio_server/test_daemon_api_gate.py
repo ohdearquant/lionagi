@@ -470,7 +470,7 @@ def test_admin_health_response_shape(tmp_path, monkeypatch):
         "code_identity",
         "db",
         "diagnostic_run_at",
-        "process_liveness",
+        "process_snapshot",
         "scheduler_timezone",
         "sessions",
     ]

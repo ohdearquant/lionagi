@@ -510,18 +510,6 @@ def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool
     return process_liveness(s, Path(ap) if ap else None, ps_snapshot)
 
 
-def _session_requires_snapshot(s: dict[str, Any]) -> bool:
-    from .admin import process_snapshot_required
-
-    ap = s.get("artifacts_path")
-    return process_snapshot_required(s, Path(ap) if ap else None)
-
-
-_TERMINAL_ROW_STATUSES = frozenset(
-    {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}
-)
-
-
 def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None) -> dict[str, Any]:
     """Canonical Run row shape shared by list and detail routes.
 
@@ -610,40 +598,23 @@ async def list_runs(
     )
     sessions = await _sessions_svc.list_sessions(limit=limit, offset=offset, where=where, sort=sort)
     now = time.time()
-    out: list[dict[str, Any]] = []
-    fallback: list[tuple[int, dict[str, Any]]] = []
-    identity_rows = 0
-    unverifiable_rows = 0
+    out = []
     for s in sessions:
         alive: bool | None = None
         if s.get("status") == "running":
-            alive = _session_liveness(s, "")
-            if alive is None and _session_requires_snapshot(s):
-                fallback.append((len(out), s))
-            elif alive is None:
-                unverifiable_rows += 1
-            else:
-                identity_rows += 1
+            from .admin import process_identity_is_foreign, resolve_process_liveness_probe
+
+            # A row recording another machine's process is left unknown without
+            # paying for the host scan to say so. The scan reads this machine's
+            # process table, so the answer is None whether or not it is taken:
+            # skipping it changes the cost and not the verdict. A page of
+            # imported rows would otherwise trigger the very scan the
+            # targeted-first path exists to ration.
+            if not process_identity_is_foreign(s):
+                alive = await resolve_process_liveness_probe(
+                    lambda snapshot, row=s: _session_liveness(row, snapshot)
+                )
         out.append(_run_row(s, now, process_alive=alive))
-
-    if fallback:
-        from .admin import cached_ps_snapshot
-
-        snapshot = await cached_ps_snapshot()
-        for index, session in fallback:
-            out[index] = _run_row(
-                session,
-                now,
-                process_alive=_session_liveness(session, snapshot),
-            )
-
-    from .admin import _record_process_identity_batch
-
-    _record_process_identity_batch(
-        identity_rows=identity_rows,
-        fallback_rows=len(fallback),
-        unverifiable_rows=unverifiable_rows,
-    )
 
     tagmap = await run_tags.tags_for_sessions([r["id"] for r in out])
     for r in out:
@@ -745,7 +716,14 @@ async def get_run(
         "message_count": message_count,
         "last_message_at": last_message_at,
     }
-    alive = _session_liveness(detail_session) if detail_session.get("status") == "running" else None
+    if detail_session.get("status") == "running":
+        from .admin import resolve_process_liveness_probe
+
+        alive = await resolve_process_liveness_probe(
+            lambda snapshot: _session_liveness(detail_session, snapshot)
+        )
+    else:
+        alive = None
     row = _run_row(detail_session, time.time(), process_alive=alive)
 
     from . import run_tags

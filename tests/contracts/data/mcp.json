@@ -198,6 +198,61 @@
       "team.receive",
       "team.send",
       "team.show"
+    ],
+    "entry_key_sets": [
+      [
+        [
+          "available",
+          "cli_path",
+          "summary",
+          "verb"
+        ],
+        26
+      ],
+      [
+        [
+          "required",
+          "required_unenforced",
+          "schema_fingerprint_varies_with",
+          "summary",
+          "verb"
+        ],
+        1
+      ],
+      [
+        [
+          "required",
+          "summary",
+          "verb"
+        ],
+        24
+      ],
+      [
+        [
+          "required_unenforced",
+          "schema_fingerprint",
+          "schema_fingerprint_varies_with",
+          "summary",
+          "verb"
+        ],
+        1
+      ],
+      [
+        [
+          "required_unenforced",
+          "schema_fingerprint",
+          "summary",
+          "verb"
+        ],
+        2
+      ],
+      [
+        [
+          "summary",
+          "verb"
+        ],
+        16
+      ]
     ]
   },
   "projections": {
@@ -1354,7 +1409,7 @@
           },
           "resume_on_timeout": {
             "type": "boolean",
-            "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+            "description": "Deprecated and ignored on this command: it is accepted so existing invocations keep working, but nothing here reads it and it will be removed in a future release. Only `li agent` implements it.",
             "default": false,
             "x-flag": "--resume-on-timeout"
           },
@@ -1608,7 +1663,7 @@
           },
           "resume_on_timeout": {
             "type": "boolean",
-            "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+            "description": "Deprecated and ignored on this command: it is accepted so existing invocations keep working, but nothing here reads it and it will be removed in a future release. Only `li agent` implements it.",
             "default": false,
             "x-flag": "--resume-on-timeout"
           },
