@@ -182,12 +182,19 @@ def _kill_delivery_group(proc: subprocess.Popen) -> None:
     writing the outcome down: a fallback kill can leave a descendant holding
     the pipe open, and waiting on it indefinitely would spend the reserve and
     lose the record, which is the failure this whole path exists to prevent.
+
+    Descendant collection is a POSIX guarantee here, stated rather than
+    implied. ``start_new_session`` creates no group off POSIX, so there is no
+    group to signal and the fallback is all there is; collecting a tree there
+    needs a different mechanism (a job object, or shelling out to a tree-kill),
+    which nothing in CI could exercise. This is not a narrowing: the timeout
+    path this replaced terminated the direct child only, on every platform.
     """
     killpg = getattr(os, "killpg", None)
     try:
         if killpg is not None:
             killpg(proc.pid, signal.SIGKILL)
-        else:
+        else:  # pragma: no cover - POSIX is what CI runs
             proc.kill()
     except (ProcessLookupError, PermissionError, OSError):
         # Already gone, or not ours to signal. Either way there is nothing
