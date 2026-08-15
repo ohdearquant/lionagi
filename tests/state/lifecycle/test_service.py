@@ -104,6 +104,29 @@ async def test_transition_applied_shape(db: StateDB) -> None:
 
 
 @pytest.mark.asyncio
+async def test_guarded_terminal_session_transition_still_stamps_end_and_duration(
+    db: StateDB, monkeypatch
+) -> None:
+    """A guard on an end-time basis column must not disable the invariant."""
+    sid = await _make_session(db, status="running")
+    await db.update_session(sid, started_at=100.0)
+    monkeypatch.setattr("lionagi.state.lifecycle.service.time.time", lambda: 112.5)
+    service = SQLAlchemyLifecycleService(db)
+
+    outcome = await service._transition(  # noqa: SLF001 - exercises guarded internal path
+        _command(entity_id=sid, to_status="completed"),
+        extra_guard={"started_at": 100.0},
+    )
+
+    assert outcome.result == "applied"
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at"] == 112.5
+    assert row["duration_ms"] == pytest.approx(12_500.0)
+    assert row["ended_at_is_approximate"] is False
+
+
+@pytest.mark.asyncio
 async def test_transition_conflict_shape_on_expected_statuses_mismatch(db: StateDB) -> None:
     sid = await _make_session(db, status="running")
     service = SQLAlchemyLifecycleService(db)
@@ -576,3 +599,65 @@ async def test_history_insert_failure_rolls_back_the_entity_update(db: StateDB) 
 
     row = await db.get_session(sid)
     assert row["status"] == "running"  # rolled back
+
+
+@pytest.mark.asyncio
+async def test_measured_completion_clears_the_approximate_end_flag(db: StateDB) -> None:
+    """A repaired row that runs again and really finishes stops being approximate.
+
+    The flag and duration_ms are one fact. Left set beside a measured duration,
+    the row contradicts itself and every reader believes the flag, so it
+    discards the very number this transition measured.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "UPDATE sessions SET started_at = :started, ended_at = :ended, "
+                "ended_at_is_approximate = 1, duration_ms = NULL WHERE id = :id"
+            ),
+            {"started": 100.0, "ended": 150.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    outcome = await service.transition(_command(entity_id=sid, to_status="completed"))
+    assert outcome.result == "applied"
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at_is_approximate"] is False
+    # The stored 150.0 was a guess, so it is not the basis for a measured end.
+    assert row["ended_at"] > 150.0
+    assert row["duration_ms"] is not None
+    assert row["duration_ms"] == pytest.approx((row["ended_at"] - 100.0) * 1000)
+
+
+@pytest.mark.asyncio
+async def test_a_caller_supplied_end_is_still_honored_on_an_approximate_row(
+    db: StateDB,
+) -> None:
+    """Control for the test above: only the *stored* guess is refused.
+
+    Without this, replacing the basis with `now` unconditionally would look
+    equally correct and would quietly discard an end time the caller measured.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "UPDATE sessions SET started_at = :started, ended_at = :ended, "
+                "ended_at_is_approximate = 1 WHERE id = :id"
+            ),
+            {"started": 100.0, "ended": 150.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(entity_id=sid, to_status="completed", patch={"ended_at": 400.0})
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at"] == 400.0
+    assert row["ended_at_is_approximate"] is False
+    assert row["duration_ms"] == pytest.approx(300_000.0)

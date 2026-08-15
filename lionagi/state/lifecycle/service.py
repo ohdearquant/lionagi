@@ -250,16 +250,21 @@ class SQLAlchemyLifecycleService:
         # ended_at/duration_ms from the same row read here, instead of each
         # writer computing it independently (or not at all).
         needs_duration_basis = (
-            command.entity_type == "session"
-            and command.to_status in policy.terminal_statuses
-            and {"started_at", "ended_at"}.isdisjoint(extra_guard)
+            command.entity_type == "session" and command.to_status in policy.terminal_statuses
         )
 
         async with self._db._tx() as conn:
             guard_cols = list(extra_guard)
-            fetch_cols = ["status", "updated_at", *guard_cols]
+            # A caller may guard one of the duration-basis columns. Keep the
+            # SELECT unique, but never let that guard disable the terminal-end
+            # invariant itself.
+            fetch_cols = list(dict.fromkeys(["status", "updated_at", *guard_cols]))
             if needs_duration_basis:
-                fetch_cols += ["started_at", "ended_at"]
+                fetch_cols.extend(
+                    col
+                    for col in ("started_at", "ended_at", "ended_at_is_approximate")
+                    if col not in fetch_cols
+                )
             select_cols = ", ".join(fetch_cols)
             sel = f"SELECT {select_cols} FROM {policy.table} WHERE id = :id"  # noqa: S608
             if self._db.dialect != "sqlite":
@@ -418,7 +423,13 @@ class SQLAlchemyLifecycleService:
 
             if needs_duration_basis and not same_status:
                 ended_at_value = command.patch.get("ended_at", row["ended_at"])
-                if ended_at_value is None:
+                # A repaired row carries a guessed end until something measures
+                # one, and this transition is that measurement. Reusing the
+                # guess would compute a real-looking duration from a number
+                # nobody observed.
+                if ended_at_value is None or (
+                    "ended_at" not in command.patch and row["ended_at_is_approximate"]
+                ):
                     ended_at_value = now
                 patch = dict(command.patch)
                 patch.setdefault("ended_at", ended_at_value)
@@ -426,6 +437,11 @@ class SQLAlchemyLifecycleService:
                     started_at = row["started_at"]
                     if isinstance(started_at, int | float):
                         patch["duration_ms"] = max(0.0, (ended_at_value - started_at) * 1000)
+                # The flag and the duration are one fact and move together.
+                # Leaving the bit set beside a measured duration produces a row
+                # whose own two fields disagree, and readers believe the bit:
+                # they discard the duration this write just measured.
+                patch.setdefault("ended_at_is_approximate", 0)
                 if patch != dict(command.patch):
                     command = replace(command, patch=patch)
 

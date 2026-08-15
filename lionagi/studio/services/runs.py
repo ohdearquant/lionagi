@@ -550,6 +550,7 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
         "status": s.get("status", "completed"),
         "started_at": s.get("started_at"),
         "ended_at": s.get("ended_at"),
+        "ended_at_is_approximate": bool(s.get("ended_at_is_approximate")),
         "created_at": s.get("created_at"),
         "updated_at": s.get("updated_at"),
         "last_message_at": s.get("last_message_at"),

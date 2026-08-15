@@ -192,6 +192,25 @@ def test_elapsed_hours():
     assert _elapsed(100.0, ended_at=7300.0) == "2h00m"
 
 
+def test_elapsed_marks_a_reconstructed_end_and_leaves_a_measured_one_bare():
+    """The same two timestamps must not print the same way when one end was
+    reconstructed. Rows repaired from leftover evidence carry a guessed end,
+    and printed identically to a measured run there is nothing in the output
+    that could tell a reader which one they are looking at."""
+    measured = _elapsed(100.0, ended_at=145.0)
+    reconstructed = _elapsed(100.0, ended_at=145.0, approximate=True)
+
+    assert measured == "45s"
+    assert reconstructed == "~45s"
+    assert measured != reconstructed
+
+
+def test_elapsed_does_not_mark_a_still_running_row():
+    """A row with no end is measured up to now, so the flag must not leak a
+    tilde onto a span whose end has not been guessed at all."""
+    assert not _elapsed(time.time() - 45, approximate=True).startswith("~")
+
+
 def test_trunc_short():
     assert _trunc("hello", 10) == "hello"
 
@@ -444,6 +463,24 @@ def test_session_to_row():
     assert row["project"] == "lionagi"
     assert row["status"] == "running"
     assert row["phase"] == "coder"
+
+
+def test_session_to_row_carries_end_provenance_into_the_elapsed_column():
+    """The elapsed column is where a reader meets the reconstructed end, so the
+    flag has to survive the trip from the row into the rendered cell."""
+    common = {
+        "id": "abc123def456",
+        "invocation_kind": "agent",
+        "project": "lionagi",
+        "status": "completed",
+        "started_at": 100.0,
+        "ended_at": 145.0,
+    }
+    measured = _session_to_row({**common, "ended_at_is_approximate": 0})
+    reconstructed = _session_to_row({**common, "ended_at_is_approximate": 1})
+
+    assert measured["elapsed"] == "45s"
+    assert reconstructed["elapsed"] == "~45s"
 
 
 def test_session_to_row_no_optional():

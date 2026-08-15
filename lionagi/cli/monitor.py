@@ -97,21 +97,36 @@ def _colour_status(status: str) -> str:
 # ── Elapsed formatting ────────────────────────────────────────────────────────
 
 
-def _elapsed(started_at: float | None, ended_at: float | None = None) -> str:
-    """Human-readable elapsed time.  Uses ended_at if present, else now."""
+def _elapsed(
+    started_at: float | None,
+    ended_at: float | None = None,
+    *,
+    approximate: bool = False,
+) -> str:
+    """Human-readable elapsed time.  Uses ended_at if present, else now.
+
+    A leading ``~`` marks a span whose end was reconstructed rather than
+    observed. Rows that ended before the store recorded end times get an end
+    inferred from whatever evidence was left behind, and the difference
+    between that and a measured run is the whole reason the store keeps the
+    provenance: printed bare, a guess reads as a measurement.
+    """
     if started_at is None:
         return "-"
+    # Only a closed span can be approximate. A row that is still running is
+    # measured up to now whatever the flag says about the end it does not have.
+    marker = "~" if (approximate and ended_at is not None) else ""
     end = ended_at if ended_at is not None else time.time()
     secs = int(end - started_at)
     if secs < 0:
-        return "0s"
+        return f"{marker}0s"
     if secs < 60:
-        return f"{secs}s"
+        return f"{marker}{secs}s"
     mins, secs = divmod(secs, 60)
     if mins < 60:
-        return f"{mins}m{secs:02d}s"
+        return f"{marker}{mins}m{secs:02d}s"
     hrs, mins = divmod(mins, 60)
-    return f"{hrs}h{mins:02d}m"
+    return f"{marker}{hrs}h{mins:02d}m"
 
 
 def _since_timestamp(window: str) -> float:
@@ -416,7 +431,11 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
         "phase": (
             sess.get("current_phase") or sess.get("agent_name") or sess.get("playbook_name") or "-"
         ),
-        "elapsed": _elapsed(sess.get("started_at"), sess.get("ended_at")),
+        "elapsed": _elapsed(
+            sess.get("started_at"),
+            sess.get("ended_at"),
+            approximate=bool(sess.get("ended_at_is_approximate")),
+        ),
         "agents": str(sess.get("branch_count") or 0),
     }
 
@@ -493,7 +512,14 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
     lines.append(f"  model:     {sess.get('model') or '-'}")
     lines.append(f"  provider:  {sess.get('provider') or '-'}")
     lines.append(f"  effort:    {sess.get('effort') or '-'}")
-    lines.append(f"  elapsed:   {_elapsed(sess.get('started_at'), sess.get('ended_at'))}")
+    lines.append(
+        "  elapsed:   "
+        + _elapsed(
+            sess.get("started_at"),
+            sess.get("ended_at"),
+            approximate=bool(sess.get("ended_at_is_approximate")),
+        )
+    )
     started = sess.get("started_at")
     if started:
         lines.append(f"  started:   {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started))}")

@@ -236,6 +236,54 @@ async def test_run_progress_failed_run(db_path):
     assert result["elapsedSeconds"] == pytest.approx(10.0)
 
 
+async def test_run_progress_terminal_null_end_reports_unknown_duration(db_path, monkeypatch):
+    """An old terminal row is not still running merely because its end is absent."""
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = str(uuid.uuid4())
+    await seed_session(db_path, session_id=sid, status="running", started_at=10.0)
+    # Simulate a historical writer after this database's migration marker was
+    # recorded, so the read path itself must remain honest even before repair.
+    async with StateDB(db_path) as db:
+        await db.execute(
+            "UPDATE sessions SET status = 'completed', ended_at = NULL WHERE id = :id",
+            {"id": sid},
+        )
+    monkeypatch.setattr(time, "time", lambda: 10_000.0)
+
+    result = await run_progress({"run": sid})
+
+    assert result["status"] == "completed"
+    assert result["endedAt"] is None
+    assert result["endedAtApproximate"] is False
+    assert result["elapsedSeconds"] is None
+
+
+async def test_run_progress_approximate_end_does_not_claim_measured_duration(db_path):
+    from lionagi.studio.operator.run_progress import run_progress
+
+    sid = str(uuid.uuid4())
+    await seed_session(
+        db_path,
+        session_id=sid,
+        status="running",
+        started_at=10.0,
+        updated_at=20.0,
+    )
+    async with StateDB(db_path) as db:
+        await db.execute(
+            "UPDATE sessions SET status = 'completed', ended_at = 20.0, "
+            "ended_at_is_approximate = 1 WHERE id = :id",
+            {"id": sid},
+        )
+
+    result = await run_progress({"run": sid})
+
+    assert result["endedAt"] == 20.0
+    assert result["endedAtApproximate"] is True
+    assert result["elapsedSeconds"] is None
+
+
 async def test_run_progress_completed_empty_branch_counts_as_failed(db_path):
     """ADR-0064: completed_empty is terminal but unsuccessful -- a branch
     that produced no trusted evidence must not be counted as an op success."""
