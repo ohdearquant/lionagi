@@ -148,3 +148,59 @@ async def test_new_terminal_insert_without_measured_end_is_marked_approximate(
     assert row["ended_at_is_approximate"] is True
     # Approximate evidence must never be promoted to a measured duration.
     assert row["duration_ms"] is None
+
+
+def _seed_legacy_row_with_a_stale_duration(db_path: Path) -> None:
+    """A terminal row with no end time but a duration an older writer left behind.
+
+    The fixture above never sets duration_ms, so its assertion that the column
+    comes out NULL holds whether or not the backfill clears it. This is the row
+    that tells the two apart.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("DELETE FROM schema_meta WHERE key = ?", (_BACKFILL_KEY,))
+        conn.execute(
+            "INSERT INTO progressions (id, created_at, collection) VALUES (?, ?, '[]')",
+            ("stale-progression", 1.0),
+        )
+        conn.execute(
+            "INSERT INTO sessions "
+            "(id, created_at, progression_id, updated_at, status, started_at, "
+            "last_message_at, ended_at, duration_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "stale-duration",
+                1.0,
+                "stale-progression",
+                50.0,
+                "completed",
+                10.0,
+                60.0,
+                None,
+                999.0,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def test_backfill_clears_a_duration_it_can_no_longer_vouch_for(tmp_path: Path) -> None:
+    """Setting the approximate bit and leaving duration_ms is a contradiction.
+
+    The row would then carry a measured length for an end nobody measured, and
+    readers that trust the duration get a number with no basis.
+    """
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path):
+        pass
+    _seed_legacy_row_with_a_stale_duration(db_path)
+
+    async with StateDB(db_path) as db:
+        row = await db.get_session("stale-duration")
+
+    assert row is not None
+    assert row["ended_at"] == 60.0
+    assert row["ended_at_is_approximate"] is True
+    assert row["duration_ms"] is None

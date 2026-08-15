@@ -1173,8 +1173,12 @@ class StateDB:
 
         await conn.execute(
             text(
+                # duration_ms is cleared with the same write that sets the bit.
+                # A legacy row can carry a duration from an older writer, and
+                # keeping it beside an approximate end leaves the row asserting
+                # a measured length for an end nobody measured.
                 "UPDATE sessions SET ended_at = :ended_at, "
-                "ended_at_is_approximate = 1 "
+                "ended_at_is_approximate = 1, duration_ms = NULL "
                 "WHERE id = :id AND ended_at IS NULL AND status IN "
                 "('completed','completed_empty','failed','timed_out','aborted','cancelled')"
             ),

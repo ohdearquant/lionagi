@@ -847,7 +847,15 @@ async def get_session(
     ended_at = session_row["ended_at"]
     ended_at_is_approximate = bool(session_row["ended_at_is_approximate"])
     duration_ms = None if ended_at_is_approximate else session_row["duration_ms"]
-    if duration_ms is None and started_at is not None and ended_at is not None:
+    # Only reconstruct from a measured end. Deriving one from an approximate
+    # ended_at hands back a number that reads as measured, which is the whole
+    # thing the flag exists to prevent.
+    if (
+        duration_ms is None
+        and not ended_at_is_approximate
+        and started_at is not None
+        and ended_at is not None
+    ):
         duration_ms = (ended_at - started_at) * 1000
     status = session_row["status"] or "completed"
     artifact_contract = _parse_json_col(session_row["artifact_contract_json"])
