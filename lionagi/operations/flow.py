@@ -229,6 +229,11 @@ class DependencyAwareExecutor:
                 finally:
                     self._tg = None
         except (get_cancelled_exc_class(), KeyboardInterrupt, SystemExit):
+            # Any entry point that announces must also sweep. Announcing is
+            # structural -- one helper, called from every path -- but this
+            # sweep is hand-placed per entry point, so a new path gets the
+            # announce for free and the settle only if someone remembers.
+            # Without it, an announced operation stays queued forever.
             self._cancel_announced_unfinished()
             raise
 
@@ -489,6 +494,12 @@ class DependencyAwareExecutor:
         cancellation interrupted -- before the task group, between task
         creations, or inside an operation. Anything already terminal is left
         alone, since _emit_abandoned_terminal is a no-op for those.
+
+        The invariant callers owe: any entry point that announces must also
+        sweep. Announcing goes through one helper, so a new path picks it up
+        for free; the sweep is placed by hand at each entry point's
+        cancellation path, so a new path that forgets strands whatever it
+        announced in `queued`.
         """
         for operation in list(self._queued_announced.values()):
             self._emit_abandoned_terminal(operation, "cancelled", require_started=False)
@@ -1063,6 +1074,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
                     self._announce_queued(node)
                     tg.start_soon(self._run_tracked, node)
         except (get_cancelled_exc_class(), KeyboardInterrupt, SystemExit):
+            # Any entry point that announces must also sweep -- see the note
+            # at the first of these. Hand-placed, so a new entry point repeats
+            # it or leaves its announced operations queued forever.
             self._cancel_announced_unfinished()
             raise
         finally:
@@ -1130,6 +1144,9 @@ class ReactiveExecutor(DependencyAwareExecutor):
                             self._announce_queued(node)
                             tg.start_soon(self._run_tracked, node)
                 except get_cancelled_exc_class():
+                    # Any entry point that announces must also sweep -- see the
+                    # note at the first of these. Hand-placed, so a new entry
+                    # point repeats it or strands its announced operations.
                     self._cancel_announced_unfinished()
                     raise  # let driver_cancel_scope absorb our own cancellation
                 except BaseException as e:  # noqa: BLE001
