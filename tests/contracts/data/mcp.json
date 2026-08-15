@@ -1352,6 +1352,12 @@
             "description": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote.",
             "x-flag": "--project"
           },
+          "resume_on_timeout": {
+            "type": "boolean",
+            "description": "Deprecated and ignored on this command: it is accepted so existing invocations keep working, but nothing here reads it and it will be removed in a future release. Only `li agent` implements it.",
+            "default": false,
+            "x-flag": "--resume-on-timeout"
+          },
           "notify": {
             "type": "string",
             "description": "Shell command template run once this run reaches its terminal status. Overrides .lionagi/settings.yaml notify.on_terminal. Substitutes {payload} (full JSON), {status}, {invocation_id}.",
@@ -1599,6 +1605,12 @@
             "type": "string",
             "description": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote.",
             "x-flag": "--project"
+          },
+          "resume_on_timeout": {
+            "type": "boolean",
+            "description": "Deprecated and ignored on this command: it is accepted so existing invocations keep working, but nothing here reads it and it will be removed in a future release. Only `li agent` implements it.",
+            "default": false,
+            "x-flag": "--resume-on-timeout"
           },
           "notify": {
             "type": "string",

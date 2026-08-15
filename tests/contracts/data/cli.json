@@ -439,6 +439,17 @@
           },
           {
             "option_strings": [
+              "--resume-on-timeout"
+            ],
+            "dest": "resume_on_timeout",
+            "required": false,
+            "nargs": 0,
+            "default": false,
+            "choices": null,
+            "help": "Deprecated and ignored on this command: it is accepted so existing invocations keep working, but nothing here reads it and it will be removed in a future release. Only `li agent` implements it."
+          },
+          {
+            "option_strings": [
               "--notify"
             ],
             "dest": "notify",
@@ -837,6 +848,17 @@
             "default": null,
             "choices": null,
             "help": "Explicit project name for this session. Overrides auto-detection from .lionagi/config.toml or git remote."
+          },
+          {
+            "option_strings": [
+              "--resume-on-timeout"
+            ],
+            "dest": "resume_on_timeout",
+            "required": false,
+            "nargs": 0,
+            "default": false,
+            "choices": null,
+            "help": "Deprecated and ignored on this command: it is accepted so existing invocations keep working, but nothing here reads it and it will be removed in a future release. Only `li agent` implements it."
           },
           {
             "option_strings": [

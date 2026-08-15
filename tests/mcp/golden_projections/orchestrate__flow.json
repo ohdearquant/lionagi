@@ -148,6 +148,12 @@
         "type": "string",
         "x-flag": "--resume"
       },
+      "resume_on_timeout": {
+        "default": false,
+        "description": "Deprecated and ignored on this command: it is accepted so existing invocations keep working, but nothing here reads it and it will be removed in a future release. Only `li agent` implements it.",
+        "type": "boolean",
+        "x-flag": "--resume-on-timeout"
+      },
       "save": {
         "description": "Directory to write each agent's output and the run's artifacts into. Required by --background, which has nowhere else to report.",
         "type": "string",

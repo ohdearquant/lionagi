@@ -6,14 +6,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-### Removed
+### Deprecated
 
-- `--resume-on-timeout` on `li o fanout` and `li o flow`. The flag was accepted
+- `--resume-on-timeout` on `li o fanout` and `li o flow`. The flag is accepted
   and listed in the help output of both commands but neither ever read it, so
-  passing it changed nothing. It is removed rather than deprecated because a
-  release spent warning about an inert flag would advertise it for longer
-  without ever making it work. It remains available and functional on
-  `li agent`, which is the surface that implements it.
+  passing it changes nothing. Both commands now say so at parse time instead of
+  accepting it silently, and will keep accepting it until it is removed in a
+  later release. It remains available and functional on `li agent`, which is
+  the surface that implements it.
 
 ## [0.35.0] - 2026-08-12
 

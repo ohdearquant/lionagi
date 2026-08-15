@@ -254,13 +254,14 @@ def resolve_persisted_effort(
 def add_common_cli_args(
     parser: argparse.ArgumentParser,
     *,
-    include_resume_on_timeout: bool = True,
+    resume_on_timeout_supported: bool = True,
 ) -> None:
     """Add shared CLI flags to any subparser.
 
-    ``--resume-on-timeout`` is an agent-only execution contract.  Callers
-    whose handlers do not implement that contract must opt out so argparse
-    and the MCP projection never advertise an ignored option.
+    ``--resume-on-timeout`` is an agent-only execution contract. Commands whose
+    handlers do not implement it still accept the option, because removing a
+    flag that appears in ``--help`` breaks callers whose invocations parse
+    today, and instead say at parse time that it does nothing here.
     """
     parser.add_argument(
         "--yolo",
@@ -350,7 +351,7 @@ def add_common_cli_args(
             "from .lionagi/config.toml or git remote."
         ),
     )
-    if include_resume_on_timeout:
+    if resume_on_timeout_supported:
         parser.add_argument(
             "--resume-on-timeout",
             dest="resume_on_timeout",
@@ -362,6 +363,24 @@ def add_common_cli_args(
                 "task' and report the combined result. Bounded to a single "
                 "auto-resume; a timeout on the resumed leg terminates normally. "
                 "Same effect as an agent profile's 'resume_on_timeout: once'."
+            ),
+        )
+    else:
+        # Registered with the same action as everywhere else, deliberately. The
+        # MCP projection matches action classes exactly and treats any subclass
+        # as untranslatable, so carrying the notice in a custom action would
+        # drop this command from the MCP surface entirely -- trading the break
+        # this deprecation exists to avoid for the same break somewhere else.
+        # The notice is emitted once argv is parsed, in run_orchestrate.
+        parser.add_argument(
+            "--resume-on-timeout",
+            dest="resume_on_timeout",
+            action="store_true",
+            default=False,
+            help=(
+                "Deprecated and ignored on this command: it is accepted so existing "
+                "invocations keep working, but nothing here reads it and it will be "
+                "removed in a future release. Only `li agent` implements it."
             ),
         )
     parser.add_argument(

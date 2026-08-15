@@ -98,6 +98,12 @@
         "type": "array",
         "x-positional": true
       },
+      "resume_on_timeout": {
+        "default": false,
+        "description": "Deprecated and ignored on this command: it is accepted so existing invocations keep working, but nothing here reads it and it will be removed in a future release. Only `li agent` implements it.",
+        "type": "boolean",
+        "x-flag": "--resume-on-timeout"
+      },
       "save": {
         "description": "Directory to write each worker's output and the run's artifacts into. Without it they land in the run's own artifacts directory.",
         "type": "string",
