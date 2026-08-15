@@ -271,6 +271,23 @@ def _derive_run_files(
     }
 
 
+def display_model(value: Any) -> Any:
+    """A model column fit to show: the provider CLIs stamp ``<synthetic>`` on
+    their internal bookkeeping turns and the mirror copies it verbatim — it is
+    not a model name, so every projection drops it rather than rendering the
+    literal angle brackets in a model chip."""
+    return None if value == "<synthetic>" else value
+
+
+def display_cost(value: Any, provider: Any) -> Any:
+    """A cost column fit to show. Codex runs' spend is not actually tracked
+    yet: the stored figure is derived from a pricing table known to be wrong,
+    and a plausible-wrong dollar amount is worse than an honest unknown. The
+    cost-visibility contract already reserves NULL for "never reported", so
+    codex rows project as NULL until real tracking lands."""
+    return None if provider == "codex" else value
+
+
 def _parse_metadata(raw: str | None) -> dict[str, Any] | None:
     if not raw:
         return None
@@ -381,6 +398,7 @@ class SessionFilter:
         project_null: bool = False,
         tags: list[str] | None = None,
         search: str | None = None,
+        kinds: set[str] | None = None,
     ) -> None:
         self.playbook = playbook
         self.statuses = statuses
@@ -388,10 +406,16 @@ class SessionFilter:
         self.project_null = project_null
         self.tags = list(dict.fromkeys(tags)) if tags else None
         self.search = search
+        self.kinds = kinds
 
     def where(self) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
+        # A mirrored CLI transcript attributed to the run that spawned it as
+        # its engine (see claude_mirror.link_engine_child_session) duplicates
+        # that canonical run in every listing; the pair collapses here. The
+        # row itself stays readable by id.
+        clauses.append("json_extract(s.node_metadata, '$.engine_parent_run_id') IS NULL")
         if self.playbook:
             clauses.append(
                 "LOWER(COALESCE(s.playbook_name, '')) LIKE '%' || LOWER(?) || '%' "
@@ -416,6 +440,19 @@ class SessionFilter:
             null_clause = " OR s.status IS NULL" if "completed" in self.statuses else ""
             clauses.append(f"(COALESCE(s.status, 'completed') IN ({placeholders}){null_clause})")
             params.extend(ordered)
+        if self.kinds:
+            # Facet vocabulary: "show" covers both spellings the writers have
+            # used for a show-driven play root. Legacy rows carry NULL
+            # invocation_kind and read as plain agent runs everywhere else,
+            # so the agent facet admits them too.
+            expanded_set: set[str] = set()
+            for kind in self.kinds:
+                expanded_set.update({"show", "show-play"} if kind == "show" else {kind})
+            expanded = sorted(expanded_set)
+            placeholders = ",".join("?" for _ in expanded)
+            null_clause = " OR s.invocation_kind IS NULL" if "agent" in self.kinds else ""
+            clauses.append(f"(s.invocation_kind IN ({placeholders}){null_clause})")
+            params.extend(expanded)
         if self.project_null:
             clauses.append("s.project IS NULL")
         elif self.project:
@@ -428,8 +465,6 @@ class SessionFilter:
                 " GROUP BY session_id HAVING COUNT(DISTINCT tag) = ?)"
             )
             params.extend([*self.tags, len(self.tags)])
-        if not clauses:
-            return "", []
         return "WHERE " + " AND ".join(clauses), params
 
 
@@ -562,7 +597,7 @@ async def list_sessions(
             # Optional parent skill orchestration.
             "invocation_id": row["invocation_id"],
             # Provenance disclosure — resolved values.
-            "model": row["model"],
+            "model": display_model(row["model"]),
             "provider": row["provider"],
             "effort": row["effort"],
             "agent_hash": row["agent_hash"],
@@ -601,7 +636,7 @@ async def list_sessions(
             "status_reason_summary": row["status_reason_summary"],
             # Cost-visibility contract: NULL means the provider never reported
             # a cost for this session (unknown), never coerced to 0.0 (free).
-            "total_cost_usd": row["total_cost_usd"],
+            "total_cost_usd": display_cost(row["total_cost_usd"], row["provider"]),
             "input_tokens": row["input_tokens"],
             "output_tokens": row["output_tokens"],
         }
@@ -621,6 +656,7 @@ async def list_project_counts() -> list[dict[str, Any]]:
                    COUNT(*) AS count,
                    MAX(updated_at) AS last_activity
             FROM sessions
+            WHERE json_extract(node_metadata, '$.engine_parent_run_id') IS NULL
             GROUP BY project
             """
         )
@@ -1038,11 +1074,15 @@ async def get_session(
                     "message_stats": full_stats["branches"][branch_id],
                     "first_message_at": first_message_at,
                     "last_message_at": last_message_at,
-                    "model": br["model"],
+                    "model": display_model(br["model"]),
                     "provider": br["provider"],
                     "agent_name": br["agent_name"],
                     "status": br["status"] if "status" in br_keys else None,
-                    "started_at": br["started_at"] if "started_at" in br_keys else None,
+                    "started_at": (
+                        br["started_at"]
+                        if "started_at" in br_keys and br["started_at"] is not None
+                        else br["created_at"]
+                    ),
                     "ended_at": br["ended_at"] if "ended_at" in br_keys else None,
                 }
             )
@@ -1110,7 +1150,7 @@ async def get_session(
         "message_stats": full_stats,
         "run_files": run_files,
         # Provenance disclosure — same fields exposed on list_sessions().
-        "model": session_row["model"],
+        "model": display_model(session_row["model"]),
         "provider": session_row["provider"],
         "effort": session_row["effort"],
         "agent_hash": session_row["agent_hash"],
@@ -1123,7 +1163,7 @@ async def get_session(
         "status_reason_summary": session_row["status_reason_summary"],
         "status_evidence_refs": _parse_json_col(session_row["status_evidence_refs"]),
         # Cost-visibility contract: NULL means unreported, never coerced to 0.0.
-        "total_cost_usd": session_row["total_cost_usd"],
+        "total_cost_usd": display_cost(session_row["total_cost_usd"], session_row["provider"]),
         "input_tokens": session_row["input_tokens"],
         "output_tokens": session_row["output_tokens"],
         "graph": _graph_from_metadata(session_row["node_metadata"]),

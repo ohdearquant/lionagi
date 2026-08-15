@@ -15,12 +15,14 @@ from lionagi import Branch
 from lionagi._auto import CliDeclaration, auto_register
 from lionagi._errors import ConfigurationError
 from lionagi._errors import TimeoutError as LionTimeoutError
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
 from lionagi.ln.concurrency import (
     SigtermInterrupt,
     cache_cancelled_exc_class,
     cancelled_exc_classes,
     run_async,
 )
+from lionagi.mcp.config import JOB_MARKER_ENV_VAR
 from lionagi.protocols.generic.log import DataLoggerConfig
 from lionagi.protocols.messages import ActionRequest, AssistantResponse
 from lionagi.state import provenance as _provenance
@@ -66,6 +68,9 @@ from ._util import EXIT_CODE_BY_STATUS, classify_exception, validate_cwd_exists
 # Preset names supported by --preset.
 _PRESET_CHOICES = ("coding",)
 
+_DETACHED_EXECUTION_BOUNDARY = """[DETACHED EXECUTION BOUNDARY]
+This process was launched as a detached MCP job. No interactive harness is attached, so this turn cannot receive a background completion notification. Keep every command in the foreground. If a command tool yields a live execution handle, poll that same handle until it reaches a terminal result. Do not arm a monitor or finish a turn waiting for an external notification. Verify the requested outputs before reporting completion."""
+
 # --image extension -> MIME type, matching InstructionContent's data-URI allowlist
 # (lionagi/protocols/messages/instruction.py _DATA_IMAGE_RE: png/jpe?g/gif/webp).
 _IMAGE_MEDIA_TYPES = {
@@ -83,6 +88,15 @@ _KHIVE_INJECTION_COUNTERS = (
     "writeback_records",
     "writeback_failed",
 )
+
+
+def _apply_detached_execution_boundary(prompt: str) -> str:
+    """Tell detached MCP legs which interactive wait channel they do not have."""
+    if not os.environ.get(JOB_MARKER_ENV_VAR):
+        return prompt
+    if prompt.startswith(_DETACHED_EXECUTION_BOUNDARY):
+        return prompt
+    return f"{_DETACHED_EXECUTION_BOUNDARY}\n\n{prompt}"
 
 
 def _fold_injection_stats(totals: dict[str, int], stats: object) -> None:
@@ -608,6 +622,7 @@ async def _run_agent(
 
     session_id is None whenever live persistence never started.
     """
+    prompt = _apply_detached_execution_boundary(prompt)
     seed_injection_totals = _injection_totals is None
     _injection_totals = (
         dict.fromkeys(_KHIVE_INJECTION_COUNTERS, 0)
@@ -676,6 +691,17 @@ async def _run_agent(
             timeout = profile.timeout
         if profile.resume_on_timeout and not resume_on_timeout:
             resume_on_timeout = True
+        if (getattr(profile, "extra", None) or {}).get("hooks"):
+            # A saved guard the leg silently does not run is worse than no
+            # guard: say so at launch until CLI runs consume the assembly.
+            from lionagi.cli._logging import warn
+
+            warn(
+                f"agent profile {agent_name!r} declares a hooks assembly; "
+                "CLI-spawned runs do not apply profile hook assemblies yet "
+                "(Studio Operator turns do), so those hooks are NOT active "
+                "for this run"
+            )
 
     # Validate a declared profile `role:` key up front: a falsy-but-present
     # value must fail loudly here, not silently fall back to "implementer".
@@ -1545,10 +1571,11 @@ def _resolve_model_and_prompt(args: argparse.Namespace) -> tuple[str | None, str
             log_error("pass --prompt or --prompt-file, not both")
             return None
         if args.prompt_file == "-":
-            flag_prompt = sys.stdin.read()
+            flag_prompt = sys.stdin.read(MAX_SPEC_PROMPT_CHARS + 1)
         else:
             try:
-                flag_prompt = Path(args.prompt_file).read_text()
+                with Path(args.prompt_file).open() as prompt_stream:
+                    flag_prompt = prompt_stream.read(MAX_SPEC_PROMPT_CHARS + 1)
             except OSError as exc:
                 log_error(f"could not read --prompt-file: {exc}")
                 return None
@@ -1614,6 +1641,9 @@ def run_agent(args: argparse.Namespace) -> int:
             form_prompt_prefix = _form_to_context_block(work_form) + "\n\n"
 
     prompt = form_prompt_prefix + prompt_text
+    if len(prompt) > MAX_SPEC_PROMPT_CHARS:
+        log_error(f"agent prompt exceeds maximum length of {MAX_SPEC_PROMPT_CHARS} characters")
+        return 1
 
     # --image: load and validate BEFORE any LLM call, same contract as --form.
     image_uris: list[str] | None = None

@@ -211,6 +211,57 @@ async def test_mcp_loader_rejects_returned_name_missing_from_registry(tmp_path, 
         await create_agent(config, load_settings=False)
 
 
+async def test_native_mcp_registration_is_not_reported_unreachable(tmp_path, monkeypatch, caplog):
+    """An API provider can use tools registered by LionAGI's native MCP path."""
+    import logging
+
+    from lionagi.protocols.action.manager import ActionManager
+    from lionagi.protocols.action.tool import Tool
+
+    mcp_file = tmp_path / "custom.mcp.json"
+    mcp_file.write_text('{"mcpServers": {"khive": {"command": "true"}}}')
+
+    async def fake_load_mcp_config(
+        self, config_path, server_names=None, update=False, mcp_security=None
+    ):
+        async def request(**kwargs):
+            return kwargs
+
+        self.register_tool(Tool(func_callable=request), update=update)
+        return {"khive": ["request"]}
+
+    monkeypatch.setattr(ActionManager, "load_mcp_config", fake_load_mcp_config)
+
+    config = AgentSpec.compose("implementer", model="openai/gpt-4.1-mini")
+    config.mcp_config_path = str(mcp_file)
+    config.mcp_servers = ["khive"]
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.agent.factory"):
+        branch = await create_agent(config, load_settings=False)
+
+    assert "request" in branch.acts.registry
+    assert not any("will not be reachable" in record.getMessage() for record in caplog.records)
+
+
+def test_unforwardable_mcp_without_native_registration_still_warns(tmp_path, caplog):
+    """Keep the strong warning when neither MCP delivery path succeeded."""
+    import logging
+
+    from lionagi.agent.factory import _forward_mcp_to_cli_request
+    from lionagi.service.imodel import iModel
+
+    mcp_file = tmp_path / "custom.mcp.json"
+    mcp_file.write_text('{"mcpServers": {"khive": {"command": "true"}}}')
+    config = AgentSpec.compose("implementer", model="openai/gpt-4.1-mini")
+    config.mcp_config_path = str(mcp_file)
+    branch = Branch(chat_model=iModel(provider="openai", model="gpt-4.1-mini"))
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.agent.factory"):
+        _forward_mcp_to_cli_request(branch, config)
+
+    assert any("will not be reachable" in record.getMessage() for record in caplog.records)
+
+
 async def test_create_agent_coding_permissions_recheck_user_mutated_args(tmp_path):
     """User pre-hooks must not be able to rewrite safe args after permission checks."""
     from lionagi.agent.permissions import PermissionPolicy

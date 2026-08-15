@@ -2,11 +2,10 @@
  * Engine definition draft — the editable state behind the designer canvas.
  * Pure logic: draft shape, defaults, validation, and the POST body builder.
  * Only the honest knobs the launch pipeline accepts appear here: model,
- * max_depth, max_agents, options.test_cmd, options.export_dir, and the
- * per-stage role/model overrides in `stages`.
+ * max_depth, max_agents, options.test_cmd, and options.export_dir.
  */
 import type { EngineKind, EngineTopology } from "./topology";
-import type { CreateEngineDefRequest, EngineDef, StageOverride } from "@/lib/api";
+import type { CreateEngineDefRequest, EngineDef } from "@/lib/api";
 
 export interface EngineDefDraft {
   name: string;
@@ -17,15 +16,9 @@ export interface EngineDefDraft {
   test_cmd: string;
   export_dir: string;
   description: string;
-  /** stage id → role/model override; empty strings mean "engine default". */
-  stages: Record<string, StageOverride>;
 }
 
 export function defaultDraft(kind: EngineKind, existing?: EngineDef | null): EngineDefDraft {
-  const stages: Record<string, StageOverride> = {};
-  for (const [id, ov] of Object.entries(existing?.stages ?? {})) {
-    stages[id] = { ...ov };
-  }
   return {
     name: existing?.name ?? "",
     kind,
@@ -35,20 +28,7 @@ export function defaultDraft(kind: EngineKind, existing?: EngineDef | null): Eng
     test_cmd: existing?.options?.test_cmd ?? "",
     export_dir: existing?.options?.export_dir ?? "",
     description: existing?.description ?? "",
-    stages,
   };
-}
-
-/** Strip blank values; what remains is exactly what the launch pipeline binds. */
-export function cleanStages(stages: Record<string, StageOverride>): Record<string, StageOverride> {
-  const out: Record<string, StageOverride> = {};
-  for (const [id, ov] of Object.entries(stages)) {
-    const entry: StageOverride = {};
-    if (ov.role?.trim()) entry.role = ov.role.trim();
-    if (ov.model?.trim()) entry.model = ov.model.trim();
-    if (Object.keys(entry).length > 0) out[id] = entry;
-  }
-  return out;
 }
 
 export function buildDefBody(draft: EngineDefDraft): CreateEngineDefRequest {
@@ -66,8 +46,6 @@ export function buildDefBody(draft: EngineDefDraft): CreateEngineDefRequest {
   if (draft.test_cmd.trim()) options.test_cmd = draft.test_cmd.trim();
   if (draft.export_dir.trim()) options.export_dir = draft.export_dir.trim();
   if (Object.keys(options).length > 0) body.options = options;
-  // Always sent (even empty) so clearing the last override clears it on update.
-  body.stages = cleanStages(draft.stages);
   return body;
 }
 

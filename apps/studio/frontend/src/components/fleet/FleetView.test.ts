@@ -276,23 +276,24 @@ describe("cost-sorted history — hasMore is never hardcoded false", () => {
   });
 });
 
-// ─── Selection validity: URL id validated against live agent set ──────────────
+// ─── Selection: an explicit deep link is trusted as-is ────────────────────────
+// A ?s=<runId> from Library recent-runs, schedules, or the Operator often names
+// a run older than the loaded history page, so membership in the loaded rows
+// must not gate the selection — the detail pane fetches by id and reports a
+// genuinely dead id itself.
 
-describe("selectedRunId validation", () => {
-  it("resolves null when URL id not in current agent list", () => {
-    const s = dispatchOk([], [makeRun({ run_id: "r1", status: "running" })]);
-    const allIds = s.orgUnits.flatMap((u) => u.agents.map((a) => a.id));
-    const urlId = "stale-id-not-present";
-    const resolved = allIds.includes(urlId) ? urlId : null;
-    expect(resolved).toBeNull();
+describe("selectedRunId deep link", () => {
+  it("does not validate the URL id against the loaded rows", () => {
+    const src = fs.readFileSync(path.join(FLEET_DIR, "FleetView.tsx"), "utf-8");
+    expect(src).toMatch(/const selectedRunId: string \| null = requestedRunId;/);
+    expect(src).not.toMatch(/urlIdValid/);
   });
 
-  it("resolves correctly when URL id is present", () => {
-    const s = dispatchOk([], [makeRun({ run_id: "r1", status: "running" })]);
-    const allIds = s.orgUnits.flatMap((u) => u.agents.map((a) => a.id));
-    const urlId = "r1";
-    const resolved = allIds.includes(urlId) ? urlId : null;
-    expect(resolved).toBe("r1");
+  it("keeps the detail pane when a deep link targets an empty fleet", () => {
+    const src = fs.readFileSync(path.join(FLEET_DIR, "FleetView.tsx"), "utf-8");
+    expect(src).toMatch(
+      /state\.orgUnits\.length === 0 && state\.recent\.length === 0 && !selectedRunId/,
+    );
   });
 });
 

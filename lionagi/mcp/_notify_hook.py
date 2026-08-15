@@ -177,6 +177,29 @@ def _delivery_env(sender: str) -> dict[str, str] | None:
     return env
 
 
+def _terminal_reason_from_env() -> str | None:
+    """Read the flow callback's controlled reason from its versioned payload.
+
+    The MCP hook is itself launched as a flow ``--notify`` adapter, whose
+    payload is already carried in ``LIONAGI_NOTIFY_PAYLOAD``. Accept only a
+    registered reason code so an inherited free-form environment value can
+    never become unbounded status data or downstream notification content.
+    """
+    raw = os.environ.get("LIONAGI_NOTIFY_PAYLOAD")
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+        reason_code = payload.get("reason_code") if isinstance(payload, dict) else None
+        if not isinstance(reason_code, str):
+            return None
+        from lionagi.state.reasons import validate_reason_code
+
+        return validate_reason_code(reason_code)
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolve_delivery_cwd(
     job: dict[str, Any] | None, override: str | None
 ) -> tuple[str | None, str | None]:
@@ -359,6 +382,7 @@ def deliver_terminal_notice(
     target: str | None = None,
     command: str | None = None,
     sender: str | None = None,
+    reason_code: str | None = None,
 ) -> dict[str, Any]:
     """Attempt this run's configured terminal notice and report what came of it.
 
@@ -401,6 +425,8 @@ def deliver_terminal_notice(
             "target": target,
             "sender": sender,
         }
+        if reason_code:
+            fields["reason_code"] = reason_code
         return _deliver(
             _substitute(template, fields),
             fields,
@@ -434,7 +460,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    terminal = jobs.mark_terminal(args.run_id, args.status)
+    reason_code = _terminal_reason_from_env()
+    terminal = jobs.mark_terminal(args.run_id, args.status, reason_code=reason_code)
     if terminal.refused:
         # End not on disk — no notice sent, since it would assert a
         # completion the record contradicts; run stays non-terminal.
@@ -461,6 +488,7 @@ def main(argv: list[str] | None = None) -> int:
         target=args.target,
         command=args.command,
         sender=args.sender,
+        reason_code=(terminal.record or {}).get("reason_code") or reason_code,
     )
     recorded = jobs.record_notify_delivery(args.run_id, outcome)
     _note_delivery_in_console_log(args.run_id, outcome)
