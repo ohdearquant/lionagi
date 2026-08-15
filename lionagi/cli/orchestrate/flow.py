@@ -2176,9 +2176,18 @@ async def _synthesize(
     t_synth = time.monotonic()
     if exec_result.engine_run is None:
         raise RuntimeError("synthesis requires the engine run that executed the DAG")
+    # The graph still carries every worker node, because synthesis depends on
+    # them and the executor resolves those dependencies from it. They already
+    # ran in the execution phase, though, so this pass must not signal them
+    # again: that would write a second set of terminal events for work it did
+    # not do, and a checkpointed resume rebuilt from those events treats the
+    # replayed nodes as completed.
+    synth_graph = env.builder.get_graph()
+    already_ran = {str(n.id) for n in synth_graph.internal_nodes.values()} - {str(synth_node)}
     synth_result_raw = await exec_result.engine_run.run_dag(
-        env.builder.get_graph(),
+        synth_graph,
         verbose=env.verbose,
+        skip_signal_ops=already_ran,
     )
     t_synth_elapsed = time.monotonic() - t_synth
     synth_res = synth_result_raw.get("operation_results", {}).get(synth_node)

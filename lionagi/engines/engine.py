@@ -630,11 +630,18 @@ class EngineRun:
         on_branch_created: Any = None,
         spawn_branch_setup: Any = None,
         on_op_complete: Any = None,
+        skip_signal_ops: set[Any] | None = None,
     ) -> dict[str, Any]:
-        """Execute a prebuilt operation DAG on the run's session and return operation results."""
+        """Execute a prebuilt operation DAG on the run's session and return operation results.
+
+        ``skip_signal_ops`` names ops that already ran in an earlier pass, so this
+        pass does not signal them a second time. Default signals every node.
+        """
         from .flow_signals import flow_progress_signals  # noqa: PLC0415
 
-        async with flow_progress_signals(self.session, graph) as on_progress:
+        async with flow_progress_signals(
+            self.session, graph, skip_ops=skip_signal_ops
+        ) as on_progress:
             result = await self.session.flow(
                 graph,
                 context=context,

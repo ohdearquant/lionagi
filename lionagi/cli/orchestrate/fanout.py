@@ -503,9 +503,18 @@ async def _run_fanout_inner(
             # bridge, so a failed synthesis reaches the observer above. Calling
             # session.flow directly emits no node signals at all, which leaves
             # the observer silent and renders the failure as an empty response.
+            # The graph still carries the workers, since synthesis depends on
+            # them, but they ran in the worker phase above and already have
+            # their terminal events; signalling them here would record the
+            # same work a second time.
+            synth_graph = env.builder.get_graph()
+            already_ran = {str(n.id) for n in synth_graph.internal_nodes.values()} - {
+                str(synth_node)
+            }
             result3 = await eng_run.run_dag(
-                env.builder.get_graph(),
+                synth_graph,
                 verbose=env.verbose,
+                skip_signal_ops=already_ran,
             )
         finally:
             env.session.observer.unobserve(_record_failed_op)

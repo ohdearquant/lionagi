@@ -1505,6 +1505,9 @@ async def test_synthesize_reuses_execution_engine_lifecycle_bridge(tmp_path):
     engine_run.run_dag.assert_awaited_once_with(
         env.builder.get_graph(),
         verbose=env.verbose,
+        # The synthesis node is the only node in this graph, so there is no
+        # earlier pass whose nodes have to be kept quiet.
+        skip_signal_ops=set(),
     )
     assert result is not None
     assert result["response"] == "synthesized through engine"
@@ -1997,3 +2000,64 @@ def _make_flow_returning(node_id: str, response: str):
         return {"operation_results": {node_id: response}}
 
     return _flow
+
+
+@pytest.mark.asyncio
+async def test_synthesize_keeps_already_executed_workers_out_of_the_signal_pass(tmp_path):
+    """Synthesis re-runs the whole graph, because the executor resolves the new
+    node's dependencies from it. The worker nodes already ran, so they are named
+    as skipped: signalling them here would record their work a second time and a
+    checkpointed resume rebuilt from those events would treat the replay as real.
+    """
+    env = _make_env(tmp_path)
+    # Two workers that the execution phase already ran.
+    worker_a = env.builder.add_operation("operate", branch=env.orc_branch, depends_on=[])
+    worker_b = env.builder.add_operation("operate", branch=env.orc_branch, depends_on=[worker_a])
+
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="x", assignee="researcher")],
+        agent_ids=["researcher"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=[worker_a, worker_b],
+        known_nodes={worker_a, worker_b},
+        deps_by_node={worker_a: [], worker_b: [worker_a]},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=["codex/gpt-5.5"],
+    )
+    exec_result = _ExecResult(
+        agent_results=[
+            {"id": "researcher", "agent_id": "researcher", "name": "researcher", "response": "f"}
+        ],
+        n_spawned=0,
+        t_exec_elapsed=1.0,
+    )
+    exec_result.engine_run = SimpleNamespace(
+        run_dag=AsyncMock(return_value={"operation_results": {}})
+    )
+
+    await _synthesize(
+        env,
+        "task",
+        plan_result,
+        dag_state,
+        exec_result,
+        synthesis_model=None,
+        model_spec="codex/gpt-5.5",
+    )
+
+    kwargs = exec_result.engine_run.run_dag.await_args.kwargs
+    skipped = kwargs["skip_signal_ops"]
+    assert skipped == {worker_a, worker_b}, (
+        f"the executed workers must be kept out of the synthesis signal pass: {skipped}"
+    )
+    # The synthesis node is the work this pass actually does, so it must not be
+    # skipped -- suppressing it would make the run's own synthesis invisible.
+    graph_ids = {str(n.id) for n in env.builder.get_graph().internal_nodes.values()}
+    synth_ids = graph_ids - skipped
+    assert len(synth_ids) == 1, f"exactly one unskipped (synthesis) node expected: {synth_ids}"
