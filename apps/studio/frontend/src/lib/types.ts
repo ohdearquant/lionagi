@@ -86,12 +86,14 @@ export interface RunSummary {
   show_play_name?: string | null;
   source_kind?: string;
   status: string;
-  // ADR-0024: derived health indicator computed at read time.
+  // ADR-0057: running-process health computed at read time. This is null for
+  // terminal rows; status + reason fields are the execution outcome.
   // - healthy / idle: alive and active (or quietly waiting).
   // - unresponsive: alive but past kind-aware threshold.
   // - stale: process dead, has produced output.
   // - orphaned: process dead, no output, no artifacts.
-  // - zombie: terminal status, but resources leaked (stale locks).
+  // - zombie: process/resource cleanup needs attention when supplied by a
+  //   health-specific surface (the runs projection currently has no lock signal).
   effective_health?: "healthy" | "idle" | "unresponsive" | "stale" | "orphaned" | "zombie" | null;
   last_message_at?: number | null;
   // ADR-0020: optional parent skill orchestration id (from `li invoke`).

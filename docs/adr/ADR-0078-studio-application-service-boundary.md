@@ -201,6 +201,11 @@ class ArtifactResult(ContractModel):
     preview_truncated: bool = False
 ```
 
+`RunSummary.effective_health` is a running-process diagnostic, not a success
+verdict. It is `None` for every terminal run. Consumers determine outcome from
+`status`, `status_reason_code`, and `status_reason_summary`; they must never use
+`effective_health == "healthy"` as a success predicate.
+
 `262_144` bytes is the target default bounded preview (256 KiB), with a 1 MiB hard cap.
 It is a conservative UI responsiveness and memory bound, not a measured optimum; changing
 either value is a contract change with tests.

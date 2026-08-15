@@ -475,29 +475,26 @@ def _session_liveness(s: dict[str, Any], ps_snapshot: str | None = None) -> bool
     return process_liveness(s, Path(ap) if ap else None, ps_snapshot)
 
 
-_TERMINAL_ROW_STATUSES = frozenset(
-    {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}
-)
-
-
 def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None) -> dict[str, Any]:
-    """Canonical Run row shape shared by list and detail routes."""
-    from lionagi.state.health import classify_session_health
+    """Canonical Run row shape shared by list and detail routes.
 
-    health = classify_session_health(
-        s,
-        now=now,
-        process_alive=process_alive,
-        has_artifacts=bool(s.get("artifacts_path")),
-        has_stale_locks=False,
-    )
-    # Expose the classifier verdict verbatim; the dashboard maps UNRESPONSIVE→"stuck".
-    effective_health: str | None = health.value
-    # A finished (or failed) run has no live process for "healthy" to describe —
-    # projecting it beside a terminal status reads as a contradiction ("failed
-    # but healthy"). Real terminal signals (stale locks, zombie) still pass.
-    if effective_health == "healthy" and s.get("status") in _TERMINAL_ROW_STATUSES:
-        effective_health = None
+    ``effective_health`` is a live-process diagnostic, not an execution
+    outcome. Once the session is terminal there is no process health to
+    report; callers must use ``status`` and its reason fields for the outcome.
+    """
+    effective_health: str | None = None
+    if s.get("status") == "running":
+        from lionagi.state.health import classify_session_health
+
+        health = classify_session_health(
+            s,
+            now=now,
+            process_alive=process_alive,
+            has_artifacts=bool(s.get("artifacts_path")),
+            has_stale_locks=False,
+        )
+        # The dashboard maps a live-but-quiet UNRESPONSIVE run onto "stuck".
+        effective_health = health.value
     return {
         "run_id": s["id"],
         "id": s["id"],
