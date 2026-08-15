@@ -174,7 +174,7 @@ function buildOrgUnits(
   runs: RunSummary[],
   nowSec: number,
   scoped: boolean,
-  runsHasNext: boolean,
+  activeRunsAreExhaustive: boolean,
   scopeIsServerCoherent: boolean,
 ): OrgUnit[] {
   const activeInvocations = invocations.filter((inv) => isActive(inv));
@@ -228,9 +228,9 @@ function buildOrgUnits(
   // did not belong. Snapshot callers are different: invocation membership was
   // scoped transactionally on the server. Keep those groups even when their
   // matching child fell beyond the bounded active-runs page.
-  const runsAreExhaustive = !runsHasNext;
   for (const unit of invMap.values()) {
-    if (scoped && !scopeIsServerCoherent && runsAreExhaustive && unit.agents.length === 0) continue;
+    if (scoped && !scopeIsServerCoherent && activeRunsAreExhaustive && unit.agents.length === 0)
+      continue;
     // A scoped view reports the children it is showing. The invocation's own
     // session_count is global, so rendering it beside a filtered child list
     // states a total that belongs to a different question.
@@ -416,12 +416,20 @@ export function fleetReducer(state: FleetState, action: FleetAction): FleetState
       // group can be left childless by the filter itself and the old
       // page-based rule is the honest one there.
       const scopeIsServerCoherent = action.snapshotVersion != null && !kind;
+      // Only active runs are matched into groups, so whether a childless group
+      // may be dropped turns on the active page being complete. runsHasNext
+      // describes terminal-history paging and answers a different question:
+      // reading it here drops a group whose live child sat on an omitted
+      // active page, hiding running work. Legacy callers send no omitted
+      // count, and for them the runs page remains the only evidence there is.
+      const activeRunsAreExhaustive =
+        action.activeRunOmitted != null ? action.activeRunOmitted === 0 : !runsHasNext;
       const orgUnits = buildOrgUnits(
         invocations,
         runs,
         nowSec,
         scoped,
-        runsHasNext,
+        activeRunsAreExhaustive,
         scopeIsServerCoherent,
       );
       const counts = deriveCounts(orgUnits, runs);

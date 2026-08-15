@@ -547,7 +547,10 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
         "provider": s.get("provider"),
         "effort": s.get("effort"),
         "agent_hash": s.get("agent_hash"),
-        "status": s.get("status", "completed"),
+        # Legacy rows carry a NULL status and read as "completed" everywhere
+        # else. A default argument does not cover them: the column is always
+        # selected, so the key is present and holds None.
+        "status": s.get("status") or "completed",
         "started_at": s.get("started_at"),
         "ended_at": s.get("ended_at"),
         "created_at": s.get("created_at"),

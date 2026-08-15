@@ -255,3 +255,194 @@ def test_active_snapshot_refuses_an_unknown_kind(tmp_path, monkeypatch):
 
     assert response.status_code == 422
     assert "aegnt" in response.text
+
+
+async def _seed_engine_mirror_rows(db_path: Path) -> None:
+    """A canonical run and the mirrored transcript attributed to it.
+
+    The runs listing collapses this pair into the canonical row. Both halves are
+    running children of one invocation, which is the shape that lets a missing
+    exclusion show up as an inflated total rather than an extra list entry only.
+    """
+    now = time.time()
+    async with StateDB(db_path) as db:
+        await db.create_invocation(
+            {
+                "id": "mirror-inv",
+                "skill": "mirrored",
+                "status": "running",
+                "started_at": now - 60,
+            }
+        )
+        for session_id, node_metadata in (
+            ("canonical-run", None),
+            ("mirror-run", {"engine_parent_run_id": "canonical-run"}),
+        ):
+            progression_id = str(uuid.uuid4())
+            await db.create_progression(progression_id)
+            row = {
+                "id": session_id,
+                "progression_id": progression_id,
+                "name": session_id,
+                "status": "running",
+                "started_at": now - 60,
+                "last_message_at": now,
+                "invocation_id": "mirror-inv",
+                "project": "org/alpha",
+            }
+            if node_metadata is not None:
+                row["node_metadata"] = node_metadata
+            await db.create_session(row)
+
+
+def test_active_snapshot_collapses_an_engine_mirror_into_its_canonical_run(tmp_path, monkeypatch):
+    """One logical run must count once.
+
+    The snapshot's totals are the feature: Fleet and Mission read them as the
+    exact active count, so admitting the mirror does not merely add a row, it
+    reports work that is not separately happening.
+    """
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    _run(_seed_engine_mirror_rows(db_path))
+    monkeypatch.setattr(
+        "lionagi.studio.services.runs._session_liveness", lambda *_args, **_kwargs: True
+    )
+
+    from lionagi.studio.app import app
+
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+
+    response = client.get("/api/active-snapshot", params={"run_limit": 10})
+    assert response.status_code == 200
+    payload = response.json()
+    assert {row["id"] for row in payload["active_runs"]} == {"canonical-run"}
+    assert payload["active_run_total"] == 1
+
+    # The scoped path builds its invocation membership from a separate child
+    # subquery, so it needs its own arm rather than inheriting the one above.
+    scoped = client.get("/api/active-snapshot", params={"project": "org/alpha", "run_limit": 10})
+    assert scoped.status_code == 200
+    scoped_payload = scoped.json()
+    assert {row["id"] for row in scoped_payload["active_runs"]} == {"canonical-run"}
+    assert scoped_payload["active_run_total"] == 1
+    assert [row["id"] for row in scoped_payload["active_invocations"]] == ["mirror-inv"]
+
+
+async def _seed_legacy_null_status_row(db_path: Path) -> None:
+    now = time.time()
+    async with StateDB(db_path) as db:
+        progression_id = str(uuid.uuid4())
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": "legacy-run",
+                "progression_id": progression_id,
+                "name": "legacy",
+                "started_at": now - 500,
+                "ended_at": now - 400,
+            }
+        )
+
+
+def test_active_snapshot_normalizes_a_legacy_null_status_row(tmp_path, monkeypatch):
+    """A row predating the status column reads as completed everywhere else.
+
+    Serving it as null puts the value straight into the client's status
+    handling, which lowercases it, so the crash lands on whoever polls next
+    rather than on the row's own view.
+    """
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    _run(_seed_legacy_null_status_row(db_path))
+
+    from lionagi.studio.app import app
+
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+
+    response = client.get("/api/active-snapshot", params={"recent_limit": 10})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [row["id"] for row in payload["recent_runs"]] == ["legacy-run"]
+    assert payload["recent_runs"][0]["status"] == "completed"
+
+
+async def _seed_fanout_children(db_path: Path, *, wide: int, narrow: int) -> None:
+    now = time.time()
+    async with StateDB(db_path) as db:
+        for invocation_id, count in (("wide-inv", wide), ("narrow-inv", narrow)):
+            await db.create_invocation(
+                {
+                    "id": invocation_id,
+                    "skill": invocation_id,
+                    "status": "running",
+                    "started_at": now - 60,
+                }
+            )
+            for index in range(count):
+                progression_id = str(uuid.uuid4())
+                await db.create_progression(progression_id)
+                await db.create_session(
+                    {
+                        "id": f"{invocation_id}-child-{index}",
+                        "progression_id": progression_id,
+                        "name": f"{invocation_id} child {index}",
+                        "status": "running",
+                        "created_at": now - 60 + index,
+                        "started_at": now - 60 + index,
+                        "last_message_at": now,
+                        "invocation_id": invocation_id,
+                    }
+                )
+
+
+def test_active_snapshot_caps_children_per_invocation_and_stops_claiming_health(
+    tmp_path, monkeypatch
+):
+    """The row limits bound invocations; this bounds each invocation's children.
+
+    The health verdict is worst-of, so a capped read can only be optimistic:
+    reporting healthy off a partial sample is the one answer the sample cannot
+    support, and the narrow invocation is the control that the cap did not just
+    silence everything.
+    """
+    import lionagi.state.db as state_db_mod
+    from lionagi.studio.services import active_snapshot as snap_mod
+
+    monkeypatch.setattr(snap_mod, "MAX_INVOCATION_CHILDREN", 2)
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    _run(_seed_fanout_children(db_path, wide=5, narrow=1))
+
+    seen: dict[int, int] = {}
+
+    def _fake_health(sessions, *, now, ps_snapshot):
+        seen[len(sessions)] = seen.get(len(sessions), 0) + 1
+        return "healthy", now
+
+    monkeypatch.setattr("lionagi.studio.services.invocations._invocation_health", _fake_health)
+    monkeypatch.setattr(
+        "lionagi.studio.services.runs._session_liveness", lambda *_args, **_kwargs: True
+    )
+
+    from lionagi.studio.app import app
+
+    client = TestClient(app, base_url="http://127.0.0.1:8765")
+
+    response = client.get("/api/active-snapshot", params={"run_limit": 10})
+
+    assert response.status_code == 200
+    payload = response.json()
+    health = {row["id"]: row["health"] for row in payload["active_invocations"]}
+    # Five running children, two read.
+    assert sorted(seen) == [1, 2], (
+        "the wide invocation must reach the health classifier with the cap's "
+        f"worth of children, not its whole fanout; saw sizes {sorted(seen)}"
+    )
+    assert health["wide-inv"] == "unknown"
+    assert health["narrow-inv"] == "healthy"

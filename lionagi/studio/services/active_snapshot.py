@@ -25,6 +25,20 @@ from .sessions import _escape_like
 
 MAX_ACTIVE_SNAPSHOT_ROWS = 500
 
+# Running children read per invocation to reach a health verdict. The row
+# limits above bound how many invocations a snapshot returns; without a second
+# bound here one high-fanout invocation still makes every poll scale with its
+# whole child population.
+MAX_INVOCATION_CHILDREN = 200
+
+
+def _not_engine_mirror(alias: str) -> str:
+    """The runs and sessions listings collapse a mirrored CLI transcript into
+    the run that spawned it as its engine (SessionFilter.where). Selecting
+    sessions here without the same clause returns both halves of that pair, so
+    one logical run is listed and counted twice."""
+    return f"json_extract({alias}.node_metadata, '$.engine_parent_run_id') IS NULL"
+
 
 def _session_scope(
     *,
@@ -155,7 +169,11 @@ def _invocation_scope(
         alias="child", project=project, project_null=project_null, search=search
     )
     if not child_clauses:
+        # No user scope means no membership test at all, which is what keeps a
+        # childless invocation in an unscoped view. The mirror exclusion is not
+        # a reason to start emitting one.
         return "", []
+    child_clauses.insert(0, _not_engine_mirror("child"))
     if active_children_only:
         child_clauses.insert(0, "child.status = 'running'")
     scope_sql = (
@@ -211,17 +229,24 @@ async def _count_invocations(
 
 async def _active_invocation_children(
     db: aiosqlite.Connection, invocation_ids: list[str]
-) -> tuple[dict[str, list[dict[str, Any]]], dict[str, float | None], set[str]]:
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, float | None], set[str], set[str]]:
+    """Child aggregates and a bounded sample of running children per invocation.
+
+    The fourth member names the invocations whose running children were cut off
+    by the cap, because a worst-of health verdict read from a partial sample can
+    only err toward looking healthy.
+    """
     if not invocation_ids:
-        return {}, {}, set()
+        return {}, {}, set(), set()
     placeholders = ",".join("?" for _ in invocation_ids)
     cursor = await db.execute(
         f"""
         SELECT invocation_id,
                COUNT(*) AS child_count,
+               SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_child_count,
                MAX(COALESCE(last_message_at, updated_at, started_at)) AS last_activity_at
         FROM sessions
-        WHERE invocation_id IN ({placeholders})
+        WHERE invocation_id IN ({placeholders}) AND {_not_engine_mirror("sessions")}
         GROUP BY invocation_id
         """,  # noqa: S608
         invocation_ids,
@@ -229,19 +254,37 @@ async def _active_invocation_children(
     aggregates = await cursor.fetchall()
     last_activity = {row["invocation_id"]: row["last_activity_at"] for row in aggregates}
     with_children = {row["invocation_id"] for row in aggregates if row["child_count"] > 0}
+    truncated = {
+        row["invocation_id"]
+        for row in aggregates
+        if (row["running_child_count"] or 0) > MAX_INVOCATION_CHILDREN
+    }
 
+    # Ranked per invocation rather than by one global LIMIT: a flat cap would
+    # spend the whole budget on the first invocation and leave every later one
+    # looking childless.
     cursor = await db.execute(
         f"""
-        SELECT * FROM sessions
-        WHERE status = 'running' AND invocation_id IN ({placeholders})
+        SELECT * FROM (
+            SELECT sessions.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY invocation_id ORDER BY created_at, id
+                   ) AS child_rank
+            FROM sessions
+            WHERE status = 'running' AND invocation_id IN ({placeholders})
+              AND {_not_engine_mirror("sessions")}
+        )
+        WHERE child_rank <= ?
         ORDER BY invocation_id, created_at, id
         """,  # noqa: S608
-        invocation_ids,
+        [*invocation_ids, MAX_INVOCATION_CHILDREN],
     )
     by_invocation: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in await cursor.fetchall():
-        by_invocation[row["invocation_id"]].append(dict(row))
-    return dict(by_invocation), last_activity, with_children
+        child = dict(row)
+        child.pop("child_rank", None)
+        by_invocation[row["invocation_id"]].append(child)
+    return dict(by_invocation), last_activity, with_children, truncated
 
 
 def _prepare_session(row: dict[str, Any]) -> dict[str, Any]:
@@ -320,8 +363,12 @@ async def read_active_snapshot(
     scope_clauses, scope_params = _session_scope(
         alias="s", project=project, project_null=project_null, search=search, kinds=kinds
     )
-    active_run_clauses = ["s.status = 'running'", *scope_clauses]
-    recent_run_clauses = ["(s.status IS NULL OR s.status <> 'running')", *scope_clauses]
+    active_run_clauses = ["s.status = 'running'", _not_engine_mirror("s"), *scope_clauses]
+    recent_run_clauses = [
+        "(s.status IS NULL OR s.status <> 'running')",
+        _not_engine_mirror("s"),
+        *scope_clauses,
+    ]
     active_inv_scope, active_inv_scope_params = _invocation_scope(
         project=project,
         project_null=project_null,
@@ -378,6 +425,7 @@ async def read_active_snapshot(
                 child_rows,
                 child_activity,
                 invocations_with_children,
+                children_truncated,
             ) = await _active_invocation_children(db, [row["id"] for row in active_invocations_raw])
             await db.commit()
         except BaseException:
@@ -415,6 +463,11 @@ async def read_active_snapshot(
             health, _ = _invocations_svc._invocation_health(
                 running_children, now=observed_at, ps_snapshot=process_snapshot
             )
+            if invocation_id in children_truncated and health == SessionHealth.HEALTHY.value:
+                # Worst-of across children, so a capped sample can only be
+                # optimistic. Every child read looked healthy and the rest went
+                # unread, which is the one verdict the sample cannot support.
+                health = "unknown"
         elif invocation_id in invocations_with_children:
             health = SessionHealth.HEALTHY.value
         else:

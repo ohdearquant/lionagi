@@ -744,3 +744,55 @@ describe("createHistoryPager", () => {
     expect(filteredPage2.map((r) => r.id)).toEqual(["cheap-failed"]);
   });
 });
+
+// ─── Which page proves a childless group does not belong ──────────────────────
+
+// A kind-filtered snapshot is the one case where the server does not claim to
+// have scoped runs and invocations together, so the reducer falls back to
+// judging whether the runs it holds are exhaustive. Only active runs are
+// matched into groups, which makes the omitted active count the signal;
+// terminal-history paging answers a different question and reads as "complete"
+// exactly when live work has been left off the active page.
+describe("fleetReducer — dropping a childless group", () => {
+  function dispatchKindSnapshot(
+    overrides: {
+      activeRunOmitted?: number;
+      runsHasNext?: boolean;
+      snapshotVersion?: string;
+    } = {},
+  ): FleetState {
+    const { activeRunOmitted, runsHasNext = false, snapshotVersion = "1:9:1" } = overrides;
+    return fleetReducer(initialFleetState(), {
+      type: "DATA_OK",
+      // Its running child exists on the server but sat past the active page.
+      invocations: [makeInvocation({ id: "inv-live", status: "running", skill: "fanout" })],
+      runs: [],
+      runsHasNext,
+      nowSec: 1_000_000,
+      kind: "fanout",
+      snapshotVersion,
+      activeRunTotal: 9,
+      ...(activeRunOmitted === undefined ? {} : { activeRunOmitted }),
+    });
+  }
+
+  it("keeps the group when the active page omitted runs, whatever history paging says", () => {
+    const state = dispatchKindSnapshot({ activeRunOmitted: 1, runsHasNext: false });
+    expect(state.orgUnits.map((u) => u.id)).toEqual(["inv-live"]);
+  });
+
+  it("still drops it when the active page was complete", () => {
+    const state = dispatchKindSnapshot({ activeRunOmitted: 0, runsHasNext: false });
+    expect(state.orgUnits).toEqual([]);
+  });
+
+  it("falls back to the runs page for a caller that sends no omitted count", () => {
+    // Legacy callers fetched invocations and runs independently; the runs page
+    // is the only evidence they carry, and that behavior is unchanged.
+    const withoutOmitted = dispatchKindSnapshot({ runsHasNext: false, snapshotVersion: undefined });
+    expect(withoutOmitted.orgUnits).toEqual([]);
+
+    const pagedOut = dispatchKindSnapshot({ runsHasNext: true, snapshotVersion: undefined });
+    expect(pagedOut.orgUnits.map((u) => u.id)).toEqual(["inv-live"]);
+  });
+});
