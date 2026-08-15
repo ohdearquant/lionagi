@@ -16,9 +16,11 @@ from pathlib import Path
 
 import pytest
 
+from lionagi.cli.kill import _NOT_STOPPED_SIGNALS
 from lionagi.studio.operator.cancel_run import (
     CancelRunInput,
     MissingOwnerContextError,
+    _redacted_cancel_result,
     cancel_run,
     execute_cancel_command,
 )
@@ -617,6 +619,81 @@ async def test_execute_cancel_command_identity_mismatch_does_not_report_cancelle
     async with StateDB() as db:
         row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
         assert row["status"] == "running"
+
+
+@pytest.mark.parametrize("refusal", sorted(_NOT_STOPPED_SIGNALS))
+async def test_execute_cancel_command_reports_every_refusal_by_name(tmp_path, monkeypatch, refusal):
+    """`_kill_one` writes nothing for any of these, so the row still says
+    "running" -- and re-reading it would run that through the
+    terminal/already_terminal mapping and announce a live run as finished.
+
+    Parametrized over `kill`'s own set rather than a list spelled out here, so
+    a refusal added there arrives with this coverage already attached instead
+    of waiting to be noticed.
+    """
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        run_id = await _seed_session(db, status="running", pid=999999)
+
+    async def fake_kill_one(db, entity_type, entity_id, row, **kwargs):
+        return {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "signal": refusal,
+            "pid": row.get("node_metadata", {}).get("pid"),
+        }
+
+    import lionagi.cli.kill as kill_mod
+
+    monkeypatch.setattr(kill_mod, "_kill_one", fake_kill_one)
+
+    result = await execute_cancel_command({"session_id": run_id, "project": DEFAULT_TEST_PROJECT})
+    assert result == {"status": refusal, "id": run_id, "signal": refusal}
+    assert result["status"] != "already_terminal", (
+        "a refusal to signal must not be reported as the run having finished"
+    )
+
+    async with StateDB() as db:
+        row = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (run_id,))
+        assert row["status"] == "running"
+
+
+def test_a_delivered_cancellation_still_unwinding_is_not_reported_untouched():
+    """ "cancelling" means the stop was delivered and the run is on its way
+    down. It is not cancelled yet, and it is emphatically not untouched -- a
+    caller told `run_untouched` would go looking for a run to stop that is
+    already stopping."""
+    result = _redacted_cancel_result(
+        {"status": "succeeded", "result": {"status": "cancelling", "signal": "task_cancelled"}},
+        "run-1",
+    )
+    assert result["cancelled"] is False, "not terminal yet, so not cancelled"
+    assert result["run_untouched"] is False, "the cancellation was delivered"
+
+
+@pytest.mark.parametrize(
+    "status", sorted({"not_found", "already_terminal", "not_cancellable", *_NOT_STOPPED_SIGNALS})
+)
+def test_outcomes_that_changed_nothing_still_report_untouched(status):
+    """The other half of the pair: widening `run_untouched` must not turn every
+    no-op into a claim that something happened."""
+    result = _redacted_cancel_result({"status": "succeeded", "result": {"status": status}}, "run-1")
+    assert result["cancelled"] is False
+    assert result["run_untouched"] is True
+
+
+def test_an_unrecognised_outcome_is_not_claimed_untouched():
+    """Fail toward the honest direction: an outcome this function does not know
+    may well have touched the run, and "nothing happened" is the claim that
+    sends a caller away believing the run still needs stopping."""
+    result = _redacted_cancel_result(
+        {"status": "succeeded", "result": {"status": "some_future_outcome"}}, "run-1"
+    )
+    assert result["cancelled"] is False
+    assert result["run_untouched"] is False
 
 
 async def test_execute_cancel_command_terminalized_during_approval_is_not_cancelled(

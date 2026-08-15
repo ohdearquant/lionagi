@@ -276,22 +276,37 @@ def _redacted_cancel_result(proposal: dict[str, Any], run_id: str) -> dict[str, 
             "run_untouched": True,
             "id": run_id,
         }
+    from lionagi.cli.kill import _NOT_STOPPED_SIGNALS
+
     raw = proposal.get("result")
     result = raw if isinstance(raw, dict) else {}
-    # A "succeeded" proposal only means the executor ran without raising --
-    # it says nothing about whether the run was actually cancelled.
-    # `execute_cancel_command` names its outcome in `status`; "terminal" is
-    # the only value that means the database row now holds "cancelled". Every
-    # other outcome (not_found, already_terminal, identity_mismatch) is the
-    # process staying exactly as it was, so `cancelled` must say so.
+    # A "succeeded" proposal only means the executor ran without raising -- it
+    # says nothing about whether the run was actually cancelled.
+    # `execute_cancel_command` names its outcome in `status`, and two different
+    # questions are read off it. "terminal" is the only value meaning the
+    # database row now holds "cancelled". Whether this call left the run alone
+    # is a separate question with a separate answer: "cancelling" means the
+    # stop was delivered and the run is unwinding, which is neither cancelled
+    # nor untouched. Deriving the second from the first is what let a delivered
+    # cancellation be reported as having changed nothing.
+    #
+    # The refusals come from `kill`'s own set rather than a second copy here,
+    # so a signal added there cannot quietly go on being reported as a stop.
+    # An unrecognised status counts as touched, because "nothing happened" is
+    # the claim that sends a caller away believing the run still needs stopping.
+    untouched_statuses = {
+        "not_found",
+        "already_terminal",
+        "not_cancellable",
+        *_NOT_STOPPED_SIGNALS,
+    }
     status = result.get("status", "unknown")
-    cancelled = status == "terminal"
     return {
-        "cancelled": cancelled,
+        "cancelled": status == "terminal",
         "status": status,
         "id": run_id,
         "signal": result.get("signal"),
-        "run_untouched": not cancelled,
+        "run_untouched": status in untouched_statuses,
     }
 
 
@@ -415,7 +430,7 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
     invocation is reaped exactly the way ``li kill --recursive`` does,
     rather than orphaned when the parent session goes terminal.
     """
-    from lionagi.cli.kill import _kill_one, _list_running_children
+    from lionagi.cli.kill import _NOT_STOPPED_SIGNALS, _kill_one, _list_running_children
     from lionagi.state.db import StateDB
 
     run_id = command.get("session_id")
@@ -502,11 +517,14 @@ async def execute_cancel_command(command: dict[str, Any]) -> dict[str, Any]:
             row_dict,
             user_reason=user_reason,
         )
-        if outcome["signal"] == "identity_mismatch":
-            # _kill_one() returns without calling _persist_cancel for an
-            # identity mismatch -- nothing was written. Report that directly
-            # rather than re-reading a row that is guaranteed unchanged.
-            return {"status": "identity_mismatch", "id": run_id, "signal": outcome["signal"]}
+        if outcome["signal"] in _NOT_STOPPED_SIGNALS:
+            # _kill_one() returns without calling _persist_cancel for every one
+            # of these -- nothing was signalled and nothing was written. Report
+            # the refusal by name rather than re-reading a row that is
+            # guaranteed unchanged: that row still says "running", and the
+            # terminal/already_terminal mapping below would turn it into a
+            # report that a live run had already finished.
+            return {"status": outcome["signal"], "id": run_id, "signal": outcome["signal"]}
 
         # `_persist_cancel` guards its write on the row still being 'running'
         # at persist time (lionagi/cli/kill.py) -- a race that lets the run
