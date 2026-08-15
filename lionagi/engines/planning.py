@@ -72,7 +72,7 @@ class PlanningEngine(Engine):
         # assignment on a clone. Every assignee role may grow the live DAG when reactive.
         assignees = {ta.assignee for ta in assignments}
         spawners = tuple(assignees) if self.reactive else ()
-        roles = await spawn_roles(run.session, {a: a for a in assignees}, spawners=spawners)
+        roles = await spawn_roles(run.session, self._worker_specs(assignees), spawners=spawners)
 
         graph, node_ids = build_dag_graph(run.session, assignments, roles)
         run.notify("executing", assignments=len(assignments))
@@ -87,6 +87,25 @@ class PlanningEngine(Engine):
         return await self._synthesize(run, prompt, assignments, node_ids, result)
 
     # -- stages ---------------------------------------------------------------
+
+    def _worker_specs(self, assignees: set[str]) -> dict[str, Any]:
+        """Compose one worker spec per assignee, carrying the engine-wide MCP config.
+
+        Workers are spawned through ``spawn_roles`` rather than ``make_agent``,
+        so nothing on that path reads the engine's agent settings. Passing bare
+        role strings therefore had every worker resolve ambient MCP
+        configuration, silently exempting the fan-out from the config the
+        engine declared for its agents.
+        """
+        from lionagi.agent import AgentSpec  # noqa: PLC0415
+
+        specs: dict[str, Any] = {}
+        for assignee in assignees:
+            spec = AgentSpec.compose(assignee)
+            if self.agent_mcp_config_path is not None:
+                spec.mcp_config_path = self.agent_mcp_config_path
+            specs[assignee] = spec
+        return specs
 
     async def _plan(self, run: EngineRun, prompt: str, max_ops: int) -> list:
         """Decompose *prompt* into TaskAssignment list; retries once with explicit guidance, then raises PlanError."""

@@ -7,7 +7,7 @@ import {
   deleteWorkflowDef,
   listEngineDefs,
 } from "@/lib/api";
-import type { WorkflowDef, WorkflowSpec, EngineDef } from "@/lib/api";
+import type { CreatedWorkflowDef, WorkflowDef, WorkflowSpec, EngineDef } from "@/lib/api";
 import { emptySpec } from "@/lib/workflow/validation";
 import WorkflowEditor from "@/components/workflow/WorkflowEditor";
 import DrawerBackButton from "@/components/ui/DrawerBackButton";
@@ -135,7 +135,7 @@ export function WorkflowDetail({ id, onBack }: WorkflowDetailProps) {
 // ── Create panel ──────────────────────────────────────────────────────────────
 
 interface CreateWorkflowProps {
-  onCreated: (name: string) => void;
+  onCreated: (workflow: CreatedWorkflowDef) => void;
   onCancel: () => void;
 }
 
@@ -152,12 +152,12 @@ export function CreateWorkflowPanel({ onCreated, onCancel }: CreateWorkflowProps
     setCreating(true);
     setCreateError(null);
     try {
-      await createWorkflowDef({
+      const created = await createWorkflowDef({
         name: trimmed,
         description: description.trim() || undefined,
         spec_json: emptySpec(),
       });
-      onCreated(trimmed);
+      onCreated(created);
     } catch (e) {
       setCreateError(e instanceof Error ? e.message : t("createError"));
     } finally {
