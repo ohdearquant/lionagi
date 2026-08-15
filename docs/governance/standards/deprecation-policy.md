@@ -74,6 +74,25 @@ There are no exceptions to silent removal. If a public name must disappear immed
 a security defect or a name that was never functional (see section 3), document why in the
 commit message and CHANGELOG.
 
+**Options that are accepted and silently ignored.** A flag whose value is never read still
+parses, so an invocation passing it succeeds today and fails to parse once it is gone. Under
+section 1 a flag visible in `--help` is public surface, and being inert does not change that:
+what a caller depends on here is the command running at all, not the flag doing anything. All
+four steps apply.
+
+What inertness does change is which signal reaches the caller. A deprecated function warns when
+called; an inert flag has no code path to warn from, and its own uselessness is invisible from
+the outside, so nothing in a caller's logs ever suggested it was dead. Step 1 for this case is
+therefore to keep accepting the option and emit the deprecation warning at parse time, and the
+step 4 `Removed` entry is the only other notice they will get. Removing an inert option needs
+more disclosure than a normal deprecation, not less.
+
+Inertness is also a claim about one surface and has to be verified rather than assumed, because
+the same option can be live on one surface and inert on another. Verify it by running the
+parser on each surface you are claiming it is inert on, not by searching a directory: options
+are commonly declared in a shared argument provider that no per-surface path contains, so a
+path-scoped search reports a flag as absent while `--help` still prints it.
+
 ---
 
 ## 3. Allowed Without Deprecation
@@ -85,22 +104,6 @@ These changes may be made without the alias-plus-warning cycle.
 - **Fixing a name that never worked**: if importing or calling the name has always raised an
   exception (e.g., missing dependency, broken wiring), it was never a functional public
   contract. Document this in the commit message.
-- **Removing an option that was accepted and silently ignored**: if a flag or option is parsed
-  and accepted on a surface but its value is never read there, it carried no behavior a caller
-  could depend on, and the wait in section 2 step 3 does not apply. The CHANGELOG `Removed`
-  entry still does. A caller passing an inert flag gets no error and no effect, so nothing in
-  their own logs ever told them it was dead, and the release notes are the only place they can
-  learn it is gone. This is the difference from the bullet above: a name that always raised told
-  its callers immediately, an inert one told them nothing.
-
-  Inertness is a claim about a specific surface and must be verified rather than assumed. Before
-  relying on this clause, confirm at the merge base that the option's value is read nowhere under
-  the module that owns the surface you are removing it from, and state that search scope in the
-  commit message so a reviewer can reproduce the result. Scope matters in both directions: the
-  same option name may be live on one surface and inert on another, so a repo-wide search answers
-  the wrong question. This clause was introduced alongside the removal of `--resume-on-timeout`
-  from `li o fanout` and `li o flow`, where the value was read nowhere under
-  `lionagi/cli/orchestrate/` while the same option remained functional on `li agent` (#3071).
 - **Internal-only changes**: refactoring or renaming anything not in `__all__` and not
   documented. Confirm the name does not appear in any example, cookbook, or docs page first.
 - **Type annotation narrowing that is source-compatible**: adding `| None` or a more specific
