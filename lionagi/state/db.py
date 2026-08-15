@@ -417,8 +417,11 @@ TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 # rows their status filter already selected.
 EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     # duration_ms is derived from ended_at, so it carries the same requirement:
-    # it must land in the status write, never in a separate earlier one.
-    "session": frozenset({"ended_at", "duration_ms", "node_metadata"}),
+    # it must land in the status write, never in a separate earlier one. The
+    # same goes for ended_at_is_approximate, which describes that ended_at:
+    # split across two writes there is a window where the row states a
+    # provenance for an end it no longer has.
+    "session": frozenset({"ended_at", "duration_ms", "ended_at_is_approximate", "node_metadata"}),
     "invocation": frozenset({"ended_at"}),
     "schedule_run": frozenset({"ended_at", "error_detail", "exit_code"}),
     "play": frozenset({"ended_at"}),

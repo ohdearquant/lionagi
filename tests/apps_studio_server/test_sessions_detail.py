@@ -1395,3 +1395,56 @@ async def test_get_session_does_not_reconstruct_a_duration_from_an_approximate_e
     # stopped working.
     assert measured is not None
     assert measured["duration_ms"] == 3500.0
+
+
+async def _drop_column(db_path: Path, table: str, column: str) -> None:
+    """Reshape a store to the schema version that predates a column."""
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+        conn.commit()
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        assert column not in present, "the column survived the drop"
+    finally:
+        conn.close()
+
+
+async def test_session_reads_work_against_a_store_from_the_previous_schema_version(
+    patched_sessions_db,
+):
+    """Reads must not require a column that this schema version introduced.
+
+    The daemon reads stores through its own connection and never migrates
+    them, so a store last written by the previous version keeps that version's
+    columns for as long as nothing opens it for writing. That is the state of
+    every store immediately after an upgrade, and of any store the daemon can
+    only read. Selecting the new column by name makes those reads fail with a
+    missing-column error rather than degrade.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-prev-schema",
+        status="completed",
+        started_at=10.0,
+        ended_at=13.5,
+    )
+
+    # Control: both reads work while the column is present, so a failure after
+    # the drop is about the column and not about the fixture.
+    assert await svc.get_session("sess-prev-schema") is not None
+    assert [row["id"] for row in await svc.list_sessions(limit=10)] == ["sess-prev-schema"]
+
+    await _drop_column(db_path, "sessions", "ended_at_is_approximate")
+
+    detail = await svc.get_session("sess-prev-schema")
+    assert detail is not None
+    # A store that never had the column recorded no approximate ends, which is
+    # what the previous version reported for every row.
+    assert detail["ended_at_is_approximate"] is False
+
+    listed = await svc.list_sessions(limit=10)
+    assert [row["id"] for row in listed] == ["sess-prev-schema"]
+    assert listed[0]["ended_at_is_approximate"] is False

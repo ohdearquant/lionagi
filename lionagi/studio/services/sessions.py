@@ -16,7 +16,7 @@ from lionagi.state.session_naming import resolve_display_name
 
 from ..registry import studio_route
 from ._db import open_db as _open_db
-from ._db import require_file_store, store_exists, store_path
+from ._db import require_file_store, store_exists, store_path, table_columns
 from ._io import parse_json_col as _parse_json_col
 from .artifact_verification import resolve_artifact_verification
 
@@ -242,6 +242,21 @@ _SESSION_SORTS: dict[str, str] = {
 }
 
 
+async def _approximate_end_selection(db: Any, *, alias: str = "") -> str:
+    """How to read the approximate-end flag from the store in front of us.
+
+    A store written before this column existed has no approximate ends
+    recorded, so a constant zero is the honest answer for it rather than a
+    degraded one: it is exactly what the version that wrote the store reported
+    for every row. Naming the column unconditionally would instead fail the
+    whole read, and these connections cannot migrate the store to avoid that.
+    """
+    prefix = f"{alias}." if alias else ""
+    if "ended_at_is_approximate" in await table_columns(db, "sessions"):
+        return f"{prefix}ended_at_is_approximate"
+    return "0 AS ended_at_is_approximate"
+
+
 async def list_sessions(
     *,
     limit: int = MAX_SESSION_PAGE,
@@ -267,6 +282,7 @@ async def list_sessions(
             from .run_tags import _ensure_table
 
             await _ensure_table(db)
+        approximate_end = await _approximate_end_selection(db, alias="s")
         cur = await db.execute(
             f"""
             WITH page AS (
@@ -293,7 +309,7 @@ async def list_sessions(
                 s.status,
                 s.started_at,
                 s.ended_at,
-                s.ended_at_is_approximate,
+                {approximate_end},
                 s.last_message_at,
                 s.invocation_id,
                 s.model,
@@ -704,19 +720,22 @@ async def get_session(
     )
 
     async with _open_db(store_path()) as db:
+        approximate_end = await _approximate_end_selection(db)
         cur = await db.execute(
             # Include lifecycle and provenance columns (model/provider/effort/agent_hash).
-            """SELECT id, name, created_at, updated_at,
+            # The one interpolated name is chosen from two literals by the
+            # helper above and never comes from a caller.
+            f"""SELECT id, name, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path,
                       artifact_contract_json, artifact_verification_json,
                       source_kind, status, started_at, ended_at,
-                      ended_at_is_approximate, last_message_at,
+                      {approximate_end}, last_message_at,
                       model, provider, effort, agent_hash, invocation_id,
                       node_metadata, project, project_source,
                       status_reason_code, status_reason_summary, status_evidence_refs,
                       total_cost_usd, input_tokens, output_tokens, duration_ms
-               FROM sessions WHERE id = ?""",
+               FROM sessions WHERE id = ?""",  # noqa: S608
             (session_id,),
         )
         session_row = await cur.fetchone()

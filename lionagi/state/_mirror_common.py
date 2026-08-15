@@ -343,8 +343,14 @@ async def reconcile_status(
         ),
         # A reactivated row is running again: the terminal stamps must not
         # survive, or every listing reads it as "running yet ended days ago"
-        # and elapsed-time surfaces keep growing from the stale end mark.
-        extra_fields=({"ended_at": None, "duration_ms": None} if reactivating else None),
+        # and elapsed-time surfaces keep growing from the stale end mark. The
+        # end's provenance is one of those stamps and clears with it, since a
+        # row with no end cannot have an approximate one.
+        extra_fields=(
+            {"ended_at": None, "duration_ms": None, "ended_at_is_approximate": 0}
+            if reactivating
+            else None
+        ),
     )
 
 

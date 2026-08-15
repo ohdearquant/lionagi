@@ -882,6 +882,7 @@ async def list_recent_runs(arguments: dict[str, Any]) -> dict[str, Any]:
             "project": public_project(row.get("project")),
             "startedAt": row.get("started_at"),
             "endedAt": row.get("ended_at"),
+            "endedAtApproximate": bool(row.get("ended_at_is_approximate")),
             "href": f"/runs/{row.get('id')}",
             "kind": row.get("invocation_kind"),
             "playbookName": row.get("playbook_name"),
