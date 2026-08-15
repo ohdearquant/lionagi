@@ -438,3 +438,116 @@ def test_a_missing_mcp_extra_is_a_normal_configuration(monkeypatch) -> None:
     monkeypatch.setattr(builtins, "__import__", fake_import)
     assert review_mod._mcp_error_type() is None
     review_mod._mcp_error_type.cache_clear()
+
+
+# -- the approval cap has to hold on every channel a verdict can leave by ------
+
+
+class _CoverageRun:
+    """Minimal run exposing the surface the cap paths read."""
+
+    def __init__(self, *, verdicts=None, clean=(), issues=()) -> None:
+        from lionagi.engines.review import DimensionClean, IssueFound, ReviewVerdict
+
+        self._by_type = {
+            ReviewVerdict: list(verdicts or []),
+            DimensionClean: [DimensionClean(dimension=d) for d in clean],
+            IssueFound: list(issues),
+        }
+        self.notices: list[tuple[str, dict]] = []
+        self.agents_made = 3
+
+    def by_type(self, event_type):
+        return self._by_type.get(event_type, [])
+
+    def notify(self, kind: str, **data) -> None:
+        self.notices.append((kind, data))
+
+    async def make_agent(self, role: str, **kwargs):
+        class _Approve:
+            async def operate(self, instruction: str):
+                return "DECISION: APPROVE"
+
+        return _Approve()
+
+
+async def test_a_dimension_that_emitted_nothing_cannot_be_approved_over() -> None:
+    """A reviewer that exhausts its emission repairs raises nothing.
+
+    So it never reaches the isolated-failure recorder and the failed list stays
+    empty. If coverage is read from that list alone, a dimension that produced
+    no output at all is indistinguishable from one that came back clean, and
+    the run approves over it.
+    """
+    engine = ReviewEngine()
+    run = _CoverageRun(clean=("correctness",))
+
+    result = await engine._verdict(run, "artifact.py", ("correctness", "security"), [])
+
+    assert result.startswith("DECISION: REQUEST-CHANGES")
+    assert "security dimension did not run (no evidence emitted)" in result
+    # The dimension that actually reported is not accused of silence.
+    assert "correctness dimension did not run" not in result
+
+
+async def test_partial_export_does_not_hand_back_an_approval_over_missing_coverage() -> None:
+    """Exhaustion is the one exit that never reaches _verdict.
+
+    A run cut short by its deadline is also the likeliest to be missing a
+    dimension, so this is the worst channel to let a stored approval out of.
+    """
+    from lionagi.engines.review import ReviewVerdict
+
+    verdict = ReviewVerdict(verdict="APPROVE", rationale="nothing came up", blocking=[])
+    engine = ReviewEngine()
+    run = _CoverageRun(verdicts=[verdict], clean=("correctness",))
+
+    out = await engine._partial_export(run, "artifact.py", dimensions=("correctness", "security"))
+
+    assert "REQUEST-CHANGES" in out
+    assert not any(line.startswith("DECISION: APPROVE") for line in out.splitlines())
+    # The stored verdict is rewritten too, not just the text built from it.
+    assert verdict.verdict == "REQUEST-CHANGES"
+    assert any("security" in b for b in verdict.blocking)
+
+
+async def test_a_verdict_is_capped_when_it_arrives_not_after_synthesis_returns() -> None:
+    """Persistence and subscribers read the verdict from the run's flow.
+
+    Rewriting it after synthesis returns leaves an approval already delivered
+    to whoever was listening, so the cap runs on arrival.
+    """
+    from lionagi.engines.review import ReviewVerdict
+
+    observers: dict[type, list] = {}
+
+    class _ObservingRun(_CoverageRun):
+        root = ""
+        _sem = asyncio.Semaphore(1)
+
+        def observe(self, event_type, handler):
+            observers.setdefault(event_type, []).append(handler)
+
+        async def wait_quiescence(self):
+            return None
+
+        async def cancel_active(self):
+            return None
+
+        async def operate_with_repair(self, agent, instruction, **kwargs):
+            return ""
+
+    engine = ReviewEngine(verify_clean=False)
+    run = _ObservingRun(clean=("correctness",))
+    await engine._run(run, "artifact.py", dimensions=("correctness", "security"))
+
+    assert ReviewVerdict in observers, "no verdict observer registered, so nothing caps on arrival"
+    arriving = ReviewVerdict(verdict="APPROVE", rationale="looks clean", blocking=[])
+    for handler in observers[ReviewVerdict]:
+        handler(arriving, None)
+
+    assert arriving.verdict == "REQUEST-CHANGES", (
+        "the verdict object handed to subscribers still says APPROVE while a "
+        "dimension produced no evidence"
+    )
+    assert any("security" in b for b in arriving.blocking)

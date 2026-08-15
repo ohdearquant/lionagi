@@ -289,6 +289,34 @@ def _cap_approvals_on_missing_coverage(
     return capped
 
 
+def _missing_coverage(
+    run: Any, dimensions: tuple[str, ...], failed: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """Dimensions this run cannot claim to have reviewed, derived from evidence.
+
+    A dimension counts as covered only when it produced something: an issue, or
+    an affirmative clean. Deriving the gap from what arrived rather than from
+    failure bookkeeping is what makes it complete. A reviewer that exhausts its
+    emission repairs raises nothing, so it never reaches the isolated-failure
+    recorder and never lands in *failed* — and a dimension that emitted nothing
+    is indistinguishable from a clean one to everything downstream. This is the
+    same predicate the repair loop uses to decide a dimension arrived, so a
+    dimension the engine gave up on is exactly a dimension named here.
+
+    *failed* entries keep their specific error label and their order; anything
+    else missing is appended.
+    """
+    gap: list[tuple[str, str]] = list(failed)
+    named = {name for name, _ in gap}
+    covered = {i.dimension for i in run.by_type(IssueFound)} | {
+        c.dimension for c in run.by_type(DimensionClean)
+    }
+    for dimension in dimensions:
+        if dimension not in named and dimension not in covered:
+            gap.append((dimension, "no evidence emitted"))
+    return gap
+
+
 def _cap_verdict_text(text: str, failed: list[tuple[str, str]]) -> str:
     """Front the returned verdict text with a refusal when a dimension never ran.
 
@@ -418,6 +446,12 @@ class ReviewEngine(Engine):
         if not verdicts:
             return ""
         verdict = verdicts[-1]
+        # Exhaustion is the one exit that skips _verdict, so the cap has to be
+        # applied here too. A run cut short by its deadline is the likeliest
+        # one to be missing a dimension, which makes this the worst channel to
+        # let an approval out of.
+        gap = _missing_coverage(run, tuple(dimensions) if dimensions else self.dimensions, [])
+        _cap_approvals_on_missing_coverage([verdict], gap)
         run.notify("verdict_emitted_on_exhaustion", verdict=verdict.verdict)
         status_header = (
             "**status: budget_exhausted (verdict emitted on exhaustion)** — "
@@ -425,7 +459,9 @@ class ReviewEngine(Engine):
             f"({run.agents_made} agents)\n\n"
         )
         blocking = f"\n\nBlocking: {', '.join(verdict.blocking)}" if verdict.blocking else ""
-        return f"{status_header}{verdict.verdict}: {verdict.rationale}{blocking}"
+        return _cap_verdict_text(
+            f"{status_header}{verdict.verdict}: {verdict.rationale}{blocking}", gap
+        )
 
     async def _run(
         self, run: EngineRun, artifact: str, *, dimensions: tuple[str, ...] | None = None
@@ -433,12 +469,24 @@ class ReviewEngine(Engine):
         dims = tuple(dimensions) if dimensions else self.dimensions
         run.root = artifact
         run.observe(IssueFound, lambda i, _c: self._on_issue(run, i))
+        failed: list[tuple[str, str]] = []
+        # Cap the verdict where it arrives, not after synthesis returns.
+        # Everything downstream — persistence, subscribers, the notify stream —
+        # reads the verdict from this flow, so rewriting it later leaves an
+        # approval already delivered to whoever was listening. Synthesis runs
+        # after every reviewer, so the coverage gap is final by the time this
+        # fires.
+        run.observe(
+            ReviewVerdict,
+            lambda v, _c: _cap_approvals_on_missing_coverage(
+                [v], _missing_coverage(run, dims, failed)
+            ),
+        )
 
         # Fan out one reviewer per dimension. Ordinary provider/transport
         # failures are isolated per dimension so completed sibling evidence is
         # still usable; run-wide budget exhaustion and cancellation keep their
         # existing structured-concurrency semantics.
-        failed: list[tuple[str, str]] = []
         try:
             await ln_gather(
                 *(
@@ -613,7 +661,8 @@ class ReviewEngine(Engine):
         # Both channels carry the cap: the emitted verdict, and the returned
         # text, which is the only verdict a caller sees when synthesis emits
         # nothing structured at all.
-        if failed:
-            _cap_approvals_on_missing_coverage(run.by_type(ReviewVerdict), failed)
-            run.notify("verdict_capped", failed=", ".join(name for name, _ in failed))
-        return _cap_verdict_text(str(res) if res is not None else "", failed or [])
+        gap = _missing_coverage(run, dimensions, failed or [])
+        if gap:
+            _cap_approvals_on_missing_coverage(run.by_type(ReviewVerdict), gap)
+            run.notify("verdict_capped", failed=", ".join(name for name, _ in gap))
+        return _cap_verdict_text(str(res) if res is not None else "", gap)
