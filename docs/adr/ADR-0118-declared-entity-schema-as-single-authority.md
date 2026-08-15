@@ -144,24 +144,33 @@ and departs from it where the departures are called out. The shape is:
 Adopt the pattern, and do not copy the code: the implementation studied has defects that a bulk
 port would import wholesale, several of them observable by running it.
 
-- **Generated output is not deterministic.** Field selection filters by iterating the caller's
-  collection rather than filtering the stored ordered tuple, and the callers pass sets. Column
-  and constraint order therefore varies between processes. That is survivable for a
-  `CREATE TABLE` and fatal for a generated migration or a schema hash, which are exactly what
-  this design depends on.
+- **Generated output is not deterministic, measurably.** Field selection filters by iterating the
+  caller's collection rather than filtering the stored ordered tuple, and the composition path
+  converts its ordered field list to a set at the call site. Column order therefore follows string
+  set iteration order, which varies per process. Composing one entity under four different
+  `PYTHONHASHSEED` values produced four different column orders and four different
+  `CREATE TABLE` statements. That is survivable for a one-off table creation and fatal for a
+  generated migration or a schema hash, which are exactly what this design depends on.
 - **Type information is lost between the field spec and the emitter.** The type mapper discards
-  the resolver's "is a list" flag, so `list[str]` unwraps to `str` and emits `TEXT`, and vector
-  dimension metadata stored under a key the SQL path does not consult emits a plain float column.
-  Both were reproduced end to end. Two versions of that implementation disagree with each other
-  here, one converting lists to JSON early and one not, so there is not even a single reference
-  behavior to copy.
+  the resolver's "is a list" flag, so `list[str]` unwraps to `str` and emits `TEXT`, and the
+  vector dimension is dropped: an entity declared with an eight-dimensional embedding emits an
+  untyped JSON column. Both were reproduced end to end. Two versions of that implementation
+  disagree with each other here, one converting lists to JSON early and one not, so there is not
+  even a single reference behavior to copy.
 - **Literal defaults are interpolated without escaping**, so a default containing an apostrophe
   produces invalid SQL, and the two emission paths disagree about whether a default suppresses
   `NOT NULL`.
-- **The schema hash omits most of what it must detect** — primary key and unique flags, foreign
-  key actions, index method and predicate, triggers and checks — so materially different schemas
-  hash equal. A drift detector with that projection is worse than none, which is the same defect
-  this repository already has in its name-only parity test (P2).
+- **The schema hash omits most of what it must detect, and the two sides of the comparison hash
+  different things.** The projection drops primary key and unique flags, foreign key actions, and
+  index method and predicate, so materially different schemas hash equal. Worse, the hash computed
+  from the *declared* schema includes triggers, check constraints and unique constraints while the
+  hash computed from the *live* schema includes only columns, foreign keys and indexes. Comparing
+  them compares different field sets, which is not a weak detector but a meaningless one. This is
+  the same defect this repository already has in its name-only parity test (P2), arrived at
+  independently.
+- **Two derivations claim to be the single source.** Schema generation flattens the configured
+  content model while the entity-to-table factory iterates the outer class's fields, so the
+  implementation that exists to end multiple sources of physical truth has two of its own.
 - **Whole-schema emission ignores dependency order** and constraint names are assembled without
   re-validating the assembled length.
 
