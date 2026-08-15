@@ -25,11 +25,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import subprocess
 import time
 from typing import Any
 
+from lionagi.ln._proc import terminate_process_group
 from lionagi.state.lifecycle.callbacks import HANDLER_BUDGET_SECONDS
 
 # The CLI runs this file's module by absolute interpreter path; lionagi is on
@@ -173,33 +173,26 @@ def _kill_delivery_group(proc: subprocess.Popen) -> None:
     """Take down the delivery's whole process group, then reap it.
 
     The delivery leads its own group (``start_new_session``), so its pid is the
-    group id. Falling back to the single process is not equivalent — it leaves
-    the descendants this exists to collect — but it is what is available where
-    process groups are not, and it still collects the common case of a notifier
-    that forks nothing.
+    group id. The signalling itself belongs to the package's shared terminator
+    rather than to this module: it refuses to signal pid<=1 or this process's
+    own group, which is the difference between ending the notifier and ending
+    the run that spawned it, and it signals the group *and* the direct child,
+    so the child is still collected on a platform where the group call is
+    unavailable or refused.
+
+    Descendant collection is therefore a POSIX property of that shared helper,
+    not a guarantee invented here. Off POSIX ``start_new_session`` creates no
+    group to signal and the direct child is what gets collected — the same
+    behaviour as every other process-group caller in the package, and not a
+    narrowing on this path, since the timeout it replaced terminated the direct
+    child only, on every platform.
 
     The reap is bounded because this runs inside the window reserved for
-    writing the outcome down: a fallback kill can leave a descendant holding
-    the pipe open, and waiting on it indefinitely would spend the reserve and
-    lose the record, which is the failure this whole path exists to prevent.
-
-    Descendant collection is a POSIX guarantee here, stated rather than
-    implied. ``start_new_session`` creates no group off POSIX, so there is no
-    group to signal and the fallback is all there is; collecting a tree there
-    needs a different mechanism (a job object, or shelling out to a tree-kill),
-    which nothing in CI could exercise. This is not a narrowing: the timeout
-    path this replaced terminated the direct child only, on every platform.
+    writing the outcome down: a kill can leave a descendant holding the pipe
+    open, and waiting on it indefinitely would spend the reserve and lose the
+    record, which is the failure this whole path exists to prevent.
     """
-    killpg = getattr(os, "killpg", None)
-    try:
-        if killpg is not None:
-            killpg(proc.pid, signal.SIGKILL)
-        else:  # pragma: no cover - POSIX is what CI runs
-            proc.kill()
-    except (ProcessLookupError, PermissionError, OSError):
-        # Already gone, or not ours to signal. Either way there is nothing
-        # further this can do about it, and the outcome is recorded regardless.
-        pass
+    terminate_process_group(proc, grace=None)
     try:
         proc.communicate(timeout=_REAP_TIMEOUT_S)
     except (OSError, subprocess.SubprocessError):
