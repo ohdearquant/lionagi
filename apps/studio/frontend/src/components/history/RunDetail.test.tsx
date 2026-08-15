@@ -14,6 +14,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import RunStepCard from "@/components/RunStepCard";
+import { isTerminalSessionStatus } from "@/components/history/RunDetail";
 import enMessages from "@/messages/en.json";
 import type { SignalEvent } from "@/lib/api";
 import type { RunStep, WorkerGraph } from "@/lib/types";
@@ -1165,6 +1166,38 @@ describe("history/RunDetail.tsx — persisted branch totals survive message pagi
 
     expect(runStep.result?.duration_sec).toBe(600);
     expect(runStep.result?.message_count).toBe(30_525);
+  });
+
+  it("uses branch lifecycle bounds when a cancelled branch has only one message", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const runStep = branchToRunStep(
+      {
+        id: "branch-cancelled",
+        name: "architect",
+        created_at: 100,
+        started_at: null,
+        ended_at: 178.1,
+        first_message_at: 101,
+        last_message_at: 101,
+        message_total: 1,
+        messages: [
+          {
+            id: "prompt-only",
+            role: "user",
+            content: { instruction: "Investigate" },
+            sender: "user",
+            timestamp: 101,
+            lion_class: "Instruction",
+          },
+        ],
+      },
+      "cancelled",
+    );
+
+    expect(runStep.result?.duration_sec).toBe(78);
+    const { container } = renderRunStepCards([runStep]);
+    expect(container.textContent).toContain("1m 18s");
+    expect(container.textContent).not.toContain("0s");
   });
 });
 
@@ -3165,5 +3198,36 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
       act(() => root.unmount());
       container.remove();
     }
+  });
+});
+
+describe("history/RunDetail.tsx — isTerminalSessionStatus", () => {
+  // Every raw status the detail pane treats as "this run is over". A status
+  // missing here leaves the pane streaming a finished run forever, which is
+  // invisible in a diff because each half of the check reads correct alone.
+  const TERMINAL = [
+    "completed",
+    "completed_empty",
+    "done",
+    "success",
+    "failed",
+    "failure",
+    "timed_out",
+    "aborted",
+    "cancelled",
+  ];
+
+  it("treats every terminal status as terminal, including completed_empty", () => {
+    for (const status of TERMINAL) {
+      expect(isTerminalSessionStatus(status), `${status} should be terminal`).toBe(true);
+    }
+  });
+
+  it("does not treat a live run as terminal", () => {
+    for (const status of ["running", "queued", "pending", ""]) {
+      expect(isTerminalSessionStatus(status), `${status} should not be terminal`).toBe(false);
+    }
+    expect(isTerminalSessionStatus(null)).toBe(false);
+    expect(isTerminalSessionStatus(undefined)).toBe(false);
   });
 });

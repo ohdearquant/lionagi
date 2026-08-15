@@ -17,6 +17,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from lionagi._spec_limits import MAX_SPEC_PROMPT_CHARS
+
 __all__ = (
     "Verb",
     "AbsentVerb",
@@ -105,10 +107,12 @@ class AbsentVerb:
 
 _PROMPT = {
     "type": "string",
+    "maxLength": MAX_SPEC_PROMPT_CHARS,
     "description": (
         "The instruction text. It is written to a file inside the job record and "
         "the run is spawned with an argv list and no shell, so quotes, newlines "
-        "and code in it are safe. Give it here or as prompt_file, never both."
+        "and code in it are safe. Give it here or as prompt_file, never both. "
+        f"Maximum length: {MAX_SPEC_PROMPT_CHARS} characters."
     ),
     "x-server-owned": True,
 }
@@ -119,7 +123,7 @@ _PROMPT_FILE = {
         "Absolute path to a file holding the instruction. The server reads it now "
         "and snapshots the text, so editing the file afterwards cannot change what "
         "an already-submitted run executes. '-' is refused: a detached run has no "
-        "stdin to read."
+        f"stdin to read. File content is capped at {MAX_SPEC_PROMPT_CHARS} characters."
     ),
     "x-server-owned": True,
 }
@@ -436,7 +440,12 @@ _REGISTERED: tuple[Verb, ...] = (
     ),
     Verb(
         name="job.status",
-        summary="Current state of a background run: liveness, job record, CLI manifest.",
+        summary=(
+            "Current state of a background run: liveness, job record, CLI manifest. "
+            "declared_mcp_servers names only the servers in the config snapshot "
+            "LionAGI wrote; providers may merge other configuration, so it is not "
+            "the effective server set. mcp_config_servers is its deprecated alias."
+        ),
         executor="job",
         own_schema=_JOB_STATUS_SCHEMA,
     ),

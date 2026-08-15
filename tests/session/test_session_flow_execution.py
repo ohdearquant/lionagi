@@ -44,9 +44,7 @@ def _get_oai_config(
     )
 
 
-# ============================================================================
 # Test Fixtures and Helpers
-# ============================================================================
 
 
 def make_mock_branch(name: str = "TestBranch") -> Branch:
@@ -113,9 +111,7 @@ def make_parallel_graph() -> tuple[Graph, dict[str, Operation]]:
     return graph, ops
 
 
-# ============================================================================
 # 1. Basic Flow Execution Tests
-# ============================================================================
 
 
 class TestEdgeCasesAndErrors:
@@ -315,9 +311,7 @@ class TestEdgeCasesAndErrors:
         )
 
 
-# ============================================================================
 # 4. Integration Tests
-# ============================================================================
 
 
 class TestSessionFlowIntegration:
@@ -441,9 +435,7 @@ class TestSessionFlowIntegration:
         assert has_error
 
 
-# ============================================================================
 # 6. Async Edge Cases: Cancellation, Timeout, Error Propagation
-# ============================================================================
 
 
 class TestSessionFlowAsyncEdgeCases:
@@ -556,7 +548,6 @@ class TestSessionFlowAsyncEdgeCases:
 
     @pytest.mark.asyncio
     async def test_flow_continues_after_operation_failure(self):
-        """Test that flow continues processing after one operation fails."""
         session = Session()
 
         # Create two branches - one will fail, one will succeed
@@ -609,7 +600,6 @@ class TestSessionFlowAsyncEdgeCases:
 
     @pytest.mark.asyncio
     async def test_concurrent_flow_with_mixed_timings(self):
-        """Test concurrent flow with operations of varying speeds doesn't deadlock."""
         session = Session()
         branch = make_mock_branch()
         session.include_branches(branch)

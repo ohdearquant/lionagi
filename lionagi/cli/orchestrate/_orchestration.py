@@ -533,6 +533,10 @@ class OrchestrationEnv:
     budget_deadline_epoch: float | None = None
     _live_persist: dict | None = field(default=None, repr=False)
     _run_manifest: dict[str, Any] = field(default_factory=dict, repr=False)
+    # Capacity-refused reactive work, populated after DAG execution and
+    # consumed by terminal persistence. Kept on the run env so it survives
+    # the phase boundary without being confused with operation failures.
+    _spawn_refusal_evidence: list[dict[str, Any]] = field(default_factory=list, repr=False)
     _name_counts: dict[str, int] = field(default_factory=dict)
     _all_names: list[str] = field(default_factory=list)
 
@@ -574,20 +578,9 @@ class OrchestrationEnv:
 def _hand_mcp_servers(imodel, servers: dict | None, *, label: str) -> None:
     """Give one worker's model the run's server set, or say it could not be given.
 
-    A caller who named a set for this run gets that set applied to every worker
-    whose provider has a transport for one, and is told about every worker whose
-    provider has none. Which providers those are is not decided here — the
-    request is where the set lands, so the function that writes it is the one
-    that answers whether it landed.
-
-    An empty set and no set are different requests. ``{}`` is the caller having
-    asked for no servers, so it is applied as the whole set rather than as
-    nothing to add. ``None`` is there being nothing to hand over, and the model
-    keeps whatever it would have used.
-
-    *label* names the worker, because a run's workers can resolve different
-    providers and a caller reading the warning needs to know which leg lost
-    what.
+    ``{}`` (apply no servers) and ``None`` (nothing to hand over, keep
+    whatever the model already had) are different requests. See
+    ``docs/internals/cli.md`` (`_orchestration.py`).
     """
     if servers is None:
         return
@@ -786,8 +779,14 @@ def _resolve_worker_model_spec(
     model_override: str | None = None,
 ) -> tuple[str, AgentProfile | None, Any]:
     """Resolve which model spec a worker with this role/override would use,
-    without building anything. Shared by `build_worker_branch` and
-    `worker_is_cli` so the resolution logic lives in exactly one place."""
+    without building anything.
+
+    Explicit ``--workers`` routing wins, then the selected pack's per-role
+    model, then the role profile's model. The profile is still returned when a
+    pack selects the model so its prompt and behavior remain attached. Shared
+    by `build_worker_branch` and `worker_is_cli` so the resolution logic lives
+    in exactly one place.
+    """
     # Pack per-role config (ADR-0043): model/effort/modes defaults for casts
     # roles. Ignored in bare mode (workers are the raw CLI spec there).
     w_cfg = None if env.bare else role_config(role, env.pack)
@@ -799,10 +798,10 @@ def _resolve_worker_model_spec(
         resolved_model, w_profile = resolve_worker_spec(role)
         if model_override:
             w_model = model_override
-        elif w_profile:
-            w_model = resolved_model
         elif w_cfg and w_cfg.model:
             w_model = w_cfg.model
+        elif w_profile:
+            w_model = resolved_model
         else:
             w_model = env.default_model_spec
 
@@ -1247,23 +1246,11 @@ def make_team_lifecycle_coordinator(
 def collect_worker_artifacts(env: OrchestrationEnv) -> list[dict]:
     """List what each worker actually wrote, one entry per worker the run expected.
 
-    The roster comes from the directories the run handed out, not a scan for
-    non-empty ones, so a worker that wrote nothing is still an entry (empty
-    ``files``) rather than an absence. A worker the run expected but never
-    registered a directory for is emitted as ``unregistered`` rather than
-    dropped, since that failure looks identical to "fewer workers" if omitted.
-
-    ``status`` per entry:
-
-    ``unreadable``
-        traversal raised — could not look.
-    ``missing``
-        the registered path is gone (removed after registration, not a worker
-        declining to write).
-    ``unregistered``
-        expected but no directory was ever recorded.
-    ``reported``
-        looked, and ``files`` is what was there, empty or not.
+    ``status``: ``unreadable`` (traversal raised), ``missing`` (registered
+    path gone), ``unregistered`` (expected, no directory recorded),
+    ``reported`` (looked, ``files`` is what was there). See
+    ``docs/internals/cli.md`` (`_orchestration.py`) for why every expected
+    worker gets an entry rather than being dropped when empty/absent.
     """
     entries: list[dict] = []
     registered = env.worker_artifact_dirs
@@ -1675,6 +1662,7 @@ async def stop_live_persist(
     extras = getattr(env, "_finalize_extras", None)
     escalated_evidence = getattr(env, "_escalated_evidence", None)
     failed_operation_evidence = getattr(env, "_failed_operation_evidence", None)
+    spawn_refusal_evidence = getattr(env, "_spawn_refusal_evidence", None)
     finalize_error = getattr(env, "_finalize_error", None)
     artifact_write_error = getattr(env, "_artifact_write_error", None)
     gate_rejected_evidence = getattr(env, "_gate_rejected_evidence", None)
@@ -1685,6 +1673,7 @@ async def stop_live_persist(
         extras=extras,
         escalated_evidence=escalated_evidence,
         failed_operation_evidence=failed_operation_evidence,
+        spawn_refusal_evidence=spawn_refusal_evidence,
         finalize_error=finalize_error,
         artifact_write_error=artifact_write_error,
         gate_rejected_evidence=gate_rejected_evidence,

@@ -120,7 +120,6 @@ class TestOperable:
             operable.get_specs(include={"field1", "invalid_field"})
 
     def test_field_ordering_preserved(self):
-        """Test that field ordering is preserved across tuple position."""
         specs = [
             Spec(str, name="field_a"),
             Spec(int, name="field_b"),
@@ -143,19 +142,16 @@ class TestOperable:
             operable.create_model(adapter="unsupported")  # type: ignore
 
     def test_immutability(self):
-        """Test that Operable is immutable."""
         spec1 = Spec(str, name="field1")
         operable = Operable((spec1,))
         with pytest.raises(dataclasses.FrozenInstanceError):  # frozen dataclass (not pydantic)
             operable.name = "new_name"
 
     def test_type_validation(self):
-        """Test that non-Spec objects are rejected."""
         with pytest.raises(TypeError, match="All specs must be Spec objects"):
             Operable(("not_a_spec",))
 
     def test_duplicate_name_detection(self):
-        """Test that duplicate field names are detected."""
         spec1 = Spec(str, name="field1")
         spec2 = Spec(int, name="field1")  # Duplicate name
         with pytest.raises(ValueError, match="Duplicate field names found"):

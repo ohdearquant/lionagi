@@ -34,9 +34,7 @@ from lionagi.service.imodel import iModel
 from lionagi.service.types.stream_chunk import StreamChunk
 from lionagi.session.branch import Branch
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_fake_cli_model(chunks: list[StreamChunk], session_id: str | None = None):
@@ -87,9 +85,7 @@ def _fail_on_next_checkpoint(_delay: float):
         raise TimeoutError
 
 
-# ---------------------------------------------------------------------------
 # P0 tests — run()
-# ---------------------------------------------------------------------------
 
 
 async def test_run_rejects_non_cli_chat_model():
@@ -533,9 +529,7 @@ async def test_write_branch_snapshot_failed_replace_keeps_prior_snapshot(tmp_pat
     assert target.read_text() == v1
 
 
-# ---------------------------------------------------------------------------
 # P0/P1 tests — run_and_collect()
-# ---------------------------------------------------------------------------
 
 
 async def test_run_and_collect_clears_messages_and_joins_assistant_text(monkeypatch):
@@ -615,13 +609,11 @@ async def test_run_and_collect_parses_when_response_format_is_set(monkeypatch):
     assert parse_calls[0] == '{"value": 42}'
 
 
-# ---------------------------------------------------------------------------
 # Timeout enforcement tests — regression for the "timeout silently ignored"
 # bug where ``branch.operate(timeout=N)`` / ``li agent --timeout N`` flowed
 # through ``imodel_kw`` into ``model.create_event(**kw)`` but the streaming
 # loop never wrapped the consumer with ``anyio.fail_after``, so CLI
 # subprocesses (codex, claude_code) ran unbounded.
-# ---------------------------------------------------------------------------
 
 
 def _make_slow_cli_model(chunk_delay: float, n_chunks: int = 100):
@@ -926,9 +918,7 @@ async def test_gemini_timeout_arms_produce_distinct_caps():
     assert await captured_cap({"timeout": 1200}) != await captured_cap({})
 
 
-# ---------------------------------------------------------------------------
 # Regression: Branch.operate() must flatten **kwargs so timeout reaches run()
-# ---------------------------------------------------------------------------
 
 
 async def test_branch_operate_forwards_timeout_to_run(monkeypatch):
@@ -979,9 +969,7 @@ async def test_branch_operate_forwards_extra_kwargs_to_run(monkeypatch):
     assert received_kw.get("repo") == "/tmp/test"
 
 
-# ---------------------------------------------------------------------------
 # Regression: iModel.stream() must not yield in finally (swallows cancellation)
-# ---------------------------------------------------------------------------
 
 
 async def test_imodel_stream_propagates_cancellation():
@@ -1045,12 +1033,10 @@ async def test_imodel_stream_propagates_cancellation():
     )
 
 
-# ---------------------------------------------------------------------------
 # Worker-liveness watchdog — regression for a CLI subprocess that dies at/near
 # spawn (or otherwise produces no first output): the leg must retry once and
 # then fail loud with WorkerLivenessError instead of hanging as a zombie
 # "running" operation forever.
-# ---------------------------------------------------------------------------
 
 
 def _make_hanging_cli_model(create_event_calls: list, streams_first_output_early: bool = True):

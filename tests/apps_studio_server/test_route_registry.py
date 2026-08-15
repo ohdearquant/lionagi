@@ -22,9 +22,7 @@ from lionagi.studio.registry import iter_studio_routes as _iter_at_import  # noq
 _AREAS_AT_IMPORT = {r.area for r in _iter_at_import()}
 _KEYS_AT_IMPORT = [(r.path, r.method) for r in _iter_at_import()]
 
-# ---------------------------------------------------------------------------
 # Fixtures
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -41,9 +39,7 @@ def _isolated_registry():
     _DEDUP_KEYS.update(saved_keys)
 
 
-# ---------------------------------------------------------------------------
 # 1. studio_route registers a StudioRoute; handler is returned unchanged
-# ---------------------------------------------------------------------------
 
 
 def test_registration_stores_route_and_returns_original():
@@ -105,9 +101,7 @@ def test_registration_stores_all_passed_fields():
     assert len(route.dependencies) == 1
 
 
-# ---------------------------------------------------------------------------
 # 2. tags=None defaults to (area,); explicit tags preserved verbatim
-# ---------------------------------------------------------------------------
 
 
 def test_tags_none_defaults_to_area():
@@ -140,9 +134,7 @@ def test_explicit_empty_tags_preserved():
     assert _ROUTES[0].tags == ()
 
 
-# ---------------------------------------------------------------------------
 # 3. iter_studio_routes returns immutable tuple sorted by order; area filter works
-# ---------------------------------------------------------------------------
 
 
 def test_iter_returns_tuple_sorted_by_order():
@@ -195,9 +187,7 @@ def test_iter_returns_immutable_tuple():
     assert isinstance(result, tuple)
 
 
-# ---------------------------------------------------------------------------
 # 4. Dedup guard raises on same (path, method, module, qualname)
-# ---------------------------------------------------------------------------
 
 
 def test_dedup_guard_raises_on_duplicate():
@@ -226,9 +216,7 @@ def test_dedup_same_path_different_method_allowed():
     assert len(_ROUTES) == 2
 
 
-# ---------------------------------------------------------------------------
 # 5. load_studio_route_modules registers every migrated area (phase 1+)
-# ---------------------------------------------------------------------------
 
 _MIGRATED_AREAS = {
     "casts",
@@ -254,6 +242,7 @@ _MIGRATED_AREAS = {
     "schedules",
     "stats",
     "attention",
+    "hooks",
 }
 
 
@@ -277,9 +266,7 @@ def test_loaded_registry_has_no_duplicate_routes():
     assert len(_KEYS_AT_IMPORT) == len(set(_KEYS_AT_IMPORT)), "duplicate (path, method) in registry"
 
 
-# ---------------------------------------------------------------------------
 # 6. Live app still exposes its full route table (behavior-preservation gate)
-# ---------------------------------------------------------------------------
 
 
 def test_live_app_health_route_present():

@@ -67,10 +67,7 @@ class OperationGraphBuilder:
         one added before it.
 
         `is_gate=True` opts this node into the flow executor's gate-reject
-        contract (see `lionagi/operations/flow.py`): if its result carries a
-        top-level `gate_verdict="reject"`, every downstream dependent is
-        short-circuited to skipped instead of running against the baseline
-        this node just rejected.
+        contract — see `docs/internals/core.md` (`operations/flow.py`).
         """
         node = create_operation(operation=operation, parameters=parameters)
 
@@ -269,10 +266,14 @@ class OperationGraphBuilder:
         return self.graph
 
     def get_node_by_reference(self, reference_id: str):
-        for op in self._operations.values():
-            if op.metadata.get("reference_id") == reference_id:
-                return op
-        return None
+        matches = [
+            op
+            for op in self.graph.internal_nodes.values()
+            if getattr(op, "metadata", {}).get("reference_id") == reference_id
+        ]
+        if len(matches) > 1:
+            raise OperationError(f"Duplicate reference_id {reference_id!r}")
+        return matches[0] if matches else None
 
     def visualize_state(self) -> dict[str, Any]:
         expansions = {}

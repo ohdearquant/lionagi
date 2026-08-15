@@ -64,7 +64,7 @@ def test_health_and_staleness_entry_points_share_threshold_boundary(
     )
 
 
-# ── Terminal sessions ────────────────────────────────────────────────────────
+# Terminal sessions
 
 
 def test_completed_session_with_clean_resources_is_healthy():
@@ -108,7 +108,7 @@ def test_terminal_session_artifacts_alone_not_zombie():
     assert h == SessionHealth.HEALTHY
 
 
-# ── Running, process alive ────────────────────────────────────────────────────
+# Running, process alive
 
 
 def test_running_with_recent_messages_is_healthy():
@@ -196,7 +196,7 @@ def test_flow_threshold_more_lenient_than_agent():
     )
 
 
-# ── Running, liveness unknown (no matchable pid) ────────────────────────────
+# Running, liveness unknown (no matchable pid)
 
 
 def test_running_liveness_unknown_but_recently_messaging_is_healthy():
@@ -326,7 +326,7 @@ def test_running_liveness_unknown_no_messages_but_has_artifacts_not_orphaned():
     assert h == SessionHealth.HEALTHY
 
 
-# ── Edge cases ────────────────────────────────────────────────────────────────
+# Edge cases
 
 
 def test_null_status_treated_as_completed():
@@ -359,7 +359,7 @@ def test_missing_invocation_kind_uses_default_threshold():
     assert h == SessionHealth.UNRESPONSIVE
 
 
-# ── worst_health aggregator (grouped runs view) ──────────────────────────────
+# worst_health aggregator (grouped runs view)
 
 
 def test_worst_health_picks_highest_severity():
@@ -386,7 +386,7 @@ def test_severity_table_covers_all_health_levels():
     assert set(HEALTH_SEVERITY) == set(SessionHealth)
 
 
-# ── Running, confirmed dead (recorded pid no longer running) ─────────────────
+# Running, confirmed dead (recorded pid no longer running)
 
 
 def test_running_confirmed_dead_recent_messages_is_stale():

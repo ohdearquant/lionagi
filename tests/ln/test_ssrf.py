@@ -10,20 +10,11 @@ import pytest
 
 from lionagi.ln._ssrf import is_ssrf_safe
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _mock_getaddrinfo(ip_str: str):
     """Return a getaddrinfo-shaped list for a single IP."""
     family = socket.AF_INET6 if ":" in ip_str else socket.AF_INET
     return [(family, socket.SOCK_STREAM, 6, "", (ip_str, 0))]
-
-
-# ---------------------------------------------------------------------------
-# 1. Public IPs — must return True
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -38,11 +29,6 @@ def _mock_getaddrinfo(ip_str: str):
 def test_public_ips_safe(ip):
     with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo(ip)):
         assert is_ssrf_safe("example.com") is True
-
-
-# ---------------------------------------------------------------------------
-# 2. Private / reserved IPv4 — must return False
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -65,11 +51,6 @@ def test_public_ips_safe(ip):
 def test_private_ipv4_blocked(ip):
     with patch("socket.getaddrinfo", return_value=_mock_getaddrinfo(ip)):
         assert is_ssrf_safe("evil.internal") is False
-
-
-# ---------------------------------------------------------------------------
-# 3. Private IPv6 — must return False
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -97,11 +78,6 @@ def test_ipv6_link_local_scoped_blocked():
         assert is_ssrf_safe("link-local.example.com") is False
 
 
-# ---------------------------------------------------------------------------
-# 4. IPv4-mapped IPv6 — CRITICAL: must return False
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "ipv4_mapped",
     [
@@ -123,9 +99,7 @@ def test_ipv4_mapped_public_safe():
         assert is_ssrf_safe("dns.example.com") is True
 
 
-# ---------------------------------------------------------------------------
 # 4b. IPv4-compatible IPv6 (::a.b.c.d) — must return False (CWE-918)
-# ---------------------------------------------------------------------------
 # Deprecated form without the 0xffff marker; ipv4_mapped returns None so the
 # ::ffff: unmap path does NOT catch it — separate fix required.
 
@@ -153,11 +127,6 @@ def test_ipv4_compatible_public_safe():
         assert is_ssrf_safe("dns.example.com") is True
 
 
-# ---------------------------------------------------------------------------
-# 5. DNS resolution failure — must fail closed
-# ---------------------------------------------------------------------------
-
-
 def test_dns_failure_returns_false():
     with patch("socket.getaddrinfo", side_effect=OSError("NXDOMAIN")):
         assert is_ssrf_safe("nonexistent.example.invalid") is False
@@ -165,11 +134,6 @@ def test_dns_failure_returns_false():
 
 def test_empty_hostname_returns_false():
     assert is_ssrf_safe("") is False
-
-
-# ---------------------------------------------------------------------------
-# 6. Multiple A records — any private IP blocks the request
-# ---------------------------------------------------------------------------
 
 
 def test_any_private_ip_blocks():
@@ -182,20 +146,10 @@ def test_any_private_ip_blocks():
         assert is_ssrf_safe("mixed.example.com") is False
 
 
-# ---------------------------------------------------------------------------
-# 7. Localhost names
-# ---------------------------------------------------------------------------
-
-
 def test_localhost_blocked():
     """'localhost' resolves to 127.0.0.1 or ::1, both blocked."""
     # Do not mock — use real DNS for this test (localhost is always loopback)
     assert is_ssrf_safe("localhost") is False
-
-
-# ---------------------------------------------------------------------------
-# 8. Integration with reader.py call site
-# ---------------------------------------------------------------------------
 
 
 async def test_reader_ssrf_guard_blocks_metadata_url(monkeypatch):

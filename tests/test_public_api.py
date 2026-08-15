@@ -5,18 +5,12 @@
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Module-level import — intentionally NOT importorskip.
-#
-# A broken lionagi/__init__.py must FAIL the entire test module, not skip it.
-# Using importorskip here would mask exactly the regressions this file guards
-# against the regressions this file guards.
-# ---------------------------------------------------------------------------
+# Module-level import, intentionally NOT importorskip: a broken
+# lionagi/__init__.py must FAIL the entire test module, not skip it, or the
+# regressions this file guards against would be masked instead of caught.
 import lionagi as _lionagi  # noqa: E402 — must come after pytest import
 
-# ---------------------------------------------------------------------------
 # Sanity: pre-existing symbols — must always pass
-# ---------------------------------------------------------------------------
 
 
 class TestExistingPublicAPI:
@@ -31,7 +25,6 @@ class TestExistingPublicAPI:
         ],
     )
     def test_core_session_symbols_importable(self, symbol: str) -> None:
-        """Branch, Session, iModel must always be importable from lionagi."""
         import lionagi
 
         obj = getattr(lionagi, symbol)
@@ -53,35 +46,27 @@ class TestExistingPublicAPI:
         assert iModel is not None
 
 
-# ---------------------------------------------------------------------------
 # New: LNDL public API
-# ---------------------------------------------------------------------------
 
 
 class TestLndlPublicAPI:
-    """Verify lndl symbols are importable from the top-level lionagi package."""
-
     def test_lndloutput_importable(self) -> None:
-        """LNDLOutput must be importable from lionagi."""
         from lionagi import LNDLOutput  # noqa: F401
 
         assert LNDLOutput is not None
 
     def test_lndlerror_importable(self) -> None:
-        """LNDLError must be importable from lionagi."""
         from lionagi import LNDLError  # noqa: F401
 
         assert LNDLError is not None
 
     def test_get_lndl_system_prompt_importable(self) -> None:
-        """get_lndl_system_prompt must be importable from lionagi."""
         from lionagi import get_lndl_system_prompt  # noqa: F401
 
         assert get_lndl_system_prompt is not None
         assert callable(get_lndl_system_prompt)
 
     def test_get_lndl_system_prompt_returns_string(self) -> None:
-        """get_lndl_system_prompt() must return a non-empty string."""
         from lionagi import get_lndl_system_prompt
 
         result = get_lndl_system_prompt()
@@ -89,7 +74,6 @@ class TestLndlPublicAPI:
         assert len(result) > 0, "get_lndl_system_prompt() returned empty string"
 
     def test_lndloutput_is_correct_type(self) -> None:
-        """LNDLOutput from lionagi must be the canonical dataclass from lionagi.lndl."""
         from lionagi import LNDLOutput
         from lionagi.lndl import LNDLOutput as LNDLOutputDirect
 
@@ -99,7 +83,6 @@ class TestLndlPublicAPI:
         )
 
     def test_lndlerror_is_correct_type(self) -> None:
-        """LNDLError from lionagi must be the canonical exception from lionagi.lndl."""
         from lionagi import LNDLError
         from lionagi.lndl import LNDLError as LNDLErrorDirect
 
@@ -114,7 +97,6 @@ class TestLndlPublicAPI:
         ],
     )
     def test_lndl_symbols_in_all(self, symbol: str) -> None:
-        """Every lndl symbol must appear in lionagi.__all__."""
         import lionagi
 
         assert symbol in lionagi.__all__, (
@@ -123,14 +105,10 @@ class TestLndlPublicAPI:
         )
 
 
-# ---------------------------------------------------------------------------
 # New: Adapters public API
-# ---------------------------------------------------------------------------
 
 
 class TestAdaptersPublicAPI:
-    """Verify adapter symbols are importable from the top-level lionagi package."""
-
     def test_adapterregistry_importable(self) -> None:
         from lionagi import AdapterRegistry  # noqa: F401
 
@@ -157,7 +135,6 @@ class TestAdaptersPublicAPI:
         assert TomlAdapter is not None
 
     def test_adapterregistry_is_correct_type(self) -> None:
-        """AdapterRegistry from lionagi must be the canonical class from lionagi.adapters."""
         from lionagi import AdapterRegistry
         from lionagi.adapters import AdapterRegistry as AdapterRegistryDirect
 
@@ -201,7 +178,6 @@ class TestAdaptersPublicAPI:
         ],
     )
     def test_adapter_symbols_in_all(self, symbol: str) -> None:
-        """Every adapter symbol must appear in lionagi.__all__."""
         import lionagi
 
         assert symbol in lionagi.__all__, (
@@ -210,9 +186,7 @@ class TestAdaptersPublicAPI:
         )
 
 
-# ---------------------------------------------------------------------------
 # __all__ consistency: every symbol in __all__ must be importable
-# ---------------------------------------------------------------------------
 
 
 class TestAllConsistency:
@@ -237,7 +211,6 @@ class TestAllConsistency:
         list(_lionagi.__all__),
     )
     def test_all_symbol_importable_via_getattr(self, symbol: str) -> None:
-        """getattr(lionagi, symbol) must not raise for any symbol in __all__."""
         try:
             getattr(_lionagi, symbol)
         except (AttributeError, ImportError) as exc:
@@ -247,7 +220,6 @@ class TestAllConsistency:
             )
 
     def test_all_sorted_dunders_first(self) -> None:
-        """__all__ must be globally sorted: dunder names first, then regular names alphabetically."""
         import lionagi
 
         dunder_names = [n for n in lionagi.__all__ if n.startswith("__")]
@@ -267,7 +239,6 @@ class TestAllConsistency:
             )
 
     def test_all_no_duplicates(self) -> None:
-        """__all__ must not contain duplicate entries."""
         import lionagi
 
         seen: set[str] = set()
@@ -279,14 +250,10 @@ class TestAllConsistency:
         assert not duplicates, f"Duplicate entries in __all__: {duplicates}"
 
 
-# ---------------------------------------------------------------------------
 # Sub-module import paths (always pass)
-# ---------------------------------------------------------------------------
 
 
 class TestSubmoduleImportPaths:
-    """Verify lndl and adapters sub-packages are reachable via their own import paths."""
-
     def test_lndl_subpackage_importable(self) -> None:
         import lionagi.lndl as lndl_mod
 

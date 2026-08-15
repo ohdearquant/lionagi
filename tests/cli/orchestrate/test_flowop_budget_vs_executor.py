@@ -3,54 +3,44 @@
 
 """Does the budget's divisor cover every schedule the executor can produce?
 
-`op_budget_share` divides a flow's total budget by `max_sequential_depth`, so a
-divisor that lands BELOW what the executor actually consumes hands every op more
-time than the flow can afford, and the flow overruns its deadline with later ops
-cancelled part-written. Every other test of that function checks its arithmetic
-against a hand-computed number, which cannot see whether the executor agrees.
-These run the executor.
+`op_budget_share` divides a flow's total budget by `max_sequential_depth`; a
+divisor landing BELOW what the executor actually consumes hands every op more
+time than the flow can afford, overrunning the deadline with later ops
+cancelled part-written. Every other test of that function checks its
+arithmetic against a hand-computed number, which cannot see whether the
+executor agrees -- these run the executor, through the real `flow()` entry
+point production uses. Only the work inside an op belongs to the test.
 
-The scheduling here is real: the same `flow()` entry point production uses. Only
-the work inside an op belongs to the test, and how long that work takes is the
-whole point. An earlier version slept a FIXED amount in every op, which held the
-equal-duration assumption the divisor used to be built on, so it agreed with a
-divisor that undercounted and read as coverage while doing it. Durations here
+An earlier version slept a FIXED amount in every op, which held the
+equal-duration assumption the divisor was built on and so agreed with a
+divisor that undercounted, reading as coverage while doing it. Durations here
 are deliberately unequal, and each shape is swept with the long op in every
-admission position, because a long-running op holding a slot is what makes the
+admission position, since a long-running op holding a slot is what makes the
 ops behind it serialize.
 
-WHAT IS MEASURED, AND WHY IT CHANGED
-------------------------------------
 Every op sleeps exactly one budget unit in the primary pattern, so elapsed
-wall clock divided by that unit is literally the number of op-budgets the flow
-consumed. That is the quantity the divisor bounds: the flow overruns precisely
-when consumption exceeds the divisor.
+wall clock divided by that unit is literally the number of op-budgets
+consumed -- the quantity the divisor bounds: the flow overruns precisely when
+consumption exceeds the divisor.
 
-This replaces an earlier reading that took the longest chain of non-overlapping
-spans. That quantity is not the same one, and it is wrong in BOTH directions:
+This replaces an earlier reading that took the longest chain of
+non-overlapping spans, which is wrong in both directions. It OVER-counts:
+two ops separated by an idle gap are non-overlapping while consuming no
+budget in between, so a chain across a gap some third op owns reads as extra
+free stages (measured: deps [[], [0], [0], [1], [2]] under a cap of 3 with
+one slow op reads a chain of 4, while the same shape at full budget consumes
+3). It UNDER-counts: two ops overlapping by half consume one and a half
+budgets at a chain length of 1. Because the span reading over-counts, it
+would have failed this suite on shapes that do not overrun -- a false alarm
+in a test whose whole job is to be believed.
 
-  it OVER-counts   two ops separated by an idle gap are non-overlapping while
-                   consuming no budget in between, so a chain across a gap that
-                   some third op owns reads as extra stages that cost nothing.
-                   Measured: deps [[], [0], [0], [1], [2]] under a cap of 3 with
-                   one slow op reads a chain of 4, while the same shape with
-                   every op at a full budget consumes 3.
-
-  it UNDER-counts  two ops overlapping by half consume one and a half budgets
-                   at a chain length of 1.
-
-Because the span reading over-counts, it would have failed this suite on shapes
-that do not overrun — a false alarm waiting for a future author, in a test whose
-whole job is to be believed.
-
-THE INSTRUMENT PRICES ITSELF
-----------------------------
 A straight chain consumes exactly one budget per op by construction, so it
-measures this machine's per-op executor overhead in the same units everything
-else is reported in. The work unit has to stay well above that overhead: at
-0.15s the ~5ms per-op cost perturbs which ops get admitted together, so the
-instrument changes the schedule it is measuring and readings move by a whole
-budget between runs. At the unit below, readings sit within 0.06 of an integer.
+also measures this machine's per-op executor overhead in the same units
+everything else is reported in. The work unit has to stay well above that
+overhead: at 0.15s the ~5ms per-op cost perturbs which ops get admitted
+together, so the instrument changes the schedule it is measuring and
+readings move by a whole budget between runs. At the unit below, readings
+sit within 0.06 of an integer.
 """
 
 import asyncio
@@ -209,7 +199,7 @@ async def _run_real_flow(
     return max(finished_at) / BUDGET, peak
 
 
-# --- Instrument controls -------------------------------------------------
+# Instrument controls.
 #
 # Both have an answer that is true by construction rather than by measurement.
 # If either misreads, the timing instrument is not fit to judge anything below
@@ -235,7 +225,7 @@ async def test_independent_ops_fill_the_cap_and_no_more():
     assert consumed == pytest.approx(2, abs=TOLERANCE)
 
 
-# --- The claim -----------------------------------------------------------
+# The claim.
 #
 # Neither pinned number is derived from the function under test. `divisor` is
 # what the function returns today and `consumed` is what the executor was

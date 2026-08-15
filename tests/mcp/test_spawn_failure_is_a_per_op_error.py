@@ -1,42 +1,13 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""A submit whose child could not be started raises ``SpawnError``, which is a
-``RuntimeError``. Dispatch caught ``OpError`` and the schema-projection errors
-and nothing else, so this one escaped and took the entire batch down with it —
-including the ops beside it that had already succeeded.
-
-That was reachable before any of this: ``_record_spawn_failure`` raises it for
-every ``Popen`` failure, deliberately for every exception rather than an errno
-family. A caller who batched a submit alongside anything else lost the lot, and
-the response said nothing about which run failed or why.
-
-It is now a per-op error carrying the run_id, so the batch keeps its other
-results and the caller has the id whose log holds the cause.
-
-WHY THERE IS NO STARTUP WATCH HERE
-
-A first version of this fix watched the freshly spawned child for a few seconds
-and converted an immediate non-zero exit into a refused submit. It was removed
-before merge, on a measurement rather than an opinion.
-
-Ten real children spawned to die on their own arguments (`li agent -a
-<nonexistent-profile>`), timed end to end on a machine at load average 76:
-
-    2.08  2.43  2.53  2.55  2.81  3.35  3.64  3.67  3.82  5.52   seconds
-
-A fixed window has to sit above the slowest of those to catch the class it
-exists for, and every healthy submit pays whatever that window is. At three
-seconds it would have missed four of these ten while taxing every good submit;
-at six it would catch them and tax every good submit twice as much. The
-distribution is a property of the machine's load, not of the defect, so no
-constant is right on both counts.
-
-The thing it was reaching for already exists on the read side: ``status()``
-reports ``possibly_orphaned`` for a process that is gone with no end recorded,
-and returns ``log_tail`` in the same response, which is where the cause has been
-the whole time. A caller probing once after submit learns this without anyone
-paying for a window.
+"""A submit whose child could not be started raises ``SpawnError`` (a
+``RuntimeError``) carrying the run_id. Dispatch used to catch only ``OpError``
+and the schema-projection errors, so this one escaped and took the whole batch
+down with it, including ops beside it that had already succeeded. It is now a
+per-op error, so the batch keeps its other results and the caller has the id
+whose log holds the cause. See docs/internals/mcp.md
+(spawn-failure-per-op-error) for why there is deliberately no startup watch.
 """
 
 from __future__ import annotations

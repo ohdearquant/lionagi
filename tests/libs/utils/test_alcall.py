@@ -11,10 +11,6 @@ from pydantic import BaseModel
 from lionagi.ln import AlcallParams, BcallParams, alcall, bcall
 from lionagi.ln.concurrency import BaseExceptionGroup
 
-# =============================================================================
-# Test fixtures and helper functions
-# =============================================================================
-
 
 async def async_func(x: int, add: int = 0) -> int:
     await asyncio.sleep(0)
@@ -46,11 +42,6 @@ class PydanticTestModel(BaseModel):
     value: int
 
 
-# =============================================================================
-# Test alcall function - Basic functionality
-# =============================================================================
-
-
 class TestAlcallBasic:
     @pytest.mark.anyio
     async def test_alcall_basic_async_function(self):
@@ -68,11 +59,6 @@ class TestAlcallBasic:
     async def test_alcall_empty_input(self):
         results = await alcall([], async_func)
         assert results == []
-
-
-# =============================================================================
-# Test alcall function - func parameter validation
-# =============================================================================
 
 
 class TestAlcallFuncValidation:
@@ -107,11 +93,6 @@ class TestAlcallFuncValidation:
     async def test_alcall_func_empty_iterable_raises(self):
         with pytest.raises(ValueError, match="Only one callable"):
             await alcall([1, 2, 3], [])
-
-
-# =============================================================================
-# Test alcall function - Input processing
-# =============================================================================
 
 
 class TestAlcallInputProcessing:
@@ -155,11 +136,6 @@ class TestAlcallInputProcessing:
     async def test_alcall_input_non_iterable(self):
         result = await alcall(5, async_func)
         assert result == [5]
-
-
-# =============================================================================
-# Test alcall function - Retry and timeout
-# =============================================================================
 
 
 class TestAlcallRetryTimeout:
@@ -240,11 +216,6 @@ class TestAlcallRetryTimeout:
             assert mock_sleep.await_args_list == [call(0.1), call(0.2)]
 
 
-# =============================================================================
-# Test alcall function - Exception handling
-# =============================================================================
-
-
 class TestAlcallExceptionHandling:
     @pytest.mark.anyio
     async def test_alcall_exception_reraises_after_retry_exhaustion(self):
@@ -301,11 +272,6 @@ class TestAlcallExceptionHandling:
         assert results == ["failed", "failed", "failed"]
 
 
-# =============================================================================
-# Test alcall function - Concurrency and throttling
-# =============================================================================
-
-
 class TestAlcallConcurrency:
     @pytest.mark.anyio
     async def test_alcall_max_concurrent(self):
@@ -325,11 +291,6 @@ class TestAlcallConcurrency:
             inputs = [1, 2, 3]
             await alcall(inputs, async_func, delay_before_start=0.5)
             mock_sleep.assert_any_call(0.5)
-
-
-# =============================================================================
-# Test alcall function - Output processing
-# =============================================================================
 
 
 class TestAlcallOutputProcessing:
@@ -367,11 +328,6 @@ class TestAlcallOutputProcessing:
             output_unique=True,
         )
         assert sorted(results) == [1, 2, 3]
-
-
-# =============================================================================
-# Test bcall function
-# =============================================================================
 
 
 class TestBcall:
@@ -423,10 +379,6 @@ class TestBcall:
         assert batches == [[1, 2], [3, 4], [5]]
 
 
-# =============================================================================
-# =============================================================================
-
-
 class TestParams:
     # AlcallParams/BcallParams.__call__ are thin alcall/bcall wrappers; dataclass inheritance
     # makes them hard to unit-test directly — coverage comes from the alcall tests above.
@@ -446,11 +398,6 @@ class TestParams:
         assert hasattr(BcallParams, "__annotations__")
         assert "batch_size" in BcallParams.__annotations__
         # Lines 310-311 covered conceptually through bcall tests
-
-
-# =============================================================================
-# Test edge cases and combinations
-# =============================================================================
 
 
 class TestEdgeCases:
@@ -494,11 +441,6 @@ class TestEdgeCases:
             throttle_period=0.01,
         )
         assert results == [1, 2, 3, 4, 5]
-
-
-# =============================================================================
-# Test return_exceptions parameter
-# =============================================================================
 
 
 class TestReturnExceptions:

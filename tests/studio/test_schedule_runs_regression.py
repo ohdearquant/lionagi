@@ -91,9 +91,7 @@ async def _seed_run_with_error_detail(db: StateDB) -> tuple[str, str]:
     return sched_id, run_id
 
 
-# ---------------------------------------------------------------------------
-# Issue #2292 — route default limit
-# ---------------------------------------------------------------------------
+# Route default limit
 
 
 def test_list_schedule_runs_route_default_limit_is_50() -> None:
@@ -134,9 +132,7 @@ async def test_list_schedule_runs_route_explicit_limit_passthrough(
     assert result["has_next"] is True
 
 
-# ---------------------------------------------------------------------------
-# Issue #2293 — double read of the schedule_runs row
-# ---------------------------------------------------------------------------
+# Double read of the schedule_runs row
 
 
 @pytest.mark.asyncio

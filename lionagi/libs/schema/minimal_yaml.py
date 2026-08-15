@@ -5,7 +5,7 @@ from typing import Any
 import orjson
 import yaml
 
-# --- YAML Dumper with minimal, readable settings --------------------------------
+# YAML Dumper with minimal, readable settings
 
 
 class MinimalDumper(yaml.SafeDumper):
@@ -23,7 +23,7 @@ def _represent_str(dumper: yaml.SafeDumper, data: str):
 
 MinimalDumper.add_representer(str, _represent_str)
 
-# --- Optional pruning of empty values -------------------------------------------
+# Optional pruning of empty values
 
 
 def _is_empty(x: Any) -> bool:
@@ -58,7 +58,7 @@ def _prune(x: Any) -> Any:
     return x
 
 
-# --- Public API ------------------------------------------------------------------
+# Public API
 
 
 def minimal_yaml(

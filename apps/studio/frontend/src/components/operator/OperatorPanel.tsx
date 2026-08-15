@@ -69,6 +69,7 @@ import { nextObservationSeq, observationObserver } from "./observationSequence";
 import { applyTheme } from "@/lib/theme";
 
 const STORAGE_KEY = "studio:operator-conversation";
+const AUTO_ALLOW_KEY = "studio:operator-auto-allow";
 const DEFAULT_WIDTH = 408;
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 640;
@@ -235,7 +236,10 @@ function operatorContext(
   else if (pathname.startsWith("/schedules")) space = "schedules";
   else if (pathname.startsWith("/system")) space = "system";
   else if (pathname.startsWith("/designer")) space = "designer";
-  else if (pathname.startsWith("/history")) space = "history";
+  // /fleet IS the history space (navigate's enum promises as much); without
+  // this arm a navigate(space="history") lands on a snapshot that calls
+  // itself "mission", two vocabularies for one surface.
+  else if (pathname.startsWith("/history") || pathname.startsWith("/fleet")) space = "history";
 
   const filters: OperatorContextSnapshot["filters"] = {};
   const selection: Record<string, string> = {};
@@ -379,17 +383,24 @@ function shortToolName(tool: string): string {
 }
 
 /** One line of what the call actually asked for, so a collapsed row is not
- * just a name. Values only: the keys repeat and the width is scarce. */
+ * just a name. Values only: the keys repeat and the width is scarce. A call
+ * that describes itself (Bash carries `description`) leads with that
+ * sentence — "what is this doing" reads better than raw argv on a narrow
+ * row, and the argv would otherwise truncate the description clean away. */
 function argumentSummary(args: unknown): string {
   if (!args || typeof args !== "object" || Array.isArray(args)) return "";
+  const record = args as Record<string, unknown>;
   const parts: string[] = [];
-  for (const value of Object.values(args as Record<string, unknown>)) {
+  const description = record.description;
+  if (typeof description === "string" && description) parts.push(description);
+  for (const [key, value] of Object.entries(record)) {
+    if (key === "description") continue;
     if (value === null || value === undefined || value === "") continue;
     if (typeof value === "object") continue;
     parts.push(String(value));
     if (parts.length === 3) break;
   }
-  return parts.join(" · ").slice(0, 80);
+  return parts.join(" · ").slice(0, 120);
 }
 
 function ToolCallCard({ payload }: { payload: OperatorToolCallPayload }) {
@@ -644,6 +655,19 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [deciding, setDeciding] = useState<Set<string>>(() => new Set());
   const [decidedProposalIds, setDecidedProposalIds] = useState<Set<string>>(() => new Set());
+  // Opt-in, per-browser: every pending proposal is allowed the moment it
+  // arrives. The proposal cards still render and the executed confirmations
+  // still land, so the audit trail is unchanged — only the click is skipped.
+  const [autoAllow, setAutoAllow] = useState<boolean>(
+    () => typeof window !== "undefined" && window.localStorage.getItem(AUTO_ALLOW_KEY) === "1",
+  );
+  const toggleAutoAllow = useCallback(() => {
+    setAutoAllow((current) => {
+      const next = !current;
+      window.localStorage.setItem(AUTO_ALLOW_KEY, next ? "1" : "0");
+      return next;
+    });
+  }, []);
   const [conversations, setConversations] = useState<OperatorConversation[]>([]);
   const [listFilter, setListFilter] = useState<"active" | "archived">("active");
   const [listPanelOpen, setListPanelOpen] = useState(false);
@@ -1123,6 +1147,23 @@ export default function OperatorPanel({ open, onClose }: Props) {
     },
     [state.conversation, t],
   );
+
+  // Auto-allow: decide each pending proposal as it arrives. The deciding /
+  // decided sets make this idempotent across re-renders and SSE replays.
+  // Deferred a tick so the decision (a network POST plus its own state
+  // bookkeeping) never runs synchronously inside the effect body; the guard
+  // sets keep a cancelled-then-rescheduled tick from double-deciding.
+  useEffect(() => {
+    if (!autoAllow) return;
+    const timer = window.setTimeout(() => {
+      for (const item of proposals) {
+        const id = item.frame.payload.proposal.id;
+        if (item.resolved || decidedProposalIds.has(id) || deciding.has(id)) continue;
+        void handleProposalDecision(item.frame, "allow");
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [autoAllow, proposals, decidedProposalIds, deciding, handleProposalDecision]);
 
   const resetConversation = useCallback(() => {
     conversationLoadGenerationRef.current += 1;
@@ -1728,6 +1769,18 @@ export default function OperatorPanel({ open, onClose }: Props) {
                     ))}
                   </select>
                 )}
+                <label
+                  title={t("composer.autoAllow")}
+                  className="hidden shrink-0 cursor-pointer items-center gap-1 font-data text-meta text-content-muted hover:text-content-primary sm:flex"
+                >
+                  <input
+                    type="checkbox"
+                    checked={autoAllow}
+                    onChange={toggleAutoAllow}
+                    className="h-3 w-3 accent-[var(--accent)]"
+                  />
+                  {t("composer.autoAllow")}
+                </label>
               </div>
               {state.activeRequestId ? (
                 // Send is disabled while a turn runs, so the same slot becomes

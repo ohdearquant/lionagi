@@ -7,9 +7,7 @@ import asyncio
 
 import pytest
 
-# ---------------------------------------------------------------------------
 # AsyncTestHelpers Python 3.10 compatibility (no asyncio.timeout)
-# ---------------------------------------------------------------------------
 
 
 class TestAsyncTestHelpersPy310:
@@ -93,9 +91,7 @@ class TestAsyncTestHelpersPy310:
         assert tasks[0].cancelled() or tasks[0].done()
 
 
-# ---------------------------------------------------------------------------
 # TestDataLoader path traversal boundary
-# ---------------------------------------------------------------------------
 
 
 class TestDataLoaderPathBoundary:

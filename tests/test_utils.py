@@ -9,9 +9,7 @@ import pytest
 
 from lionagi.utils import copy, create_path, is_same_dtype, union_members
 
-# ---------------------------------------------------------------------------
 # create_path rejects backslash and existing file without overwrite
-# ---------------------------------------------------------------------------
 
 
 def test_create_path_rejects_backslash_and_existing_file_without_overwrite(tmp_path):
@@ -55,9 +53,7 @@ def test_create_path_with_extension_arg(tmp_path):
     assert p.stem == "report"
 
 
-# ---------------------------------------------------------------------------
 # copy utility
-# ---------------------------------------------------------------------------
 
 
 def test_copy_deep_returns_independent_copy():
@@ -98,9 +94,7 @@ def test_copy_rejects_non_positive_copy_count():
         copy({"x": []}, num=-1)
 
 
-# ---------------------------------------------------------------------------
 # is_same_dtype — Mapping branch (lines 92-97)
-# ---------------------------------------------------------------------------
 
 
 def test_is_same_dtype_with_mapping_same_types():
@@ -121,9 +115,7 @@ def test_is_same_dtype_list_infers_dtype():
     assert is_same_dtype([1, "two", 3]) is False
 
 
-# ---------------------------------------------------------------------------
 # union_members — lines 131-140 (_unwrap_annotated at 122-124 is exercised too)
-# ---------------------------------------------------------------------------
 
 
 def test_union_members_basic():
@@ -156,9 +148,7 @@ def test_union_members_unwrap_annotated_false():
     assert str in members
 
 
-# ---------------------------------------------------------------------------
 # create_path — time_prefix and random_hash_digits (lines 195-202)
-# ---------------------------------------------------------------------------
 
 
 def test_create_path_timestamp_prefix(tmp_path):

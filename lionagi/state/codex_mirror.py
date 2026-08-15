@@ -1,14 +1,13 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Mirror Codex CLI/app rollouts (~/.codex/sessions/**/rollout-*.jsonl) into StateDB,
-one lionagi message per conversation record, under deterministic ids.
+"""Mirror Codex CLI/app rollouts (~/.codex/sessions/**/rollout-*.jsonl) into
+StateDB, one lionagi message per conversation record, under deterministic ids.
 
-Reads the enveloped rollout format, where each line is ``{type, timestamp, payload}``.
-Rollouts written before 2025-09-20 use a flat format with no envelope, and mirror
-nothing; that was measured over the whole local corpus rather than sampled, at 6 files
-out of 29,652. Such a file still gets a session row carrying its counts, because a
-rollout that mirrors nothing is the case the per-type count pair exists to expose and
-a row is what there is to subtract against.
+Reads the enveloped rollout format, where each line is ``{type, timestamp,
+payload}``. Rollouts written before 2025-09-20 use a flat, unenveloped format
+and mirror nothing (measured at 6 files out of 29,652 in the local corpus);
+such a file still gets a session row carrying its (zero) counts, since a row
+is what a completeness check has to subtract against.
 """
 
 from __future__ import annotations
@@ -121,15 +120,12 @@ _TURN_FIELDS = ("model", "effort", "turn_id")
 class RecordTally:
     """Per-record-type counts from both sides of one file's import.
 
-    Completeness is then a subtraction any consumer can do — ``seen`` minus
-    ``mirrored``, per type — rather than a narrative the importer writes about
-    itself. A self-report goes stale silently when the importer's behaviour
-    changes; two numbers that disagree cannot.
-
-    ``unparseable`` is deliberately its own count and never folded into a type's
-    skip. A line that could not be read is not a line deliberately not mirrored,
-    and rolling the two together makes the subtraction stop discriminating exactly
-    where a corpus is damaged.
+    Completeness is a subtraction any consumer can do (``seen`` minus
+    ``mirrored``, per type) rather than a self-report that can go stale
+    silently. ``unparseable`` is its own count, never folded into a type's
+    skip, since a line that couldn't be read is not a line deliberately not
+    mirrored -- rolling the two together would hide exactly where a corpus
+    is damaged.
     """
 
     seen: dict[str, int] = field(default_factory=dict)
@@ -416,20 +412,18 @@ async def mirror_session(
 ) -> tuple[int, RecordTally]:
     """Idempotently write a batch of codex records for one rollout.
 
-    Returns the messages written and the tally for this batch. ``turn`` is the
-    turn_context carried in from the previous batch, so attribution survives a
-    file being mirrored across several passes; it is updated in place as records
-    are walked. ``source_path`` is the rollout file this batch came from, stamped
-    into the session's provenance so any row resolves back to its file.
-
-    ``event_sources`` is the per-record ``(byte_offset, byte_count, sha256)`` of
-    each raw JSONL line in ``records`` (same order/length). When both it and
-    ``max_preview_chars`` are given, every message's content is bounded via
-    ``bound_mirror_content`` before it is written, with a resolvable source
-    pointer on ``node_metadata.mirror_source``. Omitting them keeps the legacy
-    unbounded write, for callers with no live rollout file behind the records.
-
-    Live/idle transitions are owned by ``reconcile_session_status``, not this writer.
+    Returns the messages written and the tally for this batch. ``turn`` is
+    the turn_context carried in from the previous batch (updated in place as
+    records are walked), so attribution survives a file being mirrored
+    across several passes. ``source_path`` is stamped into the session's
+    provenance so any row resolves back to its file. ``event_sources`` is
+    the per-record ``(byte_offset, byte_count, sha256)`` of each raw JSONL
+    line in ``records`` (same order/length); when both it and
+    ``max_preview_chars`` are given, message content is bounded via
+    ``bound_mirror_content`` with a resolvable pointer on
+    ``node_metadata.mirror_source`` -- omitting them keeps the legacy
+    unbounded write. Live/idle transitions are owned by
+    ``reconcile_session_status``, not this writer.
     """
     sid = session_db_id(rollout_uid)
     branch_id = _det(rollout_uid, "branch")

@@ -192,7 +192,7 @@ class TestEdgeCases:
 
 
 class TestManualSubclassWithConfig:
-    """Test setting node_config as a ClassVar on a hand-written subclass."""
+    """Setting node_config as a ClassVar on a hand-written subclass."""
 
     def test_manual_subclass_lifecycle(self):
         class Article(Node):

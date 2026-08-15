@@ -20,7 +20,7 @@ from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 from lionagi.state.transitions import Actor, StateReason, TransitionRequest, transition
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ async def _make_schedule_run(db: StateDB, *, status: str = "queued") -> str:
     return run_id
 
 
-# ── Missing row: both surfaces raise LookupError ────────────────────────────
+# Missing row: both surfaces raise LookupError
 
 
 @pytest.mark.asyncio
@@ -93,7 +93,7 @@ async def test_legacy_transition_raises_lookup_error_for_missing_row(db: StateDB
         )
 
 
-# ── CAS conflict: both surfaces report a clean skip, no row mutation ───────
+# CAS conflict: both surfaces report a clean skip, no row mutation
 
 
 @pytest.mark.asyncio
@@ -137,7 +137,7 @@ async def test_legacy_transition_cas_conflict_is_a_clean_skip(db: StateDB) -> No
     assert row["status"] == "queued"
 
 
-# ── Same-status write: "append" rule applies identically on both surfaces ──
+# Same-status write: "append" rule applies identically on both surfaces
 
 
 @pytest.mark.asyncio

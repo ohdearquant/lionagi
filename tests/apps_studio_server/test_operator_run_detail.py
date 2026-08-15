@@ -244,17 +244,16 @@ async def test_run_detail_status_reason_summary_over_text_cap_is_truncated_and_r
 async def test_run_detail_summary_flag_follows_the_capped_string_not_the_raw_one(db_path):
     """The rule-separating arm for the truncation flag.
 
-    The over-cap row above cannot protect this: there the raw string and the
+    The over-cap row above can't protect this: there the raw string and the
     scrubbed string are BOTH over the cap, so a flag derived from either one
-    reports True and the test passes under either rule. It is green whichever
-    rule is in force, which makes it no guard at all against the flag drifting
-    back to the raw length.
+    reports True and passes under either rule -- no guard against the flag
+    drifting back to the raw length.
 
-    This fixture makes the two rules disagree. The summary is a run of absolute
-    paths, so scrubbing collapses each to its leaf and carries the length back
-    across the cap: raw is over, scrubbed is well under. Nothing is cut, so the
-    honest answer is False -- and a raw-derived flag answers True, telling the
-    reader a complete string was clipped.
+    This fixture makes the two rules disagree: the summary is a run of
+    absolute paths, so scrubbing collapses each to its leaf and pulls the
+    length back under the cap (raw is over, scrubbed is well under).
+    Nothing is cut, so the honest answer is False -- a raw-derived flag
+    would answer True, telling the reader a complete string was clipped.
     """
     from lionagi.studio.operator.redact import PER_ITEM_TEXT_CAP, scrub_text
     from lionagi.studio.operator.run_detail import run_detail
@@ -422,7 +421,11 @@ async def test_run_detail_happy_path(db_path):
     assert result["runId"] == sid
     assert result["id"] == sid
     assert result["status"] == "completed"
-    assert result["effectiveHealth"] == "healthy"
+    # A terminal run's vacuous "healthy" is dropped from the projection:
+    # health is a liveness concept, and "healthy" beside a terminal status
+    # reads as a claim about the run's outcome. Only a pathological verdict
+    # (leftover locks) would still be projected here.
+    assert result["effectiveHealth"] is None
     assert result["project"] == "acme-research"
     assert result["totalCostUsd"] == 1.23
     assert result["task"] == ""

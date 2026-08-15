@@ -119,9 +119,7 @@ def _reset_channel(name: str) -> logging.Logger:
     return logger
 
 
-# ---------------------------------------------------------------------------
 # Implausible bare token as resume MODEL override → rejected
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -197,9 +195,7 @@ async def test_garbage_model_token_on_resume_exits_nonzero(monkeypatch, tmp_path
     assert any("c95-32617270327a" in rec.message for rec in caplog.records)
 
 
-# ---------------------------------------------------------------------------
 # Legitimate provider/model override on resume → proceeds + warns
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -263,9 +259,7 @@ async def test_matching_model_override_on_resume_does_not_warn(monkeypatch, tmp_
     assert not override_warns, f"Unexpected override warning for a no-op override: {override_warns}"
 
 
-# ---------------------------------------------------------------------------
 # Prefix-matched resume id → hint emitted
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

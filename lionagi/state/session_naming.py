@@ -84,21 +84,15 @@ def sanitize_prompt_name(raw: str | None, *, max_len: int = DISPLAY_NAME_MAX_LEN
 def agent_role_label(agent_name: str, started_at: float | None, run_id: str | None = None) -> str:
     """Deterministic label for an agent-only session: the agent's name, a short
     slice of the row's own id, and a UTC HH:MM stamp from its start time
-    ("claude-code · 1167 · 14:22"). Every part is a pure function of the row,
-    so no lookup against sibling rows is needed and a re-read always formats
-    the same way. UTC rather than local time keeps the label independent of
-    the resolving machine's timezone.
+    ("claude-code · 1167 · 14:22"). Pure function of the row (UTC, not local
+    time, so it's independent of the resolving machine), so a re-read always
+    formats the same way.
 
-    The id slice is what makes a list of these readable. Name and minute alone
-    were chosen first, on the reasoning that a same-name same-minute collision
-    is an edge case the row id already covers everywhere identity actually
-    matters. Watching the real surface refuted that: the common case is
-    several long-lived sessions of one engine, so a page of them reads as
-    "claude-code · 21:37", "claude-code · 21:49", "claude-code · 21:50" —
-    near-identical strings a viewer has to compare digit by digit. Four
-    characters of the id are stable, meaningless to an outsider, and turn a
-    row into something you can point at.
-
+    The id slice earns its place: name+minute alone reads fine until the
+    common case of several long-lived sessions of one engine turns a page
+    into near-identical strings ("claude-code · 21:37", "· 21:49", "· 21:50")
+    a viewer has to compare digit by digit. Four characters of id, though
+    meaningless to an outsider, make each row something you can point at.
     Each part is dropped when its input is missing rather than rendered
     blank, so a row with only a name still returns that bare name.
     """
@@ -121,25 +115,13 @@ def _stripped(session_row: dict[str, Any], key: str) -> str:
     return str(value).strip() if value else ""
 
 
-# Stored names that identify nothing. Each is a default written when the writer
-# had nothing better: "Codex session" is the codex mirror's fallback at its
-# create path, "agent" is lionagi's default branch name. "session" and "flow"
-# are here on the strength of the stored data rather than a located writer, and
-# that is the weaker grounding of the four -- said plainly so the next reader
-# knows which entries to re-derive rather than trusting the list wholesale.
-#
-# Counted in one store: agent 11851, codex session 917, session 600, flow 273.
-# A title tier that accepts these renders a page of identical cards, which is
-# the complaint this guards against.
-#
-# Matched by VALUE, deliberately, rather than by reordering the tiers. A reorder
-# would re-rank every row that has both a stored name and a derivable prompt --
-# including the mirrored Claude rows and the live codex rows whose stored names
-# are real -- so it would change populations that have nothing wrong with them.
-# Keying on the value leaves every one of those exactly where it was.
-#
-# Compared case-folded because these are written by several call sites and the
-# casing is not guaranteed to agree between them.
+# Stored names that identify nothing, written when the writer had nothing
+# better ("agent" is lionagi's default branch name, "Codex session" the codex
+# mirror's create-path fallback; "session"/"flow" are weaker-grounded entries
+# kept on the strength of the stored data alone). Matched by value rather than
+# by reordering the priority tiers, so rows with a real stored name and a
+# derivable prompt are unaffected. Compared case-folded since several call
+# sites write these with inconsistent casing.
 _UNINFORMATIVE_STORED_NAMES: frozenset[str] = frozenset(
     {
         "agent",

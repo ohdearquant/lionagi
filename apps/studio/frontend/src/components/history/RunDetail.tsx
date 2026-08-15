@@ -37,6 +37,7 @@ import {
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
 import { buildNodeActivityByName } from "@/lib/nodeActivity";
 import type { NodeActivitySnapshot } from "@/lib/nodeActivity";
+import { formatTokenCount } from "@/lib/usageFormat";
 import {
   deriveDisplayStatus,
   deriveVerdict,
@@ -78,7 +79,14 @@ const RESUME_FALLBACK_MAX_MS = 8_000;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// "Is this run over?" is a different question from "how should it be badged".
+// completed_empty is finished but deliberately not a success, so it belongs to
+// no display bucket and derives to "running" — asking only the display status
+// would leave a finished run streaming forever.
+const RAW_TERMINAL_STATUSES = new Set(["completed_empty"]);
+
 export function isTerminalSessionStatus(status: string | null | undefined): boolean {
+  if (RAW_TERMINAL_STATUSES.has((status ?? "").toLowerCase().trim())) return true;
   const displayStatus = deriveDisplayStatus({ status: status ?? "" });
   return (
     displayStatus === "completed" ||
@@ -425,6 +433,7 @@ export function computeReconciledNodeStatuses(
   runGraph: Pick<WorkerGraph, "nodes" | "edges"> | null,
   nodeStatuses: Record<string, NodeExecStatus> | undefined,
   done: boolean,
+  failedNodeIds?: ReadonlySet<string>,
 ): Record<string, NodeExecStatus> | undefined {
   if (!runGraph) return nodeStatuses;
   return reconcileNodeStatuses(
@@ -432,7 +441,23 @@ export function computeReconciledNodeStatuses(
     runGraph.edges.map((e) => ({ source: e.source, target: e.target })),
     nodeStatuses,
     done,
+    failedNodeIds,
   );
+}
+
+// Node ids the run's own failure evidence names as failed operations. The
+// dying engine frequently never emits the node's terminal signal, so this
+// is often the ONLY record that the op failed.
+export function evidenceFailedNodeIds(session: SessionDetail | null): Set<string> | undefined {
+  const refs = session?.status_evidence_refs;
+  if (!Array.isArray(refs)) return undefined;
+  const out = new Set<string>();
+  for (const ref of refs) {
+    if (ref && ref.kind === "failed_operation" && typeof ref.id === "string" && ref.id) {
+      out.add(ref.id);
+    }
+  }
+  return out.size ? out : undefined;
 }
 
 export function computeProgressCountsForGraph(
@@ -548,8 +573,8 @@ export function branchToRunStep(
     rolesCounts[rm.role] = (rolesCounts[rm.role] ?? 0) + 1;
   }
 
-  const firstMessageAt = branch.first_message_at ?? branch.started_at ?? null;
-  const lastMessageAt = branch.last_message_at ?? branch.ended_at ?? null;
+  const firstMessageAt = branch.started_at ?? branch.created_at ?? branch.first_message_at ?? null;
+  const lastMessageAt = branch.ended_at ?? branch.last_message_at ?? null;
   const durationSec =
     firstMessageAt != null && lastMessageAt != null
       ? Math.max(0, Math.round(lastMessageAt - firstMessageAt))
@@ -749,6 +774,9 @@ interface OverviewData {
   /** Why the run ended this way, for terminal statuses that need explaining. */
   statusReason?: string | null;
   durationSec: number | null;
+  /** Whole-session totals (workers included) — null means never reported. */
+  inputTokens?: number | null;
+  outputTokens?: number | null;
   branchCount: number;
   messageCount: number;
   toolCallCount: number;
@@ -764,6 +792,14 @@ function OverviewSection({ data }: { data: OverviewData }) {
     { label: t("statStatus"), value: data.status },
     ...(data.durationSec != null
       ? [{ label: t("statDuration"), value: formatDuration(data.durationSec) }]
+      : []),
+    // Cost-visibility contract: null means the provider never reported usage,
+    // so the cell is omitted rather than shown as a fabricated 0.
+    ...(data.inputTokens != null
+      ? [{ label: t("statTokensIn"), value: formatTokenCount(data.inputTokens) }]
+      : []),
+    ...(data.outputTokens != null
+      ? [{ label: t("statTokensOut"), value: formatTokenCount(data.outputTokens) }]
       : []),
     { label: t("statBranches"), value: String(data.branchCount) },
     { label: t("statMessages"), value: String(data.messageCount) },
@@ -2434,9 +2470,12 @@ export default function RunDetail({ id }: RunDetailProps) {
   // descendant has reached a terminal status, and once the run itself is
   // done, any node with no terminal signal collapses to "pending" (absence
   // of information) instead of visually reading as live work.
+  // The run's failure evidence outranks stale lifecycle signals: the op it
+  // names must render failed even when the dying engine left it "queued".
+  const failedNodeIds = useMemo(() => evidenceFailedNodeIds(session), [session]);
   const reconciledNodeStatuses = useMemo(
-    () => computeReconciledNodeStatuses(runGraph, nodeStatuses, done),
-    [runGraph, nodeStatuses, done],
+    () => computeReconciledNodeStatuses(runGraph, nodeStatuses, done, failedNodeIds),
+    [runGraph, nodeStatuses, done, failedNodeIds],
   );
 
   const progressCounts = useMemo(
@@ -2560,6 +2599,8 @@ export default function RunDetail({ id }: RunDetailProps) {
       ? (session.status_reason_summary ?? null)
       : null,
     durationSec,
+    inputTokens: session.input_tokens ?? null,
+    outputTokens: session.output_tokens ?? null,
     branchCount: session.branches.length,
     messageCount: totalMessages,
     toolCallCount,
@@ -2621,6 +2662,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       <ExpectedArtifacts
         contract={session.artifact_contract_json}
         verification={session.artifact_verification_json}
+        runId={session.id}
       />
       {canRenderGraph && (
         <div

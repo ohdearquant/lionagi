@@ -59,9 +59,7 @@ def _health_timezone(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict:
     return response.json()["scheduler_timezone"]
 
 
-# ---------------------------------------------------------------------------
 # Each source is reported distinguishably
-# ---------------------------------------------------------------------------
 
 
 def test_explicit_scheduler_env_var_is_reported_as_its_own_source(monkeypatch, tmp_path):
@@ -122,9 +120,7 @@ def test_surrendered_utc_is_distinguishable_from_a_chosen_one(monkeypatch, tmp_p
     assert surrendered["source"] != chosen["source"]
 
 
-# ---------------------------------------------------------------------------
 # The payload carries enough to date the value
-# ---------------------------------------------------------------------------
 
 
 def test_payload_carries_resolution_and_process_start_times(monkeypatch, tmp_path):
@@ -139,9 +135,7 @@ def test_payload_carries_resolution_and_process_start_times(monkeypatch, tmp_pat
         assert parsed <= datetime.now(tz=timezone.utc)
 
 
-# ---------------------------------------------------------------------------
 # The reported value is the one the scheduler actually uses
-# ---------------------------------------------------------------------------
 
 
 def test_reported_zone_is_the_one_fire_times_are_computed_in(monkeypatch, tmp_path):

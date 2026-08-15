@@ -11,6 +11,7 @@ import { PluginDetail } from "@/components/library/PluginDetail";
 import { KindBadge } from "@/components/library/KindBadge";
 import { loadLibraryCatalogs } from "@/components/library/data";
 import type { LibraryItem, PlaybookSubKind } from "@/components/library/data";
+import HooksView from "@/components/library/HooksView";
 import SplitPane from "@/components/ui/SplitPane";
 import TabBar from "@/components/shell/TabBar";
 import EmptyState from "@/components/ui/EmptyState";
@@ -37,6 +38,7 @@ const LIBRARY_TABS = [
   "plugin",
   "engine",
   "mcp",
+  "hooks",
 ] as const;
 type LibraryTab = (typeof LIBRARY_TABS)[number];
 
@@ -190,7 +192,7 @@ function LibraryPage() {
   const tDaemon = useTranslations("daemon");
   const navigate = useNavigate({ from: "/library" });
   const { tab, sel } = Route.useSearch();
-  const kindFilter: LibraryKind | "all" = tab ?? "all";
+  const kindFilter: LibraryTab = tab ?? "all";
   const { items, loading, error, reload, allAgents, allEngines } = useLibraryData(kindFilter);
 
   const [search, setSearch] = useState("");
@@ -208,6 +210,7 @@ function LibraryPage() {
     { value: "plugin", label: t("filterPlugin") },
     { value: "engine", label: t("filterEngine") },
     { value: "mcp", label: t("filterMcp") },
+    { value: "hooks", label: t("filterHooks") },
   ];
   const KIND_TABS = ALL_KIND_TABS.filter((tab) => !UNFINISHED_KINDS.has(tab.value));
 
@@ -637,19 +640,25 @@ function LibraryPage() {
         />
       </div>
 
-      {/* Split body */}
+      {/* Split body — the Hooks tab is a single configuration surface (the
+          shared hook library + the Operator's assembly), not a catalog of
+          selectable items, so it takes the whole body instead of the split. */}
       <div className="min-h-0 flex-1">
-        <SplitPane
-          id="library"
-          master={masterPane}
-          detail={detailPane}
-          defaultMasterWidth={420}
-          minMasterWidth={280}
-          maxMasterWidth={560}
-          detailActive={detailPaneActive}
-          ariaLabelMaster={t("masterAria")}
-          ariaLabelDetail={t("detailAria")}
-        />
+        {kindFilter === "hooks" ? (
+          <HooksView />
+        ) : (
+          <SplitPane
+            id="library"
+            master={masterPane}
+            detail={detailPane}
+            defaultMasterWidth={420}
+            minMasterWidth={280}
+            maxMasterWidth={560}
+            detailActive={detailPaneActive}
+            ariaLabelMaster={t("masterAria")}
+            ariaLabelDetail={t("detailAria")}
+          />
+        )}
       </div>
     </div>
   );

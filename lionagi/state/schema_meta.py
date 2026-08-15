@@ -23,7 +23,7 @@ from sqlalchemy import (
 
 metadata = MetaData()
 
-# ── schema_meta ───────────────────────────────────────────────────────────────
+# schema_meta
 
 schema_meta = Table(
     "schema_meta",
@@ -32,7 +32,7 @@ schema_meta = Table(
     Column("value", Text, nullable=False),
 )
 
-# ── message_types ─────────────────────────────────────────────────────────────
+# message_types
 
 message_types = Table(
     "message_types",
@@ -41,7 +41,7 @@ message_types = Table(
     Column("lion_class", Text, nullable=False, unique=True),
 )
 
-# ── messages ──────────────────────────────────────────────────────────────────
+# messages
 
 messages = Table(
     "messages",
@@ -79,7 +79,7 @@ Index(
 )
 Index("idx_messages_created", messages.c.created_at)
 
-# ── progressions ─────────────────────────────────────────────────────────────
+# progressions
 
 progressions = Table(
     "progressions",
@@ -89,7 +89,7 @@ progressions = Table(
     Column("collection", Text, nullable=False, server_default="[]"),
 )
 
-# ── projects ──────────────────────────────────────────────────────────────────
+# projects
 
 projects = Table(
     "projects",
@@ -107,7 +107,7 @@ projects = Table(
 Index("idx_projects_source", projects.c.source)
 Index("idx_projects_updated", projects.c.updated_at)
 
-# ── invocations ───────────────────────────────────────────────────────────────
+# invocations
 # Defined before sessions because sessions FK -> invocations.
 
 invocations = Table(
@@ -144,7 +144,7 @@ Index("idx_invocations_skill", invocations.c.skill)
 Index("idx_invocations_status", invocations.c.status)
 Index("idx_invocations_updated", invocations.c.updated_at)
 
-# ── sessions ──────────────────────────────────────────────────────────────────
+# sessions
 
 sessions = Table(
     "sessions",
@@ -252,7 +252,7 @@ Index(
     postgresql_where=text("cc_session_id IS NOT NULL"),
 )
 
-# ── branches ──────────────────────────────────────────────────────────────────
+# branches
 
 branches = Table(
     "branches",
@@ -283,7 +283,7 @@ Index("idx_branches_session_created", branches.c.session_id, branches.c.created_
 Index("idx_branches_system_msg_id", branches.c.system_msg_id)
 Index("idx_branches_progression_id", branches.c.progression_id)
 
-# ── definitions ───────────────────────────────────────────────────────────────
+# definitions
 
 definitions = Table(
     "definitions",
@@ -308,7 +308,7 @@ UniqueConstraint(
     definitions.c.kind, definitions.c.name, definitions.c.version, name="idx_def_unique_version"
 )
 
-# ── shows ─────────────────────────────────────────────────────────────────────
+# shows
 
 shows = Table(
     "shows",
@@ -343,7 +343,7 @@ Index("idx_shows_topic", shows.c.topic)
 Index("idx_shows_status", shows.c.status)
 Index("idx_shows_updated", shows.c.updated_at)
 
-# ── plays ─────────────────────────────────────────────────────────────────────
+# plays
 
 plays = Table(
     "plays",
@@ -395,7 +395,7 @@ Index("idx_plays_status", plays.c.status)
 Index("idx_plays_session", plays.c.session_id)
 UniqueConstraint(plays.c.show_id, plays.c.name, name="idx_plays_show_name")
 
-# ── teams ─────────────────────────────────────────────────────────────────────
+# teams
 
 teams = Table(
     "teams",
@@ -424,7 +424,7 @@ Index("idx_teams_name", teams.c.name)
 Index("idx_teams_updated", teams.c.updated_at)
 Index("idx_teams_status", teams.c.status)
 
-# ── team_messages ─────────────────────────────────────────────────────────────
+# team_messages
 
 team_messages = Table(
     "team_messages",
@@ -454,7 +454,7 @@ Index(
     postgresql_where=text("session_id IS NOT NULL"),
 )
 
-# ── schedules ─────────────────────────────────────────────────────────────────
+# schedules
 
 schedules = Table(
     "schedules",
@@ -601,7 +601,7 @@ Index(
     postgresql_where=text("owner_key IS NOT NULL"),
 )
 
-# ── schedule_runs ─────────────────────────────────────────────────────────────
+# schedule_runs
 # ADR-0071 D2: generalized task-application entity, schedule_id nullable.
 
 schedule_runs = Table(
@@ -688,7 +688,7 @@ Index(
     postgresql_where=text("status IN ('queued', 'running', 'retry_wait')"),
 )
 
-# ── workers ─────────────────────────────────────────────────────────────────
+# workers
 # ADR-0071 D5: capability-matching worker registry.
 
 workers = Table(
@@ -703,7 +703,7 @@ workers = Table(
 
 Index("idx_workers_heartbeat", workers.c.last_heartbeat_at)
 
-# ── admin_events ──────────────────────────────────────────────────────────────
+# admin_events
 
 admin_events = Table(
     "admin_events",
@@ -725,7 +725,7 @@ Index(
     postgresql_where=text("target_id IS NOT NULL"),
 )
 
-# ── artifacts ─────────────────────────────────────────────────────────────────
+# artifacts
 
 artifacts = Table(
     "artifacts",
@@ -809,7 +809,7 @@ Index(
     postgresql_where=text("session_id IS NOT NULL"),
 )
 
-# ── status_transitions ────────────────────────────────────────────────────────
+# status_transitions
 
 status_transitions = Table(
     "status_transitions",
@@ -841,7 +841,7 @@ Index(
 )
 Index("idx_status_transitions_created", status_transitions.c.created_at)
 
-# ── terminal_deliveries ─────────────────────────────────────────────────────────
+# terminal_deliveries
 # Reconciliation-consumer acknowledgment ledger; see
 # lionagi/state/lifecycle/deliveries.py and docs/internals/runtime.md.
 
@@ -859,7 +859,7 @@ Index(
     terminal_deliveries.c.acked_at,
 )
 
-# ── session_signals ───────────────────────────────────────────────────────────
+# session_signals
 
 session_signals = Table(
     "session_signals",
@@ -883,7 +883,7 @@ UniqueConstraint(
 )
 Index("idx_session_signals_session_ts", session_signals.c.session_id, session_signals.c.ts)
 
-# ── engine_runs ───────────────────────────────────────────────────────────────
+# engine_runs
 
 engine_runs = Table(
     "engine_runs",
@@ -918,7 +918,7 @@ Index(
     postgresql_where=text("session_id IS NOT NULL"),
 )
 
-# ── engine_defs ───────────────────────────────────────────────────────────────
+# engine_defs
 
 engine_defs = Table(
     "engine_defs",
@@ -939,7 +939,7 @@ Index("idx_engine_defs_name", engine_defs.c.name)
 Index("idx_engine_defs_kind", engine_defs.c.kind)
 Index("idx_engine_defs_updated", engine_defs.c.updated_at)
 
-# ── workflow_defs ─────────────────────────────────────────────────────────────
+# workflow_defs
 # Named workflow definitions from the Studio Designer; spec_json is the
 # versioned node/edge graph, validated in the studio service layer.
 
@@ -957,7 +957,7 @@ workflow_defs = Table(
 Index("idx_workflow_defs_name", workflow_defs.c.name)
 Index("idx_workflow_defs_updated", workflow_defs.c.updated_at)
 
-# ── session_controls (ADR-0069 D1–D3: live-control transport) ─────────────────
+# session_controls -- live-control transport
 # One row per operator control verb queued against a live session, polled by
 # `cli/orchestrate/flow.py`'s `_execute_dag`; see docs/internals/runtime.md
 # for the verb-classed apply/stamp ordering.
@@ -1001,7 +1001,7 @@ Index(
     postgresql_where=text("applied_at IS NULL"),
 )
 
-# ── dispatch_outbox (ADR-0059: durable dispatch outbox) ─────────────────────
+# dispatch_outbox -- durable dispatch outbox
 # Producer-driven at-least-once delivery; the scheduler tick re-attempts
 # until success, backoff exhaustion, or max_attempts.
 
@@ -1051,7 +1051,7 @@ Index(
     postgresql_where=text("status IN ('pending', 'delivering')"),
 )
 
-# ── run_tags ──────────────────────────────────────────────────────────────────
+# run_tags
 # Free-form review labels on a run (session); kept in canonical metadata (not
 # only schema.sql) so create_all builds it consistently on every backend.
 
@@ -1068,7 +1068,7 @@ run_tags = Table(
     Column("created_at", Float, nullable=False),
 )
 
-# ── approvals (studio operator permission ledger) ──────────────────────────
+# approvals -- studio operator permission ledger
 # Server-side confirm-flow: proposed, granted/denied, consumed exactly once.
 
 approvals = Table(
@@ -1107,7 +1107,7 @@ Index(
     postgresql_where=text("session_id IS NOT NULL"),
 )
 
-# ── approval_evidence (hash-chained audit trail on the approval ledger) ────
+# approval_evidence -- hash-chained audit trail on the approval ledger
 # Append-only, same transaction as the approvals status change; see schema.sql.
 
 approval_evidence = Table(
@@ -1150,7 +1150,7 @@ Index(
 
 Index("idx_run_tags_tag", run_tags.c.tag)
 
-# ── attention_dispositions (Studio needs-attention discharge lifecycle) ────
+# attention_dispositions -- Studio needs-attention discharge lifecycle
 # One row per derived attention item (item_id == "run:<id>" | "inv:<id>" |
 # "sched:<id>", the id boardReducer.buildAttentionItems already builds).
 # Records what an operator decided about seeing a condition; the source
@@ -1178,7 +1178,7 @@ attention_dispositions = Table(
     Column("revision", Integer, nullable=False, server_default="1"),
 )
 
-# ── attention_disposition_revisions (per-item_id revision ledger) ─────────
+# attention_disposition_revisions -- per-item_id revision ledger
 # Survives a DELETE of the disposition row itself so a PUT that recreates
 # item_id afterward can still be fenced against the last operation --
 # without this, a delayed replay of an earlier PUT could resurrect a
@@ -1191,7 +1191,7 @@ attention_disposition_revisions = Table(
     Column("revision", Integer, nullable=False),
 )
 
-# ── attention_disposition_history (append-only discharge ledger) ──────────
+# attention_disposition_history -- append-only discharge ledger
 
 attention_disposition_history = Table(
     "attention_disposition_history",

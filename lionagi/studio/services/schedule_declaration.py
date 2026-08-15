@@ -391,18 +391,14 @@ def _digest_of(obj: Any) -> str:
 
 
 def _resolve_path(raw: str, manifest_dir: Path) -> Path:
-    """Resolve a manifest-relative path to an absolute one.
-
-    A manifest is allowed to write relative paths, unlike a stored schedule
-    row: they mean "relative to this manifest", which is a location that
-    exists, rather than "relative to wherever the daemon started", which is
-    not. That is why the declarative path does not consult
-    ``_is_usable_execution_root`` before writing ``action_cwd`` -- it converts
-    the relative form into an absolute one here instead, so what reaches
-    storage already satisfies the predicate. ``Path.resolve()`` always returns
-    an absolute path, so this holds even when ``manifest_dir`` is itself
-    relative.
-    """
+    """Resolve a manifest-relative path to an absolute one. A manifest may
+    write relative paths, unlike a stored schedule row: they mean "relative
+    to this manifest", a location that exists, not "relative to wherever the
+    daemon started". The declarative path converts to absolute here instead
+    of consulting ``_is_usable_execution_root`` before writing
+    ``action_cwd``, so what reaches storage already satisfies the
+    predicate; ``Path.resolve()`` always returns absolute even when
+    *manifest_dir* is itself relative."""
     p = Path(raw)
     if not p.is_absolute():
         p = manifest_dir / p

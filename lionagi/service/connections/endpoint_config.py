@@ -147,42 +147,16 @@ class EndpointConfig(BaseModel):
 
     @field_serializer("kwargs")
     def _serialize_kwargs(self, v: dict):
-        """Keep runtime-only values out of every dump of this config.
-
-        The endpoint holding these drains them out of ``kwargs`` when it
-        serializes itself, which covers ``Endpoint.to_dict``, ``iModel.to_dict``
-        and the run snapshots written underneath them. That drain does not cover
-        this model's own public API. ``EndpointConfig`` inherits Pydantic's
-        ``model_dump``, callers use it directly, and two supported routes put a
-        runtime value back into ``kwargs`` after an endpoint has already drained
-        it once: a post-construction ``update()``, and ``iModel.from_dict``,
-        which assigns a freshly hydrated config over the drained one.
-
-        Excluding here rather than draining on every read is what makes the
-        answer independent of who is asking. A drain has to be reached, and the
-        set of routes that reach it is open-ended because this model is public.
-
-        Omitted rather than replaced with a placeholder: a dump is something a
-        config is rebuilt from, and a stand-in string would hydrate as a real
-        value of the wrong type. ``repr`` is not rebuilt from, so it reports
-        presence instead — see :meth:`__repr_args__`.
+        """Excludes RUNTIME_STATE_NAMES (env, on_spawn) from every dump of this
+        config (model_dump, to_dict, run snapshots), independent of caller.
+        See docs/internals/service-layer.md#runtime-state-across-serialization-channels.
         """
         return {k: val for k, val in v.items() if k not in RUNTIME_STATE_NAMES}
 
     def __iter__(self):
-        """The same exclusion on the conversion Pydantic's dump does not run.
-
-        ``dict(config)`` and ``list(config)`` go through ``BaseModel.__iter__``,
-        which yields the raw values held in ``__dict__``. No field serializer
-        runs on that path, so the exclusion above does not reach it, and
-        ``json.dumps(dict(config), default=str)`` is an ordinary way to write a
-        config to a log or a file.
-
-        Omits rather than reports presence, matching the dump: a mapping of
-        field names to values is something a config can be rebuilt from, so a
-        stand-in string would come back as a real value of the wrong type.
-        ``repr`` is the one channel nothing is rebuilt from, and it is the only
-        one that names what it withheld.
+        """Applies the same RUNTIME_STATE_NAMES exclusion on the ``dict(config)``/
+        ``list(config)`` path, which bypasses the field serializer above. See
+        docs/internals/service-layer.md#runtime-state-across-serialization-channels.
         """
         for name, value in super().__iter__():
             if name == "kwargs" and isinstance(value, dict):
@@ -190,13 +164,10 @@ class EndpointConfig(BaseModel):
             yield name, value
 
     def __repr_args__(self):
-        """The same values, on the channel a dump does not reach.
-
-        ``repr`` walks ``kwargs`` whole, so a config whose ``env`` is excluded
-        from every dump still prints it in a traceback, a log line, or a
-        debugger. Presence is reported and content is not: a reader asking why
-        an environment was not applied needs to know one is set, and that is the
-        entire question ``repr`` gets asked here.
+        """Unlike dump/iter, repr reports RUNTIME_STATE_NAMES presence (not
+        content) rather than omitting it — repr is never rebuilt from, so a
+        reader needs to see that e.g. ``env`` is set. See
+        docs/internals/service-layer.md#runtime-state-across-serialization-channels.
         """
         for name, value in super().__repr_args__():
             if name == "kwargs" and isinstance(value, dict):

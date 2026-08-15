@@ -17,7 +17,7 @@ from lionagi.cli.wait import format_wait_line, run_wait, wait_for_terminal
 from lionagi.state.db import StateDB
 from lionagi.state.reasons import RunReasons
 
-# ── Fixtures ────────────────────────────────────────────────────────────────
+# Fixtures
 
 
 @pytest.fixture
@@ -110,7 +110,7 @@ async def _make_schedule_run(
     return rid
 
 
-# ── format_wait_line ─────────────────────────────────────────────────────────
+# format_wait_line
 
 
 def test_format_wait_line_is_one_frozen_tab_delimited_line() -> None:
@@ -142,7 +142,7 @@ def test_format_wait_line_uses_dash_for_missing_exit_code_and_artifact_dir() -> 
     assert line == "abc123\tstatus=failed\treason=unknown\tartifact_dir=-\texit_code=-"
 
 
-# ── Acceptance: play + session, correct reason + resolvable artifact_dir ────
+# Acceptance: play + session, correct reason + resolvable artifact_dir
 
 
 @pytest.mark.asyncio
@@ -259,7 +259,7 @@ async def test_wait_for_terminal_on_mixed_play_and_session_ids(temp_db_path: Pat
     assert {o["kind"] for o in outcomes} == {"play", "session"}
 
 
-# ── Acceptance: completed-empty gets its own reason, not a bare status ──────
+# Acceptance: completed-empty gets its own reason, not a bare status
 
 
 @pytest.mark.asyncio
@@ -280,7 +280,7 @@ async def test_completed_empty_session_yields_no_evidence_reason(temp_db_path: P
     assert outcomes[0]["reason"] == "run.completed_empty.no_evidence"
 
 
-# ── run_wait: the CLI entry point ───────────────────────────────────────────
+# run_wait: the CLI entry point
 
 
 def test_run_wait_prints_contract_line_for_terminal_session(
@@ -339,7 +339,7 @@ def test_run_wait_requires_at_least_one_id(temp_db_path: Path) -> None:
         run_wait([])
 
 
-# ── Ambiguous short-id prefixes ─────────────────────────────────────────────
+# Ambiguous short-id prefixes
 
 
 async def _make_session_with_id(db: StateDB, sid: str, *, status: str = "running") -> str:

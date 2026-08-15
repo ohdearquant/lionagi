@@ -21,7 +21,7 @@ from lionagi.state.schema_migrations import MIGRATION_COLUMNS
 _NUM_CONCURRENT_WORKERS = 4
 _BARRIER_TIMEOUT_SECONDS = 15
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# Helpers
 
 
 async def _column_names(db: aiosqlite.Connection, table: str) -> set[str]:
@@ -127,7 +127,7 @@ def _open_state_db_worker(
         result_queue.put(None)
 
 
-# ── Old-schema fixture ────────────────────────────────────────────────────────
+# Old-schema fixture
 
 
 @pytest.fixture
@@ -226,7 +226,7 @@ async def old_schema_db():
         yield db
 
 
-# ── Tests ─────────────────────────────────────────────────────────────────────
+# Tests
 
 
 async def test_migration_columns_constant_is_importable():
@@ -807,7 +807,7 @@ async def test_statedb_open_exposes_migration_columns():
     await state.close()
 
 
-# ── max_runs / count_schedule_runs (one-shot semantics) ──────────────────────
+# max_runs / count_schedule_runs (one-shot semantics)
 
 
 async def test_count_schedule_runs_excludes_skipped_and_running():
@@ -922,7 +922,7 @@ async def test_max_runs_nullable_defaults_unlimited():
     await state.close()
 
 
-# ── resume_packet round-trip ─────────────────────────────────────────────────
+# resume_packet round-trip
 
 
 async def test_resume_packet_roundtrips_as_dict():

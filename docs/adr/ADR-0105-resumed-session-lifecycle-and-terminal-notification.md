@@ -1,7 +1,9 @@
 # ADR-0105: Resumed session lifecycle and terminal notification
 
 - **Status**: Accepted (2026-07-25; implementation merged)
-- **Kind**: Implemented (the lifecycle and notification behavior specified here is on main)
+- **Kind**: Aspirational (records the target state)
+- **Implementation-status**: implemented (the lifecycle and notification behavior
+  specified here is on main)
 - **Area**: persistence-state
 - **Date**: 2026-07-24
 - **Relations**: extends ADR-0095

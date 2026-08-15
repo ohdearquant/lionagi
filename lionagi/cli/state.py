@@ -49,9 +49,6 @@ __all__ = [
 ]
 
 
-# ── run/team import helpers ───────────────────────────────────────────────────
-
-
 def _mtime_as_float(path: Path) -> float:
     try:
         return path.stat().st_mtime
@@ -295,9 +292,6 @@ async def _import_one_run(
     return 1, total_branches, total_messages
 
 
-# ── DB maintenance helpers ────────────────────────────────────────────────────
-
-
 def _format_bytes(n: int) -> str:
     for unit in ("B", "KiB", "MiB", "GiB"):
         if n < 1024:
@@ -492,17 +486,11 @@ def _db_sizes() -> dict[str, Any]:
 async def _collect_message_breakdown(db: Any) -> dict[str, Any]:
     """Messages by role and by age — the two axes a retention decision is made on.
 
-    A total row count cannot say whether a retention setting is able to reclaim
-    anything. A store whose oldest message is newer than the prune's keep-window
-    frees nothing at any ``--keep-days`` the prune accepts, and reports success
-    while doing it. The age histogram is what makes that readable before the
-    prune runs rather than after it has run and changed nothing.
-
-    Counts only. Summing content size is the one query here no index can serve
-    (57s against 1.68M rows, versus under 2s for everything else), and the
-    command that reclaims that content reports the size of the exact population
-    it is about to touch — which is the same number, measured where the decision
-    is actually taken.
+    A total row count can't say whether a retention setting reclaims anything;
+    the age histogram makes that readable before a prune runs rather than
+    after. Counts only, no content-size sum: that query is unindexable here
+    (measured 57s against 1.68M rows, vs under 2s for everything else) — the
+    prune command reports the size of its own touched population instead.
     """
     import time as _time
 
@@ -651,12 +639,10 @@ async def _print_stats() -> None:
         print("  oldest          (no messages)")
     else:
         print(f"  oldest       {oldest:>10.1f}d")
-        # Said about MESSAGES, deliberately, and not about the prune as a whole.
-        # Message lifetime and session lifetime are independent here: `li state
-        # prune` selects by session age and then frees only messages nothing
-        # surviving still references, so it can delete thousands of old sessions
-        # and free no message rows at all. Since messages hold nearly all the
-        # bytes, "sessions deleted" is not a claim about space.
+        # About MESSAGES, not the prune as a whole: `li state prune` selects by
+        # session age and frees only messages nothing surviving still
+        # references, so it can delete thousands of sessions and free no
+        # message rows at all.
         print("  (messages only — prune selects by SESSION age, see prune's own output)")
     print()
 
@@ -701,18 +687,12 @@ _PRUNE_VICTIMS = (
 
 
 async def _prune_candidates(*, keep_days: int, keep_n: int) -> dict[str, Any]:
-    """Recount what the prune's own predicate selects, and how old the oldest session is.
-
-    Printed beside the prune's result so the command cannot report an outcome
-    nothing contradicts. A single number is undetectable when it is wrong; a
-    pair is not. After a real run this must read zero, and after a preview it
-    must equal the count the preview reported, so either disagreement is visible
-    without anyone querying anything.
-
-    The age is here because of the failure this was built for: a keep-window
-    wider than the whole store selects nothing, so the prune deletes nothing and
-    says so in the words of a success. Beside the oldest session's age that
-    sentence stops being ambiguous.
+    """Recount what the prune's own predicate selects, and how old the oldest
+    session is. Printed beside the prune's result as a cross-check: after a
+    real run this must read zero, after a preview it must match the count the
+    preview reported. The age guards against a keep-window wider than the
+    whole store, which selects nothing and would otherwise report a no-op
+    prune as an unqualified success.
     """
     import time as _time
 
@@ -751,12 +731,10 @@ async def _prune_candidates(*, keep_days: int, keep_n: int) -> dict[str, Any]:
 
 
 class _PreviewOnlyError(Exception):
-    """Signals the end of a preview so its transaction unwinds instead of committing.
-
-    A preview has to answer "how many rows would this free", and the only answer
-    that cannot drift from the real one is the real one. The preview therefore
-    runs the prune and then refuses to commit it, carrying the counts out with it.
-    """
+    """Signals the end of a preview so its transaction unwinds instead of
+    committing. The preview runs the real prune statements and refuses to
+    commit them, carrying the real counts out via this exception, so the
+    reported "would free" number can't drift from the real one."""
 
     def __init__(self, counts: dict[str, int]) -> None:
         super().__init__("preview complete")
@@ -934,12 +912,9 @@ async def _prune(
 
 
 # Which message bodies the reclaim replaces, written once so the operation and
-# the recount below cannot describe different populations. Two copies of this
-# drifting apart would make the pair agree while counting different rows, which
-# is worse than printing no check at all.
-#
-# The already-reclaimed exclusion is what makes a second run of the same command
-# a no-op instead of a marker rewrite that reports work it did not do.
+# the recount below can't describe different populations. The already-reclaimed
+# exclusion makes a second run of the same command a no-op rather than a
+# marker rewrite reporting work it didn't do.
 _NULL_CONTENT_TARGETS = (
     "FROM messages "
     "WHERE created_at < :cutoff "
@@ -969,15 +944,10 @@ async def _null_content_candidates(
     roles: tuple[str, ...],
 ) -> dict[str, Any]:
     """Recount what the reclaim's own predicate still selects, and their size.
-
-    Printed beside the result so the command cannot report an outcome nothing
-    contradicts. After a real run this has to read zero; after a preview it has
-    to equal what the preview reported. A single number is undetectable when it
-    is wrong, and a pair is not.
-
-    Runs outside the operation's transaction deliberately: inside it, it would
-    be reading the same uncommitted rows the operation just wrote and would
-    agree with it by construction.
+    Printed beside the result as a cross-check: after a real run must read
+    zero, after a preview must match what the preview reported. Runs outside
+    the operation's transaction deliberately — inside it, it would read the
+    same uncommitted rows the operation just wrote and agree by construction.
     """
     import time as _time
 
@@ -1025,21 +995,16 @@ async def _null_content(
 ) -> dict[str, int]:
     """Replace old message bodies with a marker, keeping every row and reference.
 
-    This exists because the prune cannot reach these bytes. The prune selects
-    SESSIONS; the bytes live on MESSAGES; and a message some surviving
-    progression still names is kept whatever its age. So a store can be almost
-    entirely message content, have every message inside a keep-window, and give
-    a prune nothing to delete.
+    Exists because the prune can't reach these bytes: the prune selects
+    sessions, the bytes live on messages, and a message some surviving
+    progression still names is kept whatever its age. Only the body is
+    dropped; a marker recording that a body was there and how large it was
+    takes its place, so the row stays legible instead of reading as an empty
+    turn.
 
-    The row, its id, its role, its timestamp and its place in every progression
-    all survive. What is dropped is the body, and in its place goes a value that
-    says a body was there and how large it was, so the removal stays legible
-    instead of reading as a turn that produced nothing.
-
-    ``dry_run`` performs the update and rolls it back, so the reported numbers
-    are measurements of the operation rather than an estimate of it. That makes
-    a preview a WRITE that takes the same lock for the same duration -- it is
-    not a read, and on a large store it is not a quick one.
+    ``dry_run`` performs the update and rolls it back, so reported numbers are
+    measurements, not estimates — a preview is therefore a WRITE taking the
+    same lock for the same duration, not a quick read.
     """
     import time as _time
 
@@ -1057,12 +1022,11 @@ async def _null_content(
     async with StateDB() as db:
         try:
             async with db._tx() as conn:
-                # The batch is pinned to a scratch table before anything is
-                # written, because both measurements have to be about the same
-                # rows and the predicate stops selecting them the moment the
-                # update lands. It also keeps the after-size away from markers
-                # an earlier run left behind, which the predicate excludes but a
-                # sum over "rows carrying a marker" would quietly re-include.
+                # Batch pinned to a scratch table before any write: both
+                # measurements must be about the same rows, and the predicate
+                # stops selecting them the moment the update lands. Also keeps
+                # the after-size from re-including markers an earlier run left
+                # behind, which the predicate excludes but a raw sum wouldn't.
                 await conn.execute(text("DROP TABLE IF EXISTS null_content_batch"))
                 await conn.execute(
                     text("CREATE TEMPORARY TABLE null_content_batch (id TEXT PRIMARY KEY)")
@@ -1088,27 +1052,21 @@ async def _null_content(
                 target_count = int(measured["n"])
                 bytes_before = int(measured["b"])
 
-                # The marker is built in SQL rather than in Python so that
-                # LENGTH(content) is evaluated against each row as it is
-                # overwritten. That makes original_bytes the row's OWN size in a
-                # single statement -- the alternative, one marker computed here
-                # and written everywhere, records a batch average under a
-                # per-row name.
+                # Marker built in SQL, not Python, so LENGTH(content) evaluates
+                # against each row as it's overwritten -- original_bytes is the
+                # row's OWN size, not a batch average recorded under a per-row
+                # name. pruned_content_sql() takes no argument, so the
+                # interpolated expression is a module constant; :at is bound.
                 await conn.execute(
                     text(
-                        # noqa on the interpolation: pruned_content_sql() takes
-                        # no argument here, so the expression is a constant of
-                        # this module's making and the only value crossing the
-                        # boundary is :at, which is bound.
                         f"UPDATE messages SET content = {pruned_content_sql()} "  # noqa: S608
                         "WHERE id IN (SELECT id FROM null_content_batch)"
                     ),
                     {"at": now},
                 )
 
-                # Read back inside the same transaction: what the markers
-                # actually occupy. SQLite wrote them and is the only authority
-                # on how much of it is there.
+                # Read back inside the same transaction what the markers
+                # actually occupy -- SQLite wrote them and is the only authority.
                 bytes_after = int(
                     (
                         (
@@ -1180,11 +1138,9 @@ async def _doctor(
             if started is not None and started >= cutoff:
                 skipped += 1
                 continue
-            # Age answers "how long since this session first started", which is
-            # the same question as "how long has this process been running" only
-            # for a session that ran once. A branch picked up again keeps the
-            # start time of the session while the process is new, so the command
-            # asks the process itself before calling anything stuck.
+            # Session age isn't process age: a branch picked up again keeps the
+            # session's original start time while its process is new, so the
+            # sweep checks the process itself before calling anything stuck.
             entity = dict(row)
             meta = entity.get("node_metadata")
             if isinstance(meta, str):
@@ -1195,11 +1151,9 @@ async def _doctor(
             entity["node_metadata"] = meta if isinstance(meta, dict) else None
             pid = _read_pid_from_entity(entity)
             if pid is not None and pid_alive(pid):
-                # A live PID is not by itself proof: the OS can hand a dead
-                # session's number to an unrelated process, which would protect
-                # a genuinely stuck row for as long as that process lives. The
-                # stale-kill sweep already answers this, so it answers it here
-                # too rather than a second, weaker rule being written.
+                # A live PID alone isn't proof: the OS can hand a dead session's
+                # number to an unrelated process. Reuse the same identity check
+                # the stale-kill sweep uses rather than write a second, weaker rule.
                 raw_ct = (entity["node_metadata"] or {}).get("pid_create_time")
                 try:
                     expected_create_time = float(raw_ct) if raw_ct is not None else None
@@ -1211,11 +1165,10 @@ async def _doctor(
                     expected_session_id=row["id"],
                     expected_create_time=expected_create_time,
                 )
-                # "unverifiable" means the process could not be inspected, not
-                # that it is gone; skipping it leaves a row for the next run
-                # rather than reaping one out from under a worker. "zombie" is
-                # the opposite: the process has exited and is only waiting to
-                # be reaped, so the row is stale and belongs in the sweep.
+                # "unverifiable" means inspection failed, not that the process
+                # is gone -- skip it rather than reap a row out from under a
+                # live worker. "zombie" means the process exited and is only
+                # waiting to be reaped, so that row belongs in the sweep.
                 if verdict in ("ours", "unverifiable"):
                     skipped += 1
                     continue
@@ -1243,9 +1196,6 @@ async def _doctor(
                     swept_count += 1
 
         return {"running": total, "swept": swept_count, "skipped": skipped}
-
-
-# ── _import_runs / _import_teams ─────────────────────────────────────────────
 
 
 async def _import_runs() -> dict[str, int]:
@@ -1418,9 +1368,6 @@ async def _import_teams() -> dict[str, int]:
                     await conn.execute(msg_stmt, mrow)
 
     return counts
-
-
-# ── CLI parser + runner ───────────────────────────────────────────────────────
 
 
 def add_state_subparser(subparsers: argparse._SubParsersAction) -> None:
@@ -1722,14 +1669,12 @@ def run_state(args: argparse.Namespace) -> int:
             print("  oldest session: (none)")
         else:
             print(f"  oldest session: {age:.1f}d")
-            # Gated on the operation's own count, not on the age alone. The same
-            # comparison means two opposite things depending on when it is read:
-            # before the prune it says the window reaches nothing, after a
-            # successful one it says the prune WORKED and every survivor is
-            # inside the window. Ungated it prints "this reclaimed nothing"
-            # directly beneath "deleted 2000 session(s)", and tells an operator
-            # to lower the window -- advice that deletes more, on the one path
-            # where nothing was wrong.
+            # Gated on the operation's own count, not age alone: the same
+            # age-vs-window comparison means "window reaches nothing" before a
+            # prune but "it worked, every survivor is in-window" after one.
+            # Ungated, it would print "this reclaimed nothing" beneath "deleted
+            # 2000 session(s)" and suggest lowering the window when nothing was
+            # wrong.
             if result["sessions"] == 0 and age < args.keep_days:
                 print(
                     f"  NOTHING IS OLDER THAN --keep-days {args.keep_days}, so this "
@@ -1792,9 +1737,6 @@ def run_state(args: argparse.Namespace) -> int:
         return 0
 
     return 1
-
-
-# ── machine result ────────────────────────────────────────────────────────────
 
 
 async def _machine_ls_data(*, limit: int, status: str | None) -> dict[str, Any]:

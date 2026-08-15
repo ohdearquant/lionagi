@@ -10,7 +10,10 @@ import type { EngineDef } from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
 import type { LibraryKind } from "./KindBadge";
 
-export type LibraryDataTab = "all" | LibraryKind;
+// "hooks" is a tab with its own view rather than a kind of library item, so it
+// matches no catalog and correctly loads nothing. It is admitted here so the
+// tab union and the loader's input stay the same set.
+export type LibraryDataTab = "all" | LibraryKind | "hooks";
 export type PlaybookSubKind = "builtin" | "custom";
 
 export interface LibraryItem {

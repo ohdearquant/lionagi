@@ -104,9 +104,7 @@ class TestLoadImageDataUris:
             _load_image_data_uris([str(f)])
 
 
-# ---------------------------------------------------------------------------
 # CLI wiring: --image -> run_agent -> _run_agent(images=[...])
-# ---------------------------------------------------------------------------
 
 _CAPTURED: dict[str, Any] = {}
 

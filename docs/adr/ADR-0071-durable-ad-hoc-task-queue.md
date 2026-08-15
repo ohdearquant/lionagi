@@ -486,6 +486,7 @@ serialization avoids turning a warm cache preference into a hard scheduling fail
 | 4 | Complete the schedule-run transition owner and event record; acceptance: every declared lifecycle edge uses one guarded API and produces one durable transition fact. | M | (filled at issue-open time) |
 | 5 | Add lease renewal or explicitly constrain admitted task duration below the lease; acceptance: a healthy long-running worker cannot lose ownership solely because execution exceeds the initial TTL. | M | (filled at issue-open time) |
 | 6 | Persist worker execution outcome columns atomically with terminal transition; acceptance: `ended_at`, `exit_code`, error detail, status, and the transition fact cannot disagree after a crash. | M | (filled at issue-open time) |
+| 7 | Execute independent claimed ad-hoc tasks concurrently up to a configured worker capacity while retaining one guarded claim and terminal transition per row and serializing equal non-null `concurrency_key` values; acceptance: independent tasks overlap, active count never exceeds the cap, equal keys never overlap, and failure, cancellation, or lease loss releases capacity without allowing a stale terminal write. | M | (filled at issue-open time) |
 
 ## Alternatives considered
 

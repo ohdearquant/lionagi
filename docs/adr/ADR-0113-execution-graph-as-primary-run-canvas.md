@@ -1,12 +1,32 @@
 # ADR-0113: The execution graph as the primary run canvas
 
-- **Status**: Proposed
+- **Status**: Accepted for D1-D4 and D6 (2026-08-11; see Amendment 1). D5 remains
+  Proposed — it depends on a flow definition format that does not exist yet (#2836)
 - **Kind**: Aspirational
+- **Implementation-status**: partial — D2 (ASAP ranks, dagre within ranks) and D3
+  (live node state on the node) are on main with tests; D1/D6 are shipping through
+  the current-vs-ideal delta table below, which is the live work list; D4's resume
+  verb is on main, pause and steer are not; D5 is not started
 - **Area**: studio
 - **Date**: 2026-08-08
 - **Relations**: extends ADR-0080 (six-space cockpit IA — this decides the primary surface
   *inside* a run, not the top-level taxonomy), extends ADR-0083 (operator-command protocol
   — the control verbs here ride its proposal and audit machinery)
+
+## Amendment 1 (2026-08-11) — partial landing, recorded per clause
+
+Implementation began the week this record was authored, so the Context section's
+present-tense description of a step-list-primary run detail is now historical: it is
+retained as the state the decision was made against, not a description of main. What
+has landed, with the evidence: live per-node activity on the run canvas (#3008,
+`WorkerCanvas` node-activity handling), lifecycle signals kept under one name per
+operation, the board rendering guarded against a slow backend (#3022), and the
+ASAP-rank layout with in-rank dagre ordering (`useLayout` and its rank tests). The
+run-detail resume verb exists (`resumeRun` in the Studio client API); pause and steer
+do not yet. D5 stays Proposed: as this record itself states, the executable flow
+definition format it depends on does not exist, and ADR-0114 is the design attempt at
+it. The delta table at the foot of this document remains the authoritative list of
+what D1/D6 still owe.
 
 ## Context
 

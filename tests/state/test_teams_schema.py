@@ -25,7 +25,7 @@ async def db():
     await state.close()
 
 
-# ── Schema invariants ─────────────────────────────────────────────────────────
+# Schema invariants
 
 
 async def test_teams_table_exists_with_status_check(db: StateDB):
@@ -131,7 +131,7 @@ async def test_team_messages_session_id_fk_to_sessions(db: StateDB):
     assert row["session_id"] == sess_id
 
 
-# ── import-teams CLI helper ───────────────────────────────────────────────────
+# import-teams CLI helper
 
 
 async def test_import_teams_loads_json_into_db(tmp_path: Path, monkeypatch):
