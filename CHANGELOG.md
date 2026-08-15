@@ -6,6 +6,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- The notify hook's delivery timeout is derived from the handler budget, so a
+  delivery now fits inside the deadline that would otherwise terminate it.
+- A delivery stopped part way reports `notify_delivery_state` as `unknown`
+  rather than `failed`. Whether the notice already went out is exactly what
+  such a delivery cannot say, and `failed` tells a caller to send it again.
+  The value appears on every job listing row, so callers switching on
+  `failed` should handle `unknown` as well.
+- Delivery descendants are terminated through the shared process-group helper
+  on POSIX. Cross-platform descendant containment remains out of scope and is
+  tracked in #2576.
+
 ### Deprecated
 
 - `--resume-on-timeout` on `li o fanout` and `li o flow`. The flag is accepted

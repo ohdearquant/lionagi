@@ -1131,6 +1131,44 @@ def _make_buffered_delay_cli_model(create_event_calls: list, delay: float):
     return m
 
 
+def _make_scheduled_cli_model(
+    create_event_calls: list,
+    schedule: list[tuple[float, StreamChunk]],
+    *,
+    hang_after: bool = False,
+    streams_first_output_early: bool = True,
+):
+    """A CLI iModel that emits chunks after controlled per-chunk delays."""
+    import anyio
+
+    m = iModel(provider="openai", model="gpt-4.1-mini", api_key="test_key")
+    endpoint_ns = types.SimpleNamespace(
+        is_cli=True,
+        session_id=None,
+        streams_first_output_early=streams_first_output_early,
+        to_dict=lambda: {"type": "fake_cli", "session_id": None},
+    )
+    m.endpoint = endpoint_ns
+    m.streaming_process_func = None
+
+    async def create_event(**kw):
+        create_event_calls.append(kw)
+        return object()
+
+    m.create_event = create_event
+    m.executor = types.SimpleNamespace(append=AsyncMock(), config={})
+
+    async def stream(api_call=None):
+        for delay, chunk in schedule:
+            await anyio.sleep(delay)
+            yield chunk
+        if hang_after:
+            await anyio.sleep(999)
+
+    m.stream = stream
+    return m
+
+
 async def test_run_liveness_watchdog_raises_after_exhausting_retries():
     """A worker that never produces a first chunk is retried once, then
     fails loud with WorkerLivenessError — the operation must be able to
@@ -1342,3 +1380,153 @@ async def test_run_liveness_watchdog_explicit_timeout_enforced_on_buffered_endpo
             pass
 
     assert len(create_event_calls) == 2
+
+
+async def test_run_idle_watchdog_fails_after_partial_output_without_retry(monkeypatch):
+    """A worker that emits once then stalls fails distinctly and is not rerun."""
+    import lionagi.config as config_module
+    from lionagi.providers._provider_errors import WorkerLivenessError
+
+    create_event_calls: list[dict] = []
+    model = _make_scheduled_cli_model(
+        create_event_calls,
+        [(0, StreamChunk(type="text", content="partial"))],
+        hang_after=True,
+    )
+    branch = Branch()
+    branch.chat_model = model
+    fast_settings = config_module.AppSettings(LIONAGI_WORKER_IDLE_TIMEOUT=0.03)
+    monkeypatch.setattr(config_module, "settings", fast_settings)
+
+    with pytest.raises(WorkerLivenessError) as exc_info:
+        await _collect(
+            run(
+                branch,
+                "go",
+                RunParam(
+                    imodel_kw={
+                        "timeout": 0.2,
+                        "liveness_timeout": 0.1,
+                    }
+                ),
+            )
+        )
+
+    assert exc_info.value.reason == "worker.stream_idle"
+    assert len(create_event_calls) == 1
+    assert "idle_timeout" not in create_event_calls[0]
+
+
+async def test_run_idle_watchdog_resets_after_every_chunk():
+    """Total stream time may exceed the idle window when each gap stays below it."""
+    create_event_calls: list[dict] = []
+    model = _make_scheduled_cli_model(
+        create_event_calls,
+        [
+            (0, StreamChunk(type="text", content="a")),
+            (0.03, StreamChunk(type="text", content="b")),
+            (0.03, StreamChunk(type="text", content="c")),
+            (0.03, StreamChunk(type="text", content="d")),
+        ],
+    )
+    branch = Branch()
+    branch.chat_model = model
+
+    results = await _collect(
+        run(
+            branch,
+            "go",
+            RunParam(
+                imodel_kw={
+                    "timeout": 0.5,
+                    "liveness_timeout": 0.1,
+                    "idle_timeout": 0.08,
+                }
+            ),
+        )
+    )
+
+    text_msgs = [r for r in results if isinstance(r, AssistantResponse)]
+    assert [msg.response for msg in text_msgs] == ["abcd"]
+    assert len(create_event_calls) == 1
+    assert "idle_timeout" not in create_event_calls[0]
+
+
+async def test_run_idle_watchdog_yields_to_tighter_overall_deadline():
+    """The caller's total-stream budget retains ownership when it expires first."""
+    from lionagi.providers._provider_errors import WorkerLivenessError
+
+    create_event_calls: list[dict] = []
+    model = _make_scheduled_cli_model(
+        create_event_calls,
+        [(0, StreamChunk(type="text", content="partial"))],
+        hang_after=True,
+    )
+    branch = Branch()
+    branch.chat_model = model
+
+    with pytest.raises(TimeoutError) as exc_info:
+        await _collect(
+            run(
+                branch,
+                "go",
+                RunParam(
+                    imodel_kw={
+                        "timeout": 0.04,
+                        "liveness_timeout": 0.1,
+                        "idle_timeout": 0.2,
+                    }
+                ),
+            )
+        )
+
+    assert not isinstance(exc_info.value, WorkerLivenessError)
+    assert len(create_event_calls) == 1
+    assert "idle_timeout" not in create_event_calls[0]
+
+
+async def test_run_idle_watchdog_allows_normal_completion():
+    """The run-only idle setting is stripped and a healthy stream completes."""
+    create_event_calls: list[dict] = []
+    model = _make_scheduled_cli_model(
+        create_event_calls,
+        [
+            (0, StreamChunk(type="text", content="hello")),
+            (0.01, StreamChunk(type="text", content=" world")),
+        ],
+    )
+    branch = Branch()
+    branch.chat_model = model
+
+    results = await _collect(run(branch, "go", RunParam(imodel_kw={"idle_timeout": 0.1})))
+
+    text_msgs = [r for r in results if isinstance(r, AssistantResponse)]
+    assert [msg.response for msg in text_msgs] == ["hello world"]
+    assert len(create_event_calls) == 1
+    assert "idle_timeout" not in create_event_calls[0]
+
+
+async def test_run_idle_watchdog_default_skips_buffered_endpoint(monkeypatch):
+    """Buffered transports remain exempt from the default mid-stream bound."""
+    import lionagi.config as config_module
+
+    create_event_calls: list[dict] = []
+    model = _make_scheduled_cli_model(
+        create_event_calls,
+        [
+            (0, StreamChunk(type="text", content="buffered")),
+            (0.08, StreamChunk(type="text", content=" result")),
+        ],
+        streams_first_output_early=False,
+    )
+    branch = Branch()
+    branch.chat_model = model
+
+    fast_settings = config_module.AppSettings(LIONAGI_WORKER_IDLE_TIMEOUT=0.02)
+    monkeypatch.setattr(config_module, "settings", fast_settings)
+
+    results = await _collect(run(branch, "go", RunParam()))
+
+    text_msgs = [r for r in results if isinstance(r, AssistantResponse)]
+    assert [msg.response for msg in text_msgs] == ["buffered result"]
+    assert len(create_event_calls) == 1

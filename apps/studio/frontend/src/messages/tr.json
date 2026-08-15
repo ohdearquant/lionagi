@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "Varsayılan",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · önerilen",
+      "legacyGroup": "Eski seçim",
+      "efforts": "Çaba: {efforts}",
+      "effortInModel": "Çaba model kimliğine kodlanır",
+      "effortAsSetting": "Çaba sağlayıcı ayarı olarak gönderilir"
     },
     "effort": {
       "label": "Çaba",
