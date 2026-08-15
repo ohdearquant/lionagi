@@ -170,3 +170,108 @@ def test_invocation_health_avoids_host_scan_for_terminal_and_identity_rows(monke
     health, last_activity = asyncio.run(invocations_svc._invocation_health(sessions, now=now))
     assert health == "healthy"
     assert last_activity == now
+
+
+def test_a_second_event_loop_gets_its_own_capture_instead_of_a_cross_loop_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The in-flight capture is a Task, and a Task belongs to one event loop.
+
+    Sharing it through a process-global meant a caller running its own loop
+    reached `asyncio.shield` on a Task owned by the serving loop and got a
+    cross-loop RuntimeError instead of the snapshot. Two real loops are driven
+    here, in separate threads, with the capture held open until both callers
+    are inside it -- a sequential test cannot reach the state at all, because
+    the in-flight slot is empty by the time the second call runs.
+    """
+    import threading
+
+    import lionagi.studio.services.admin as admin_svc
+
+    _isolate_snapshot_cache(monkeypatch)
+
+    both_arrived = threading.Barrier(2, timeout=10)
+    captures = 0
+    captures_lock = threading.Lock()
+
+    def slow_capture() -> str:
+        nonlocal captures
+        with captures_lock:
+            captures += 1
+        # Hold the capture open until the other loop has also entered
+        # cached_ps_snapshot, so the second caller meets a PENDING in-flight
+        # entry rather than a finished one.
+        try:
+            both_arrived.wait()
+        except threading.BrokenBarrierError:  # pragma: no cover - timeout path
+            pass
+        return "PID COMMAND\n1 init\n"
+
+    monkeypatch.setattr(admin_svc, "_ps_snapshot", slow_capture)
+
+    results: dict[str, object] = {}
+
+    def run_on_its_own_loop(name: str) -> None:
+        try:
+            results[name] = asyncio.run(admin_svc.cached_ps_snapshot())
+        except BaseException as exc:  # noqa: BLE001 - the defect raised RuntimeError
+            results[name] = exc
+
+    threads = [
+        threading.Thread(target=run_on_its_own_loop, args=(name,), daemon=True)
+        for name in ("first", "second")
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+        assert not t.is_alive(), "a caller never returned"
+
+    for name in ("first", "second"):
+        assert not isinstance(results[name], BaseException), (
+            f"{name} loop raised instead of receiving a snapshot: {results[name]!r}"
+        )
+        assert results[name] == "PID COMMAND\n1 init\n"
+
+    # Both loops really did run concurrently and each captured for itself:
+    # the barrier only releases when two captures are in flight at once, so
+    # this also proves the two calls overlapped rather than ran back to back.
+    assert captures == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_callers_on_one_loop_still_share_a_single_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The positive arm: per-loop scoping must not disable singleflight.
+
+    Without this, the fix above is equally satisfied by removing the shared
+    capture entirely and letting every caller run its own `ps`.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    _isolate_snapshot_cache(monkeypatch)
+
+    captures = 0
+    release = asyncio.Event()
+
+    def counted_capture() -> str:
+        nonlocal captures
+        captures += 1
+        return "PID COMMAND\n1 init\n"
+
+    monkeypatch.setattr(admin_svc, "_ps_snapshot", counted_capture)
+
+    async def gated() -> str:
+        await release.wait()
+        return await admin_svc.cached_ps_snapshot()
+
+    waiters = [asyncio.create_task(gated()) for _ in range(4)]
+    await asyncio.sleep(0)
+    release.set()
+    values = await asyncio.gather(*waiters)
+
+    assert values == ["PID COMMAND\n1 init\n"] * 4
+    assert captures == 1
+    metrics = admin_svc._ps_snapshot_metrics_state()
+    assert int(metrics["singleflight_hits"] or 0) >= 1

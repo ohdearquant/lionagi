@@ -238,7 +238,11 @@ class _PsSnapshotCache(NamedTuple):
 
 
 _PS_SNAPSHOT_CACHE: _PsSnapshotCache | None = None
-_PS_SNAPSHOT_INFLIGHT: asyncio.Task[str] | None = None
+# The in-flight capture is stored with the loop that owns it. A Task belongs to
+# the loop that created it, so a caller on a different loop cannot await this
+# one -- see cached_ps_snapshot. The cached value above carries no such
+# affinity and is shared by every caller.
+_PS_SNAPSHOT_INFLIGHT: tuple[asyncio.AbstractEventLoop, asyncio.Task[str]] | None = None
 _PS_SNAPSHOT_METRICS: dict[str, int | float | None] | None = None
 
 
@@ -284,20 +288,35 @@ async def cached_ps_snapshot() -> str:
         metrics["cache_hits"] = int(metrics["cache_hits"] or 0) + 1
         return cached.value
 
-    task = _PS_SNAPSHOT_INFLIGHT
-    if task is None or task.done():
+    loop = asyncio.get_running_loop()
+    inflight = _PS_SNAPSHOT_INFLIGHT
+    task: asyncio.Task[str] | None = None
+    if inflight is not None:
+        owner, pending = inflight
+        # Singleflight is per event loop, deliberately. Awaiting a Task owned by
+        # another loop raises rather than sharing its result, so a caller on a
+        # second loop starts its own capture instead of failing. Two loops in
+        # one process is the exception (a legacy caller running its own loop
+        # beside the serving one), and one extra `ps` there beats a
+        # RuntimeError; within a loop this still collapses to a single capture.
+        if owner is loop and not pending.done():
+            task = pending
+            metrics = _ps_snapshot_metrics_state()
+            metrics["singleflight_hits"] = int(metrics["singleflight_hits"] or 0) + 1
+
+    if task is None:
         task = asyncio.create_task(_capture_ps_snapshot())
-        _PS_SNAPSHOT_INFLIGHT = task
-    else:
-        metrics = _ps_snapshot_metrics_state()
-        metrics["singleflight_hits"] = int(metrics["singleflight_hits"] or 0) + 1
+        _PS_SNAPSHOT_INFLIGHT = (loop, task)
 
     try:
         # One cancelled request must not cancel the shared capture underneath
         # other viewers that are already awaiting it.
         return await asyncio.shield(task)
     finally:
-        if task.done() and _PS_SNAPSHOT_INFLIGHT is task:
+        current = _PS_SNAPSHOT_INFLIGHT
+        # Clear only our own entry: a capture started by another loop after
+        # ours must not be dropped by this one's cleanup.
+        if current is not None and current[1] is task and task.done():
             _PS_SNAPSHOT_INFLIGHT = None
 
 
