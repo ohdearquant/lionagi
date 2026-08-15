@@ -247,8 +247,11 @@ Two corrections to the reasoning that first motivated this choice, both from run
   the right default; it is not what decides this call.
 - Kahn ordering needs a self-edge rule before it is adopted literally, because this schema
   already has one: `schedule_runs.chain_parent_id` references `schedule_runs(id)`, so a
-  dependency graph built straight from the foreign keys contains a self-loop, no node ever has
-  in-degree zero, and the sort reports a cycle on a schema that is perfectly well-formed. The
+  dependency graph built straight from the foreign keys contains a self-loop. `schedule_runs`
+  then never reaches in-degree zero, so it never enters the queue and is reported as a residual
+  cycle on a schema that is perfectly well-formed. Every other table still sorts normally, which
+  is what makes this easy to miss: the failure is one unplaceable table at the end of a run that
+  otherwise looks like it worked, not an ordering that refuses to start. The
   rule is to drop self-edges when building the graph. A table's dependency on itself carries no
   ordering information: it is satisfied by its own `CREATE TABLE`, which is exactly the
   `ALTER TABLE` limitation above, and the same holds for the rebuild path, where the copy target
@@ -368,12 +371,17 @@ needs a named mechanism per dialect or the state is read-only in name only:
 
 - **SQLite** — the existing `mode=ro` URI open plus `PRAGMA query_only`, which is what
   `make_readonly_engine()` already does.
-- **PostgreSQL** — `default_transaction_read_only` on the session, set at connect, with
-  `SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY` as the statement form; a dedicated
-  read-only role is the stronger form where the deployment can provide one, and is preferred
-  when available because a session setting can be reset by anything holding the connection.
+- **PostgreSQL** — a server-enforced form only: a role without write privilege on the schema, or
+  a connection to a hot standby, which rejects writes at the server. `default_transaction_read_only`
+  does **not** qualify. It is a session setting, and anything holding the connection can turn it
+  off with one statement, so it protects against accident and not against the case quarantine
+  exists for. An earlier draft of this decision listed it as the mechanism and named a role as
+  merely the "stronger form where the deployment can provide one" — that is a fail-open dressed
+  as a preference, and it is recorded here because it is the exact failure this whole decision
+  was written to remove, reintroduced one paragraph after removing it. Setting it as well is
+  harmless defence in depth; it never satisfies the requirement.
 
-If neither is available on a PostgreSQL store, quarantine **denies the open** rather than
+If no server-enforced form is available on a PostgreSQL store, quarantine **denies the open** rather than
 handing back a writable connection. This is the specific hole the current code names in its own
 docstring: `read_only_open_supported()` returns False for server-backed stores, and it warns
 that callers needing read-only *for safety* must not use it, because it hands them a writable
@@ -497,14 +505,23 @@ entity vocabulary is the registry filtered by it. The parity gate for this move 
 against today's hand-typed six, asserted before the old constant is deleted, so the projection
 is proven to reproduce the current set rather than assumed to.
 
-`dispatch` is the one case that does not fall out of the toggle, and it needs its own answer
-rather than a default. It has a domain class and a lifecycle policy but is absent from
-`VALID_ENTITY_TYPES` today, so marking `dispatch_outbox` lifecycle-managed would change
-behaviour by admitting a type the validator currently rejects, and leaving it unmarked
-perpetuates a policy that exists but is unreachable through the validator. Either is defensible;
-neither should happen as a side effect of a schema refactor. The decision is recorded when the
-toggle is introduced, and the parity gate above is what forces it to be made: the derived set
-either equals the hand-typed six, or the difference is `dispatch` and someone has chosen it.
+`dispatch` is the one case that does not fall out of the toggle, and this ADR **deliberately
+defers it** rather than leaving it unnoticed. It has a domain class and a lifecycle policy but is
+absent from `VALID_ENTITY_TYPES` today, so marking `dispatch_outbox` lifecycle-managed would
+change behaviour by admitting a type the validator currently rejects, and leaving it unmarked
+perpetuates a policy that exists but is unreachable through the validator. Either is defensible
+and both are behaviour changes, which is why neither should be inherited as a side effect of a
+schema refactor by whoever happens to write the toggle.
+
+Deferring is not the same as leaving it under-specified, and the difference is the forcing
+mechanism. The parity gate makes the choice unavoidable at toggle-introduction: the derived set
+either equals today's hand-typed six, or the only permitted difference is `dispatch` and the
+gate fails until someone states which. Until that decision is made the schema behaviour is
+**exactly today's** — the six-entity vocabulary, `dispatch` rejected by `update_status` — because
+the gate's default arm is set equality against the current constant. So the contract is
+determinate at every moment: it is six now, it is six after Phase 1 unless someone deliberately
+makes it seven, and this ADR is amended with the reason at that point. What is deferred is the
+decision, not the behaviour.
 
 **D9 — what carries over, what is reworked, what is left behind.** The target design splits
 cleanly along a dialect seam, and that seam is what makes adopting it tractable:
@@ -763,11 +780,25 @@ Divergences found between the two full-schema authorities, all currently green:
 
 The `artifacts.updated_at` divergence is deliberate and carries its reason in the code: `ALTER
 TABLE` rejects an expression default, so the column that `schema.sql` creates with one is
-declared without it on the `MetaData` side, and the insert path sets the value explicitly. It is
-listed here because D3 treats defaults as physical semantics, which makes this a divergence the
-parity gate must decide about rather than a free-standing implementation note — and because a
-generated authority has to pick one of the two spellings and then answer what happens to stores
-already built from the other. Naming it is also a correction: this table previously implied the
+declared without it on the `MetaData` side, and the insert path sets the value explicitly. D3
+treats defaults as physical semantics, so this is a divergence the parity gate must decide,
+which means deciding it here rather than noting it.
+
+**The decision: the generated authority carries the server default**, matching `schema.sql`. The
+reason the `MetaData` side omits it is a *migration* constraint, not a *declaration* one — the
+column could not be added by `ALTER TABLE` with an expression default — and the phase above now
+routes exactly that shape through the generated rebuild with an authored backfill. The constraint
+that forced the omission is the one this ADR removes, so preserving the omission would be
+carrying a workaround past the thing it worked around. The insert path keeps setting the value
+explicitly; a default is a floor for writers that forget, not a licence to stop being explicit.
+
+Existing stores split cleanly and neither case needs data written. A store built from
+`schema.sql` already has the default and diffs clean. A store built from `create_all` lacks it,
+which is a physical-semantics difference the diff now detects, classified as a rebuild rather
+than an `ALTER` for the reason above. No row changes value in either case: the column is `NOT
+NULL` in both authorities and every existing row already carries a value the insert path wrote.
+That is what makes this one safe to decide now instead of deferring it with the index decisions —
+it is a declaration change with an empty data migration, which the `DESC` index questions are not. Naming it is also a correction: this table previously implied the
 two authorities differed only in index count and direction.
 
 The defaults dimension was then enumerated across all 32 tables rather than spot-checked, since
