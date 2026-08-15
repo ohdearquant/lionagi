@@ -86,12 +86,14 @@ export interface RunSummary {
   show_play_name?: string | null;
   source_kind?: string;
   status: string;
-  // ADR-0024: derived health indicator computed at read time.
+  // ADR-0057: running-process health computed at read time. This is null for
+  // terminal rows; status + reason fields are the execution outcome.
   // - healthy / idle: alive and active (or quietly waiting).
   // - unresponsive: alive but past kind-aware threshold.
   // - stale: process dead, has produced output.
   // - orphaned: process dead, no output, no artifacts.
-  // - zombie: terminal status, but resources leaked (stale locks).
+  // - zombie: process/resource cleanup needs attention when supplied by a
+  //   health-specific surface (the runs projection currently has no lock signal).
   effective_health?: "healthy" | "idle" | "unresponsive" | "stale" | "orphaned" | "zombie" | null;
   last_message_at?: number | null;
   // ADR-0020: optional parent skill orchestration id (from `li invoke`).
@@ -440,6 +442,8 @@ export interface ScheduleSummary {
   on_success: Record<string, unknown> | null;
   on_fail: Record<string, unknown> | null;
   last_fired_at: number | null;
+  /** Completed threshold checks, including checks that did not breach. */
+  last_evaluated_at?: number | null;
   next_fire_at: number | null;
   missed_fire_policy: string;
   overlap_policy: string;
@@ -447,8 +451,8 @@ export interface ScheduleSummary {
   github_filter?: { event?: string; base?: string; state?: string } | null;
   consecutive_failures?: number;
   last_status?: string | null;
-  /** Server-computed verdict from cadence + recorded schedule_runs, never
-   * from next_fire_at (a promise, not evidence). */
+  /** Server-computed verdict from cadence + execution/evaluation evidence,
+   * never from next_fire_at (a promise, not evidence). */
   health_state?: "healthy" | "failing" | "overdue" | "never-fired" | "no-evidence" | "disabled";
   health_last_outcome?: string | null;
   health_last_outcome_at?: number | null;

@@ -202,18 +202,22 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  // 1098 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
+  // 1097 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
   // (library.filterHooks + 29 library.hooks.* leaves) when the shared hook
   // library and per-agent assembly landed, + history.detail token-usage stats
-  // (statTokensIn/statTokensOut, natively translated in all 16 locales)
-  // + the schedule lifecycle surface (3 schedules.card.* leaves for a
-  // disable that carries its reason, 3 schedules.detail.* leaves for the
-  // lifecycle history), translated in all 16 locales rather than copied from
-  // English. autoAllow and the hooks leaves are natively translated in
+  // (statTokensIn/statTokensOut, natively translated in all 16 locales), + 5
+  // for the Operator model picker's provider groups, legacy selection, and
+  // effort-transport explanation (also natively translated in all 16).
+  // autoAllow and the hooks leaves are natively translated in
   // zh/ja/ko/es/fr/de/pt-BR/ru and English-copied in the remaining 7 locales
   // — that debt is attributed in the identity-leak baseline below.
-  it("en.json has 1098 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1098);
+  //
+  // 1103 = 1097 + 6 schedules.* leaves for the lifecycle audit trail
+  // (detail.lastLifecycleChange, detail.noLifecycleHistory,
+  // detail.unknownActor) and the disable-with-reason flow
+  // (card.cancelDisable, card.disableReason, card.disableReasonHint).
+  it("en.json has 1103 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1103);
   });
 
   it.each(LOCALES.map((l) => l.code))(

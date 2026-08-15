@@ -15,6 +15,7 @@ export interface Run {
   created_at: number;
   updated_at: number | null;
   last_message_at: number | null;
+  /** Running-process health only; null after terminal status. Never an outcome verdict. */
   effective_health: string | null;
   branch_count: number;
   message_count: number;

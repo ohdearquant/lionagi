@@ -100,24 +100,28 @@ the primary error or a secondary one to log and swallow.
 A worker whose subprocess dies at/near spawn (or otherwise produces
 nothing) leaves an operation awaiting a stream chunk that never arrives —
 the leg stays "running" forever and every dependent operation in a flow
-deadlocks behind it. `_stream_with_liveness()` guards the *first* chunk
-only: once any chunk has arrived, the subprocess is alive and the rest of
-the stream is governed solely by `stream_deadline`.
+deadlocks behind it. `_stream_with_liveness()` guards both the *first* chunk
+and the gap between later chunks. The idle window resets after every chunk.
 
 On a first-output miss, the subprocess is retried once with an identical
 invocation. A second miss raises `WorkerLivenessError` so the operation
 transitions to FAILED and releases its dependents, instead of hanging as a
 zombie "running" leg.
 
-`liveness_timeout` of `None`/`<=0` disables the watchdog entirely
-(deterministic/test runs). When the caller's own `stream_deadline` is
-tighter than `liveness_timeout`, the deadline wins and its `TimeoutError` is
-propagated unchanged — not treated as a liveness miss, not retried — since
-the caller asked for that total-stream budget deliberately. The default
-liveness timeout only applies to endpoints declaring
+Once any chunk has escaped the stream, a watchdog miss is not retried: the
+consumer may already have acted on that partial output. Instead it raises
+`WorkerLivenessError` with reason `worker.stream_idle`. The first-output and
+idle windows are configured independently by `liveness_timeout` and
+`idle_timeout`; non-positive values disable their respective window.
+
+When the caller's own `stream_deadline` is tighter than either watchdog
+window, the deadline wins and its `TimeoutError` is propagated unchanged —
+not treated as a liveness miss, not retried — since the caller asked for that
+total-stream budget deliberately. The default watchdogs only apply to endpoints declaring
 `streams_first_output_early`; a buffered transport (e.g. `gemini_code`,
 whose first chunk arrives only once the whole result is in) would otherwise
-have a healthy long call misdiagnosed as a dead worker.
+have a healthy long call misdiagnosed as a dead worker. Explicit per-run
+values remain opt-in overrides for any endpoint.
 
 ## Review engine partial export on deadline
 
