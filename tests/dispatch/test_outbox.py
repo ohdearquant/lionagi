@@ -936,3 +936,104 @@ async def test_payload_delivered_via_stdin_when_template_has_no_placeholder(tmp_
     assert counts["delivered"] == 1
     captured = out_path.read_text()
     assert '"z": 9' in captured
+
+
+# ── delivery-loop identity (who the history says wrote the row) ──────────────
+
+# Every transition the delivery scan writes: one per write site in the loop.
+_LOOP_REASON_CODES = {
+    "dispatch.delivering.attempt",
+    "dispatch.delivered.transport_ok",
+    "dispatch.pending.retry_backoff",
+    "dispatch.dead_letter.max_attempts",
+    "dispatch.dead_letter.ack_timeout",
+    "dispatch.expired.deadline",
+}
+
+
+async def _loop_identities(db) -> dict[str, set[tuple[str, str]]]:
+    """reason_code -> {(source, actor)} for every delivery-loop history row."""
+    async with db._read() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    text(
+                        "SELECT reason_code, source, actor FROM status_transitions "
+                        "WHERE entity_type = 'dispatch'"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    seen: dict[str, set[tuple[str, str]]] = {}
+    for row in rows:
+        if row["reason_code"] in _LOOP_REASON_CODES:
+            seen.setdefault(row["reason_code"], set()).add((row["source"], row["actor"]))
+    return seen
+
+
+async def _drive_every_loop_write_site(db, *, actor=None) -> dict[str, set[tuple[str, str]]]:
+    """Enqueue rows that between them reach all six loop write sites, scan twice
+    (the notify template is per-scan, so success and failure need separate scans),
+    and return the identities the history recorded.
+    """
+    kw = {} if actor is None else {"actor": actor}
+
+    # expired: past deadline, resolved before any transport runs.
+    await enqueue_dispatch(
+        db, kind="terminal_notify", deliver_to="seat-1", expires_at=time.time() - 60
+    )
+    # delivered: transport exits 0, no ack required.
+    await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-2")
+    # dead_letter via ack timeout: sends fine, never acked, attempts exhausted.
+    await enqueue_dispatch(
+        db, kind="terminal_notify", deliver_to="seat-3", ack_required=True, max_attempts=1
+    )
+    # now is sampled after enqueue: rows are due at next_attempt_at <= now.
+    await deliver_due_dispatches(db, now=time.time(), notify_template=_SUCCESS_TEMPLATE, **kw)
+
+    # retried: transport fails with attempts left.
+    await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-4", max_attempts=3)
+    # dead_letter via max_attempts: transport fails with no attempts left.
+    await enqueue_dispatch(db, kind="terminal_notify", deliver_to="seat-5", max_attempts=1)
+    await deliver_due_dispatches(db, now=time.time(), notify_template=_FAIL_TEMPLATE, **kw)
+
+    return await _loop_identities(db)
+
+
+async def test_delivery_loop_records_the_caller_supplied_actor(tmp_path: Path):
+    """A caller that is not the scheduler tick must be able to say so: the actor
+    it passes is what the history attributes every one of the loop's writes to.
+    """
+    from lionagi.state.transitions import Actor
+
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        seen = await _drive_every_loop_write_site(
+            db, actor=Actor(type="agent", id="fleet-delivery-worker-7")
+        )
+
+    # Non-vacuous: the scenarios really did reach all six write sites.
+    assert set(seen) == _LOOP_REASON_CODES
+
+    for code, identities in seen.items():
+        assert identities == {("agent", "fleet-delivery-worker-7")}, (
+            f"{code} was attributed to {identities}"
+        )
+
+
+async def test_delivery_loop_defaults_to_the_scheduler_identity(tmp_path: Path):
+    """Omitting ``actor`` keeps the scheduler tick's own identity, which is what
+    the only in-tree caller is.
+    """
+    db_path = tmp_path / "state.db"
+    async with StateDB(db_path) as db:
+        seen = await _drive_every_loop_write_site(db)
+
+    assert set(seen) == _LOOP_REASON_CODES
+
+    for code, identities in seen.items():
+        assert identities == {("scheduler", "dispatch_delivery_loop")}, (
+            f"{code} was attributed to {identities}"
+        )
