@@ -85,6 +85,22 @@ These changes may be made without the alias-plus-warning cycle.
 - **Fixing a name that never worked**: if importing or calling the name has always raised an
   exception (e.g., missing dependency, broken wiring), it was never a functional public
   contract. Document this in the commit message.
+- **Removing an option that was accepted and silently ignored**: if a flag or option is parsed
+  and accepted on a surface but its value is never read there, it carried no behavior a caller
+  could depend on, and the wait in section 2 step 3 does not apply. The CHANGELOG `Removed`
+  entry still does. A caller passing an inert flag gets no error and no effect, so nothing in
+  their own logs ever told them it was dead, and the release notes are the only place they can
+  learn it is gone. This is the difference from the bullet above: a name that always raised told
+  its callers immediately, an inert one told them nothing.
+
+  Inertness is a claim about a specific surface and must be verified rather than assumed. Before
+  relying on this clause, confirm at the merge base that the option's value is read nowhere under
+  the module that owns the surface you are removing it from, and state that search scope in the
+  commit message so a reviewer can reproduce the result. Scope matters in both directions: the
+  same option name may be live on one surface and inert on another, so a repo-wide search answers
+  the wrong question. This clause was introduced alongside the removal of `--resume-on-timeout`
+  from `li o fanout` and `li o flow`, where the value was read nowhere under
+  `lionagi/cli/orchestrate/` while the same option remained functional on `li agent` (#3071).
 - **Internal-only changes**: refactoring or renaming anything not in `__all__` and not
   documented. Confirm the name does not appear in any example, cookbook, or docs page first.
 - **Type annotation narrowing that is source-compatible**: adding `| None` or a more specific
