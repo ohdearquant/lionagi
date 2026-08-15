@@ -134,8 +134,10 @@ For a positive `max_ops` ceiling, the fresh-run arithmetic is:
 spawn capacity = max(0, max_ops - initial planned assignments)
 ```
 
-A four-assignment plan under `max_ops: 4` therefore advertises itself as
-reactive but has zero capacity to accept a spawn. Size the ceiling as:
+A four-assignment plan under `max_ops: 4` therefore has zero spawn capacity,
+so its workers are not granted the spawn tool. The reactive state and effective
+`max_spawn` are recorded in the flow checkpoint and Studio run metadata. Size
+the ceiling as:
 
 ```text
 max_ops = intended initial plan + intended reactive spawns

@@ -288,6 +288,12 @@ StateDB/legacy-transition compatibility mapping (`adapters`).
 
 ### `state/reasons.py`
 
+- `RunReasons.COMPLETED_SPAWN_REFUSED` — the planned DAG reached completion,
+  but one or more reactive `SpawnRequest`s were refused after the run exhausted
+  its spawn capacity. Status remains `completed`; the non-clean reason and
+  `refused_spawn` evidence distinguish it from a run that never requested more
+  work. The same reason is preserved when child sessions roll up to an
+  invocation.
 - `ScheduleReasons` — the `schedule.skipped.` prefix is **not** the full set of
   reasons a skipped `schedule_run` can carry. `DEFERRED_CAPACITY` and
   `BUDGET_EXHAUSTED` land on skipped rows without that prefix, and a third

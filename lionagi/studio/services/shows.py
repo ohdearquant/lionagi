@@ -349,10 +349,37 @@ async def _all_show_topics() -> set[str]:
     return topics
 
 
+#: Play statuses where the gate said FAIL — a human owes a real decision
+#: (rework the play, accept the escalation). A play merely sitting in
+#: ``gated`` after a PASSING verdict is routine queue advance, not a
+#: decision, so it does not surface here by default: the director declares
+#: ``attention_opt_in: true`` in the play's metadata when a passing gate
+#: still warrants a human look.
+_ATTENTION_PLAY_STATUSES = frozenset({"gate_failed", "escalated"})
+
+
+def _play_needs_attention(status: Any, meta: dict[str, Any], verdict: dict[str, Any]) -> bool:
+    if status in _ATTENTION_PLAY_STATUSES:
+        return True
+    if status != "gated":
+        return False
+    # A play parked in "gated" whose recorded verdict is a FAIL is a decision
+    # waiting on a human even though the director never advanced the status.
+    if verdict.get("gate_passed") is False:
+        return True
+    return meta.get("attention_opt_in") is True
+
+
 async def list_gated_plays() -> list[dict[str, Any]]:
-    """Every play, across every show, currently sitting in the ``gated``
-    lifecycle status — read live (disk status winning over any DB row for
-    the same play), the same merge ``get_show()`` performs.
+    """Every play, across every show, currently waiting on a real human
+    decision at its gate — read live (disk status winning over any DB row
+    for the same play), the same merge ``get_show()`` performs.
+
+    Admission is decision-shaped, not status-shaped: a FAIL outcome
+    (``gate_failed``, ``escalated``, or a ``gated`` play whose verdict
+    records ``gate_passed: false``) always surfaces; a play that passed its
+    gate and is simply next in the queue auto-advances and stays out unless
+    its metadata opts in with ``attention_opt_in: true``.
 
     The ``plays`` table is populated once by ``import_shows()`` and never
     resynced afterward (a show already in the DB is skipped on re-import),
@@ -386,6 +413,7 @@ async def list_gated_plays() -> list[dict[str, Any]]:
                         "id": f"play:{topic}:{play['name']}",
                         "topic": topic,
                         "play_name": play["name"],
+                        "status": None,
                         "started_at": meta.get("started_at"),
                         "updated_at": play.get("updated_at"),
                         "feedback": verdict.get("feedback"),
@@ -395,13 +423,15 @@ async def list_gated_plays() -> list[dict[str, Any]]:
                     }
                 )
                 continue
-            if meta.get("status") != "gated":
+            status = meta.get("status")
+            if not _play_needs_attention(status, meta, verdict):
                 continue
             out.append(
                 {
                     "id": f"play:{topic}:{play['name']}",
                     "topic": topic,
                     "play_name": play["name"],
+                    "status": status,
                     "started_at": meta.get("started_at"),
                     "updated_at": play.get("updated_at"),
                     "feedback": verdict.get("feedback"),

@@ -206,7 +206,11 @@ def _derive_tool_calls(branches: list[dict[str, Any]]) -> tuple[list[dict[str, A
 
 def _collect_tool_calls(tool_calls: list[dict[str, Any]], clipped: bool) -> dict[str, Any]:
     kept, byte_truncated = cap_by_bytes(tool_calls, MESSAGE_BYTE_CAP)
-    return {"items": kept, "truncated": byte_truncated or clipped or len(kept) < len(tool_calls)}
+    return {
+        "items": kept,
+        "truncated": byte_truncated or clipped or len(kept) < len(tool_calls),
+        "returned": len(kept),
+    }
 
 
 def _collect_errors(
@@ -260,7 +264,24 @@ def _collect_errors(
             }
         )
     kept, byte_truncated = cap_by_bytes(items, MESSAGE_BYTE_CAP)
-    return {"items": kept, "truncated": byte_truncated or partial or len(kept) < len(items)}
+    result = {
+        "items": kept,
+        "truncated": byte_truncated or partial or len(kept) < len(items),
+        "returned": len(kept),
+        "evidenceComplete": not partial,
+    }
+    if not kept and result["truncated"]:
+        # An empty list under a bare truncated flag is unreadable: it cannot
+        # say whether zero errors happened or every error was dropped. Say
+        # which. Nothing was dropped HERE when kept == items -- the flag is
+        # carrying the incomplete evidence window underneath.
+        result["note"] = (
+            "no errors among the loaded evidence; the message window did not "
+            "cover the whole run, so absence here does not certify the run"
+            if partial and not byte_truncated
+            else "errors existed but exceeded the response byte budget"
+        )
+    return result
 
 
 def _collect_artifacts(session: dict[str, Any]) -> dict[str, Any]:
@@ -289,7 +310,7 @@ async def run_findings(arguments: dict[str, Any]) -> dict[str, Any]:
     args = RunFindingsInput.model_validate(arguments)
     resolution = await resolve_run(args.run)
     if not resolution["found"]:
-        return {"found": False}
+        return {"found": False, "reason": resolution.get("reason")}
     if resolution.get("ambiguous"):
         return {
             "found": True,
@@ -300,9 +321,15 @@ async def run_findings(arguments: dict[str, Any]) -> dict[str, Any]:
 
     from lionagi.studio.services.sessions import get_session
 
-    session = await get_session(resolution["session_id"], message_limit=PER_KIND_ITEM_CAP)
+    # Exact lifetime counts are opt-in on this read because the listings cannot
+    # afford them per row. This tool is single-session and already reports what
+    # its window left out, and that claim is only honest against a real total:
+    # without it every windowed run reads as complete.
+    session = await get_session(
+        resolution["session_id"], message_limit=PER_KIND_ITEM_CAP, include_stats=True
+    )
     if session is None:
-        return {"found": False}
+        return {"found": False, "reason": "the resolved run vanished before it could be read"}
 
     branches = session.get("branches") or []
     if args.agent_filter:
