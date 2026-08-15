@@ -2,7 +2,15 @@
 
 from pathlib import Path
 
-from scripts.check_adr_numbering import DEFAULT_ADR_DIR, check_dir
+import pytest
+
+from scripts.check_adr_numbering import (
+    _MAX_TITLE_BYTES as MAX_TITLE_BYTES,
+)
+from scripts.check_adr_numbering import (
+    DEFAULT_ADR_DIR,
+    check_dir,
+)
 
 
 def _write_adr(adr_dir: Path, name: str, heading_number: str) -> None:
@@ -66,12 +74,38 @@ def test_symlinked_record_is_rejected(tmp_path: Path):
     assert "is a symlink" in errors[0]
 
 
-def test_a_first_line_longer_than_the_read_bound_is_not_a_title(tmp_path: Path):
-    """The title is read from a bounded prefix, so an unterminated first line fails closed."""
+@pytest.mark.parametrize("title_bytes", [MAX_TITLE_BYTES - 1, MAX_TITLE_BYTES, 8192])
+def test_a_title_longer_than_the_read_bound_is_still_valid(tmp_path: Path, title_bytes: int):
+    """The read bound protects against unbounded files; it is not a title-length limit."""
+    heading = "# ADR-0007: "
+    (tmp_path / "ADR-0007-long-title.md").write_text(
+        heading + "x" * (title_bytes - len(heading)) + "\n\nBody.\n"
+    )
+    assert check_dir(tmp_path) == []
+
+
+def test_an_unterminated_long_first_line_is_still_read_as_a_title(tmp_path: Path):
+    """No trailing newline is a formatting nit, not grounds to reject the heading."""
     (tmp_path / "ADR-0007-unterminated.md").write_text("# ADR-0007: " + "x" * 8192)
+    assert check_dir(tmp_path) == []
+
+
+def test_a_long_wrong_first_line_reports_a_capped_excerpt(tmp_path: Path):
+    """A truncated first line must not dump thousands of characters into the log."""
+    (tmp_path / "ADR-0008-long-junk.md").write_text("y" * 8192)
     errors = check_dir(tmp_path)
     assert len(errors) == 1
     assert "first line is not a" in errors[0]
+    assert "chars)" in errors[0]
+    assert len(errors[0]) < 300
+
+
+def test_a_non_utf8_first_line_says_so(tmp_path: Path):
+    """The unreadable-as-text case is named, not collapsed into 'found: None'."""
+    (tmp_path / "ADR-0009-binary.md").write_bytes(b"# ADR-0009: \xff\xfe not text\n")
+    errors = check_dir(tmp_path)
+    assert len(errors) == 1
+    assert "not valid UTF-8" in errors[0]
 
 
 def test_malformed_filename_fails(tmp_path: Path):

@@ -4,7 +4,8 @@ Two ADRs can claim the same number through a clean merge: each branch adds its
 own file, git sees no textual conflict, and the merged tree carries both. The
 collision is only visible by listing the directory at the merge result, so this
 check must run in CI (which checks out the PR merge commit), not just locally
-on a branch.
+on a branch. tests/docs/test_adr_numbering.py is what carries it there: the
+docs job runs that suite on every pull request.
 
 Three properties are asserted over ``docs/adr/ADR-*.md``:
 
@@ -25,6 +26,7 @@ Usage: ``uv run scripts/check_adr_numbering.py``.
 from __future__ import annotations
 
 import argparse
+import codecs
 import re
 import sys
 from pathlib import Path
@@ -35,28 +37,46 @@ DEFAULT_ADR_DIR = REPO_ROOT / "docs" / "adr"
 _FILENAME_RE = re.compile(r"^ADR-(\d{4})-[a-z0-9][a-z0-9-]*\.md$")
 _HEADING_RE = re.compile(r"^# ADR-(\d{4}):")
 
-# The title line is short by construction, so the first line is read from a
-# bounded prefix. This also keeps the check from streaming a file that never
-# ends (a character device, say) until the CI job times out.
+# The first line is read from a bounded prefix, which keeps the check from
+# streaming a file that never ends (a character device, say) until the CI job
+# times out. The bound is not a title-length limit: a first line longer than
+# this comes back truncated, and the heading pattern is decided by the line's
+# opening characters, so a long title still passes.
 _MAX_TITLE_BYTES = 4096
 
+# Long enough to show the defect, short enough to keep a truncated first line
+# from filling the CI log.
+_MAX_SHOWN_CHARS = 80
 
-def _title_line(path: Path) -> str | None:
-    """Return the file's first line, or None if it is unreadable as text."""
+
+def _read_title_line(path: Path) -> tuple[str | None, str | None]:
+    """Return ``(first line, reason it could not be read)``; exactly one is None.
+
+    The line may be truncated at ``_MAX_TITLE_BYTES``. Callers must only use it
+    to match a prefix pattern, never to validate the line's full content.
+    """
     try:
         with path.open("rb") as fh:
             head = fh.read(_MAX_TITLE_BYTES)
-    except OSError:
-        return None
+    except OSError as exc:
+        return None, f"unreadable: {exc.strerror or exc}"
     line, newline, _ = head.partition(b"\n")
-    if not newline and len(head) == _MAX_TITLE_BYTES:
-        # No line break within the bounded prefix: whatever this is, it is not
-        # a title line, and the rest of the file must not be read to find out.
-        return None
+    # A truncated read can split a multi-byte character, which is not the same
+    # defect as a file that is genuinely not UTF-8. Decoding non-final leaves
+    # an incomplete trailing sequence buffered instead of raising on it.
+    complete = bool(newline) or len(head) < _MAX_TITLE_BYTES
     try:
-        return line.decode("utf-8").rstrip("\r")
+        text = codecs.getincrementaldecoder("utf-8")().decode(line, final=complete)
     except UnicodeDecodeError:
-        return None
+        return None, "first line is not valid UTF-8"
+    return text.rstrip("\r"), None
+
+
+def _show(line: str) -> str:
+    """Render a first line for an error message, capped so a long one stays readable."""
+    if len(line) > _MAX_SHOWN_CHARS:
+        return f"{line[:_MAX_SHOWN_CHARS]!r}... ({len(line)} chars)"
+    return repr(line)
 
 
 def check_dir(adr_dir: Path) -> list[str]:
@@ -79,12 +99,12 @@ def check_dir(adr_dir: Path) -> list[str]:
         if path.is_symlink():
             errors.append(f"{path.name}: is a symlink; ADR records must be regular files")
             continue
-        first_line = _title_line(path)
+        first_line, read_error = _read_title_line(path)
         heading = _HEADING_RE.match(first_line) if first_line is not None else None
         if heading is None:
+            found = read_error if first_line is None else f"found: {_show(first_line)}"
             errors.append(
-                f"{path.name}: first line is not a '# ADR-NNNN: Human Title' heading "
-                f"(found: {first_line!r})"
+                f"{path.name}: first line is not a '# ADR-NNNN: Human Title' heading ({found})"
             )
         elif heading.group(1) != number:
             errors.append(
