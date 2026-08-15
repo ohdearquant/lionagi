@@ -32,9 +32,22 @@ def _session_scope(
     project: str | None,
     project_null: bool,
     search: str | None,
+    kinds: set[str] | None = None,
 ) -> tuple[list[str], list[Any]]:
     clauses: list[str] = []
     params: list[Any] = []
+    if kinds:
+        # Same facet vocabulary the runs listing selects with, spelled the same
+        # way on purpose: "show" covers both spellings writers have used for a
+        # show-driven play root, and legacy rows carry NULL invocation_kind,
+        # which reads as a plain agent run everywhere else.
+        expanded = sorted(
+            {k for kind in kinds for k in ({"show", "show-play"} if kind == "show" else {kind})}
+        )
+        placeholders = ",".join("?" for _ in expanded)
+        null_clause = f" OR {alias}.invocation_kind IS NULL" if "agent" in kinds else ""
+        clauses.append(f"({alias}.invocation_kind IN ({placeholders}){null_clause})")
+        params.extend(expanded)
     if project_null:
         clauses.append(f"{alias}.project IS NULL")
     elif project:
@@ -279,6 +292,7 @@ async def read_active_snapshot(
     project: str | None = None,
     project_null: bool = False,
     search: str | None = None,
+    kinds: set[str] | None = None,
 ) -> dict[str, Any]:
     require_file_store()
     observed_at = time.time()
@@ -300,8 +314,11 @@ async def read_active_snapshot(
     if not store_exists():
         return empty
 
+    # The kind facet selects runs only, matching the runs listing it replaces
+    # here. Invocation grouping stays unfiltered, which is why a kind-scoped
+    # view does not claim the server scoped it end to end (see the route).
     scope_clauses, scope_params = _session_scope(
-        alias="s", project=project, project_null=project_null, search=search
+        alias="s", project=project, project_null=project_null, search=search, kinds=kinds
     )
     active_run_clauses = ["s.status = 'running'", *scope_clauses]
     recent_run_clauses = ["(s.status IS NULL OR s.status <> 'running')", *scope_clauses]
@@ -448,6 +465,10 @@ async def get_active_snapshot_route(
     project: str | None = Query(default=None),
     project_null: bool = Query(default=False),
     search: str | None = Query(default=None, min_length=1, max_length=200),
+    kind: list[str] | None = Query(  # noqa: B008
+        default=None,
+        description="Repeated orchestration-kind filter: agent, play, flow, fanout, show",
+    ),
 ) -> dict[str, Any]:
     return await read_active_snapshot(
         run_limit=run_limit,
@@ -456,4 +477,8 @@ async def get_active_snapshot_route(
         project=project,
         project_null=project_null,
         search=search,
+        # Validated by the runs listing's own normalizer rather than a second
+        # copy of the vocabulary, so an unknown facet is refused identically
+        # on both endpoints and the two cannot drift apart.
+        kinds=_runs_svc._normalize_kind_filter(kind),
     )

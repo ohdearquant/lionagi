@@ -96,6 +96,11 @@ through the scheduler's own resolver, since an echoed cron expression only prove
 survived the trip. Reaching the schedule store is itself a fact that can fail — most of these
 commands are HTTP calls to a running Studio, so an unreachable Studio answers with an explicit
 `unavailable` naming the URL, never an empty list that reads as "there are no schedules".
+A request that exceeds the client deadline remains `unavailable` in the version 1 envelope but
+is qualified as a request timeout, including its elapsed time and configured limit. A timed-out
+mutation has an unknown outcome: the daemon may still commit it, so neither the human nor machine
+client suggests restarting Studio or retries the write automatically; callers should inspect the
+schedule before deciding whether to retry.
 
 ## `orchestrate/` (`li o fanout` / `li o flow`)
 
@@ -360,6 +365,7 @@ has to hold on both routes into teardown — cancellation landing mid-`run_dag()
 landing after `run_dag()` has already returned, inside the `finally` block's
 own drain `gather()` (where that except never runs, so `_dag_cancelled` stays
 `False`) — since only one of those two routes exercises the flag.
+
 ### `_round_records.py` / `_quiescence.py` — proving a manifest round is idle
 
 A manifest round dispatches independent legs as subprocesses, each in its own

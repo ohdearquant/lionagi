@@ -113,6 +113,7 @@ export type FleetAction =
       project?: string;
       projectNull?: boolean;
       search?: string;
+      kind?: string;
     }
   | { type: "DATA_ERROR"; message: string }
   | { type: "MARK_STALE" };
@@ -407,15 +408,21 @@ export function fleetReducer(state: FleetState, action: FleetAction): FleetState
       return { ...state, nowSec: action.nowSec };
 
     case "DATA_OK": {
-      const { invocations, runs, runsHasNext, nowSec, project, projectNull, search } = action;
-      const scoped = isScopeActive(project, projectNull, search);
+      const { invocations, runs, runsHasNext, nowSec, project, projectNull, search, kind } = action;
+      const scoped = isScopeActive(project, projectNull, search) || Boolean(kind);
+      // The server scopes a snapshot's runs and invocations together, which is
+      // what makes a childless group trustworthy rather than an artifact of
+      // paging. The kind facet is the exception: it selects runs only, so a
+      // group can be left childless by the filter itself and the old
+      // page-based rule is the honest one there.
+      const scopeIsServerCoherent = action.snapshotVersion != null && !kind;
       const orgUnits = buildOrgUnits(
         invocations,
         runs,
         nowSec,
         scoped,
         runsHasNext,
-        action.snapshotVersion != null,
+        scopeIsServerCoherent,
       );
       const counts = deriveCounts(orgUnits, runs);
       const displayedActiveRuns = runs.filter(isActive).length;

@@ -119,7 +119,8 @@
       "busyPlaceholder": "Operator is working…",
       "hint": "Enter to send · Shift+Enter for a new line",
       "send": "Send",
-      "sending": "Sending…"
+      "sending": "Sending…",
+      "autoAllow": "Permitir propostas automaticamente"
     },
     "message": {
       "you": "You",
@@ -379,6 +380,38 @@
       "creating": "Creating…",
       "create": "Create",
       "createError": "Could not create this server."
+    },
+    "filterHooks": "Hooks",
+    "hooks": {
+      "title": "Hooks",
+      "description": "Hooks nomeados e reutilizáveis, definidos uma vez aqui e montados por agente: cada agente vincula hooks desta biblioteca a eventos (antes de uma chamada de ferramenta, no envio do prompt, após uma resposta). A mesma montagem funciona em qualquer CLI de provedor.",
+      "libraryTitle": "Biblioteca de hooks",
+      "newHook": "Novo hook",
+      "emptyLibrary": "Nenhum hook definido ainda. Crie um para que todos os agentes possam montá-lo.",
+      "emptyLibraryHint": "Defina os hooks na biblioteca primeiro — os anexos vinculam hooks da biblioteca a eventos.",
+      "operatorTitle": "Montagem do Operator",
+      "operatorDescription": "Hooks que o Operator do Studio executa. O Operator não herda configurações de usuário nem de projeto; os hooks anexados aqui são os únicos carregados em seus turnos.",
+      "enabled": "Ativado",
+      "save": "Salvar",
+      "saving": "Salvando…",
+      "savedNotice": "Salvo — vale a partir do próximo turno.",
+      "cancel": "Cancelar",
+      "delete": "Excluir",
+      "fieldName": "Nome",
+      "fieldDescription": "Descrição",
+      "fieldCommand": "Comando",
+      "fieldTimeout": "Tempo limite (segundos)",
+      "nameRequired": "Um hook precisa de um nome.",
+      "timeoutInvalid": "O tempo limite deve ser um número.",
+      "noAttachments": "Nenhum hook anexado.",
+      "attachmentHook": "Hook",
+      "attachmentOn": "em",
+      "attachmentEvent": "Evento",
+      "attachmentMatcher": "Matcher",
+      "matcherPlaceholder": "matcher (opcional)",
+      "removeAttachment": "Remover anexo",
+      "addAttachment": "Anexar hook",
+      "agentSectionTitle": "Hooks"
     }
   },
   "history": {
@@ -448,6 +481,8 @@
       "statMessages": "Mensagens",
       "statToolCalls": "Chamadas de ferramenta",
       "statErrors": "Erros",
+      "statTokensIn": "Tokens de entrada",
+      "statTokensOut": "Tokens de saída",
       "statTopic": "Tópico",
       "statPlay": "Play",
       "statPlaybook": "Fluxo de trabalho",

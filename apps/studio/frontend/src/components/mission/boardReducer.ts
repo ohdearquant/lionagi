@@ -89,6 +89,12 @@ export interface AttentionItem {
   reasonSummary?: string;
   /** Server-persisted discharge state, joined by id. Absent = "open". */
   disposition?: AttentionDisposition;
+  /**
+   * The play root's run/session id — present on "play" items whose show
+   * recorded one, so the row can deep-link to the actual run instead of
+   * landing on the bare fleet list.
+   */
+  sessionId?: string | null;
 }
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
@@ -177,13 +183,17 @@ function buildAttentionItems(
   // run/invocation status string that can never carry it.
   for (const play of gatedPlays) {
     items.push({
+      // Already prefixed like every other disposition key: the gated-plays
+      // feed's id is `play:<topic>:<name>` (services/shows.py), stable
+      // across polls.
       id: play.id,
       kind: "play",
       name: `${play.topic} / ${play.play_name}`,
       reason: "gated",
       startedAt: play.started_at,
-      href: "/fleet",
-      status: "gated",
+      href: play.session_id ? `/fleet?s=${play.session_id}` : "/fleet",
+      status: play.status ?? "gated",
+      sessionId: play.session_id,
       ...(play.feedback ? { reasonSummary: play.feedback } : {}),
     });
   }
@@ -315,7 +325,17 @@ function buildAttentionItems(
   for (const item of deduped) {
     const disposition = dispositions[item.id];
     const joined = disposition ? { ...item, disposition } : item;
-    if (disposition && DISCHARGED_STATES.has(disposition.state) && item.reason !== "gated") {
+    // "A gated item only ever discharges via acknowledged" (see the comment
+    // above) — this is that arm. Without it, acknowledged isn't in
+    // DISCHARGED_STATES and the reason guard blocks the rest, so a gated row
+    // that a human explicitly acknowledged stayed in the active queue
+    // forever, just restyled.
+    const isDischarged = disposition
+      ? item.reason === "gated"
+        ? disposition.state === "acknowledged"
+        : DISCHARGED_STATES.has(disposition.state)
+      : false;
+    if (isDischarged) {
       discharged.push(joined);
     } else {
       active.push(joined);

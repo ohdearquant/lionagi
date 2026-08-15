@@ -71,6 +71,9 @@ class RunReasons:
     # baseline -- the run genuinely completed, so status stays "completed",
     # but the reason distinguishes it from a clean pass
     COMPLETED_GATE_REJECTED = "run.completed.gate_rejected"
+    # the planned DAG completed, but at least one reactive SpawnRequest was
+    # refused because the run had no remaining spawn capacity
+    COMPLETED_SPAWN_REFUSED = "run.completed.spawn_refused"
     # unlike COMPLETED_FINALIZE_ERROR, a raised write failure is a real failure
     # (status -> failed); distinct from FAILED_MISSING_ARTIFACT's post-hoc gap
     FAILED_ARTIFACT_WRITE = "run.failed.artifact_write"

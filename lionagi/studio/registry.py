@@ -62,6 +62,8 @@ _STUDIO_ROUTE_MODULES: tuple[str, ...] = (
     "lionagi.studio.services.sessions",
     "lionagi.studio.services.run_tags",
     "lionagi.studio.services.operator",
+    "lionagi.studio.services.hooks_library",
+    "lionagi.studio.services.operator_hooks",
     "lionagi.studio.services.approvals",
     "lionagi.studio.services.admin",
     "lionagi.studio.services.schedules",

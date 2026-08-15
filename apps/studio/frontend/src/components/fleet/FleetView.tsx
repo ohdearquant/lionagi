@@ -71,14 +71,6 @@ function AgentRowItem({
       aria-label={t("agentRow.ariaLabel", { name: agent.name })}
     >
       <StatusDot status={agent.status} />
-      {isPlayRoot(agent.invocationKind) && (
-        <span
-          className="shrink-0 rounded border border-edge px-1 py-0.5 font-data text-[length:var(--t-xs)] uppercase tracking-[0.04em] text-content-muted"
-          title={agent.invocationKind ?? undefined}
-        >
-          play
-        </span>
-      )}
       <span className="min-w-0 flex-1 truncate font-data text-[length:var(--t-sm)] text-content-primary">
         {agent.name}
       </span>
@@ -102,6 +94,46 @@ function AgentRowItem({
         {formatElapsed(agent.elapsedSec)}
       </span>
     </button>
+  );
+}
+
+export function AgentSections({
+  agents,
+  selectedId,
+  onSelectAgent,
+}: {
+  agents: AgentRow[];
+  selectedId: string | null;
+  onSelectAgent: (id: string) => void;
+}) {
+  const t = useTranslations("fleet");
+  const orchestrations = agents.filter((agent) => isPlayRoot(agent.invocationKind));
+  const singleAgents = agents.filter((agent) => !isPlayRoot(agent.invocationKind));
+  const groups = [
+    { key: "orchestrations", rows: orchestrations },
+    { key: "agents", rows: singleAgents },
+  ] as const;
+
+  return groups.map(({ key, rows }) =>
+    rows.length > 0 ? (
+      <section
+        key={key}
+        data-fleet-group={key}
+        aria-label={t(`counts.${key}`, { count: rows.length })}
+      >
+        <div className="border-t border-edge bg-surface-overlay px-4 py-1.5 font-ui text-[length:var(--t-xs)] font-semibold uppercase tracking-[0.08em] text-content-muted">
+          {t(`counts.${key}`, { count: rows.length })}
+        </div>
+        {rows.map((agent) => (
+          <AgentRowItem
+            key={agent.id}
+            agent={agent}
+            selected={selectedId === agent.id}
+            onSelect={onSelectAgent}
+          />
+        ))}
+      </section>
+    ) : null,
   );
 }
 
@@ -152,15 +184,7 @@ function OrgUnitGroup({
         </span>
       </div>
 
-      {/* Agent rows */}
-      {unit.agents.map((agent) => (
-        <AgentRowItem
-          key={agent.id}
-          agent={agent}
-          selected={selectedId === agent.id}
-          onSelect={onSelectAgent}
-        />
-      ))}
+      <AgentSections agents={unit.agents} selectedId={selectedId} onSelectAgent={onSelectAgent} />
 
       {unit.agents.length === 0 && (
         <div className="border-t border-edge px-4 py-2">
@@ -292,6 +316,12 @@ function ErrorState({ message }: { message: string | null }) {
 
 type HistFilter = "all" | "completed" | "failed";
 
+// The orchestration-kind facet vocabulary, mirroring the server's
+// VALID_KIND_FILTERS (services/runs.py). "show" also admits "show-play"
+// rows server-side.
+const KIND_FACETS = ["agent", "play", "flow", "fanout", "show"] as const;
+type KindFacet = (typeof KIND_FACETS)[number];
+
 // Filters against the normalized display status, not the raw run.status —
 // a phantom-reaped row (raw status "failed") is orphaned housekeeping, not a
 // failure, so it must not match the "failed" chip (design-brief §0/§4).
@@ -304,9 +334,10 @@ function matchesHistFilter(displayStatus: string, filter: HistFilter): boolean {
 export function HistorySection({
   rows,
   filter,
-  onFilter,
   sort,
   onSort,
+  kind,
+  onKind,
   selectedId,
   onSelect,
   nowSec,
@@ -317,9 +348,10 @@ export function HistorySection({
 }: {
   rows: RecentRow[];
   filter: HistFilter;
-  onFilter: (f: HistFilter) => void;
   sort: "recent" | "cost";
   onSort: (s: "recent" | "cost") => void;
+  kind: KindFacet | null;
+  onKind: (k: KindFacet | null) => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
   nowSec: number;
@@ -362,34 +394,15 @@ export function HistorySection({
     io.observe(el);
     return () => io.disconnect();
   }, [hasMore]);
-  const chips: { key: HistFilter; label: string }[] = [
-    { key: "all", label: t("history.all") },
-    { key: "completed", label: t("history.completed") },
-    { key: "failed", label: t("history.failed") },
-  ];
-
   return (
     <div>
-      {/* Section header with status filter chips */}
+      {/* Section header — the status chips moved up to the FilterBar beside
+          the other scope controls; the count still reflects the active
+          status filter. */}
       <div className="flex items-center gap-2 border-b border-edge bg-surface-raised px-4 py-2">
         <span className="min-w-0 flex-1 truncate font-ui text-[length:var(--t-xs)] font-semibold uppercase tracking-[0.08em] text-content-muted">
           {t("history.label")}
         </span>
-        {chips.map((c) => (
-          <button
-            key={c.key}
-            type="button"
-            onClick={() => onFilter(c.key)}
-            aria-pressed={filter === c.key}
-            className={`shrink-0 rounded px-1.5 py-0.5 font-data text-[length:var(--t-xs)] transition-colors duration-100 ${
-              filter === c.key
-                ? "bg-surface-overlay text-content-primary"
-                : "text-content-muted hover:text-content-secondary"
-            }`}
-          >
-            {c.label}
-          </button>
-        ))}
         <span className="shrink-0 font-data tabular-nums text-[length:var(--t-xs)] text-content-muted">
           {allFiltered.length}
           {serverHasMore ? "+" : ""}
@@ -412,6 +425,26 @@ export function HistorySection({
             }`}
           >
             {s === "cost" ? t("history.sortCost") : t("history.sortRecent")}
+          </button>
+        ))}
+        {/* Orchestration-kind facet, applied server-side (?kind=…) so it
+            composes with pagination and with the status chips above. The
+            facet values are the product's own kind vocabulary, shown raw —
+            the same strings each row's data already carries. */}
+        <span className="flex-1" />
+        {KIND_FACETS.map((k) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => onKind(kind === k ? null : k)}
+            aria-pressed={kind === k}
+            className={`shrink-0 rounded px-1.5 py-0.5 font-data text-[length:var(--t-xs)] transition-colors duration-100 ${
+              kind === k
+                ? "bg-surface-overlay text-content-primary"
+                : "text-content-muted hover:text-content-secondary"
+            }`}
+          >
+            {k}
           </button>
         ))}
       </div>
@@ -485,6 +518,8 @@ function FilterBar({
   projectNull,
   onProjectChange,
   onClear,
+  histFilter,
+  onHistFilter,
 }: {
   searchDraft: string;
   onSearchDraftChange: (v: string) => void;
@@ -492,9 +527,19 @@ function FilterBar({
   projectNull: boolean;
   onProjectChange: (next: { project?: string; projectNull?: boolean }) => void;
   onClear: () => void;
+  histFilter: HistFilter;
+  onHistFilter: (f: HistFilter) => void;
 }) {
   const t = useTranslations("fleet");
   const hasFilter = Boolean(searchDraft) || Boolean(project) || projectNull;
+  // Status chips live up here with the other scope controls rather than in
+  // the history section header: a filter placed inside one section reads as
+  // scoped to that section, which is not a promise this control keeps.
+  const chips: { key: HistFilter; label: string }[] = [
+    { key: "all", label: t("history.all") },
+    { key: "completed", label: t("history.completed") },
+    { key: "failed", label: t("history.failed") },
+  ];
   return (
     <div className="flex items-center gap-2 border-b border-edge px-4 py-2">
       <input
@@ -506,6 +551,21 @@ function FilterBar({
         className="min-w-0 flex-1 rounded border border-edge bg-surface-base px-2 py-1 font-data text-[length:var(--t-xs)] text-content-primary placeholder:text-content-muted focus:border-accent/50 focus:outline-none"
       />
       <ProjectFilter project={project} projectNull={projectNull} onChange={onProjectChange} />
+      {chips.map((c) => (
+        <button
+          key={c.key}
+          type="button"
+          onClick={() => onHistFilter(c.key)}
+          aria-pressed={histFilter === c.key}
+          className={`shrink-0 rounded px-1.5 py-0.5 font-data text-[length:var(--t-xs)] transition-colors duration-100 ${
+            histFilter === c.key
+              ? "bg-surface-overlay text-content-primary"
+              : "text-content-muted hover:text-content-secondary"
+          }`}
+        >
+          {c.label}
+        </button>
+      ))}
       {hasFilter && (
         <button
           type="button"
@@ -563,18 +623,71 @@ export default function FleetView() {
   const urlProject = (search as { project?: string }).project ?? null;
   const urlProjectNull = (search as { project_null?: boolean }).project_null ?? false;
   const urlSearchText = (search as { q?: string }).q ?? "";
+  // Orchestration-kind facet (?kind=play etc.) — set by the facet select
+  // below or by the Operator's navigate tool; applied server-side so it
+  // composes with pagination. Unknown values are dropped rather than sent
+  // (the server 422s on them, which would blank the whole list).
+  const rawUrlKind = (search as { kind?: unknown }).kind;
+  const urlKindCandidate =
+    typeof rawUrlKind === "string"
+      ? rawUrlKind
+      : Array.isArray(rawUrlKind) && typeof rawUrlKind[0] === "string"
+        ? rawUrlKind[0]
+        : null;
+  const urlKind =
+    urlKindCandidate !== null && KIND_FACETS.includes(urlKindCandidate as KindFacet)
+      ? (urlKindCandidate as KindFacet)
+      : null;
 
   const state = useFleet({
     project: urlProject ?? undefined,
     projectNull: urlProjectNull,
     search: urlSearchText || undefined,
+    kind: urlKind ?? undefined,
   });
 
   // A deep link is already an explicit selection. This matters when the
   // Operator dock narrows Fleet below the split-pane breakpoint: opening a run
   // must reveal its detail instead of landing back on the master list.
   const [narrowExplicit, setNarrowExplicit] = useState(() => Boolean(urlRunId));
-  const [histFilter, setHistFilter] = useState<HistFilter>("all");
+  // Initializers only run on mount, but the Operator's navigate tool changes
+  // the search params on an already-mounted Fleet (/fleet -> /fleet?s=…), so
+  // the deep-link intent must be re-applied whenever the URL's run target
+  // changes — during render, the endorsed adjust-on-props-change pattern,
+  // which leaves the user's own back/collapse actions (no URL change) alone.
+  const autoSelectedRef = useRef<string | null>(null);
+  const [lastUrlRunId, setLastUrlRunId] = useState(urlRunId);
+  if (lastUrlRunId !== urlRunId) {
+    setLastUrlRunId(urlRunId);
+    // The auto-select effect below writes ?s= too; a selection this component
+    // authored itself is not a deep link, and treating it as one replaces the
+    // master list with the detail pane whenever the pane is narrow.
+    if (urlRunId !== autoSelectedRef.current) {
+      setNarrowExplicit(Boolean(urlRunId));
+    }
+  }
+  // Deep links (and the Operator's navigate tool) carry ?status=…; honor it
+  // as the initial history filter instead of silently showing "all".
+  const rawUrlStatus = (search as { status?: unknown }).status;
+  const urlStatus =
+    typeof rawUrlStatus === "string"
+      ? rawUrlStatus
+      : Array.isArray(rawUrlStatus) && typeof rawUrlStatus[0] === "string"
+        ? rawUrlStatus[0]
+        : null;
+  const [histFilter, setHistFilter] = useState<HistFilter>(() =>
+    urlStatus === "failed" || urlStatus === "completed" ? urlStatus : "all",
+  );
+  // Same adjust-on-change pattern as narrowExplicit above: an in-place
+  // navigation carrying ?status=… must move the filter, while a URL without
+  // the param expresses no opinion and leaves the user's local choice alone.
+  const [lastUrlStatus, setLastUrlStatus] = useState(urlStatus);
+  if (lastUrlStatus !== urlStatus) {
+    setLastUrlStatus(urlStatus);
+    if (urlStatus === "failed" || urlStatus === "completed") {
+      setHistFilter(urlStatus);
+    }
+  }
   const [histSort, setHistSort] = useState<"recent" | "cost">("recent");
 
   // Text search is debounced into the URL (and from there into the poll and
@@ -615,9 +728,20 @@ export default function FleetView() {
   const handleClearFilters = useCallback(() => {
     setSearchDraft("");
     void navigate({
-      search: patchSearch(search, { project: undefined, project_null: undefined, q: undefined }),
+      search: patchSearch(search, {
+        project: undefined,
+        project_null: undefined,
+        q: undefined,
+        kind: undefined,
+      }),
     });
   }, [navigate, search]);
+  const handleKindChange = useCallback(
+    (next: string | null) => {
+      void navigate({ search: patchSearch(search, { kind: next ?? undefined }) });
+    },
+    [navigate, search],
+  );
 
   // History pagination. The 3s poll covers page 1 (200 runs); older pages are
   // fetched on demand and kept here — polls never clobber them. The visible
@@ -646,6 +770,7 @@ export default function FleetView() {
         project: urlProject ?? undefined,
         project_null: urlProjectNull,
         search: urlSearchText || undefined,
+        kind: urlKind ? [urlKind] : undefined,
       }),
     );
   }
@@ -660,15 +785,18 @@ export default function FleetView() {
         project: urlProject ?? undefined,
         project_null: urlProjectNull,
         search: urlSearchText || undefined,
+        kind: urlKind ? [urlKind] : undefined,
       }),
     );
     // Filter scope changed - the previous page's older-history cache/cursor
     // belongs to a different result set and must not be appended to this one.
+    // (In-flight continuations from the old pager are dropped by the identity
+    // checks in handleLoadMore: the ref now points at the new pager.)
     // eslint-disable-next-line react-hooks/set-state-in-effect -- external filter change, not a render-derivable value
     setOlderRows([]);
     setPagedHasMore(null);
     setHistVisible(HIST_VISIBLE_STEP);
-  }, [urlProject, urlProjectNull, urlSearchText]);
+  }, [urlProject, urlProjectNull, urlSearchText, urlKind]);
 
   // "Highest cost" is computed server-side (/api/runs/?sort=cost) rather than
   // a client re-sort of the live-polled + paginated "recent" history — the
@@ -694,6 +822,7 @@ export default function FleetView() {
         project: urlProject ?? undefined,
         project_null: urlProjectNull,
         search: urlSearchText || undefined,
+        kind: urlKind ? [urlKind] : undefined,
         sort: "cost",
       });
     costPagerRef.current = createHistoryPager(fetchCostPage, 2, terminalRecentRowsServerOrder);
@@ -717,7 +846,7 @@ export default function FleetView() {
     return () => {
       active = false;
     };
-  }, [histSort, urlProject, urlProjectNull, urlSearchText]);
+  }, [histSort, urlProject, urlProjectNull, urlSearchText, urlKind]);
 
   // Polled rows win on id collision (fresher status); older pages fill the tail.
   const recentSortedRows = useMemo(() => {
@@ -748,6 +877,13 @@ export default function FleetView() {
       if (!costHasMore || !costPager || costPager.inFlight()) return;
       setCostSortLoading(true);
       void costPager.loadNext().then((page) => {
+        // A filter/sort change swaps the pager under this continuation; its
+        // rows belong to the previous result set and must not be appended
+        // into the freshly-reset one (has-more included).
+        if (costPagerRef.current !== costPager) {
+          setCostSortLoading(false);
+          return;
+        }
         // null = fetch failed — leave state as-is; the sentinel retries the page.
         if (page) {
           setCostSortedRows((prev) => [...(prev ?? []), ...page.rows]);
@@ -765,6 +901,13 @@ export default function FleetView() {
     if (!serverHasMore || pager.inFlight()) return;
     setLoadingMore(true);
     void pager.loadNext().then((page) => {
+      // Same cross-generation guard as the cost branch: a filter change
+      // rebuilt the pager and reset the arrays; this continuation's rows
+      // belong to the old filter and mixing them in corrupts the list.
+      if (pagerRef.current !== pager) {
+        setLoadingMore(false);
+        return;
+      }
       // null = fetch failed — leave state as-is; the sentinel retries the page.
       if (page) {
         setPagedHasMore(page.hasMore);
@@ -776,19 +919,15 @@ export default function FleetView() {
   }, [histSort, histVisible, historyRows.length, serverHasMore, pager, costHasMore]);
 
   // Derive effective selection: URL param first, else auto-select first row.
-  // We track whether we've done the auto-select with a ref to avoid loops.
-  const autoSelectedRef = useRef<string | null>(null);
+  // The auto-select is tracked in autoSelectedRef (declared beside the
+  // deep-link sync above, which reads it) to avoid loops.
   const allAgents = state.orgUnits.flatMap((u) => u.agents);
-  const allAgentIds = allAgents.map((agent) => agent.id);
   const invocationRunId = urlInvocationId
     ? (allAgents.find((agent) => agent.invocation_id === urlInvocationId)?.id ??
       historyRows.find((row) => row.invocation_id === urlInvocationId)?.id ??
       null)
     : null;
   const requestedRunId = urlRunId ?? invocationRunId;
-  const urlIdValid =
-    requestedRunId != null &&
-    (allAgentIds.includes(requestedRunId) || historyRows.some((r) => r.id === requestedRunId));
 
   useEffect(() => {
     if (!urlRunId && invocationRunId) {
@@ -799,9 +938,16 @@ export default function FleetView() {
     }
   }, [invocationRunId, navigate, search, urlRunId]);
 
-  // Auto-select first row when data arrives and nothing is selected
+  // Auto-select first row when data arrives and nothing is selected. Under a
+  // terminal-status filter the live agents cannot match it, so selecting one
+  // would contradict the very filter that produced the view — pick the first
+  // matching history row instead.
   useEffect(() => {
-    const first = firstAgentId(state.orgUnits) ?? historyRows[0]?.id ?? null;
+    const first =
+      histFilter !== "all"
+        ? (historyRows.find((row) => matchesHistFilter(deriveDisplayStatus(row), histFilter))?.id ??
+          null)
+        : (firstAgentId(state.orgUnits) ?? historyRows[0]?.id ?? null);
     if (!first) return;
     if (urlRunId) return; // URL already has a selection
     if (autoSelectedRef.current === first) return;
@@ -811,10 +957,13 @@ export default function FleetView() {
     // bare `{ s }` would drop the project and text filters that produced the
     // row in the first place, and the next poll would come back unscoped.
     void navigate({ search: patchSearch(search, { s: first }), replace: true });
-  }, [state.orgUnits, historyRows, urlRunId, navigate, search]);
+  }, [state.orgUnits, historyRows, histFilter, urlRunId, navigate, search]);
 
-  // Resolved selected id: validated URL param, fallback to first (pre-auto-select)
-  const selectedRunId: string | null = urlIdValid ? requestedRunId : null;
+  // An explicit deep link (Library recent-runs, schedules, Operator navigate)
+  // is trusted as-is: the run it names is often older than the loaded history
+  // page, and the detail pane fetches by id anyway — a genuinely dead id
+  // surfaces as RunDetail's own error state, not a silently empty page.
+  const selectedRunId: string | null = requestedRunId;
 
   const handleSelectAgent = useCallback(
     (id: string) => {
@@ -855,6 +1004,8 @@ export default function FleetView() {
         projectNull={urlProjectNull}
         onProjectChange={handleProjectChange}
         onClear={handleClearFilters}
+        histFilter={histFilter}
+        onHistFilter={setHistFilter}
       />
 
       {/* Counts strip */}
@@ -909,9 +1060,10 @@ export default function FleetView() {
           <HistorySection
             rows={historyRows}
             filter={histFilter}
-            onFilter={setHistFilter}
             sort={histSort}
             onSort={setHistSort}
+            kind={urlKind}
+            onKind={handleKindChange}
             selectedId={selectedRunId}
             onSelect={handleSelectAgent}
             nowSec={state.nowSec}
@@ -928,7 +1080,7 @@ export default function FleetView() {
   // Nothing selectable at all → render the master column full-width. The
   // detail pane only earns the split when a live or historical session can be
   // selected; a truly empty fleet reads as one composed state.
-  if (state.orgUnits.length === 0 && state.recent.length === 0) {
+  if (state.orgUnits.length === 0 && state.recent.length === 0 && !selectedRunId) {
     return master;
   }
 
@@ -942,6 +1094,7 @@ export default function FleetView() {
       master={master}
       detail={detail}
       defaultMasterWidth={400}
+      collapsible
       detailActive={narrowExplicit || Boolean(invocationRunId)}
       ariaLabelMaster={t("split.master")}
       ariaLabelDetail={t("split.detail")}

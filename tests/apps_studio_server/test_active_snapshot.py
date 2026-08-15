@@ -149,3 +149,109 @@ def test_active_snapshot_rejects_unbounded_limits(tmp_path, monkeypatch):
     response = client.get("/api/active-snapshot", params={"run_limit": 501})
 
     assert response.status_code == 422
+
+
+async def _seed_kind_rows(db_path: Path) -> None:
+    """One running run per stored orchestration kind, plus a legacy row with none.
+
+    The stored vocabulary spells the show-driven root "show-play"; "show" is the
+    facet's spelling and is not a value any row carries.
+    """
+    now = time.time()
+    kinds = ["play", "flow", "fanout", "show-play", "agent", None]
+    async with StateDB(db_path) as db:
+        for index, kind in enumerate(kinds):
+            invocation_id = f"kind-inv-{index}"
+            await db.create_invocation(
+                {
+                    "id": invocation_id,
+                    "skill": f"skill-{index}",
+                    "status": "running",
+                    "started_at": now - 100 + index,
+                }
+            )
+            progression_id = str(uuid.uuid4())
+            await db.create_progression(progression_id)
+            row = {
+                "id": f"kind-run-{index}",
+                "progression_id": progression_id,
+                "name": f"{kind or 'legacy'} run",
+                "status": "running",
+                "started_at": now - 100 + index,
+                "last_message_at": now,
+                "invocation_id": invocation_id,
+            }
+            if kind is not None:
+                row["invocation_kind"] = kind
+            await db.create_session(row)
+
+
+def _kind_client(tmp_path, monkeypatch) -> TestClient:
+    import lionagi.state.db as state_db_mod
+
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    _run(_seed_kind_rows(db_path))
+    monkeypatch.setattr(
+        "lionagi.studio.services.runs._session_liveness", lambda *_args, **_kwargs: True
+    )
+
+    from lionagi.studio.app import app
+
+    return TestClient(app, base_url="http://127.0.0.1:8765")
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("play", {"play run"}),
+        ("flow", {"flow run"}),
+        ("fanout", {"fanout run"}),
+        # The facet spells one thing; the writers have spelled it two ways.
+        ("show", {"show-play run"}),
+        # A row predating the column carries NULL and reads as a plain agent
+        # run everywhere else, so the agent facet has to admit it here too.
+        ("agent", {"agent run", "legacy run"}),
+    ],
+)
+def test_active_snapshot_kind_facet_selects_the_same_rows_the_runs_listing_would(
+    tmp_path, monkeypatch, kind: str, expected: set[str]
+):
+    client = _kind_client(tmp_path, monkeypatch)
+
+    response = client.get("/api/active-snapshot", params={"kind": kind})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert {row["name"] for row in payload["active_runs"]} == expected
+    assert payload["active_run_total"] == len(expected), (
+        "the total is what makes a bounded snapshot's omissions readable, so it "
+        "has to count the facet's rows rather than every running row"
+    )
+
+
+def test_active_snapshot_kind_facet_leaves_invocation_grouping_alone(tmp_path, monkeypatch):
+    """The facet selects runs only, matching the listing this replaced.
+
+    Stated as a test because the client relies on it: a kind-scoped view is the
+    one case where a childless group can be an artifact of the filter, and the
+    reducer stops trusting server coherence exactly there.
+    """
+    client = _kind_client(tmp_path, monkeypatch)
+
+    response = client.get("/api/active-snapshot", params={"kind": "play"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["active_run_total"] == 1
+    assert payload["active_invocation_total"] == 6
+
+
+def test_active_snapshot_refuses_an_unknown_kind(tmp_path, monkeypatch):
+    """Refused rather than silently empty, and by the runs listing's own check."""
+    client = _kind_client(tmp_path, monkeypatch)
+
+    response = client.get("/api/active-snapshot", params={"kind": "aegnt"})
+
+    assert response.status_code == 422
+    assert "aegnt" in response.text
