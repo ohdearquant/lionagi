@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "Default",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · direkomendasikan",
+      "legacyGroup": "Pilihan lama",
+      "efforts": "Usaha: {efforts}",
+      "effortInModel": "Usaha dienkode dalam ID model",
+      "effortAsSetting": "Usaha dikirim sebagai pengaturan penyedia"
     },
     "effort": {
       "label": "Usaha",
