@@ -457,3 +457,66 @@ def test_a_second_loop_does_not_evict_the_first_loops_singleflight_slot(
     # started its own instead of joining.
     assert captures == 2
     assert admin_svc._PS_SNAPSHOT_INFLIGHT == {}
+
+
+def test_cache_publish_is_mutually_exclusive_across_loops(monkeypatch):
+    """Two captures must not be inside the compare-and-publish step at once.
+
+    Publishing reads the cache, decides whether its own scan is newer, and
+    writes. Those are separate steps, and captures run on different OS
+    threads, so without mutual exclusion both can read the old value before
+    either writes. The one that started earlier then publishes last and its
+    older process table replaces the newer one, which is how a process that
+    exists only in the newer snapshot comes back as absent.
+
+    Asserting on overlap rather than on a lost write: the lost write needs a
+    specific interleaving to show up, while overlap is the condition that
+    makes the lost write possible at all, and it is observable directly.
+    """
+    import threading
+
+    import lionagi.studio.services.admin as admin_svc
+
+    _isolate_snapshot_cache(monkeypatch)
+
+    real_cache_cls = admin_svc._PsSnapshotCache
+    inside = 0
+    observed = {"max_inside": 0}
+    bookkeeping = threading.Lock()
+
+    def _instrumented(*args: Any, **kwargs: Any) -> Any:
+        nonlocal inside
+        with bookkeeping:
+            inside += 1
+            observed["max_inside"] = max(observed["max_inside"], inside)
+        # Hold the critical section open long enough that a second thread
+        # reaching it would be seen. Without the publish lock this window is
+        # wide enough to make the overlap essentially certain.
+        time.sleep(0.05)
+        with bookkeeping:
+            inside -= 1
+        return real_cache_cls(*args, **kwargs)
+
+    monkeypatch.setattr(admin_svc, "_PsSnapshotCache", _instrumented)
+    monkeypatch.setattr(admin_svc, "_ps_snapshot", lambda: "PID COMMAND\n1 init\n")
+
+    errors: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            asyncio.run(admin_svc._capture_ps_snapshot())
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_run, daemon=True) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+        assert not t.is_alive(), "a capture never returned"
+
+    assert errors == []
+    assert observed["max_inside"] == 1, (
+        f"{observed['max_inside']} captures were publishing at once; "
+        "the compare-and-publish step is not mutually exclusive"
+    )

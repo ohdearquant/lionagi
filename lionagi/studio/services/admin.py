@@ -9,6 +9,7 @@ import logging
 import os
 import sqlite3
 import subprocess
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -247,6 +248,13 @@ _PS_SNAPSHOT_CACHE: _PsSnapshotCache | None = None
 # and is shared by every caller.
 _PS_SNAPSHOT_INFLIGHT: dict[asyncio.AbstractEventLoop, asyncio.Task[str]] = {}
 _PS_SNAPSHOT_METRICS: dict[str, int | float | None] | None = None
+# Guards publishing the cache and bumping the counters above. Those are
+# read-modify-write sequences, and the loops that run them live on different
+# OS threads, so comparing timestamps is not enough on its own: two captures
+# can both read the cache before either writes, and then the older one wins by
+# writing last. An asyncio lock would only order coroutines within one loop.
+# Held for a few statements with no I/O and no await inside.
+_PS_SNAPSHOT_PUBLISH_LOCK = threading.Lock()
 
 
 def _ps_snapshot_metrics_state() -> dict[str, int | float | None]:
@@ -285,21 +293,28 @@ async def _capture_ps_snapshot() -> str:
     value = await anyio.to_thread.run_sync(_ps_snapshot)
     duration_ms = (time.perf_counter() - started) * 1000
 
-    metrics = _ps_snapshot_metrics_state()
-    metrics["captures"] = int(metrics["captures"] or 0) + 1
-    metrics["last_scan_duration_ms"] = round(duration_ms, 3)
+    # Compare and publish under the lock as one step. Reading the cache,
+    # deciding, and then writing is three steps, and captures run on different
+    # OS threads: without the lock two of them can both read the old value
+    # before either writes, at which point the one that started earlier
+    # publishes last and its older evidence replaces the newer.
+    with _PS_SNAPSHOT_PUBLISH_LOCK:
+        metrics = _ps_snapshot_metrics_state()
+        metrics["captures"] = int(metrics["captures"] or 0) + 1
+        metrics["last_scan_duration_ms"] = round(duration_ms, 3)
 
-    current = _PS_SNAPSHOT_CACHE
-    if current is not None and current.stored_at > taken_at:
-        # A scan that started later has already published. It is the better
-        # evidence, so it stays in the cache and is what this caller gets too.
-        return current.value
+        current = _PS_SNAPSHOT_CACHE
+        if current is not None and current.stored_at > taken_at:
+            # A scan that started later has already published. It is the
+            # better evidence, so it stays in the cache and is what this
+            # caller gets too.
+            return current.value
 
-    _PS_SNAPSHOT_CACHE = _PsSnapshotCache(
-        value=value,
-        stored_at=taken_at,
-        duration_ms=duration_ms,
-    )
+        _PS_SNAPSHOT_CACHE = _PsSnapshotCache(
+            value=value,
+            stored_at=taken_at,
+            duration_ms=duration_ms,
+        )
     return value
 
 
