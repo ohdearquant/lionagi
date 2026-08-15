@@ -487,3 +487,59 @@ def test_the_human_path_still_ends_quietly_when_its_reader_goes_away():
     # The reason the default is set at all: `li ... | head` should stop, not
     # print a traceback about a pipe the person closed on purpose.
     assert _sigpipe_disposition_after("handshake") == "SIG_DFL"
+
+
+def test_lifecycle_hands_a_consumer_the_end_and_whether_it_was_observed():
+    """A run's end reaches the consumer with its provenance attached.
+
+    The consumer here is the one this file is written for: another language,
+    reading JSON, with no way to ask what a field means. Given `ended_at`
+    alone it cannot tell an end somebody observed from one reconstructed
+    afterwards from leftover evidence, and the two are arithmetic-identical.
+    The aggregate end IS one of the session ends, so it carries that row's
+    provenance rather than a fresh judgement about the run.
+    """
+    from lionagi.cli.machine import _lifecycle_summary
+
+    summary = _lifecycle_summary(
+        [
+            {
+                "id": "s1",
+                "status": "completed",
+                "started_at": 100.0,
+                "ended_at": 150.0,
+                "ended_at_is_approximate": 0,
+            },
+            {
+                "id": "s2",
+                "status": "completed",
+                "started_at": 150.0,
+                "ended_at": 400.0,
+                "ended_at_is_approximate": 1,
+            },
+        ]
+    )
+
+    assert summary["terminal"] is True
+    assert [entry["ended_at_is_approximate"] for entry in summary["sessions"]] == [False, True]
+    # The run's end is s2's, so it inherits s2's provenance.
+    assert summary["ended_at"] == 400.0
+    assert summary["ended_at_is_approximate"] is True
+
+
+def test_lifecycle_states_the_provenance_key_on_every_branch():
+    """A key that appears only once a run has ended forces the consumer to
+    tell absent from null, and a consumer that does not will read absent as
+    measured. Cheaper to always answer the question."""
+    from lionagi.cli.machine import _lifecycle_summary
+
+    nothing_recorded = _lifecycle_summary([])
+    still_running = _lifecycle_summary(
+        [{"id": "s1", "status": "running", "started_at": 100.0, "ended_at": None}]
+    )
+
+    assert nothing_recorded["found"] is False
+    assert still_running["terminal"] is False
+    for summary in (nothing_recorded, still_running):
+        assert "ended_at_is_approximate" in summary
+        assert summary["ended_at_is_approximate"] is None

@@ -526,6 +526,10 @@ def _lifecycle_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "terminal": row.get("status") in SESSION_TERMINAL_STATUSES,
             "started_at": row.get("started_at"),
             "ended_at": row.get("ended_at"),
+            # Travels with the `ended_at` beside it. A row repaired after the
+            # fact carries an end nobody observed, and handed over bare it is
+            # arithmetic-identical to a measured one.
+            "ended_at_is_approximate": bool(row.get("ended_at_is_approximate")),
             "reason_code": row.get("status_reason_code"),
             "reason_summary": row.get("status_reason_summary"),
         }
@@ -540,6 +544,10 @@ def _lifecycle_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "reason_code": None,
             "reason_summary": None,
             "ended_at": None,
+            # Present on every branch. A key that appears only when the run
+            # ended forces the consumer to distinguish absent from null, and
+            # the ones that do not will read absent as measured.
+            "ended_at_is_approximate": None,
             "sessions": [],
         }
 
@@ -554,6 +562,7 @@ def _lifecycle_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "reason_code": governing["reason_code"],
             "reason_summary": governing["reason_summary"],
             "ended_at": None,
+            "ended_at_is_approximate": None,
             "sessions": sessions,
         }
 
@@ -571,7 +580,12 @@ def _lifecycle_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         governing = next(
             entry for entry in sessions if entry["status"] not in _SUCCEEDED_SESSION_STATUSES
         )
-    ends = [entry["ended_at"] for entry in sessions if entry["ended_at"] is not None]
+    # The run's end IS one of the session ends, so it carries that row's
+    # provenance rather than a fresh judgement about the run. Taking the max of
+    # the timestamps alone would drop the only thing that says whether the
+    # winning end was observed.
+    ended = [entry for entry in sessions if entry["ended_at"] is not None]
+    latest = max(ended, key=lambda entry: entry["ended_at"]) if ended else None
     return {
         "found": True,
         "terminal": True,
@@ -579,7 +593,8 @@ def _lifecycle_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "outcome": outcome,
         "reason_code": governing["reason_code"],
         "reason_summary": governing["reason_summary"],
-        "ended_at": max(ends) if ends else None,
+        "ended_at": latest["ended_at"] if latest else None,
+        "ended_at_is_approximate": latest["ended_at_is_approximate"] if latest else None,
         "sessions": sessions,
     }
 

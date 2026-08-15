@@ -211,6 +211,30 @@ def test_elapsed_does_not_mark_a_still_running_row():
     assert not _elapsed(time.time() - 45, approximate=True).startswith("~")
 
 
+def test_elapsed_reports_unknown_for_a_finished_row_that_recorded_no_end():
+    """A session that stopped, with no end on the row, has no span to report.
+
+    Measuring it up to now is what the running case does, and doing it here
+    produces a duration that is larger every time the table is redrawn for a
+    session that has been over for months. Legacy rows are exactly the
+    population with a terminal status and no recorded end, so this is not a
+    hypothetical shape.
+    """
+    long_ago = time.time() - 86_400
+
+    assert _elapsed(long_ago, ended_at=None, terminal=True) == "-"
+
+
+def test_elapsed_still_measures_a_running_row_that_recorded_no_end():
+    """Control for the test above: the terminal flag is what suppresses the
+    span, not the missing end. A running row has no end either, and its
+    elapsed time genuinely is measured up to now."""
+    running = _elapsed(time.time() - 45, ended_at=None, terminal=False)
+
+    assert running != "-"
+    assert running.endswith("s")
+
+
 def test_trunc_short():
     assert _trunc("hello", 10) == "hello"
 
@@ -481,6 +505,45 @@ def test_session_to_row_carries_end_provenance_into_the_elapsed_column():
 
     assert measured["elapsed"] == "45s"
     assert reconstructed["elapsed"] == "~45s"
+
+
+def test_session_to_row_reports_unknown_elapsed_for_a_terminal_row_with_no_end():
+    """The whole path, not just the formatter: a terminal session carrying no
+    end must reach the table as unknown rather than as a span still growing."""
+    row = _session_to_row(
+        {
+            "id": "abc123def456",
+            "invocation_kind": "agent",
+            "project": "lionagi",
+            "status": "completed",
+            "started_at": time.time() - 86_400,
+            "ended_at": None,
+        }
+    )
+
+    assert row["elapsed"] == "-"
+
+
+def test_machine_session_entity_carries_end_provenance():
+    """`li monitor --machine` hands out `ended_at` for sessions, so it has to
+    hand out the field saying whether that end was observed. A consumer given
+    the timestamp alone cannot tell a reconstructed end from a measured one,
+    and nothing else in the payload answers it."""
+    from lionagi.cli.monitor import _machine_entity
+
+    entity = _machine_entity(
+        "session",
+        {
+            "id": "abc123def456",
+            "status": "completed",
+            "started_at": 100.0,
+            "ended_at": 145.0,
+            "ended_at_is_approximate": 1,
+        },
+    )
+
+    assert "ended_at_is_approximate" in entity
+    assert entity["ended_at_is_approximate"] == 1
 
 
 def test_session_to_row_no_optional():

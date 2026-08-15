@@ -427,9 +427,10 @@ class SQLAlchemyLifecycleService:
                 # one, and this transition is that measurement. Reusing the
                 # guess would compute a real-looking duration from a number
                 # nobody observed.
-                if ended_at_value is None or (
+                measured_here = ended_at_value is None or (
                     "ended_at" not in command.patch and row["ended_at_is_approximate"]
-                ):
+                )
+                if measured_here:
                     ended_at_value = now
                 patch = dict(command.patch)
                 patch.setdefault("ended_at", ended_at_value)
@@ -441,7 +442,17 @@ class SQLAlchemyLifecycleService:
                 # Leaving the bit set beside a measured duration produces a row
                 # whose own two fields disagree, and readers believe the bit:
                 # they discard the duration this write just measured.
-                patch.setdefault("ended_at_is_approximate", 0)
+                #
+                # Where this transition is what measured the end, that holds
+                # against a caller who sent the bit too: the value they sent
+                # described an end they did not supply, so it cannot describe
+                # the one taken here. A caller supplying both an end and the
+                # bit is recording a reconstructed end deliberately, and keeps
+                # it -- which is why this is not an unconditional clear.
+                if measured_here:
+                    patch["ended_at_is_approximate"] = 0
+                else:
+                    patch.setdefault("ended_at_is_approximate", 0)
                 if patch != dict(command.patch):
                     command = replace(command, patch=patch)
 

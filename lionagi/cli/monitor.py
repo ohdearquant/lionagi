@@ -102,6 +102,7 @@ def _elapsed(
     ended_at: float | None = None,
     *,
     approximate: bool = False,
+    terminal: bool = False,
 ) -> str:
     """Human-readable elapsed time.  Uses ended_at if present, else now.
 
@@ -112,6 +113,13 @@ def _elapsed(
     provenance: printed bare, a guess reads as a measurement.
     """
     if started_at is None:
+        return "-"
+    # A row that has finished and recorded no end has no span to report, and
+    # saying so is the whole answer. Measuring it up to now is what the branch
+    # below does for a running row, and doing that here prints a duration that
+    # grows every redraw for a session that stopped long ago -- the reading the
+    # provenance flag exists to prevent, arrived at by a different route.
+    if ended_at is None and terminal:
         return "-"
     # Only a closed span can be approximate. A row that is still running is
     # measured up to now whatever the flag says about the end it does not have.
@@ -421,6 +429,8 @@ def _format_table(rows: list[dict[str, Any]]) -> str:
 
 
 def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
     return {
         "id": sess["id"][:16],
         "type": sess.get("invocation_kind") or "session",
@@ -435,6 +445,7 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
             sess.get("started_at"),
             sess.get("ended_at"),
             approximate=bool(sess.get("ended_at_is_approximate")),
+            terminal=sess.get("status") in SESSION_TERMINAL_STATUSES,
         ),
         "agents": str(sess.get("branch_count") or 0),
     }
@@ -1819,6 +1830,11 @@ _ENTITY_EXTRA: dict[str, tuple[str, ...]] = {
     "session": (
         "project",
         "invocation_kind",
+        # Describes the `ended_at` in the core block above. Withheld, the
+        # caller receives a reconstructed end that is indistinguishable from a
+        # measured one, which is the confusion the column was added to remove.
+        # Session-only: no other entity kind has a reconstructed end.
+        "ended_at_is_approximate",
         "agent_name",
         "playbook_name",
         "current_phase",
