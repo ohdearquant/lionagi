@@ -242,9 +242,10 @@ class _PsSnapshotCache(NamedTuple):
     # here, and roughly 15% of back-to-back reads return the same value. Two
     # captures starting inside one tick would compare equal, the `>` test would
     # not hold, and the earlier one would publish over the later one's evidence.
-    # A counter handed out under the publish lock is strictly increasing by
+    # A counter handed out under its own lock is strictly increasing by
     # construction and carries no clock dependency at all. `stored_at` is kept
-    # because the TTL is a real duration; it just no longer decides ordering.
+    # because the TTL is a real duration; it just no longer decides ordering,
+    # which is why it is read at publication rather than at scan start.
     sequence: int
 
 
@@ -293,19 +294,22 @@ async def _capture_ps_snapshot() -> str:
     Captures on different loops overlap, and they do not finish in the order
     they started: a scan that began earlier can return later. Publishing by
     arrival would let that older scan replace newer evidence, so a process
-    that appears only in the newer snapshot resolves as absent. Stamping at
-    completion would compound it, since the older data would then carry the
-    later timestamp and outlive the newer snapshot in the TTL.
+    that appears only in the newer snapshot resolves as absent. So a capture
+    claims a start-order number up front, and publishes only if nothing that
+    started later has published already.
 
-    So a snapshot is stamped with when its own scan began, and it is
-    published only if nothing newer has been published already. Stamping at
-    the start also shortens the effective TTL by the scan's duration, which
-    is the safe direction for a cache that answers liveness questions.
+    The TTL clock is read at publication instead, because that is the only
+    thing ``stored_at`` decides now. Reading it at the start would charge the
+    scan's own duration against a one-second lifetime: a scan slower than
+    that would publish an entry already expired, every later caller would
+    miss, and each would launch a scan of its own. That happens exactly under
+    the load that makes scans slow, which is when the cache has to work.
+    Nothing is lost by moving it, because the start-order number, not this
+    timestamp, is what keeps an older scan from replacing a newer one.
     """
     global _PS_SNAPSHOT_CACHE
 
     started = time.perf_counter()
-    taken_at = time.monotonic()
     # Claimed before the scan, so it orders captures by when they STARTED,
     # which is the ordering this cache publishes by. Taking it at publish time
     # instead would order by arrival and reintroduce exactly the staleness the
@@ -336,7 +340,10 @@ async def _capture_ps_snapshot() -> str:
 
         _PS_SNAPSHOT_CACHE = _PsSnapshotCache(
             value=value,
-            stored_at=taken_at,
+            # Read here, past the ordering guard above, so the TTL measures how
+            # long this value has been available rather than how long ago its
+            # scan set off. See the docstring.
+            stored_at=time.monotonic(),
             duration_ms=duration_ms,
             sequence=sequence,
         )

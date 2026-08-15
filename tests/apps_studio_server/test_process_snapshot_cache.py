@@ -622,3 +622,159 @@ def test_cache_publish_is_mutually_exclusive_across_loops(monkeypatch):
         f"{observed['max_inside']} captures were publishing at once; "
         "the compare-and-publish step is not mutually exclusive"
     )
+
+
+async def test_a_scan_slower_than_the_ttl_still_produces_a_cache_that_hits(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The published entry must not already be expired when it lands.
+
+    The TTL clock reading and the scan are two different moments, and taking
+    the reading first charges the scan's duration against the entry's whole
+    lifetime. A scan slower than the TTL then publishes something dead on
+    arrival: the next caller misses, starts its own scan, and so does the one
+    after it. Slow scans are what the cache exists for, so this is the load
+    under which it would quietly stop being a cache at all.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    _isolate_snapshot_cache(monkeypatch)
+
+    scan_seconds = admin_svc.PS_SNAPSHOT_TTL_SECONDS * 2
+    assert scan_seconds > admin_svc.PS_SNAPSHOT_TTL_SECONDS, (
+        "the scan has to outlast the TTL or this test asserts nothing"
+    )
+    reading = 1000.0
+
+    class _ScanAdvancesTheClock:
+        """Real time module, except monotonic() advances only while a scan runs."""
+
+        @staticmethod
+        def monotonic() -> float:
+            return reading
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(time, name)
+
+    monkeypatch.setattr(admin_svc, "time", _ScanAdvancesTheClock())
+
+    captures = 0
+
+    def capture() -> str:
+        nonlocal captures, reading
+        captures += 1
+        # The scan itself is what consumes wall-clock here; nothing else in
+        # this test moves the clock, so any expiry is the scan's duration.
+        reading += scan_seconds
+        return f"SNAPSHOT-{captures}"
+
+    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+
+    first = await admin_svc.cached_ps_snapshot()
+    assert first == "SNAPSHOT-1"
+    assert captures == 1
+
+    second = await admin_svc.cached_ps_snapshot()
+    assert second == "SNAPSHOT-1", (
+        "the second caller got a fresh scan, so the entry published by the "
+        "first was already past its TTL when it landed"
+    )
+    assert captures == 1, f"expected the cached entry to be reused, but {captures} scans ran"
+
+
+async def test_the_cache_still_expires_once_the_ttl_actually_elapses(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Control for the test above.
+
+    An entry that never expired would satisfy that one too, so without this
+    the suite would read a broken TTL as a working cache.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    _isolate_snapshot_cache(monkeypatch)
+
+    reading = 1000.0
+
+    class _ManualMonotonic:
+        @staticmethod
+        def monotonic() -> float:
+            return reading
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(time, name)
+
+    monkeypatch.setattr(admin_svc, "time", _ManualMonotonic())
+
+    captures = 0
+
+    def capture() -> str:
+        nonlocal captures
+        captures += 1
+        return f"SNAPSHOT-{captures}"
+
+    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+
+    assert await admin_svc.cached_ps_snapshot() == "SNAPSHOT-1"
+    assert await admin_svc.cached_ps_snapshot() == "SNAPSHOT-1"
+    assert captures == 1
+
+    reading += admin_svc.PS_SNAPSHOT_TTL_SECONDS + 0.001
+
+    assert await admin_svc.cached_ps_snapshot() == "SNAPSHOT-2"
+    assert captures == 2
+
+
+async def test_a_page_of_legacy_rows_launches_one_scan_even_when_the_scan_is_slow(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The consequence the TTL reading actually governs, asserted at the consumer.
+
+    Legacy rows carry no targeted process identity, so each one falls back to
+    the shared host scan. That is precisely the population the cache exists
+    for. With the TTL clock read before the scan, a scan slower than the TTL
+    made every row in a page pay for its own, so the health and phantom loops
+    got slower the slower scanning already was.
+    """
+    import lionagi.studio.services.admin as admin_svc
+
+    _isolate_snapshot_cache(monkeypatch)
+
+    reading = 1000.0
+    scan_seconds = admin_svc.PS_SNAPSHOT_TTL_SECONDS * 3
+
+    class _ScanAdvancesTheClock:
+        @staticmethod
+        def monotonic() -> float:
+            return reading
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(time, name)
+
+    monkeypatch.setattr(admin_svc, "time", _ScanAdvancesTheClock())
+
+    scans = 0
+
+    def capture() -> str:
+        nonlocal scans, reading
+        scans += 1
+        reading += scan_seconds
+        return "host-process-table"
+
+    monkeypatch.setattr(admin_svc, "_ps_snapshot", capture)
+
+    rows = 8
+    # No recorded pid, so every row misses the targeted path and falls through
+    # to the shared scan — the legacy shape this cache serves.
+    for _ in range(rows):
+        await admin_svc.resolve_process_liveness({"id": "legacy-row"}, None)
+
+    assert scans == 1, (
+        f"{rows} legacy rows launched {scans} host scans; the cached entry was "
+        "expiring on arrival because its age was charged from before the scan"
+    )
+    metrics = admin_svc.process_snapshot_diagnostics()
+    assert metrics["fallback_checks"] == rows, (
+        "the rows have to have taken the fallback path, or this counts scans "
+        "that were never going to happen"
+    )
