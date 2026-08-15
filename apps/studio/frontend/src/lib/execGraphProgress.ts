@@ -128,11 +128,24 @@ export function formatElapsed(seconds: number | null): string {
 
 // ── Descendant-terminal suppression + terminal-run collapse ────────────────
 
-const TERMINAL_STATUSES = new Set<NodeExecStatus>([
+/** Descendant statuses that prove an ancestor actually finished.
+ *
+ * The suppression below reads a terminal descendant as evidence that a node
+ * still reporting "running" has in fact completed — the descendant could only
+ * have got there by its dependency being satisfied. That inference is about
+ * how the descendant reached its status, not about the status being terminal,
+ * which is why this is deliberately not "the set of terminal statuses".
+ *
+ * `cancelled` is terminal and is NOT here. A cancellation is delivered to
+ * nodes that never ran, before dependency waiting, so a cancelled descendant
+ * is evidence of nothing about its ancestor. Including it projected a graph
+ * `a -> b` with a still-running `a` and a cancelled `b` as `a=completed`,
+ * reporting work as finished that was in fact interrupted mid-flight.
+ */
+const DEPENDENCY_SATISFIED_STATUSES = new Set<NodeExecStatus>([
   "completed",
   "failed",
   "skipped",
-  "cancelled",
   "escalated",
 ]);
 const NON_TERMINAL_ACTIVE_STATUSES = new Set<NodeExecStatus>([
@@ -208,7 +221,7 @@ export function reconcileNodeStatuses(
     if (afterSuppression[id] !== "running") continue;
     let hasTerminalDescendant = false;
     for (const d of descendants.get(id) ?? []) {
-      if (TERMINAL_STATUSES.has(base[d]!)) {
+      if (DEPENDENCY_SATISFIED_STATUSES.has(base[d]!)) {
         hasTerminalDescendant = true;
         break;
       }

@@ -486,7 +486,7 @@ def test_node_lifecycle_state_vocabulary_golden():
 
 def test_node_lifecycle_terminal_lane_set_golden():
     """The sticky-terminal lane set backing lane_for()'s transition rule
-    (queued -> running -> {awaiting_approval, paused} -> one of these three,
+    (queued -> running -> {awaiting_approval, paused} -> one of these five,
     then sticky unless explicitly reset to queued/running)."""
     assert signal_mod._TERMINAL == EXPECTED_NODE_LIFECYCLE_TERMINAL
 

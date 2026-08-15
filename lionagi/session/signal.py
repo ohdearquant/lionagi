@@ -165,8 +165,11 @@ class DispatchSignal(Signal):
     body: dict = {}
 
 
-# -- Extended node lifecycle (ADR-0033): queued → running → awaiting_approval →
-# succeeded|failed|escalated. NodeStarted/Completed/Failed (above) cover running/succeeded/failed; these three cover the rest.
+# -- Extended node lifecycle (ADR-0033): queued → running →
+# {awaiting_approval, paused} → succeeded|failed|skipped|cancelled|escalated.
+# NodeStarted/Completed/Failed (above) cover running/succeeded/failed; the
+# signals below cover the rest. NodeLifecycleState is the vocabulary of record
+# and tests/protocols/test_event_schema_drift.py pins it.
 
 
 class NodeQueued(Signal):

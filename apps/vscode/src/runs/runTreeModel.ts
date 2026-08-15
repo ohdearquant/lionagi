@@ -42,11 +42,14 @@ export function createRunTreeState(): RunTreeState {
   };
 }
 
-/** Terminal states that are sticky — a later signal only resets them on retry. */
+/** Terminal states that are sticky — a later signal only resets them on retry.
+ *
+ * Mirrors `_TERMINAL` in lionagi/session/signal.py, which is the set of record. */
 const TERMINAL: ReadonlySet<NodeLifecycleState> = new Set([
   "succeeded",
   "failed",
   "skipped",
+  "cancelled",
   "escalated",
 ]);
 

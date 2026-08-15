@@ -245,6 +245,57 @@ describe("reconcileNodeStatuses — descendant-terminal suppression of stale run
     expect(result.mid).not.toBe("running");
   });
 
+  // A cancellation reaches nodes that never ran, ahead of dependency waiting,
+  // so a cancelled descendant says nothing about whether its ancestor finished.
+  // Reading it as evidence reported interrupted work as completed.
+  it("does not suppress a running ancestor whose descendant was cancelled", () => {
+    const statuses: Record<string, NodeExecStatus> = {
+      a: "running",
+      b: "cancelled",
+    };
+    const result = reconcileNodeStatuses(
+      ["a", "b"],
+      [{ source: "a", target: "b" }],
+      statuses,
+      false,
+    );
+    expect(result.a).toBe("running");
+    expect(result.b).toBe("cancelled");
+  });
+
+  it("still suppresses when a cancelled descendant sits beside one that really ran", () => {
+    // The evidence is per-descendant: one that proves the ancestor finished is
+    // enough, and the cancelled sibling neither adds to nor cancels it out.
+    const statuses: Record<string, NodeExecStatus> = {
+      a: "running",
+      b: "cancelled",
+      c: "completed",
+    };
+    const result = reconcileNodeStatuses(
+      ["a", "b", "c"],
+      [
+        { source: "a", target: "b" },
+        { source: "a", target: "c" },
+      ],
+      statuses,
+      false,
+    );
+    expect(result.a).not.toBe("running");
+  });
+
+  it("keeps cancelled terminal for the done-collapse — it is not rewritten to pending", () => {
+    // Excluding cancelled from the suppression evidence must not make it read
+    // as still-active work when the run has finished.
+    const statuses: Record<string, NodeExecStatus> = { a: "running", b: "cancelled" };
+    const result = reconcileNodeStatuses(
+      ["a", "b"],
+      [{ source: "a", target: "b" }],
+      statuses,
+      true,
+    );
+    expect(result.b).toBe("cancelled");
+  });
+
   it("does not suppress a genuinely running node with no terminal descendant", () => {
     const statuses: Record<string, NodeExecStatus> = {
       source: "completed",
