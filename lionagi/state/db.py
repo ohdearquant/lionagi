@@ -3980,6 +3980,7 @@ class StateDB:
             "project",
             "threshold_config",
             "last_alert_at",
+            "last_evaluated_at",
             "last_healthy_poll_at",
             "poller_consecutive_401",
             "predispatch_refusal_event",

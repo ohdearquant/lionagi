@@ -119,6 +119,8 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # config blob + the cooldown timestamp of the last breach fire.
         ("threshold_config", "JSON"),
         ("last_alert_at", "REAL"),
+        # Completed threshold evaluations, including healthy no-breach ticks.
+        ("last_evaluated_at", "REAL"),
         # Observer self-health: last healthy (2xx/304) github_poll() read,
         # and the consecutive-401 counter (resets only on a healthy read).
         ("last_healthy_poll_at", "REAL"),
