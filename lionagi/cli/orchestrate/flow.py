@@ -811,6 +811,15 @@ class _ExecResult:
     n_spawned: int
     t_exec_elapsed: float
     escalated_agent_ids: list[str] = field(default_factory=list)
+    engine_run: Any | None = field(default=None, repr=False)
+    # Op ids the checkpoint observer must ignore. The observer is registered
+    # on the engine run, which later phases reuse, so it also sees nodes that
+    # did not exist when it was built. A phase that adds such a node declares
+    # it here before running. Named as what to SKIP rather than a set of
+    # nodes to accept: an accept-list is a closed description of the graph
+    # taken before the graph stopped changing, so anything arriving later is
+    # misclassified by default, which is the failure this carries.
+    checkpoint_skip_ids: set[str] = field(default_factory=set, repr=False)
 
 
 # ── Phase 1: build DAG ────────────────────────────────────────────────────────
@@ -1223,6 +1232,7 @@ async def _execute_dag(
     checkpoint_flow_context: dict | None = None,
     checkpoint_spawned_seed: list[dict] | None = None,
     team_max_rounds: int = 2,
+    checkpoint_skip_ids: set[str] | None = None,
 ) -> _ExecResult:
     """Drive the planning engine over the DAG and collect per-agent results.
     checkpoint_config gates the checkpoint writer (opt-in); checkpoint_spawned_seed
@@ -1249,6 +1259,14 @@ async def _execute_dag(
     # DependencyAwareExecutor.__init__; both the control poller and the
     # checkpoint writer's per-completion hook read from it.
     _executor_ref: dict[str, object] = {}
+
+    # Handed out on the result so a later phase sharing this engine run can
+    # exclude its own node from checkpointing before that node runs. Accepted
+    # as an argument so a caller can seed it, since the observer's writes are
+    # drained inside this call and a later phase's additions have to be
+    # visible to that drain.
+    if checkpoint_skip_ids is None:
+        checkpoint_skip_ids = set()
     _checkpoint_tasks: list = []
     _branch_status_tasks: list = []
     _escalation_link_tasks: list = []
@@ -1376,6 +1394,19 @@ async def _execute_dag(
         (not sig.name, which a spawned clone can share with a planned node)
         routes to record() vs record_spawned() to avoid key collisions."""
         if _checkpoint_writer is None:
+            return
+        # A node a later phase adds to the graph is neither a planned op nor a
+        # reactive spawn, and both branches below are wrong for it: record()
+        # would write the planned `ops` keyspace under a name no plan entry
+        # claims, and record_spawned() would hand resume something it rebuilds
+        # into the fresh graph as pre-completed work. The spawn soundness
+        # checks do not stop that, because they are written for role-spawned
+        # nodes and such a node passes each one vacuously -- no assignee, so
+        # the assignee/spawn_id pairing check does not apply, and no parent, so
+        # the parent-terminal check does not apply. Not recording is the honest
+        # answer: nothing about the phase needs restoring, since it is derived
+        # from results the checkpoint already holds.
+        if sig.op_id in checkpoint_skip_ids:
             return
         executor = _executor_ref.get("executor")
         response = None
@@ -2164,6 +2195,8 @@ async def _execute_dag(
         n_spawned=n_spawned,
         t_exec_elapsed=t_exec_elapsed,
         escalated_agent_ids=escalated_agent_ids,
+        engine_run=eng_run,
+        checkpoint_skip_ids=checkpoint_skip_ids,
     )
 
 
@@ -2231,7 +2264,26 @@ async def _synthesize(
         context=artifacts,
     )
     t_synth = time.monotonic()
-    synth_result_raw = await env.session.flow(env.builder.get_graph(), verbose=env.verbose)
+    if exec_result.engine_run is None:
+        raise RuntimeError("synthesis requires the engine run that executed the DAG")
+    # The graph still carries every worker node, because synthesis depends on
+    # them and the executor resolves those dependencies from it. They already
+    # ran in the execution phase, though, so this pass must not signal them
+    # again: that would write a second set of terminal events for work it did
+    # not do, and a checkpointed resume rebuilt from those events treats the
+    # replayed nodes as completed.
+    synth_graph = env.builder.get_graph()
+    already_ran = {str(n.id) for n in synth_graph.internal_nodes.values()} - {str(synth_node)}
+    # The synthesis node's own signals stay audible, so the checkpoint
+    # observer registered during execution sees a node that did not exist
+    # when it was built and has no branch it belongs to. Exclude it before
+    # the pass rather than after: the observer fires during run_dag.
+    exec_result.checkpoint_skip_ids.add(str(synth_node))
+    synth_result_raw = await exec_result.engine_run.run_dag(
+        synth_graph,
+        verbose=env.verbose,
+        skip_signal_ops=already_ran,
+    )
     t_synth_elapsed = time.monotonic() - t_synth
     synth_res = synth_result_raw.get("operation_results", {}).get(synth_node)
     synthesis_result = {
