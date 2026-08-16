@@ -16,7 +16,7 @@ from lionagi.libs.path_safety import safe_join
 from ..config import SHOWS_ROOT
 from ..registry import studio_route
 from ._db import open_db as _open_db
-from ._db import store_exists, store_path
+from ._db import require_file_store, store_exists, store_path
 from ._io import read_json_file as _read_json
 from ._io import read_json_file_checked as _read_json_checked
 from ._path_safety import public_path, safe_path_join
@@ -88,6 +88,7 @@ def _extract_repo_and_branches(show_md: str | None) -> tuple[str | None, str | N
 
 
 async def _db_available() -> bool:
+    require_file_store()
     return store_exists()
 
 

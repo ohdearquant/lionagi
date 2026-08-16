@@ -145,6 +145,46 @@ def test_same_route_still_answers_rows_against_an_existing_store(tmp_path, monke
     assert names == ["demo-project"]
 
 
+@pytest.mark.parametrize(
+    ("path", "expected_route"),
+    (
+        ("/api/shows/", "/api/shows/"),
+        ("/api/stats", "/api/stats"),
+    ),
+)
+def test_remaining_sqlite_direct_routes_are_501_when_store_is_server_backed(
+    tmp_path, monkeypatch, path, expected_route
+):
+    """A partial Studio response from the fallback SQLite file is never valid.
+
+    Shows and the aggregate stats route were the two HTTP paths left outside
+    ``require_file_store``.  They must now use the same explicit refusal as
+    the other SQLite-direct services.
+    """
+    default = tmp_path / "state.db"
+    _configure(monkeypatch, default=default, url="postgresql://user:secret@host/db")
+
+    r = _client().get(path)
+
+    assert r.status_code == 501
+    body = r.json()
+    assert body["route"] == expected_route
+    assert body["backend"] == "postgresql"
+    assert "secret" not in str(body)
+
+
+def test_signal_reads_refuse_a_server_backed_store_before_fallback(tmp_path, monkeypatch):
+    """The signal reader is internal, so pin its service-level refusal directly."""
+    default = tmp_path / "state.db"
+    _configure(monkeypatch, default=default, url="postgresql://user:secret@host/db")
+
+    from lionagi.studio.services.signals import get_signals_after
+
+    with pytest.raises(StoreNotAddressableError) as exc_info:
+        _run(get_signals_after("session-1", 0))
+    assert exc_info.value.backend == "postgresql"
+
+
 # ── Readiness stays 200 no matter what (it is asked about the store, not for rows) ──
 
 
