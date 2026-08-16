@@ -76,17 +76,25 @@ def _mcp_error_type() -> type[BaseException] | None:
     return McpError
 
 
-# The MCP SDK spells only two conditions as McpError itself: a closed
-# connection and a request timeout. Every other McpError relays a server-side
-# error object verbatim — authorization refusals, application failures — which
-# says something about the request, not the transport, and must not be
-# swallowed as if the wire had dropped.
-_MCP_TRANSPORT_CODES: frozenset[int] = frozenset(
-    {
-        -32000,  # mcp.types.CONNECTION_CLOSED
-        408,  # httpx.codes.REQUEST_TIMEOUT, used by the SDK's own timeout raise
-    }
-)
+# The MCP SDK raises McpError for two conditions of its own — a closed
+# connection and a request timeout — and also for every error object a server
+# sends back. A server's error says something about the request, not the
+# transport, and must not be swallowed as if the wire had dropped.
+#
+# The error code alone cannot tell those apart, because the code travels in the
+# server's payload. A server is free to answer with the SDK's own numbers, and
+# a buggy one reusing -32000 for its internal failures would have each of them
+# recorded as a dropped connection.
+_MCP_CONNECTION_CLOSED = -32000  # mcp.types.CONNECTION_CLOSED
+_MCP_REQUEST_TIMEOUT = 408  # httpx.codes.REQUEST_TIMEOUT, the SDK's timeout code
+
+# The SDK builds this one itself, verbatim, when the read loop ends with
+# requests still waiting. It is matched exactly rather than by code alone
+# because the peer-closed path and a server's own reply are raised from the
+# same line and are otherwise identical. Should the SDK ever reword it, this
+# stops recognising a dropped connection and the run fails loudly instead of
+# degrading, which is the safe direction to be wrong in.
+_MCP_CONNECTION_CLOSED_MESSAGE = "Connection closed"
 
 
 def _is_transport_mcp_error(exc: BaseException) -> bool:
@@ -94,7 +102,16 @@ def _is_transport_mcp_error(exc: BaseException) -> bool:
     if mcp_error is None or not isinstance(exc, mcp_error):
         return False
     error = getattr(exc, "error", None)
-    return getattr(error, "code", None) in _MCP_TRANSPORT_CODES
+    code = getattr(error, "code", None)
+    if code == _MCP_REQUEST_TIMEOUT:
+        # The SDK raises its timeout from inside `except TimeoutError`, so the
+        # chained context is set. A server answering 408 of its own is raised
+        # outside any handler and carries no context, which separates the two
+        # without reading the message.
+        return isinstance(exc.__context__, TimeoutError)
+    if code == _MCP_CONNECTION_CLOSED:
+        return getattr(error, "message", None) == _MCP_CONNECTION_CLOSED_MESSAGE
+    return False
 
 
 def _is_all_isolated_failure(exc: BaseException) -> bool:

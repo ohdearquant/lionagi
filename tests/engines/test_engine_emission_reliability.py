@@ -214,11 +214,10 @@ def test_isolation_predicate_refuses_a_group_carrying_a_non_transport_leaf() -> 
 def test_application_mcp_errors_are_not_isolated_as_transport_failures() -> None:
     """Only connection-shaped McpErrors are per-dimension transport failures.
 
-    The SDK spells just two conditions as McpError itself: connection closed
-    and request timeout. Every other McpError relays a server-side error —
-    an authorization refusal, an application failure — which describes the
-    request, not the wire. Swallowing those as transport drops turns e.g. a
-    permission denial into a silent one-dimension degrade.
+    An McpError that relays a server-side error — an authorization refusal, an
+    application failure — describes the request, not the wire. Swallowing those
+    as transport drops turns e.g. a permission denial into a silent
+    one-dimension degrade.
     """
     from mcp.shared.exceptions import McpError
     from mcp.types import ErrorData
@@ -293,3 +292,71 @@ def test_a_missing_mcp_extra_is_a_normal_configuration(monkeypatch) -> None:
     monkeypatch.setattr(builtins, "__import__", fake_import)
     assert review_mod._mcp_error_type() is None
     review_mod._mcp_error_type.cache_clear()
+
+
+@pytest.mark.skipif(importlib.util.find_spec("mcp") is None, reason="mcp is an optional extra")
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        (-32000, "boom: upstream unavailable"),
+        (408, "rate limited, retry later"),
+    ],
+)
+def test_a_server_reusing_the_sdks_own_codes_is_not_a_transport_drop(
+    code: int, message: str
+) -> None:
+    """The error code travels in the server's payload, so it cannot decide this alone.
+
+    A server may answer with -32000 or 408 for reasons of its own, and a buggy
+    one that reuses either would have every application failure recorded as a
+    dropped connection and skipped, leaving a degraded verdict that names the
+    wrong cause.
+    """
+    from mcp.shared.exceptions import McpError
+    from mcp.types import ErrorData
+
+    assert _is_all_isolated_failure(McpError(ErrorData(code=code, message=message))) is False
+
+
+@pytest.mark.skipif(importlib.util.find_spec("mcp") is None, reason="mcp is an optional extra")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["connection_closed", "read_timeout"])
+async def test_the_sdks_own_transport_failures_are_still_recognised(failure: str) -> None:
+    """Drive the two failures the SDK raises itself and require the predicate to claim both.
+
+    Separating those from a server's own error rests on details this repository
+    does not own: the exact wording of the closed-connection message, and the
+    fact that the timeout is raised from inside an exception handler. So this
+    drives a real session instead of building the exception, and goes red if a
+    later SDK changes either one.
+    """
+    from datetime import timedelta
+
+    from mcp.client.session import ClientSession
+    from mcp.shared.exceptions import McpError
+    from mcp.shared.memory import create_client_server_memory_streams
+
+    read_timeout = timedelta(seconds=0.2) if failure == "read_timeout" else None
+    async with create_client_server_memory_streams() as (
+        (client_read, client_write),
+        (server_read, server_write),
+    ):
+        async with ClientSession(
+            client_read, client_write, read_timeout_seconds=read_timeout
+        ) as session:
+            async with anyio.create_task_group() as task_group:
+
+                async def take_the_request_and_fail() -> None:
+                    async for _ in server_read:
+                        if failure == "connection_closed":
+                            await server_write.aclose()
+                        # For the timeout arm the request is simply never
+                        # answered, which is what the client is timing.
+                        return
+
+                task_group.start_soon(take_the_request_and_fail)
+                with pytest.raises(McpError) as caught:
+                    await session.list_tools()
+                task_group.cancel_scope.cancel()
+
+    assert _is_all_isolated_failure(caught.value) is True
