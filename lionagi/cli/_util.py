@@ -166,6 +166,18 @@ def recorded_pid_is_foreign(metadata: dict[str, Any] | None) -> bool:
     return isinstance(host, str) and bool(host) and host != socket.gethostname()
 
 
+# Boot time is read from the OS on each side of the comparison and can drift by
+# a little across clock adjustments and suspend/resume cycles. A real reboot
+# moves it by far more than this, so the tolerance costs nothing and avoids
+# reading jitter as a reboot.
+#
+# It lives here, beside the host check, rather than next to either caller,
+# because both the kill path and the liveness probe answer the same question
+# about the same recorded value. Two copies of a number that has to agree is
+# how one of them ends up being a process create-time tolerance instead.
+BOOT_TIME_TOLERANCE = 5.0
+
+
 _SEARCH_ORDER = ("sessions", "invocations", "plays", "shows")
 
 _TABLE_TO_ENTITY_TYPE = {

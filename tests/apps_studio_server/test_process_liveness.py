@@ -163,3 +163,55 @@ def test_process_identity_from_another_host_is_unknown(monkeypatch):
     }
 
     assert process_liveness(session, None, ps_snapshot="") is None
+
+
+def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(monkeypatch):
+    """Clock jitter must not read as a reboot on the liveness path either.
+
+    Boot time is re-derived from the current clock on every read, so an NTP
+    step or a suspend/resume moves it on a machine that never rebooted. Process
+    create time is not like that: the kernel fixed it once, so the tighter
+    create-time tolerance is generous there and far too tight here. Reading
+    drift as a reboot reports a healthy local session as dead, and the
+    lifecycle reapers act on that answer.
+    """
+    import lionagi.studio.services.admin as admin_mod
+    from lionagi.cli._util import BOOT_TIME_TOLERANCE
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    drift = BOOT_TIME_TOLERANCE / 2
+    assert drift > 0, "a zero tolerance would make this test assert nothing"
+
+    session = {
+        "id": "drifted-session",
+        "node_metadata": {
+            "pid": os.getpid(),
+            "pid_create_time": psutil.Process(os.getpid()).create_time(),
+            "pid_host": "this-host",
+            "pid_boot_time": psutil.boot_time() - drift,
+        },
+    }
+
+    assert process_liveness(session, None, ps_snapshot="") is True
+
+
+def test_a_boot_time_from_before_the_last_reboot_is_dead(monkeypatch):
+    """The control for the tolerance: a real reboot still reads as dead.
+
+    Without it, widening the tolerance to something absurd would pass the test
+    above and the check would have stopped detecting reissued pids.
+    """
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    session = {
+        "id": "pre-reboot-session",
+        "node_metadata": {
+            "pid": os.getpid(),
+            "pid_create_time": psutil.Process(os.getpid()).create_time(),
+            "pid_host": "this-host",
+            "pid_boot_time": psutil.boot_time() - 86400.0,
+        },
+    }
+
+    assert process_liveness(session, None, ps_snapshot="") is False

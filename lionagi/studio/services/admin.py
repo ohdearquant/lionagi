@@ -487,7 +487,17 @@ def process_liveness(
         try:
             import psutil
 
-            if abs(psutil.boot_time() - pid_boot_time) > _PID_CREATE_TIME_TOLERANCE:
+            from lionagi.cli._util import BOOT_TIME_TOLERANCE
+
+            # Boot-time drift needs its own tolerance, not the process
+            # create-time one. Create times are compared against a value the
+            # kernel fixed when the process started, so a second is generous
+            # there. Boot time is re-derived from the current clock on every
+            # read, so an NTP step or a suspend/resume moves it by more than a
+            # second on a machine that never rebooted — and reading that as a
+            # reboot reports a healthy local session as dead, which is what
+            # the lifecycle reapers act on.
+            if abs(psutil.boot_time() - pid_boot_time) > BOOT_TIME_TOLERANCE:
                 return False
         except Exception:
             return None

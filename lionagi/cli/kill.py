@@ -17,7 +17,7 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 
 from ._logging import log_error, warn
-from ._util import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
+from ._util import _TABLE_TO_ENTITY_TYPE, BOOT_TIME_TOLERANCE, AmbiguousIdError
 from ._util import pid_alive as _pid_alive
 from ._util import recorded_pid_is_foreign as _recorded_pid_is_foreign
 from ._util import resolve_entity as _resolve_entity
@@ -77,10 +77,10 @@ _REFUSED_SIGNAL_REASONS: dict[str, str] = {
     "boot_mismatch": "was recorded before this machine last booted",
 }
 
-# Boot time is read from the OS on each side of the comparison and can drift by
-# a little across clock adjustments. A real reboot moves it by far more than
-# this, so the tolerance costs nothing and avoids refusing on jitter.
-_BOOT_TIME_TOLERANCE = 5.0
+#: Re-exported so the module's own tests and readers find it where the check
+#: that uses it lives. The value is defined once in ``_util`` beside the host
+#: check, because the Studio liveness probe compares the same recorded value.
+_BOOT_TIME_TOLERANCE = BOOT_TIME_TOLERANCE
 
 
 def _unaddressable_pid_reason(meta: dict[str, Any]) -> str | None:
