@@ -667,3 +667,68 @@ async def test_a_flow_run_never_has_to_declare_a_drain_to_be_controllable(
         session = dict(await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (session_id,)))
 
     assert session_has_control_consumer(session) is True
+
+
+@pytest.mark.asyncio
+async def test_the_wait_for_a_decision_backs_off_instead_of_polling_at_one_rate(
+    tmp_path: Path, monkeypatch
+):
+    """What is being waited on is a person reading a proposal.
+
+    Each poll opens its own store connection, and the lifetime of a pending
+    proposal is measured in minutes, so a fixed tenth-of-a-second interval
+    spends thousands of reads on a wait that resolves in one. The first seconds
+    stay closely watched, since a prompt confirmation should return promptly,
+    and the interval widens to a ceiling after that.
+    """
+    from lionagi.state.db import StateDB
+    from lionagi.studio.operator import run_control as run_control_mod
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        session_id = await _seed_run(db, kind="flow")
+
+    store = OperatorStore(path)
+    coordinator = OperatorCoordinator(store=store)
+    await coordinator.startup()
+    conversation_id, request_id = await _running_turn(store, monkeypatch, path)
+
+    intervals: list[float] = []
+    real_sleep = asyncio.sleep
+
+    class _RecordingAsyncio:
+        # Scoped to this module's name for asyncio so the helpers in this file
+        # keep sleeping for real -- patching the shared module would record
+        # their intervals too.
+        def __getattr__(self, name: str):
+            return getattr(asyncio, name)
+
+        async def sleep(self, delay: float, *args, **kwargs):
+            intervals.append(delay)
+            # Yield without waiting: the schedule is the subject, not the clock.
+            return await real_sleep(0, *args, **kwargs)
+
+    monkeypatch.setattr(run_control_mod, "asyncio", _RecordingAsyncio())
+
+    task = asyncio.create_task(pause_run({"run": session_id}))
+    proposal = await _wait_proposal(store, request_id)
+    while len(intervals) < 8:
+        await real_sleep(0)
+    await coordinator.decide(
+        conversation_id,
+        proposal["id"],
+        allow=True,
+        expected_command_hash=proposal["commandHash"],
+        expected_target_version=proposal["targetVersion"],
+    )
+    await asyncio.wait_for(task, timeout=5)
+    await coordinator.shutdown()
+
+    assert intervals[0] == run_control_mod._MIN_PROPOSAL_POLL_SECONDS
+    # Strictly increasing until the ceiling, then flat at it -- a fixed
+    # interval, or one that grows without bound, fails here.
+    assert intervals[1] > intervals[0]
+    assert max(intervals) <= run_control_mod._MAX_PROPOSAL_POLL_SECONDS
+    # A whole proposal lifetime costs dozens of reads, not thousands.
+    assert sum(intervals) > 8 * run_control_mod._MIN_PROPOSAL_POLL_SECONDS

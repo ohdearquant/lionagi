@@ -6,6 +6,26 @@ These tools enqueue the same ``session_controls`` verbs as ``li o ctl``.
 They do not call an in-memory executor directly: the live run remains the
 single consumer, and the existing queue keeps pause/resume idempotence and
 message claim semantics intact.
+
+What stops a control here, stated once so it is not re-derived from the
+individual checks below:
+
+Nothing in this module mutates a run on its own. Every verb creates a proposal
+and then blocks until a person confirms or denies it, and the summary they are
+shown names the run and the project it belongs to. That confirmation is the
+authorization step. The Studio API around it is a local surface: it binds to
+loopback by default and its only credential, ``LIONAGI_STUDIO_AUTH_TOKEN``, is
+one token for the whole daemon -- it answers whether a client may talk to
+Studio at all, not which projects it owns. There is no per-project identity
+anywhere in the operator surface, so the project a turn is scoped to is chosen,
+somewhere up the chain, by the same person who confirms the proposal.
+
+The project fence below is therefore a blast-radius bound rather than a
+privilege boundary, and it is worth having as one: it keeps a turn from naming
+a run outside the conversation it is working in, which is the realistic way a
+control reaches the wrong run. It is deliberately not described as proving
+ownership, because it cannot -- calling it that would leave a reader expecting
+a boundary that the surrounding system does not implement.
 """
 
 from __future__ import annotations
@@ -59,6 +79,11 @@ _CONSUMER_KINDS_BY_VERB: dict[str, frozenset[str]] = {
 }
 _TERMINAL_PROPOSAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "expired", "conflict"})
 
+# How often a pending proposal is re-read while waiting for a decision. See the
+# wait loop for why this backs off rather than holding one interval.
+_MIN_PROPOSAL_POLL_SECONDS = 0.1
+_MAX_PROPOSAL_POLL_SECONDS = 5.0
+
 
 class _StrictInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -78,13 +103,16 @@ class SteerRunInput(_StrictInput):
 
 
 class MissingOwnerContextError(ValueError):
-    """The calling turn has no durable project mapping to authorize against.
+    """The calling turn has no durable project mapping to scope against.
 
     A turn whose identity is present but whose conversation names no project
-    must never be treated as authorized for every project's runs. A separate
-    small copy of ``run_progress.py``'s and ``cancel_run.py``'s, kept local for
-    the same reason theirs are: this module's identity and store handling stays
+    must never be treated as scoped to every project's runs. A separate small
+    copy of ``run_progress.py``'s and ``cancel_run.py``'s, kept local for the
+    same reason theirs are: this module's identity and store handling stays
     self-contained.
+
+    Named for the ``missing_owner_context`` refusal code it produces, which is
+    on the wire and stays as it is.
     """
 
 
@@ -103,7 +131,11 @@ async def _allowed_project(store: OperatorStore, request_id: str) -> str:
     turn identity is absent entirely, so read paths fall open for direct calls;
     a control mutates the run it names, so there is no version of "no scope" it
     can safely proceed under. A turn whose conversation is gone lands here too:
-    it has no owner left to check against, which is the same refusal.
+    it has no scope left to check against, which is the same refusal.
+
+    See the module docstring for what this does and does not bound. It keeps a
+    turn inside its own conversation's project; it is not a privilege boundary,
+    and the confirmation step is what authorizes the mutation.
     """
     turn = await store.get_turn(request_id)
     conversation_id = turn.get("conversationId")
@@ -299,6 +331,16 @@ async def _propose_run_control(
         summary=_proposal_summary(session, verb, payload),
         idempotency_key=f"operator-app:{stable}",
     )
+    # Polled rather than woken, because the decision is written by a different
+    # process and there is no notification channel between them. The interval
+    # backs off instead of staying at its first value: what is being waited on
+    # is a person reading a proposal, so the first seconds are worth checking
+    # closely and the tenth minute is not, and each check opens its own store
+    # connection. Held at a tenth of a second for the first few seconds so a
+    # prompt confirmation still returns promptly, then widened to a ceiling
+    # that keeps a full-lifetime wait in the dozens of reads rather than the
+    # thousands.
+    poll_interval = _MIN_PROPOSAL_POLL_SECONDS
     while True:
         proposal = await store.get_proposal(proposal["id"])
         status = proposal["status"]
@@ -307,7 +349,8 @@ async def _propose_run_control(
             status = proposal["status"]
         if status in _TERMINAL_PROPOSAL_STATUSES:
             return _tool_result(proposal, session_id, verb)
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(poll_interval)
+        poll_interval = min(poll_interval * 2, _MAX_PROPOSAL_POLL_SECONDS)
 
 
 async def pause_run(arguments: dict[str, Any]) -> dict[str, Any]:

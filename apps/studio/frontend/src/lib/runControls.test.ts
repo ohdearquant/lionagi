@@ -432,7 +432,7 @@ describe("lib/runControls — proposeRunControl / confirmRunControl route throug
 
     const result = await proposeRunControl("run-abc123", "flow", "pause", {
       project: "acme-project",
-    } as never);
+    });
 
     expect(api.createOperatorConversation).toHaveBeenCalledTimes(1);
     const turnArgs = vi.mocked(api.submitOperatorTurn).mock.calls[0];
