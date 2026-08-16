@@ -1819,3 +1819,92 @@ async def test_a_stopped_action_walk_keeps_the_newest_rows_not_the_first_ones_re
         )
 
     assert [m["id"] for m in fetched] == ["b1-act-7", "b1-act-8", "b1-act-9"]
+
+
+async def test_rows_whose_payload_was_withheld_still_spend_the_budget(
+    patched_sessions_db, monkeypatch
+):
+    """A character budget cannot bound rows that decode to nothing.
+
+    The per-row ceiling withholds an oversized payload, which is the point --
+    but a withheld row charges zero characters, so under a character bound
+    alone it is free. A progression of them is then read to the end, and what
+    accumulates is one identity and timestamp per row, unbounded, produced by
+    exactly the input the ceiling exists to refuse.
+    """
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 3)
+    await seed_session(db_path, session_id="sess-withheld-rows")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-withheld-rows",
+        count=9,
+        content_for=lambda i: {
+            "function": "Read",
+            "arguments": {"file_path": f"/run/f{i}.py", "pad": "z" * 400},
+        },
+    )
+
+    detail = await svc.get_session("sess-withheld-rows")
+
+    assert detail is not None
+    (branch,) = detail["branches"]
+    # Every payload is past the ceiling, so the character budget is untouched.
+    # Only the row allowance can be what stops this.
+    assert all(m["content_withheld"] for m in branch["messages"]), branch["messages"]
+    assert len(branch["messages"]) == 3
+    assert branch["message_total"] == 9
+    assert branch["messages_truncated"] is True
+
+
+async def test_rows_inside_both_allowances_are_all_returned(patched_sessions_db, monkeypatch):
+    """Control for the row allowance: with the payloads inside the per-row
+    ceiling and the count inside the allowance, nothing is withheld and nothing
+    is dropped, so the assertion above is measuring the allowance."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 3)
+    await seed_session(db_path, session_id="sess-withheld-ok")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-withheld-ok", count=3)
+
+    detail = await svc.get_session("sess-withheld-ok")
+
+    assert detail is not None
+    (branch,) = detail["branches"]
+    assert [m["content_withheld"] for m in branch["messages"]] == [False, False, False]
+    assert len(branch["messages"]) == 3
+
+
+async def test_the_tail_read_stops_on_the_row_allowance_too(patched_sessions_db, monkeypatch):
+    """The stream poll has no row bound of its own -- its cursor is what ends
+    it -- so a progression of withheld rows is where the allowance matters
+    most: every one of them is free under a character budget."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 4)
+    await seed_session(db_path, session_id="sess-tail-rows")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-tail-rows",
+        count=12,
+        content_for=lambda i: {
+            "function": "Read",
+            "arguments": {"file_path": f"/run/f{i}.py", "pad": "z" * 400},
+        },
+    )
+
+    first = await svc.get_session_messages_after("sess-tail-rows", 0.0)
+
+    assert 0 < len(first) < 12, len(first)
+    assert all(m["content_withheld"] for m in first)
+
+    seen = list(first)
+    for _ in range(20):
+        more = await svc.get_session_messages_after("sess-tail-rows", seen[-1]["timestamp"])
+        if not more:
+            break
+        seen.extend(more)
+    # Deferred, not dropped, exactly as under the character bound.
+    assert [m["id"] for m in seen] == [f"b1-act-{i}" for i in range(12)]

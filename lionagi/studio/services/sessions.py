@@ -127,6 +127,14 @@ MAX_ACTION_CONTENT_CHARS = 1_048_576
 # What one session read may decode in total, across every row it holds.
 MAX_HYDRATED_CONTENT_CHARS = 64 * 1_048_576
 
+# How many rows one session read may hold, across every reader, whatever they
+# cost. The character total above bounds what gets decoded, and a row whose
+# payload was withheld decodes nothing -- so under a character bound alone a
+# stream of withheld rows is free, and the read accumulates identities and
+# timestamps until the progression runs out. Which is the case the per-row
+# ceiling exists to produce.
+MAX_HYDRATED_ROWS = 50_000
+
 # How many action rows one session detail will pull out of the database, newest
 # first, across all of its branches together. Everything derived from action
 # messages -- the tool and error counts, the error list -- reads this set, so
@@ -160,20 +168,30 @@ class _HydrationBudget:
     reading it is what the caller was trying not to do.
     """
 
-    __slots__ = ("exhausted", "remaining")
+    __slots__ = ("exhausted", "remaining", "rows_remaining")
 
-    def __init__(self, total: int | None = None) -> None:
+    def __init__(self, total: int | None = None, rows: int | None = None) -> None:
         # Read at construction rather than bound as a default argument: a
         # default is evaluated once when this file is imported, so the ceiling
         # would stop being the module constant the moment anything rebound it.
         self.remaining = MAX_HYDRATED_CONTENT_CHARS if total is None else total
+        self.rows_remaining = MAX_HYDRATED_ROWS if rows is None else rows
         self.exhausted = False
 
     def admits(self, chars: int) -> bool:
-        if chars > self.remaining:
+        """Charge one row against both allowances, or refuse it.
+
+        Two allowances rather than one because a row costs two things and
+        neither bounds the other. A row whose payload was withheld charges
+        nothing against the characters -- correctly, since nothing was decoded
+        -- so the row count is the only thing standing between a caller and an
+        unbounded number of them.
+        """
+        if chars > self.remaining or self.rows_remaining <= 0:
             self.exhausted = True
             return False
         self.remaining -= chars
+        self.rows_remaining -= 1
         return True
 
 
