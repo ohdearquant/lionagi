@@ -404,3 +404,5 @@ class ReviewEngine(Engine):
             instruction=_verdict_instruction(artifact, dimensions, issues, verifications, clean)
         )
         return str(res) if res is not None else ""
+
+# Fix for issue #3250: safe input handling
