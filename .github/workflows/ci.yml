@@ -143,7 +143,16 @@ jobs:
     - name: Lint markdown (formatting)
       uses: DavidAnson/markdownlint-cli2-action@v24
       with:
-        globs: "docs/**/*.md,README.md,AGENT.md,CLAUDE.md,CONTRIBUTING.md,CHANGELOG.md"
+        # globs is newline-delimited; the action's `separator` input defaults to
+        # "\n". A single comma-joined string is taken as one literal glob, matches
+        # no file, and the step then passes having linted nothing at all.
+        globs: |
+          docs/**/*.md
+          README.md
+          AGENT.md
+          CLAUDE.md
+          CONTRIBUTING.md
+          CHANGELOG.md
         config: ".markdownlint.json"
 
     - name: Check internal links
