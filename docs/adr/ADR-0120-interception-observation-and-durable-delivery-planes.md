@@ -1,6 +1,6 @@
 # ADR-0120: Interception, observation, and durable delivery planes
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: hooks
