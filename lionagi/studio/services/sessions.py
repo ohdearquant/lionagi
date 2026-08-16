@@ -654,11 +654,38 @@ async def _fetch_messages_by_ids(
     """
     if not msg_ids:
         return []
-    rows_by_id: dict[str, dict[str, Any]] = {}
-    for chunk_start in range(0, len(msg_ids), 500):
+    chunks = [msg_ids[start : start + 500] for start in range(0, len(msg_ids), 500)]
+
+    # Pass one decides who is paid for, reading sizes and no payloads. An
+    # IN (...) query hands rows back in whatever order suits the query planner,
+    # so charging as they arrive picks the survivors of a short read at random,
+    # and the reader who asked for recent history is the one who loses. Here the
+    # order is the caller's own, walked from the newest end, which is the end a
+    # window is about. Sorting in SQL would answer the same question and buffer
+    # every payload into the sorter to do it.
+    admitted: list[str] = []
+    for chunk in reversed(chunks):
         if budget.exhausted:
             break
-        chunk = msg_ids[chunk_start : chunk_start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        cur = await db.execute(
+            f"SELECT m.id, length(m.content) AS content_length "  # noqa: S608
+            f"FROM messages m WHERE m.id IN ({placeholders})",
+            chunk,
+        )
+        sizes = {row["id"]: int(row["content_length"] or 0) for row in await cur.fetchall()}
+        for msg_id in reversed(chunk):
+            if msg_id not in sizes:
+                continue
+            if not budget.admits(sizes[msg_id]):
+                break
+            admitted.append(msg_id)
+
+    # Pass two hydrates exactly what pass one paid for, so no payload crosses
+    # the boundary without a charge behind it.
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(admitted), 500):
+        chunk = admitted[start : start + 500]
         placeholders = ",".join("?" for _ in chunk)
         cur = await db.execute(
             f"""
@@ -676,12 +703,9 @@ async def _fetch_messages_by_ids(
                 *chunk,
             ],
         )
-        # Iterated rather than fetchall'd: a budget can only bound what has not
-        # been read yet, and fetchall reads the whole chunk first.
         async for row in cur:
             data = dict(row)
-            if not budget.admits(int(data.pop("content_length") or 0)):
-                break
+            data.pop("content_length", None)
             rows_by_id[data["id"]] = _format_message(data)
     return [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
 
@@ -1220,22 +1244,38 @@ async def get_session_messages_after(session_id: str, after_ts: float) -> list[d
         result: list[dict[str, Any]] = []
         # Iterated rather than fetchall'd: a budget can only bound what has not
         # been read yet.
+        overspent_group: Any = None
         async for row in cur:
-            if result and not budget.admits(int(row["content_length"] or 0)):
-                # Stop on a timestamp boundary. The caller resumes with
-                # `created_at > <newest timestamp it got>`, so cutting inside a
-                # group of rows that share one timestamp would skip the rest of
-                # that group permanently rather than deferring it. Rows already
-                # collected at the refused timestamp go back.
-                cut = row["created_at"]
-                while result and result[-1]["timestamp"] == cut:
-                    result.pop()
-                if result:
+            timestamp = row["created_at"]
+            # Charged on every row including the first. Whether a row is taken
+            # is a separate question from whether it was paid for, and reading
+            # the two off one expression let the first row through for free.
+            admitted = budget.admits(int(row["content_length"] or 0))
+            if overspent_group is not None:
+                # Committed to finishing one timestamp group and stopping at
+                # its edge. `admits` can start saying yes again here -- a later
+                # row may be small enough for what is left -- and taking it
+                # would extend a read that has already declared itself over.
+                if timestamp != overspent_group:
+                    break
+            elif not admitted:
+                if result and result[0]["timestamp"] != timestamp:
+                    # Stop on a timestamp boundary. The caller resumes with
+                    # `created_at > <newest timestamp it got>`, so cutting
+                    # inside a group of rows that share one timestamp would skip
+                    # the rest of that group permanently rather than deferring
+                    # it. Rows already collected at the refused timestamp go
+                    # back; the earlier ones are what makes this a boundary.
+                    while result and result[-1]["timestamp"] == timestamp:
+                        result.pop()
                     break
                 # Everything read so far shares the refused timestamp, so there
-                # is no boundary to cut on yet. Take the row and overspend: a
-                # poll that returns nothing leaves the cursor where it was and
-                # the next one reads the same rows again, forever.
+                # is no boundary to cut on yet. Take the whole group and
+                # overspend. Returning none of it leaves the cursor where it
+                # was and the next poll reads the same rows again, forever;
+                # returning part of it is worse, because the cursor moves past
+                # a timestamp whose remaining rows were never handed over.
+                overspent_group = timestamp
             msg = _format_message(row)
             msg["branch_id"] = row["branch_id"]
             result.append(msg)

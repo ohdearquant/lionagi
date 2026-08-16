@@ -1980,3 +1980,111 @@ async def test_choosing_which_action_rows_to_keep_reads_no_payloads(patched_sess
     assert any("m.content" in sql for sql in statements), statements
     ordering = [sql for sql in statements if "ORDER BY" in sql]
     assert not [sql for sql in ordering if "m.content" in sql], ordering
+
+
+async def test_the_tail_read_charges_its_first_row_like_every_other(
+    patched_sessions_db, monkeypatch
+):
+    """Whether a row is taken and whether it was paid for are two questions.
+
+    The poll always hands back at least one row, or the caller's cursor never
+    moves and the same rows come back forever. Reading that guarantee off the
+    same expression that charges the budget let the first row through free, so
+    every poll returned one row more than the allowance it was given.
+    """
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 1)
+    await seed_session(db_path, session_id="sess-tail-first")
+    await seed_branch(
+        db_path,
+        branch_id="b1",
+        session_id="sess-tail-first",
+        msg_ids=["t-0", "t-1", "t-2"],
+    )
+    async with StateDB(db_path) as db:
+        for i in range(3):
+            await db.insert_message(
+                {
+                    "id": f"t-{i}",
+                    "created_at": 100.0 + i,
+                    "content": {"text": f"m{i}"},
+                    "sender": "user",
+                    "recipient": "worker",
+                    "role": "assistant",
+                    "node_metadata": {},
+                }
+            )
+
+    result = await svc.get_session_messages_after("sess-tail-first", 0.0)
+
+    assert [m["id"] for m in result] == ["t-0"]
+
+
+async def test_the_tail_read_hands_over_a_whole_tied_group_or_none_of_it(
+    patched_sessions_db, monkeypatch
+):
+    """Rows sharing one timestamp are indivisible for this reader.
+
+    The caller resumes at `created_at > <newest timestamp it got>`, so a poll
+    that returns part of a group moves the cursor past the rest of it and
+    nothing ever hands those rows over. When the group does not fit, the choice
+    is all of it or nothing, and nothing means the cursor never moves.
+    """
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 1)
+    await seed_session(db_path, session_id="sess-tail-tied")
+    ids = ["tie-0", "tie-1", "tie-2", "later"]
+    await seed_branch(db_path, branch_id="b1", session_id="sess-tail-tied", msg_ids=ids)
+    async with StateDB(db_path) as db:
+        for msg_id in ids:
+            await db.insert_message(
+                {
+                    "id": msg_id,
+                    "created_at": 500.0 if msg_id.startswith("tie-") else 900.0,
+                    "content": {"text": msg_id},
+                    "sender": "user",
+                    "recipient": "worker",
+                    "role": "assistant",
+                    "node_metadata": {},
+                }
+            )
+
+    first = await svc.get_session_messages_after("sess-tail-tied", 0.0)
+
+    assert sorted(m["id"] for m in first) == ["tie-0", "tie-1", "tie-2"]
+    # And the row after the group is deferred rather than lost.
+    later = await svc.get_session_messages_after("sess-tail-tied", first[-1]["timestamp"])
+    assert [m["id"] for m in later] == ["later"]
+
+
+async def test_a_short_hydration_keeps_the_newest_of_what_was_asked_for(
+    patched_sessions_db, monkeypatch
+):
+    """Which rows survive a short read is a choice, so it is made rather than
+    left to the query planner's row order. A window is asked for because its
+    newest end is what the reader is looking at."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 2)
+    await seed_paginated_session(db_path, count=5)
+    ids = [f"pmsg-{i}" for i in range(5)]
+
+    async with svc._open_db(db_path) as db:
+        rows = await svc._fetch_messages_by_ids(db, ids, budget=svc._HydrationBudget())
+
+    assert [row["id"] for row in rows] == ["pmsg-3", "pmsg-4"]
+
+
+async def test_a_hydration_inside_the_allowance_returns_everything_asked_for(
+    patched_sessions_db,
+):
+    """Control for the test above: the selection only drops rows when it has to,
+    and what it returns stays in the caller's order rather than the newest-first
+    order the charging walks in."""
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=5)
+    ids = [f"pmsg-{i}" for i in range(5)]
+
+    async with svc._open_db(db_path) as db:
+        rows = await svc._fetch_messages_by_ids(db, ids, budget=svc._HydrationBudget())
+
+    assert [row["id"] for row in rows] == ids
