@@ -440,22 +440,53 @@ def _optional_mirror_root(env_var: str) -> Path | None:
         raise ValueError(f"{env_var} could not be resolved") from None
 
 
-MIRROR_CLAUDE_ENABLED: bool = os.environ.get(
-    "LIONAGI_STUDIO_MIRROR_CLAUDE", "1"
-).strip().lower() not in ("0", "false", "no", "off", "")
+_TRUE_FLAG_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_FLAG_VALUES = frozenset({"0", "false", "no", "off", ""})
+
+
+def _env_flag(env_var: str, *, default: bool) -> bool:
+    """Read a boolean env var, refusing values that are neither true nor false.
+
+    Deciding by exclusion — anything that is not a known false spelling counts
+    as true — turns a typo into an opt-in. These flags govern whether Studio
+    reads the user's own transcript trees, so the direction a mistake fails in
+    is the whole question: "disabled", "none" and "of" all mean off to whoever
+    typed them, and all read as on under an exclusion test.
+    """
+    raw = os.environ.get(env_var)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in _TRUE_FLAG_VALUES:
+        return True
+    if value in _FALSE_FLAG_VALUES:
+        return False
+    raise ValueError(
+        f"{env_var} must be one of {sorted(_TRUE_FLAG_VALUES)} or "
+        f"{sorted(_FALSE_FLAG_VALUES - {''})} (empty means off), got {raw!r}"
+    )
+
+
+MIRROR_CLAUDE_ENABLED: bool = _env_flag("LIONAGI_STUDIO_MIRROR_CLAUDE", default=True)
 MIRROR_CLAUDE_SINCE: str = os.environ.get("LIONAGI_STUDIO_MIRROR_CLAUDE_SINCE", "24h")
 MIRROR_CLAUDE_INTERVAL: float = float(os.environ.get("LIONAGI_STUDIO_MIRROR_CLAUDE_INTERVAL", "5"))
 # Which transcript trees the ambient mirror reads: "both", "claude", or "codex".
+# An unrecognized value used to fall back to "both", which is the widest of the
+# three: a misspelled "claude" silently read the codex tree as well. Refuse it
+# instead, for the same reason the flags above refuse one.
+_MIRROR_SOURCE_CHOICES = ("both", "claude", "codex")
 _MIRROR_SOURCE_RAW: str = os.environ.get("LIONAGI_STUDIO_MIRROR_SOURCE", "both").strip().lower()
-MIRROR_SOURCE: str = (
-    _MIRROR_SOURCE_RAW if _MIRROR_SOURCE_RAW in ("both", "claude", "codex") else "both"
-)
+if _MIRROR_SOURCE_RAW not in _MIRROR_SOURCE_CHOICES:
+    raise ValueError(
+        f"LIONAGI_STUDIO_MIRROR_SOURCE must be one of {list(_MIRROR_SOURCE_CHOICES)}, "
+        f"got {_MIRROR_SOURCE_RAW!r}"
+    )
+MIRROR_SOURCE: str = _MIRROR_SOURCE_RAW
 MIRROR_CLAUDE_ROOT: Path | None = _optional_mirror_root("LIONAGI_STUDIO_MIRROR_CLAUDE_ROOT")
 MIRROR_CODEX_ROOT: Path | None = _optional_mirror_root("LIONAGI_STUDIO_MIRROR_CODEX_ROOT")
-MIRROR_IMPORT_AMBIENT: bool = os.environ.get(
-    "LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT",
-    "1" if _mirror_import_ambient_default() else "0",
-).strip().lower() not in ("0", "false", "no", "off", "")
+MIRROR_IMPORT_AMBIENT: bool = _env_flag(
+    "LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT", default=_mirror_import_ambient_default()
+)
 # Bounded display preview stored in messages.content for mirror-ingested rows
 # (Unicode code points, not bytes). 0 is valid (empty preview + pointer only).
 # Negative values are a configuration error — there is no "unbounded" sentinel.

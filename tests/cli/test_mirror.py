@@ -3135,3 +3135,105 @@ async def test_an_imported_rollout_leaves_the_role_field_empty(tmp_path):
 
     # The point of clearing the field: the prompt now reaches the display name.
     assert resolve_display_name(dict(session)) == "q"
+
+
+# Mirror configuration refuses values it does not recognize. The flags below
+# decide whether Studio reads the user's own transcript trees, so a value the
+# parser cannot classify must stop startup rather than pick a side. Deciding by
+# exclusion picked the reading side: anything that was not a known false
+# spelling counted as true.
+
+
+def _reload_config():
+    import importlib
+
+    from lionagi.studio import config as config_mod
+
+    return importlib.reload(config_mod), config_mod
+
+
+def _restore_config(monkeypatch):
+    for var in (
+        "LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT",
+        "LIONAGI_STUDIO_MIRROR_CLAUDE",
+        "LIONAGI_STUDIO_MIRROR_SOURCE",
+        "LIONAGI_HOME",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    _reload_config()
+
+
+@pytest.mark.parametrize("value", ["disabled", "none", "of", "off ,", "2", "yes please"])
+def test_an_unrecognized_ambient_import_value_is_refused(monkeypatch, value):
+    """The flagged case: these all read as ON under an exclusion test."""
+    monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT", value)
+    try:
+        with pytest.raises(ValueError, match="LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT"):
+            _reload_config()
+    finally:
+        _restore_config(monkeypatch)
+
+
+def test_an_unrecognized_mirror_enable_value_is_refused(monkeypatch):
+    """Same construct, one flag over: the outer gate on the whole mirror."""
+    monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_CLAUDE", "disabled")
+    try:
+        with pytest.raises(ValueError, match="LIONAGI_STUDIO_MIRROR_CLAUDE"):
+            _reload_config()
+    finally:
+        _restore_config(monkeypatch)
+
+
+def test_an_unrecognized_mirror_source_is_refused(monkeypatch):
+    """Same defect, different shape: this one fell back to the widest choice."""
+    monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_SOURCE", "cladue")
+    try:
+        with pytest.raises(ValueError, match="LIONAGI_STUDIO_MIRROR_SOURCE"):
+            _reload_config()
+    finally:
+        _restore_config(monkeypatch)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("0", False),
+        ("false", False),
+        ("no", False),
+        ("off", False),
+        ("", False),
+        ("1", True),
+        ("true", True),
+        ("yes", True),
+        ("on", True),
+        ("ON", True),
+        (" 1 ", True),
+    ],
+)
+def test_recognized_spellings_still_decide_both_ways(monkeypatch, value, expected):
+    """Regression guard, not a defect detector: these passed before the change too."""
+    monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT", value)
+    try:
+        config_mod, _ = _reload_config()
+        assert config_mod.MIRROR_IMPORT_AMBIENT is expected
+    finally:
+        _restore_config(monkeypatch)
+
+
+def test_an_unset_flag_still_takes_the_computed_default(monkeypatch, tmp_path):
+    """An isolated LIONAGI_HOME opts out of ambient trees unless asked back in.
+
+    This is the path the helper must not swallow: with the variable absent the
+    default is computed, not parsed.
+    """
+    monkeypatch.delenv("LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT", raising=False)
+    monkeypatch.setenv("LIONAGI_HOME", str(tmp_path / "isolated"))
+    try:
+        config_mod, _ = _reload_config()
+        assert config_mod.MIRROR_IMPORT_AMBIENT is False
+        # and an explicit opt-in still overrides that default
+        monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT", "1")
+        config_mod, _ = _reload_config()
+        assert config_mod.MIRROR_IMPORT_AMBIENT is True
+    finally:
+        _restore_config(monkeypatch)

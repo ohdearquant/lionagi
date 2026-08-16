@@ -46,6 +46,14 @@ Selecting a different `LIONAGI_HOME` creates an isolated Studio profile: its
 mirror does not read the ambient user transcript trees unless explicit roots
 are configured or `LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT=1` opts back in.
 
+The three mirror settings above refuse a value they do not recognize, and
+Studio fails to start rather than guessing. The boolean flags take `1`, `true`,
+`yes`, `on` and `0`, `false`, `no`, `off` (empty means off);
+`LIONAGI_STUDIO_MIRROR_SOURCE` takes exactly `both`, `claude`, or `codex`.
+These settings decide whether Studio reads your own transcript trees, so
+`MIRROR_IMPORT_AMBIENT=disabled` stopping the daemon is the intended outcome:
+previously it was read as "on", which is the opposite of what it says.
+
 ## Running
 
 **Default (hosted UI + local daemon)**:
