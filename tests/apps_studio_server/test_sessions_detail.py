@@ -1141,6 +1141,38 @@ async def test_get_session_cursor_pages_are_stable_under_concurrent_appends(patc
     )
 
 
+async def test_a_page_that_delivered_nothing_hands_back_a_cursor_that_reaches_it(
+    patched_sessions_db, monkeypatch
+):
+    """The two halves of this are written separately -- one names the window it
+    could not deliver, the other resolves that name -- and each half passes on
+    its own while the pair is broken. What a caller has is the cursor it was
+    given, so the assertion is that spending it returns the page, and it must
+    be the same page an anchor-less read chooses: a first request that fit
+    nothing has not read anything, so nothing may be skipped over."""
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 0)
+    starved = await svc.get_session("sess-paged", message_limit=3)
+    assert starved["branches"][0]["messages"] == [], "the budget admitted a row; the test is inert"
+    cursor = starved["message_next_cursor"]
+    assert cursor, "a window that delivered nothing must still be reachable"
+
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 1_000)
+    resumed = await svc.get_session("sess-paged", message_limit=3, message_cursor=cursor)
+    fresh = await svc.get_session("sess-paged", message_limit=3)
+
+    assert [m["id"] for m in resumed["branches"][0]["messages"]] == [
+        "pmsg-7",
+        "pmsg-8",
+        "pmsg-9",
+    ]
+    assert [m["id"] for m in resumed["branches"][0]["messages"]] == [
+        m["id"] for m in fresh["branches"][0]["messages"]
+    ]
+
+
 async def test_get_session_rejects_invalid_message_cursor(patched_sessions_db):
     svc, db_path = patched_sessions_db
     await seed_paginated_session(db_path, count=10)
@@ -2508,12 +2540,71 @@ def test_a_window_that_fit_nothing_is_asked_for_again_rather_than_skipped():
     assert anchor == "m-3", "the caller's own anchor repeats the window it did not get"
     assert has_older is True
 
-    # On a first page there is no value meaning "this same window", so the
-    # branch reports older messages and offers no cursor, rather than handing
-    # back one that skips them.
+    # A first page has no caller anchor to repeat, so it names the newest end
+    # instead. Returning None here would leave the branch out of the next
+    # cursor, and a branch absent from a cursor reads as exhausted -- the
+    # messages would be unreachable, not merely undelivered.
     assert svc._resume_anchor(
         ["m-1", "m-2"], [], has_older=True, next_anchor="m-1", current_anchor=None
-    ) == (True, None)
+    ) == (True, svc._NEWEST_ANCHOR)
+
+
+def test_the_newest_end_anchor_selects_the_window_an_anchorless_read_would():
+    """The sentinel has to mean the same window a first read picks, or the
+    page it resumes is not the page that was missed."""
+    import lionagi.studio.services.sessions as svc
+
+    progression = ["m-1", "m-2", "m-3", "m-4", "m-5"]
+    fresh = svc._window_message_ids(
+        progression, branch_id="b", limit=2, cursor_anchors=None, legacy_offset=0
+    )
+    resumed = svc._window_message_ids(
+        progression,
+        branch_id="b",
+        limit=2,
+        cursor_anchors={"b": svc._NEWEST_ANCHOR},
+        legacy_offset=0,
+    )
+
+    assert fresh == resumed == (["m-4", "m-5"], True, "m-4")
+    # And a branch genuinely absent from the cursor still reads as exhausted,
+    # which is the meaning the sentinel exists to stop overloading.
+    assert svc._window_message_ids(
+        progression, branch_id="b", limit=2, cursor_anchors={}, legacy_offset=0
+    ) == ([], False, None)
+
+
+async def test_a_store_with_no_action_message_types_still_reads(patched_sessions_db):
+    """The file union returns a pair and its caller unpacks two names. A store
+    whose message_types table carries no action row took the one branch that
+    returned a bare list, so the detail read raised at the unpack -- with
+    nothing wrong with the session being read."""
+    import aiosqlite
+
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-no-action-types")
+
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "DELETE FROM message_types WHERE lion_class IN "
+            f"({','.join('?' for _ in svc._ACTION_LION_CLASSES)})",
+            svc._ACTION_LION_CLASSES,
+        )
+        await db.commit()
+        remaining = await (
+            await db.execute(
+                "SELECT COUNT(*) FROM message_types WHERE lion_class IN "
+                f"({','.join('?' for _ in svc._ACTION_LION_CLASSES)})",
+                svc._ACTION_LION_CLASSES,
+            )
+        ).fetchone()
+    assert remaining[0] == 0, "the action types are still registered; the test is inert"
+
+    detail = await svc.get_session("sess-no-action-types")
+
+    assert detail is not None
+    assert detail["message_stats"]["files"] == []
+    assert detail["message_stats"]["files_bounded"] is False
 
 
 async def test_a_withheld_action_row_still_carries_the_link_to_its_other_half(
@@ -2656,3 +2747,71 @@ async def test_a_run_under_the_ceiling_returns_every_path_and_says_it_was_comple
     assert detail is not None
     assert detail["message_stats"]["files"] == ["/run/f0", "/run/f1", "/run/f2", "/run/f3"]
     assert detail["message_stats"]["files_bounded"] is False
+
+
+async def test_the_file_union_stops_on_weight_as_well_as_on_count(patched_sessions_db, monkeypatch):
+    """A count says how many names come back and nothing about how long each
+    one is, and a path is only as short as the row it was read out of. Both
+    reads below hold the count ceiling well clear of the fixture, so the only
+    difference between them is what the set is allowed to weigh."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATHS", 5_000)
+    await seed_session(db_path, session_id="sess-files-heavy")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-files-heavy",
+        count=6,
+        content_for=lambda i: {
+            "function": "Read",
+            "arguments": {"file_path": f"/run/{'d' * 300}/f{i}"},
+        },
+    )
+
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATH_BYTES", 900)
+    cut = await svc.get_session("sess-files-heavy")
+
+    assert cut is not None
+    assert len(cut["message_stats"]["files"]) < 6
+    assert cut["message_stats"]["files_bounded"] is True
+
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATH_BYTES", 1_048_576)
+    whole = await svc.get_session("sess-files-heavy")
+
+    assert whole is not None
+    assert len(whole["message_stats"]["files"]) == 6
+    assert whole["message_stats"]["files_bounded"] is False
+
+
+async def test_the_file_union_stops_on_rows_read_even_when_the_answer_is_small(
+    patched_sessions_db, monkeypatch
+):
+    """The two ceilings on the answer bound what comes back. Neither bounds the
+    work of getting there, and the run that pays most for it is the one that
+    touches a single file over and over: the set stays at one name, so nothing
+    about the answer ever grows enough to stop the scan. Both reads return the
+    same one path, which leaves the ceiling on rows read as the only thing the
+    flag can be reporting."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-files-rescanned")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-files-rescanned",
+        count=12,
+        content_for=lambda i: {"function": "Read", "arguments": {"file_path": "/run/same.py"}},
+    )
+
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_ROWS_SCANNED", 5)
+    cut = await svc.get_session("sess-files-rescanned")
+
+    assert cut is not None
+    assert cut["message_stats"]["files"] == ["/run/same.py"]
+    assert cut["message_stats"]["files_bounded"] is True
+
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_ROWS_SCANNED", 200_000)
+    whole = await svc.get_session("sess-files-rescanned")
+
+    assert whole is not None
+    assert whole["message_stats"]["files"] == ["/run/same.py"]
+    assert whole["message_stats"]["files_bounded"] is False

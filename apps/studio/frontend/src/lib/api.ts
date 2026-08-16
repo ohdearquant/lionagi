@@ -1312,6 +1312,12 @@ export interface SessionDetail {
     // rows is a floor rather than a total, and the reader has to say so —
     // a lower bound presented as a count is read as a count.
     bounded?: boolean;
+    // `files` has its own ceilings (distinct names, total bytes, rows
+    // scanned), separate from `bounded` above: the union is computed over the
+    // whole run rather than the hydrated slice, so it can be cut when nothing
+    // else was. A file union that was cut answers "is this name a file?" with
+    // a no it has not earned, so it is never presented as complete.
+    files_bounded?: boolean;
   };
 }
 

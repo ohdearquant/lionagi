@@ -1096,6 +1096,116 @@ describe("history/RunDetail.tsx — overview aggregates are lifetime totals", ()
   });
 });
 
+// ─── Files section: a cut union says so ───────────────────────────────────────
+// The server stops the run-wide file union at a ceiling and reports that it
+// did. A cut union reaches this section in two shapes -- a short list and an
+// empty one -- and both of them read as a complete answer unless the note is
+// rendered, so each shape gets its own arm and its own control.
+
+describe("history/RunDetail.tsx — the files section discloses a cut union", () => {
+  async function mountFiles(messageStats: Record<string, unknown>) {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockResolvedValue({
+      id: "run-files-note",
+      name: "run-files-note",
+      created_at: 0,
+      updated_at: 0,
+      status: "completed",
+      branches: [],
+      message_stats: messageStats,
+    } as never);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <RunDetail id="run-files-note" />
+        </IntlProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return {
+      container,
+      unmount: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  const CUT_NOTE = "this run touched more files than one view collects";
+  const STATS = {
+    message_count: 4,
+    roles: {},
+    tool_call_count: 4,
+    error_count: 0,
+  };
+
+  it("says the list is short when the union was cut with names in it", async () => {
+    const { container, unmount } = await mountFiles({
+      ...STATS,
+      files: ["/run/a.py", "/run/b.py"],
+      files_bounded: true,
+    });
+    try {
+      expect(container.textContent).toContain("/run/b.py");
+      expect(container.textContent).toContain(CUT_NOTE);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("leaves the same list unqualified when the union was complete", async () => {
+    const { container, unmount } = await mountFiles({
+      ...STATS,
+      files: ["/run/a.py", "/run/b.py"],
+      files_bounded: false,
+    });
+    try {
+      expect(container.textContent).toContain("/run/b.py");
+      expect(container.textContent).not.toContain(CUT_NOTE);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("says the same about an empty list, where a complete answer means no files", async () => {
+    const { container, unmount } = await mountFiles({
+      ...STATS,
+      files: [],
+      files_bounded: true,
+    });
+    try {
+      expect(container.textContent).toContain("No file operations detected");
+      expect(container.textContent).toContain(CUT_NOTE);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("leaves an empty list unqualified when the union was complete", async () => {
+    const { container, unmount } = await mountFiles({
+      ...STATS,
+      files: [],
+      files_bounded: false,
+    });
+    try {
+      expect(container.textContent).toContain("No file operations detected");
+      expect(container.textContent).not.toContain(CUT_NOTE);
+    } finally {
+      unmount();
+    }
+  });
+});
+
 // ─── NodeEscalated badge tone ─────────────────────────────────────────────────
 // Every escalation route is attention-worthy rather than failed. Soft notify
 // keeps its distinct label, while hard and legacy escalation shapes retain the

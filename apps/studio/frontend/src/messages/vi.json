@@ -508,6 +508,7 @@
       "statErrorsRecent": "lỗi (gần đây)",
       "noBranchErrorsPartial": "không có lỗi trong các tin nhắn đã tải.",
       "noFilesPartial": "không phát hiện thao tác tệp trong các tin nhắn đã tải.",
+      "filesUnionBounded": "Một số thao tác tệp không được liệt kê: lần chạy này đã chạm vào nhiều tệp hơn mức một khung hiển thị thu thập.",
       "olderUnavailable": "Không thể tải lịch sử cũ hơn — cuộc trò chuyện này đã tiếp tục trước khi yêu cầu hoàn tất.",
       "reloadConversation": "Tải lại cuộc trò chuyện",
       "graphEdgeCount": "{count} cạnh",

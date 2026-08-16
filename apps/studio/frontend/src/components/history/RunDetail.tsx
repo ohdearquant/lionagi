@@ -1215,8 +1215,25 @@ function ErrorsSection({
 
 // ── Files section ─────────────────────────────────────────────────────────────
 
-function FilesSection({ files, partial }: { files: string[]; partial?: boolean }) {
+function FilesSection({
+  files,
+  partial,
+  unionBounded,
+}: {
+  files: string[];
+  partial?: boolean;
+  unionBounded?: boolean;
+}) {
   const t = useTranslations("history.detail");
+  // Said on both branches. An empty list and a populated one are the two
+  // ways a cut union reaches a reader, and disclosing only one of them
+  // leaves the other presenting an incomplete answer as a complete one,
+  // which is the whole reason the server reports the flag.
+  const cutNote = unionBounded ? (
+    <div className="mt-1 text-[length:var(--t-xs)] text-content-muted">
+      {t("filesUnionBounded")}
+    </div>
+  ) : null;
   return (
     <div id="run-files" className="scroll-mt-4">
       <SectionHeader label={t("sectionFiles")} count={files.length} />
@@ -1235,6 +1252,7 @@ function FilesSection({ files, partial }: { files: string[]; partial?: boolean }
           </ul>
         </div>
       )}
+      {cutNote}
     </div>
   );
 }
@@ -2932,7 +2950,11 @@ export default function RunDetail({ id }: RunDetailProps) {
         </>
       )}
       <ErrorsSection errors={errors} partial={partialWindow} gateOutcome={gateOutcome} />
-      <FilesSection files={runFiles} partial={partialWindow} />
+      <FilesSection
+        files={runFiles}
+        partial={partialWindow}
+        unionBounded={session.message_stats?.files_bounded}
+      />
       <EventsSection
         events={signalSnapshot.events}
         totalCount={signalSnapshot.totalCount}

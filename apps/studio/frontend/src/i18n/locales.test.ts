@@ -229,8 +229,12 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // 1101 = 1100 + runCard.outputWithheld, the badge for a tool result the
   // server withheld past its per-row size ceiling. Natively translated in all
   // 16, so it adds nothing to the identity-leak baseline either.
-  it("en.json has 1101 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1101);
+  //
+  // 1102 = 1101 + history.detail.filesUnionBounded, said when the run-wide
+  // file union stopped at one of its ceilings. Natively translated in all 16,
+  // same as the two above.
+  it("en.json has 1102 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1102);
   });
 
   it.each(LOCALES.map((l) => l.code))(

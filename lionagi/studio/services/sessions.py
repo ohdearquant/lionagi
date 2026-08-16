@@ -150,6 +150,20 @@ MAX_HYDRATED_ACTION_MESSAGES = 20_000
 # an ordinary session never meets it, and reported when it does.
 MAX_ACTION_FILE_PATHS = 5_000
 
+# What that union is allowed to weigh. A count bounds how many names come
+# back and says nothing about how long each one is: a path is only bounded by
+# the row it was read out of, so a count-only ceiling admits a set orders of
+# magnitude larger than the count suggests. Both ceilings report through the
+# same flag, because a reader only needs to know the union was cut.
+MAX_ACTION_FILE_PATH_BYTES = 1_048_576
+
+# How many action rows the union will look at before it stops. The two
+# ceilings above bound the answer; this one bounds the work of reaching it,
+# which is otherwise a full scan with a JSON extraction per row -- paid on
+# every session-detail request, and paid in full precisely when the run
+# touched few enough distinct files to never reach the other two.
+MAX_ACTION_FILE_ROWS_SCANNED = 200_000
+
 # Selected in place of `m.content` by every query that hydrates a message row.
 # The ceiling is one property of the data, so it belongs to the column rather
 # than to whichever reader was being looked at when the cost was noticed: there
@@ -601,6 +615,17 @@ def _decode_message_cursor(token: str, *, session_id: str, limit: int) -> dict[s
     return anchors
 
 
+# An anchor names the row a page ends just before, so the newest page has no
+# anchor to name: it ends at the end. That left one state inexpressible -- a
+# first page whose budget could not afford a single row -- and a branch with
+# nothing to say was simply left out of the next cursor, which is how a
+# cursor says exhausted. Its messages then could not be reached again. This
+# value means "the newest end", so the branch stays in the cursor and the
+# next request asks for that window instead of stepping over it. No message
+# id can collide with it: ids are UUIDs.
+_NEWEST_ANCHOR = "@newest"
+
+
 def _window_message_ids(
     msg_ids: list[str],
     *,
@@ -615,11 +640,14 @@ def _window_message_ids(
         anchor = cursor_anchors.get(branch_id)
         if anchor is None:
             return [], False, None
-        if anchor not in msg_ids:
+        if anchor == _NEWEST_ANCHOR:
+            end = len(msg_ids)
+        elif anchor not in msg_ids:
             raise MessageCursorError(
                 f"message_cursor anchor not found in branch {branch_id!r} progression"
             )
-        end = msg_ids.index(anchor)
+        else:
+            end = msg_ids.index(anchor)
     elif legacy_offset:
         total = len(msg_ids)
         end = max(0, total - legacy_offset)
@@ -652,18 +680,19 @@ def _resume_anchor(
     budget refused the start of the next page rather than a hole.
 
     When nothing fit at all, this window has not been delivered, so the next
-    request has to ask for it again rather than move past it. That is only
-    expressible while the caller gave an anchor to repeat; on a first page
-    there is no value that means "this same window", so the branch reports
-    that older messages exist and offers no cursor to reach them. Reaching
-    that state needs a request whose budget cannot afford one row of the
-    newest page.
+    request has to ask for it again rather than move past it. On a resumed
+    page that is the anchor the caller gave; on a first page it is
+    ``_NEWEST_ANCHOR``, which names the same newest window an anchor-less
+    read would have chosen. Returning nothing there instead would drop the
+    branch from the next cursor, and a branch absent from a cursor is a
+    branch reported exhausted. Reaching this state needs a request whose
+    budget cannot afford one row of the newest page.
     """
     if len(present_ids) == len(window_ids):
         return has_older, next_anchor
     if present_ids:
         return True, present_ids[0]
-    return True, current_anchor
+    return True, current_anchor or _NEWEST_ANCHOR
 
 
 def _short_lion_class(lion_class: str) -> str:
@@ -979,15 +1008,26 @@ async def _fetch_action_file_paths(
     )
     type_ids = [row["type_id"] for row in await cur.fetchall()]
     if not type_ids:
-        return []
+        # No action rows to union, and nothing was cut reaching that answer.
+        return [], False
     type_placeholders = ",".join("?" for _ in type_ids)
 
     paths: set[str] = set()
+    path_bytes = 0
+    rows_scanned = 0
+
+    def at_ceiling() -> bool:
+        return (
+            len(paths) >= MAX_ACTION_FILE_PATHS
+            or path_bytes >= MAX_ACTION_FILE_PATH_BYTES
+            or rows_scanned >= MAX_ACTION_FILE_ROWS_SCANNED
+        )
+
     for msg_ids in ids_by_branch.values():
-        if len(paths) >= MAX_ACTION_FILE_PATHS:
+        if at_ceiling():
             break
         for chunk_start in range(0, len(msg_ids), 500):
-            if len(paths) >= MAX_ACTION_FILE_PATHS:
+            if at_ceiling():
                 break
             chunk = msg_ids[chunk_start : chunk_start + 500]
             placeholders = ",".join("?" for _ in chunk)
@@ -1003,18 +1043,20 @@ async def _fetch_action_file_paths(
                 [*chunk, *type_ids, MAX_ACTION_CONTENT_CHARS],
             )
             async for row in cur:
+                rows_scanned += 1
                 found = _action_file_path(
                     row["fn"], {"file_path": row["file_path"], "path": row["path"]}
                 )
-                if found:
+                if found and found not in paths:
                     paths.add(found)
-                    if len(paths) >= MAX_ACTION_FILE_PATHS:
-                        break
-    # Equality, not the count alone: the ceiling is reached by the row that
-    # would have exceeded it, so a run holding exactly this many distinct paths
-    # reports bounded and a reader treats the union as possibly short. That is
-    # the safe direction for a set used to decide whether a name is a file.
-    return sorted(paths), len(paths) >= MAX_ACTION_FILE_PATHS
+                    path_bytes += len(found.encode())
+                if at_ceiling():
+                    break
+    # Equality, not the count alone: a ceiling is reached by the item that
+    # would have exceeded it, so a run sitting exactly on one reports bounded
+    # and a reader treats the union as possibly short. That is the safe
+    # direction for a set used to decide whether a name is a file.
+    return sorted(paths), at_ceiling()
 
 
 def _branch_message_stats(
