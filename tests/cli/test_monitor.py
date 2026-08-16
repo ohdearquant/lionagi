@@ -26,6 +26,7 @@ from lionagi.cli.monitor import (
     _format_table,
     _gather_table_rows,
     _invocation_to_row,
+    _machine_entity,
     _parse_json_field,
     _pid_alive,
     _play_to_row,
@@ -2350,3 +2351,26 @@ def test_running_rows_of_every_entity_are_still_measured():
 
     assert inv["elapsed"] != "-"
     assert play["elapsed"] != "-"
+
+
+def test_machine_entity_emits_a_json_boolean_for_the_approximate_end_flag():
+    """SQLite returns 0/1; the lifecycle summary endpoint returns true/false.
+
+    Same field name on two machine-readable surfaces, so a caller that reads
+    both should not have to branch on which one produced the payload.
+    """
+    entity = _machine_entity("session", {"id": "s1", "ended_at_is_approximate": 1})
+    assert entity["ended_at_is_approximate"] is True
+
+    entity = _machine_entity("session", {"id": "s1", "ended_at_is_approximate": 0})
+    assert entity["ended_at_is_approximate"] is False
+
+
+def test_machine_entity_leaves_an_absent_approximate_flag_as_null():
+    """Absent is unknown, which is a different answer from measured.
+
+    Coercing a missing column with bare bool() would report every row the query
+    did not select as carrying a measured end.
+    """
+    entity = _machine_entity("session", {"id": "s1"})
+    assert entity["ended_at_is_approximate"] is None

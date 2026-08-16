@@ -730,3 +730,38 @@ async def test_a_caller_supplying_both_an_end_and_the_flag_keeps_the_flag(
     assert row is not None
     assert row["ended_at"] == 400.0
     assert row["ended_at_is_approximate"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_explicitly_null_end_does_not_survive_the_measurement(
+    db: StateDB,
+) -> None:
+    """Sending ``ended_at=None`` is sending the absence of an end, not an end.
+
+    The transition measures one and computes the duration from it. If the
+    caller's null were kept, the row would land with no end, marked measured,
+    carrying a duration -- the same contradiction the flag handling exists to
+    prevent, entered from the other side. Nothing in the tree sends this today;
+    it is reachable through the public update path.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET started_at = :started WHERE id = :id"),
+            {"started": 100.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(
+            entity_id=sid,
+            to_status="completed",
+            patch={"ended_at": None, "ended_at_is_approximate": 1},
+        )
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at"] is not None
+    assert row["ended_at_is_approximate"] is False
+    assert row["duration_ms"] == pytest.approx((row["ended_at"] - 100.0) * 1000)

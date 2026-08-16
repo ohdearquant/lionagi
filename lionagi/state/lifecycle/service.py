@@ -433,7 +433,16 @@ class SQLAlchemyLifecycleService:
                 if measured_here:
                     ended_at_value = now
                 patch = dict(command.patch)
-                patch.setdefault("ended_at", ended_at_value)
+                # setdefault cannot displace a key the caller already sent, so
+                # an explicit ended_at=None would survive while the duration
+                # below is computed from the end measured here -- a row with no
+                # end, marked measured, carrying a duration. Where this
+                # transition is the measurement, its value wins over a key
+                # whose value is the absence of one.
+                if measured_here:
+                    patch["ended_at"] = ended_at_value
+                else:
+                    patch.setdefault("ended_at", ended_at_value)
                 if "duration_ms" not in patch:
                     started_at = row["started_at"]
                     if isinstance(started_at, int | float):
