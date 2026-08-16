@@ -1235,28 +1235,38 @@ async def get_session(
                 # Compatibility for an in-flight v1 anchor. New responses issue
                 # byte-position cursors, so the unbounded lookup ages out after
                 # one continuation instead of remaining the normal path.
-                prog_cur = await db.execute(
-                    "SELECT collection FROM progressions WHERE id = ?",
-                    (prog_id,),
-                )
-                prog_row = await prog_cur.fetchone()
-                full_msg_ids: list[str] = []
-                if prog_row and prog_row["collection"]:
-                    try:
-                        full_msg_ids = json.loads(prog_row["collection"])
-                    except (json.JSONDecodeError, TypeError):
-                        full_msg_ids = []
-                window_ids, has_older, next_anchor = _window_message_ids(
-                    full_msg_ids,
-                    branch_id=branch_id,
-                    limit=message_limit,
-                    cursor_anchors=cursor_positions,  # type: ignore[arg-type]
-                    legacy_offset=0,
-                )
-                if next_anchor:
-                    anchor_index = full_msg_ids.index(next_anchor)
-                    prefix = json.dumps(full_msg_ids[:anchor_index], separators=(",", ":"))
-                    next_position = {"end": len(prefix.encode()) - 1, "anchor": next_anchor}
+                #
+                # A branch the anchor map does not name has nothing left to
+                # page, and reading its collection to discover that costs
+                # exactly as much as reading it to serve a page. So the anchor
+                # decides first: the whole-collection decode is spent only on
+                # branches that are actually owed one, and a cursor naming no
+                # branch at all -- which every v1 client can send, for every
+                # session -- reads nothing.
+                anchor = cursor_positions.get(branch_id) if cursor_positions else None
+                if anchor is not None:
+                    prog_cur = await db.execute(
+                        "SELECT collection FROM progressions WHERE id = ?",
+                        (prog_id,),
+                    )
+                    prog_row = await prog_cur.fetchone()
+                    full_msg_ids: list[str] = []
+                    if prog_row and prog_row["collection"]:
+                        try:
+                            full_msg_ids = json.loads(prog_row["collection"])
+                        except (json.JSONDecodeError, TypeError):
+                            full_msg_ids = []
+                    window_ids, has_older, next_anchor = _window_message_ids(
+                        full_msg_ids,
+                        branch_id=branch_id,
+                        limit=message_limit,
+                        cursor_anchors=cursor_positions,  # type: ignore[arg-type]
+                        legacy_offset=0,
+                    )
+                    if next_anchor:
+                        anchor_index = full_msg_ids.index(next_anchor)
+                        prefix = json.dumps(full_msg_ids[:anchor_index], separators=(",", ":"))
+                        next_position = {"end": len(prefix.encode()) - 1, "anchor": next_anchor}
             elif prog_id:
                 end: int | None = None
                 if cursor_version == 2:

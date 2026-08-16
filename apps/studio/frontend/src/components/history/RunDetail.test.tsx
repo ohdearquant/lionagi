@@ -131,7 +131,7 @@ describe("history/ — no Drawer overlay import (master-detail doctrine §4)", (
   }
 });
 
-// ─── SSE done-refetch stale-write race guard (MAJ-3) ─────────────────────────
+// ─── SSE done-refetch stale-write race guard ─────────────────────────────────
 // The 'done' handler refetches status/reason fields after streamSession
 // reports completion. Without a same-session guard, navigating A→B before
 // A's refetch resolves lets A's data clobber B's freshly-fetched state.
@@ -2905,6 +2905,59 @@ describe("the signal projection is built from the run's history", () => {
     expect(cursor == null || cursor === 0).toBe(true);
   });
 
+  it("reconnects the signal stream after a resync instead of going quiet", async () => {
+    const { streamSignals } = await import("@/lib/api");
+    let emit: ((event: { type: string }) => void) | null = null;
+    vi.mocked(streamSignals).mockImplementationOnce((_id, cb) => {
+      emit = cb as (event: { type: string }) => void;
+      return () => {};
+    });
+    await mount(session);
+    expect(vi.mocked(streamSignals).mock.calls).toHaveLength(1);
+
+    // The server's generator returns after it emits a resync, so that stream is
+    // over. Rebuilding the projection without opening a new one leaves the run
+    // silent for the rest of its life behind a snapshot that reads as empty
+    // rather than as stopped.
+    expect(emit).not.toBeNull();
+    await act(async () => {
+      emit!({ type: "resync" });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const calls = vi.mocked(streamSignals).mock.calls;
+    expect(calls.length).toBeGreaterThan(1);
+    const cursor = calls[calls.length - 1][2];
+    expect(cursor == null || cursor === 0).toBe(true);
+  });
+
+  it("reconnects the message stream after a resync that leaves its cursor unchanged", async () => {
+    const { streamSession } = await import("@/lib/api");
+    let emit: ((event: { type: string }) => void) | null = null;
+    vi.mocked(streamSession).mockImplementationOnce((_id, cb) => {
+      emit = cb as (event: { type: string }) => void;
+      return () => {};
+    });
+    await mount(session);
+    expect(vi.mocked(streamSession).mock.calls).toHaveLength(1);
+
+    // The subscription is keyed on the session's stream cursor, so the re-read
+    // a resync triggers usually re-keys it by moving. When nothing was
+    // persisted in the gap the cursor comes back identical, nothing re-keys,
+    // and the reconnection has to be asked for rather than fallen into.
+    expect(emit).not.toBeNull();
+    await act(async () => {
+      emit!({ type: "resync" });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(streamSession).mock.calls.length).toBeGreaterThan(1);
+  });
+
   it("a resync refetch that resolves after a run switch does not replace the run on screen", async () => {
     const { streamSignals, getSession } = await import("@/lib/api");
     let emit: ((event: { type: string }) => void) | null = null;
@@ -2929,5 +2982,147 @@ describe("the signal projection is built from the run's history", () => {
       await Promise.resolve();
     });
     expect(container!.textContent).not.toContain("a-different-run");
+  });
+});
+
+// ─── Exact lifetime totals against a run that is still moving ────────────────
+
+describe("exact lifetime totals stop being an answer once the run moves past them", () => {
+  let root: Root | null = null;
+  let container: HTMLDivElement | null = null;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    if (root) act(() => root!.unmount());
+    container?.remove();
+    root = null;
+    container = null;
+    vi.clearAllMocks();
+  });
+
+  async function mount(session: unknown) {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockResolvedValue(session as never);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <RunDetail id="run-stats" />
+        </IntlProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  function sessionWith(branch: Record<string, unknown>) {
+    return {
+      id: "run-stats",
+      name: "run-stats",
+      created_at: 0,
+      updated_at: 0,
+      status: "running",
+      branches: [{ id: "branch-a", name: "A", created_at: 0, messages: [], ...branch }],
+      stream_cursors: { messages: null, signals: 0 },
+    };
+  }
+
+  // The snapshot says two messages. The refetch that follows completion says
+  // 507, a number that appears nowhere else on the page, so its presence or
+  // absence is the whole assertion.
+  const statistics = {
+    session_id: "run-stats",
+    message_stats_loaded: true,
+    message_stats: {
+      message_count: 2,
+      roles: {},
+      tool_call_count: 0,
+      error_count: 0,
+      files: [],
+    },
+    branches: {
+      "branch-a": {
+        message_total: 2,
+        message_stats: { message_count: 2, roles: {} },
+        first_message_at: 0,
+        last_message_at: 1,
+      },
+    },
+  };
+
+  const streamedMessage = {
+    id: "m-live",
+    role: "assistant",
+    branch_id: "branch-a",
+    timestamp: 5,
+    content: "live",
+    lion_class: "AssistantResponse",
+  };
+
+  async function runToCompletion(withLiveMessage: boolean) {
+    const { getSession, getSessionStatistics, streamSession } = await import("@/lib/api");
+    let emit: ((event: Record<string, unknown>) => void) | null = null;
+    vi.mocked(streamSession).mockImplementationOnce((_id, cb) => {
+      emit = cb as (event: Record<string, unknown>) => void;
+      return () => {};
+    });
+    vi.mocked(getSessionStatistics).mockResolvedValueOnce(statistics as never);
+
+    await mount(sessionWith({ message_total: null }));
+    expect(emit).not.toBeNull();
+
+    if (withLiveMessage) {
+      await act(async () => {
+        emit!(streamedMessage);
+        await Promise.resolve();
+      });
+    }
+
+    vi.mocked(getSession).mockResolvedValue(sessionWith({ message_total: 507 }) as never);
+    await act(async () => {
+      emit!({ type: "done" });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it("a refresh after live messages reports the newer total, not the snapshot", async () => {
+    await runToCompletion(true);
+    expect(container!.textContent).toContain("507");
+  });
+
+  it("a refresh with no live messages in between still restores the snapshot", async () => {
+    // The control. The snapshot exists to survive refreshes that come back
+    // without it, and a fix that simply stopped re-applying it would pass the
+    // test above while deleting the behaviour it protects.
+    await runToCompletion(false);
+    expect(container!.textContent).not.toContain("507");
+  });
+
+  it("says the error and file lists cover only the loaded messages when no total arrived", async () => {
+    // getSessionStatistics rejects by default in this file, which is the
+    // finding's own scenario: the lazy read failed, so no branch has an exact
+    // total, and a missing total is not a statement that nothing is missing.
+    await mount(sessionWith({ message_total: null, message_has_older: true }));
+    expect(container!.textContent).toContain("No runtime errors in the loaded messages.");
+    expect(container!.textContent).toContain("No file operations detected in the loaded messages.");
+  });
+
+  it("says they cover everything when the branch reports a complete window", async () => {
+    await mount(sessionWith({ message_total: 0, message_has_older: false }));
+    expect(container!.textContent).toContain("No runtime errors across all branches.");
+    expect(container!.textContent).not.toContain("in the loaded messages");
   });
 });

@@ -411,6 +411,31 @@ class TestSeekableSessionCursor:
         )
         assert {row["id"] for row in again.items}.isdisjoint({row["id"] for row in first.items})
 
+    def test_a_cursor_page_reports_its_own_neighbours_not_page_ones(self, client):
+        """Asking for an exact total must not make the arrows come from the page
+        number. A cursor request is pinned at page=1 wherever it lands, so page
+        arithmetic answers about the first page every time: no previous page in
+        the middle of the walk, and another page waiting at the end of it."""
+        first = client.get("/api/runs/", params={"per_page": 10}).json()
+        assert first["total"] == 25
+        assert first["has_prev"] is False
+        assert first["next_cursor"]
+
+        second = client.get(
+            "/api/runs/", params={"per_page": 10, "cursor": first["next_cursor"]}
+        ).json()
+        assert len(second["runs"]) == 10
+        assert second["total"] == 25
+        assert second["has_prev"] is True
+        assert second["has_next"] is True
+
+        third = client.get(
+            "/api/runs/", params={"per_page": 10, "cursor": second["next_cursor"]}
+        ).json()
+        assert len(third["runs"]) == 5
+        assert third["has_prev"] is True
+        assert third["has_next"] is False
+
     def test_deep_offset_compatibility_path_is_refused(self, client):
         from lionagi.studio.services import sessions as sessions_svc
 

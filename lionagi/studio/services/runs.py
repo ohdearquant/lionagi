@@ -918,6 +918,14 @@ async def list_runs_route(
     total = await _sessions_svc.count_sessions(where) if include_total else None
     if total is not None:
         response = paginate_runs(runs, page=page, per_page=per_page, total=total)
+        if cursor is not None:
+            # A cursor request is pinned at page=1 whatever position it names,
+            # so page-arithmetic answers about page one for every page in the
+            # walk: no previous page halfway down the list, and more to come at
+            # the end of it. Only the selection knows. The count is still the
+            # whole filtered set and stays as it is.
+            response["has_next"] = selected_page.has_more
+            response["has_prev"] = True
     else:
         response = {
             "runs": runs,

@@ -1884,6 +1884,14 @@ export default function RunDetail({ id }: RunDetailProps) {
   // unrecoverable for the current session load; the reader is offered a full
   // reconversation reload instead of a dead retry loop.
   const [olderLoadFailed, setOlderLoadFailed] = useState(false);
+  // A resync means the server ended that stream: its own generator returns
+  // after emitting the frame, because the viewer's position no longer lines up
+  // with anything it can replay. Rebuilding the local state is only half of
+  // the recovery -- without a reconnection the run goes quiet for the rest of
+  // its life, with a rebuilt-and-empty projection on screen and nothing to say
+  // the feed stopped. Bumping this re-runs both stream effects, which tear the
+  // dead subscriptions down and open new ones.
+  const [resyncGeneration, setResyncGeneration] = useState(0);
   const [resumeWatch, setResumeWatch] = useState<RunResumeResponse | null>(null);
   // State rather than a ref because the affordance for loading older history
   // is rendered from it: a cursor the server stopped handing back means there
@@ -2067,7 +2075,13 @@ export default function RunDetail({ id }: RunDetailProps) {
             .then((fresh) => {
               if (!cancelled) setSession(withLoadedStatistics(fresh));
             })
-            .catch(() => {});
+            .catch(() => {})
+            // After the re-read, never before it: the reconnection resumes from
+            // the session's stream cursor, and reconnecting on the old one asks
+            // the server the question it just refused to answer.
+            .finally(() => {
+              if (!cancelled) setResyncGeneration((n) => n + 1);
+            });
           return;
         }
         if (event.type === "done") {
@@ -2091,6 +2105,14 @@ export default function RunDetail({ id }: RunDetailProps) {
         }
         setLive(true);
         if (isSessionMessageEvent(event)) {
+          // The lifetime statistics were exact for the session as it stood when
+          // they were read. This message is proof the session has moved past
+          // that read, so the snapshot stops being an answer and becomes an old
+          // number that every later refresh would put back on top of newer
+          // totals -- and put back wearing the label that says it is exact.
+          // Dropping it leaves the bounded read, which discloses what it does
+          // not cover.
+          loadedStatisticsRef.current = null;
           const msg = event as unknown as SessionMessage;
           setSession((prev) => {
             if (!prev) return prev;
@@ -2105,7 +2127,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       cancelled = true;
       stop();
     };
-  }, [activeSessionId, id, messageStreamCursor, withLoadedStatistics]);
+  }, [activeSessionId, id, messageStreamCursor, resyncGeneration, withLoadedStatistics]);
 
   useEffect(() => {
     if (!id || activeSessionId !== id) return;
@@ -2141,7 +2163,13 @@ export default function RunDetail({ id }: RunDetailProps) {
                 if (cancelled || fresh.id !== id) return;
                 setSession(withLoadedStatistics(fresh));
               })
-              .catch(() => {});
+              .catch(() => {})
+              // Reconnecting tears this effect down, so it goes last: bumping
+              // first would cancel the read above and leave the pane holding
+              // the state the resync just declared stale.
+              .finally(() => {
+                if (!cancelled) setResyncGeneration((n) => n + 1);
+              });
           }
           return;
         }
@@ -2160,7 +2188,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       cancelled = true;
       stop();
     };
-  }, [activeSessionId, id, withLoadedStatistics]);
+  }, [activeSessionId, id, resyncGeneration, withLoadedStatistics]);
 
   useEffect(() => {
     if (suppressAutoScrollRef.current) {
@@ -2596,7 +2624,15 @@ export default function RunDetail({ id }: RunDetailProps) {
   );
   const endRef = session.ended_at ?? (done ? session.updated_at : null);
   const startRef = session.started_at ?? session.created_at;
-  const partialWindow = session.branches.some((b) => (b.message_total ?? 0) > b.messages.length);
+  // A branch with no exact total has not said it is complete, it has said it
+  // does not know. Reading that absence as zero turns "unknown" into "nothing
+  // is missing", which is the one answer it cannot support: the lifetime
+  // statistics are a separate read that can fail or be dropped as stale, and
+  // when it has not landed the branch still knows whether older history
+  // exists. Absent even that, this errs toward saying the view is partial.
+  const partialWindow = session.branches.some((b) =>
+    b.message_total == null ? b.message_has_older !== false : b.message_total > b.messages.length,
+  );
   const durationSec =
     startRef != null && endRef != null ? Math.max(0, Math.round(endRef - startRef)) : null;
   const elapsedLabel = formatElapsed(computeElapsedSeconds(startRef, endRef, elapsedNow));

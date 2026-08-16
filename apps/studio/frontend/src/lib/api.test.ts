@@ -692,6 +692,65 @@ describe("runs/sessions query construction", () => {
     expect(url.searchParams.get("cursor")).toBe("opaque-high-water");
   });
 
+  // A frame's id is the server's name for "you have seen everything up to
+  // here". Taking it off a frame the caller could not consume asks the
+  // reconnect to start after an event that never reached anyone, and the
+  // stream has no way to send it again.
+  function stubSseSequence(bodies: string[]): string[] {
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        const body = bodies[urls.length - 1] ?? 'data: {"type":"done"}\n\n';
+        return Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode(body));
+                controller.close();
+              },
+            }),
+            { status: 200 },
+          ),
+        );
+      }),
+    );
+    return urls;
+  }
+
+  async function reconnectCursorAfter(firstBody: string): Promise<string | null> {
+    const urls = stubSseSequence([firstBody]);
+    const { streamSession } = await import("./api");
+    vi.useFakeTimers();
+    try {
+      const close = streamSession("s1", () => {}, "c0");
+      // The first connection has to drain and hit end-of-stream before the
+      // reconnect timer is even armed.
+      for (let i = 0; i < 20 && urls.length < 1; i += 1) await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 40 && urls.length < 2; i += 1) await vi.advanceTimersByTimeAsync(2100);
+      close();
+      expect(urls.length).toBeGreaterThanOrEqual(2);
+      return new URL(urls[1]!, "http://localhost").searchParams.get("cursor");
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it("resumes after the last frame it actually consumed, not the last one delivered", async () => {
+    const cursor = await reconnectCursorAfter(
+      'id: c1\ndata: {"type":"tick"}\n\nid: c2\ndata: {not json\n\n',
+    );
+    expect(cursor).toBe("c1");
+  });
+
+  it("resumes after the newest frame when every frame was consumed", async () => {
+    const cursor = await reconnectCursorAfter(
+      'id: c1\ndata: {"type":"tick"}\n\nid: c2\ndata: {"type":"tick"}\n\n',
+    );
+    expect(cursor).toBe("c2");
+  });
+
   it("streamSignals resumes after the detail snapshot sequence", async () => {
     const calls: string[] = [];
     vi.stubGlobal(

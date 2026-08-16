@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -1208,6 +1209,89 @@ async def test_get_session_initial_page_does_not_decode_or_aggregate_full_progre
     assert result["message_stats_loaded"] is False
     assert result["branches"][0]["message_total"] is None
     assert result["branches"][0]["message_has_older"] is True
+
+
+def _v1_message_window_cursor(session_id: str, limit: int, branch_anchors: dict[str, str]) -> str:
+    """Mint the older cursor shape the service still has to accept.
+
+    Nothing encodes v1 any more, so a client holding one is the only source —
+    which is exactly why its cost has to be measured rather than assumed to age
+    out.
+    """
+    raw = json.dumps(
+        {
+            "v": 1,
+            "session_id": session_id,
+            "limit": limit,
+            "branch_anchors": branch_anchors,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _array_decode_meter(svc, monkeypatch) -> dict[str, int]:
+    """Count the bytes of every JSON array that crosses the Python boundary."""
+    meter = {"bytes": 0}
+    original_loads = svc.json.loads
+
+    def measured_loads(raw, *args, **kwargs):
+        if isinstance(raw, str) and raw.lstrip().startswith("["):
+            meter["bytes"] += len(raw.encode())
+        return original_loads(raw, *args, **kwargs)
+
+    monkeypatch.setattr(svc.json, "loads", measured_loads)
+    return meter
+
+
+async def test_a_v1_cursor_naming_no_branch_decodes_no_progression(
+    patched_sessions_db, monkeypatch
+):
+    """An anchor map without an entry for a branch already says it is exhausted.
+
+    Reading that from the map is free. Reading it by decoding the collection
+    costs the whole progression and returns nothing for it, and a client can ask
+    for that on every branch of every session at will.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=2_000)
+    meter = _array_decode_meter(svc, monkeypatch)
+
+    result = await svc.get_session(
+        "sess-paged",
+        message_limit=3,
+        message_cursor=_v1_message_window_cursor("sess-paged", 3, {}),
+    )
+
+    assert result["branches"][0]["messages"] == []
+    assert result["branches"][0]["message_has_older"] is False
+    # The session's own empty progression still decodes, so the bound is a size
+    # and not a zero. Two thousand ids are an order of magnitude past it.
+    assert meter["bytes"] <= 4_096
+
+
+async def test_a_v1_cursor_naming_a_branch_still_pages_that_branch(
+    patched_sessions_db, monkeypatch
+):
+    """Control for the test above: the compatibility path still works, and the
+    meter it is measured with does move when a decode happens."""
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=2_000)
+    meter = _array_decode_meter(svc, monkeypatch)
+
+    result = await svc.get_session(
+        "sess-paged",
+        message_limit=3,
+        message_cursor=_v1_message_window_cursor("sess-paged", 3, {"br-paged": "pmsg-1997"}),
+    )
+
+    assert [m["id"] for m in result["branches"][0]["messages"]] == [
+        "pmsg-1994",
+        "pmsg-1995",
+        "pmsg-1996",
+    ]
+    assert meter["bytes"] > 4_096
 
 
 async def test_session_statistics_is_an_explicit_exact_lifetime_read(patched_sessions_db):

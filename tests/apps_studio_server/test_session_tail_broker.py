@@ -386,3 +386,81 @@ async def test_a_failed_read_tells_viewers_to_resync_and_reconnects():
 async def _wait_for(predicate) -> None:
     while not predicate():
         await asyncio.sleep(0)
+
+
+async def test_a_subscribe_cancelled_after_registration_leaves_nothing_behind():
+    """The caller cannot clean up a subscription it never received.
+
+    Registering the subscriber and starting the reader both happen before
+    subscribe() yields, and it yields on purpose -- the reader has to enter its
+    connection context before the subscription is exposed. A viewer that
+    disconnects on that turn cancels the awaiting request, so the route
+    generator's try/finally is never installed, while the queue is already in
+    the subscriber map and the reader is already polling. One aborted request
+    per orphan, and nothing ever collects them.
+    """
+    import lionagi.studio.services.tail_broker as broker_mod
+
+    @asynccontextmanager
+    async def connect():
+        yield object()
+
+    async def read_tick(
+        _db,
+        _session_id,
+        message_cursor,
+        signal_cursor,
+        *,
+        read_messages,
+        read_signals,
+    ):
+        await asyncio.sleep(0)
+        return broker_mod.TailRead([], [], None, message_cursor, signal_cursor, True, True)
+
+    broker = broker_mod.SessionTailBroker("cancelled", connect=connect, read_tick=read_tick)
+
+    task = asyncio.create_task(broker.subscribe_messages(None))
+    # One turn is enough to reach the yield inside subscribe: the registration
+    # and the reader task are behind it, the return is in front of it.
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Let the unwind and the reader's own cancellation settle.
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert broker._subscribers == {}, broker._subscribers
+    assert not broker.running
+
+
+async def test_a_subscribe_that_completes_leaves_a_live_subscriber():
+    """Control: subscribe has to be able to leave a subscriber and a running
+    reader behind, or the assertions above are satisfied by a broker that never
+    registers anything."""
+    import lionagi.studio.services.tail_broker as broker_mod
+
+    @asynccontextmanager
+    async def connect():
+        yield object()
+
+    async def read_tick(
+        _db,
+        _session_id,
+        message_cursor,
+        signal_cursor,
+        *,
+        read_messages,
+        read_signals,
+    ):
+        await asyncio.sleep(0)
+        return broker_mod.TailRead([], [], None, message_cursor, signal_cursor, True, True)
+
+    broker = broker_mod.SessionTailBroker("not-cancelled", connect=connect, read_tick=read_tick)
+    subscription = await broker.subscribe_messages(None)
+    try:
+        assert len(broker._subscribers) == 1
+        assert broker.running
+    finally:
+        await subscription.close()

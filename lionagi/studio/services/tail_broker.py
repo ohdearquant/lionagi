@@ -220,7 +220,19 @@ class SessionTailBroker:
             # Let the task enter its connection context before exposing the
             # subscription.  Otherwise an immediately-disconnected viewer can
             # cancel a not-yet-started task and skip resource cleanup entirely.
-            await asyncio.sleep(0)
+            #
+            # Cleanup for this await belongs here and cannot belong to the
+            # caller. The caller installs its `finally` around the subscription
+            # it received, and a cancellation landing on this line means it
+            # never receives one -- while the registration and the reader task
+            # above have already happened. The subscriber queue would stay in
+            # `_subscribers` and the reader would keep polling, for a viewer
+            # that is gone, once per aborted request.
+            try:
+                await asyncio.sleep(0)
+            except BaseException:
+                await subscription.close()
+                raise
         return subscription
 
     def _replay_or_resync(

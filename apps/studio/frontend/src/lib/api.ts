@@ -214,7 +214,11 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 // their terminal "done" frame.
 function sseSubscribe(
   path: string,
-  onData: (data: string) => void,
+  // Returns false when the frame could not be consumed. The resume cursor
+  // advances on a consumed frame and not on a delivered one: a frame that is
+  // dropped downstream has still been counted as seen if the id was taken from
+  // it, so the reconnect asks for events after the one that was lost.
+  onData: (data: string) => boolean | void,
   resume?: { param: string; initial?: string },
 ): () => void {
   const controller = new AbortController();
@@ -257,12 +261,12 @@ function sseSubscribe(
               .find((line) => line.startsWith("id:"))
               ?.slice(3)
               .replace(/^ /, "");
-            if (eventId) resumeCursor = eventId;
             const data = lines
               .filter((line) => line.startsWith("data:"))
               .map((line) => line.slice(5).replace(/^ /, ""))
               .join("\n");
-            if (data && !closed) onData(data);
+            const consumed = data && !closed ? onData(data) !== false : true;
+            if (eventId && consumed) resumeCursor = eventId;
           }
         }
       } catch {
@@ -1351,8 +1355,9 @@ export function streamSession(
       try {
         event = JSON.parse(data) as Record<string, unknown>;
       } catch {
-        /* malformed chunk */
-        return;
+        // Not consumed. Reported so the resume cursor stays where it was and
+        // the reconnect asks for this event again.
+        return false;
       }
       if (event.type === "done" || event.type === "resync") {
         close();
@@ -1401,8 +1406,8 @@ export function streamSignals(
       try {
         event = JSON.parse(data) as SignalEvent | { type: string };
       } catch {
-        /* malformed chunk */
-        return;
+        // Not consumed -- see streamSession above.
+        return false;
       }
       if ("type" in event && (event.type === "done" || event.type === "resync")) {
         close();
