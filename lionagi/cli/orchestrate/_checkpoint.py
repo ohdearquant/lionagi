@@ -63,6 +63,9 @@ class CheckpointWriter:
     _bytes_written: int = field(default=0, repr=False, compare=False)
     _base_ready: bool = field(default=False, repr=False, compare=False)
     _journal_reset_required: bool = field(default=False, repr=False, compare=False)
+    # Device and inode of the journal this writer created, so an append can
+    # tell "the file I made" from "a file at the name I use".
+    _journal_identity: tuple[int, int] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.version not in (LEGACY_CHECKPOINT_VERSION, CHECKPOINT_VERSION):
@@ -246,6 +249,9 @@ class CheckpointWriter:
         elif self._journal_reset_required:
             written = await _durable_to_thread(_atomic_write_bytes, self.journal_path, b"")
             self._bytes_written += written
+            self._journal_identity = await _durable_to_thread(
+                _read_inode_identity, self.journal_path
+            )
             self._journal_reset_required = False
 
     async def _append_delta_locked(self, delta: dict[str, Any], apply_state: Any = None) -> None:
@@ -266,7 +272,9 @@ class CheckpointWriter:
         }
         written = 0
         try:
-            written = await _durable_to_thread(_append_journal_record, self.journal_path, record)
+            written = await _durable_to_thread(
+                _append_journal_record, self.journal_path, record, self._journal_identity
+            )
         except _RecordReachedFileError as exc:
             # The record is in the file even though its durability is
             # unconfirmed, so this sequence number is spent. Leaving it unspent
@@ -340,6 +348,7 @@ class CheckpointWriter:
         self._journal_reset_required = True
         written = await _durable_to_thread(_atomic_write_bytes, self.journal_path, b"")
         self._bytes_written += written
+        self._journal_identity = await _durable_to_thread(_read_inode_identity, self.journal_path)
         self._journal_reset_required = False
 
 
@@ -412,6 +421,11 @@ def _refuse_unsafe_inode(descriptor: int, path: Path) -> None:
     applies because nothing was created; or a pre-made world-readable file,
     same reason. Journal records carry raw operation responses and the shared
     flow context, so each of those is a disclosure of both.
+
+    What this cannot see is a private regular file belonging to us, because
+    that is what a healthy journal looks like. `_refuse_replaced_inode` is the
+    other half: it asks whether this is the particular private file we made,
+    which is the question a same-user process substituting one can fail.
     """
     info = os.fstat(descriptor)
     if not stat.S_ISREG(info.st_mode):
@@ -423,6 +437,33 @@ def _refuse_unsafe_inode(descriptor: int, path: Path) -> None:
             raise JournalPathError(f"refusing a path owned by another user: {path}")
         if info.st_mode & 0o077:
             raise JournalPathError(f"refusing a path readable beyond its owner: {path}")
+
+
+def _refuse_replaced_inode(descriptor: int, path: Path, expected: tuple[int, int]) -> None:
+    """Refuse a journal that is not the one this writer created at that name.
+
+    Every kind-and-ownership question `_refuse_unsafe_inode` asks is answered
+    the same way by our own journal and by a private regular file someone else
+    made and still holds open. Identity is the question that separates them,
+    and it is answerable because a journal is only ever created here: the base
+    write replaces it under O_EXCL before the first record, and compaction
+    replaces it again, so between those points the file at that name should not
+    change. If it has, records carrying raw responses and the shared flow
+    context are about to go somewhere other than where the last one went.
+    """
+    info = os.fstat(descriptor)
+    if (info.st_dev, info.st_ino) != expected:
+        raise JournalPathError(f"refusing a journal that was replaced after it was created: {path}")
+
+
+def _read_inode_identity(path: Path) -> tuple[int, int]:
+    """Device and inode of `path`, read through the same refusals a write takes."""
+    descriptor = _open_no_follow(path, os.O_RDONLY)
+    try:
+        info = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    return (info.st_dev, info.st_ino)
 
 
 def _open_no_follow(path: Path, flags: int, mode: int = _PRIVATE_MODE) -> int:
@@ -549,12 +590,20 @@ class _RecordReachedFileError(Exception):
         self.cause = cause
 
 
-def _append_journal_record(path: Path, record: dict[str, Any]) -> int:
+def _append_journal_record(
+    path: Path,
+    record: dict[str, Any],
+    expected_identity: tuple[int, int] | None = None,
+) -> int:
     payload = _serialize_json(record) + b"\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = _open_no_follow(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
     closed = False
     try:
+        # Before the payload, never after: the point is that these bytes do not
+        # reach a file we did not make.
+        if expected_identity is not None:
+            _refuse_replaced_inode(descriptor, path, expected_identity)
         written = _write_all(descriptor, payload)
         # Past this point the bytes are in the file. fsync decides whether they
         # survive a power loss, not whether they are there, so a failure here

@@ -107,10 +107,10 @@ async def test_journal_serialization_and_fsync_run_off_the_event_loop(tmp_path: 
     release = threading.Event()
     real_append = checkpoint_mod._append_journal_record
 
-    def slow_append(journal_path: Path, record: dict) -> int:
+    def slow_append(journal_path: Path, record: dict, *rest) -> int:
         started.set()
         release.wait(timeout=2)
-        return real_append(journal_path, record)
+        return real_append(journal_path, record, *rest)
 
     monkeypatch.setattr(checkpoint_mod, "_append_journal_record", slow_append)
     task = asyncio.create_task(writer.record("agent", status="completed", response="ok"))
@@ -191,10 +191,10 @@ async def test_cancellation_during_append_cannot_reuse_a_durable_sequence(
     release = threading.Event()
     real_append = checkpoint_mod._append_journal_record
 
-    def paused_append(journal_path: Path, record: dict) -> int:
+    def paused_append(journal_path: Path, record: dict, *rest) -> int:
         started.set()
         release.wait(timeout=2)
-        return real_append(journal_path, record)
+        return real_append(journal_path, record, *rest)
 
     monkeypatch.setattr(checkpoint_mod, "_append_journal_record", paused_append)
     first = asyncio.create_task(writer.record("agent-1", status="completed", response="one"))
@@ -275,8 +275,8 @@ def _inject_after_the_journal_write(monkeypatch, context: dict, mutate) -> list:
     original = checkpoint_mod._append_journal_record
     fired: list[bool] = []
 
-    def _append_then_mutate(journal_path, record):
-        written = original(journal_path, record)
+    def _append_then_mutate(journal_path, record, *rest):
+        written = original(journal_path, record, *rest)
         if not fired:
             fired.append(True)
             mutate(context)
@@ -941,3 +941,79 @@ async def test_a_failing_close_does_not_hand_back_the_sequence_it_already_spent(
     recovered = load_checkpoint(path)
     assert "invalid_sequence" not in recovered.get("_recovery", {}), recovered.get("_recovery")
     assert "agent-2" in recovered["ops"], recovered["ops"]
+
+
+async def test_the_journal_refuses_a_private_file_that_replaced_the_one_it_created(tmp_path: Path):
+    """A substitute made by a process running as us looks exactly like a healthy
+    journal: regular, one link, our uid, 0600. Only its identity differs, and
+    records carry raw responses and the shared flow context."""
+    from lionagi.cli.orchestrate import _checkpoint as checkpoint_mod
+
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.record("agent-1", status="completed", response="one")
+
+    journal = writer.journal_path
+    created_inode = journal.stat().st_ino
+    substitute = tmp_path / "substitute"
+    substitute.write_bytes(b"")
+    substitute.chmod(0o600)
+    os.replace(substitute, journal)
+    assert journal.stat().st_ino != created_inode
+
+    # The control that makes this test about identity rather than about the
+    # kind-and-ownership guard: that guard accepts the substitute.
+    descriptor = os.open(journal, os.O_RDONLY)
+    try:
+        checkpoint_mod._refuse_unsafe_inode(descriptor, journal)
+    finally:
+        os.close(descriptor)
+
+    with pytest.raises(JournalPathError):
+        await writer.record("agent-2", status="completed", response="two")
+
+
+async def test_a_journal_this_writer_created_keeps_taking_records(tmp_path: Path):
+    """The control for the refusal above, including across a compaction, which
+    replaces the journal on purpose and has to leave it usable."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path, compact_every=2)
+
+    for i in range(6):
+        await writer.record(f"agent-{i}", status="completed", response=i)
+
+    recovered = load_checkpoint(path)
+    assert list(recovered["ops"]) == [f"agent-{i}" for i in range(6)]
+
+
+async def test_a_journal_reset_deferred_by_a_failure_is_pinned_when_it_finally_happens(
+    tmp_path: Path, monkeypatch
+):
+    """A base write marks the journal for reset before performing it, so a
+    failure there leaves the reset owed to the next record. That reset replaces
+    the journal exactly as the base write would have, and the append after it
+    is measured against whatever the last reset produced."""
+    from lionagi.cli.orchestrate import _checkpoint as checkpoint_mod
+
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path, compact_every=1)
+    real = checkpoint_mod._atomic_write_bytes
+    resets: list[int] = []
+
+    def fail_the_compaction_reset(target: Path, payload: bytes) -> int:
+        if target == writer.journal_path:
+            resets.append(1)
+            if len(resets) == 2:
+                raise OSError(errno.EIO, "journal reset failed")
+        return real(target, payload)
+
+    monkeypatch.setattr(checkpoint_mod, "_atomic_write_bytes", fail_the_compaction_reset)
+
+    with pytest.raises(OSError):
+        await writer.record("agent-1", status="completed", response="one")
+    assert len(resets) == 2
+
+    await writer.record("agent-2", status="completed", response="two")
+
+    recovered = load_checkpoint(path)
+    assert list(recovered["ops"]) == ["agent-1", "agent-2"]
