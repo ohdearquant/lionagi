@@ -398,6 +398,40 @@ describe("generic SSE retry policy", () => {
     close();
   });
 
+  it("holds the signal cursor over a consumer that threw, then advances past one that did not", async () => {
+    const urls: string[] = [];
+    const fetchMock = vi.fn((url: string) => {
+      urls.push(url);
+      return Promise.resolve(
+        new Response(
+          'data: {"id":"sig-7","session_id":"session-1","seq":7,"kind":"NodeStarted","op_id":"op-1","ts":1,"payload":{}}\n\n',
+          { status: 200, headers: { "Content-Type": "text/event-stream" } },
+        ),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { streamSignals } = await import("./api");
+
+    let deliveries = 0;
+    const close = streamSignals("session-1", () => {
+      deliveries += 1;
+      if (deliveries === 1) throw new Error("consumer failed on this signal");
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    // The second request repeats the signal the consumer never took. The third
+    // has moved past it, which is what says the cursor advances at all — a
+    // cursor that simply never moved would satisfy the first half alone.
+    expect(
+      urls.map((url) => new URL(url, "http://studio.test").searchParams.get("after_seq")),
+    ).toEqual(["0", "0", "7"]);
+    close();
+  });
+
   it("reconnects a session-message stream from the last server-issued cursor", async () => {
     const urls: string[] = [];
     const requests: RequestInit[] = [];

@@ -194,6 +194,10 @@ struct ServerIdentity {
     version: String,
 }
 
+/// Ceiling on the identity response body, in bytes. Our own answer is two
+/// short strings; anything approaching this is not the backend we launched.
+const MAX_IDENTITY_BODY_BYTES: usize = 64 * 1024;
+
 /// After health 2xx, verify the backend with the cheap authenticated identity probe.
 /// This ensures the health endpoint belongs to our process, not a port-race squatter.
 pub async fn verify_identity(port: u16, auth_token: &str) -> Result<(), LaunchError> {
@@ -205,7 +209,7 @@ pub async fn verify_identity(port: u16, auth_token: &str) -> Result<(), LaunchEr
     // Exact route path — a trailing slash would bounce through a redirect,
     // and redirects can drop the Authorization header.
     let url = format!("http://127.0.0.1:{port}/api/identity");
-    let resp = client
+    let mut resp = client
         .get(&url)
         .header("Authorization", format!("Bearer {auth_token}"))
         .send()
@@ -219,9 +223,30 @@ pub async fn verify_identity(port: u16, auth_token: &str) -> Result<(), LaunchEr
         )));
     }
 
-    let body = resp
-        .json::<ServerIdentity>()
-        .await
+    // Read the body in chunks against a ceiling rather than buffering whatever
+    // arrives. This probe exists because the port may be held by something
+    // that is not our backend, and that something answers the request: a
+    // squatter that passes /health can stream an arbitrarily large identity
+    // body, and the whole-body read would hold all of it in memory before
+    // anyone got to look at the two fields we want. The response we expect is
+    // two short strings; the ceiling is far above that and far below a
+    // problem. The client's own timeout bounds the other shape of this, a
+    // body delivered slowly rather than largely.
+    let mut body_bytes: Vec<u8> = Vec::new();
+    loop {
+        let chunk = resp
+            .chunk()
+            .await
+            .map_err(|e| LaunchError::IdentityCheckFailed(format!("invalid response: {e}")))?;
+        let Some(chunk) = chunk else { break };
+        if body_bytes.len() + chunk.len() > MAX_IDENTITY_BODY_BYTES {
+            return Err(LaunchError::IdentityCheckFailed(format!(
+                "identity response exceeded {MAX_IDENTITY_BODY_BYTES} bytes"
+            )));
+        }
+        body_bytes.extend_from_slice(&chunk);
+    }
+    let body: ServerIdentity = serde_json::from_slice(&body_bytes)
         .map_err(|e| LaunchError::IdentityCheckFailed(format!("invalid response: {e}")))?;
     if body.identity != "lionagi-studio" || body.version.trim().is_empty() {
         return Err(LaunchError::IdentityCheckFailed(format!(
@@ -317,5 +342,68 @@ mod tests {
             .expect_err("an unrelated 2xx server must not pass identity verification");
 
         assert!(error.to_string().contains("unexpected identity"));
+    }
+
+    /// Serves one response and tolerates the client hanging up before the body
+    /// is fully written, which is what a client enforcing a size ceiling does.
+    /// `serve_once` unwraps its write on purpose, so it cannot serve this case.
+    async fn serve_once_allowing_disconnect(body: String) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0u8; 1024];
+                let read = socket.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        });
+        port
+    }
+
+    /// The exact answer our own backend gives, padded to a chosen length with a
+    /// field `ServerIdentity` ignores. Size is then the only thing that can
+    /// decide the outcome.
+    fn padded_identity(total: usize) -> String {
+        let prefix = r#"{"identity":"lionagi-studio","version":"0.34.1","pad":""#;
+        let suffix = r#""}"#;
+        let pad = total.saturating_sub(prefix.len() + suffix.len());
+        format!("{prefix}{}{suffix}", "x".repeat(pad))
+    }
+
+    #[tokio::test]
+    async fn identity_check_stops_reading_a_body_past_the_ceiling() {
+        let port =
+            serve_once_allowing_disconnect(padded_identity(MAX_IDENTITY_BODY_BYTES + 1)).await;
+
+        let error = verify_identity(port, "desktop-test-token")
+            .await
+            .expect_err("a body past the ceiling must not be read to the end");
+
+        assert!(error.to_string().contains("exceeded"), "got: {error}");
+    }
+
+    #[tokio::test]
+    async fn identity_check_accepts_a_large_body_inside_the_ceiling() {
+        // One byte under, same shape. Without this the test above would also
+        // pass with a ceiling of zero, which would reject our own backend.
+        let (port, _request) = serve_once(&padded_identity(MAX_IDENTITY_BODY_BYTES - 1)).await;
+
+        verify_identity(port, "desktop-test-token")
+            .await
+            .expect("a body inside the ceiling must still verify");
     }
 }

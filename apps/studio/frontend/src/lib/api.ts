@@ -755,8 +755,12 @@ export function streamOperatorConversation(
               controller.abort();
               break;
             }
-            cursor = Math.max(cursor, candidate.sequence);
             handlers.onFrame(candidate);
+            // Advanced after the handler, for the reason the signal stream
+            // advances after its consumer: a throwing handler is caught below
+            // and reconnects from this cursor, so advancing first drops the
+            // frame it never handled.
+            cursor = Math.max(cursor, candidate.sequence);
           }
         }
       } catch (error) {
@@ -1424,8 +1428,13 @@ export function streamSignals(
         onEvent(event);
         return;
       }
-      afterSeq = Math.max(afterSeq, event.seq);
       onEvent(normalizeSignalEvent(event));
+      // Advanced only after the consumer has taken the event. Advancing first
+      // left a throwing consumer with the cursor already past a signal it
+      // never handled, and the reconnect resumes from that cursor, so the
+      // signal was skipped for good. Redelivering one the consumer already
+      // processed is the cheaper failure of the two.
+      afterSeq = Math.max(afterSeq, event.seq);
     },
   );
   return close;
