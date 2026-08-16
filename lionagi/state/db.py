@@ -147,6 +147,16 @@ class SchemaTooNewError(RuntimeError):
     """
 
 
+class BackupNotTrustworthyError(RuntimeError):
+    """A pre-rebuild backup could not be taken from a fully checkpointed store.
+
+    Raised instead of copying, and it aborts the rebuild that asked for the
+    backup. A rebuild replaces a table in place, so the backup is the only way
+    back; a copy that is missing committed data restores cleanly and silently
+    returns a database to an earlier state, which is worse than not migrating.
+    """
+
+
 def state_db_file() -> Path | None:
     """The local file a default ``StateDB()`` would open, or None.
 
@@ -2001,11 +2011,42 @@ class StateDB:
         # In WAL mode, recently committed transactions can live only in the
         # `-wal` sidecar file until a checkpoint occurs. A raw file copy taken
         # without checkpointing first can silently omit that data, defeating
-        # the rollback guarantee this backup exists to provide. TRUNCATE forces
-        # a full checkpoint and truncates the WAL file back to zero length.
-        await self.checkpoint("TRUNCATE")
+        # the rollback guarantee this backup exists to provide.
+        #
+        # TRUNCATE *asks* for a full checkpoint; it does not promise one. When
+        # it cannot get the locks within the busy timeout it falls back and
+        # reports busy, leaving committed frames in the WAL, and the copy below
+        # would then be a rollback artifact predating them. So the result is
+        # read rather than discarded, and a partial checkpoint refuses.
+        result = await self.checkpoint("TRUNCATE")
+        if result is None:
+            # checkpoint() returns None for a non-sqlite dialect or for a pragma
+            # read that produced no row. The dialect was ruled out above, so
+            # only the failed read is left, and it says nothing about whether
+            # the WAL was folded in. Reading that silence as permission would
+            # be the same mistake as discarding the result outright.
+            raise BackupNotTrustworthyError(
+                f"cannot back up {mask_credentials(str(p))} before the {label} rebuild: "
+                "wal_checkpoint(TRUNCATE) returned no row, so whether the write-ahead "
+                "log was folded into the database file is unknown. A file copy would "
+                "not be a verifiable backup. Retry, and check the database is readable."
+            )
+        busy, log_pages, checkpointed = result
+        if busy or log_pages != checkpointed:
+            raise BackupNotTrustworthyError(
+                f"cannot back up {mask_credentials(str(p))} before the {label} rebuild: "
+                f"wal_checkpoint(TRUNCATE) reported busy={busy}, "
+                f"{checkpointed} of {log_pages} WAL pages checkpointed. Committed data "
+                "may still be in the write-ahead log, so a file copy would not be a "
+                "complete backup. Stop other writers to this database and retry."
+            )
         backup_path = p.with_name(f"{p.name}.pre-{label}.{int(time.time())}.bak")
         shutil.copy2(p, backup_path)
+        # Not a snapshot: a writer committing between the checkpoint above and
+        # this copy lands in the WAL again, and those frames are not in the
+        # file just written. The check above bounds what was missed to writes
+        # concurrent with the backup itself rather than to the whole unflushed
+        # WAL, which is a narrower window, not no window.
 
     # Substring present only in the current schedule_runs CREATE SQL
     # (the widened status CHECK); its absence indicates a legacy DB whose
