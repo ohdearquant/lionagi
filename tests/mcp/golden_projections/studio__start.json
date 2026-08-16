@@ -34,7 +34,7 @@
         "x-flag": "--no-frontend"
       },
       "no_open": {
-        "description": "Don't open the hosted UI in a browser (--web only)",
+        "description": "Don't open the hosted UI in a browser (`web` only)",
         "type": "boolean",
         "x-flag": "--no-open"
       },

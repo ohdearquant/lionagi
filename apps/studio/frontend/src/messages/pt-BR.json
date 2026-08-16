@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "Padrão",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · recomendado",
+      "legacyGroup": "Seleção legada",
+      "efforts": "Esforço: {efforts}",
+      "effortInModel": "O esforço é codificado no ID do modelo",
+      "effortAsSetting": "O esforço é enviado como configuração do provedor"
     },
     "effort": {
       "label": "Esforço",
@@ -516,6 +521,7 @@
       "graphNodeStatusDone": "concluído",
       "graphNodeStatusFailed": "falhou",
       "graphNodeStatusSkipped": "ignorado",
+      "graphNodeStatusCancelled": "cancelado",
       "graphNodeStatusEscalated": "escalado",
       "progressTotal": "Total",
       "progressCompleted": "Concluído",
@@ -552,10 +558,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "Ainda não existe nenhum comando que execute esta ação."
+          "no-executable-path": "Ainda não existe nenhum comando que execute esta ação.",
+          "no-project-scope": "Esta execução não tem projeto, portanto nenhum controle pode ser autorizado."
         }
       }
     },

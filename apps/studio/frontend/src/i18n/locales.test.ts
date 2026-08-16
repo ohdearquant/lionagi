@@ -202,15 +202,31 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  // 1092 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
+  // 1098 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
   // (library.filterHooks + 29 library.hooks.* leaves) when the shared hook
   // library and per-agent assembly landed, + history.detail token-usage stats
-  // (statTokensIn/statTokensOut, natively translated in all 16 locales).
+  // (statTokensIn/statTokensOut, natively translated in all 16 locales), + 5
+  // for the Operator model picker's provider groups, legacy selection, and
+  // effort-transport explanation (also natively translated in all 16),
+  // + history.detail.graphNodeStatusCancelled (1), the label for a node that
+  // stopped because its run was cancelled rather than because it failed
+  // (natively translated in all 16, which is why the baseline below is
+  // unchanged).
   // autoAllow and the hooks leaves are natively translated in
   // zh/ja/ko/es/fr/de/pt-BR/ru and English-copied in the remaining 7 locales
   // — that debt is attributed in the identity-leak baseline below.
-  it("en.json has 1092 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1092);
+  //
+  // 1099 = 1098 + history.detail.controls.reason.no-live-consumer, the refusal
+  // shown when an agent run has no runner that would deliver a control. It
+  // ships English-copied in all 15 non-English locales, like its sibling
+  // agent-no-pause-seam; that debt is attributed in the baseline below.
+  //
+  // 1100 = 1099 + history.detail.controls.reason.no-project-scope, the refusal
+  // shown when a run carries no project for a control to be authorized
+  // against. Natively translated in all 16, so unlike its two siblings it adds
+  // nothing to the identity-leak baseline below.
+  it("en.json has 1100 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1100);
   });
 
   it.each(LOCALES.map((l) => l.code))(
@@ -331,11 +347,17 @@ describe("messages — a locale value byte-identical to English is a missed tran
   // 22 native values identical to English on the merits ("Hooks", "Matcher",
   // and cognates in the Latin-script locales). A follow-up should translate
   // the 7 placeholder locales and lower this by 217.
+  //
+  // Raised from 3727 to 3742 (+15 = 1 new leaf × 15 non-English locales) with
+  // history.detail.controls.reason.no-live-consumer, shipped English-copied in
+  // every non-English locale. It joins the controls.* placeholder debt already
+  // attributed above rather than adding a new kind of it, and the follow-up
+  // that translates that subtree should take this key with it.
   it("pre-existing identity-leak count across all locales does not grow past its pinned baseline", () => {
     const total = LOCALES.map((l) => l.code)
       .filter((c) => c !== "en")
       .reduce((sum, code) => sum + findIdentityLeaks(code).length, 0);
-    expect(total).toBeLessThanOrEqual(3727);
+    expect(total).toBeLessThanOrEqual(3742);
   });
 });
 

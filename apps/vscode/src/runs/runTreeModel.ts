@@ -42,11 +42,14 @@ export function createRunTreeState(): RunTreeState {
   };
 }
 
-/** Terminal states that are sticky — a later signal only resets them on retry. */
+/** Terminal states that are sticky — a later signal only resets them on retry.
+ *
+ * Mirrors `_TERMINAL` in lionagi/session/signal.py, which is the set of record. */
 const TERMINAL: ReadonlySet<NodeLifecycleState> = new Set([
   "succeeded",
   "failed",
   "skipped",
+  "cancelled",
   "escalated",
 ]);
 
@@ -113,6 +116,16 @@ export function applySignalRow(state: RunTreeState, row: SignalRow): void {
       // it never ran. Without this case it falls to `default` and is dropped,
       // leaving the node showing whatever it was before it was skipped.
       newState = "skipped";
+      break;
+    case "NodeCancelled":
+      // Terminal, and the reason a node stops without ever reaching its own
+      // outcome. Same drop hazard as NodeSkipped above: with no case here it
+      // falls to `default`, so a cancelled run leaves its nodes frozen at
+      // "running" and the tree reports work still in flight that was
+      // interrupted. TERMINAL below already lists "cancelled", but that only
+      // decides what a later signal may overwrite; nothing could reach that
+      // state without this case.
+      newState = "cancelled";
       break;
     case "NodeEscalated":
       // A soft ("fyi") help signal (route="notify") is informational only —

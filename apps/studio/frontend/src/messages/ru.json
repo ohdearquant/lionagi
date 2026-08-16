@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "По умолчанию",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · рекомендуется",
+      "legacyGroup": "Устаревший выбор",
+      "efforts": "Усилие: {efforts}",
+      "effortInModel": "Уровень усилия закодирован в ID модели",
+      "effortAsSetting": "Уровень усилия передаётся как настройка провайдера"
     },
     "effort": {
       "label": "Усилие",
@@ -516,6 +521,7 @@
       "graphNodeStatusDone": "готово",
       "graphNodeStatusFailed": "ошибка",
       "graphNodeStatusSkipped": "пропущено",
+      "graphNodeStatusCancelled": "отменено",
       "graphNodeStatusEscalated": "эскалировано",
       "progressTotal": "Всего",
       "progressCompleted": "Завершено",
@@ -552,10 +558,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "Пока нет команды, которая бы это выполнила."
+          "no-executable-path": "Пока нет команды, которая бы это выполнила.",
+          "no-project-scope": "У этого запуска нет проекта, поэтому управление не может быть авторизовано."
         }
       }
     },

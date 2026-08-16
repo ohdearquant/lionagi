@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import sqlite3
 import subprocess
+import threading
 import time
 import uuid
+from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
@@ -221,6 +224,167 @@ def _ps_snapshot() -> str:
         return ""
 
 
+# The command-table fallback exists for imported and legacy sessions that do
+# not carry a targeted process identity.  It is host-wide work, so nearby
+# requests share a very short-lived answer.  The value is deliberately short:
+# this cache is a display/diagnostic optimization, never evidence used to send
+# a signal to a process.
+PS_SNAPSHOT_TTL_SECONDS = 1.0
+
+
+class _PsSnapshotCache(NamedTuple):
+    value: str
+    stored_at: float
+    duration_ms: float
+    # Start order as a counter rather than as a clock reading. Publication has
+    # to know which of two captures STARTED later, and a timestamp cannot
+    # answer that at this granularity: time.monotonic() resolves to about 42ns
+    # here, and roughly 15% of back-to-back reads return the same value. Two
+    # captures starting inside one tick would compare equal, the `>` test would
+    # not hold, and the earlier one would publish over the later one's evidence.
+    # A counter handed out under its own lock is strictly increasing by
+    # construction and carries no clock dependency at all. `stored_at` is kept
+    # because the TTL is a real duration; it just no longer decides ordering,
+    # which is why it is read at publication rather than at scan start.
+    sequence: int
+
+
+_PS_SNAPSHOT_CACHE: _PsSnapshotCache | None = None
+# In-flight captures, keyed by the loop that owns each one. A Task belongs to
+# the loop that created it, so a caller on a different loop cannot await this
+# one -- see cached_ps_snapshot. One slot per loop rather than one slot in
+# total: with a single slot, a third loop's entry evicted the second's, and the
+# evicted loop's next caller started a duplicate capture instead of joining the
+# one already running for it. The cached value above carries no such affinity
+# and is shared by every caller.
+_PS_SNAPSHOT_INFLIGHT: dict[asyncio.AbstractEventLoop, asyncio.Task[str]] = {}
+_PS_SNAPSHOT_METRICS: dict[str, int | float | None] | None = None
+# Guards publishing the cache and bumping the counters above. Those are
+# read-modify-write sequences, and the loops that run them live on different
+# OS threads, so comparing timestamps is not enough on its own: two captures
+# can both read the cache before either writes, and then the older one wins by
+# writing last. An asyncio lock would only order coroutines within one loop.
+# Held for a few statements with no I/O and no await inside.
+_PS_SNAPSHOT_PUBLISH_LOCK = threading.Lock()
+# Start order for captures, handed out at scan start. See _PsSnapshotCache.sequence.
+# Its own lock rather than the publish lock: the two guard different things, and
+# sharing one would make a capture that is mid-publish block unrelated captures
+# from even starting.
+_PS_SNAPSHOT_SEQUENCE_LOCK = threading.Lock()
+_PS_SNAPSHOT_SEQUENCE = 0
+
+
+def _ps_snapshot_metrics_state() -> dict[str, int | float | None]:
+    global _PS_SNAPSHOT_METRICS
+    if _PS_SNAPSHOT_METRICS is None:
+        _PS_SNAPSHOT_METRICS = {
+            "captures": 0,
+            "cache_hits": 0,
+            "singleflight_hits": 0,
+            "identity_resolved": 0,
+            "fallback_checks": 0,
+            "last_scan_duration_ms": None,
+        }
+    return _PS_SNAPSHOT_METRICS
+
+
+async def _capture_ps_snapshot() -> str:
+    """Capture once off-loop and publish the cache before waking waiters.
+
+    Captures on different loops overlap, and they do not finish in the order
+    they started: a scan that began earlier can return later. Publishing by
+    arrival would let that older scan replace newer evidence, so a process
+    that appears only in the newer snapshot resolves as absent. So a capture
+    claims a start-order number up front, and publishes only if nothing that
+    started later has published already.
+
+    The TTL clock is read at publication instead, because that is the only
+    thing ``stored_at`` decides now. Reading it at the start would charge the
+    scan's own duration against a one-second lifetime: a scan slower than
+    that would publish an entry already expired, every later caller would
+    miss, and each would launch a scan of its own. That happens exactly under
+    the load that makes scans slow, which is when the cache has to work.
+    Nothing is lost by moving it, because the start-order number, not this
+    timestamp, is what keeps an older scan from replacing a newer one.
+    """
+    global _PS_SNAPSHOT_CACHE
+
+    started = time.perf_counter()
+    # Claimed before the scan, so it orders captures by when they STARTED,
+    # which is the ordering this cache publishes by. Taking it at publish time
+    # instead would order by arrival and reintroduce exactly the staleness the
+    # comparison below exists to prevent.
+    with _PS_SNAPSHOT_SEQUENCE_LOCK:
+        global _PS_SNAPSHOT_SEQUENCE
+        _PS_SNAPSHOT_SEQUENCE += 1
+        sequence = _PS_SNAPSHOT_SEQUENCE
+    value = await anyio.to_thread.run_sync(_ps_snapshot)
+    duration_ms = (time.perf_counter() - started) * 1000
+
+    # Compare and publish under the lock as one step. Reading the cache,
+    # deciding, and then writing is three steps, and captures run on different
+    # OS threads: without the lock two of them can both read the old value
+    # before either writes, at which point the one that started earlier
+    # publishes last and its older evidence replaces the newer.
+    with _PS_SNAPSHOT_PUBLISH_LOCK:
+        metrics = _ps_snapshot_metrics_state()
+        metrics["captures"] = int(metrics["captures"] or 0) + 1
+        metrics["last_scan_duration_ms"] = round(duration_ms, 3)
+
+        current = _PS_SNAPSHOT_CACHE
+        if current is not None and current.sequence > sequence:
+            # A scan that started later has already published. It is the
+            # better evidence, so it stays in the cache and is what this
+            # caller gets too.
+            return current.value
+
+        _PS_SNAPSHOT_CACHE = _PsSnapshotCache(
+            value=value,
+            # Read here, past the ordering guard above, so the TTL measures how
+            # long this value has been available rather than how long ago its
+            # scan set off. See the docstring.
+            stored_at=time.monotonic(),
+            duration_ms=duration_ms,
+            sequence=sequence,
+        )
+    return value
+
+
+async def cached_ps_snapshot() -> str:
+    """Return a short-TTL process snapshot with async singleflight refresh."""
+    cached = _PS_SNAPSHOT_CACHE
+    if cached is not None and time.monotonic() - cached.stored_at < PS_SNAPSHOT_TTL_SECONDS:
+        metrics = _ps_snapshot_metrics_state()
+        metrics["cache_hits"] = int(metrics["cache_hits"] or 0) + 1
+        return cached.value
+
+    loop = asyncio.get_running_loop()
+    # Singleflight is per event loop, deliberately. Awaiting a Task owned by
+    # another loop raises rather than sharing its result, so a caller on a
+    # second loop starts its own capture instead of failing. Two loops in one
+    # process is the exception (a legacy caller running its own loop beside
+    # the serving one), and one extra `ps` there beats a RuntimeError; within
+    # a loop this collapses to a single capture however many loops are live.
+    pending = _PS_SNAPSHOT_INFLIGHT.get(loop)
+    if pending is not None and not pending.done():
+        task = pending
+        metrics = _ps_snapshot_metrics_state()
+        metrics["singleflight_hits"] = int(metrics["singleflight_hits"] or 0) + 1
+    else:
+        task = asyncio.create_task(_capture_ps_snapshot())
+        _PS_SNAPSHOT_INFLIGHT[loop] = task
+
+    try:
+        # One cancelled request must not cancel the shared capture underneath
+        # other viewers that are already awaiting it.
+        return await asyncio.shield(task)
+    finally:
+        # Clear only our own entry: a capture started on this loop after ours
+        # must not be dropped by this one's cleanup.
+        if _PS_SNAPSHOT_INFLIGHT.get(loop) is task and task.done():
+            del _PS_SNAPSHOT_INFLIGHT[loop]
+
+
 # Process start-time comparison tolerance (clock-tick rounding).
 _PID_CREATE_TIME_TOLERANCE = 1.0
 
@@ -288,6 +452,57 @@ def process_liveness(
     if session_id and session_id in snapshot:
         return True
     return None
+
+
+async def _resolve_process_liveness_probe_with_snapshot(
+    probe: Callable[[str], bool | None],
+) -> tuple[bool | None, str]:
+    """Resolve liveness and return the fallback evidence used for sync classifiers."""
+    targeted = probe("")
+    metrics = _ps_snapshot_metrics_state()
+    if targeted is not None:
+        metrics["identity_resolved"] = int(metrics["identity_resolved"] or 0) + 1
+        return targeted, ""
+
+    metrics["fallback_checks"] = int(metrics["fallback_checks"] or 0) + 1
+    snapshot = await cached_ps_snapshot()
+    return probe(snapshot), snapshot
+
+
+async def resolve_process_liveness_probe(
+    probe: Callable[[str], bool | None],
+) -> bool | None:
+    """Apply targeted-first fallback semantics through a caller-owned probe."""
+    resolved, _snapshot = await _resolve_process_liveness_probe_with_snapshot(probe)
+    return resolved
+
+
+async def _resolve_process_liveness_with_snapshot(
+    session: dict[str, Any],
+    artifacts_path: Path | None,
+) -> tuple[bool | None, str]:
+    return await _resolve_process_liveness_probe_with_snapshot(
+        lambda snapshot: process_liveness(session, artifacts_path, ps_snapshot=snapshot)
+    )
+
+
+async def resolve_process_liveness(
+    session: dict[str, Any],
+    artifacts_path: Path | None,
+) -> bool | None:
+    """Prefer targeted identity; share an off-loop host scan only for legacy rows."""
+    resolved, _snapshot = await _resolve_process_liveness_with_snapshot(session, artifacts_path)
+    return resolved
+
+
+def process_snapshot_diagnostics() -> dict[str, int | float | None]:
+    """Observable coverage and capture cost for the legacy liveness fallback."""
+    metrics = dict(_ps_snapshot_metrics_state())
+    cached = _PS_SNAPSHOT_CACHE
+    metrics["cache_age_ms"] = (
+        round((time.monotonic() - cached.stored_at) * 1000, 3) if cached is not None else None
+    )
+    return metrics
 
 
 def _artifacts_path(row: Any) -> Path | None:
@@ -521,14 +736,14 @@ async def list_phantom_sessions(*, stale_hours: float = 1.0) -> list[dict[str, A
             """
         )
         rows = await cur.fetchall()
-    snapshot: str | None = None
     # One scan, one answer per artifact root: sessions repeat their roots
     # heavily, and the walk is the expensive part.
     lock_cache: dict[tuple[str, float], _ScanResult] = {}
     lock_budget = _ScanBudget()
     for row in rows:
-        if snapshot is None:
-            snapshot = _ps_snapshot()
+        artifacts = _artifacts_path(row)
+        session = {"id": row["id"], "node_metadata": row["node_metadata"]}
+        _process_alive, snapshot = await _resolve_process_liveness_with_snapshot(session, artifacts)
         # Classification stats an artifact tree and may walk it. Both are
         # synchronous filesystem work, and this coroutine is the one serving
         # every other request while it runs.
@@ -612,6 +827,7 @@ async def health_report() -> dict[str, Any]:
         return {
             "sessions": {"total": 0, "by_status": {}, "by_health": {}, "unhealthy": []},
             "db": db_health(),
+            "process_snapshot": process_snapshot_diagnostics(),
             "scheduler_timezone": scheduler_timezone_report(),
             "code_identity": await _code_identity_report(),
             "diagnostic_run_at": now_utc().isoformat(),
@@ -658,7 +874,6 @@ async def health_report() -> dict[str, Any]:
     by_status: Counter[str] = Counter()
     by_health: Counter[str] = Counter()
     unhealthy: list[dict[str, Any]] = []
-    snapshot: str | None = None
     # One scan, one answer per artifact root: sessions repeat their roots
     # heavily, and the walk is the expensive part.
     lock_cache: dict[tuple[str, float], _ScanResult] = {}
@@ -698,9 +913,7 @@ async def health_report() -> dict[str, Any]:
                 lock_scan_truncated += 1
 
         if status == "running":
-            if snapshot is None:
-                snapshot = _ps_snapshot()
-            process_alive = process_liveness(sess, artifacts, snapshot)
+            process_alive = await resolve_process_liveness(sess, artifacts)
         else:
             process_alive = False
 
@@ -769,6 +982,7 @@ async def health_report() -> dict[str, Any]:
             "unhealthy": unhealthy,
         },
         "db": db_health(),
+        "process_snapshot": process_snapshot_diagnostics(),
         # The zone this daemon interprets cron expressions in, as resolved at
         # its own start. Reported alongside the other daemon state because the
         # value is frozen per process: nothing in the source tree or the host's
@@ -841,7 +1055,6 @@ async def transition_sessions(
     transitioned: list[str] = []
     skipped: list[dict[str, str]] = []
     now = time.time()
-    txn_snapshot: str | None = None
     # One scan, one answer per artifact root: sessions repeat their roots
     # heavily, and the walk is the expensive part.
     lock_cache: dict[tuple[str, float], _ScanResult] = {}
@@ -879,9 +1092,9 @@ async def transition_sessions(
                     )
                 )
                 has_stale_locks = scan.lock is not None
-            if txn_snapshot is None:
-                txn_snapshot = _ps_snapshot()
-            process_alive = process_liveness(current, artifacts, txn_snapshot)
+            process_alive, liveness_snapshot = await _resolve_process_liveness_with_snapshot(
+                current, artifacts
+            )
             health = classify_session_health(
                 current,
                 now=now,
@@ -906,7 +1119,7 @@ async def transition_sessions(
                     current,
                     now=now,
                     stale_seconds=3600,
-                    ps_snapshot=txn_snapshot,
+                    ps_snapshot=liveness_snapshot,
                     lock_cache=lock_cache,
                     lock_budget=lock_budget,
                 )

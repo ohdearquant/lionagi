@@ -27,22 +27,17 @@ import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
 import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import { ApiError, getInvocation, getSession, streamSession, streamSignals } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
-import {
-  buildNodeStatusesByName,
-  buildOperationGraph,
-  laneFor,
-  transitiveReduceDisplay,
-} from "@/lib/operationGraph";
+import { laneFor, transitiveReduceDisplay } from "@/lib/operationGraph";
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
-import { buildNodeActivityByName } from "@/lib/nodeActivity";
 import type { NodeActivitySnapshot } from "@/lib/nodeActivity";
+import { gateOutcomeFromEvent, SignalProjection } from "@/lib/signalProjection";
+import type {
+  SignalGateOutcome,
+  SignalLaneSummary,
+  SignalProjectionSnapshot,
+} from "@/lib/signalProjection";
 import { formatTokenCount } from "@/lib/usageFormat";
-import {
-  deriveDisplayStatus,
-  deriveVerdict,
-  isEffectivelyActive,
-  isUnsuccessfulTerminal,
-} from "@/lib/runStatus";
+import { deriveDisplayStatus, isEffectivelyActive, isUnsuccessfulTerminal } from "@/lib/runStatus";
 import type { Verdict } from "@/lib/runStatus";
 import type {
   OperatorCommandProposal,
@@ -61,6 +56,7 @@ import {
 import type { ProgressCounts } from "@/lib/execGraphProgress";
 import {
   applyExecutablePath,
+  applyProjectScope,
   confirmRunControl,
   controlKindFor,
   derivePausePhase,
@@ -68,11 +64,19 @@ import {
   pauseControlState,
   proposeRunControl,
   resumeControlState,
+  runAdmitsControls,
   steerControlState,
 } from "@/lib/runControls";
-import type { ControlKind, ControlReasonCode, ControlVerb, PausePhase } from "@/lib/runControls";
+import type {
+  ControlKind,
+  ControlReasonCode,
+  ControlState,
+  ControlVerb,
+  PausePhase,
+} from "@/lib/runControls";
 
 const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
+const EMPTY_SIGNAL_SNAPSHOT = new SignalProjection(1).snapshot();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -949,16 +953,7 @@ interface ErrorEntry {
   summary?: string;
 }
 
-export interface GateOutcome {
-  verdict: Verdict;
-  major: number;
-  minor: number;
-  /** True when the emission carried a findings list (a review-style verdict);
-   *  false for a bare pass/fail gate, which has no severity breakdown. */
-  hasFindings: boolean;
-}
-
-const BLOCKING_FINDING_SEVERITIES = new Set(["critical", "high"]);
+export type GateOutcome = SignalGateOutcome;
 
 // Flow-layer DAG gates (lionagi/operations/flow.py's is_gate contract) never
 // emit a StructuredOutput signal — a rejecting gate's verdict lives in the
@@ -989,31 +984,8 @@ export function deriveGateOutcome(
   runStatus?: { status_reason_code?: string | null } | null,
 ): GateOutcome | null {
   for (let i = events.length - 1; i >= 0; i--) {
-    const ev = events[i];
-    if (ev.kind !== "StructuredOutput") continue;
-    const data = ev.payload?.data;
-    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
-    const d = data as Record<string, unknown>;
-    if (typeof d.gate_verdict === "string" && d.gate_verdict) {
-      const findings = Array.isArray(d.findings) ? d.findings : [];
-      let major = 0;
-      let minor = 0;
-      for (const f of findings) {
-        const severity =
-          f && typeof f === "object" ? (f as Record<string, unknown>).severity : null;
-        if (typeof severity === "string" && BLOCKING_FINDING_SEVERITIES.has(severity)) major += 1;
-        else minor += 1;
-      }
-      return { verdict: deriveVerdict(d.gate_verdict), major, minor, hasFindings: true };
-    }
-    if (typeof d.gate_passed === "boolean") {
-      return {
-        verdict: d.gate_passed ? "approve" : "reject",
-        major: 0,
-        minor: 0,
-        hasFindings: false,
-      };
-    }
+    const outcome = gateOutcomeFromEvent(events[i]);
+    if (outcome) return outcome;
   }
   // No direct-producer StructuredOutput carried a verdict — fall back to the
   // DAG-gate reason code. This channel only ever reports a rejection (there is
@@ -1217,6 +1189,7 @@ const KIND_BADGE: Record<string, { label: string; tone: string }> = {
   // Muted, not an error tone: an edge condition passed this node over, which
   // is the gate working rather than the step breaking.
   NodeSkipped: { label: "skipped", tone: "bg-surface-overlay text-content-muted" },
+  NodeCancelled: { label: "cancelled", tone: "bg-status-warning-bg text-status-warning" },
   NodeAwaitingApproval: { label: "approval", tone: "bg-status-warning-bg text-status-warning" },
   NodeEscalated: { label: "escalated", tone: "bg-status-warning-bg text-status-warning" },
   GateDenied: { label: "gate-denied", tone: "bg-status-error-bg text-status-error" },
@@ -1248,6 +1221,7 @@ const LANE_TONE: Record<LaneState, string> = {
   succeeded: "bg-status-success-bg text-status-success",
   failed: "bg-status-error-bg text-status-error",
   skipped: "bg-surface-overlay text-content-muted",
+  cancelled: "bg-status-warning-bg text-status-warning",
   escalated: "bg-status-warning-bg text-status-warning",
 };
 
@@ -1309,15 +1283,23 @@ export function EventsSection({
   events,
   live,
   renderStep = EVENTS_RENDER_STEP,
+  totalCount = events.length,
+  projectedLanes,
 }: {
   events: SignalEvent[];
   live: boolean;
   /** Paging window size; defaults to EVENTS_RENDER_STEP. Overridable so tests
    *  can exercise the "show older" page-back without rendering hundreds of rows. */
   renderStep?: number;
+  /** Exact number folded from the stream. May exceed events.length because
+   * events is the bounded raw-payload window. */
+  totalCount?: number;
+  /** Full-history lane aggregates maintained by SignalProjection. Direct
+   * EventsSection callers may omit this and derive from their supplied rows. */
+  projectedLanes?: SignalLaneSummary[];
 }) {
   const t = useTranslations("history.detail");
-  const laneSummaries = useMemo((): LaneSummary[] => {
+  const derivedLaneSummaries = useMemo((): LaneSummary[] => {
     const byOp = new Map<string, LaneSignal[]>();
     for (const ev of events) {
       if (!ev.op_id) continue;
@@ -1332,6 +1314,7 @@ export function EventsSection({
       count: kinds.length,
     }));
   }, [events]);
+  const laneSummaries = projectedLanes ?? derivedLaneSummaries;
 
   const [renderCap, setRenderCap] = useState(renderStep);
   // A switch to a new (empty) run must reset the render window immediately,
@@ -1360,7 +1343,7 @@ export function EventsSection({
 
   return (
     <div id="run-events" className="scroll-mt-4">
-      <SectionHeader label={t("sectionEvents")} count={events.length} />
+      <SectionHeader label={t("sectionEvents")} count={totalCount} />
 
       {laneSummaries.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
@@ -1501,15 +1484,19 @@ type ControlDialog = {
 
 function RunControls({
   runId,
+  project,
   kind,
   runTerminal,
+  hasControlConsumer,
   pausePhase,
   onPauseAccepted,
   onResumeAccepted,
 }: {
   runId: string;
+  project?: string | null;
   kind: ControlKind | null;
   runTerminal: boolean;
+  hasControlConsumer: boolean;
   pausePhase: PausePhase;
   onPauseAccepted: () => void;
   onResumeAccepted: () => void;
@@ -1523,22 +1510,24 @@ function RunControls({
 
   if (!kind) return null;
 
-  // applyExecutablePath layers the surface-wide refusal on top of the run's
-  // own state: no command exists that pauses a run, releases a pause gate, or
-  // delivers a steering message, so all three are shown and disabled rather
-  // than dispatching an instruction the operator has no tool for.
-  const pauseState = applyExecutablePath("pause", pauseControlState(kind, runTerminal, pausePhase));
-  const resumeState = applyExecutablePath(
-    "resume",
-    resumeControlState(kind, runTerminal, pausePhase),
-  );
-  const steerState = applyExecutablePath("message", steerControlState(kind, runTerminal));
+  // applyExecutablePath layers command availability on top of the run's own
+  // state, and applyProjectScope layers the run's lack of a project on top of
+  // both. The proposal-backed commands exist for all three verbs; the state
+  // machines still disable unsupported kinds and invalid phases explicitly.
+  const gate = (verb: ControlVerb, state: ControlState): ControlState =>
+    applyProjectScope(project, applyExecutablePath(verb, state));
+  const pauseState = gate("pause", pauseControlState(kind, runTerminal, pausePhase));
+  const resumeState = gate("resume", resumeControlState(kind, runTerminal, pausePhase));
+  const steerState = gate("message", steerControlState(kind, runTerminal, hasControlConsumer));
 
   async function propose(verb: ControlVerb, message?: string) {
     setBusy(verb);
     setError(null);
     try {
-      const { conversationId, proposal } = await proposeRunControl(runId, kind!, verb, { message });
+      const { conversationId, proposal } = await proposeRunControl(runId, kind!, verb, {
+        message,
+        project,
+      });
       setDialog({ verb, conversationId, proposal });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("controls.proposeFailed"));
@@ -1847,8 +1836,21 @@ export default function RunDetail({ id }: RunDetailProps) {
   // request itself is tracked locally rather than re-derived from a status
   // string that does not exist. A reload loses it, same as any other
   // client-only UI state; see the report for the follow-up this implies.
-  const [pauseRequested, setPauseRequested] = useState(false);
-  const [signalEvents, setSignalEvents] = useState<SignalEvent[]>([]);
+  // Tri-state on purpose. `null` means "no local intent, use what the server
+  // reports"; true/false are the intent from a control confirmed on this
+  // screen, which is newer than the last fetch and outranks it until the run
+  // changes. A plain boolean cannot express the difference between "not
+  // paused" and "nobody here has said", and collapsing them is what left a
+  // reloaded paused run showing Pause enabled and Resume refused.
+  const [pauseIntent, setPauseIntent] = useState<boolean | null>(null);
+  // Raw signal payloads are capped in a 2,000-row ring. The projection keeps
+  // complete graph/status/activity/gate/lane indexes separately, so a 100k
+  // replay does not leave 100k payload objects in React state or rescan them
+  // for every arriving row.
+  const [signalState, setSignalState] = useState<{
+    id: string;
+    snapshot: SignalProjectionSnapshot;
+  }>({ id, snapshot: EMPTY_SIGNAL_SNAPSHOT });
   const [loadingOlder, setLoadingOlder] = useState(false);
   const loadingOlderRef = useRef(false);
   // Set when the server rejects the held anchor as no longer present in the
@@ -1874,13 +1876,14 @@ export default function RunDetail({ id }: RunDetailProps) {
     setLive(false);
     setDone(false);
     setError(null);
-    setSignalEvents([]);
-    // The pause request is scoped to the run it was made on. The Fleet view
+    // The pause intent is scoped to the run it was formed on. The Fleet view
     // keeps this component mounted and swaps `id`, so leaving it set let run
     // B derive its pause phase from run A's request: B could show pausing or
     // paused, disable its own Pause, and offer a Resume that would then send
     // a command carrying B's run id even though only A was ever paused.
-    setPauseRequested(false);
+    // Cleared to null, not false: run B has its own server-reported state,
+    // and false would assert it is not paused before anyone has looked.
+    setPauseIntent(null);
     setLoadingOlder(false);
     loadingOlderRef.current = false;
     setOlderLoadFailed(false);
@@ -2036,17 +2039,25 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   useEffect(() => {
     if (!id) return;
+    const projection = new SignalProjection();
+    let cancelled = false;
+    let publishScheduled = false;
+    const publish = () => {
+      if (publishScheduled) return;
+      publishScheduled = true;
+      queueMicrotask(() => {
+        publishScheduled = false;
+        if (!cancelled) setSignalState({ id, snapshot: projection.snapshot() });
+      });
+    };
     const stop = streamSignals(id, (event) => {
       if ("type" in event) return;
       const sig = event as SignalEvent;
-      setSignalEvents((prev) => {
-        if (prev.some((e) => e.id === sig.id)) return prev;
-        return [...prev, sig];
-      });
+      if (projection.append(sig)) publish();
     });
     return () => {
+      cancelled = true;
       stop();
-      setSignalEvents([]);
     };
   }, [id]);
 
@@ -2269,13 +2280,13 @@ export default function RunDetail({ id }: RunDetailProps) {
     [id],
   );
 
-  // Confirming a pause proposal marks the request locally; derivePausePhase
+  // Confirming a proposal records the intent locally; derivePausePhase
   // (above) turns that into "pausing" vs "paused" against the live running
-  // count, and confirming a resume clears it — a fresh pause() later
-  // installs its own gate, mirrored by allowing pauseRequested to be set
-  // again from idle.
-  const handlePauseAccepted = useCallback(() => setPauseRequested(true), []);
-  const handleResumeAccepted = useCallback(() => setPauseRequested(false), []);
+  // count. Resume records false rather than clearing to null so the release
+  // shows immediately instead of waiting for the next detail fetch to stop
+  // reporting a gate the operator has already released.
+  const handlePauseAccepted = useCallback(() => setPauseIntent(true), []);
+  const handleResumeAccepted = useCallback(() => setPauseIntent(false), []);
 
   const sessionStatus = done ? "completed" : live ? "running" : "completed";
 
@@ -2330,15 +2341,14 @@ export default function RunDetail({ id }: RunDetailProps) {
     return errs;
   }, [steps]);
 
+  const signalSnapshot = signalState.id === id ? signalState.snapshot : EMPTY_SIGNAL_SNAPSHOT;
+
   const gateOutcome = useMemo(
-    () => deriveGateOutcome(signalEvents, session),
-    [signalEvents, session],
+    () => signalSnapshot.gateOutcome ?? deriveGateOutcome([], session),
+    [signalSnapshot.gateOutcome, session],
   );
 
-  const opGraph = useMemo(
-    () => buildOperationGraph(signalEvents.filter((e) => !!e.op_id)),
-    [signalEvents],
-  );
+  const opGraph = signalSnapshot.operationGraph;
 
   const execSteps = useMemo(
     () =>
@@ -2379,14 +2389,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   // planned graph exists to correlate against.
   const nodeStatuses = useMemo((): Record<string, NodeExecStatus> | undefined => {
     if (!runGraph) return undefined;
-    const byName = buildNodeStatusesByName(signalEvents);
     const result: Record<string, NodeExecStatus> = {};
     for (const node of runGraph.nodes) {
-      const live = byName.get(node.id);
+      const live = signalSnapshot.nodeStatuses.get(node.id);
       if (live) result[node.id] = live.status === "succeeded" ? "completed" : live.status;
     }
     return result;
-  }, [runGraph, signalEvents]);
+  }, [runGraph, signalSnapshot.nodeStatuses]);
 
   // What each node is DOING inside its running state, correlated from the same
   // stream and by the same authored-name rule as nodeStatuses above. Kept to
@@ -2394,14 +2403,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   // draw cannot grow the map.
   const nodeActivity = useMemo((): Map<string, NodeActivitySnapshot> | undefined => {
     if (!runGraph) return undefined;
-    const byName = buildNodeActivityByName(signalEvents);
     const result = new Map<string, NodeActivitySnapshot>();
     for (const node of runGraph.nodes) {
-      const live = byName.get(node.id);
+      const live = signalSnapshot.nodeActivity.get(node.id);
       if (live) result.set(node.id, live);
     }
     return result;
-  }, [runGraph, signalEvents]);
+  }, [runGraph, signalSnapshot.nodeActivity]);
 
   // The SAME reconciled map feeds both the always-visible progress summary
   // and the graph nodes below (WorkerCanvas nodeStatuses prop) — one source,
@@ -2508,10 +2516,24 @@ export default function RunDetail({ id }: RunDetailProps) {
     status_reason_summary: session.status_reason_summary,
   };
   const displayStatus = deriveDisplayStatus(runForStatus);
-  const runTerminal =
-    displayStatus === "completed" || displayStatus === "failed" || displayStatus === "cancelled";
+  // Not derived from displayStatus: that mapping folds unknown statuses into
+  // "running", which is right for a chip and wrong for a control gate. See
+  // runAdmitsControls, which asks the question the server's admission asks.
+  const runTerminal = !runAdmitsControls(session.status);
   const controlKind = controlKindFor(session.invocation_kind ?? null);
-  const pausePhase: PausePhase = derivePausePhase(pauseRequested, pauseRunningCount);
+  // The server's answer is what survives a reload; the local flag only adds
+  // the optimism between confirming a pause and the next detail fetch. OR
+  // rather than a choice between them, so neither can erase the other: the
+  // local flag never turns a held pause back into "not paused", and a stale
+  // server read never un-does a pause that was just confirmed here.
+  const serverPauseHeld = session.pause_is_held ?? false;
+  const pausePhase: PausePhase = derivePausePhase(
+    pauseIntent ?? serverPauseHeld,
+    pauseRunningCount,
+    // Established only when the server is the one saying so. A pause confirmed
+    // on this screen is still a fresh request and keeps the cautious reading.
+    pauseIntent === null && serverPauseHeld,
+  );
 
   // ADR-0113 D1/D6: a graph with edges is the default view; anything with no
   // edges to draw (including "no graph at all") opens on the list.
@@ -2583,8 +2605,13 @@ export default function RunDetail({ id }: RunDetailProps) {
       {controlKind && hasAnyExecutablePath() && (
         <RunControls
           runId={session.id}
+          project={session.project}
           kind={controlKind}
           runTerminal={runTerminal}
+          // Strict compare: a response that never carried the field leaves the
+          // steer disabled with a stated reason, rather than offering a control
+          // the server would refuse.
+          hasControlConsumer={session.has_control_consumer === true}
           pausePhase={pausePhase}
           onPauseAccepted={handlePauseAccepted}
           onResumeAccepted={handleResumeAccepted}
@@ -2842,7 +2869,12 @@ export default function RunDetail({ id }: RunDetailProps) {
       )}
       <ErrorsSection errors={errors} partial={partialWindow} gateOutcome={gateOutcome} />
       <FilesSection files={runFiles} partial={partialWindow} />
-      <EventsSection events={signalEvents} live={live && !done} />
+      <EventsSection
+        events={signalSnapshot.events}
+        totalCount={signalSnapshot.totalCount}
+        projectedLanes={signalSnapshot.laneSummaries}
+        live={live && !done}
+      />
       <div ref={bottomRef} />
     </div>
   );

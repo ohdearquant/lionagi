@@ -105,8 +105,12 @@ def test_a_positional_the_parser_will_not_enforce_is_still_reported(catalog: dic
 
 def test_the_unenforced_parameters_are_real_parameters(catalog: dict) -> None:
     """A name reported here has to be one the caller may actually pass."""
+    checked = 0
     for entry in catalog["verbs"]:
-        if not entry.get("available"):
+        # An available verb carries no "available" key; only an unavailable one
+        # says so. Reading it without the default skips every entry and leaves
+        # this test asserting nothing at all.
+        if not entry.get("available", True):
             continue
         named = entry.get("required_unenforced")
         if not named:
@@ -114,6 +118,8 @@ def test_the_unenforced_parameters_are_real_parameters(catalog: dict) -> None:
         schema = dispatch.verb_schema(dispatch.VERBS[entry["verb"]])
         for parameter in named:
             assert parameter in schema["properties"]
+            checked += 1
+    assert checked, "no unenforced parameter was checked; this test proved nothing"
 
 
 @pytest.mark.parametrize("verb", ["agent.submit", "flow.submit", "fanout.submit"])
@@ -156,7 +162,8 @@ def test_a_catalog_built_call_to_an_ordinary_read_verb_succeeds(tmp_path) -> Non
         client.initialize()
         catalog = client.request(help=True)
         entry = _entry(catalog, "job.list")
-        assert entry["required"] == []
+        # no required parameters is spelled by omitting the key
+        assert entry.get("required", []) == []
         assert "schema_fingerprint" not in entry
         result = client.op("job.list", {})
 
