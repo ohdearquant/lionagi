@@ -2234,6 +2234,24 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
     });
     return {
       container,
+      // Re-render the SAME React tree under a different run id, which is what
+      // navigating between runs does: the RunDetail instance is reused rather
+      // than remounted, so per-run state has to be reset rather than dropped.
+      rerenderWithRun: async (nextId: string, nextSession: unknown) => {
+        const { getSession } = await import("@/lib/api");
+        vi.mocked(getSession).mockResolvedValue(nextSession as never);
+        await act(async () => {
+          root.render(
+            <IntlProvider locale="en" messages={enMessages}>
+              <RunDetail id={nextId} />
+            </IntlProvider>,
+          );
+        });
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      },
       unmount: () => {
         act(() => root.unmount());
         container.remove();
@@ -2265,6 +2283,59 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
       expect(dialog.getAttribute("aria-label")).toBe("Execution graph");
       expect(container.hasAttribute("inert")).toBe(true);
       expect(document.body.style.overflow).toBe("hidden");
+    } finally {
+      unmount();
+    }
+  });
+
+  // Navigating to another run reuses this RunDetail instance. The overlay is
+  // rendered inside the graph section, so the dialog goes away, but the flag
+  // that installed the body lock, the inert background and the key listener
+  // is not per-dialog — if it survives the navigation, the teardown never
+  // runs and the app is left scroll-locked behind an inert root.
+  it("switching to another run releases the background lock the overlay installed", async () => {
+    const { container, rerenderWithRun, unmount } = await mountRunDetail(
+      sessionWithBranches(edgedGraph),
+    );
+    try {
+      await openExpandedGraph(container);
+      expect(container.hasAttribute("inert")).toBe(true);
+      expect(document.body.style.overflow).toBe("hidden");
+
+      // The next run also has a resolvable graph, so the section itself stays
+      // rendered. Only the run identity changed.
+      await rerenderWithRun("run-next", {
+        ...(sessionWithBranches(edgedGraph) as Record<string, unknown>),
+        id: "run-next",
+        name: "run-next",
+      });
+
+      expect(document.body.style.overflow).toBe("");
+      expect(container.hasAttribute("inert")).toBe(false);
+      expect(
+        document.body.querySelector('[role="dialog"][aria-label="Execution graph"]'),
+      ).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("moving to a run with no resolvable graph also releases the lock", async () => {
+    const { container, rerenderWithRun, unmount } = await mountRunDetail(
+      sessionWithBranches(edgedGraph),
+    );
+    try {
+      await openExpandedGraph(container);
+      expect(document.body.style.overflow).toBe("hidden");
+
+      await rerenderWithRun("run-graphless", {
+        ...(sessionWithBranches(null) as Record<string, unknown>),
+        id: "run-graphless",
+        name: "run-graphless",
+      });
+
+      expect(document.body.style.overflow).toBe("");
+      expect(container.hasAttribute("inert")).toBe(false);
     } finally {
       unmount();
     }

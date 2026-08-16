@@ -2511,6 +2511,22 @@ export default function RunDetail({ id }: RunDetailProps) {
     return () => clearInterval(interval);
   }, [live, done]);
 
+  // Navigating to another run reuses this component instance, and the expand
+  // overlay lives inside the graph section, so the dialog unmounts with the
+  // outgoing run. graphExpanded is what holds the body scroll lock, the inert
+  // background and the key listener in place, and the effect that installs
+  // them is keyed on graphExpanded alone — so a flag that outlives its dialog
+  // means the teardown never runs and the page is left scrolled-locked behind
+  // an inert root. Closing on the run id keeps the flag from outliving what it
+  // describes; the teardown is then the ordinary cleanup of that same effect.
+  // Closed in the cleanup, the same way the per-run subscriptions above clear
+  // their accumulated state, so leaving one run tears the overlay down before
+  // the next run's effects set up. This must stay above the error/loading
+  // early returns below to keep the hook order stable across renders.
+  useEffect(() => {
+    return () => setGraphExpanded(false);
+  }, [id]);
+
   if (error) {
     return (
       <div className="flex items-center justify-center py-20">
