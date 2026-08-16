@@ -41,7 +41,7 @@ This ADR answers five concrete problems:
 | Control addressing and transport | D1: Queue ordered `pause`, `resume`, and `message` rows only for live flow/play sessions. |
 | Cooperative pause semantics | D2: Gate new operation starts at the executor boundary; never preempt an in-flight provider call. |
 | Context-mode steering | D3: Apply messages at most once to shared flow context and render them once into a pending operation instruction. |
-| Checkpoint persistence | D4: Atomically replace a versioned full-state JSON checkpoint after operation outcomes. |
+| Checkpoint persistence | D4: Append fsynced deltas to a generation-scoped journal beside an atomically replaced base snapshot, compacting on a bound. |
 | Resume and reactive-growth bounds | D5: Replay the recorded plan without planning; refuse spawned topology and gate degraded inherited context. |
 
 Out of scope:
@@ -294,6 +294,11 @@ Version 3 replaces the per-completion full rewrite with two run-local files:
   and filesystem work run in a worker thread while one async lock preserves writer order.
 - Context snapshots are reduced to changed and deleted top-level keys. Completed operation responses
   remain individually durable.
+- The baseline for the next delta is captured once, synchronously, before any await. The caller
+  keeps mutating the shared context workspace, so reading it to build the delta and reading it
+  again afterwards to store the baseline would put those reads on opposite sides of an await; a
+  mutation landing between them enters the baseline without entering any delta, and is therefore
+  never journaled at all.
 - After 128 deltas, the writer atomically replaces the base with the recovered current state under a
   new generation and then clears the journal. A journal from an older generation is never replayed
   onto the new base.
@@ -392,8 +397,19 @@ Legacy version 1/2 persistence semantics:
 versioning is recorded.
 
 Why version 3: atomic replacement still protects the compacted base, while fsynced deltas keep
-completion writes proportional to the new data rather than all prior state. Generation ids make the
-two-file compaction boundary recoverable without replaying an obsolete journal.
+completion writes proportional to the changed top-level entries rather than to all prior state.
+Generation ids make the two-file compaction boundary recoverable without replaying an obsolete
+journal.
+
+The ceiling that phrasing carries, stated because it is not "proportional to the new data": a
+delta is computed one top-level key at a time, so a key holding a growing list or dict is
+journaled whole whenever any part of it changes, and the baseline capture deep-copies the whole
+context. Both therefore scale with accumulated context rather than with the increment. That is a
+ceiling, not a regression — the writer this replaces serialized the entire checkpoint state on
+the event loop after every completion, so version 3 is strictly cheaper on both the loop and the
+disk. Lifting it means descending into nested containers on both sides: a structural delta and a
+baseline that shares unchanged subtrees. Those are one decision seen from two ends and are not
+part of this one.
 
 ### D5 — Resume replays the original plan and refuses unfaithful topology
 
@@ -544,6 +560,16 @@ Appending one event per completion would reduce full-file write amplification an
 more exact replay. It lost for the current implementation because it needs log framing,
 compaction, corruption recovery, schema migration, and a deterministic fold. A full JSON snapshot
 is much smaller operational machinery for current flow sizes.
+
+**Reversed in version 3.** That rejection stands for versions 1 and 2 and is kept as written,
+because it records why the full-snapshot writer was the right first shape. Version 3 adopts the
+event log in a bounded form and D4 above is the operative decision. The reversal is not a
+correction of the reasoning: every cost the rejection named is now paid rather than avoided.
+Framing is newline-delimited JSON, compaction is the generation-scoped base rewrite on a
+128-delta bound, corruption recovery is the valid-prefix rule with torn, gapped, malformed and
+stale-generation records disclosed in `_recovery`, and the fold is deterministic because records
+carry a monotonic per-generation sequence. What changed is the price of not paying it: a full
+rewrite per completion costs the serialization of all prior state, which grows with the run.
 
 ### Replan on resume
 
