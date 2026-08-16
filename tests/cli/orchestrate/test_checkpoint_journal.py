@@ -775,3 +775,169 @@ async def test_recovery_refuses_a_record_that_carries_an_id_but_no_outcome(tmp_p
     recovered = load_checkpoint(path)
     assert recovered["_recovery"]["invalid_record"] is True
     assert set(recovered["ops"]) == {"agent-1"}
+
+
+# --- what is already sitting at the journal name -----------------------------
+
+
+async def test_the_journal_refuses_an_inode_that_is_linked_from_somewhere_else(tmp_path: Path):
+    """0600 describes a file this process created. A hard link planted at the
+    journal name was created by somebody else, at whatever mode they chose, and
+    every record appended to it lands in their file too -- with the run's raw
+    operation responses and its whole flow context in it."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.record("agent-0", status="completed", response=0)
+
+    readable = tmp_path / "somebody-elses-file.jsonl"
+    readable.write_bytes(b"")
+    # Owner-only, like a journal we made ourselves. The link is the only thing
+    # wrong with it, so nothing but the link check can be what refuses it --
+    # a 0644 fixture here passes against a writer that has no link check at all.
+    readable.chmod(0o600)
+    writer.journal_path.unlink()
+    os.link(readable, writer.journal_path)
+    assert writer.journal_path.stat().st_nlink == 2, "the fixture did not create a link"
+    assert writer.journal_path.stat().st_mode & 0o077 == 0, "the fixture is not owner-only"
+
+    with pytest.raises(JournalPathError):
+        await writer.record("agent-1", status="completed", response={"token": "sk-secret"})
+
+    assert b"sk-secret" not in readable.read_bytes()
+
+
+async def test_the_journal_refuses_a_file_readable_beyond_its_owner(tmp_path: Path):
+    """The same hole without the link: a file already at the journal name keeps
+    the permissions it was created with, because the creation mode applies to
+    a creation and nothing was created."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.record("agent-0", status="completed", response=0)
+
+    writer.journal_path.chmod(0o644)
+
+    with pytest.raises(JournalPathError):
+        await writer.record("agent-1", status="completed", response={"token": "sk-secret"})
+
+    assert b"sk-secret" not in writer.journal_path.read_bytes()
+
+
+async def test_a_private_journal_of_our_own_is_still_accepted(tmp_path: Path):
+    """Control for the two refusals above. Both of them pass trivially against
+    a writer that refuses every journal, so the ordinary case has to be shown
+    working under the same checks."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.record("agent-0", status="completed", response=0)
+    await writer.record("agent-1", status="completed", response={"token": "sk-secret"})
+
+    assert writer.journal_path.stat().st_nlink == 1
+    assert writer.journal_path.stat().st_mode & 0o077 == 0
+    assert b"sk-secret" in writer.journal_path.read_bytes()
+    assert set(load_checkpoint(path)["ops"]) == {"agent-0", "agent-1"}
+
+
+def _fifo_at(path: Path) -> None:
+    """Replace `path` with an owner-only FIFO.
+
+    Owner-only on purpose. A FIFO created at the default umask is 0644, which
+    the permission check refuses on its own -- and a test that trips that check
+    says nothing about whether the file type is examined at all.
+    """
+    path.unlink()
+    os.mkfifo(path, 0o600)
+    path.chmod(0o600)
+    assert path.stat().st_mode & 0o077 == 0, "the fixture is not owner-only"
+
+
+async def test_the_journal_refuses_a_fifo_even_while_one_is_being_read(tmp_path: Path):
+    """A FIFO passes a symlink check, because it is not a symlink. With a
+    reader already attached the write-side open succeeds outright, so nothing
+    about the open refuses it: what the writer does with the descriptor after
+    opening it is the only thing that can."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.record("agent-0", status="completed", response=0)
+
+    _fifo_at(writer.journal_path)
+    # A non-blocking read-side open returns straight away and leaves a reader
+    # attached, so the writer's open cannot fail for want of one.
+    reader = os.open(writer.journal_path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        with pytest.raises(JournalPathError):
+            await writer.record("agent-1", status="completed", response=1)
+    finally:
+        os.close(reader)
+
+
+async def test_the_journal_does_not_wait_on_a_fifo_nobody_is_reading(tmp_path: Path):
+    """The same FIFO with no reader. A write-side open of one waits for a
+    reader that is never coming, and the checkpoint write holds the writer's
+    lock, so what stalls is the run.
+
+    The timeout bounds the call rather than the assertion. Without the
+    non-blocking open this does not raise late, it does not return, so a
+    regression here reports as a hang and not as a pass.
+    """
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.record("agent-0", status="completed", response=0)
+
+    _fifo_at(writer.journal_path)
+
+    with pytest.raises(JournalPathError):
+        await asyncio.wait_for(writer.record("agent-1", status="completed", response=1), timeout=10)
+
+
+async def test_recovery_refuses_a_fifo_at_the_journal_name(tmp_path: Path):
+    """Recovery opens the same name to read it, and gets whatever is there."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.record("agent-0", status="completed", response=0)
+
+    _fifo_at(writer.journal_path)
+
+    with pytest.raises(JournalPathError):
+        await asyncio.wait_for(asyncio.to_thread(load_checkpoint, path), timeout=10)
+
+
+# --- a close that fails after the bytes are already down ---------------------
+
+
+async def test_a_failing_close_does_not_hand_back_the_sequence_it_already_spent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """close() reports errors the write never surfaced, and it runs after the
+    record is in the file and fsynced. Raised from a `finally`, it replaced the
+    byte count with itself -- so the writer read a landed record as one that
+    never happened, kept the sequence number, and spent it again on the next
+    record. Recovery meets the same sequence twice, stops there, and discards
+    every completion after it."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.record("agent-0", status="completed", response=0)
+
+    real_close = os.close
+    state = {"fired": False}
+
+    def failing_close(descriptor: int) -> None:
+        if not state["fired"] and os.fstat(descriptor).st_size > 0:
+            state["fired"] = True
+            real_close(descriptor)
+            raise OSError(errno.EIO, "injected close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(os, "close", failing_close)
+    with contextlib.suppress(Exception):
+        await writer.record("agent-1", status="completed", response=1)
+    monkeypatch.undo()
+    assert state["fired"], "the injected failure never fired"
+
+    await writer.record("agent-2", status="completed", response=2)
+
+    seqs = [json.loads(line)["seq"] for line in writer.journal_path.read_bytes().splitlines()]
+    assert len(seqs) == len(set(seqs)), f"a sequence number was spent twice: {seqs}"
+
+    recovered = load_checkpoint(path)
+    assert "invalid_sequence" not in recovered.get("_recovery", {}), recovered.get("_recovery")
+    assert "agent-2" in recovered["ops"], recovered["ops"]

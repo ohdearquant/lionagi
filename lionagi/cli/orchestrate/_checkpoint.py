@@ -9,7 +9,9 @@ import copy
 import errno
 import json
 import os
+import stat
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -138,20 +140,16 @@ class CheckpointWriter:
         entry = {"agent_id": agent_id, "status": status, "response": response}
         async with self._lock:
             if self.version == CHECKPOINT_VERSION:
-                captured = _capture_context(flow_context)
-                await self._ensure_base_locked()
-                context_delta = await _context_delta_async(self.flow_context, captured)
-                delta = {"kind": "op", "entry": entry}
-                if context_delta is not None:
-                    delta["flow_context"] = context_delta
 
-                def apply() -> None:
+                def store() -> None:
                     self.ops[agent_id] = entry
-                    if captured is not None:
-                        self.flow_context = captured
 
-                await self._append_delta_locked(delta, apply)
-                await self._maybe_compact_locked()
+                await self._journal_locked(
+                    kind="op",
+                    entry=entry,
+                    flow_context=flow_context,
+                    apply_entry=store,
+                )
             else:
                 self.ops[agent_id] = entry
                 if flow_context is not None:
@@ -208,20 +206,12 @@ class CheckpointWriter:
 
         async with self._lock:
             if self.version == CHECKPOINT_VERSION:
-                captured = _capture_context(flow_context)
-                await self._ensure_base_locked()
-                context_delta = await _context_delta_async(self.flow_context, captured)
-                delta = {"kind": "spawned", "entry": entry}
-                if context_delta is not None:
-                    delta["flow_context"] = context_delta
-
-                def apply() -> None:
-                    upsert()
-                    if captured is not None:
-                        self.flow_context = captured
-
-                await self._append_delta_locked(delta, apply)
-                await self._maybe_compact_locked()
+                await self._journal_locked(
+                    kind="spawned",
+                    entry=entry,
+                    flow_context=flow_context,
+                    apply_entry=upsert,
+                )
             else:
                 upsert()
                 if flow_context is not None:
@@ -298,6 +288,37 @@ class CheckpointWriter:
                 if apply_state is not None:
                     apply_state()
 
+    async def _journal_locked(
+        self,
+        *,
+        kind: str,
+        entry: dict[str, Any],
+        flow_context: dict[str, Any] | None,
+        apply_entry: Callable[[], None],
+    ) -> None:
+        """Journal one completion as a delta and advance memory with the file.
+
+        One copy rather than one per record kind. The steps are ordered against
+        each other -- the context is frozen before anything can await, the
+        baseline exists before a delta is taken against it, and memory advances
+        only where the record reached the file -- and two copies of an ordering
+        is an ordering that can be changed in one place.
+        """
+        captured = _capture_context(flow_context)
+        await self._ensure_base_locked()
+        context_delta = await _context_delta_async(self.flow_context, captured)
+        delta: dict[str, Any] = {"kind": kind, "entry": entry}
+        if context_delta is not None:
+            delta["flow_context"] = context_delta
+
+        def apply() -> None:
+            apply_entry()
+            if captured is not None:
+                self.flow_context = captured
+
+        await self._append_delta_locked(delta, apply)
+        await self._maybe_compact_locked()
+
     async def _maybe_compact_locked(self) -> None:
         if self._delta_count >= self.compact_every:
             await self._write_v3_base_locked()
@@ -336,6 +357,18 @@ def _serialize_json(value: Any) -> bytes:
 # quietly depend on which platform this runs on.
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
+# Opening a FIFO for writing waits until someone opens it for reading, which is
+# a wait with no timeout in the middle of a checkpoint write. O_NONBLOCK turns
+# that into an immediate ENXIO, and it has no effect on the regular files this
+# is actually meant to open, so the inode check below gets to run before
+# anything can block on what it is about to refuse.
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+
+# Ownership and permission bits mean what they say on POSIX. On Windows the
+# same fields are synthesized and every file would look world-readable, so the
+# two checks that read them are asked only where the answer is real.
+_POSIX_IDENTITY = hasattr(os, "getuid")
+
 # Checkpoint state and journal records carry raw operation responses and the
 # shared flow context. Every file this module creates is owner-only, and the
 # mode is set on the descriptor rather than left to the process umask, which
@@ -365,18 +398,49 @@ def _refuse_if_symlinked(descriptor: int, path: Path) -> None:
         raise JournalPathError(f"refusing to use a symlinked path: {path}")
 
 
+def _refuse_unsafe_inode(descriptor: int, path: Path) -> None:
+    """Refuse anything at this name but a private regular file of our own.
+
+    O_NOFOLLOW covers a symlink at the final component and nothing else, and
+    0600 describes a file this process created. Neither says anything about an
+    inode that was already there, which is the case that matters: the journal
+    is opened by name on every delta, so whatever is sitting at that name is
+    what the records go into.
+
+    What can be sitting there: a FIFO or device, where the open itself is the
+    attack; a hard link to a file elsewhere, where the creation mode never
+    applies because nothing was created; or a pre-made world-readable file,
+    same reason. Journal records carry raw operation responses and the shared
+    flow context, so each of those is a disclosure of both.
+    """
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode):
+        raise JournalPathError(f"refusing a path that is not a regular file: {path}")
+    if info.st_nlink != 1:
+        raise JournalPathError(f"refusing a path that is linked from somewhere else: {path}")
+    if _POSIX_IDENTITY:
+        if info.st_uid != os.getuid():
+            raise JournalPathError(f"refusing a path owned by another user: {path}")
+        if info.st_mode & 0o077:
+            raise JournalPathError(f"refusing a path readable beyond its owner: {path}")
+
+
 def _open_no_follow(path: Path, flags: int, mode: int = _PRIVATE_MODE) -> int:
     try:
-        descriptor = os.open(path, flags | _NOFOLLOW, mode)
+        descriptor = os.open(path, flags | _NOFOLLOW | _NONBLOCK, mode)
     except OSError as exc:
         # ELOOP is what O_NOFOLLOW reports for a symlinked final component.
         if exc.errno == errno.ELOOP:
             raise JournalPathError(f"refusing to use a symlinked path: {path}") from exc
+        # ENXIO is a write-side open of a FIFO nobody is reading. Without
+        # O_NONBLOCK this call would still be waiting instead of raising.
+        if exc.errno == errno.ENXIO:
+            raise JournalPathError(f"refusing a path that is not a regular file: {path}") from exc
         raise
-    if _NOFOLLOW:
-        return descriptor
     try:
-        _refuse_if_symlinked(descriptor, path)
+        if not _NOFOLLOW:
+            _refuse_if_symlinked(descriptor, path)
+        _refuse_unsafe_inode(descriptor, path)
     except BaseException:
         os.close(descriptor)
         raise
@@ -489,6 +553,7 @@ def _append_journal_record(path: Path, record: dict[str, Any]) -> int:
     payload = _serialize_json(record) + b"\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = _open_no_follow(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+    closed = False
     try:
         written = _write_all(descriptor, payload)
         # Past this point the bytes are in the file. fsync decides whether they
@@ -498,8 +563,27 @@ def _append_journal_record(path: Path, record: dict[str, Any]) -> int:
             os.fsync(descriptor)
         except OSError as exc:
             raise _RecordReachedFileError(written, exc) from exc
+        # Closed here rather than in the `finally` below. A close that fails
+        # from a `finally` replaces whatever the block was returning or
+        # raising, so the byte count goes with it -- and the caller reads a
+        # lost count as a record that never landed, keeps the sequence number,
+        # and spends it again on the next record. Recovery then meets the same
+        # sequence twice and stops there, discarding every completion after it.
+        # The descriptor is gone either way once close returns, error or not.
+        try:
+            os.close(descriptor)
+        except OSError as exc:
+            raise _RecordReachedFileError(written, exc) from exc
+        finally:
+            closed = True
     finally:
-        os.close(descriptor)
+        if not closed:
+            try:
+                os.close(descriptor)
+            except OSError:
+                # Nothing left to salvage: this path is already unwinding a
+                # failure that has the byte count in it.
+                pass
     return written
 
 
