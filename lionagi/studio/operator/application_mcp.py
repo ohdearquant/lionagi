@@ -33,6 +33,17 @@ from .redact import (
 )
 from .rename_session import RENAME_SESSION_DESCRIPTION, RenameSessionInput, rename_session
 from .resume_run import RESUME_RUN_DESCRIPTION, ResumeRunInput, resume_run
+from .run_control import (
+    PAUSE_RUN_DESCRIPTION,
+    RELEASE_RUN_PAUSE_DESCRIPTION,
+    STEER_RUN_DESCRIPTION,
+    PauseRunInput,
+    ReleaseRunPauseInput,
+    SteerRunInput,
+    pause_run,
+    release_run_pause,
+    steer_run,
+)
 from .run_detail import RunDetailInput, run_detail
 from .run_findings import RunFindingsInput, run_findings
 from .run_progress import RunProgressInput, run_progress
@@ -235,6 +246,9 @@ _TOOL_MODELS: dict[str, type[BaseModel]] = {
     "cancel_run": CancelRunInput,
     "resume_run": ResumeRunInput,
     "rename_run": RenameSessionInput,
+    "pause_run": PauseRunInput,
+    "release_run_pause": ReleaseRunPauseInput,
+    "steer_run": SteerRunInput,
     "list_sessions": ListSessionsInput,
     "session_detail": SessionDetailInput,
     "session_signals": SessionSignalsInput,
@@ -335,6 +349,9 @@ _TOOL_DESCRIPTIONS = {
     "cancel_run": CANCEL_RUN_DESCRIPTION,
     "resume_run": RESUME_RUN_DESCRIPTION,
     "rename_run": RENAME_SESSION_DESCRIPTION,
+    "pause_run": PAUSE_RUN_DESCRIPTION,
+    "release_run_pause": RELEASE_RUN_PAUSE_DESCRIPTION,
+    "steer_run": STEER_RUN_DESCRIPTION,
     "list_sessions": (
         "List a filtered page of Studio sessions. The result is capped at 500 rows, "
         "reports the matching total and whether more rows exist, and labels the store source."
@@ -1223,6 +1240,9 @@ _TOOL_HANDLERS = {
     "cancel_run": cancel_run,
     "resume_run": resume_run,
     "rename_run": rename_session,
+    "pause_run": pause_run,
+    "release_run_pause": release_run_pause,
+    "steer_run": steer_run,
     "list_sessions": list_sessions,
     "session_detail": session_detail,
     "session_signals": session_signals,

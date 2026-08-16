@@ -2559,7 +2559,10 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
 
   const flatGraph = { name: "run", description: "", nodes: [], edges: [] };
 
-  function sessionOf(invocationKind: string | null) {
+  // has_control_consumer mirrors what services/sessions.py projects for every
+  // session: true for flow and play unconditionally, and for an agent run only
+  // when a lionagi runner owns it and declared that it drains controls.
+  function sessionOf(invocationKind: string | null, hasControlConsumer = true) {
     return {
       id: "run-mount-controls",
       name: "run-mount-controls",
@@ -2567,6 +2570,11 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
       updated_at: 0,
       status: "running",
       invocation_kind: invocationKind,
+      has_control_consumer: hasControlConsumer,
+      // A control is authorized against the project of the conversation it is
+      // proposed in, which comes from the run. A session without one is its
+      // own case, covered separately below.
+      project: "studio",
       branches: [],
       graph: flatGraph,
     };
@@ -2617,52 +2625,146 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
     }
   });
 
-  // These three replace tests that asserted pause on a flow run and steer on
-  // an agent run were ENABLED. That expectation described a backend path that
-  // was never built: nothing in the operator's command set pauses a run,
-  // releases a pause gate, or delivers a steering message, and because the
-  // control dispatches a natural-language instruction, an unbacked verb does
-  // not fail cleanly — the nearest match to "stop this run" is cancel_run. A
-  // clickable button was the defect, not the fix.
-  it("every control is disabled while no command exists to carry its verb out", async () => {
+  it("enables backed flow controls while keeping resume state-aware", async () => {
     const { container, unmount } = await mountRunDetail(sessionOf("flow"));
     try {
-      for (const verb of ["pause", "resume", "steer"]) {
-        const button = container.querySelector<HTMLButtonElement>(
-          `[data-testid="run-controls-${verb}"]`,
-        );
-        expect(button, `${verb} button missing`).not.toBeNull();
-        expect(button?.disabled, `${verb} button is clickable`).toBe(true);
-      }
-    } finally {
-      unmount();
-    }
-  });
-
-  it("states the refusal in text, not only in a tooltip", async () => {
-    const { container, unmount } = await mountRunDetail(sessionOf("flow"));
-    try {
-      const reason = container.querySelector(
-        '[data-testid="run-controls-reason-no-executable-path"]',
+      const pause = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-controls-pause"]',
       );
-      expect(reason).not.toBeNull();
-      expect(reason?.textContent).toBe("No command exists yet to carry this out.");
+      const resume = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-controls-resume"]',
+      );
+      const steer = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-controls-steer"]',
+      );
+      expect(pause?.disabled).toBe(false);
+      expect(resume?.disabled).toBe(true);
+      expect(steer?.disabled).toBe(false);
     } finally {
       unmount();
     }
   });
 
-  // The refusal that wins is the one that does not imply a working
-  // counterfactual: "steer instead" and "the run is not paused" both tell the
-  // reader another route works, and neither does.
-  it("does not advise steering as an alternative while steer is itself refused", async () => {
+  it("states the run-state refusal in text, not only in a tooltip", async () => {
+    const { container, unmount } = await mountRunDetail(sessionOf("flow"));
+    try {
+      const reason = container.querySelector('[data-testid="run-controls-reason-not-paused"]');
+      expect(reason).not.toBeNull();
+      expect(reason?.textContent).toBe("The run is not paused.");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("offers steering as the supported alternative to pausing an agent turn", async () => {
     const { container, unmount } = await mountRunDetail(sessionOf("agent"));
     try {
       const panel = container.querySelector('[data-testid="run-controls"]');
-      expect(panel?.textContent).not.toContain("steer instead");
+      expect(panel?.textContent).toContain("steer instead");
       expect(
-        container.querySelector('[data-testid="run-controls-reason-no-executable-path"]'),
-      ).not.toBeNull();
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-steer"]')?.disabled,
+      ).toBe(false);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("disables steering for an agent run no runner owns, and says why", async () => {
+    // A mirrored or imported session carries invocation_kind "agent" like a
+    // live one. The server refuses every control queued against it, so an
+    // enabled steer here would be a button that can never queue anything.
+    const { container, unmount } = await mountRunDetail(sessionOf("agent", false));
+    try {
+      const steer = container.querySelector<HTMLButtonElement>(
+        '[data-testid="run-controls-steer"]',
+      );
+      expect(steer).not.toBeNull();
+      expect(steer?.disabled).toBe(true);
+      const reason = container.querySelector(
+        '[data-testid="run-controls-reason-no-live-consumer"]',
+      );
+      expect(reason?.textContent).toBe(
+        "This run is a mirrored or imported session, so no runner would deliver a control.",
+      );
+    } finally {
+      unmount();
+    }
+  });
+
+  it("refuses every control on a completed_empty run, which the server will not admit", async () => {
+    // completed_empty is a valid terminal status the display mapping does not
+    // recognize, so it used to fold into "running" and leave these controls
+    // enabled against a run the server refuses with not_running.
+    const { container, unmount } = await mountRunDetail({
+      ...sessionOf("flow"),
+      status: "completed_empty",
+    });
+    try {
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-pause"]')?.disabled,
+      ).toBe(true);
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-steer"]')?.disabled,
+      ).toBe(true);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("refuses every control on a run with no project, and says which limit it is", async () => {
+    // A control is authorized against the project of the conversation it is
+    // proposed in, and a run with no project leaves that conversation nothing
+    // to be scoped to. The server rejects it before proposing anything, so an
+    // enabled control here is one that can never succeed.
+    const { project: _omitted, ...withoutProject } = sessionOf("flow");
+    const { container, unmount } = await mountRunDetail(withoutProject);
+    try {
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-pause"]')?.disabled,
+      ).toBe(true);
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-steer"]')?.disabled,
+      ).toBe(true);
+      const reason = container.querySelector(
+        '[data-testid="run-controls-reason-no-project-scope"]',
+      );
+      expect(reason?.textContent).toBe(
+        "This run has no project, so a control cannot be authorized for it.",
+      );
+    } finally {
+      unmount();
+    }
+  });
+
+  it("a run the server reports as paused offers Resume on a fresh mount", async () => {
+    // The state this closes: pause lived only in component state, so a reload
+    // of a still-paused run came back reading "not paused" — Pause enabled,
+    // Resume refused, and no way left to release the gate.
+    const { container, unmount } = await mountRunDetail({
+      ...sessionOf("flow"),
+      pause_is_held: true,
+    });
+    try {
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-resume"]')?.disabled,
+      ).toBe(false);
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-pause"]')?.disabled,
+      ).toBe(true);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("a response that never carried the capability field does not enable steering", async () => {
+    // Absent is not evidence of a capability: the strict compare in RunDetail
+    // is what keeps a missing field from reading as permission.
+    const { has_control_consumer: _omitted, ...withoutField } = sessionOf("agent");
+    const { container, unmount } = await mountRunDetail(withoutField);
+    try {
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-steer"]')?.disabled,
+      ).toBe(true);
     } finally {
       unmount();
     }
@@ -2735,6 +2837,7 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
       updated_at: 0,
       status: "running",
       invocation_kind: "flow",
+      project: "studio",
       branches: [],
       graph: flatGraph,
     })) as never);

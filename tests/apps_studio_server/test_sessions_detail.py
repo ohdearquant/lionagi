@@ -1616,3 +1616,154 @@ async def test_session_reads_work_against_a_store_from_the_previous_schema_versi
     listed = await svc.list_sessions(limit=10)
     assert [row["id"] for row in listed] == ["sess-prev-schema"]
     assert listed[0]["ended_at_is_approximate"] is False
+
+
+# Durable pause state — get_session projects whether a pause gate is held
+
+
+async def _queue_control(db_path: Path, session_id: str, verb: str, *, created_at: float) -> str:
+    async with StateDB(db_path) as db:
+        control_id = await db.insert_session_control(
+            session_id=session_id, verb=verb, created_at=created_at
+        )
+    assert control_id is not None, f"{verb} control was not admitted"
+    return control_id
+
+
+async def _apply_control(db_path: Path, control_id: str, *, result: str = "applied") -> None:
+    async with StateDB(db_path) as db:
+        assert await db.finalize_session_control(control_id, result=result)
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_no_controls_reports_no_pause_held(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_queued_pause_is_already_held_before_the_poller_applies_it(patched_sessions_db):
+    """A pause counts from the moment it is queued, not from when it drains.
+
+    The window between the two is exactly when a reader is most likely to
+    reload, and reporting "not paused" there offers a second Pause for a gate
+    already on its way in.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+    await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_applied_pause_survives_into_the_next_read(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+    control_id = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
+    await _apply_control(db_path, control_id)
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_later_resume_releases_the_pause_before_it(patched_sessions_db):
+    """Ordering is by when each control was written, so the newer verb wins."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+    pause_id = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
+    await _apply_control(db_path, pause_id)
+    resume_id = await _queue_control(db_path, "sess-1", "resume", created_at=20.0)
+    await _apply_control(db_path, resume_id)
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_pause_after_a_resume_holds_the_gate_again(patched_sessions_db):
+    """The control arm for the ordering: newest-wins has to work both ways.
+
+    A rule that simply answered "has there ever been a resume" would pass the
+    release case above and fail here, leaving a re-paused run readable as
+    running.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+    first = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
+    await _apply_control(db_path, first)
+    released = await _queue_control(db_path, "sess-1", "resume", created_at=20.0)
+    await _apply_control(db_path, released)
+    again = await _queue_control(db_path, "sess-1", "pause", created_at=30.0)
+    await _apply_control(db_path, again)
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_pause_never_held_the_gate(patched_sessions_db):
+    """A control the runner refused is not a pause, and must not read as one.
+
+    Without this the refusal would present as a paused run: Pause disabled,
+    Resume offered, and neither describing what actually happened.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+    control_id = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
+    await _apply_control(db_path, control_id, result="rejected:not_running")
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_steering_message_is_not_a_pause(patched_sessions_db):
+    """Only pause and resume speak to the gate.
+
+    A steer queued after a resume is the newest control row on the session, so
+    a rule reading "the newest row" without filtering the verb would answer
+    from it.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+    pause_id = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
+    await _apply_control(db_path, pause_id)
+    await _queue_control(db_path, "sess-1", "message", created_at=20.0)
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is True
+
+
+@pytest.mark.asyncio
+async def test_one_runs_pause_does_not_leak_into_another(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-paused")
+    await seed_session(db_path, session_id="sess-other")
+    await _queue_control(db_path, "sess-paused", "pause", created_at=10.0)
+
+    paused = await svc.get_session("sess-paused")
+    other = await svc.get_session("sess-other")
+
+    assert paused is not None and other is not None
+    assert paused["pause_is_held"] is True
+    assert other["pause_is_held"] is False
