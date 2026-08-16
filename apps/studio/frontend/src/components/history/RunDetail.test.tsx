@@ -3008,6 +3008,52 @@ describe("history/RunDetail.tsx — a tool result nobody read is not a tool call
     expect(call.status).toBe("ok");
   });
 
+  // A withheld REQUEST is the harder half. Its payload is what carries the
+  // function name, the arguments and the forward link to its response, so a
+  // consumer reading only the response's flag sees an ordinary call with a
+  // blank name, and the response it could no longer point at renders as a
+  // second one. Two green checks, for one call nobody could read.
+  const withheldRequestBranch = () => ({
+    id: "branch-withheld-req",
+    name: "worker",
+    created_at: 10,
+    message_total: 2,
+    messages: [
+      {
+        id: "req-1",
+        role: "action",
+        content: null,
+        content_withheld: true,
+        sender: "worker",
+        timestamp: 11,
+        lion_class: "ActionRequest",
+      },
+      {
+        id: "resp-1",
+        role: "action",
+        content: { function: "Bash", output: "a.txt", action_request_id: "req-1" },
+        sender: "tool",
+        timestamp: 12,
+        lion_class: "ActionResponse",
+      },
+    ],
+  });
+
+  it("marks a call whose own request payload was withheld", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldRequestBranch() as never, "completed");
+    const calls = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(calls.map((c) => c.status)).toEqual(["withheld"]);
+  });
+
+  it("pairs a withheld request with its response from the response's own end", async () => {
+    // One row, not two: the response names its request in a payload the
+    // request's withholding cannot reach, so the pairing survives it.
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldRequestBranch() as never, "completed");
+    expect((step.messages ?? []).filter((m) => m.role === "tool_call")).toHaveLength(1);
+  });
+
   it("marks an unpaired response whose own payload was withheld", async () => {
     const { branchToRunStep } = await import("./RunDetail");
     const branch = withheldBranch(true) as never as { messages: unknown[] };

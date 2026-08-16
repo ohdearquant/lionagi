@@ -464,9 +464,16 @@ export function branchToRunStep(
   const runMessages: RunMessage[] = [];
 
   const responseById = new Map<string, SessionMessage>();
+  // The same pairing read from the response's end. A request whose payload was
+  // withheld carries no action_response_id, so the forward link is exactly what
+  // goes missing in the case that most needs pairing; the response names its
+  // request in its own payload, which the request's withholding cannot reach.
+  const responseByRequestId = new Map<string, SessionMessage>();
   for (const m of msgs) {
     if (classifyLC(m.lion_class) === "action_response") {
       responseById.set(m.id, m);
+      const requestId = (m.content as Record<string, unknown> | null)?.action_request_id;
+      if (requestId) responseByRequestId.set(String(requestId), m);
     }
   }
   const pairedResponseIds = new Set<string>();
@@ -511,7 +518,7 @@ export function branchToRunStep(
       const fn = String(content.function ?? "");
       const args = (content.arguments ?? {}) as Record<string, unknown>;
       const respId = content.action_response_id ? String(content.action_response_id) : null;
-      const respMsg = respId ? responseById.get(respId) : null;
+      const respMsg = (respId ? responseById.get(respId) : null) ?? responseByRequestId.get(m.id);
       if (respMsg) pairedResponseIds.add(respMsg.id);
 
       const respContent = respMsg ? ((respMsg.content ?? {}) as Record<string, unknown>) : {};
@@ -521,7 +528,13 @@ export function branchToRunStep(
       // nothing" -- and the success/error split below is decided by reading
       // the output, so without this a call whose result nobody has seen
       // renders with a green check.
-      const resultWithheld = Boolean(respMsg?.content_withheld);
+      //
+      // Withholding applies to requests too, and a withheld request is the
+      // worse case: it has no function name, no arguments and no forward link,
+      // so before the fallback pairing above it also stranded its own response
+      // as a second row. Both halves then rendered as ordinary successful
+      // calls, because neither of them had an output that said otherwise.
+      const resultWithheld = Boolean(m.content_withheld) || Boolean(respMsg?.content_withheld);
 
       const summary = Object.entries(args)
         .slice(0, 2)

@@ -751,23 +751,32 @@ async def _fetch_message_bounds(
 
 async def _fetch_action_messages(
     db: aiosqlite.Connection,
-    msg_ids: list[str],
+    ids_by_branch: dict[str, list[str]],
     *,
     limit: int,
     budget: _HydrationBudget,
-) -> tuple[list[dict[str, Any]], bool]:
-    """Hydrate at most *limit* ActionRequest/ActionResponse rows among msg_ids,
-    newest first, returned in progression order.
+) -> tuple[dict[str, list[dict[str, Any]]], bool]:
+    """Hydrate at most *limit* ActionRequest/ActionResponse rows across the whole
+    session, newest first, returned per branch in progression order.
 
     These are the only kinds the tool and error aggregates need, and the cap is
     on the hydration rather than on some later pass because the rows are the
     cost: their content is what has to be held, and a long-running session has
     no natural end to how many it accumulates.
 
-    Newest first is what makes the cap safe to apply here. A response always
-    sits later in the progression than the request it answers, so a window
-    taken from the newest end never keeps a request whose response it dropped;
-    it drops whole request/response pairs off the old end instead.
+    The cap is spent over the session's rows rather than handed to branches one
+    at a time, because a per-branch share makes the answer depend on the order
+    branches are visited in rather than on when the work happened. Visiting them
+    newest-created first sounds like the recent end, and is not: a branch created
+    late whose work finished early can take the whole cap while an older branch
+    that is still producing gets none of it, and the aggregate that calls itself
+    recent activity then describes neither. One selection over every candidate
+    has no order to depend on.
+
+    Newest first is what makes the cap safe to apply at all. A response always
+    sits later in its branch's progression than the request it answers, so a
+    window taken from the newest end never keeps a request whose response it
+    dropped; it drops whole request/response pairs off the old end instead.
 
     Which rows, then those rows -- two passes, because they cannot be one. A
     single sorted query that also selects content makes SQLite buffer every
@@ -777,16 +786,17 @@ async def _fetch_action_messages(
     its last chunk, since the newest rows of the last chunk are not the newest
     rows of the run wherever progression order and time order disagree.
 
-    Returns (messages, bounded), where bounded says the answer describes less
-    than what is there.
+    Returns (messages_by_branch, bounded), where bounded says the answer
+    describes less than what is there.
     """
-    if not msg_ids or limit <= 0:
-        return [], bool(msg_ids)
+    empty: dict[str, list[dict[str, Any]]] = {branch_id: [] for branch_id in ids_by_branch}
+    any_ids = any(ids_by_branch.values())
+    if not any_ids or limit <= 0:
+        return empty, any_ids
     if budget.exhausted:
-        # An earlier branch of the same request already spent the total. Say so
-        # rather than reading a first row for free: every branch doing that is
-        # how a per-call ceiling turns into a per-branch one.
-        return [], True
+        # The display windows already spent the total. Say so rather than
+        # reading a first row for free.
+        return empty, True
     class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
     cur = await db.execute(
         f"SELECT type_id FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
@@ -794,7 +804,7 @@ async def _fetch_action_messages(
     )
     type_ids = [row["type_id"] for row in await cur.fetchall()]
     if not type_ids:
-        return [], False
+        return empty, False
     type_placeholders = ",".join("?" for _ in type_ids)
 
     # A heap of the newest `limit` seen so far, rather than every candidate
@@ -802,31 +812,41 @@ async def _fetch_action_messages(
     # the size of the progression, which is the whole point of the cap.
     newest: list[tuple[float, str]] = []
     candidates = 0
-    for chunk_start in range(0, len(msg_ids), 500):
-        chunk = msg_ids[chunk_start : chunk_start + 500]
-        placeholders = ",".join("?" for _ in chunk)
-        # `+m.lion_class` disqualifies the lion_class index so the planner
-        # probes the id primary key for the IN list instead of rescanning every
-        # action-class row in the whole table per chunk.
-        cur = await db.execute(
-            f"""
-            SELECT m.id, m.created_at
-            FROM messages m
-            WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
-            """,  # noqa: S608
-            [*chunk, *type_ids],
-        )
-        async for row in cur:
-            candidates += 1
-            key = (row["created_at"] or 0.0, row["id"])
-            if len(newest) < limit:
-                heapq.heappush(newest, key)
-            elif key > newest[0]:
-                heapq.heapreplace(newest, key)
+    for msg_ids in ids_by_branch.values():
+        for chunk_start in range(0, len(msg_ids), 500):
+            chunk = msg_ids[chunk_start : chunk_start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            # `+m.lion_class` disqualifies the lion_class index so the planner
+            # probes the id primary key for the IN list instead of rescanning
+            # every action-class row in the whole table per chunk.
+            cur = await db.execute(
+                f"""
+                SELECT m.id, m.created_at
+                FROM messages m
+                WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
+                """,  # noqa: S608
+                [*chunk, *type_ids],
+            )
+            async for row in cur:
+                candidates += 1
+                key = (row["created_at"] or 0.0, row["id"])
+                if len(newest) < limit:
+                    heapq.heappush(newest, key)
+                elif key > newest[0]:
+                    heapq.heapreplace(newest, key)
 
-    selected = {message_id for _, message_id in newest}
-    ordered_ids = [message_id for message_id in msg_ids if message_id in selected]
+    # Oldest to newest, so the hydration budget -- which pays from the end of
+    # the list it is handed -- pays for the newest of the selection first.
+    ordered_ids = [message_id for _, message_id in sorted(newest)]
     messages = await _fetch_messages_by_ids(db, ordered_ids, budget=budget)
+    hydrated = {message["id"]: message for message in messages}
+    # Message ids are unique to one branch: cloning a message into another
+    # branch mints a new id. So a selected row belongs to exactly one
+    # progression and this splits the selection without duplicating it.
+    by_branch = {
+        branch_id: [hydrated[mid] for mid in msg_ids if mid in hydrated]
+        for branch_id, msg_ids in ids_by_branch.items()
+    }
     # Three ways this describes less than what is there, and they are all the
     # same answer to a caller: the cap dropped older rows, the budget stopped
     # the hydration short, or a payload was withheld for its size.
@@ -835,7 +855,92 @@ async def _fetch_action_messages(
         or len(messages) < len(ordered_ids)
         or any(message["content_withheld"] for message in messages)
     )
-    return messages, bounded
+    return by_branch, bounded
+
+
+_FILE_TOOL_NAMES = frozenset(
+    {
+        "read",
+        "read_file",
+        "write",
+        "write_file",
+        "edit",
+        "edit_file",
+        "multiedit",
+        "notebookedit",
+    }
+)
+
+
+def _action_file_path(function: Any, arguments: Any) -> str | None:
+    """The file an action request touched, or None if it touched none.
+
+    One function rather than one per reader. Two readers ask this: the
+    per-branch stats, over the action rows that were hydrated, and the run-wide
+    file union, over every action row there is. They have to agree on which
+    calls count as file calls, and two copies of that rule is how they stop
+    agreeing.
+    """
+    arguments = arguments if isinstance(arguments, dict) else {}
+    tool_name = str(function or "").lower().replace("-", "_").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+    if tool_name and tool_name not in _FILE_TOOL_NAMES:
+        return None
+    file_path = arguments.get("file_path") or arguments.get("path")
+    return file_path if isinstance(file_path, str) and file_path else None
+
+
+async def _fetch_action_file_paths(
+    db: aiosqlite.Connection, ids_by_branch: dict[str, list[str]]
+) -> list[str]:
+    """Every file this session's action requests touched, over the whole run.
+
+    Separate from the hydration above because it answers a different question.
+    The hydrated set is the newest slice of a long session's action rows, and
+    the fields derived from it say so; this one is a union, and a union that
+    covers only recent rows is not a smaller union, it is a wrong one. It is
+    what the reader resolves a file reference against, and a reference is
+    resolved by a name written long before the window this read is showing.
+
+    Affordable because it decodes nothing: SQLite extracts the two short fields
+    the answer depends on and the payloads never leave it. What comes back is
+    bounded by the number of distinct paths a run touched, not by what its
+    arguments weigh -- with the per-row ceiling applied here too, because a
+    path read out of an oversized payload is not short, and a row past that
+    ceiling is withheld from every reader or from none.
+    """
+    class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
+    cur = await db.execute(
+        f"SELECT type_id FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
+        _ACTION_LION_CLASSES,
+    )
+    type_ids = [row["type_id"] for row in await cur.fetchall()]
+    if not type_ids:
+        return []
+    type_placeholders = ",".join("?" for _ in type_ids)
+
+    paths: set[str] = set()
+    for msg_ids in ids_by_branch.values():
+        for chunk_start in range(0, len(msg_ids), 500):
+            chunk = msg_ids[chunk_start : chunk_start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            cur = await db.execute(
+                f"""
+                SELECT json_extract(m.content, '$.function') AS fn,
+                       json_extract(m.content, '$.arguments.file_path') AS file_path,
+                       json_extract(m.content, '$.arguments.path') AS path
+                FROM messages m
+                WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
+                      AND length(m.content) <= ?
+                """,  # noqa: S608
+                [*chunk, *type_ids, MAX_ACTION_CONTENT_CHARS],
+            )
+            async for row in cur:
+                found = _action_file_path(
+                    row["fn"], {"file_path": row["file_path"], "path": row["path"]}
+                )
+                if found:
+                    paths.add(found)
+    return sorted(paths)
 
 
 def _branch_message_stats(
@@ -865,20 +970,9 @@ def _branch_message_stats(
         function = content.get("function") or ""
         arguments = content.get("arguments")
         arguments = arguments if isinstance(arguments, dict) else {}
-        tool_name = str(function).lower().replace("-", "_").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
-        if not tool_name or tool_name in {
-            "read",
-            "read_file",
-            "write",
-            "write_file",
-            "edit",
-            "edit_file",
-            "multiedit",
-            "notebookedit",
-        }:
-            file_path = arguments.get("file_path") or arguments.get("path")
-            if isinstance(file_path, str) and file_path:
-                files.add(file_path)
+        file_path = _action_file_path(function, arguments)
+        if file_path:
+            files.add(file_path)
 
         response_id = content.get("action_response_id")
         response_msg = response_by_id.get(response_id) if response_id else None
@@ -1057,22 +1151,15 @@ async def get_session(
                 has_older,
             )
 
-        # Row count gets its own budget for the same reason, spent newest branch
-        # first: spending it oldest-first would drop exactly the recent activity
-        # every consumer of this data is asking about.
-        action_by_branch: dict[str, list[dict[str, Any]]] = {}
-        action_message_budget = MAX_HYDRATED_ACTION_MESSAGES
-        action_messages_bounded = False
-        for br in reversed(branch_rows):
-            fetched, branch_bounded = await _fetch_action_messages(
-                db,
-                progression_ids[br["id"]],
-                limit=action_message_budget,
-                budget=content_budget,
-            )
-            action_message_budget -= len(fetched)
-            action_messages_bounded = action_messages_bounded or branch_bounded
-            action_by_branch[br["id"]] = fetched
+        # Row count gets its own ceiling for the same reason, and it is spent
+        # over the session rather than shared out branch by branch: which rows
+        # survive is then decided by when they happened and by nothing else.
+        action_by_branch, action_messages_bounded = await _fetch_action_messages(
+            db,
+            progression_ids,
+            limit=MAX_HYDRATED_ACTION_MESSAGES,
+            budget=content_budget,
+        )
 
         for br in branch_rows:
             branch_id = br["id"]
@@ -1098,7 +1185,6 @@ async def get_session(
             full_stats["tool_call_count"] += branch_stats["tool_call_count"]
             full_stats["error_count"] += branch_stats["error_count"]
             full_stats["errors"].extend(branch_stats["errors"])
-            full_stats["files"].extend(branch_stats["files"])
 
             br_keys = br.keys()
             branches.append(
@@ -1130,7 +1216,12 @@ async def get_session(
             )
 
         full_stats["bounded"] = action_messages_bounded
-        full_stats["files"] = sorted(set(full_stats["files"]))
+        # Read over every action row rather than the hydrated slice. The counts
+        # beside this are honest as floors and say so; a file union cannot be a
+        # floor in the same way, because the reader uses it to decide whether a
+        # name refers to a file at all, and the names it fails on are exactly
+        # the old ones a bounded read drops.
+        full_stats["files"] = await _fetch_action_file_paths(db, progression_ids)
         message_next_cursor = (
             _encode_message_cursor(session_id, message_limit, next_branch_anchors)
             if next_branch_anchors

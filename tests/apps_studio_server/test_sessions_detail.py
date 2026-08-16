@@ -516,8 +516,14 @@ async def seed_branch(
     session_id: str,
     msg_ids: list[str] | None = None,
     name: str = "worker",
+    created_at: float = 200.0,
 ) -> str:
-    """Create a progression + branch row; returns the progression id."""
+    """Create a progression + branch row; returns the progression id.
+
+    created_at is a parameter because branches are read in that order, so a
+    test about what the order does needs to set it. Left alone every branch
+    ties, and a tie is decided by insertion order, which is not the thing.
+    """
     prog_id = f"{branch_id}-prog"
     async with StateDB(db_path) as db:
         if msg_ids:
@@ -527,7 +533,7 @@ async def seed_branch(
         await db.create_branch(
             {
                 "id": branch_id,
-                "created_at": 200.0,
+                "created_at": created_at,
                 "name": name,
                 "session_id": session_id,
                 "progression_id": prog_id,
@@ -1469,10 +1475,17 @@ async def _seed_action_requests(
     count: int,
     start: int = 0,
     content_for=None,
+    branch_created_at: float = 200.0,
 ) -> None:
     """One ActionRequest per file, in progression order, oldest first."""
     ids = [f"{branch_id}-act-{i}" for i in range(start, start + count)]
-    await seed_branch(db_path, branch_id=branch_id, session_id=session_id, msg_ids=ids)
+    await seed_branch(
+        db_path,
+        branch_id=branch_id,
+        session_id=session_id,
+        msg_ids=ids,
+        created_at=branch_created_at,
+    )
     async with StateDB(db_path) as db:
         for i, msg_id in enumerate(ids, start=start):
             content = (
@@ -1513,7 +1526,10 @@ async def test_action_hydration_stops_at_its_bound_and_keeps_the_newest(
     stats = detail["message_stats"]
     assert stats["bounded"] is True
     assert stats["tool_call_count"] == 3
-    assert set(stats["files"]) == {"/run/f5.py", "/run/f6.py", "/run/f7.py"}
+    # The counts are floors over the newest rows. The file union is not: it is
+    # what a reader resolves a file reference against, and a reference is
+    # written against a name from anywhere in the run.
+    assert set(stats["files"]) == {f"/run/f{i}.py" for i in range(8)}
 
 
 async def test_an_unbounded_session_reports_the_whole_action_surface(patched_sessions_db):
@@ -1546,9 +1562,87 @@ async def test_the_hydration_budget_is_spent_on_the_newest_branch(patched_sessio
 
     assert detail is not None
     assert detail["message_stats"]["bounded"] is True
+    assert detail["message_stats"]["tool_call_count"] == 2
+    async with svc._open_db(db_path) as db:
+        by_branch, _ = await svc._fetch_action_messages(
+            db,
+            {
+                "older": [f"older-act-{i}" for i in range(3)],
+                "newer": [f"newer-act-{i}" for i in range(10, 13)],
+            },
+            limit=2,
+            budget=svc._HydrationBudget(),
+        )
     # Both branches together hold six requests and the budget is two, so the
-    # two that survive must both come from the branch created last.
-    assert set(detail["message_stats"]["files"]) == {"/run/f11.py", "/run/f12.py"}
+    # two that survive must be the two newest in the session.
+    assert by_branch["older"] == []
+    assert [m["id"] for m in by_branch["newer"]] == ["newer-act-11", "newer-act-12"]
+    # The union is unbounded by that choice and still covers both branches.
+    assert set(detail["message_stats"]["files"]) == {
+        "/run/f0.py",
+        "/run/f1.py",
+        "/run/f2.py",
+        "/run/f10.py",
+        "/run/f11.py",
+        "/run/f12.py",
+    }
+
+
+async def test_the_action_cap_follows_recent_activity_not_branch_creation_order(
+    patched_sessions_db, monkeypatch
+):
+    """Branch creation order is not a proxy for recent activity, and using it as
+    one starves exactly the branch a reader is watching.
+
+    A long-lived orchestrator branch is created first and is still producing
+    when a worker branch created later has already finished. Spending the cap
+    one branch at a time, newest-created first, hands the whole of it to the
+    worker's older rows and leaves none for the newer ones under it -- and the
+    result is still labelled this session's recent activity.
+    """
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 3)
+    await seed_session(db_path, session_id="sess-activity-order")
+    # Created first, still working: its rows carry the newest timestamps.
+    await _seed_action_requests(
+        db_path,
+        branch_id="orchestrator",
+        session_id="sess-activity-order",
+        count=4,
+        start=100,
+        branch_created_at=100.0,
+    )
+    # Created later, finished earlier: every row of it is older than every row
+    # above.
+    await _seed_action_requests(
+        db_path,
+        branch_id="worker",
+        session_id="sess-activity-order",
+        count=4,
+        start=0,
+        branch_created_at=300.0,
+    )
+
+    detail = await svc.get_session("sess-activity-order")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is True
+    async with svc._open_db(db_path) as db:
+        by_branch, _ = await svc._fetch_action_messages(
+            db,
+            {
+                "orchestrator": [f"orchestrator-act-{i}" for i in range(100, 104)],
+                "worker": [f"worker-act-{i}" for i in range(4)],
+            },
+            limit=3,
+            budget=svc._HydrationBudget(),
+        )
+    assert [m["id"] for m in by_branch["orchestrator"]] == [
+        "orchestrator-act-101",
+        "orchestrator-act-102",
+        "orchestrator-act-103",
+    ], "the cap kept the session's newest rows, wherever they live"
+    assert by_branch["worker"] == [], "and none of them came from the branch created last"
 
 
 async def test_an_oversized_action_payload_never_reaches_the_parser(
@@ -1657,19 +1751,17 @@ async def test_the_walk_reads_from_the_newest_end_across_more_than_one_chunk(
     handing back the oldest rows under a heading about recent activity.
     """
     svc, db_path = patched_sessions_db
-    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 3)
     await seed_session(db_path, session_id="sess-chunks")
     await _seed_action_requests(db_path, branch_id="b1", session_id="sess-chunks", count=600)
+    ids = [f"b1-act-{i}" for i in range(600)]
 
-    detail = await svc.get_session("sess-chunks")
+    async with svc._open_db(db_path) as db:
+        by_branch, bounded = await svc._fetch_action_messages(
+            db, {"b1": ids}, limit=3, budget=svc._HydrationBudget()
+        )
 
-    assert detail is not None
-    assert detail["message_stats"]["bounded"] is True
-    assert set(detail["message_stats"]["files"]) == {
-        "/run/f597.py",
-        "/run/f598.py",
-        "/run/f599.py",
-    }
+    assert bounded is True
+    assert [m["id"] for m in by_branch["b1"]] == ["b1-act-597", "b1-act-598", "b1-act-599"]
 
 
 async def _content_chars(svc, db_path: Path, msg_id: str) -> int:
@@ -1797,7 +1889,10 @@ async def test_the_action_row_limit_bounds_what_is_decoded_not_only_what_is_retu
     budget = svc._HydrationBudget(total=10 * row_chars)
 
     async with svc._open_db(db_path) as db:
-        fetched, bounded = await svc._fetch_action_messages(db, ids, limit=3, budget=budget)
+        by_branch, bounded = await svc._fetch_action_messages(
+            db, {"b1": ids}, limit=3, budget=budget
+        )
+        fetched = by_branch["b1"]
 
     assert len(fetched) == 3
     assert bounded is True
@@ -1819,9 +1914,10 @@ async def test_a_stopped_action_walk_keeps_the_newest_rows_not_the_first_ones_re
     ids = [f"b1-act-{i}" for i in range(10)]
 
     async with svc._open_db(db_path) as db:
-        fetched, _ = await svc._fetch_action_messages(
-            db, ids, limit=3, budget=svc._HydrationBudget()
+        by_branch, _ = await svc._fetch_action_messages(
+            db, {"b1": ids}, limit=3, budget=svc._HydrationBudget()
         )
+        fetched = by_branch["b1"]
 
     assert [m["id"] for m in fetched] == ["b1-act-7", "b1-act-8", "b1-act-9"]
 
@@ -1944,11 +2040,14 @@ async def test_the_newest_action_rows_are_chosen_across_the_whole_progression(
             )
         await raw.commit()
 
-    detail = await svc.get_session("sess-order-disagrees")
+    ids = [f"b1-act-{i}" for i in range(600)]
+    async with svc._open_db(db_path) as db:
+        by_branch, bounded = await svc._fetch_action_messages(
+            db, {"b1": ids}, limit=3, budget=svc._HydrationBudget()
+        )
 
-    assert detail is not None
-    assert detail["message_stats"]["bounded"] is True
-    assert set(detail["message_stats"]["files"]) == {"/run/f0.py", "/run/f1.py", "/run/f2.py"}
+    assert bounded is True
+    assert [m["id"] for m in by_branch["b1"]] == ["b1-act-0", "b1-act-1", "b1-act-2"]
 
 
 async def test_choosing_which_action_rows_to_keep_reads_no_payloads(patched_sessions_db):
@@ -1972,7 +2071,7 @@ async def test_choosing_which_action_rows_to_keep_reads_no_payloads(patched_sess
             return await original(sql, *args, **kwargs)
 
         db.execute = spy  # type: ignore[method-assign]
-        await svc._fetch_action_messages(db, ids, limit=3, budget=svc._HydrationBudget())
+        await svc._fetch_action_messages(db, {"b1": ids}, limit=3, budget=svc._HydrationBudget())
 
     assert statements, "the spy never fired"
     # Control: the hydration pass does select content, so "no statement selects
