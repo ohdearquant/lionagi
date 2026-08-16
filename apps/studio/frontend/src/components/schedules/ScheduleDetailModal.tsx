@@ -355,6 +355,29 @@ export default function ScheduleDetailModal({
                     onChanged();
                     // Optimistically flip so the toggle reflects state
                     setDetail((prev) => (prev ? { ...prev, enabled: prev.enabled ? 0 : 1 } : prev));
+                    // The toggle just wrote a lifecycle transition, so the
+                    // audit fields this panel renders are now a mount-time
+                    // snapshot of a state that no longer holds. Re-read them
+                    // instead of waiting for a reopen. Only the lifecycle
+                    // fields are merged back, so an edit in progress in the
+                    // form is not overwritten by the server copy.
+                    void (async () => {
+                      try {
+                        const fresh = await getSchedule(scheduleId);
+                        setDetail((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                enabled: fresh.enabled,
+                                last_lifecycle_change: fresh.last_lifecycle_change,
+                                lifecycle_history: fresh.lifecycle_history,
+                              }
+                            : prev,
+                        );
+                      } catch {
+                        // Keep the optimistic flip; the panel reloads on reopen.
+                      }
+                    })();
                   }}
                 />
                 <IconButton aria-label={t("close")} onClick={onClose}>

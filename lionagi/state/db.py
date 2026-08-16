@@ -421,6 +421,14 @@ PLAY_ACTIVE_STATUSES = frozenset(
 PLAY_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["play"]
 TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 
+# How many lifecycle transitions a single schedule keeps. Enabling and
+# disabling is an operator action that can be repeated at will, and each
+# transition writes a row plus three index entries. Reads are already
+# capped at this number, so anything past it is storage nothing can return;
+# the writer trims to the same bound rather than letting the table grow with
+# the number of times someone flipped a switch.
+SCHEDULE_LIFECYCLE_HISTORY_LIMIT = 200
+
 # Same-row columns update_status() may set alongside a status write, in the
 # same transaction as the status/status_transitions write — keeps a caller
 # from splitting a status change and a dependent column (e.g. ended_at) into
@@ -3986,7 +3994,7 @@ class StateDB:
         source: str,
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        return await self._lifecycle_service().append_audit_in_transaction(
+        transition_id = await self._lifecycle_service().append_audit_in_transaction(
             conn,
             _TransitionCommand(
                 entity_type="schedule",
@@ -4002,6 +4010,30 @@ class StateDB:
             previous_status=previous_status,
             require_actor=True,
         )
+        # Trim in the same transaction as the append, so the history is never
+        # observed past its bound. Every write path for a schedule transition
+        # goes through this method, which is what makes one trim here enough.
+        # terminal_deliveries holds an FK into status_transitions: children
+        # first, matching delete_session below.
+        doomed = (
+            "SELECT id FROM status_transitions "
+            "WHERE entity_type = 'schedule' AND entity_id = :id "
+            "AND id NOT IN ("
+            "  SELECT id FROM status_transitions "
+            "  WHERE entity_type = 'schedule' AND entity_id = :id "
+            "  ORDER BY created_at DESC, rowid DESC LIMIT :keep"
+            ")"
+        )
+        params = {"id": schedule_id, "keep": SCHEDULE_LIFECYCLE_HISTORY_LIMIT}
+        await conn.execute(
+            text(f"DELETE FROM terminal_deliveries WHERE transition_id IN ({doomed})"),  # noqa: S608
+            params,
+        )
+        await conn.execute(
+            text(f"DELETE FROM status_transitions WHERE id IN ({doomed})"),  # noqa: S608
+            params,
+        )
+        return transition_id
 
     @staticmethod
     def _build_schedule_insert_stmt(schedule: dict[str, Any]):
@@ -4129,8 +4161,10 @@ class StateDB:
         pre-audit schedule must never synthesize a creation transition from
         its mutable ``created_at``/``updated_at`` columns.
         """
-        if limit < 1 or limit > 200:
-            raise ValueError("schedule lifecycle limit must be between 1 and 200")
+        if limit < 1 or limit > SCHEDULE_LIFECYCLE_HISTORY_LIMIT:
+            raise ValueError(
+                f"schedule lifecycle limit must be between 1 and {SCHEDULE_LIFECYCLE_HISTORY_LIMIT}"
+            )
         async with self._read() as conn:
             rows = (
                 (
@@ -4140,7 +4174,10 @@ class StateDB:
                             "reason_code, reason_summary, evidence_refs, source, actor, "
                             "created_at, metadata FROM status_transitions "
                             "WHERE entity_type = 'schedule' AND entity_id = :id "
-                            "ORDER BY created_at DESC, id DESC LIMIT :limit"
+                            # rowid, not id: the primary key is a random UUID,
+                            # so it orders two transitions written in the same
+                            # clock tick arbitrarily. rowid is insertion order.
+                            "ORDER BY created_at DESC, rowid DESC LIMIT :limit"
                         ),
                         {"id": schedule_id, "limit": limit},
                     )

@@ -269,3 +269,95 @@ def test_a_request_that_claims_no_name_records_no_claim(
     history = client.get(f"/api/schedules/{schedule_id}").json()["lifecycle_history"]
     assert history[0]["actor"] == "operator"
     assert "claimed_actor_unverified" not in history[0]["metadata"]
+
+
+async def _append(db: StateDB, schedule_id: str, n: int) -> None:
+    """Write *n* transitions through the one method every write path uses."""
+    for i in range(n):
+        async with db.transaction() as conn:
+            await db._append_schedule_lifecycle_in_tx(  # noqa: SLF001 - the choke point under test
+                conn,
+                schedule_id=schedule_id,
+                previous_status="enabled" if i % 2 else "disabled",
+                status="disabled" if i % 2 else "enabled",
+                reason_code="schedule.disabled.request" if i % 2 else "schedule.enabled.request",
+                reason_summary=f"flip {i}",
+                actor="tester",
+                source="operator",
+            )
+
+
+async def test_history_stops_growing_at_its_bound_rather_than_at_the_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Toggling is an operator action with no natural end, so the row count
+    has to be bounded by policy. Every flip is written in the same tick here,
+    which is also what makes this exercise the insertion-order tiebreaker:
+    ``created_at`` alone cannot say which three are newest."""
+    _patch_db(monkeypatch, tmp_path / "state.db")
+    monkeypatch.setattr(state_db_mod, "SCHEDULE_LIFECYCLE_HISTORY_LIMIT", 3)
+    schedule_id = uuid.uuid4().hex[:12]
+
+    async with StateDB() as db:
+        stmt, params = db._build_schedule_insert_stmt(  # noqa: SLF001 - fixture
+            {"id": schedule_id, **_spec("bounded-history")}
+        )
+        async with db.transaction() as conn:
+            await conn.execute(stmt, params)
+        await _append(db, schedule_id, 8)
+
+    async with StateDB(readonly=True) as db:
+        rows = await db.fetch_all(
+            "SELECT reason_summary FROM status_transitions "
+            "WHERE entity_type = 'schedule' AND entity_id = :id "
+            "ORDER BY created_at DESC, rowid DESC",
+            {"id": schedule_id},
+        )
+    assert [r["reason_summary"] for r in rows] == ["flip 7", "flip 6", "flip 5"]
+
+
+async def test_the_trim_does_not_orphan_a_delivery_row_that_points_at_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``terminal_deliveries`` carries a foreign key into the table being
+    trimmed. With enforcement on, deleting a referenced transition raises, so
+    the failure this guards is a write path that works until something has
+    acknowledged a transition."""
+    _patch_db(monkeypatch, tmp_path / "state.db")
+    monkeypatch.setattr(state_db_mod, "SCHEDULE_LIFECYCLE_HISTORY_LIMIT", 2)
+    schedule_id = uuid.uuid4().hex[:12]
+
+    async with StateDB() as db:
+        stmt, params = db._build_schedule_insert_stmt(  # noqa: SLF001 - fixture
+            {"id": schedule_id, **_spec("delivery-fk")}
+        )
+        async with db.transaction() as conn:
+            await conn.execute(stmt, params)
+        await _append(db, schedule_id, 1)
+
+        oldest = await db.fetch_one(
+            "SELECT id FROM status_transitions WHERE entity_type = 'schedule' AND entity_id = :id",
+            {"id": schedule_id},
+        )
+        assert oldest is not None
+        async with db.transaction() as conn:
+            await conn.execute(
+                state_db_mod.text(
+                    "INSERT INTO terminal_deliveries (transition_id, consumer, acked_at) "
+                    "VALUES (:tid, 'test-consumer', 1.0)"
+                ),
+                {"tid": oldest["id"]},
+            )
+
+        # Pushes the acknowledged transition out of the retained window.
+        await _append(db, schedule_id, 4)
+
+    async with StateDB(readonly=True) as db:
+        kept = await db.fetch_all(
+            "SELECT id FROM status_transitions WHERE entity_type = 'schedule' AND entity_id = :id",
+            {"id": schedule_id},
+        )
+        deliveries = await db.fetch_all("SELECT transition_id FROM terminal_deliveries", {})
+    assert len(kept) == 2
+    assert oldest["id"] not in {r["id"] for r in kept}
+    assert deliveries == []
