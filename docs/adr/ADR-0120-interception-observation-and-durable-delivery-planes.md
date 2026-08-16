@@ -136,14 +136,14 @@ class InterceptorDisposition(str, Enum):
     STOP = "stop"
     DENY = "deny"
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class InterceptorDecision(Params, Generic[ContextT]):
     disposition: InterceptorDisposition
     context: ContextT | UnsetType = Unset
     reason: str | UnsetType = Unset
     evidence: tuple[EvidenceRef, ...] = ()
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class InterceptorRegistration(Params, Generic[ContextT]):
     name: str
     stage: str
@@ -238,14 +238,14 @@ class SyncEntryPolicy(str, Enum):
     ALLOW = "allow"
     REJECT_DECLARED_ASYNC_BEFORE_OWNER_EFFECT = "reject_declared_async_before_owner_effect"
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class DispatchStagePolicy(Params):
     failure: DispatchFailure
     completion: CompletionTiming
     error_surface: ErrorSurface
     handler_cancellation: HandlerCancellation
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class DispatchPhase(Params):
     selector: Literal["all", "declared_sync", "declared_async"]
     concurrency: DispatchConcurrency
@@ -260,7 +260,7 @@ class DispatchPhase(Params):
     deadline_disposition: DeadlineDisposition | UnsetType = Unset
     deadline_seconds: float | UnsetType = Unset
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class DispatchPolicy(Params):
     phases: tuple[DispatchPhase, ...]
     preserve_registration_order: bool = True
@@ -291,8 +291,9 @@ never executed in production starts executing, and the first symptom is whatever
 It therefore gets its own gate rather than riding the migration: the set of registrations
 currently resolving to `DISCARD_UNAWAITED` is enumerated and each is either converted deliberately
 or recorded as intentionally discarding, the flip lands as its own change with its own revert,
-and the record names an owner accountable for that enumeration. A deprecation with no named owner
-is removed eventually by whoever is least aware of what it was protecting.
+and the implementation issue names the owner accountable for that enumeration at the moment it
+opens rather than when the flip is proposed. A deprecation with no named owner is removed
+eventually by whoever is least aware of what it was protecting.
 
 A synchronous owner calls `preflight_sync()` before its domain mutation and later supplies that
 immutable registration snapshot to `emit_sync()`. The message-manager profile rejects a declared
@@ -510,11 +511,13 @@ the scheduler. Messenger remains an addressed coordination transport, not a gene
 External hooks are an integration profile over the semantic planes, not another internal bus.
 
 ```python
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class ExternalHookProfile(Params):
     profile: Literal["claude", "codex", "lionagi"]
     version: str
     registrations: tuple[ExternalHookRegistration, ...]
 
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class ExternalHookRegistration(Params):
     external_event: str
     matcher: HookMatcher | UnsetType = Unset

@@ -374,6 +374,7 @@ deprecated.
 A declaration module exports values. It does not mutate the active registry when imported.
 
 ```python
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class Registry(Params, Generic[ItemT]):
     name: str
     items: tuple[ItemT, ...]
@@ -422,6 +423,7 @@ compare to.
 registry, plan, and Run identities use a separate strict surface:
 
 ```python
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class SnapshotEnvelope(Params):
     domain: str
     contract_version: str

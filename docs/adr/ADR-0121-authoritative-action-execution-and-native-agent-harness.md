@@ -206,12 +206,12 @@ class ExecutionScopeKind(str, Enum):
     EPHEMERAL_OPERATION = "ephemeral_operation"
     DURABLE_RUN = "durable_run"
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class EphemeralOperationScopeRef(Params):
     kind: Literal[ExecutionScopeKind.EPHEMERAL_OPERATION]
     scope_id: IDType
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class DurableRunScopeRef(Params):
     kind: Literal[ExecutionScopeKind.DURABLE_RUN]
     run_id: IDType
@@ -219,7 +219,7 @@ class DurableRunScopeRef(Params):
 
 ExecutionScopeRef = EphemeralOperationScopeRef | DurableRunScopeRef
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class ExecutionRequest(Params):
     request_id: IDType
     action: ActionRef
@@ -231,7 +231,7 @@ class ExecutionRequest(Params):
     idempotency_key: str | UnsetType = Unset
     metadata: Mapping[str, JsonValue] = field(default_factory=dict)
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class ExecutionContext(Params):
     context_id: IDType
     execution_scope: ExecutionScopeRef
@@ -247,7 +247,7 @@ class AdmissionDisposition(str, Enum):
     DENY = "deny"
     ESCALATE = "escalate"
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class ActionAdmissionDecision(Params):
     disposition: AdmissionDisposition
     reason: DecisionReason
@@ -421,7 +421,7 @@ provider. It is not an Action and does not route the provider's internal tools t
 ActionExecutor unless the provider explicitly delegates those calls back to LionAGI.
 
 ```python
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class HarnessSpec(Params):
     provider: ProviderRef
     model: str | UnsetType = Unset
@@ -477,7 +477,7 @@ The executor freezes the verified result together with its admission lease befor
 OperationContext:
 
 ```python
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class ActionPreflightReport(Params):
     report_id: IDType
     request_id: IDType
@@ -513,7 +513,7 @@ without that capability evidence.
 Compilation produces a report:
 
 ```python
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class CapabilityReport(Params):
     provider: ProviderRef
     provider_version: str

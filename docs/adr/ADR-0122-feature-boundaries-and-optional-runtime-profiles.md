@@ -254,6 +254,7 @@ its name or wheel size.
 ADR-0119's immutable declarations describe each selectable feature. Conceptually:
 
 ```python
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class FeatureSpec(Params):
     name: str
     extra: str | None
