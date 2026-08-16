@@ -427,21 +427,61 @@ class SQLAlchemyLifecycleService:
                 # one, and this transition is that measurement. Reusing the
                 # guess would compute a real-looking duration from a number
                 # nobody observed.
-                if ended_at_value is None or (
+                measured_here = ended_at_value is None or (
                     "ended_at" not in command.patch and row["ended_at_is_approximate"]
-                ):
+                )
+                if measured_here:
                     ended_at_value = now
                 patch = dict(command.patch)
-                patch.setdefault("ended_at", ended_at_value)
-                if "duration_ms" not in patch:
-                    started_at = row["started_at"]
-                    if isinstance(started_at, int | float):
-                        patch["duration_ms"] = max(0.0, (ended_at_value - started_at) * 1000)
+                # setdefault cannot displace a key the caller already sent, so
+                # an explicit ended_at=None would survive while the duration
+                # below is computed from the end measured here -- a row with no
+                # end, marked measured, carrying a duration. Where this
+                # transition is the measurement, its value wins over a key
+                # whose value is the absence of one.
+                if measured_here:
+                    patch["ended_at"] = ended_at_value
+                else:
+                    patch.setdefault("ended_at", ended_at_value)
                 # The flag and the duration are one fact and move together.
                 # Leaving the bit set beside a measured duration produces a row
                 # whose own two fields disagree, and readers believe the bit:
                 # they discard the duration this write just measured.
-                patch.setdefault("ended_at_is_approximate", 0)
+                #
+                # Where this transition is what measured the end, that holds
+                # against a caller who sent the bit too: the value they sent
+                # described an end they did not supply, so it cannot describe
+                # the one taken here. A caller supplying both an end and the
+                # bit is recording a reconstructed end deliberately, and keeps
+                # it -- which is why this is not an unconditional clear.
+                if measured_here:
+                    patch["ended_at_is_approximate"] = 0
+                else:
+                    patch.setdefault("ended_at_is_approximate", 0)
+                # Derived only from an end that was measured. Subtracting a
+                # reconstructed end from a start yields a real-looking number
+                # for a length nobody observed, which is the thing the flag
+                # exists to prevent -- and once stored, the duration outlives
+                # every reader's chance to notice. An approximate end leaves
+                # duration unknown instead.
+                #
+                # This reads the flag settled just above rather than
+                # measured_here, because a caller who supplies both an end and
+                # the bit is recording a reconstructed end deliberately, and
+                # that end is no more subtractable than a repaired one.
+                if patch["ended_at_is_approximate"]:
+                    # Cleared, not merely left uncomputed. Both readers already
+                    # discard a stored duration when this bit is set, so one
+                    # persisted beside it is a value nothing can ever surface,
+                    # and the row asserts a measured length for an end nobody
+                    # measured. The schema-version repair clears it in the same
+                    # write that sets the bit for exactly this reason; a
+                    # transition that sets the bit owes the same.
+                    patch["duration_ms"] = None
+                elif "duration_ms" not in patch:
+                    started_at = row["started_at"]
+                    if isinstance(started_at, int | float):
+                        patch["duration_ms"] = max(0.0, (ended_at_value - started_at) * 1000)
                 if patch != dict(command.patch):
                     command = replace(command, patch=patch)
 

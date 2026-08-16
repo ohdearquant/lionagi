@@ -26,6 +26,7 @@ from lionagi.cli.monitor import (
     _format_table,
     _gather_table_rows,
     _invocation_to_row,
+    _machine_entity,
     _parse_json_field,
     _pid_alive,
     _play_to_row,
@@ -209,6 +210,30 @@ def test_elapsed_does_not_mark_a_still_running_row():
     """A row with no end is measured up to now, so the flag must not leak a
     tilde onto a span whose end has not been guessed at all."""
     assert not _elapsed(time.time() - 45, approximate=True).startswith("~")
+
+
+def test_elapsed_reports_unknown_for_a_finished_row_that_recorded_no_end():
+    """A session that stopped, with no end on the row, has no span to report.
+
+    Measuring it up to now is what the running case does, and doing it here
+    produces a duration that is larger every time the table is redrawn for a
+    session that has been over for months. Legacy rows are exactly the
+    population with a terminal status and no recorded end, so this is not a
+    hypothetical shape.
+    """
+    long_ago = time.time() - 86_400
+
+    assert _elapsed(long_ago, ended_at=None, terminal=True) == "-"
+
+
+def test_elapsed_still_measures_a_running_row_that_recorded_no_end():
+    """Control for the test above: the terminal flag is what suppresses the
+    span, not the missing end. A running row has no end either, and its
+    elapsed time genuinely is measured up to now."""
+    running = _elapsed(time.time() - 45, ended_at=None, terminal=False)
+
+    assert running != "-"
+    assert running.endswith("s")
 
 
 def test_trunc_short():
@@ -481,6 +506,45 @@ def test_session_to_row_carries_end_provenance_into_the_elapsed_column():
 
     assert measured["elapsed"] == "45s"
     assert reconstructed["elapsed"] == "~45s"
+
+
+def test_session_to_row_reports_unknown_elapsed_for_a_terminal_row_with_no_end():
+    """The whole path, not just the formatter: a terminal session carrying no
+    end must reach the table as unknown rather than as a span still growing."""
+    row = _session_to_row(
+        {
+            "id": "abc123def456",
+            "invocation_kind": "agent",
+            "project": "lionagi",
+            "status": "completed",
+            "started_at": time.time() - 86_400,
+            "ended_at": None,
+        }
+    )
+
+    assert row["elapsed"] == "-"
+
+
+def test_machine_session_entity_carries_end_provenance():
+    """`li monitor --machine` hands out `ended_at` for sessions, so it has to
+    hand out the field saying whether that end was observed. A consumer given
+    the timestamp alone cannot tell a reconstructed end from a measured one,
+    and nothing else in the payload answers it."""
+    from lionagi.cli.monitor import _machine_entity
+
+    entity = _machine_entity(
+        "session",
+        {
+            "id": "abc123def456",
+            "status": "completed",
+            "started_at": 100.0,
+            "ended_at": 145.0,
+            "ended_at_is_approximate": 1,
+        },
+    )
+
+    assert "ended_at_is_approximate" in entity
+    assert entity["ended_at_is_approximate"] == 1
 
 
 def test_session_to_row_no_optional():
@@ -2244,3 +2308,70 @@ async def test_show_detail_marks_blocked_play_as_done(temp_db_path: Path) -> Non
     assert "[done]" in blocked_line
     assert "[wait]" not in blocked_line
     assert "[wait]" in gated_line, "an undecided play is unfinished, not done"
+
+
+def test_terminal_invocation_and_play_rows_with_no_recorded_end_report_unknown():
+    """Sessions are not the only population with this shape.
+
+    Invocations and plays reach a terminal status with no recorded end too, in
+    real stores and not just in principle, so fixing the session row alone
+    leaves these two rendering a span that grows on every redraw. The session
+    case has its own test above; this one exists because the sibling tables
+    were the part it was tempting to reason about instead of check.
+    """
+    from lionagi.cli.monitor import _invocation_to_row, _play_to_row
+
+    long_ago = time.time() - 86_400
+
+    inv = _invocation_to_row(
+        {"id": "inv123def456", "status": "completed", "started_at": long_ago, "ended_at": None}
+    )
+    # Plays carry their own terminal vocabulary, disjoint from the session one
+    # -- "completed" is not a play status at all.
+    play = _play_to_row(
+        {"id": "ply123def456", "status": "merged", "started_at": long_ago, "ended_at": None}
+    )
+
+    assert inv["elapsed"] == "-"
+    assert play["elapsed"] == "-"
+
+
+def test_running_rows_of_every_entity_are_still_measured():
+    """Control: the terminal status suppresses the span, not the missing end.
+    A running row of either kind is still measured up to now."""
+    from lionagi.cli.monitor import _invocation_to_row, _play_to_row
+
+    recent = time.time() - 45
+
+    inv = _invocation_to_row(
+        {"id": "inv123def456", "status": "running", "started_at": recent, "ended_at": None}
+    )
+    play = _play_to_row(
+        {"id": "ply123def456", "status": "running", "started_at": recent, "ended_at": None}
+    )
+
+    assert inv["elapsed"] != "-"
+    assert play["elapsed"] != "-"
+
+
+def test_machine_entity_emits_a_json_boolean_for_the_approximate_end_flag():
+    """SQLite returns 0/1; the lifecycle summary endpoint returns true/false.
+
+    Same field name on two machine-readable surfaces, so a caller that reads
+    both should not have to branch on which one produced the payload.
+    """
+    entity = _machine_entity("session", {"id": "s1", "ended_at_is_approximate": 1})
+    assert entity["ended_at_is_approximate"] is True
+
+    entity = _machine_entity("session", {"id": "s1", "ended_at_is_approximate": 0})
+    assert entity["ended_at_is_approximate"] is False
+
+
+def test_machine_entity_leaves_an_absent_approximate_flag_as_null():
+    """Absent is unknown, which is a different answer from measured.
+
+    Coercing a missing column with bare bool() would report every row the query
+    did not select as carrying a measured end.
+    """
+    entity = _machine_entity("session", {"id": "s1"})
+    assert entity["ended_at_is_approximate"] is None
