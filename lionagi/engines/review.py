@@ -97,6 +97,28 @@ _MCP_REQUEST_TIMEOUT = 408  # httpx.codes.REQUEST_TIMEOUT, the SDK's timeout cod
 _MCP_CONNECTION_CLOSED_MESSAGE = "Connection closed"
 
 
+def _carries_only_the_sdks_own_fields(error: object) -> bool:
+    """True while the error object holds nothing the SDK would not have put there.
+
+    The closed-connection signal is not raised as a distinct condition: the read
+    loop synthesises an ordinary error reply and pushes it onto the same
+    response stream a server's reply arrives on, so both surface from one line
+    with an empty ``__context__``. Code and message are therefore the whole of
+    what separates them, and both travel in the payload.
+
+    The SDK constructs that reply with two fields and no others. ``ErrorData``
+    permits a third and accepts unknown ones besides, so anything populated
+    there came from a server and could not have come from the SDK. That does
+    not close the ambiguity -- a server sending exactly the two fields with
+    exactly the SDK's values is still indistinguishable here -- but it removes
+    every server reply carrying detail alongside its code, which is what a
+    server relaying an upstream failure typically sends.
+    """
+    if getattr(error, "data", None) is not None:
+        return False
+    return not getattr(error, "model_extra", None)
+
+
 def _is_transport_mcp_error(exc: BaseException) -> bool:
     mcp_error = _mcp_error_type()
     if mcp_error is None or not isinstance(exc, mcp_error):
@@ -110,7 +132,9 @@ def _is_transport_mcp_error(exc: BaseException) -> bool:
         # without reading the message.
         return isinstance(exc.__context__, TimeoutError)
     if code == _MCP_CONNECTION_CLOSED:
-        return getattr(error, "message", None) == _MCP_CONNECTION_CLOSED_MESSAGE
+        return getattr(
+            error, "message", None
+        ) == _MCP_CONNECTION_CLOSED_MESSAGE and _carries_only_the_sdks_own_fields(error)
     return False
 
 

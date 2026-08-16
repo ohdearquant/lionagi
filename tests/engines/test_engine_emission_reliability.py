@@ -319,6 +319,33 @@ def test_a_server_reusing_the_sdks_own_codes_is_not_a_transport_drop(
 
 
 @pytest.mark.skipif(importlib.util.find_spec("mcp") is None, reason="mcp is an optional extra")
+def test_a_server_echoing_the_closed_connection_wording_with_detail_is_not_a_drop() -> None:
+    """The wording is the only thing separating the two, and a server can type it.
+
+    What a server cannot do is send it the way the SDK does. The SDK builds the
+    reply with a code and a message and nothing else, so a payload carrying
+    detail beside them came from a server whatever it says. Both shapes below
+    would otherwise be swallowed and the dimension dropped from the verdict.
+
+    The last case is the control: strip the detail and the same payload is the
+    drop signal again, which is what keeps this from passing by refusing
+    everything.
+    """
+    from mcp.shared.exceptions import McpError
+    from mcp.types import ErrorData
+
+    with_data = ErrorData(code=-32000, message="Connection closed", data={"upstream": "vendor-api"})
+    with_extra = ErrorData.model_validate(
+        {"code": -32000, "message": "Connection closed", "requestId": "req-9"}
+    )
+    bare = ErrorData(code=-32000, message="Connection closed")
+
+    assert _is_all_isolated_failure(McpError(with_data)) is False
+    assert _is_all_isolated_failure(McpError(with_extra)) is False
+    assert _is_all_isolated_failure(McpError(bare)) is True
+
+
+@pytest.mark.skipif(importlib.util.find_spec("mcp") is None, reason="mcp is an optional extra")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["connection_closed", "read_timeout"])
 async def test_the_sdks_own_transport_failures_are_still_recognised(failure: str) -> None:
