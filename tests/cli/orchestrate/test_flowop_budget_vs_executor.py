@@ -151,6 +151,12 @@ async def _measure_patiently(
     ordinary case is, and a reading that comes in low is already the assertion's
     own answer — re-measuring it could only raise it, which is the direction the
     minimum exists to discard.
+
+    The cost is worth stating plainly, because it is paid by whoever is running
+    a loaded machine: a pattern that reads high costs `attempts + PATIENT_ATTEMPTS`
+    executions instead of `attempts`, so the sweep's worst case is several times
+    its ordinary one. That worst case only arrives when readings are already
+    unreliable, which is when the extra rounds are worth their cost.
     """
     consumed, peak = await _measure(dep_indices, num_ops, max_concurrent, durations, attempts)
     if consumed <= at_most:
@@ -298,6 +304,54 @@ async def test_extra_rounds_do_not_rescue_a_genuinely_slower_shape(monkeypatch):
     )
 
 
+@pytest.mark.asyncio
+async def test_extra_rounds_do_not_rescue_a_shape_that_is_slow_from_its_cap(monkeypatch):
+    """The same guard where the slowness is structural rather than a long op.
+
+    A one-op shape has one schedule, so it cannot say whether extra rounds can
+    find a faster ordering of a shape that has orderings to choose between.
+    Here two independent ops compete for a single slot, so the executor does
+    pick an order, and the two ops carry different work lengths so the orders
+    are not interchangeable by inspection.
+
+    They are interchangeable in the reading, and deliberately: work lengths are
+    handed out in admission order rather than by op index, so whichever op goes
+    first does the short work. The span is the sum either way, which is why the
+    minimum across rounds is a noise floor here and not a choice between two
+    real answers.
+    """
+    rounds = 0
+    real = _run_real_flow
+
+    async def counted(*args, **kwargs):
+        nonlocal rounds
+        rounds += 1
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_real_flow", counted)
+
+    # Two independent ops, one slot: a quarter budget and a half, in whichever
+    # order they are admitted, so the shape cannot finish inside 0.75 budgets.
+    consumed, peak = await _measure_patiently(
+        [[], []], 2, 1, [BUDGET / 4, BUDGET / 2], at_most=0.3, attempts=3
+    )
+
+    assert rounds == 3 + PATIENT_ATTEMPTS, (
+        f"the patient path ran {rounds} rounds where it must run {3 + PATIENT_ATTEMPTS}. "
+        f"A guard that never reaches the retry says nothing about the retry."
+    )
+    assert peak == 1, f"{peak} ops in flight under a cap of 1 — this shape was not serialized"
+    assert consumed > 0.3, (
+        f"{PATIENT_ATTEMPTS} extra rounds found a {consumed:.2f}-budget ordering of a shape "
+        f"the cap forces to take 0.75 — the minimum is picking between schedules, not "
+        f"discarding contention."
+    )
+    assert consumed == pytest.approx(0.75, abs=TOLERANCE), (
+        f"the rounds settled on {consumed:.2f} budgets where the cap and the work lengths "
+        f"require 0.75; the reading is not measuring what this shape costs."
+    )
+
+
 # The claim.
 #
 # Neither pinned number is derived from the function under test. `divisor` is
@@ -352,8 +406,12 @@ async def test_the_divisor_covers_every_schedule_this_shape_can_produce(
 
     worst = 0.0
     worst_pattern = ""
-    # Both assertions below fail upward, so a pattern only needs the patient
-    # re-measure when it lands above the lower of the two bounds it will face.
+    # The bound assertion below fails upward only. The equality against the
+    # recorded consumption fails in both directions, which is what keeps the
+    # patient re-measure honest: readings pulled too far down redden it just as
+    # readings that are too high redden the bound. A pattern buys extra rounds
+    # when it lands above the lower of the two bounds it will face, since that
+    # is the only direction extra rounds can move it.
     believable = min(divisor, consumed) + TOLERANCE
     for pattern_name, durations in _duration_patterns(num_ops):
         budgets, peak = await _measure_patiently(
