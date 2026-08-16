@@ -600,11 +600,11 @@ async def reconcile_session_status(
     *,
     now: float,
     live_window: float,
-) -> None:
+) -> bool:
     """Align a mirrored codex session's status with its live/idle state."""
     from ._mirror_common import reconcile_status
 
-    await reconcile_status(
+    return await reconcile_status(
         db,
         session_db_id(rollout_uid),
         now=now,
