@@ -1161,6 +1161,7 @@
     "showEarlier": "önceki {count, number} mesajı göster",
     "noArgs": "(argüman yok)",
     "noOutput": "(çıktı yok)",
+    "outputWithheld": "okunmadı",
     "roleUser": "kullanıcı",
     "roleThinking": "düşünüyor",
     "roleResponse": "yanıt",

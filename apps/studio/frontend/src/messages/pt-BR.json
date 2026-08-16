@@ -1161,6 +1161,7 @@
     "showEarlier": "Mostrar {count, plural, one {{count, number} mensagem anterior} other {{count, number} mensagens anteriores}}",
     "noArgs": "(sem args)",
     "noOutput": "(sem saída)",
+    "outputWithheld": "não lido",
     "roleUser": "usuário",
     "roleThinking": "pensando",
     "roleResponse": "resposta",

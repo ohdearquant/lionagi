@@ -1161,6 +1161,7 @@
     "showEarlier": "{count, plural, one {{count, number} frühere Nachricht anzeigen} other {{count, number} frühere Nachrichten anzeigen}}",
     "noArgs": "(keine Args)",
     "noOutput": "(keine Ausgabe)",
+    "outputWithheld": "nicht gelesen",
     "roleUser": "Benutzer",
     "roleThinking": "Denkprozess",
     "roleResponse": "Antwort",

@@ -1154,9 +1154,9 @@ async def test_get_session_full_aggregates_do_not_hydrate_every_message_row(
     calls: list[list[str]] = []
     original = svc._fetch_messages_by_ids
 
-    async def spy(db, ids):
+    async def spy(db, ids, **kwargs):
         calls.append(list(ids))
-        return await original(db, ids)
+        return await original(db, ids, **kwargs)
 
     monkeypatch.setattr(svc, "_fetch_messages_by_ids", spy)
 
@@ -1665,3 +1665,157 @@ async def test_the_walk_reads_from_the_newest_end_across_more_than_one_chunk(
         "/run/f598.py",
         "/run/f599.py",
     }
+
+
+async def _content_chars(svc, db_path: Path, msg_id: str) -> int:
+    """How many characters one seeded row's payload occupies in the database.
+
+    Read rather than computed from the literal the seeder passes: the column
+    holds whatever the store's own serializer wrote, and a budget assertion
+    derived from a re-serialization of my own would be measuring my guess.
+    """
+    async with svc._open_db(db_path) as db:
+        cur = await db.execute("SELECT length(content) AS n FROM messages WHERE id = ?", (msg_id,))
+        row = await cur.fetchone()
+    assert row is not None, msg_id
+    return int(row["n"])
+
+
+async def test_one_read_has_one_content_budget_across_all_of_its_branches(
+    patched_sessions_db, monkeypatch
+):
+    """A ceiling each reader keeps for itself is not a ceiling on the read.
+
+    A session detail hydrates once per branch and holds every result at the
+    same time, so a per-call budget of N admits N times however many branches
+    the session happens to have -- and nothing bounds that. The number only
+    means what it says if one object is spent by everything the request does.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-budget-branches")
+    await _seed_action_requests(
+        db_path, branch_id="b-older", session_id="sess-budget-branches", count=4
+    )
+    await _seed_action_requests(
+        db_path, branch_id="b-newer", session_id="sess-budget-branches", count=4
+    )
+    row_chars = await _content_chars(svc, db_path, "b-older-act-0")
+    monkeypatch.setattr(svc, "MAX_HYDRATED_CONTENT_CHARS", 5 * row_chars)
+
+    detail = await svc.get_session("sess-budget-branches")
+
+    assert detail is not None
+    hydrated = sum(len(branch["messages"]) for branch in detail["branches"])
+    # Eight rows exist and the request is allowed five. A budget per branch
+    # would have admitted five to each and returned all eight.
+    assert hydrated == 5, [len(b["messages"]) for b in detail["branches"]]
+
+
+async def test_a_session_under_the_ceiling_still_returns_every_branch_whole(patched_sessions_db):
+    """Control for the budget: with the real ceiling in place, a two-branch
+    session hands back both branches complete, so the assertion above is
+    measuring the bound and not some other reason rows go missing."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-budget-ok")
+    await _seed_action_requests(db_path, branch_id="b-one", session_id="sess-budget-ok", count=4)
+    await _seed_action_requests(db_path, branch_id="b-two", session_id="sess-budget-ok", count=4)
+
+    detail = await svc.get_session("sess-budget-ok")
+
+    assert detail is not None
+    assert sum(len(branch["messages"]) for branch in detail["branches"]) == 8
+
+
+async def test_the_display_window_spends_from_the_budget_too(patched_sessions_db, monkeypatch):
+    """The window is bounded by its row count, which says nothing about what
+    those rows cost: a page of rows each just under the per-row ceiling is a
+    megabyte-scale read that no row count refuses. It comes back short and says
+    so, rather than being the one reader the total does not cover."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-window-budget")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-window-budget", count=6)
+    row_chars = await _content_chars(svc, db_path, "b1-act-0")
+    monkeypatch.setattr(svc, "MAX_HYDRATED_CONTENT_CHARS", 2 * row_chars)
+
+    detail = await svc.get_session("sess-window-budget")
+
+    assert detail is not None
+    (branch,) = detail["branches"]
+    assert len(branch["messages"]) == 2
+    assert branch["message_total"] == 6
+    assert branch["messages_truncated"] is True
+
+
+async def test_the_tail_read_is_bounded_and_defers_the_rest_to_the_next_poll(
+    patched_sessions_db, monkeypatch
+):
+    """The stream poll is the reader with the least to lose from a bound and
+    the most to lose from not having one: its cursor starts at zero, so a first
+    poll against a long finished run matches everything the session ever
+    recorded. Bounding it costs half a second, and only if there is more.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-tail-budget")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-tail-budget", count=8)
+    row_chars = await _content_chars(svc, db_path, "b1-act-0")
+    monkeypatch.setattr(svc, "MAX_HYDRATED_CONTENT_CHARS", 3 * row_chars)
+
+    first = await svc.get_session_messages_after("sess-tail-budget", 0.0)
+    assert 0 < len(first) < 8, len(first)
+
+    # Poll the way the SSE generator does, advancing the cursor to the newest
+    # timestamp it was handed, until the tail runs dry.
+    seen = list(first)
+    for _ in range(20):
+        more = await svc.get_session_messages_after("sess-tail-budget", seen[-1]["timestamp"])
+        if not more:
+            break
+        seen.extend(more)
+
+    # Deferred, not dropped: polling to exhaustion yields the whole
+    # progression, once each, in order.
+    assert [m["id"] for m in seen] == [f"b1-act-{i}" for i in range(8)]
+
+
+async def test_the_action_row_limit_bounds_what_is_decoded_not_only_what_is_returned(
+    patched_sessions_db,
+):
+    """Asking for three rows and getting three back says nothing about how many
+    were read to produce them. Checked once per chunk, a request for three
+    decodes five hundred and then discards four hundred and ninety-seven -- the
+    cost the limit exists to refuse, paid in full before it is consulted."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-decode-limit")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-decode-limit", count=10)
+    ids = [f"b1-act-{i}" for i in range(10)]
+    row_chars = await _content_chars(svc, db_path, "b1-act-0")
+    budget = svc._HydrationBudget(total=10 * row_chars)
+
+    async with svc._open_db(db_path) as db:
+        fetched, bounded = await svc._fetch_action_messages(db, ids, limit=3, budget=budget)
+
+    assert len(fetched) == 3
+    assert bounded is True
+    # Every row here is the same size, so what the budget lost is a row count.
+    assert (10 * row_chars - budget.remaining) == 3 * row_chars
+
+
+async def test_a_stopped_action_walk_keeps_the_newest_rows_not_the_first_ones_read(
+    patched_sessions_db,
+):
+    """Stopping the walk early is only safe if the rows it stopped on are the
+    ones worth keeping. An id list comes back in whatever order the index walk
+    produces, which for messages inserted in time order is oldest first, so a
+    walk that stops after three would keep the three oldest and label them as
+    this session's recent activity."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-newest-kept")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-newest-kept", count=10)
+    ids = [f"b1-act-{i}" for i in range(10)]
+
+    async with svc._open_db(db_path) as db:
+        fetched, _ = await svc._fetch_action_messages(
+            db, ids, limit=3, budget=svc._HydrationBudget()
+        )
+
+    assert [m["id"] for m in fetched] == ["b1-act-7", "b1-act-8", "b1-act-9"]

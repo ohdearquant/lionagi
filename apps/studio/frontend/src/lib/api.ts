@@ -1285,6 +1285,11 @@ export interface SessionDetail {
     tool_call_count: number;
     error_count: number;
     files: string[];
+    // The server hydrates the newest slice of a long session's action rows and
+    // stops at a bound. When it stopped, every field above derived from those
+    // rows is a floor rather than a total, and the reader has to say so —
+    // a lower bound presented as a count is read as a count.
+    bounded?: boolean;
   };
 }
 

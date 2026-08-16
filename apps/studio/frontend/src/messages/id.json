@@ -1161,6 +1161,7 @@
     "showEarlier": "Tampilkan {count, plural, other {{count, number} pesan sebelumnya}}",
     "noArgs": "(tanpa args)",
     "noOutput": "(tanpa output)",
+    "outputWithheld": "tidak dibaca",
     "roleUser": "pengguna",
     "roleThinking": "berpikir",
     "roleResponse": "respons",

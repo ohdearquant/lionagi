@@ -146,6 +146,37 @@ _BOUNDED_CONTENT_COLUMNS = (
 )
 
 
+class _HydrationBudget:
+    """What one session read may decode in total, spent across every reader.
+
+    A ceiling each reader keeps for itself is not a total. `get_session`
+    hydrates once per branch and holds every result, so a per-call ceiling of N
+    admits N times the branch count, and the display window and the tail read
+    spend nothing against it at all. One object, passed to every reader a single
+    request uses, is what makes the number mean what it says.
+
+    A row is admitted only if it fits in what is left, so the total is a bound
+    rather than a bound plus one row: the length is already on the row, and
+    reading it is what the caller was trying not to do.
+    """
+
+    __slots__ = ("exhausted", "remaining")
+
+    def __init__(self, total: int | None = None) -> None:
+        # Read at construction rather than bound as a default argument: a
+        # default is evaluated once when this file is imported, so the ceiling
+        # would stop being the module constant the moment anything rebound it.
+        self.remaining = MAX_HYDRATED_CONTENT_CHARS if total is None else total
+        self.exhausted = False
+
+    def admits(self, chars: int) -> bool:
+        if chars > self.remaining:
+            self.exhausted = True
+            return False
+        self.remaining -= chars
+        return True
+
+
 def _format_message(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
     """Shape one hydrated message row for the API.
 
@@ -590,13 +621,24 @@ def _init_message_stats() -> dict[str, Any]:
 
 
 async def _fetch_messages_by_ids(
-    db: aiosqlite.Connection, msg_ids: list[str]
+    db: aiosqlite.Connection,
+    msg_ids: list[str],
+    *,
+    budget: _HydrationBudget,
 ) -> list[dict[str, Any]]:
-    """Hydrate message rows for msg_ids, chunked to stay under SQLite's bound-variable limit."""
+    """Hydrate message rows for msg_ids, chunked to stay under SQLite's bound-variable limit.
+
+    Spends from the same budget the rest of the request spends from. A display
+    window is bounded by its own row count, but a thousand rows each carrying a
+    payload just under the per-row ceiling is still a megabyte-scale read, and
+    the request may already have spent most of the total elsewhere.
+    """
     if not msg_ids:
         return []
     rows_by_id: dict[str, dict[str, Any]] = {}
     for chunk_start in range(0, len(msg_ids), 500):
+        if budget.exhausted:
+            break
         chunk = msg_ids[chunk_start : chunk_start + 500]
         placeholders = ",".join("?" for _ in chunk)
         cur = await db.execute(
@@ -615,8 +657,13 @@ async def _fetch_messages_by_ids(
                 *chunk,
             ],
         )
-        for row in await cur.fetchall():
-            rows_by_id[row["id"]] = _format_message(row)
+        # Iterated rather than fetchall'd: a budget can only bound what has not
+        # been read yet, and fetchall reads the whole chunk first.
+        async for row in cur:
+            data = dict(row)
+            if not budget.admits(int(data.pop("content_length") or 0)):
+                break
+            rows_by_id[data["id"]] = _format_message(data)
     return [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
 
 
@@ -659,7 +706,11 @@ async def _fetch_message_bounds(
 
 
 async def _fetch_action_messages(
-    db: aiosqlite.Connection, msg_ids: list[str], *, limit: int
+    db: aiosqlite.Connection,
+    msg_ids: list[str],
+    *,
+    limit: int,
+    budget: _HydrationBudget,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Hydrate at most *limit* ActionRequest/ActionResponse rows among msg_ids,
     newest first, returned in progression order.
@@ -679,6 +730,11 @@ async def _fetch_action_messages(
     """
     if not msg_ids or limit <= 0:
         return [], bool(msg_ids)
+    if budget.exhausted:
+        # An earlier branch of the same request already spent the total. Say so
+        # rather than reading a first row for free: every branch doing that is
+        # how a per-call ceiling turns into a per-branch one.
+        return [], True
     class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
     cur = await db.execute(
         f"SELECT type_id, lion_class FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
@@ -691,10 +747,8 @@ async def _fetch_action_messages(
     rows_by_id: dict[str, dict[str, Any]] = {}
     type_ids = list(lion_class_by_type_id)
     type_placeholders = ",".join("?" for _ in type_ids)
-    bounded = False
+    stopped_early = False
     oversized_seen = False
-    budget_spent = False
-    content_chars = 0
     for chunk_end in range(len(msg_ids), 0, -500):
         chunk_start = max(0, chunk_end - 500)
         chunk = msg_ids[chunk_start:chunk_end]
@@ -702,12 +756,19 @@ async def _fetch_action_messages(
         # `+m.lion_class` disqualifies the lion_class index so the planner probes
         # the id primary key for the IN list instead of rescanning every
         # action-class row in the whole table per chunk (minutes of I/O at scale).
+        #
+        # Ordered rather than left to the planner. An IN list comes back in
+        # whatever order the index walk produces, so a walk that stops partway
+        # through a chunk -- on the limit or on the budget -- keeps whichever
+        # rows arrived first rather than the newest ones, which is the opposite
+        # of what this function promises.
         cur = await db.execute(
             f"""
             SELECT m.id, m.created_at, m.sender, m.role, m.lion_class,
                    {_BOUNDED_CONTENT_COLUMNS}
             FROM messages m
             WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
+            ORDER BY m.created_at DESC, m.id DESC
             """,  # noqa: S608
             [
                 MAX_ACTION_CONTENT_CHARS,
@@ -717,28 +778,30 @@ async def _fetch_action_messages(
                 *type_ids,
             ],
         )
-        # Iterated rather than fetchall'd: the budget below can only bound what
-        # has not been read yet, and fetchall reads the whole chunk first.
+        # Iterated rather than fetchall'd, and both stops are checked per row:
+        # a bound can only bound what has not been read yet, and a check that
+        # runs once per chunk lets a request for three rows decode five hundred.
         async for row in cur:
-            if content_chars >= MAX_HYDRATED_CONTENT_CHARS:
-                budget_spent = True
+            if len(rows_by_id) >= limit:
+                stopped_early = True
                 break
             data = dict(row)
-            content_chars += int(data.pop("content_length") or 0)
+            if not budget.admits(int(data.pop("content_length") or 0)):
+                stopped_early = True
+                break
             if data["content_oversized"]:
                 oversized_seen = True
             data["lion_class_str"] = lion_class_by_type_id.get(data.pop("lion_class"))
             rows_by_id[data["id"]] = _format_message(data)
-        if budget_spent or len(rows_by_id) >= limit:
+        if stopped_early:
             # Stop reading rather than read everything and slice: the ids left
             # unread are older than everything already held, so nothing further
             # back can belong in a newest-first window this size.
-            bounded = budget_spent or chunk_start > 0 or len(rows_by_id) > limit
             break
     ordered = [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
     # A withheld payload is a bounded read for the same reason a stopped walk is:
     # what the caller gets back describes less than what is there.
-    return ordered[-limit:], bounded or oversized_seen
+    return ordered, stopped_early or oversized_seen
 
 
 def _branch_message_stats(
@@ -900,16 +963,50 @@ async def get_session(
                         ids = []
             progression_ids[br["id"]] = ids
 
-        # One budget for the session rather than one per branch, spent newest
-        # branch first: a per-branch bound would multiply by the branch count,
-        # and spending it oldest-first would drop exactly the recent activity
+        # One budget for the whole read, rather than one per branch or one per
+        # reader: a ceiling each caller keeps for itself multiplies by however
+        # many callers a request happens to make, which is the branch count here
+        # and is not bounded by anything.
+        #
+        # The display windows spend from it first. They are what the caller is
+        # looking at; the action aggregate under them is a summary that already
+        # reports itself as bounded when it comes up short, so it is the half
+        # that can degrade without the page going blank.
+        content_budget = _HydrationBudget()
+
+        window_by_branch: dict[str, tuple[list[dict[str, Any]], bool]] = {}
+        for br in branch_rows:
+            branch_id = br["id"]
+            # Window from the tail: offset/cursor 0 = the newest page,
+            # each page further back prepends older history.
+            window_ids, has_older, next_anchor = _window_message_ids(
+                progression_ids[branch_id],
+                branch_id=branch_id,
+                limit=message_limit,
+                cursor_anchors=cursor_anchors,
+                legacy_offset=message_offset if cursor_anchors is None else 0,
+            )
+            if next_anchor:
+                next_branch_anchors[branch_id] = next_anchor
+            window_messages = await _fetch_messages_by_ids(db, window_ids, budget=content_budget)
+            by_id = {m["id"]: m for m in window_messages}
+            window_by_branch[branch_id] = (
+                [by_id[mid] for mid in window_ids if mid in by_id],
+                has_older,
+            )
+
+        # Row count gets its own budget for the same reason, spent newest branch
+        # first: spending it oldest-first would drop exactly the recent activity
         # every consumer of this data is asking about.
         action_by_branch: dict[str, list[dict[str, Any]]] = {}
         action_message_budget = MAX_HYDRATED_ACTION_MESSAGES
         action_messages_bounded = False
         for br in reversed(branch_rows):
             fetched, branch_bounded = await _fetch_action_messages(
-                db, progression_ids[br["id"]], limit=action_message_budget
+                db,
+                progression_ids[br["id"]],
+                limit=action_message_budget,
+                budget=content_budget,
             )
             action_message_budget -= len(fetched)
             action_messages_bounded = action_messages_bounded or branch_bounded
@@ -919,22 +1016,7 @@ async def get_session(
             branch_id = br["id"]
             full_msg_ids = progression_ids[branch_id]
             message_total = len(full_msg_ids)
-
-            # Window from the tail: offset/cursor 0 = the newest page,
-            # each page further back prepends older history.
-            window_ids, has_older, next_anchor = _window_message_ids(
-                full_msg_ids,
-                branch_id=branch_id,
-                limit=message_limit,
-                cursor_anchors=cursor_anchors,
-                legacy_offset=message_offset if cursor_anchors is None else 0,
-            )
-            if next_anchor:
-                next_branch_anchors[branch_id] = next_anchor
-
-            window_messages = await _fetch_messages_by_ids(db, window_ids)
-            by_id = {m["id"]: m for m in window_messages}
-            messages = [by_id[mid] for mid in window_ids if mid in by_id]
+            messages, has_older = window_by_branch[branch_id]
 
             role_counts = await _fetch_role_counts(db, full_msg_ids)
             first_message_at, last_message_at = await _fetch_message_bounds(db, full_msg_ids)
@@ -1091,7 +1173,14 @@ async def get_session_by_cc_id(cc_uid: str) -> dict[str, Any] | None:
 async def get_session_messages_after(session_id: str, after_ts: float) -> list[dict[str, Any]]:
     """Poll-friendly tail read for the SSE stream/signals endpoints. Joins via
     json_each rather than binding every message id into an IN (...) clause,
-    which would blow past SQLite's 999 bound-variable limit at scale."""
+    which would blow past SQLite's 999 bound-variable limit at scale.
+
+    Bounded like the rest of a session read, and with less to lose by it: the
+    caller advances its cursor from the timestamps it was handed, so whatever
+    this stops short of arrives on the next poll half a second later. What it
+    prevents is a first poll on a long finished run, where `after_ts` is zero
+    and everything the session ever recorded matches at once.
+    """
     if not store_exists():
         return []
 
@@ -1117,13 +1206,30 @@ async def get_session_messages_after(session_id: str, after_ts: float) -> list[d
                 after_ts,
             ),
         )
-        rows = await cur.fetchall()
 
-    result = []
-    for row in rows:
-        msg = _format_message(row)
-        msg["branch_id"] = row["branch_id"]
-        result.append(msg)
+        budget = _HydrationBudget()
+        result: list[dict[str, Any]] = []
+        # Iterated rather than fetchall'd: a budget can only bound what has not
+        # been read yet.
+        async for row in cur:
+            if result and not budget.admits(int(row["content_length"] or 0)):
+                # Stop on a timestamp boundary. The caller resumes with
+                # `created_at > <newest timestamp it got>`, so cutting inside a
+                # group of rows that share one timestamp would skip the rest of
+                # that group permanently rather than deferring it. Rows already
+                # collected at the refused timestamp go back.
+                cut = row["created_at"]
+                while result and result[-1]["timestamp"] == cut:
+                    result.pop()
+                if result:
+                    break
+                # Everything read so far shares the refused timestamp, so there
+                # is no boundary to cut on yet. Take the row and overspend: a
+                # poll that returns nothing leaves the cursor where it was and
+                # the next one reads the same rows again, forever.
+            msg = _format_message(row)
+            msg["branch_id"] = row["branch_id"]
+            result.append(msg)
     return result
 
 

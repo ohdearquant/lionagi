@@ -1477,6 +1477,10 @@ function ToolCallBlock({
   const status = message.status || "ok";
   const exitCode = message.exit_code;
   const isError = status === "error";
+  // The result payload was past the server's per-row ceiling and never
+  // decoded, so nothing here knows whether the call succeeded. Neither badge
+  // is honest, so it gets its own.
+  const isWithheld = status === "withheld";
   // Collapsed-row fallback: an empty summary with non-empty output shows the
   // output's first non-blank line instead of a bare "(no args)" — that line
   // is usually more informative than a static placeholder.
@@ -1485,6 +1489,10 @@ function ToolCallBlock({
   const statusBadge = isError ? (
     <span className="rounded border border-status-error/30 bg-status-error-bg px-1.5 py-0.5 text-[length:var(--t-xs)] font-medium text-status-error">
       {exitCode != null ? `exit ${exitCode}` : "ERR"}
+    </span>
+  ) : isWithheld ? (
+    <span className="rounded border border-edge bg-surface-overlay px-1.5 py-0.5 text-[length:var(--t-xs)] font-medium text-content-muted">
+      {t("outputWithheld")}
     </span>
   ) : (
     <span className="inline-flex items-center rounded border border-status-success/30 bg-status-success-bg px-1.5 py-1 text-[length:var(--t-xs)] font-medium text-status-success">
