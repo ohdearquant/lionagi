@@ -454,3 +454,97 @@ def test_playbook_fingerprint_reports_the_resolved_path(playbook_dir) -> None:
     fingerprint, resolved = playbook_fingerprint("probe")
     assert Path(resolved) == book
     assert len(fingerprint.removeprefix("sha256:")) == 32
+
+
+# ── flag spellings become parameter names ────────────────────────────────────
+#
+# Help text is written for someone typing a command. A caller of this schema
+# sends an object, so a sentence pointing at `--resume` names something they
+# cannot send, and the parameter it means is `resume`.
+
+
+def _named_parser(help_text: str, *, extra_flags: tuple[str, ...] = ()) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="probe", description="probe")
+    parser.add_argument("--subject", help=help_text)
+    parser.add_argument("-r", "--resume", help="resume something")
+    parser.add_argument("--context-from", dest="context_from", help="context")
+    for flag in extra_flags:
+        parser.add_argument(flag, help="other")
+    return parser
+
+
+def _subject_description(help_text: str, **kwargs) -> str:
+    schema = project_parser(_named_parser(help_text, **kwargs), path="probe")
+    return schema["properties"]["subject"]["description"]
+
+
+def test_a_flag_the_parser_accepts_is_named_as_its_parameter() -> None:
+    assert _subject_description("Rejected together with --resume.") == (
+        "Rejected together with `resume`."
+    )
+
+
+def test_a_dest_that_differs_from_the_flag_uses_the_dest() -> None:
+    """The caller sends the property name, which argparse spells with underscores."""
+    assert _subject_description("Shares a budget with --context-from.") == (
+        "Shares a budget with `context_from`."
+    )
+
+
+def test_alternative_spellings_of_one_flag_collapse_to_one_name() -> None:
+    """`-r / --resume` is one parameter, so repeating the name would misdescribe it."""
+    assert _subject_description("Set by -r / --resume.") == "Set by `resume`."
+
+
+def test_a_flag_this_parser_does_not_accept_is_left_exactly_as_written() -> None:
+    """Help text quotes argv for other programs, and that argv is meant literally.
+
+    A scheduled command's own arguments are the live case: `--pr` in an example
+    of what to run belongs to that command, not to this one, so guessing a
+    parameter name for it would invent one that does not exist.
+    """
+    text = 'Rendered argv, such as ["review-pr", "--pr", "{{pr_number}}"].'
+    assert _subject_description(text) == text
+
+
+def test_a_worked_example_keeps_its_flags() -> None:
+    """An example is read as typed; a renamed flag makes it a command that fails."""
+    text = "Filter by status; repeatable (e.g. --resume a --resume b)."
+    assert _subject_description(text) == text
+
+
+def test_a_literal_invocation_keeps_its_flags() -> None:
+    text = "Stop a run:\n  li kill abc123 --resume\n"
+    assert _subject_description(text) == text
+
+
+def test_a_flag_inside_a_quoted_command_is_left_alone() -> None:
+    """Renaming inside backticks both breaks the command and nests the quoting."""
+    text = "Resolved the same way `li agent --resume` resolves it."
+    assert _subject_description(text) == text
+
+
+def test_renaming_still_happens_outside_a_quoted_command() -> None:
+    """Control: quoting protects its own span, not the whole sentence.
+
+    Without this, the span rule could be silently disabling the feature for any
+    description that quotes anything at all.
+    """
+    assert _subject_description("See `li agent --help`, then set --resume.") == (
+        "See `li agent --help`, then set `resume`."
+    )
+
+
+def test_the_command_description_is_named_too() -> None:
+    parser = _named_parser("plain")
+    parser.description = "Use --resume to continue."
+    schema = project_parser(parser, path="probe")
+    assert schema["description"] == "Use `resume` to continue."
+
+
+def test_the_real_agent_schema_no_longer_points_at_flags_it_cannot_take() -> None:
+    """The projection over the real CLI, not a probe parser."""
+    schema = project_parser(build_parser_for("agent"), path="agent")
+    query = schema["properties"]["query"]["description"]
+    assert "--resume" not in query and "--prompt-file" not in query
+    assert "`resume`" in query and "`prompt_file`" in query

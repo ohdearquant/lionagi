@@ -46,7 +46,7 @@
         "x-flag": "--max-concurrent"
       },
       "mcp_config": {
-        "description": "Read this MCP config and hand its servers to every worker this run builds. By default the nearest .mcp.json at or above the directory this command was run in is used, so the workers' tools come from the submission rather than from --cwd. The file is read once, at startup.",
+        "description": "Read this MCP config and hand its servers to every worker this run builds. By default the nearest .mcp.json at or above the directory this command was run in is used, so the workers' tools come from the submission rather than from `cwd`. The file is read once, at startup.",
         "type": "string",
         "x-flag": "--mcp-config"
       },
@@ -63,7 +63,7 @@
       },
       "num_workers": {
         "default": 3,
-        "description": "Maximum assignments the orchestrator generates (default 3). It may generate fewer if the task does not divide that far, and --workers specs beyond this cap go unused.",
+        "description": "Maximum assignments the orchestrator generates (default 3). It may generate fewer if the task does not divide that far, and `workers` specs beyond this cap go unused.",
         "type": "integer",
         "x-aliases": [
           "-n"
@@ -81,7 +81,7 @@
         "x-flag": "--output"
       },
       "pack": {
-        "description": "Path to a YAML routing pack. Provides per-role model/effort when --workers is absent. --workers overrides pack routing.",
+        "description": "Path to a YAML routing pack. Provides per-role model/effort when `workers` is absent. `workers` overrides pack routing.",
         "type": "string",
         "x-flag": "--pack"
       },
@@ -91,7 +91,7 @@
         "x-flag": "--project"
       },
       "query": {
-        "description": "Orchestrator model spec (provider/model-effort) followed by the task prompt. Model is also used as the default worker model unless --workers is set; omit it when -a/--agent provides one. A single positional is treated as the prompt.",
+        "description": "Orchestrator model spec (provider/model-effort) followed by the task prompt. Model is also used as the default worker model unless `workers` is set; omit it when `agent` provides one. A single positional is treated as the prompt.",
         "items": {
           "type": "string"
         },

@@ -21,7 +21,7 @@
         "x-flag": "--limit"
       },
       "status": {
-        "description": "Filter by run status; repeatable (e.g. --status failed --status timed_out).",
+        "description": "Filter by run status; repeatable.",
         "items": {
           "type": "string"
         },

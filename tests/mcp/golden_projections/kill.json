@@ -6,7 +6,7 @@
     "properties": {
       "all_stale": {
         "default": false,
-        "description": "Sweep stale sessions and invocations with dead PIDs older than --threshold. A play older than --threshold whose recorded worker session has gone terminal is marked 'blocked'; a play that records no worker session is left running, because age alone cannot tell it apart from one still working. A show is marked 'aborted' only once it is older than --threshold and ALL of its plays are terminal.",
+        "description": "Sweep stale sessions and invocations with dead PIDs older than `threshold`. A play older than `threshold` whose recorded worker session has gone terminal is marked 'blocked'; a play that records no worker session is left running, because age alone cannot tell it apart from one still working. A show is marked 'aborted' only once it is older than `threshold` and ALL of its plays are terminal.",
         "type": "boolean",
         "x-flag": "--all-stale"
       },

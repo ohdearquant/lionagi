@@ -14,13 +14,13 @@
       },
       "allow_degraded_context": {
         "default": false,
-        "description": "With --resume: proceed even when a pending op declared inherit_context \u2014 it runs against an empty branch instead of its predecessor's conversation history, which resume does not restore. Without this flag such ops refuse loudly, naming them.",
+        "description": "With `resume`: proceed even when a pending op declared inherit_context \u2014 it runs against an empty branch instead of its predecessor's conversation history, which resume does not restore. Without this flag such ops refuse loudly, naming them.",
         "type": "boolean",
         "x-flag": "--allow-degraded-context"
       },
       "background": {
         "default": false,
-        "description": "Run flow in background. Requires --save. Check output in save dir.",
+        "description": "Run flow in background. Requires `save`. Check output in save dir.",
         "type": "boolean",
         "x-flag": "--background"
       },
@@ -87,7 +87,7 @@
         "x-flag": "--max-ops"
       },
       "mcp_config": {
-        "description": "Read this MCP config and hand its servers to every worker this run builds. By default the nearest .mcp.json at or above the directory this command was run in is used, so the workers' tools come from the submission rather than from --cwd. The file is read once, at startup.",
+        "description": "Read this MCP config and hand its servers to every worker this run builds. By default the nearest .mcp.json at or above the directory this command was run in is used, so the workers' tools come from the submission rather than from `cwd`. The file is read once, at startup.",
         "type": "string",
         "x-flag": "--mcp-config"
       },
@@ -113,7 +113,7 @@
         "x-flag": "--output"
       },
       "pack": {
-        "description": "Path to a YAML routing pack. Provides per-role model/effort when --workers is absent. --workers overrides pack routing.",
+        "description": "Path to a YAML routing pack. Provides per-role model/effort when `workers` is absent. `workers` overrides pack routing.",
         "type": "string",
         "x-flag": "--pack"
       },
@@ -131,7 +131,7 @@
         "x-flag": "--project"
       },
       "query": {
-        "description": "Orchestrator model spec followed by the task prompt. Model is optional when -a/--agent provides one; a single positional is treated as the prompt. The prompt itself may instead come from -f/--file or -p/--playbook.",
+        "description": "Orchestrator model spec followed by the task prompt. Model is optional when `agent` provides one; a single positional is treated as the prompt. The prompt itself may instead come from `file` or `playbook`.",
         "items": {
           "type": "string"
         },
@@ -155,18 +155,18 @@
         "x-flag": "--resume-on-timeout"
       },
       "save": {
-        "description": "Directory to write each agent's output and the run's artifacts into. Required by --background, which has nowhere else to report.",
+        "description": "Directory to write each agent's output and the run's artifacts into. Required by `background`, which has nowhere else to report.",
         "type": "string",
         "x-flag": "--save"
       },
       "show_graph": {
         "default": false,
-        "description": "Render DAG as matplotlib visualization. With --save, saves PNG to save dir.",
+        "description": "Render DAG as matplotlib visualization. With `save`, saves PNG to save dir.",
         "type": "boolean",
         "x-flag": "--show-graph"
       },
       "team_attach": {
-        "description": "Attach to a team by NAME \u2014 upsert semantics: load existing team if found (preserving message history), else create fresh. Mutually exclusive with --team-mode.",
+        "description": "Attach to a team by NAME \u2014 upsert semantics: load existing team if found (preserving message history), else create fresh. Mutually exclusive with `team_mode`.",
         "type": "string",
         "x-flag": "--team-attach"
       },
@@ -227,7 +227,7 @@
         "x-flag": "--with-synthesis"
       },
       "workers": {
-        "description": "Comma-separated worker model specs (assignment i uses pool[i % len]). Overrides the per-role model while KEEPING each role's profile/system prompt \u2014 unlike --bare, which also drops profiles. Enables mixed-model flows (cheap roles + expensive roles).",
+        "description": "Comma-separated worker model specs (assignment i uses pool[i % len]). Overrides the per-role model while KEEPING each role's profile/system prompt \u2014 unlike `bare`, which also drops profiles. Enables mixed-model flows (cheap roles + expensive roles).",
         "type": "string",
         "x-flag": "--workers"
       },

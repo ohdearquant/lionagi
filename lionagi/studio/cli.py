@@ -2171,8 +2171,8 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
             "INHERITED from this schedule, including on_success/on_fail "
             "themselves. A 2-level chain must set the inner level's own "
             '"on_success": null explicitly, or the chain keeps re-firing at '
-            "each depth (capped, but rarely what you want). Example: "
-            '--on-success \'{"prompt": "notify done", "on_success": null}\'.'
+            "each depth (capped, but rarely what you want). Example value: "
+            '{"prompt": "notify done", "on_success": null}'
         ),
     )
     create_p.add_argument(
@@ -2182,8 +2182,8 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         help=(
             "Chain action to fire when this run exits non-zero, as a JSON "
             "object (same allowed keys and shallow-merge caveat as "
-            "--on-success — see above). Example: --on-fail "
-            '\'{"prompt": "alert on-call", "on_fail": null}\'.'
+            "--on-success — see above). Example value: "
+            '{"prompt": "alert on-call", "on_fail": null}'
         ),
     )
 
@@ -2322,7 +2322,7 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         "--status",
         action="append",
         metavar="STATUS",
-        help="Filter by run status; repeatable (e.g. --status failed --status timed_out).",
+        help="Filter by run status; repeatable.",
     )
     runs_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
 

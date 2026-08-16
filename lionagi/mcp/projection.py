@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
@@ -350,6 +351,83 @@ def _mutually_exclusive(parser: argparse.ArgumentParser) -> list[dict[str, Any]]
     return groups
 
 
+# A run of flag spellings offered as alternatives, e.g. ``-r / --resume``.
+_FLAG_ALTERNATIVES = re.compile(r"--?[A-Za-z][\w-]*(?:\s*/\s*--?[A-Za-z][\w-]*)*")
+
+# Help text that DEMONSTRATES a command rather than referring to one: a literal
+# invocation, or a worked example. Those are meant to be read as typed, so the
+# flags in them are the point and renaming them produces a line that does not run.
+_DEMONSTRATES = re.compile(r"(?:^|\s)li\s+[a-z]|\be\.g\.|\bExample\b", re.IGNORECASE)
+
+
+def _flag_properties(parser: argparse.ArgumentParser) -> dict[str, str]:
+    """Every flag spelling *parser* accepts, mapped to the property it becomes."""
+    out: dict[str, str] = {}
+    for action in parser._actions:
+        if isinstance(action, _META_ACTIONS) or action.dest == argparse.SUPPRESS:
+            continue
+        for option in action.option_strings:
+            out[option] = action.dest
+    return out
+
+
+def _name_parameters(text: str, flags: dict[str, str]) -> str:
+    """Rewrite flag spellings in help text as the parameters they project to.
+
+    Help text is written for someone typing a command, so it names flags. A
+    caller of this schema sends an object and can never type one, and a
+    parameter it cannot find is worse than a longer sentence would have been.
+
+    Only spellings *this* parser accepts are rewritten. Help text quotes argv
+    for other programs -- a scheduled command's own arguments, for one -- and
+    those are still meant literally, so an unrecognised flag is left exactly as
+    written rather than guessed at.
+
+    Text that demonstrates a command is left whole for the same reason. A worked
+    example or a literal ``li ...`` line is meant to be read as typed, and a
+    renamed flag inside one produces a command that does not run while still
+    looking like it would. Referring to a flag and showing one being used are
+    different acts, and only the first has a parameter to name.
+    """
+    if _DEMONSTRATES.search(text):
+        return text
+
+    def replace(match: re.Match[str]) -> str:
+        spellings = [part.strip() for part in match.group(0).split("/")]
+        named = [flags[s] for s in spellings if s in flags]
+        if not named:
+            return match.group(0)
+        # Alternative spellings of one flag are one parameter, so the run
+        # collapses rather than repeating the same name several times.
+        seen = list(dict.fromkeys(named))
+        return " / ".join(f"`{name}`" for name in seen)
+
+    # Backtick-quoted spans are already literal -- typically a whole command,
+    # like `li agent --agent`. Renaming a flag inside one both breaks the
+    # command and nests the quoting, so only the text between spans is touched.
+    parts = text.split("`")
+    for index in range(0, len(parts), 2):
+        parts[index] = _FLAG_ALTERNATIVES.sub(replace, parts[index])
+    return "`".join(parts)
+
+
+def _rewrite_descriptions(node: Any, flags: dict[str, str]) -> None:
+    """Rename flags to parameters in every description under *node*, in place.
+
+    A JSON-valued argument projects to a nested schema whose own fields carry
+    help text too, so this recurses rather than touching only the top level.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "description" and isinstance(value, str):
+                node[key] = _name_parameters(value, flags)
+            else:
+                _rewrite_descriptions(value, flags)
+    elif isinstance(node, list):
+        for item in node:
+            _rewrite_descriptions(item, flags)
+
+
 def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, Any]:
     """Translate one fully-resolved parser into a JSON Schema object."""
     nested = _subparser_actions(parser)
@@ -366,12 +444,15 @@ def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, A
     unenforced: list[str] = []
     positionals: list[str] = []
 
+    flags = _flag_properties(parser)
+
     for action in parser._actions:
         if isinstance(action, _META_ACTIONS):
             continue
         if action.dest == argparse.SUPPRESS:
             continue
         properties[action.dest] = _project_action(path, parser, action)
+        _rewrite_descriptions(properties[action.dest], flags)
         if _accepts_no_values(action):
             unenforced.append(action.dest)
         elif action.required:
@@ -386,7 +467,7 @@ def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, A
         "additionalProperties": False,
     }
     if parser.description:
-        schema["description"] = parser.description.strip()
+        schema["description"] = _name_parameters(parser.description.strip(), flags)
     if required:
         schema["required"] = required
     if unenforced:
