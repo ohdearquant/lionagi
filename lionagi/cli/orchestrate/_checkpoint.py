@@ -247,11 +247,11 @@ class CheckpointWriter:
         if not self._base_ready:
             await self._write_v3_base_locked()
         elif self._journal_reset_required:
-            written = await _durable_to_thread(_atomic_write_bytes, self.journal_path, b"")
-            self._bytes_written += written
-            self._journal_identity = await _durable_to_thread(
-                _read_inode_identity, self.journal_path
+            written, identity = await _durable_to_thread(
+                _atomic_write_bytes, self.journal_path, b""
             )
+            self._bytes_written += written
+            self._journal_identity = identity
             self._journal_reset_required = False
 
     async def _append_delta_locked(self, delta: dict[str, Any], apply_state: Any = None) -> None:
@@ -346,9 +346,9 @@ class CheckpointWriter:
         self._delta_count = 0
         self._base_ready = True
         self._journal_reset_required = True
-        written = await _durable_to_thread(_atomic_write_bytes, self.journal_path, b"")
+        written, identity = await _durable_to_thread(_atomic_write_bytes, self.journal_path, b"")
         self._bytes_written += written
-        self._journal_identity = await _durable_to_thread(_read_inode_identity, self.journal_path)
+        self._journal_identity = identity
         self._journal_reset_required = False
 
 
@@ -450,20 +450,14 @@ def _refuse_replaced_inode(descriptor: int, path: Path, expected: tuple[int, int
     replaces it again, so between those points the file at that name should not
     change. If it has, records carrying raw responses and the shared flow
     context are about to go somewhere other than where the last one went.
+
+    `expected` is taken from the descriptor the replacing write held, never
+    from a later read of the name, so there is no moment at which a substitute
+    could become the file this compares against.
     """
     info = os.fstat(descriptor)
     if (info.st_dev, info.st_ino) != expected:
         raise JournalPathError(f"refusing a journal that was replaced after it was created: {path}")
-
-
-def _read_inode_identity(path: Path) -> tuple[int, int]:
-    """Device and inode of `path`, read through the same refusals a write takes."""
-    descriptor = _open_no_follow(path, os.O_RDONLY)
-    try:
-        info = os.fstat(descriptor)
-    finally:
-        os.close(descriptor)
-    return (info.st_dev, info.st_ino)
 
 
 def _open_no_follow(path: Path, flags: int, mode: int = _PRIVATE_MODE) -> int:
@@ -545,7 +539,13 @@ def _open_private_new(path: Path) -> int:
     return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _PRIVATE_MODE)
 
 
-def _write_private_bytes(path: Path, payload: bytes) -> None:
+def _write_private_bytes(path: Path, payload: bytes) -> tuple[int, int]:
+    """Write `payload` into a file this call created, and say which file it is.
+
+    The device and inode come off the descriptor rather than the name. Nobody
+    else can have substituted the file this returns, because the descriptor was
+    never reopened.
+    """
     descriptor = _open_private_new(path)
     try:
         stream = os.fdopen(descriptor, "wb")
@@ -556,13 +556,23 @@ def _write_private_bytes(path: Path, payload: bytes) -> None:
         stream.write(payload)
         stream.flush()
         os.fsync(stream.fileno())
+        info = os.fstat(stream.fileno())
+    return (info.st_dev, info.st_ino)
 
 
-def _atomic_write_bytes(path: Path, payload: bytes) -> int:
+def _atomic_write_bytes(path: Path, payload: bytes) -> tuple[int, tuple[int, int]]:
+    """Replace `path` with `payload`, reporting the bytes and the resulting file.
+
+    A rename moves a directory entry onto an existing inode, so the identity
+    taken from the temporary file before the replace is the identity `path`
+    has after it. Reading it back by name instead would leave a window between
+    the replace and the read where someone can put a different file there and
+    have it be the one that gets pinned.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        _write_private_bytes(tmp, payload)
+        identity = _write_private_bytes(tmp, payload)
         os.replace(tmp, path)
         _fsync_parent(path)
     finally:
@@ -570,11 +580,12 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> int:
             tmp.unlink()
         except FileNotFoundError:
             pass
-    return len(payload)
+    return len(payload), identity
 
 
 def _atomic_write_json(path: Path, value: Any) -> int:
-    return _atomic_write_bytes(path, _serialize_json(value))
+    written, _ = _atomic_write_bytes(path, _serialize_json(value))
+    return written
 
 
 class _RecordReachedFileError(Exception):

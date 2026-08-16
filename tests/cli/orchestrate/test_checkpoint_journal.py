@@ -986,6 +986,45 @@ async def test_a_journal_this_writer_created_keeps_taking_records(tmp_path: Path
     assert list(recovered["ops"]) == [f"agent-{i}" for i in range(6)]
 
 
+async def test_a_journal_substituted_between_its_replace_and_its_pin_is_refused(
+    tmp_path: Path, monkeypatch
+):
+    """The moment the pin has to be taken before, not after.
+
+    Replacing the journal and then reading its identity back by name leaves a
+    window: whatever is at that name when the read happens becomes the file
+    every later record is measured against, and records carry raw responses and
+    the shared flow context.
+    """
+    from lionagi.cli.orchestrate import _checkpoint as checkpoint_mod
+
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    planted_inode: list[int] = []
+    real_fsync_parent = checkpoint_mod._fsync_parent
+
+    def plant_a_substitute_after_the_replace(target: Path) -> None:
+        # Runs after os.replace and before the atomic write returns, which is
+        # exactly the window a pin read back by name would fall into.
+        real_fsync_parent(target)
+        if target == writer.journal_path and not planted_inode:
+            planted = tmp_path / "planted"
+            planted.write_bytes(b"")
+            planted.chmod(0o600)
+            os.replace(planted, target)
+            planted_inode.append(target.stat().st_ino)
+
+    monkeypatch.setattr(checkpoint_mod, "_fsync_parent", plant_a_substitute_after_the_replace)
+
+    with pytest.raises(JournalPathError):
+        await writer.record("agent-1", status="completed", response="one")
+
+    assert planted_inode, "nothing was substituted, so this asserts nothing"
+    journal = writer.journal_path
+    assert journal.stat().st_ino == planted_inode[0]
+    assert journal.read_bytes() == b""
+
+
 async def test_a_journal_reset_deferred_by_a_failure_is_pinned_when_it_finally_happens(
     tmp_path: Path, monkeypatch
 ):
@@ -1000,7 +1039,7 @@ async def test_a_journal_reset_deferred_by_a_failure_is_pinned_when_it_finally_h
     real = checkpoint_mod._atomic_write_bytes
     resets: list[int] = []
 
-    def fail_the_compaction_reset(target: Path, payload: bytes) -> int:
+    def fail_the_compaction_reset(target: Path, payload: bytes) -> tuple[int, tuple[int, int]]:
         if target == writer.journal_path:
             resets.append(1)
             if len(resets) == 2:
