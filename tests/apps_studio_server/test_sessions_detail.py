@@ -1860,11 +1860,14 @@ async def test_the_tail_read_is_bounded_and_defers_the_rest_to_the_next_poll(
     first = await svc.get_session_messages_after("sess-tail-budget", 0.0)
     assert 0 < len(first) < 8, len(first)
 
-    # Poll the way the SSE generator does, advancing the cursor to the newest
-    # timestamp it was handed, until the tail runs dry.
+    # Poll the way the SSE generator does, advancing the cursor to the last row
+    # it was handed, until the tail runs dry.
     seen = list(first)
     for _ in range(20):
-        more = await svc.get_session_messages_after("sess-tail-budget", seen[-1]["timestamp"])
+        last = seen[-1]
+        more = await svc.get_session_messages_after(
+            "sess-tail-budget", last["timestamp"], last["id"], last["branch_id"]
+        )
         if not more:
             break
         seen.extend(more)
@@ -2003,7 +2006,10 @@ async def test_the_tail_read_stops_on_the_row_allowance_too(patched_sessions_db,
 
     seen = list(first)
     for _ in range(20):
-        more = await svc.get_session_messages_after("sess-tail-rows", seen[-1]["timestamp"])
+        last = seen[-1]
+        more = await svc.get_session_messages_after(
+            "sess-tail-rows", last["timestamp"], last["id"], last["branch_id"]
+        )
         if not more:
             break
         seen.extend(more)
@@ -2119,15 +2125,17 @@ async def test_the_tail_read_charges_its_first_row_like_every_other(
     assert [m["id"] for m in result] == ["t-0"]
 
 
-async def test_the_tail_read_hands_over_a_whole_tied_group_or_none_of_it(
+async def test_a_group_sharing_one_timestamp_is_split_and_resumed_without_loss(
     patched_sessions_db, monkeypatch
 ):
-    """Rows sharing one timestamp are indivisible for this reader.
+    """A tie is not indivisible, because the cursor names a row and not a time.
 
-    The caller resumes at `created_at > <newest timestamp it got>`, so a poll
-    that returns part of a group moves the cursor past the rest of it and
-    nothing ever hands those rows over. When the group does not fit, the choice
-    is all of it or nothing, and nothing means the cursor never moves.
+    This is the case that decides whether the bound is a bound. Rows sharing a
+    timestamp can arrive in any number -- branch fan-out puts many at one
+    instant -- and a reader that can only stop at a group's edge has to take
+    the whole group whatever its size, which is the same as having no bound at
+    all on that path. Cutting mid-group is safe here only because the cursor
+    carries the whole sort key, so the resume lands on the very next row.
     """
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 1)
@@ -2150,10 +2158,23 @@ async def test_the_tail_read_hands_over_a_whole_tied_group_or_none_of_it(
 
     first = await svc.get_session_messages_after("sess-tail-tied", 0.0)
 
-    assert sorted(m["id"] for m in first) == ["tie-0", "tie-1", "tie-2"]
-    # And the row after the group is deferred rather than lost.
-    later = await svc.get_session_messages_after("sess-tail-tied", first[-1]["timestamp"])
-    assert [m["id"] for m in later] == ["later"]
+    # One row over the allowance is the entire overspend, even though three
+    # rows share the timestamp it stopped inside of.
+    assert [m["id"] for m in first] == ["tie-0"]
+
+    seen = list(first)
+    for _ in range(10):
+        last = seen[-1]
+        more = await svc.get_session_messages_after(
+            "sess-tail-tied", last["timestamp"], last["id"], last["branch_id"]
+        )
+        if not more:
+            break
+        seen.extend(more)
+
+    # The rest of the tie is deferred rather than lost, and nothing is handed
+    # over twice.
+    assert [m["id"] for m in seen] == ["tie-0", "tie-1", "tie-2", "later"]
 
 
 async def test_a_short_hydration_keeps_the_newest_of_what_was_asked_for(

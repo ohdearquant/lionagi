@@ -1330,19 +1330,51 @@ async def get_session_by_cc_id(cc_uid: str) -> dict[str, Any] | None:
     return await get_session(row["id"] if row else session_db_id(cc_uid))
 
 
-async def get_session_messages_after(session_id: str, after_ts: float) -> list[dict[str, Any]]:
+async def get_session_messages_after(
+    session_id: str,
+    after_ts: float,
+    after_id: str | None = None,
+    after_branch: str | None = None,
+) -> list[dict[str, Any]]:
     """Poll-friendly tail read for the SSE stream/signals endpoints. Joins via
     json_each rather than binding every message id into an IN (...) clause,
     which would blow past SQLite's 999 bound-variable limit at scale.
 
     Bounded like the rest of a session read, and with less to lose by it: the
-    caller advances its cursor from the timestamps it was handed, so whatever
-    this stops short of arrives on the next poll half a second later. What it
-    prevents is a first poll on a long finished run, where `after_ts` is zero
+    caller advances its cursor from the rows it was handed, so whatever this
+    stops short of arrives on the next poll half a second later. What it
+    prevents is a first poll on a long finished run, where the cursor is empty
     and everything the session ever recorded matches at once.
+
+    The cursor is the whole sort key, not just the timestamp. A timestamp alone
+    cannot name a position inside a group of rows that share one, so a read
+    cursored on it can only stop at a group's edge -- which means a single
+    group larger than the budget has to be taken whole, and the work of taking
+    it is bounded by nothing. Ordering by ``(created_at, id, branch_id)`` and
+    resuming from all three lets this stop at any row and pick up at the next
+    one, so the budget bounds every call and no row is skipped to do it.
+
+    ``after_id`` and ``after_branch`` are optional so a caller that only has a
+    timestamp still gets the old exclusive-on-timestamp read. That is the right
+    reading of a bare timestamp: it is the cursor a previous version handed
+    out, and rows at exactly that timestamp were all delivered under it.
     """
     if not store_exists():
         return []
+
+    # A bare timestamp keeps the old exclusive read; a full cursor resumes at
+    # the row after the one it names, which is what lets a group sharing one
+    # timestamp be cut in the middle.
+    if after_id is None or after_branch is None:
+        cursor_sql = "m.created_at > ?"
+        cursor_params: tuple[Any, ...] = (after_ts,)
+    else:
+        cursor_sql = (
+            "(m.created_at > ?"
+            " OR (m.created_at = ? AND m.id > ?)"
+            " OR (m.created_at = ? AND m.id = ? AND b.id > ?))"
+        )
+        cursor_params = (after_ts, after_ts, after_id, after_ts, after_id, after_branch)
 
     async with _open_db(store_path()) as db:
         cur = await db.execute(
@@ -1355,15 +1387,15 @@ async def get_session_messages_after(session_id: str, after_ts: float) -> list[d
             JOIN json_each(p.collection) je ON 1=1
             JOIN messages m ON m.id = je.value
             LEFT JOIN message_types mt ON m.lion_class = mt.type_id
-            WHERE b.session_id = ? AND m.created_at > ?
-            ORDER BY m.created_at
+            WHERE b.session_id = ? AND {cursor_sql}
+            ORDER BY m.created_at, m.id, b.id
             """,  # noqa: S608
             (
                 MAX_ACTION_CONTENT_CHARS,
                 MAX_ACTION_CONTENT_CHARS,
                 MAX_ACTION_CONTENT_CHARS,
                 session_id,
-                after_ts,
+                *cursor_params,
             ),
         )
 
@@ -1371,41 +1403,28 @@ async def get_session_messages_after(session_id: str, after_ts: float) -> list[d
         result: list[dict[str, Any]] = []
         # Iterated rather than fetchall'd: a budget can only bound what has not
         # been read yet.
-        overspent_group: Any = None
         async for row in cur:
-            timestamp = row["created_at"]
             # Charged on every row including the first. Whether a row is taken
             # is a separate question from whether it was paid for, and reading
             # the two off one expression let the first row through for free.
             admitted = budget.admits(int(row["content_length"] or 0))
-            if overspent_group is not None:
-                # Committed to finishing one timestamp group and stopping at
-                # its edge. `admits` can start saying yes again here -- a later
-                # row may be small enough for what is left -- and taking it
-                # would extend a read that has already declared itself over.
-                if timestamp != overspent_group:
+            if not admitted:
+                # Stop wherever the budget runs out. The sort key is the whole
+                # cursor, so the caller resumes at exactly the next row and
+                # nothing is skipped by cutting here -- including inside a run
+                # of rows that share a timestamp, which is the case that used
+                # to force taking the entire run however large it was.
+                if result:
                     break
-            elif not admitted:
-                if result and result[0]["timestamp"] != timestamp:
-                    # Stop on a timestamp boundary. The caller resumes with
-                    # `created_at > <newest timestamp it got>`, so cutting
-                    # inside a group of rows that share one timestamp would skip
-                    # the rest of that group permanently rather than deferring
-                    # it. Rows already collected at the refused timestamp go
-                    # back; the earlier ones are what makes this a boundary.
-                    while result and result[-1]["timestamp"] == timestamp:
-                        result.pop()
-                    break
-                # Everything read so far shares the refused timestamp, so there
-                # is no boundary to cut on yet. Take the whole group and
-                # overspend. Returning none of it leaves the cursor where it
-                # was and the next poll reads the same rows again, forever;
-                # returning part of it is worse, because the cursor moves past
-                # a timestamp whose remaining rows were never handed over.
-                overspent_group = timestamp
+                # Nothing has been taken yet, so stopping now would return an
+                # empty page with the cursor unmoved and the next poll would
+                # read the same row again, forever. One row over is the whole
+                # overspend, and it is what makes the stream advance.
             msg = _format_message(row)
             msg["branch_id"] = row["branch_id"]
             result.append(msg)
+            if not admitted:
+                break
     return result
 
 
@@ -1523,17 +1542,27 @@ async def stream_session_route(session_id: str):
 
     async def generate():
         after_ts: float = 0.0
+        after_id: str | None = None
+        after_branch: str | None = None
         last_heartbeat = time.monotonic()
 
         while True:
-            messages = await get_session_messages_after(session_id, after_ts)
+            messages = await get_session_messages_after(
+                session_id, after_ts, after_id, after_branch
+            )
 
             if messages:
                 for msg in messages:
                     yield f"data: {json.dumps(msg)}\n\n"
-                    ts = msg.get("timestamp") or msg.get("created_at")
-                    if ts and ts > after_ts:
-                        after_ts = ts
+                # The read hands rows back in cursor order, so the last one is
+                # the position to resume from. Taking the newest timestamp
+                # instead would name a whole group rather than a row, and a
+                # group is exactly what the cursor has to be able to point
+                # inside of.
+                last = messages[-1]
+                after_ts = last.get("timestamp") or last.get("created_at") or after_ts
+                after_id = last.get("id")
+                after_branch = last.get("branch_id")
                 last_heartbeat = time.monotonic()
             elif time.monotonic() - last_heartbeat >= 5.0:
                 yield 'data: {"type":"heartbeat"}\n\n'
