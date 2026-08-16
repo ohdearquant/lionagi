@@ -1,7 +1,7 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Server-owned Run Detail file summaries (GitHub #3128)."""
+"""Server-owned Run Detail file summaries."""
 
 from __future__ import annotations
 
@@ -101,6 +101,7 @@ def test_run_files_deduplicates_normalized_paths_and_merges_reliable_access() ->
         "shown": 4,
         "truncated": False,
         "redacted_count": 0,
+        "bounded": False,
     }
 
 
@@ -162,6 +163,72 @@ def test_run_files_hard_caps_thousands_to_a_recent_window() -> None:
     assert summary["truncated"] is True
     assert summary["items"][0]["path"] == "src/file-2499.py"
     assert summary["items"][-1]["path"] == "src/file-2400.py"
+    # 2500 requests fit inside the scan budget, so nothing here is a floor.
+    assert summary["bounded"] is False
+
+
+def test_a_run_past_the_scan_budget_reports_a_floor_rather_than_a_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stopped walk must not hand back its partial counts as totals.
+
+    Deriving this summary resolves a path per request, so an unbounded run is a
+    caller-shaped cost paid on every read. Stopping is the right answer. Saying
+    nothing about having stopped is not: `total` then describes the part that
+    was scanned while reading as a count of the whole run.
+    """
+    from lionagi.studio.services import sessions as sessions_svc
+
+    monkeypatch.setattr(sessions_svc, "MAX_RUN_FILE_SCANNED_REQUESTS", 10)
+    messages = [
+        _request(
+            f"read-{index}",
+            "read_file",
+            {"file_path": f"src/file-{index:04d}.py"},
+            timestamp=float(index),
+        )
+        for index in range(30)
+    ]
+
+    summary = sessions_svc._derive_run_files(messages, artifact_root=Path("/workspace/run"))
+
+    assert summary["bounded"] is True
+    assert summary["total"] == 10
+    # Fewer distinct paths than the run touched, and the caller can tell.
+    assert summary["total"] < 30
+    # `truncated` has to hold even though every path counted is also shown: a
+    # caller that reads only this field must not be told the surface is whole.
+    assert summary["shown"] == 10
+    assert summary["truncated"] is True
+
+
+def test_the_scan_budget_is_spent_on_the_newest_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Walking forward would bound the same cost and answer the wrong question.
+
+    This summary is the recently-touched window. A budget spent from the start
+    of the run returns the files a long run touched first, under a heading that
+    says most recent, and every count beside it stays plausible.
+    """
+    from lionagi.studio.services import sessions as sessions_svc
+
+    monkeypatch.setattr(sessions_svc, "MAX_RUN_FILE_SCANNED_REQUESTS", 5)
+    messages = [
+        _request(f"old-{i}", "read_file", {"file_path": f"src/old-{i:02d}.py"}, timestamp=float(i))
+        for i in range(20)
+    ] + [
+        _request(
+            f"new-{i}", "read_file", {"file_path": f"src/new-{i:02d}.py"}, timestamp=float(20 + i)
+        )
+        for i in range(10)
+    ]
+
+    summary = sessions_svc._derive_run_files(messages, artifact_root=Path("/workspace/run"))
+
+    paths = [item["path"] for item in summary["items"]]
+    assert paths == [f"src/new-{i:02d}.py" for i in (9, 8, 7, 6, 5)]
+    assert not [path for path in paths if "old-" in path]
 
 
 async def test_get_session_exposes_only_safe_bounded_server_file_summary(
@@ -223,6 +290,7 @@ async def test_get_session_exposes_only_safe_bounded_server_file_summary(
         "shown": 1,
         "truncated": False,
         "redacted_count": 2,
+        "bounded": False,
     }
     # The legacy flat surface remains for file-reference resolution, but now
     # mirrors the bounded safe paths rather than leaking raw tool arguments.

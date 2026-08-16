@@ -1732,6 +1732,14 @@ function RunControls({
 // "the dag panel height policy is floor/grow-only" in RunDetail.test.tsx.
 const DAG_MIN_HEIGHT = 280;
 
+// How long streamed tool activity is allowed to accumulate before the run's
+// file surface is re-read. The stream carries messages; it does not carry
+// run_files, which the server derives and only sends with a session read. One
+// read per window keeps a busy run from issuing a request per message while
+// still letting the surface follow the run rather than freezing at whatever it
+// held when the view opened.
+const RUN_FILES_REFRESH_WINDOW_MS = 2000;
+
 export interface RunDetailProps {
   /** Session ID to load. */
   id: string;
@@ -2091,6 +2099,35 @@ export default function RunDetail({ id }: RunDetailProps) {
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
+    let runFilesTimer: number | null = null;
+
+    // The stream carries messages and nothing else, so a run that touches a
+    // file while you are watching does not update run_files: that surface is
+    // derived server-side and arrives only with a session read. Left alone it
+    // stays frozen at whatever the run had when this view opened, and since it
+    // is also the allowlist that decides which paths a step may show, a stale
+    // one hides real activity rather than merely lagging.
+    //
+    // Only run_files is merged. Replacing the whole session here would discard
+    // the streamed messages appended since the read was issued. And the read
+    // has to go to the server: deriving the new paths from the streamed tool
+    // arguments would mean the client deciding which paths are safe to show,
+    // which is the judgment this field exists to keep on the server.
+    const scheduleRunFilesRefresh = () => {
+      if (cancelled || runFilesTimer != null) return;
+      runFilesTimer = window.setTimeout(() => {
+        runFilesTimer = null;
+        getSession(id)
+          .then((fresh) => {
+            if (cancelled) return;
+            setSession((prev) =>
+              prev && prev.id === fresh.id ? { ...prev, run_files: fresh.run_files } : prev,
+            );
+          })
+          .catch(() => {});
+      }, RUN_FILES_REFRESH_WINDOW_MS);
+    };
+
     const stop = streamSession(id, (event) => {
       if (event.type === "heartbeat") return;
       if (event.type === "done") {
@@ -2119,10 +2156,17 @@ export default function RunDetail({ id }: RunDetailProps) {
           const branchId = String(event.branch_id);
           return appendStreamedMessage(prev, branchId, msg);
         });
+        // Any tool call may have touched a file. Which ones actually did is a
+        // question for the server, so the trigger is the message class rather
+        // than the tool name: filtering on a list of known file tools here
+        // would be a second copy of a policy the server already owns, and it
+        // would miss exactly the tools that list has not caught up with.
+        if (msg.role === "action" || msg.role === "tool_call") scheduleRunFilesRefresh();
       }
     });
     return () => {
       cancelled = true;
+      if (runFilesTimer != null) window.clearTimeout(runFilesTimer);
       stop();
     };
   }, [id]);
@@ -2392,11 +2436,17 @@ export default function RunDetail({ id }: RunDetailProps) {
 
   // Only server-normalized paths are eligible for file links. Re-parsing raw
   // tool arguments here would reintroduce absolute host paths and credentials.
-  const runFiles = useMemo(
-    () =>
-      (session?.run_files?.items ?? []).filter((item) => item.openable).map((item) => item.path),
-    [session],
-  );
+  //
+  // Undefined when the session carries no summary at all, which is a different
+  // answer from a summary that allows nothing. Both used to arrive as an empty
+  // array, and the consumer reads an empty allowlist as "show no files", so a
+  // session still loading or served without the field silently emptied every
+  // step's file list instead of leaving it alone.
+  const runFiles = useMemo(() => {
+    const summary = session?.run_files;
+    if (!summary) return undefined;
+    return summary.items.filter((item) => item.openable).map((item) => item.path);
+  }, [session]);
 
   const errors = useMemo(() => {
     const errs: ErrorEntry[] = [];

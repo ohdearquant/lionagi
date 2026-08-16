@@ -1252,7 +1252,15 @@ async def test_get_session_action_stats_match_canonical_fully_qualified_lion_cla
     assert result["run_files"]["redacted_count"] == 1
 
 
-def test_branch_file_stats_only_accept_structured_file_tool_paths():
+def test_per_branch_stats_do_not_carry_a_second_file_surface():
+    """Branch stats report counts. The file surface has exactly one producer.
+
+    These stats used to aggregate their own set of file paths, straight out of
+    raw tool arguments, which meant two independent answers to "what did this
+    touch" with different path policies: this one disclosed absolute host paths
+    with no containment check at all. The session-level run_files summary is
+    the one that decides, so there is nothing to report here.
+    """
     from lionagi.studio.services.sessions import _branch_message_stats
 
     action_messages = [
@@ -1266,47 +1274,13 @@ def test_branch_file_stats_only_accept_structured_file_tool_paths():
             "lion_class": "ActionRequest",
             "content": {"function": "Edit", "arguments": {"path": "/repo/Makefile"}},
         },
-        {
-            "id": "glob",
-            "lion_class": "ActionRequest",
-            "content": {"function": "Glob", "arguments": {"path": "/repo/src"}},
-        },
-        {
-            "id": "bash",
-            "lion_class": "ActionRequest",
-            "content": {"function": "Bash", "arguments": {"path": "//"}},
-        },
     ]
 
-    stats = _branch_message_stats(4, {"action": 4}, action_messages)
+    stats = _branch_message_stats(2, {"action": 2}, action_messages)
 
-    assert stats["files"] == ["/repo/Makefile", "/repo/src/main.py"]
-
-
-def test_branch_file_stats_capture_empty_or_missing_function_name():
-    from lionagi.studio.services.sessions import _branch_message_stats
-
-    action_messages = [
-        {
-            "id": "empty-fn",
-            "lion_class": "ActionRequest",
-            "content": {"function": "", "arguments": {"file_path": "/repo/src/empty.py"}},
-        },
-        {
-            "id": "missing-fn",
-            "lion_class": "ActionRequest",
-            "content": {"arguments": {"path": "/repo/src/missing.py"}},
-        },
-        {
-            "id": "bash",
-            "lion_class": "ActionRequest",
-            "content": {"function": "Bash", "arguments": {"path": "//"}},
-        },
-    ]
-
-    stats = _branch_message_stats(3, {"action": 3}, action_messages)
-
-    assert stats["files"] == ["/repo/src/empty.py", "/repo/src/missing.py"]
+    assert stats["tool_call_count"] == 2
+    assert "files" not in stats
+    assert not [key for key, value in stats.items() if value == "/repo/Makefile"]
 
 
 async def test_get_session_message_count_is_db_aggregate_not_progression_length(

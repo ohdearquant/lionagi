@@ -56,6 +56,7 @@ describe("RunFilesSection", () => {
       shown: 4,
       truncated: false,
       redacted_count: 0,
+      bounded: false,
     });
 
     expect(container.querySelectorAll('[data-testid="run-file-item"]')).toHaveLength(4);
@@ -77,6 +78,7 @@ describe("RunFilesSection", () => {
       shown: 4,
       truncated: false,
       redacted_count: 0,
+      bounded: false,
     });
 
     clickButton(container, "Written");
@@ -103,6 +105,7 @@ describe("RunFilesSection", () => {
       shown: 100,
       truncated: true,
       redacted_count: 3,
+      bounded: false,
     });
 
     expect(container.querySelectorAll('[data-testid="run-file-item"]')).toHaveLength(20);

@@ -130,7 +130,7 @@ describe("history/ — no Drawer overlay import (master-detail doctrine §4)", (
   }
 });
 
-// ─── SSE done-refetch stale-write race guard (MAJ-3) ─────────────────────────
+// ─── SSE done-refetch stale-write race guard ─────────────────────────────────
 // The 'done' handler refetches status/reason fields after streamSession
 // reports completion. Without a same-session guard, navigating A→B before
 // A's refetch resolves lets A's data clobber B's freshly-fetched state.
@@ -619,11 +619,24 @@ describe("history/RunDetail.tsx — runFiles uses session.run_files", () => {
   const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
 
   it("reads the server-normalized full-session items", () => {
-    expect(src).toMatch(/session\?\.run_files\?\.items/);
+    expect(src).toMatch(/const summary = session\?\.run_files;/);
+    expect(src).toMatch(/summary\.items\.filter/);
   });
 
   it("does not re-parse windowed tool arguments into the public file surface", () => {
     expect(src).not.toMatch(/extractFilePaths/);
+  });
+
+  it("distinguishes an absent summary from one that allows nothing", () => {
+    // Downstream this value is an allowlist, and an empty allowlist means show
+    // no files. Collapsing "no summary yet" into it is not a smaller answer,
+    // it is a different one, and it suppresses every step's file list on any
+    // session served without the field.
+    const start = src.indexOf("const runFiles = useMemo(");
+    const end = src.indexOf(";", src.indexOf("}, [", start));
+    const block = src.slice(start, end);
+    expect(block).toMatch(/if \(!summary\) return undefined;/);
+    expect(block).not.toMatch(/\?\?\s*\[\]/);
   });
 
   it("depends on session so a server-only update refreshes it", () => {
@@ -1064,7 +1077,7 @@ describe("history/RunDetail.tsx — operation lane escalation presentation", () 
   });
 });
 
-// ─── visibleEventPayloadEntries / summarizeHookEvent — #2862 ─────────────────
+// ─── visibleEventPayloadEntries / summarizeHookEvent ─────────────────────────
 // Element/Signal attach created_at/metadata/schema_version to every signal
 // row; the events panel must not dump them into the one-line summary, and a
 // HookSignal row must read as a human summary, not a struct.
@@ -1187,7 +1200,7 @@ describe("history/RunDetail.tsx — summarizeHookEvent", () => {
   });
 });
 
-// ─── deriveGateOutcome — #2863 ────────────────────────────────────────────────
+// ─── deriveGateOutcome ───────────────────────────────────────────────────────
 // A gate/review step's structured verdict is a different population from
 // runtime tool errors; deriveGateOutcome scans the signal stream for it so
 // the page can surface "Gate: approve-with-fixes · 1 major, 5 minor" beside

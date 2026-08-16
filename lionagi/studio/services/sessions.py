@@ -49,6 +49,25 @@ def _normalize_session_label(raw: str) -> str | None:
 # exposes only the most recently touched safe paths.
 MAX_RUN_FILE_ITEMS = 100
 
+# What one session read is allowed to SPEND deriving that summary, as opposed to
+# what it is allowed to return.  MAX_RUN_FILE_ITEMS bounds only the response: the
+# derivation still resolved every historical path in the run on every read,
+# including the file previews that ask for a single message, and a resolve is a
+# filesystem call.  A run is caller-shaped, so that is a caller-controlled cost.
+#
+# The scan is what gets bounded, because the scan is what performs the resolves,
+# and it is spent newest-first so that a run exceeding the bound still answers
+# the question the summary is for.  Bounding the number of distinct paths kept
+# instead would be strictly more binding -- a run cannot hold more distinct paths
+# than it made requests -- and it would quietly turn `total` into an undercount
+# of a set the scan had actually seen in full.
+#
+# This sits far above the display cap so ordering stays exact for any run that
+# fits inside it, and when it binds the summary says so: a total counted from a
+# bounded scan is a floor, and a reader that cannot tell the two apart will quote
+# the floor as the number.
+MAX_RUN_FILE_SCANNED_REQUESTS = 20_000
+
 _READ_FILE_TOOLS = frozenset({"read", "read_file"})
 _WRITE_FILE_TOOLS = frozenset(
     {
@@ -207,14 +226,29 @@ def _derive_run_files(
     capped_limit = max(1, min(int(limit), MAX_RUN_FILE_ITEMS))
     files: dict[str, dict[str, Any]] = {}
     redacted_hashes: set[str] = set()
+    scanned = 0
+    bounded = False
     try:
         resolved_artifact_root = artifact_root.resolve(strict=False) if artifact_root else None
     except (OSError, RuntimeError):
         resolved_artifact_root = None
 
-    for sequence, message in enumerate(action_messages):
+    # Newest first, so a run that exhausts the scan budget spends it on the
+    # messages this summary is about.  Walking forward would bound the same cost
+    # and return the run's oldest files under a heading that says recent.  The
+    # order is not otherwise load-bearing: every per-path field below merges by
+    # max, or, or set union, and the final sort breaks ties on the path itself,
+    # so a run that fits inside the budget produces the same summary either way.
+    for sequence, message in reversed(list(enumerate(action_messages))):
         if _short_lion_class(str(message.get("lion_class") or "")) != "ActionRequest":
             continue
+        if scanned >= MAX_RUN_FILE_SCANNED_REQUESTS:
+            # Stop reading rather than stop recording: the remaining messages
+            # would each cost a path resolve, and the walk itself is the part
+            # that scales with the run.
+            bounded = True
+            break
+        scanned += 1
         content = message.get("content")
         content = content if isinstance(content, dict) else {}
         arguments = content.get("arguments")
@@ -266,8 +300,14 @@ def _derive_run_files(
         "items": items,
         "total": total,
         "shown": len(items),
-        "truncated": total > len(items),
+        # Bounded scans are truncated whatever the counts say: the reason the
+        # numbers are small may be that the walk stopped, and a caller reading
+        # only `truncated` must not be told the surface is complete.
+        "truncated": bounded or total > len(items),
         "redacted_count": len(redacted_hashes),
+        # True when a work bound stopped the derivation, which makes `total` and
+        # `redacted_count` floors rather than counts.
+        "bounded": bounded,
     }
 
 
@@ -880,10 +920,16 @@ def _branch_message_stats(
         if _short_lion_class(m.get("lion_class", "")) == "ActionResponse"
     }
 
+    # This deliberately does not aggregate file paths. It used to, into an
+    # unbounded set of raw tool arguments that no caller read: get_session
+    # copies message_count, roles, tool_call_count, error_count and errors out
+    # of this and nothing else, and the file surface now comes from
+    # _derive_run_files, which is the one place that decides path policy. The
+    # old set was both a second policy and a second disclosure risk, since it
+    # held absolute host paths verbatim.
     tool_call_count = 0
     error_count = 0
     errors: list[dict[str, Any]] = []
-    files: set[str] = set()
     for m in action_messages:
         if _short_lion_class(m.get("lion_class", "")) != "ActionRequest":
             continue
@@ -891,23 +937,6 @@ def _branch_message_stats(
         content = m.get("content") if isinstance(m.get("content"), dict) else {}
         tool_call_count += 1
         function = content.get("function") or ""
-        arguments = content.get("arguments")
-        arguments = arguments if isinstance(arguments, dict) else {}
-        tool_name = str(function).lower().replace("-", "_").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
-        if not tool_name or tool_name in {
-            "read",
-            "read_file",
-            "write",
-            "write_file",
-            "edit",
-            "edit_file",
-            "multiedit",
-            "notebookedit",
-        }:
-            file_path = arguments.get("file_path") or arguments.get("path")
-            if isinstance(file_path, str) and file_path:
-                files.add(file_path)
-
         response_id = content.get("action_response_id")
         response_msg = response_by_id.get(response_id) if response_id else None
         output_text = ""
@@ -931,7 +960,6 @@ def _branch_message_stats(
         "tool_call_count": tool_call_count,
         "error_count": error_count,
         "errors": errors,
-        "files": sorted(files),
     }
 
 

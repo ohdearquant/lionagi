@@ -167,6 +167,13 @@ export interface RunFileSummary {
   shown: number;
   truncated: boolean;
   redacted_count: number;
+  /**
+   * True when a work bound stopped the derivation before the end of the run,
+   * which makes `total` and `redacted_count` floors rather than counts. A run
+   * large enough to hit the bound is scanned newest-first, so `items` still
+   * describes recent activity; there is simply older activity not counted.
+   */
+  bounded: boolean;
 }
 
 // RunDetail comes from the filesystem run.json path (GET /api/runs/{id} →

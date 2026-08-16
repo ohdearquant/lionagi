@@ -412,16 +412,43 @@ function RunStepCard({
 
     // File aggregation
     const fileMap = new Map<string, FileChange>();
-    const serverSafePaths = runFiles ? new Set(runFiles) : null;
+    // Run Detail supplies the server-normalized allowlist; a standalone card
+    // gets `undefined` and keeps its legacy behaviour. An empty array is a
+    // third thing again -- the server looked and allowed nothing -- so the
+    // three cases stay distinct rather than collapsing into one falsy check.
+    //
+    // The allowlist holds root-relative paths and the tool arguments hold
+    // whatever the agent passed, usually absolute, so the two are compared
+    // through aliases built from the trusted side: each allowed path under
+    // its own name and under the artifact root joined to it. Normalizing the
+    // untrusted side instead would mean a client-side path resolution that
+    // can disagree with the server's, and disagreeing in the direction that
+    // admits a path the server withheld.
+    const serverPathByAlias = (() => {
+      if (!runFiles) return null;
+      const root = artifactRoot ? artifactRoot.replace(/\/+$/, "") : null;
+      const aliases = new Map<string, string>();
+      for (const canonical of runFiles) {
+        aliases.set(canonical, canonical);
+        if (root) aliases.set(`${root}/${canonical}`, canonical);
+      }
+      return aliases;
+    })();
     for (const t of toolMessages) {
       const args = (t.arguments as Record<string, unknown>) ?? {};
       const fn = t.function || "";
       const paths = pathFromArgs(args, t.summary || "", fn);
-      for (const p of paths) {
-        // Run Detail supplies the server-normalized allowlist. Keep legacy
-        // standalone cards unchanged, but never echo a raw path the server
-        // rejected or normalized away inside the run detail surface.
-        if (serverSafePaths && !serverSafePaths.has(p)) continue;
+      for (const raw of paths) {
+        let p = raw;
+        if (serverPathByAlias) {
+          // Anything the server rejected, normalized away, or never saw has no
+          // alias and is dropped: an unmatched path fails closed, and the one
+          // that matches is displayed in the server's form so this surface
+          // never echoes an absolute host path.
+          const canonical = serverPathByAlias.get(raw);
+          if (canonical === undefined) continue;
+          p = canonical;
+        }
         if (!fileMap.has(p)) {
           fileMap.set(p, { path: p, ops: { read: 0, write: 0, edit: 0, other: 0 } });
         }
@@ -475,7 +502,7 @@ function RunStepCard({
       firstTs,
       lastTs,
     };
-  }, [messages, result.duration_sec, runFiles]);
+  }, [messages, result.duration_sec, runFiles, artifactRoot]);
 
   // File-link resolution context (shared by the overview + conversation
   // Markdown renderers): agent dir first, then the run-wide file surface.
