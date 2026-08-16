@@ -2565,6 +2565,75 @@ def test_dropping_children_of_a_rerunning_parent_is_transitive():
     assert UUID(grandchild_id) not in graph.internal_nodes
 
 
+def test_children_of_a_rerunning_spawned_parent_are_dropped_transitively():
+    """A failed spawned node re-runs under --retry-failed just as a failed
+    planned one does, so its recorded children are superseded the same way.
+
+    Nothing else catches them. The reconstruction refuses a child whose parent
+    is not checkpoint-terminal, but a child of a spawned parent names a parent
+    that is still in the checkpoint's own spawn list, so it passes that check
+    and would be rebuilt against a parent execution that no longer exists.
+    """
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    rerunning_id, child_id, grandchild_id = str(uuid4()), str(uuid4()), str(uuid4())
+
+    _apply_checkpoint_precompletion(
+        env,
+        plan_result,
+        _spawn_dag_state(parent_id, worker_branch),
+        checkpoint_ops,
+        allow_degraded_context=False,
+        retry_failed=True,
+        checkpoint_spawned=[
+            _spawn_entry(rerunning_id, str(parent_id), status="failed", spawn_id="spawn-1"),
+            _spawn_entry(child_id, rerunning_id, spawn_id="spawn-2"),
+            _spawn_entry(grandchild_id, child_id, spawn_id="spawn-3"),
+        ],
+    )
+
+    graph = builder.get_graph()
+    assert UUID(child_id) not in graph.internal_nodes
+    assert UUID(grandchild_id) not in graph.internal_nodes
+    assert graph.internal_nodes[UUID(rerunning_id)].execution.status == EventStatus.PENDING, (
+        "control: the spawned parent is dropped from nothing — it is the one re-running"
+    )
+
+
+def test_children_of_a_completed_spawned_parent_survive_a_retry_elsewhere():
+    """The spawned-parent drop is scoped by ancestry too.
+
+    Without this the fix above would read as correct while discarding every
+    reactive result under a spawned parent that completed.
+    """
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    rerunning_id, kept_id, kept_child_id = str(uuid4()), str(uuid4()), str(uuid4())
+
+    _apply_checkpoint_precompletion(
+        env,
+        plan_result,
+        _spawn_dag_state(parent_id, worker_branch),
+        checkpoint_ops,
+        allow_degraded_context=False,
+        retry_failed=True,
+        checkpoint_spawned=[
+            _spawn_entry(rerunning_id, str(parent_id), status="failed", spawn_id="spawn-1"),
+            _spawn_entry(kept_id, str(parent_id), spawn_id="spawn-2"),
+            _spawn_entry(kept_child_id, kept_id, spawn_id="spawn-3"),
+        ],
+    )
+
+    graph = builder.get_graph()
+    assert graph.internal_nodes[UUID(kept_id)].execution.status == EventStatus.COMPLETED
+    assert graph.internal_nodes[UUID(kept_child_id)].execution.status == EventStatus.COMPLETED
+    assert graph.internal_nodes[UUID(rerunning_id)].execution.status == EventStatus.PENDING, (
+        "control: something really is re-running in this run"
+    )
+
+
 def test_children_of_a_completed_parent_survive_a_retry_of_a_different_op():
     """The drop is scoped by ancestry, not by the presence of the flag.
 

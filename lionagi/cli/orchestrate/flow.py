@@ -1255,8 +1255,15 @@ def _apply_checkpoint_precompletion(
             "side effects their first attempt already had."
         )
 
-    if checkpoint_spawned and failed_node_ids:
-        checkpoint_spawned = _drop_spawns_under_rerun_parents(checkpoint_spawned, failed_node_ids)
+    # A failed spawned node is rebuilt to run again exactly as a failed planned
+    # one is, so it is a re-running parent by the same reasoning, and its own
+    # recorded children are just as superseded. Leaving it out would keep them:
+    # unlike a child of a re-running planned op, which the reconstruction's
+    # parent-terminal check catches, a child of a spawned parent names a parent
+    # that is still in the checkpoint's own list and so passes that check.
+    rerun_node_ids = failed_node_ids | set(failed_spawned_ids)
+    if checkpoint_spawned and rerun_node_ids:
+        checkpoint_spawned = _drop_spawns_under_rerun_parents(checkpoint_spawned, rerun_node_ids)
     if checkpoint_spawned:
         _reconstruct_spawned_nodes(
             env,
