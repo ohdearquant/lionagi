@@ -67,6 +67,14 @@ class CheckpointWriter:
             raise ValueError(f"unsupported checkpoint version: {self.version}")
         if self.compact_every < 1:
             raise ValueError("compact_every must be at least 1")
+        if self.version == CHECKPOINT_VERSION and self.flow_context:
+            # A resume seeds this from the same dict the executor goes on to use
+            # as its live workspace. Even a shallow copy of it shares every
+            # nested value, so a nested mutation lands in the baseline as well
+            # as in the capture, the two compare equal, no delta is journaled,
+            # and the mutation is lost on the next recovery. Owning the
+            # baseline outright is what makes the comparison meaningful.
+            self.flow_context = _context_snapshot(self.flow_context)
 
     @property
     def journal_path(self) -> Path:
@@ -136,10 +144,13 @@ class CheckpointWriter:
                 delta = {"kind": "op", "entry": entry}
                 if context_delta is not None:
                     delta["flow_context"] = context_delta
-                await self._append_delta_locked(delta)
-                self.ops[agent_id] = entry
-                if captured is not None:
-                    self.flow_context = captured
+
+                def apply() -> None:
+                    self.ops[agent_id] = entry
+                    if captured is not None:
+                        self.flow_context = captured
+
+                await self._append_delta_locked(delta, apply)
                 await self._maybe_compact_locked()
             else:
                 self.ops[agent_id] = entry
@@ -186,31 +197,35 @@ class CheckpointWriter:
             "spawn_id": spawn_id,
             "context": context,
         }
-        async with self._lock:
-            captured = (
-                _capture_context(flow_context) if self.version == CHECKPOINT_VERSION else None
-            )
-            if self.version == CHECKPOINT_VERSION:
-                await self._ensure_base_locked()
-                context_delta = await _context_delta_async(self.flow_context, captured)
-                delta = {"kind": "spawned", "entry": entry}
-                if context_delta is not None:
-                    delta["flow_context"] = context_delta
-                await self._append_delta_locked(delta)
+
+        def upsert() -> None:
             for i, existing in enumerate(self.spawned):
                 if existing.get("node_id") == node_id:
                     self.spawned[i] = entry
                     break
             else:
                 self.spawned.append(entry)
+
+        async with self._lock:
             if self.version == CHECKPOINT_VERSION:
-                if captured is not None:
-                    self.flow_context = captured
-            elif flow_context is not None:
-                self.flow_context = flow_context
-            if self.version == CHECKPOINT_VERSION:
+                captured = _capture_context(flow_context)
+                await self._ensure_base_locked()
+                context_delta = await _context_delta_async(self.flow_context, captured)
+                delta = {"kind": "spawned", "entry": entry}
+                if context_delta is not None:
+                    delta["flow_context"] = context_delta
+
+                def apply() -> None:
+                    upsert()
+                    if captured is not None:
+                        self.flow_context = captured
+
+                await self._append_delta_locked(delta, apply)
                 await self._maybe_compact_locked()
             else:
+                upsert()
+                if flow_context is not None:
+                    self.flow_context = flow_context
                 await self._write_locked()
 
     async def flush(self) -> None:
@@ -230,7 +245,9 @@ class CheckpointWriter:
         # Python reads back and strict readers reject; refuse it at the write.
         raise_if_non_finite(state, default=str)
         payload = json.dumps(state, default=str)
-        tmp.write_text(payload)
+        # Same owner-only creation the journaled path uses: this file holds the
+        # same raw responses and flow context, whichever version wrote it.
+        _write_private_bytes(tmp, payload.encode())
         os.replace(tmp, self.path)
 
     async def _ensure_base_locked(self) -> None:
@@ -241,7 +258,15 @@ class CheckpointWriter:
             self._bytes_written += written
             self._journal_reset_required = False
 
-    async def _append_delta_locked(self, delta: dict[str, Any]) -> None:
+    async def _append_delta_locked(self, delta: dict[str, Any], apply_state: Any = None) -> None:
+        """Append one delta and, if it reached the file, apply it in memory.
+
+        `apply_state` is what this record means for the writer's own state. It
+        runs exactly when the bytes are in the file, durable or not, because
+        the two have to move together: a record that reached disk while memory
+        stayed behind is dropped for good the next time compaction rewrites the
+        base from memory and clears the journal.
+        """
         next_seq = self._journal_seq + 1
         record = {
             "version": CHECKPOINT_VERSION,
@@ -270,6 +295,8 @@ class CheckpointWriter:
                 self._journal_seq = next_seq
                 self._delta_count += 1
                 self._seq += 1
+                if apply_state is not None:
+                    apply_state()
 
     async def _maybe_compact_locked(self) -> None:
         if self._delta_count >= self.compact_every:
@@ -304,23 +331,56 @@ def _serialize_json(value: Any) -> bytes:
 # by name on every delta and read back by name during recovery, so a symlink
 # planted at that name redirects the writer into an arbitrary file and feeds
 # recovery contents this process never wrote. The intermediate directories are
-# not covered, and neither is any platform without the flag, where this degrades
-# to an ordinary open.
+# not covered. Where the flag does not exist -- Windows -- the same refusal is
+# reconstructed from the descriptor after the open, so the protection does not
+# quietly depend on which platform this runs on.
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+# Checkpoint state and journal records carry raw operation responses and the
+# shared flow context. Every file this module creates is owner-only, and the
+# mode is set on the descriptor rather than left to the process umask, which
+# would publish a 0644 file under the default umask of 022.
+_PRIVATE_MODE = 0o600
 
 
 class JournalPathError(LionError):
     """Raised when a journal path is not the regular file it must be."""
 
 
-def _open_no_follow(path: Path, flags: int, mode: int = 0o600) -> int:
+def _refuse_if_symlinked(descriptor: int, path: Path) -> None:
+    """Reconstruct the O_NOFOLLOW refusal from the descriptor we just opened.
+
+    `lstat` describes the name; `fstat` describes what the open actually
+    reached. They disagree exactly when the final component is a symlink, so
+    comparing them says what the flag would have said, on a platform that does
+    not have it. A path that vanished between the two calls is refused for the
+    same reason: this cannot show it opened the file it named.
+    """
     try:
-        return os.open(path, flags | _NOFOLLOW, mode)
+        named = os.lstat(path)
+    except OSError as exc:
+        raise JournalPathError(f"refusing a path that cannot be inspected: {path}") from exc
+    opened = os.fstat(descriptor)
+    if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+        raise JournalPathError(f"refusing to use a symlinked path: {path}")
+
+
+def _open_no_follow(path: Path, flags: int, mode: int = _PRIVATE_MODE) -> int:
+    try:
+        descriptor = os.open(path, flags | _NOFOLLOW, mode)
     except OSError as exc:
         # ELOOP is what O_NOFOLLOW reports for a symlinked final component.
         if exc.errno == errno.ELOOP:
             raise JournalPathError(f"refusing to use a symlinked path: {path}") from exc
         raise
+    if _NOFOLLOW:
+        return descriptor
+    try:
+        _refuse_if_symlinked(descriptor, path)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
 
 
 def _read_bytes_no_follow(path: Path) -> bytes:
@@ -363,14 +423,41 @@ def _fsync_parent(path: Path) -> None:
         os.close(descriptor)
 
 
+def _open_private_new(path: Path) -> int:
+    """Open `path` as a file this call created, owner-only.
+
+    Unlinking first and then demanding O_EXCL is what makes the mode
+    meaningful. Writing into a file that was already there keeps whatever
+    permissions it already had, and a symlink left at a temporary name would be
+    followed, so the pair says: nothing here now, and what follows is ours. The
+    umask can only clear bits from the mode, never add them, so 0600 is a
+    ceiling this cannot exceed however the process was configured.
+    """
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _PRIVATE_MODE)
+
+
+def _write_private_bytes(path: Path, payload: bytes) -> None:
+    descriptor = _open_private_new(path)
+    try:
+        stream = os.fdopen(descriptor, "wb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    with stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
 def _atomic_write_bytes(path: Path, payload: bytes) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with tmp.open("wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
+        _write_private_bytes(tmp, payload)
         os.replace(tmp, path)
         _fsync_parent(path)
     finally:
@@ -403,21 +490,51 @@ def _append_journal_record(path: Path, record: dict[str, Any]) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = _open_no_follow(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
     try:
-        stream = os.fdopen(descriptor, "ab")
-    except BaseException:
-        os.close(descriptor)
-        raise
-    with stream:
-        stream.write(payload)
-        stream.flush()
+        written = _write_all(descriptor, payload)
         # Past this point the bytes are in the file. fsync decides whether they
         # survive a power loss, not whether they are there, so a failure here
         # must not be reported as a write that did not happen.
         try:
-            os.fsync(stream.fileno())
+            os.fsync(descriptor)
         except OSError as exc:
-            raise _RecordReachedFileError(len(payload), exc) from exc
-    return len(payload)
+            raise _RecordReachedFileError(written, exc) from exc
+    finally:
+        os.close(descriptor)
+    return written
+
+
+def _write_all(descriptor: int, payload: bytes) -> int:
+    """Write every byte, or report how many got there before it stopped.
+
+    A buffered stream cannot answer that question: a short write inside its
+    flush raises with some of the record already appended, and the caller then
+    treats the whole append as never having happened. It retries under the same
+    sequence number, the retry lands directly behind the fragment, and recovery
+    reads one corrupt line where two records should have been -- discarding
+    every valid completion after it.
+
+    So the count is tracked here, and a stopped write is finished off with a
+    newline where it can be, which leaves the fragment as a line of its own.
+    Recovery still refuses that line, which is the honest answer for a record
+    that is genuinely incomplete, but it refuses only that one.
+    """
+    written = 0
+    try:
+        while written < len(payload):
+            count = os.write(descriptor, payload[written:])
+            if count <= 0:
+                raise OSError(errno.EIO, "journal write made no progress", str(descriptor))
+            written += count
+    except BaseException as exc:
+        if written == 0:
+            raise
+        if not payload[:written].endswith(b"\n"):
+            try:
+                written += os.write(descriptor, b"\n")
+            except OSError:
+                pass
+        raise _RecordReachedFileError(written, exc) from exc
+    return written
 
 
 def _context_snapshot(current: dict[str, Any]) -> dict[str, Any]:
@@ -604,6 +721,15 @@ def _apply_journal_record(state: dict[str, Any], record: dict[str, Any]) -> bool
         if not isinstance(entry_id, str):
             return False
     else:
+        return False
+
+    # An entry is what resume reads to decide whether an op already ran and
+    # what it produced. One carrying an id but no outcome is not a lighter
+    # version of that: applied, it makes resume skip an op whose result it does
+    # not have, silently, under the name of a durable record. Refusing it puts
+    # it on the same footing as a torn line -- recovery reports where it
+    # stopped and keeps what came before.
+    if not isinstance(entry.get("status"), str) or "response" not in entry:
         return False
 
     context_delta = record.get("flow_context")

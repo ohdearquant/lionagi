@@ -16,6 +16,7 @@ import pytest
 
 from lionagi.cli.orchestrate._checkpoint import (
     CHECKPOINT_VERSION,
+    LEGACY_CHECKPOINT_VERSION,
     CheckpointWriter,
     JournalPathError,
     load_checkpoint,
@@ -559,3 +560,218 @@ async def test_a_record_that_never_reached_the_file_leaves_its_sequence_unspent(
     recovered = load_checkpoint(path)
     assert "_recovery" not in recovered, recovered.get("_recovery")
     assert set(recovered["ops"]) == {"agent-2"}
+
+
+# --- what the files hold is nobody else's business ---------------------------
+
+
+async def test_checkpoint_and_journal_are_created_owner_only(tmp_path: Path):
+    """Both files carry raw operation responses and the shared flow context.
+
+    Creating them through an ordinary open takes the mode from the process
+    umask, which is 022 by default and publishes a world-readable file.
+    """
+    previous_umask = os.umask(0o022)
+    try:
+        path = tmp_path / "checkpoint.json"
+        writer = _writer(path, compact_every=1)
+        await writer.record("agent-1", status="completed", response={"secret": "value"})
+
+        assert path.exists() and writer.journal_path.exists()
+        for created in (path, writer.journal_path):
+            mode = created.stat().st_mode & 0o777
+            assert mode & 0o077 == 0, f"{created.name} is readable by others: {mode:o}"
+    finally:
+        os.umask(previous_umask)
+
+
+async def test_the_legacy_checkpoint_is_created_owner_only_too(tmp_path: Path):
+    """The unjournaled path writes the same responses to the same kind of file."""
+    previous_umask = os.umask(0o022)
+    try:
+        path = tmp_path / "checkpoint.json"
+        writer = CheckpointWriter(
+            path=path,
+            session_id="session-1",
+            prompt="run the plan",
+            plan=[],
+            config={},
+            version=LEGACY_CHECKPOINT_VERSION,
+        )
+        await writer.record("agent-1", status="completed", response={"secret": "value"})
+
+        assert path.stat().st_mode & 0o077 == 0
+    finally:
+        os.umask(previous_umask)
+
+
+async def test_a_symlinked_journal_is_refused_where_the_open_flag_does_not_exist(
+    tmp_path: Path, monkeypatch
+):
+    """O_NOFOLLOW is absent on some platforms this ships to, and the refusal
+    cannot be absent with it: a symlink at the journal name redirects every
+    delta into a file this process never chose and feeds recovery records it
+    never wrote."""
+    import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
+
+    monkeypatch.setattr(checkpoint_mod, "_NOFOLLOW", 0)
+
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.flush()
+
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_text("")
+    writer.journal_path.unlink()
+    writer.journal_path.symlink_to(elsewhere)
+
+    with pytest.raises(checkpoint_mod.JournalPathError):
+        await writer.record("agent-1", status="completed", response=1)
+    assert elsewhere.read_text() == "", "the write followed the symlink"
+
+
+# --- the baseline has to be the writer's own copy ----------------------------
+
+
+async def test_a_resumed_writer_does_not_share_nested_context_with_the_executor(
+    tmp_path: Path,
+):
+    """Resume hands the same dict to the writer and to the executor, which goes
+    on mutating it in place. A baseline sharing those nested values moves with
+    every mutation, so the comparison finds nothing to journal and the change is
+    gone at the next recovery."""
+    path = tmp_path / "checkpoint.json"
+    live: dict[str, object] = {"findings": ["first"]}
+    writer = CheckpointWriter(
+        path=path,
+        session_id="session-1",
+        prompt="run the plan",
+        plan=[],
+        config={},
+        version=CHECKPOINT_VERSION,
+        flow_context=dict(live),
+    )
+    await writer.flush()
+
+    live["findings"].append("second")  # type: ignore[attr-defined]
+    await writer.record("agent-1", status="completed", response=1, flow_context=live)
+
+    recovered = load_checkpoint(path)
+    assert "_recovery" not in recovered, recovered.get("_recovery")
+    assert recovered["flow_context"]["findings"] == ["first", "second"]
+
+
+# --- a record on disk that memory forgot is a record compaction deletes ------
+
+
+async def test_an_fsync_failed_record_survives_the_next_compaction(tmp_path: Path, monkeypatch):
+    """Compaction rewrites the base from memory and then clears the journal. An
+    operation whose record reached the file but was never applied in memory is
+    in neither afterwards, so a durable completion is lost for good."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path, compact_every=2)
+    await writer.flush()
+
+    real_fsync = os.fsync
+    armed = {"value": True}
+
+    def flaky_fsync(descriptor):
+        if armed["value"]:
+            armed["value"] = False
+            real_fsync(descriptor)
+            raise OSError(errno.EIO, "injected fsync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", flaky_fsync)
+
+    with pytest.raises(OSError):
+        await writer.record("agent-1", status="completed", response=1)
+    assert armed["value"] is False, "the injected failure never fired"
+
+    # Reaches compact_every and rebases from memory, discarding the journal.
+    await writer.record("agent-2", status="completed", response=2)
+    assert writer.journal_records() == []
+
+    recovered = load_checkpoint(path)
+    assert set(recovered["ops"]) == {"agent-1", "agent-2"}
+    assert recovered["ops"]["agent-1"]["response"] == 1
+
+
+# --- a stopped write must not swallow the record that follows it -------------
+
+
+async def test_a_partial_append_does_not_glue_itself_to_the_next_record(
+    tmp_path: Path, monkeypatch
+):
+    """A write that stops halfway leaves bytes with no newline. Reporting that
+    as a write that never happened leaves the sequence unspent, so the retry
+    lands directly behind the fragment and the two become one unreadable line --
+    which recovery stops at, discarding every valid completion after it."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.record("agent-0", status="completed", response=0)
+
+    real_write = os.write
+    state = {"phase": "short"}
+
+    def truncating_write(descriptor, payload):
+        # A short write is not an error: it returns a smaller count and the
+        # caller is expected to send the rest. The failure lands on that retry,
+        # which is what leaves a fragment in the file.
+        if state["phase"] == "short" and len(payload) > 8:
+            state["phase"] = "fail"
+            return real_write(descriptor, payload[:8])
+        if state["phase"] == "fail":
+            state["phase"] = "done"
+            raise OSError(errno.EIO, "injected write failure")
+        return real_write(descriptor, payload)
+
+    monkeypatch.setattr(os, "write", truncating_write)
+
+    with pytest.raises(OSError):
+        await writer.record("agent-1", status="completed", response=1)
+    assert state["phase"] == "done", "the injected failure never fired"
+
+    await writer.record("agent-2", status="completed", response=2)
+    monkeypatch.undo()
+
+    lines = writer.journal_path.read_bytes().splitlines()
+    # Three lines: the first record, the fragment on its own, and the next
+    # record intact rather than appended to the fragment.
+    assert len(lines) == 3, lines
+    assert json.loads(lines[0])["entry"]["agent_id"] == "agent-0"
+    assert json.loads(lines[2])["entry"]["agent_id"] == "agent-2"
+
+    recovered = load_checkpoint(path)
+    assert recovered["_recovery"]["invalid_record"] is True
+    assert set(recovered["ops"]) == {"agent-0"}
+
+
+# --- an id with no outcome is not a lighter record ---------------------------
+
+
+async def test_recovery_refuses_a_record_that_carries_an_id_but_no_outcome(tmp_path: Path):
+    """Applied, such a record makes resume skip an operation whose result it
+    does not have, and report success doing it."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.record("agent-1", status="completed", response=1)
+
+    state = json.loads(path.read_text())
+    with writer.journal_path.open("ab") as journal:
+        journal.write(
+            json.dumps(
+                {
+                    "version": CHECKPOINT_VERSION,
+                    "generation": state["generation"],
+                    "seq": 2,
+                    "kind": "op",
+                    "entry": {"agent_id": "agent-2"},
+                }
+            ).encode()
+            + b"\n"
+        )
+
+    recovered = load_checkpoint(path)
+    assert recovered["_recovery"]["invalid_record"] is True
+    assert set(recovered["ops"]) == {"agent-1"}
