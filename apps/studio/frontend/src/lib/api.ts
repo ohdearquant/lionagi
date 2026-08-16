@@ -18,7 +18,6 @@ import type {
   OperatorTurnAccepted,
   OperatorTurnRequest,
   ResumeAvailability,
-  RunDetail,
   RunResumeRequest,
   RunResumeResponse,
   RunSummary,
@@ -799,10 +798,6 @@ export interface RunProjectsResponse {
  * filter's option list without requiring a full unfiltered run scan. */
 export async function listRunProjects(): Promise<RunProjectsResponse> {
   return fetchJson<RunProjectsResponse>("/api/runs/projects");
-}
-
-export async function getRun(runId: string): Promise<RunDetail> {
-  return fetchJson<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`);
 }
 
 export async function resumeRun(
