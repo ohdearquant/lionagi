@@ -532,8 +532,11 @@ async def _one_pass(db, root: Path, states, offsets, *, since, live_window, line
         if "_precompact_" in path.name:
             continue  # PreCompact-hook backups duplicate the live transcript (same sessionId)
         try:
-            modified_at = path.stat().st_mtime
-            if since is not None and (now - modified_at) > since:
+            # Stat only where the window will read it. With no window
+            # configured -- the CLI's default -- the mtime has no other
+            # consumer, and statting for it costs one syscall per transcript
+            # per pass, which is the per-file work this loop exists to avoid.
+            if since is not None and (now - path.stat().st_mtime) > since:
                 continue
             key = str(path)
             state = states.get(key)
@@ -758,8 +761,9 @@ async def _codex_pass(db, root: Path, states, offsets, *, since, live_window, th
     reconcile: dict[str, list[_FileState]] = {}
     for path in sorted(root.rglob("rollout-*.jsonl")):
         try:
-            modified_at = path.stat().st_mtime
-            if since is not None and (now - modified_at) > since:
+            # Same as the claude pass: the mtime is the window's input and
+            # nothing else's, so an unwindowed sweep must not pay for it.
+            if since is not None and (now - path.stat().st_mtime) > since:
                 continue
             key = str(path)
             state = states.get(key)
