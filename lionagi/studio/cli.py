@@ -2322,7 +2322,7 @@ def add_schedule_subparser(subparsers: argparse._SubParsersAction) -> argparse.A
         "--status",
         action="append",
         metavar="STATUS",
-        help="Filter by run status; repeatable.",
+        help="Filter by run status; repeatable (e.g. failed, timed_out).",
     )
     runs_p.add_argument("--json", dest="as_json", action="store_true", help="Emit JSON.")
 

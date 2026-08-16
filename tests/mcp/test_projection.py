@@ -548,3 +548,72 @@ def test_the_real_agent_schema_no_longer_points_at_flags_it_cannot_take() -> Non
     query = schema["properties"]["query"]["description"]
     assert "--resume" not in query and "--prompt-file" not in query
     assert "`resume`" in query and "`prompt_file`" in query
+
+
+def test_a_reference_after_an_example_is_still_named() -> None:
+    """Protection is per span. A description often carries both.
+
+    `schedule create.cron` reads `e.g. "0 * * * *". Required when
+    --trigger-type is cron`: the example is a cron string and the flag is in
+    the sentence after it. Skipping the whole description on the strength of
+    one `e.g.` leaves exactly the reference this exists to fix.
+    """
+    text = 'Cron expression, e.g. "0 * * * *". Required when --resume is set.'
+    assert _subject_description(text) == (
+        'Cron expression, e.g. "0 * * * *". Required when `resume` is set.'
+    )
+
+
+def test_an_example_protects_only_its_own_clause() -> None:
+    text = "Attach (repeatable, e.g. --resume a --resume b). Then set --context-from."
+    assert _subject_description(text) == (
+        "Attach (repeatable, e.g. --resume a --resume b). Then set `context_from`."
+    )
+
+
+def test_prose_quoting_a_command_keeps_naming_its_own_references() -> None:
+    """A line that *mentions* a command is not a usage line.
+
+    Anchoring the usage rule at the line start is what separates them; without
+    it, any sentence containing `li ...` loses every rewrite on that line.
+    """
+    assert _subject_description("Resolved like `li agent --resume`, then set --resume.") == (
+        "Resolved like `li agent --resume`, then set `resume`."
+    )
+
+
+def test_the_real_schedule_create_schema_names_its_trigger_type() -> None:
+    schema = project_parser(build_parser_for("schedule create"), path="schedule create")
+    cron = schema["properties"]["cron"]["description"]
+    assert "--trigger-type" not in cron
+    assert "`trigger_type`" in cron
+    assert '"0 * * * *"' in cron, "the example value was rewritten or lost"
+
+
+def test_projecting_does_not_mutate_a_shared_json_schema() -> None:
+    """A JSON-valued argument's schema is only shallow-copied from its declarer.
+
+    Rewriting nested descriptions in place would write projection-only text
+    back into a schema other callers read, and it would accumulate across
+    calls. Projecting the same parser twice must produce the same thing.
+    """
+    from lionagi.cli._argtypes import JsonArgument
+
+    declared = {
+        "type": "object",
+        "properties": {"inner": {"type": "string", "description": "Set with --resume."}},
+    }
+    kind = JsonArgument(declared)
+    parser = argparse.ArgumentParser(prog="probe", description="probe")
+    parser.add_argument("-r", "--resume", help="resume")
+    parser.add_argument("--payload", type=kind, help="payload")
+
+    projected = project_parser(parser, path="probe")
+
+    assert (
+        projected["properties"]["payload"]["properties"]["inner"]["description"]
+        == "Set with `resume`."
+    )
+    assert declared["properties"]["inner"]["description"] == "Set with --resume.", (
+        "the rewrite was written back into the schema the argument declares"
+    )

@@ -354,10 +354,32 @@ def _mutually_exclusive(parser: argparse.ArgumentParser) -> list[dict[str, Any]]
 # A run of flag spellings offered as alternatives, e.g. ``-r / --resume``.
 _FLAG_ALTERNATIVES = re.compile(r"--?[A-Za-z][\w-]*(?:\s*/\s*--?[A-Za-z][\w-]*)*")
 
-# Help text that DEMONSTRATES a command rather than referring to one: a literal
-# invocation, or a worked example. Those are meant to be read as typed, so the
-# flags in them are the point and renaming them produces a line that does not run.
-_DEMONSTRATES = re.compile(r"(?:^|\s)li\s+[a-z]|\be\.g\.|\bExample\b", re.IGNORECASE)
+# Spans of help text that are meant to be read exactly as written, so a flag
+# inside one is the point rather than a reference to a parameter.
+_PROTECTED_SPANS = (
+    # Already-literal: a backtick-quoted span, typically a whole command.
+    re.compile(r"`[^`]*`"),
+    # A usage-block line: one that *is* a command, not one that mentions one.
+    # Anchored at the line start so prose quoting a command inline keeps its
+    # own flag references rewritable; the quoted span covers the command itself.
+    re.compile(r"^[ \t]*li\s+[a-z][^\n]*$", re.MULTILINE),
+    # A worked example, from its marker to the end of the parenthetical or the
+    # sentence carrying it -- NOT to the end of the description. A sentence that
+    # merely follows an example still refers to parameters like any other.
+    re.compile(r"(?:e\.g\.|Example\b[^:.]*:?)(?:[^.)\n]|\.(?!\s))*[.)]?", re.IGNORECASE),
+)
+
+
+def _protected_ranges(text: str) -> list[tuple[int, int]]:
+    """Character ranges of *text* that must survive verbatim, merged."""
+    spans = sorted(m.span() for pattern in _PROTECTED_SPANS for m in pattern.finditer(text))
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def _flag_properties(parser: argparse.ArgumentParser) -> dict[str, str]:
@@ -369,6 +391,10 @@ def _flag_properties(parser: argparse.ArgumentParser) -> dict[str, str]:
         for option in action.option_strings:
             out[option] = action.dest
     return out
+
+
+# A run of flag spellings offered as alternatives, e.g. ``-r / --resume``.
+_FLAG_ALTERNATIVES = re.compile(r"--?[A-Za-z][\w-]*(?:\s*/\s*--?[A-Za-z][\w-]*)*")
 
 
 def _name_parameters(text: str, flags: dict[str, str]) -> str:
@@ -383,14 +409,11 @@ def _name_parameters(text: str, flags: dict[str, str]) -> str:
     those are still meant literally, so an unrecognised flag is left exactly as
     written rather than guessed at.
 
-    Text that demonstrates a command is left whole for the same reason. A worked
-    example or a literal ``li ...`` line is meant to be read as typed, and a
-    renamed flag inside one produces a command that does not run while still
-    looking like it would. Referring to a flag and showing one being used are
-    different acts, and only the first has a parameter to name.
+    Protection is per span, not per description. A sentence that merely follows
+    an example still refers to parameters like any other, and skipping the whole
+    description on the strength of one ``e.g.`` elsewhere in it leaves exactly
+    the references this exists to fix.
     """
-    if _DEMONSTRATES.search(text):
-        return text
 
     def replace(match: re.Match[str]) -> str:
         spellings = [part.strip() for part in match.group(0).split("/")]
@@ -402,30 +425,36 @@ def _name_parameters(text: str, flags: dict[str, str]) -> str:
         seen = list(dict.fromkeys(named))
         return " / ".join(f"`{name}`" for name in seen)
 
-    # Backtick-quoted spans are already literal -- typically a whole command,
-    # like `li agent --agent`. Renaming a flag inside one both breaks the
-    # command and nests the quoting, so only the text between spans is touched.
-    parts = text.split("`")
-    for index in range(0, len(parts), 2):
-        parts[index] = _FLAG_ALTERNATIVES.sub(replace, parts[index])
-    return "`".join(parts)
+    out: list[str] = []
+    cursor = 0
+    for start, end in _protected_ranges(text):
+        out.append(_FLAG_ALTERNATIVES.sub(replace, text[cursor:start]))
+        out.append(text[start:end])
+        cursor = end
+    out.append(_FLAG_ALTERNATIVES.sub(replace, text[cursor:]))
+    return "".join(out)
 
 
-def _rewrite_descriptions(node: Any, flags: dict[str, str]) -> None:
-    """Rename flags to parameters in every description under *node*, in place.
+def _rewrite_descriptions(node: Any, flags: dict[str, str]) -> Any:
+    """Copy *node* with flags in every description named as parameters.
 
-    A JSON-valued argument projects to a nested schema whose own fields carry
-    help text too, so this recurses rather than touching only the top level.
+    Returns a new structure rather than editing in place: a JSON-valued
+    argument's schema is only shallow-copied from the ``JsonArgument`` that
+    declares it, so mutating nested objects would write these projection-only
+    rewrites back into a schema other callers share.
     """
     if isinstance(node, dict):
-        for key, value in node.items():
-            if key == "description" and isinstance(value, str):
-                node[key] = _name_parameters(value, flags)
-            else:
-                _rewrite_descriptions(value, flags)
-    elif isinstance(node, list):
-        for item in node:
-            _rewrite_descriptions(item, flags)
+        return {
+            key: (
+                _name_parameters(value, flags)
+                if key == "description" and isinstance(value, str)
+                else _rewrite_descriptions(value, flags)
+            )
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [_rewrite_descriptions(item, flags) for item in node]
+    return node
 
 
 def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, Any]:
@@ -451,8 +480,9 @@ def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, A
             continue
         if action.dest == argparse.SUPPRESS:
             continue
-        properties[action.dest] = _project_action(path, parser, action)
-        _rewrite_descriptions(properties[action.dest], flags)
+        properties[action.dest] = _rewrite_descriptions(
+            _project_action(path, parser, action), flags
+        )
         if _accepts_no_values(action):
             unenforced.append(action.dest)
         elif action.required:

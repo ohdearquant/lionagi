@@ -21,7 +21,7 @@
         "x-flag": "--limit"
       },
       "status": {
-        "description": "Filter by run status; repeatable.",
+        "description": "Filter by run status; repeatable (e.g. failed, timed_out).",
         "items": {
           "type": "string"
         },

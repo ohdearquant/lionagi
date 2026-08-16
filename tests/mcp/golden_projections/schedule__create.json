@@ -39,7 +39,7 @@
         "x-flag": "--agent"
       },
       "cron": {
-        "description": "Cron expression, e.g. \"0 * * * *\". Required when --trigger-type is cron, which is the default; ignored for other trigger types.",
+        "description": "Cron expression, e.g. \"0 * * * *\". Required when `trigger_type` is cron, which is the default; ignored for other trigger types.",
         "type": "string",
         "x-flag": "--cron"
       },
@@ -99,7 +99,7 @@
         "x-positional": true
       },
       "on_fail": {
-        "description": "Chain action to fire when this run exits non-zero, as a JSON object (same allowed keys and shallow-merge caveat as --on-success \u2014 see above). Example value: {\"prompt\": \"alert on-call\", \"on_fail\": null}",
+        "description": "Chain action to fire when this run exits non-zero, as a JSON object (same allowed keys and shallow-merge caveat as `on_success` \u2014 see above). Example value: {\"prompt\": \"alert on-call\", \"on_fail\": null}",
         "type": "string",
         "x-flag": "--on-fail"
       },

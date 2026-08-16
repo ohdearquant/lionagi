@@ -4786,7 +4786,7 @@
               "nargs": null,
               "default": null,
               "choices": null,
-              "help": "Filter by run status; repeatable."
+              "help": "Filter by run status; repeatable (e.g. failed, timed_out)."
             },
             {
               "option_strings": [

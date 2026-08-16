@@ -930,7 +930,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "Kill a running lionagi entity by id, or sweep all stale running entities whose underlying OS process is dead.\n\nThe entity's status is set to 'cancelled' (sessions/invocations), 'blocked' (plays), or 'aborted' (shows) with reason tracking per ADR-0028.\n\nRecursion boundary: --recursive kills a session's or invocation's direct children, which are the PID-bearing workers. A PLAY kill reaches the play's worker chain only when the row records the session it started; a play created by a live run does not, so that kill marks the row terminal and exits non-zero to say no worker was stopped. A SHOW kill only marks the show row terminal. To stop work either one cannot reach, kill the session ids directly; --all-stale marks a play 'blocked' only when the row records a worker session that has gone terminal, and leaves an unlinked play running.\n\nExamples:\n  li kill abc123                        # kill by id prefix\n  li kill <session-id>                  # stop a worker process\n  li kill abc123 --reason 'stuck'\n  li kill abc123 --recursive            # kill + direct children\n  li kill --all-stale                   # sweep dead-PID rows\n  li kill --all-stale --threshold 3600  # only rows older than 1h\n  li kill --all-stale --dry-run",
+        "description": "Kill a running lionagi entity by id, or sweep all stale running entities whose underlying OS process is dead.\n\nThe entity's status is set to 'cancelled' (sessions/invocations), 'blocked' (plays), or 'aborted' (shows) with reason tracking per ADR-0028.\n\nRecursion boundary: `recursive` kills a session's or invocation's direct children, which are the PID-bearing workers. A PLAY kill reaches the play's worker chain only when the row records the session it started; a play created by a live run does not, so that kill marks the row terminal and exits non-zero to say no worker was stopped. A SHOW kill only marks the show row terminal. To stop work either one cannot reach, kill the session ids directly; `all_stale` marks a play 'blocked' only when the row records a worker session that has gone terminal, and leaves an unlinked play running.\n\nExamples:\n  li kill abc123                        # kill by id prefix\n  li kill <session-id>                  # stop a worker process\n  li kill abc123 --reason 'stuck'\n  li kill abc123 --recursive            # kill + direct children\n  li kill --all-stale                   # sweep dead-PID rows\n  li kill --all-stale --threshold 3600  # only rows older than 1h\n  li kill --all-stale --dry-run",
         "x-positional-order": [
           "id"
         ]
@@ -1575,7 +1575,7 @@
           },
           "reactive": {
             "type": "string",
-            "description": "Who may grow the live DAG by emitting a SpawnRequest: 'all' (default \u2014 every worker), 'off' (flat batch DAG, no spawning), or a comma-separated list of roles (e.g. 'critic,evaluator') that alone may spawn. Caps still apply via --max-ops.",
+            "description": "Who may grow the live DAG by emitting a SpawnRequest: 'all' (default \u2014 every worker), 'off' (flat batch DAG, no spawning), or a comma-separated list of roles (e.g. 'critic,evaluator') that alone may spawn. Caps still apply via `max_ops`.",
             "x-flag": "--reactive"
           },
           "resume": {
@@ -1884,7 +1884,7 @@
           },
           "cron": {
             "type": "string",
-            "description": "Cron expression, e.g. \"0 * * * *\". Required when --trigger-type is cron, which is the default; ignored for other trigger types.",
+            "description": "Cron expression, e.g. \"0 * * * *\". Required when `trigger_type` is cron, which is the default; ignored for other trigger types.",
             "x-flag": "--cron"
           },
           "interval": {
@@ -2010,7 +2010,7 @@
           },
           "on_fail": {
             "type": "string",
-            "description": "Chain action to fire when this run exits non-zero, as a JSON object (same allowed keys and shallow-merge caveat as --on-success \u2014 see above). Example value: {\"prompt\": \"alert on-call\", \"on_fail\": null}",
+            "description": "Chain action to fire when this run exits non-zero, as a JSON object (same allowed keys and shallow-merge caveat as `on_success` \u2014 see above). Example value: {\"prompt\": \"alert on-call\", \"on_fail\": null}",
             "x-flag": "--on-fail"
           }
         },
@@ -2210,7 +2210,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Filter by run status; repeatable.",
+            "description": "Filter by run status; repeatable (e.g. failed, timed_out).",
             "x-flag": "--status"
           },
           "as_json": {

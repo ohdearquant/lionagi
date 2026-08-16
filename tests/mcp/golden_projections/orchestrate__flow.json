@@ -139,7 +139,7 @@
         "x-positional": true
       },
       "reactive": {
-        "description": "Who may grow the live DAG by emitting a SpawnRequest: 'all' (default \u2014 every worker), 'off' (flat batch DAG, no spawning), or a comma-separated list of roles (e.g. 'critic,evaluator') that alone may spawn. Caps still apply via --max-ops.",
+        "description": "Who may grow the live DAG by emitting a SpawnRequest: 'all' (default \u2014 every worker), 'off' (flat batch DAG, no spawning), or a comma-separated list of roles (e.g. 'critic,evaluator') that alone may spawn. Caps still apply via `max_ops`.",
         "type": "string",
         "x-flag": "--reactive"
       },
