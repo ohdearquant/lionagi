@@ -562,7 +562,8 @@
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "Aucune commande ne permet encore d'exécuter cette action."
+          "no-executable-path": "Aucune commande ne permet encore d'exécuter cette action.",
+          "no-project-scope": "Cette exécution n'a pas de projet, aucune commande ne peut donc être autorisée."
         }
       }
     },

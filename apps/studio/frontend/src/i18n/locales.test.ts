@@ -220,8 +220,13 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // shown when an agent run has no runner that would deliver a control. It
   // ships English-copied in all 15 non-English locales, like its sibling
   // agent-no-pause-seam; that debt is attributed in the baseline below.
-  it("en.json has 1099 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1099);
+  //
+  // 1100 = 1099 + history.detail.controls.reason.no-project-scope, the refusal
+  // shown when a run carries no project for a control to be authorized
+  // against. Natively translated in all 16, so unlike its two siblings it adds
+  // nothing to the identity-leak baseline below.
+  it("en.json has 1100 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1100);
   });
 
   it.each(LOCALES.map((l) => l.code))(

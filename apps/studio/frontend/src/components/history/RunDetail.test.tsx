@@ -2543,6 +2543,10 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
       status: "running",
       invocation_kind: invocationKind,
       has_control_consumer: hasControlConsumer,
+      // A control is authorized against the project of the conversation it is
+      // proposed in, which comes from the run. A session without one is its
+      // own case, covered separately below.
+      project: "studio",
       branches: [],
       graph: flatGraph,
     };
@@ -2659,6 +2663,71 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
     }
   });
 
+  it("refuses every control on a completed_empty run, which the server will not admit", async () => {
+    // completed_empty is a valid terminal status the display mapping does not
+    // recognize, so it used to fold into "running" and leave these controls
+    // enabled against a run the server refuses with not_running.
+    const { container, unmount } = await mountRunDetail({
+      ...sessionOf("flow"),
+      status: "completed_empty",
+    });
+    try {
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-pause"]')?.disabled,
+      ).toBe(true);
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-steer"]')?.disabled,
+      ).toBe(true);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("refuses every control on a run with no project, and says which limit it is", async () => {
+    // A control is authorized against the project of the conversation it is
+    // proposed in, and a run with no project leaves that conversation nothing
+    // to be scoped to. The server rejects it before proposing anything, so an
+    // enabled control here is one that can never succeed.
+    const { project: _omitted, ...withoutProject } = sessionOf("flow");
+    const { container, unmount } = await mountRunDetail(withoutProject);
+    try {
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-pause"]')?.disabled,
+      ).toBe(true);
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-steer"]')?.disabled,
+      ).toBe(true);
+      const reason = container.querySelector(
+        '[data-testid="run-controls-reason-no-project-scope"]',
+      );
+      expect(reason?.textContent).toBe(
+        "This run has no project, so a control cannot be authorized for it.",
+      );
+    } finally {
+      unmount();
+    }
+  });
+
+  it("a run the server reports as paused offers Resume on a fresh mount", async () => {
+    // The state this closes: pause lived only in component state, so a reload
+    // of a still-paused run came back reading "not paused" — Pause enabled,
+    // Resume refused, and no way left to release the gate.
+    const { container, unmount } = await mountRunDetail({
+      ...sessionOf("flow"),
+      pause_is_held: true,
+    });
+    try {
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-resume"]')?.disabled,
+      ).toBe(false);
+      expect(
+        container.querySelector<HTMLButtonElement>('[data-testid="run-controls-pause"]')?.disabled,
+      ).toBe(true);
+    } finally {
+      unmount();
+    }
+  });
+
   it("a response that never carried the capability field does not enable steering", async () => {
     // Absent is not evidence of a capability: the strict compare in RunDetail
     // is what keeps a missing field from reading as permission.
@@ -2740,6 +2809,7 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
       updated_at: 0,
       status: "running",
       invocation_kind: "flow",
+      project: "studio",
       branches: [],
       graph: flatGraph,
     })) as never);

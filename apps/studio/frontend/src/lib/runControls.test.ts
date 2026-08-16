@@ -518,3 +518,145 @@ describe("lib/runControls — proposeRunControl / confirmRunControl route throug
     ).rejects.toThrow(/ended without a proposal \(completed\)/);
   });
 });
+
+describe("lib/runControls — runAdmitsControls (the client/server admission mirror)", () => {
+  it("admits only a running run, matching what the server's admission asks", async () => {
+    const { runAdmitsControls } = await import("./runControls");
+    expect(runAdmitsControls("running")).toBe(true);
+  });
+
+  it("refuses every other status the sessions table allows, completed_empty included", async () => {
+    const { runAdmitsControls } = await import("./runControls");
+    // The full CHECK constraint on sessions.status, minus "running". Named as
+    // the whole population rather than sampled: the defect this closes was one
+    // member of it being absent from a list of statuses to refuse.
+    const terminal = [
+      "completed",
+      "completed_empty",
+      "failed",
+      "timed_out",
+      "aborted",
+      "cancelled",
+    ];
+    expect(terminal.map(runAdmitsControls)).toEqual(terminal.map(() => false));
+  });
+
+  it("refuses a status it does not recognize, rather than assuming the run is live", async () => {
+    const { runAdmitsControls } = await import("./runControls");
+    // The arm that makes this a gate rather than a second status list. The
+    // display mapping folds an unknown status into "running" on purpose; a
+    // gate built on it enables a control the server will reject.
+    expect(runAdmitsControls("some_status_added_later")).toBe(false);
+    expect(runAdmitsControls(null)).toBe(false);
+    expect(runAdmitsControls(undefined)).toBe(false);
+    expect(runAdmitsControls("")).toBe(false);
+  });
+});
+
+describe("lib/runControls — applyProjectScope", () => {
+  it("disables an offered control when the run carries no project", async () => {
+    const { applyProjectScope } = await import("./runControls");
+    const enabled = { offered: true, disabled: false, reasonCode: null } as const;
+    for (const project of [null, undefined, ""]) {
+      expect(applyProjectScope(project, enabled)).toEqual({
+        offered: true,
+        disabled: true,
+        reasonCode: "no-project-scope",
+      });
+    }
+  });
+
+  it("leaves a control alone when the run has a project", async () => {
+    const { applyProjectScope } = await import("./runControls");
+    const enabled = { offered: true, disabled: false, reasonCode: null } as const;
+    expect(applyProjectScope("studio", enabled)).toEqual(enabled);
+  });
+
+  it("wins over the run-state reason, which would otherwise say to wait", async () => {
+    const { applyProjectScope } = await import("./runControls");
+    const notPaused = { offered: true, disabled: true, reasonCode: "not-paused" } as const;
+    expect(applyProjectScope(null, notPaused).reasonCode).toBe("no-project-scope");
+  });
+
+  it("never adds a control the state machine did not offer", async () => {
+    const { applyProjectScope } = await import("./runControls");
+    const unoffered = { offered: false, disabled: true, reasonCode: null } as const;
+    expect(applyProjectScope(null, unoffered)).toEqual(unoffered);
+  });
+});
+
+describe("lib/runControls — proposeRunControl scopes its conversation", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("creates the conversation in the run's project, not only the turn context", async () => {
+    const createOperatorConversation = vi.fn().mockResolvedValue({ id: "conv-p" });
+    const submitOperatorTurn = vi.fn().mockResolvedValue({
+      conversationId: "conv-p",
+      requestId: "req-p",
+      acceptedSequence: 1,
+    });
+    vi.doMock("@/lib/api", () => ({
+      createOperatorConversation,
+      submitOperatorTurn,
+      streamOperatorConversation: vi.fn((_conversationId, _after, handlers) => {
+        queueMicrotask(() =>
+          handlers.onFrame({
+            version: 1,
+            conversationId: "conv-p",
+            requestId: "req-p",
+            sequence: 2,
+            type: "proposal",
+            payload: { proposal: { id: "prop-p", commandType: "pause_run" } },
+            createdAt: Date.now(),
+          }),
+        );
+        return () => {};
+      }),
+      confirmOperatorProposal: vi.fn(),
+    }));
+
+    const { proposeRunControl } = await import("./runControls");
+    await proposeRunControl("run-p", "flow", "pause", { project: "studio" });
+
+    // The server authorizes against the conversation's project. Asserting the
+    // turn context alone would pass while the conversation stayed unscoped,
+    // which is the arrangement that made the context self-authorizing.
+    expect(createOperatorConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ project: "studio" }),
+    );
+    expect(submitOperatorTurn).toHaveBeenCalledWith(
+      "conv-p",
+      expect.objectContaining({ context: expect.objectContaining({ project: "studio" }) }),
+    );
+  });
+});
+
+describe("lib/runControls — derivePausePhase, established vs freshly requested", () => {
+  it("holds an unknown count at pausing for a request made just now", async () => {
+    const { derivePausePhase } = await import("./runControls");
+    expect(derivePausePhase(true, null)).toBe("pausing");
+    expect(derivePausePhase(true, null, false)).toBe("pausing");
+  });
+
+  it("reads an established gate as paused when the count is unknown", async () => {
+    const { derivePausePhase } = await import("./runControls");
+    // A run with no authored graph never produces a count, so the cautious
+    // reading never resolves — and a gate stuck at "pausing" is one Resume
+    // will not release.
+    expect(derivePausePhase(true, null, true)).toBe("paused");
+  });
+
+  it("still reports pausing while operations are known to be in flight", async () => {
+    const { derivePausePhase } = await import("./runControls");
+    // The argument changes the unknown case only. A count that says work is
+    // still running outranks it, established gate or not.
+    expect(derivePausePhase(true, 2, true)).toBe("pausing");
+  });
+
+  it("stays idle when no pause is in effect from either source", async () => {
+    const { derivePausePhase } = await import("./runControls");
+    expect(derivePausePhase(false, null, true)).toBe("idle");
+  });
+});

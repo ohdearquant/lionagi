@@ -562,7 +562,8 @@
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "لا يوجد بعد أمر لتنفيذ هذا الإجراء."
+          "no-executable-path": "لا يوجد بعد أمر لتنفيذ هذا الإجراء.",
+          "no-project-scope": "لا يوجد مشروع لهذا التشغيل، لذا لا يمكن تخويل أي تحكم."
         }
       }
     },

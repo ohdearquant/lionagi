@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from collections.abc import Callable
@@ -290,8 +291,13 @@ async def _seed_foreign_run(db: Any, *, project: str, kind: str = "flow") -> str
 async def _turn_without_project(
     store: OperatorStore, monkeypatch: pytest.MonkeyPatch, path: Path
 ) -> str:
-    """A running turn whose context names no project at all."""
-    conversation = await store.create_conversation(project=PROJECT)
+    """A running turn whose conversation names no project at all.
+
+    The conversation is what scopes a control, so an unscoped turn is one whose
+    conversation carries no project -- the context here names none either, which
+    keeps the fixture honest about having no scope from any source.
+    """
+    conversation = await store.create_conversation(project=None)
     accepted = await store.submit_turn(
         conversation["id"],
         instruction="control this run",
@@ -387,6 +393,94 @@ async def test_a_scoped_turn_cannot_propose_against_another_projects_run(
 
     # Reported as absence, so the refusal carries no signal about a run the
     # turn is not entitled to know exists.
+    assert result == {"queued": False, "reason": "not_found"}
+    assert await store.list_proposals_for_request(request_id) == []
+    async with StateDB() as db:
+        assert await db.list_pending_session_controls(foreign_id) == []
+
+
+async def _turn_with_poisoned_context_project(
+    store: OperatorStore,
+    monkeypatch: pytest.MonkeyPatch,
+    path: Path,
+    *,
+    conversation_project: str | None,
+    claimed_project: str,
+) -> str:
+    """A running turn whose stored context names a project its conversation does not.
+
+    Written straight into the row rather than passed to ``submit_turn``, which
+    binds the field to the conversation and would leave nothing to test. The
+    point of the fixture is a turn context that disagrees with its conversation
+    no matter how it got that way, so that what the control path relies on is
+    the property under test rather than the other fix upstream of it.
+    """
+    import aiosqlite
+
+    conversation = await store.create_conversation(project=conversation_project)
+    accepted = await store.submit_turn(
+        conversation["id"],
+        instruction="control this run",
+        context={"space": "history", "route": "/history", "selection": {}, "filters": {}},
+        expected_last_sequence=0,
+    )
+    request_id = accepted["requestId"]
+    poisoned = json.dumps(
+        {
+            "space": "history",
+            "route": "/history",
+            "selection": {},
+            "filters": {},
+            "project": claimed_project,
+        }
+    )
+    async with aiosqlite.connect(str(path)) as db:
+        await db.execute(
+            "UPDATE studio_operator_turns SET context_json = ? WHERE request_id = ?",
+            (poisoned, request_id),
+        )
+        await db.commit()
+    stored = await store.get_turn(request_id)
+    assert stored["context"]["project"] == claimed_project, "fixture did not poison the turn"
+
+    assert await store.mark_running(request_id)
+    monkeypatch.setenv("LIONAGI_OPERATOR_DB_PATH", str(path))
+    monkeypatch.setenv("LIONAGI_OPERATOR_CONVERSATION_ID", conversation["id"])
+    monkeypatch.setenv("LIONAGI_OPERATOR_REQUEST_ID", request_id)
+    return request_id
+
+
+@pytest.mark.asyncio
+async def test_a_turn_cannot_widen_its_own_scope_by_naming_a_project_in_its_context(
+    tmp_path: Path, monkeypatch
+):
+    """Scope comes from the conversation, so the turn body cannot choose it.
+
+    A turn's context is whatever its request body carried. If that is what
+    authorizes a control, then naming another project in it is the whole
+    bypass: pick a project, name a run id from it, and the ownership check
+    agrees. The conversation's project is written once at creation and has no
+    update parameter, which is why the bind reads from there instead.
+    """
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "state.db"
+    _patch_state_db(monkeypatch, path)
+    async with StateDB() as db:
+        foreign_id = await _seed_foreign_run(db, project="someone-elses-project")
+
+    store = OperatorStore(path)
+    await store.ensure_schema()
+    request_id = await _turn_with_poisoned_context_project(
+        store,
+        monkeypatch,
+        path,
+        conversation_project=PROJECT,
+        claimed_project="someone-elses-project",
+    )
+
+    result = await pause_run({"run": foreign_id})
+
     assert result == {"queued": False, "reason": "not_found"}
     assert await store.list_proposals_for_request(request_id) == []
     async with StateDB() as db:

@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .redact import public_project, scrub_text
 from .run_progress import resolve_run
-from .store import OperatorStore
+from .store import OperatorNotFoundError, OperatorStore
 
 PAUSE_RUN_COMMAND_TYPE = "pause_run"
 RELEASE_RUN_PAUSE_COMMAND_TYPE = "release_run_pause"
@@ -80,7 +80,7 @@ class SteerRunInput(_StrictInput):
 class MissingOwnerContextError(ValueError):
     """The calling turn has no durable project mapping to authorize against.
 
-    A turn whose identity is present but whose own context names no project
+    A turn whose identity is present but whose conversation names no project
     must never be treated as authorized for every project's runs. A separate
     small copy of ``run_progress.py``'s and ``cancel_run.py``'s, kept local for
     the same reason theirs are: this module's identity and store handling stays
@@ -91,19 +91,32 @@ class MissingOwnerContextError(ValueError):
 async def _allowed_project(store: OperatorStore, request_id: str) -> str:
     """The project this Operator turn is scoped to.
 
+    Read from the conversation the turn belongs to, never from the turn's own
+    ``context``. That context is whatever the turn request body carried, so a
+    caller naming another project in it would be authorizing itself for that
+    project's runs. A conversation's ``project`` is written once when the
+    conversation is created and ``update_conversation`` exposes no parameter to
+    change it, which is what makes it the durable half of the pair.
+
     Raises rather than returning a sentinel, which is the difference that
     matters for a control. ``run_progress.py``'s copy returns ``None`` when the
     turn identity is absent entirely, so read paths fall open for direct calls;
     a control mutates the run it names, so there is no version of "no scope" it
-    can safely proceed under.
+    can safely proceed under. A turn whose conversation is gone lands here too:
+    it has no owner left to check against, which is the same refusal.
     """
     turn = await store.get_turn(request_id)
-    context = turn.get("context")
-    project = context.get("project") if isinstance(context, dict) else None
+    conversation_id = turn.get("conversationId")
+    project: Any = None
+    if isinstance(conversation_id, str) and conversation_id:
+        try:
+            project = (await store.get_conversation(conversation_id)).get("project")
+        except OperatorNotFoundError:
+            project = None
     if not isinstance(project, str) or not project:
         raise MissingOwnerContextError(
-            "operator turn has no project context -- refusing to propose a "
-            "control against a run it cannot prove it owns"
+            "operator turn's conversation declares no project -- refusing to "
+            "propose a control against a run it cannot prove it owns"
         )
     return project
 

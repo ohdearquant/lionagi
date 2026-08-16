@@ -562,7 +562,8 @@
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "Belum ada perintah yang dapat menjalankan tindakan ini."
+          "no-executable-path": "Belum ada perintah yang dapat menjalankan tindakan ini.",
+          "no-project-scope": "Proses ini tidak memiliki proyek, sehingga kontrol tidak dapat diotorisasi."
         }
       }
     },

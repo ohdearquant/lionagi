@@ -56,6 +56,7 @@ import {
 import type { ProgressCounts } from "@/lib/execGraphProgress";
 import {
   applyExecutablePath,
+  applyProjectScope,
   confirmRunControl,
   controlKindFor,
   derivePausePhase,
@@ -63,9 +64,16 @@ import {
   pauseControlState,
   proposeRunControl,
   resumeControlState,
+  runAdmitsControls,
   steerControlState,
 } from "@/lib/runControls";
-import type { ControlKind, ControlReasonCode, ControlVerb, PausePhase } from "@/lib/runControls";
+import type {
+  ControlKind,
+  ControlReasonCode,
+  ControlState,
+  ControlVerb,
+  PausePhase,
+} from "@/lib/runControls";
 
 const WorkerCanvas = lazy(() => import("@/components/canvas/WorkerCanvas"));
 const EMPTY_SIGNAL_SNAPSHOT = new SignalProjection(1).snapshot();
@@ -1503,17 +1511,14 @@ function RunControls({
   if (!kind) return null;
 
   // applyExecutablePath layers command availability on top of the run's own
-  // state. The proposal-backed commands exist for all three verbs; the state
+  // state, and applyProjectScope layers the run's lack of a project on top of
+  // both. The proposal-backed commands exist for all three verbs; the state
   // machines still disable unsupported kinds and invalid phases explicitly.
-  const pauseState = applyExecutablePath("pause", pauseControlState(kind, runTerminal, pausePhase));
-  const resumeState = applyExecutablePath(
-    "resume",
-    resumeControlState(kind, runTerminal, pausePhase),
-  );
-  const steerState = applyExecutablePath(
-    "message",
-    steerControlState(kind, runTerminal, hasControlConsumer),
-  );
+  const gate = (verb: ControlVerb, state: ControlState): ControlState =>
+    applyProjectScope(project, applyExecutablePath(verb, state));
+  const pauseState = gate("pause", pauseControlState(kind, runTerminal, pausePhase));
+  const resumeState = gate("resume", resumeControlState(kind, runTerminal, pausePhase));
+  const steerState = gate("message", steerControlState(kind, runTerminal, hasControlConsumer));
 
   async function propose(verb: ControlVerb, message?: string) {
     setBusy(verb);
@@ -1831,7 +1836,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   // request itself is tracked locally rather than re-derived from a status
   // string that does not exist. A reload loses it, same as any other
   // client-only UI state; see the report for the follow-up this implies.
-  const [pauseRequested, setPauseRequested] = useState(false);
+  // Tri-state on purpose. `null` means "no local intent, use what the server
+  // reports"; true/false are the intent from a control confirmed on this
+  // screen, which is newer than the last fetch and outranks it until the run
+  // changes. A plain boolean cannot express the difference between "not
+  // paused" and "nobody here has said", and collapsing them is what left a
+  // reloaded paused run showing Pause enabled and Resume refused.
+  const [pauseIntent, setPauseIntent] = useState<boolean | null>(null);
   // Raw signal payloads are capped in a 2,000-row ring. The projection keeps
   // complete graph/status/activity/gate/lane indexes separately, so a 100k
   // replay does not leave 100k payload objects in React state or rescan them
@@ -1865,12 +1876,14 @@ export default function RunDetail({ id }: RunDetailProps) {
     setLive(false);
     setDone(false);
     setError(null);
-    // The pause request is scoped to the run it was made on. The Fleet view
+    // The pause intent is scoped to the run it was formed on. The Fleet view
     // keeps this component mounted and swaps `id`, so leaving it set let run
     // B derive its pause phase from run A's request: B could show pausing or
     // paused, disable its own Pause, and offer a Resume that would then send
     // a command carrying B's run id even though only A was ever paused.
-    setPauseRequested(false);
+    // Cleared to null, not false: run B has its own server-reported state,
+    // and false would assert it is not paused before anyone has looked.
+    setPauseIntent(null);
     setLoadingOlder(false);
     loadingOlderRef.current = false;
     setOlderLoadFailed(false);
@@ -2267,13 +2280,13 @@ export default function RunDetail({ id }: RunDetailProps) {
     [id],
   );
 
-  // Confirming a pause proposal marks the request locally; derivePausePhase
+  // Confirming a proposal records the intent locally; derivePausePhase
   // (above) turns that into "pausing" vs "paused" against the live running
-  // count, and confirming a resume clears it — a fresh pause() later
-  // installs its own gate, mirrored by allowing pauseRequested to be set
-  // again from idle.
-  const handlePauseAccepted = useCallback(() => setPauseRequested(true), []);
-  const handleResumeAccepted = useCallback(() => setPauseRequested(false), []);
+  // count. Resume records false rather than clearing to null so the release
+  // shows immediately instead of waiting for the next detail fetch to stop
+  // reporting a gate the operator has already released.
+  const handlePauseAccepted = useCallback(() => setPauseIntent(true), []);
+  const handleResumeAccepted = useCallback(() => setPauseIntent(false), []);
 
   const sessionStatus = done ? "completed" : live ? "running" : "completed";
 
@@ -2503,10 +2516,24 @@ export default function RunDetail({ id }: RunDetailProps) {
     status_reason_summary: session.status_reason_summary,
   };
   const displayStatus = deriveDisplayStatus(runForStatus);
-  const runTerminal =
-    displayStatus === "completed" || displayStatus === "failed" || displayStatus === "cancelled";
+  // Not derived from displayStatus: that mapping folds unknown statuses into
+  // "running", which is right for a chip and wrong for a control gate. See
+  // runAdmitsControls, which asks the question the server's admission asks.
+  const runTerminal = !runAdmitsControls(session.status);
   const controlKind = controlKindFor(session.invocation_kind ?? null);
-  const pausePhase: PausePhase = derivePausePhase(pauseRequested, pauseRunningCount);
+  // The server's answer is what survives a reload; the local flag only adds
+  // the optimism between confirming a pause and the next detail fetch. OR
+  // rather than a choice between them, so neither can erase the other: the
+  // local flag never turns a held pause back into "not paused", and a stale
+  // server read never un-does a pause that was just confirmed here.
+  const serverPauseHeld = session.pause_is_held ?? false;
+  const pausePhase: PausePhase = derivePausePhase(
+    pauseIntent ?? serverPauseHeld,
+    pauseRunningCount,
+    // Established only when the server is the one saying so. A pause confirmed
+    // on this screen is still a fresh request and keeps the cautious reading.
+    pauseIntent === null && serverPauseHeld,
+  );
 
   // ADR-0113 D1/D6: a graph with edges is the default view; anything with no
   // edges to draw (including "no graph at all") opens on the list.

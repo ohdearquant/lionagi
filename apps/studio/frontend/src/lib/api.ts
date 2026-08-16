@@ -1251,6 +1251,12 @@ export interface SessionDetail {
    * Absent is read as false by the control surface — a missing capability is
    * not evidence of a capability. */
   has_control_consumer?: boolean | null;
+  /** Whether this run's pause gate is held, or queued to be (services/
+   * sessions.py _pause_is_held). Server-derived, so it survives a reload: a
+   * pause remembered only in component state comes back as "not paused" and
+   * leaves Resume disabled on a run that is still stopped. Absent is read as
+   * false, which is the pre-pause state and the one that offers Pause. */
+  pause_is_held?: boolean | null;
   // ADR-0028: denormalized status reason (services/sessions.py get_session
   // already returns these; the type was just missing them).
   status_reason_code?: string | null;

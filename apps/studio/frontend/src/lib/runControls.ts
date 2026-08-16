@@ -61,7 +61,13 @@ export type ControlReasonCode =
   /** No command exists that would carry this verb out, so the control is
    * shown and refused rather than offered and unable to deliver. See
    * COMMAND_TYPES_BY_VERB for which verbs are backed. */
-  | "no-executable-path";
+  | "no-executable-path"
+  /** The run carries no project, so no control against it can be authorized.
+   * The server scopes a control by the project of the conversation it was
+   * proposed in, and a run with no project of its own gives that conversation
+   * nothing to be scoped to. Shown disabled rather than hidden, like the other
+   * property-of-this-run refusals. */
+  | "no-project-scope";
 
 export interface ControlState {
   /** Whether the control renders at all. A kind this ADR does not cover
@@ -97,10 +103,23 @@ export type PausePhase = "idle" | "pausing" | "paused";
  * progress counter to count, so it would hand over zero and settle straight
  * to "paused" while its operations are still in flight — offering Resume
  * before the pause gate has drained anything. Unknown holds at "pausing"
- * instead, the phase that claims nothing about what has finished. */
-export function derivePausePhase(pauseRequested: boolean, runningCount: number | null): PausePhase {
+ * instead, the phase that claims nothing about what has finished.
+ *
+ * `pauseEstablished` says the gate is already installed as far as the server
+ * is concerned, rather than requested here a moment ago. It changes only the
+ * unknown-count case, and it has to: holding an established gate at "pausing"
+ * keeps Resume disabled for as long as the count stays unknown, which on a run
+ * with no authored graph is permanently — the reader is left with a paused run
+ * and no way to release it, which is the state this argument exists to avoid.
+ * A fresh request keeps the cautious reading, since there the unknown really
+ * is unknown. */
+export function derivePausePhase(
+  pauseRequested: boolean,
+  runningCount: number | null,
+  pauseEstablished = false,
+): PausePhase {
   if (!pauseRequested) return "idle";
-  if (runningCount === null) return "pausing";
+  if (runningCount === null) return pauseEstablished ? "paused" : "pausing";
   return runningCount > 0 ? "pausing" : "paused";
 }
 
@@ -146,6 +165,42 @@ export function hasAnyExecutablePath(): boolean {
 export function applyExecutablePath(verb: ControlVerb, state: ControlState): ControlState {
   if (!state.offered || hasExecutablePath(verb)) return state;
   return offeredState(true, "no-executable-path");
+}
+
+/** Whether the server would admit any control for this run at all.
+ *
+ * Mirrors _admission_refusal (studio/operator/run_control.py), which admits
+ * the raw status "running" and answers "not_running" for every other value.
+ * Written as that positive test rather than as "not one of the statuses we
+ * call terminal", because the display mapping this used to read folds every
+ * status it does not recognize into "running" on purpose — sensible for a
+ * status chip, wrong for a gate. A status it did not know therefore arrived on
+ * the ENABLED side and rendered a control the server then rejected;
+ * `completed_empty` is the one that exists today, and the next one added would
+ * do the same. The positive form has no unknown side to fail open on.
+ *
+ * Reads the raw status rather than the display status for the same reason: the
+ * server's admission reads the sessions row, so anything derived in between is
+ * a second opinion this gate cannot afford. A missing status is not "running",
+ * which is what the server would conclude too. */
+export function runAdmitsControls(status: string | null | undefined): boolean {
+  return status === "running";
+}
+
+/** Layers the run's own lack of a project onto whatever the state machines
+ * decided, on the same reasoning as applyExecutablePath: the refusal has to
+ * win over the run-state reasons, since "The run is not paused" on a control
+ * that could never be authorized tells the reader to wait for something that
+ * will not help.
+ *
+ * A verb the state machine did not offer stays unoffered — this disables
+ * controls, it never adds one. */
+export function applyProjectScope(
+  project: string | null | undefined,
+  state: ControlState,
+): ControlState {
+  if (!state.offered || (typeof project === "string" && project.length > 0)) return state;
+  return offeredState(true, "no-project-scope");
 }
 
 export function pauseControlState(
@@ -284,7 +339,13 @@ export async function proposeRunControl(
   verb: ControlVerb,
   options?: { message?: string; project?: string | null },
 ): Promise<RunControlProposal> {
+  // The project rides on the conversation, not only on the turn context. A
+  // turn's context is request-body data the server stores as sent, so a
+  // control authorized from it would be authorized by its own caller. The
+  // conversation's project is written once here and has no update route, which
+  // is what the server's ownership check reads.
   const conversation = await createOperatorConversation({
+    project: options?.project,
     title: `${verb} · ${runId.slice(0, 8)}`,
   });
   const accepted = await submitOperatorTurn(conversation.id, {

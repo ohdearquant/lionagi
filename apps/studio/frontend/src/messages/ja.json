@@ -562,7 +562,8 @@
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "この操作を実行するコマンドはまだありません。"
+          "no-executable-path": "この操作を実行するコマンドはまだありません。",
+          "no-project-scope": "この実行にはプロジェクトがないため、操作を承認できません。"
         }
       }
     },

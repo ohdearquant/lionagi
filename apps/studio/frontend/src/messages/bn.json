@@ -562,7 +562,8 @@
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "এটি সম্পন্ন করার জন্য এখনও কোনো কমান্ড নেই।"
+          "no-executable-path": "এটি সম্পন্ন করার জন্য এখনও কোনো কমান্ড নেই।",
+          "no-project-scope": "এই রানের কোনো প্রকল্প নেই, তাই কোনো নিয়ন্ত্রণ অনুমোদন করা যাবে না।"
         }
       }
     },

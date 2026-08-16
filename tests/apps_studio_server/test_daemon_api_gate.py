@@ -591,6 +591,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "name",
         "node_metadata",
         "output_tokens",
+        "pause_is_held",
         "playbook_name",
         "project",
         "project_source",

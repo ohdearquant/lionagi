@@ -562,7 +562,8 @@
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "Chưa có lệnh nào để thực hiện thao tác này."
+          "no-executable-path": "Chưa có lệnh nào để thực hiện thao tác này.",
+          "no-project-scope": "Lần chạy này không có dự án, nên không thể ủy quyền điều khiển."
         }
       }
     },

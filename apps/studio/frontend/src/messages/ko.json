@@ -562,7 +562,8 @@
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "이 작업을 수행할 명령이 아직 없습니다."
+          "no-executable-path": "이 작업을 수행할 명령이 아직 없습니다.",
+          "no-project-scope": "이 실행에는 프로젝트가 없어 제어를 승인할 수 없습니다."
         }
       }
     },
