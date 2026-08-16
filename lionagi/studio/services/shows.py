@@ -15,8 +15,13 @@ from lionagi.libs.path_safety import safe_join
 
 from ..config import SHOWS_ROOT
 from ..registry import studio_route
+from ._db import (
+    StoreNotAddressableError,
+    require_file_store,
+    store_exists,
+    store_path,
+)
 from ._db import open_db as _open_db
-from ._db import require_file_store, store_exists, store_path
 from ._io import read_json_file as _read_json
 from ._io import read_json_file_checked as _read_json_checked
 from ._path_safety import public_path, safe_path_join
@@ -747,7 +752,18 @@ async def watch_show(topic: str) -> AsyncGenerator[str]:
 
         if not any_change and (time.time() - last_change) >= _SHOW_DONE_STABLE_SECS:
             show_status: str | None = None
-            if await _db_available():
+            try:
+                store_readable = await _db_available()
+            except StoreNotAddressableError:
+                # This generator is already streaming, so the response status is
+                # committed and the app-level 501 handler can no longer run. The
+                # refusal still did its job: no read reached the fallback file.
+                # Leaving the status unknown matches the no-store-yet case and
+                # keeps the file events, which are filesystem-derived and correct,
+                # flowing instead of aborting the stream to report a condition the
+                # client cannot be told about here.
+                store_readable = False
+            if store_readable:
                 try:
                     async with _open_db(store_path()) as db:
                         cur = await db.execute("SELECT status FROM shows WHERE topic = ?", (topic,))

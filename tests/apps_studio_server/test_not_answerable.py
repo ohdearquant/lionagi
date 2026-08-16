@@ -185,6 +185,53 @@ def test_signal_reads_refuse_a_server_backed_store_before_fallback(tmp_path, mon
     assert exc_info.value.backend == "postgresql"
 
 
+def test_the_show_stream_survives_a_store_it_may_not_read(tmp_path, monkeypatch):
+    """A refusal inside an SSE generator has nowhere to go but the client's socket.
+
+    The other guarded sites answer a request that has not been sent yet, so
+    raising reaches the 501 handler. ``watch_show`` is already streaming by the
+    time it consults the store for terminal status, so the response status is
+    committed and a raise truncates the stream instead. Its file events come
+    from the filesystem and stay correct either way, so the guard has to leave
+    the status unknown rather than take those events down with it.
+    """
+    import lionagi.studio.services.shows as shows_mod
+
+    default = tmp_path / "state.db"
+    _configure(monkeypatch, default=default, url="postgresql://user:secret@host/db")
+
+    # Control: the condition under test is live at this configuration. Without
+    # this, a guard that silently stopped refusing would also pass below.
+    with pytest.raises(StoreNotAddressableError):
+        require_file_store()
+
+    shows_root = tmp_path / "shows"
+    (shows_root / "demo").mkdir(parents=True)
+    (shows_root / "demo" / "show.md").write_text("# demo\n")
+    monkeypatch.setattr(shows_mod, "SHOWS_ROOT", shows_root)
+    monkeypatch.setattr(shows_mod, "_SHOW_DONE_STABLE_SECS", 0)
+
+    async def drive() -> str:
+        stream = shows_mod.watch_show("demo")
+        first = await stream.__anext__()
+        # Past the first event the generator settles and consults the store. It
+        # then has nothing further to emit, so a timeout here is the pass: the
+        # stream is still open. A refusal escaping the generator surfaces as
+        # StoreNotAddressableError out of this await instead.
+        try:
+            await asyncio.wait_for(stream.__anext__(), timeout=2.0)
+        except (TimeoutError, asyncio.TimeoutError):
+            pass
+        finally:
+            await stream.aclose()
+        return first
+
+    first_event = _run(drive())
+
+    assert '"type": "new"' in first_event or '"type":"new"' in first_event
+    assert "show.md" in first_event
+
+
 # ── Readiness stays 200 no matter what (it is asked about the store, not for rows) ──
 
 
