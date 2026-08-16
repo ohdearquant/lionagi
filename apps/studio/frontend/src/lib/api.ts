@@ -1206,6 +1206,13 @@ export interface SessionMessage {
    * rows, so this flag is the only place that distinction is available.
    */
   content_withheld?: boolean;
+  /**
+   * Present only on a withheld row, where the payload that normally carries the
+   * pairing is gone. An action request and its response are one call, and
+   * without these a withheld pair renders as two unrelated rows.
+   */
+  action_request_id?: string;
+  action_response_id?: string;
   sender: string | null;
   timestamp: number;
   lion_class: string;

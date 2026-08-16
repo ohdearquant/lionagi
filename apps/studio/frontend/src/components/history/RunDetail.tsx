@@ -472,7 +472,10 @@ export function branchToRunStep(
   for (const m of msgs) {
     if (classifyLC(m.lion_class) === "action_response") {
       responseById.set(m.id, m);
-      const requestId = (m.content as Record<string, unknown> | null)?.action_request_id;
+      // The payload carries the link on an ordinary row; on a withheld one the
+      // server lifts it out to the row itself, since that is the only copy left.
+      const requestId =
+        (m.content as Record<string, unknown> | null)?.action_request_id ?? m.action_request_id;
       if (requestId) responseByRequestId.set(String(requestId), m);
     }
   }
@@ -481,6 +484,23 @@ export function branchToRunStep(
   for (const m of msgs) {
     const kind = classifyLC(m.lion_class);
     const content = (m.content ?? {}) as Record<string, unknown>;
+
+    // A withheld payload leaves nothing for the readers below to find, and each
+    // fails differently and silently: a system message vanishes on its
+    // empty-text check, an assistant one renders blank, a user one renders the
+    // literal "{}". The turn happened, so the row stays and says what is
+    // missing. Action rows are excluded: they carry their own withheld state
+    // through the pairing below, which also needs both halves to reach it.
+    if (m.content_withheld && kind !== "action_request" && kind !== "action_response") {
+      runMessages.push({
+        role: kind === "user" || kind === "assistant" ? kind : "system",
+        content: "",
+        withheld: true,
+        sender: m.sender ?? "",
+        timestamp: m.timestamp,
+      });
+      continue;
+    }
 
     if (kind === "system") {
       const text = String(content.system_message ?? content.system ?? content.guidance ?? "");
@@ -517,7 +537,8 @@ export function branchToRunStep(
     if (kind === "action_request") {
       const fn = String(content.function ?? "");
       const args = (content.arguments ?? {}) as Record<string, unknown>;
-      const respId = content.action_response_id ? String(content.action_response_id) : null;
+      const forwardLink = content.action_response_id ?? m.action_response_id;
+      const respId = forwardLink ? String(forwardLink) : null;
       const respMsg = (respId ? responseById.get(respId) : null) ?? responseByRequestId.get(m.id);
       if (respMsg) pairedResponseIds.add(respMsg.id);
 

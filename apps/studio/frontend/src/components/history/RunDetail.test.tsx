@@ -3112,3 +3112,148 @@ describe("history/RunDetail.tsx — a tool result nobody read is not a tool call
     expect(container.textContent).not.toContain("not read");
   });
 });
+
+describe("history/RunDetail.tsx — a withheld row is still a row", () => {
+  // Both halves of one call refused. The request has no function name, no
+  // arguments and no forward link; the response has no back link. Every
+  // pairing the transcript knows about lives in a payload neither of them
+  // still has, so without the ids the server lifts out of the row itself,
+  // one call arrives as two unrelated rows.
+  const bothWithheldBranch = (liftIds: boolean) => ({
+    id: "branch-both-withheld",
+    name: "worker",
+    created_at: 10,
+    message_total: 2,
+    messages: [
+      {
+        id: "req-1",
+        role: "action",
+        content: null,
+        content_withheld: true,
+        ...(liftIds ? { action_response_id: "resp-1" } : {}),
+        sender: "worker",
+        timestamp: 11,
+        lion_class: "ActionRequest",
+      },
+      {
+        id: "resp-1",
+        role: "action",
+        content: null,
+        content_withheld: true,
+        ...(liftIds ? { action_request_id: "req-1" } : {}),
+        sender: "tool",
+        timestamp: 12,
+        lion_class: "ActionResponse",
+      },
+    ],
+  });
+
+  it("renders one row when a call has both halves withheld", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(bothWithheldBranch(true) as never, "completed");
+    const calls = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].status).toBe("withheld");
+  });
+
+  // The two lifted ids are two independent routes to the same pairing, so a
+  // fixture carrying both cannot say whether either one works. These strip one
+  // route each. A row can be withheld on one side and hydrated on the other,
+  // which is why both routes exist rather than one.
+  const oneSidedBranch = (side: "request" | "response") => {
+    const branch = bothWithheldBranch(true);
+    const [request, response] = branch.messages as Record<string, unknown>[];
+    if (side === "request") delete response.action_request_id;
+    else delete request.action_response_id;
+    return branch;
+  };
+
+  it("pairs a both-withheld call from the request's lifted forward link alone", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(oneSidedBranch("request") as never, "completed");
+    expect((step.messages ?? []).filter((m) => m.role === "tool_call")).toHaveLength(1);
+  });
+
+  it("pairs a both-withheld call from the response's lifted back link alone", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(oneSidedBranch("response") as never, "completed");
+    expect((step.messages ?? []).filter((m) => m.role === "tool_call")).toHaveLength(1);
+  });
+
+  it("splits the same call into two rows without the lifted ids", async () => {
+    // Control: the single row above has to come from the ids and not from
+    // some other collapse, or the assertion passes for the wrong reason.
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(bothWithheldBranch(false) as never, "completed");
+    expect((step.messages ?? []).filter((m) => m.role === "tool_call")).toHaveLength(2);
+  });
+
+  // Withholding is decided by payload size, not by message kind, so a system,
+  // user or assistant message hits it too. Each of the three readers fails
+  // differently on an empty payload and all three fail silently.
+  const nonActionBranch = (withheld: boolean) => ({
+    id: "branch-non-action",
+    name: "worker",
+    created_at: 10,
+    message_total: 3,
+    messages: [
+      {
+        id: "sys-1",
+        role: "system",
+        content: withheld ? null : { system_message: "you are a worker" },
+        content_withheld: withheld,
+        sender: "system",
+        timestamp: 11,
+        lion_class: "System",
+      },
+      {
+        id: "usr-1",
+        role: "user",
+        content: withheld ? null : { instruction: "do the thing" },
+        content_withheld: withheld,
+        sender: "user",
+        timestamp: 12,
+        lion_class: "Instruction",
+      },
+      {
+        id: "asst-1",
+        role: "assistant",
+        content: withheld ? null : { assistant_response: "done" },
+        content_withheld: withheld,
+        sender: "worker",
+        timestamp: 13,
+        lion_class: "AssistantResponse",
+      },
+    ],
+  });
+
+  it("keeps a withheld system, user and assistant message as one marked row each", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(nonActionBranch(true) as never, "completed");
+    const messages = step.messages ?? [];
+    expect(messages.map((m) => m.role)).toEqual(["system", "user", "assistant"]);
+    expect(messages.every((m) => m.withheld === true)).toBe(true);
+    // The literal "{}" is what a serialized empty payload used to render as.
+    expect(messages.some((m) => m.content === "{}")).toBe(false);
+  });
+
+  it("leaves ordinary system, user and assistant messages unmarked", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(nonActionBranch(false) as never, "completed");
+    const messages = step.messages ?? [];
+    expect(messages.map((m) => m.content)).toEqual(["you are a worker", "do the thing", "done"]);
+    expect(messages.some((m) => m.withheld)).toBe(false);
+  });
+
+  it("renders a withheld assistant turn as unread rather than as a blank one", () => {
+    const step = {
+      step: "s1",
+      status: "completed",
+      timestamp: 1,
+      messages: [{ role: "assistant", content: "", withheld: true, timestamp: 1 }],
+    };
+    const { container } = renderRunStepCards([step as never], true);
+    openConversationTab(container);
+    expect(container.textContent).toContain("not read");
+  });
+});

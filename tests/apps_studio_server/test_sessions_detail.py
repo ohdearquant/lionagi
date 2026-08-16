@@ -2514,3 +2514,145 @@ def test_a_window_that_fit_nothing_is_asked_for_again_rather_than_skipped():
     assert svc._resume_anchor(
         ["m-1", "m-2"], [], has_older=True, next_anchor="m-1", current_anchor=None
     ) == (True, None)
+
+
+async def test_a_withheld_action_row_still_carries_the_link_to_its_other_half(
+    patched_sessions_db, monkeypatch
+):
+    """The pairing between an action request and its response lives in the
+    payload, which is exactly what withholding removes. Both halves of one call
+    can be oversized at once, and a reader with neither link has no way to tell
+    one refused call from two. SQLite extracts the two ids without the payload
+    being decoded here, so they survive the refusal that took the rest."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    await seed_session(db_path, session_id="sess-pairing")
+    await seed_branch(
+        db_path, branch_id="br-pairing", session_id="sess-pairing", msg_ids=["req-1", "resp-1"]
+    )
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "req-1",
+                "created_at": 110.0,
+                "content": {
+                    "function": "Read",
+                    "arguments": {"file_path": "/run/" + "x" * 500},
+                    "action_response_id": "resp-1",
+                },
+                "sender": "worker",
+                "recipient": "tool",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                },
+            }
+        )
+        await db.insert_message(
+            {
+                "id": "resp-1",
+                "created_at": 120.0,
+                "content": {"output": "y" * 500, "action_request_id": "req-1"},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+
+    result = await svc.get_session_messages_after("sess-pairing", 100.0)
+
+    by_id = {row["id"]: row for row in result}
+    assert by_id["req-1"]["content_withheld"] is True
+    assert by_id["resp-1"]["content_withheld"] is True
+    assert by_id["req-1"]["action_response_id"] == "resp-1"
+    assert by_id["resp-1"]["action_request_id"] == "req-1"
+
+
+async def test_a_row_that_kept_its_payload_does_not_grow_the_lifted_link_fields(
+    patched_sessions_db, monkeypatch
+):
+    """Control for the test above. The ids are lifted onto the row only where
+    the payload is gone; a row that kept its content already carries them, and
+    a shape that widens for every reader would be a different change."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 20_000)
+    await seed_session(db_path, session_id="sess-pairing-ok")
+    await seed_branch(
+        db_path, branch_id="br-pairing-ok", session_id="sess-pairing-ok", msg_ids=["req-2"]
+    )
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "req-2",
+                "created_at": 110.0,
+                "content": {
+                    "function": "Read",
+                    "arguments": {"file_path": "/run/small"},
+                    "action_response_id": "resp-2",
+                },
+                "sender": "worker",
+                "recipient": "tool",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                },
+            }
+        )
+
+    [row] = await svc.get_session_messages_after("sess-pairing-ok", 100.0)
+
+    assert row["content_withheld"] is False
+    assert "action_response_id" not in row
+    assert row["content"]["action_response_id"] == "resp-2"
+
+
+async def test_the_file_union_stops_at_its_ceiling_and_says_that_it_did(
+    patched_sessions_db, monkeypatch
+):
+    """The union is over the whole run by design, and how many distinct names a
+    run touches is decided by its own tool arguments. Without a ceiling one long
+    run builds an unbounded set on every session-detail request. The ceiling is
+    reported, because a union that was cut is a different answer from a complete
+    one to the reader resolving a name against it."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATHS", 3)
+    await seed_session(db_path, session_id="sess-files-capped")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-files-capped",
+        count=10,
+        content_for=lambda i: {"function": "Read", "arguments": {"file_path": f"/run/f{i}"}},
+    )
+
+    detail = await svc.get_session("sess-files-capped")
+
+    assert detail is not None
+    assert len(detail["message_stats"]["files"]) == 3
+    assert detail["message_stats"]["files_bounded"] is True
+
+
+async def test_a_run_under_the_ceiling_returns_every_path_and_says_it_was_complete(
+    patched_sessions_db, monkeypatch
+):
+    """Control. Without it a union that always reports bounded, or one capped to
+    nothing, satisfies the assertion above."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATHS", 50)
+    await seed_session(db_path, session_id="sess-files-whole")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-files-whole",
+        count=4,
+        content_for=lambda i: {"function": "Read", "arguments": {"file_path": f"/run/f{i}"}},
+    )
+
+    detail = await svc.get_session("sess-files-whole")
+
+    assert detail is not None
+    assert detail["message_stats"]["files"] == ["/run/f0", "/run/f1", "/run/f2", "/run/f3"]
+    assert detail["message_stats"]["files_bounded"] is False

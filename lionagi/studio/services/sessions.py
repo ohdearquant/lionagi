@@ -143,6 +143,13 @@ MAX_HYDRATED_ROWS = 50_000
 # all of them say so when it binds.
 MAX_HYDRATED_ACTION_MESSAGES = 20_000
 
+# How many distinct file paths one session detail will collect. The union is
+# over the whole run by design, and the run's own tool arguments decide how
+# many distinct names that is, so this is the only thing standing between a
+# long run and an unbounded set built on every request. Generous enough that
+# an ordinary session never meets it, and reported when it does.
+MAX_ACTION_FILE_PATHS = 5_000
+
 # Selected in place of `m.content` by every query that hydrates a message row.
 # The ceiling is one property of the data, so it belongs to the column rather
 # than to whichever reader was being looked at when the cost was noticed: there
@@ -152,7 +159,14 @@ MAX_HYDRATED_ACTION_MESSAGES = 20_000
 _BOUNDED_CONTENT_COLUMNS = (
     "CASE WHEN length(m.content) > ? THEN NULL ELSE m.content END AS content, "
     "CASE WHEN length(m.content) > ? THEN 1 ELSE 0 END AS content_oversized, "
-    "CASE WHEN length(m.content) > ? THEN 0 ELSE length(m.content) END AS content_length"
+    "CASE WHEN length(m.content) > ? THEN 0 ELSE length(m.content) END AS content_length, "
+    # A withheld row still has to be pairable. These two ids are the only link
+    # between an action request and its response, SQLite extracts them without
+    # the payload ever being decoded here, and they are short whatever the
+    # payload weighs. Without them a withheld request and its withheld response
+    # arrive as two unrelated rows describing one call.
+    "json_extract(m.content, '$.action_request_id') AS action_request_id, "
+    "json_extract(m.content, '$.action_response_id') AS action_response_id"
 )
 
 
@@ -205,18 +219,28 @@ def _format_message(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
     here is a query that silently decodes payloads of any size, which is what
     this reads as when it is missing.
     """
-    return {
+    withheld = bool(row["content_oversized"])
+    formatted = {
         "id": row["id"],
         "role": row["role"],
         "content": _parse_json_col(row["content"]),
         # The row is still listed, with its identity and timing intact; only the
         # payload is withheld, and a reader has to be able to tell that apart
         # from a message that carried no content.
-        "content_withheld": bool(row["content_oversized"]),
+        "content_withheld": withheld,
         "sender": row["sender"],
         "timestamp": row["created_at"],
         "lion_class": row["lion_class_str"] or "",
     }
+    if withheld:
+        # Only on a withheld row. A row that kept its payload carries these ids
+        # inside it already, and lifting them out there would widen the shape
+        # every reader sees for the sake of rows that do not need it.
+        for key in ("action_request_id", "action_response_id"):
+            value = row[key]
+            if value:
+                formatted[key] = str(value)
+    return formatted
 
 
 # A listing whose SQL carries no LIMIT examines every session, every branch and
@@ -924,7 +948,7 @@ def _action_file_path(function: Any, arguments: Any) -> str | None:
 
 async def _fetch_action_file_paths(
     db: aiosqlite.Connection, ids_by_branch: dict[str, list[str]]
-) -> list[str]:
+) -> tuple[list[str], bool]:
     """Every file this session's action requests touched, over the whole run.
 
     Separate from the hydration above because it answers a different question.
@@ -940,6 +964,13 @@ async def _fetch_action_file_paths(
     arguments weigh -- with the per-row ceiling applied here too, because a
     path read out of an oversized payload is not short, and a row past that
     ceiling is withheld from every reader or from none.
+
+    "The number of distinct paths a run touched" is still a number a caller
+    chooses. A run that writes a new filename on every call grows this set
+    without limit, once per session-detail request, so it stops at a ceiling
+    and returns whether it stopped. Reported rather than silent: a union that
+    was cut is a different answer from one that was complete, and the reader
+    resolving a name against it has to know which it holds.
     """
     class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
     cur = await db.execute(
@@ -953,7 +984,11 @@ async def _fetch_action_file_paths(
 
     paths: set[str] = set()
     for msg_ids in ids_by_branch.values():
+        if len(paths) >= MAX_ACTION_FILE_PATHS:
+            break
         for chunk_start in range(0, len(msg_ids), 500):
+            if len(paths) >= MAX_ACTION_FILE_PATHS:
+                break
             chunk = msg_ids[chunk_start : chunk_start + 500]
             placeholders = ",".join("?" for _ in chunk)
             cur = await db.execute(
@@ -973,7 +1008,13 @@ async def _fetch_action_file_paths(
                 )
                 if found:
                     paths.add(found)
-    return sorted(paths)
+                    if len(paths) >= MAX_ACTION_FILE_PATHS:
+                        break
+    # Equality, not the count alone: the ceiling is reached by the row that
+    # would have exceeded it, so a run holding exactly this many distinct paths
+    # reports bounded and a reader treats the union as possibly short. That is
+    # the safe direction for a set used to decide whether a name is a file.
+    return sorted(paths), len(paths) >= MAX_ACTION_FILE_PATHS
 
 
 def _branch_message_stats(
@@ -1259,7 +1300,11 @@ async def get_session(
         # floor in the same way, because the reader uses it to decide whether a
         # name refers to a file at all, and the names it fails on are exactly
         # the old ones a bounded read drops.
-        full_stats["files"] = await _fetch_action_file_paths(db, progression_ids)
+        full_stats["files"], files_bounded = await _fetch_action_file_paths(db, progression_ids)
+        # Its own flag rather than folding into `bounded`: that one is about the
+        # message counts beside it, and a caller resolving a file reference needs
+        # to know this union specifically was cut.
+        full_stats["files_bounded"] = files_bounded
         message_next_cursor = (
             _encode_message_cursor(session_id, message_limit, next_branch_anchors)
             if next_branch_anchors
@@ -1427,6 +1472,7 @@ async def get_session_messages_after(
             LEFT JOIN message_types mt ON m.lion_class = mt.type_id
             WHERE b.session_id = ? AND {cursor_sql}
             ORDER BY m.created_at, m.id, b.id
+            LIMIT ?
             """,  # noqa: S608
             (
                 MAX_ACTION_CONTENT_CHARS,
@@ -1434,6 +1480,13 @@ async def get_session_messages_after(
                 MAX_ACTION_CONTENT_CHARS,
                 session_id,
                 *cursor_params,
+                # The loop below stops at the row budget, so this returns exactly
+                # what it could ever take: the budget's rows, plus the single
+                # overspent row an empty page is allowed. Without it the ORDER BY
+                # sorts every remaining row of the stream before Python sees the
+                # first one, on every page, so a long stream pays for its own
+                # tail once per page rather than once.
+                MAX_HYDRATED_ROWS + 1,
             ),
         )
 
