@@ -215,10 +215,22 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // autoAllow and the hooks leaves are natively translated in
   // zh/ja/ko/es/fr/de/pt-BR/ru and English-copied in the remaining 7 locales
   // — that debt is attributed in the identity-leak baseline below.
-  // + runCard.outputWithheld, the badge for a tool result the server
-  // withheld past its per-row size ceiling (natively translated in all 16).
-  it("en.json has 1099 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1099);
+  //
+  // 1099 = 1098 + history.detail.controls.reason.no-live-consumer, the refusal
+  // shown when an agent run has no runner that would deliver a control. It
+  // ships English-copied in all 15 non-English locales, like its sibling
+  // agent-no-pause-seam; that debt is attributed in the baseline below.
+  //
+  // 1100 = 1099 + history.detail.controls.reason.no-project-scope, the refusal
+  // shown when a run carries no project for a control to be authorized
+  // against. Natively translated in all 16, so unlike its two siblings it adds
+  // nothing to the identity-leak baseline below.
+  //
+  // 1101 = 1100 + runCard.outputWithheld, the badge for a tool result the
+  // server withheld past its per-row size ceiling. Natively translated in all
+  // 16, so it adds nothing to the identity-leak baseline either.
+  it("en.json has 1101 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1101);
   });
 
   it.each(LOCALES.map((l) => l.code))(
@@ -339,11 +351,17 @@ describe("messages — a locale value byte-identical to English is a missed tran
   // 22 native values identical to English on the merits ("Hooks", "Matcher",
   // and cognates in the Latin-script locales). A follow-up should translate
   // the 7 placeholder locales and lower this by 217.
+  //
+  // Raised from 3727 to 3742 (+15 = 1 new leaf × 15 non-English locales) with
+  // history.detail.controls.reason.no-live-consumer, shipped English-copied in
+  // every non-English locale. It joins the controls.* placeholder debt already
+  // attributed above rather than adding a new kind of it, and the follow-up
+  // that translates that subtree should take this key with it.
   it("pre-existing identity-leak count across all locales does not grow past its pinned baseline", () => {
     const total = LOCALES.map((l) => l.code)
       .filter((c) => c !== "en")
       .reduce((sum, code) => sum + findIdentityLeaks(code).length, 0);
-    expect(total).toBeLessThanOrEqual(3727);
+    expect(total).toBeLessThanOrEqual(3742);
   });
 });
 
