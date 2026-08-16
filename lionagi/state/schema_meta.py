@@ -242,6 +242,26 @@ Index(
     sqlite_where=text("invocation_id IS NOT NULL"),
     postgresql_where=text("invocation_id IS NOT NULL"),
 )
+# The active snapshot reads one invocation's running children in creation order,
+# once per poll. On the index above, sqlite matched only `status` and then built
+# a temp b-tree to order the result, so every running session in the database was
+# visited and sorted before a LIMIT could discard any of it: the work per poll
+# tracked the whole table rather than the rows asked for. Carrying status and the
+# sort columns lets that read seek straight to the invocation and stop at its
+# limit.
+#
+# The narrower index above stays. It is a prefix of this one and so is redundant
+# for planning, but removing it is a drop that existing databases would have to
+# be migrated through, which is a separate change from this one.
+Index(
+    "idx_sessions_invocation_status_created",
+    sessions.c.invocation_id,
+    sessions.c.status,
+    sessions.c.created_at,
+    sessions.c.id,
+    sqlite_where=text("invocation_id IS NOT NULL"),
+    postgresql_where=text("invocation_id IS NOT NULL"),
+)
 Index(
     "idx_sessions_project",
     sessions.c.project,
