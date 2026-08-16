@@ -2019,16 +2019,27 @@ class StateDB:
         # would then be a rollback artifact predating them. So the result is
         # read rather than discarded, and a partial checkpoint refuses.
         result = await self.checkpoint("TRUNCATE")
-        if result is not None:
-            busy, log_pages, checkpointed = result
-            if busy or log_pages != checkpointed:
-                raise BackupNotTrustworthyError(
-                    f"cannot back up {mask_credentials(str(p))} before the {label} rebuild: "
-                    f"wal_checkpoint(TRUNCATE) reported busy={busy}, "
-                    f"{checkpointed} of {log_pages} WAL pages checkpointed. Committed data "
-                    "may still be in the write-ahead log, so a file copy would not be a "
-                    "complete backup. Stop other writers to this database and retry."
-                )
+        if result is None:
+            # checkpoint() returns None for a non-sqlite dialect or for a pragma
+            # read that produced no row. The dialect was ruled out above, so
+            # only the failed read is left, and it says nothing about whether
+            # the WAL was folded in. Reading that silence as permission would
+            # be the same mistake as discarding the result outright.
+            raise BackupNotTrustworthyError(
+                f"cannot back up {mask_credentials(str(p))} before the {label} rebuild: "
+                "wal_checkpoint(TRUNCATE) returned no row, so whether the write-ahead "
+                "log was folded into the database file is unknown. A file copy would "
+                "not be a verifiable backup. Retry, and check the database is readable."
+            )
+        busy, log_pages, checkpointed = result
+        if busy or log_pages != checkpointed:
+            raise BackupNotTrustworthyError(
+                f"cannot back up {mask_credentials(str(p))} before the {label} rebuild: "
+                f"wal_checkpoint(TRUNCATE) reported busy={busy}, "
+                f"{checkpointed} of {log_pages} WAL pages checkpointed. Committed data "
+                "may still be in the write-ahead log, so a file copy would not be a "
+                "complete backup. Stop other writers to this database and retry."
+            )
         backup_path = p.with_name(f"{p.name}.pre-{label}.{int(time.time())}.bak")
         shutil.copy2(p, backup_path)
         # Not a snapshot: a writer committing between the checkpoint above and

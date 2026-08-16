@@ -103,3 +103,29 @@ async def test_backup_proceeds_on_a_real_checkpoint(tmp_path):
         assert len(_backups(tmp_path)) == 1
     finally:
         await db.close()
+
+
+async def test_backup_refuses_when_the_checkpoint_read_returns_no_row(tmp_path, monkeypatch):
+    """A checkpoint that cannot be read is not a checkpoint that passed.
+
+    ``checkpoint()`` returns None for a non-sqlite dialect or for a pragma read
+    that produced no row. ``_backup_before_rebuild`` returns before this point
+    on any non-sqlite dialect, so None can only be the failed read -- an absent
+    value, which says nothing about whether the WAL was folded in. Spending it
+    as permission is the same defect as discarding the result, one branch over.
+    """
+    db = await _seeded_db(tmp_path)
+    try:
+
+        async def _no_row(mode: str = "PASSIVE"):
+            return None
+
+        monkeypatch.setattr(db, "checkpoint", _no_row)
+
+        with pytest.raises(BackupNotTrustworthyError) as excinfo:
+            await db._backup_before_rebuild("probe")
+
+        assert "no row" in str(excinfo.value)
+        assert _backups(tmp_path) == [], "a backup file was written despite the refusal"
+    finally:
+        await db.close()
