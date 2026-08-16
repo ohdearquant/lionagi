@@ -500,3 +500,74 @@ def test_a_non_healthy_verdict_survives_truncation_and_is_marked_as_a_floor(tmp_
         "and the consumer must be told the verdict is a floor, since an unread "
         "child could be worse still"
     )
+
+
+def _child_read_plans() -> dict[str, list[str]]:
+    """Query plans for the two statements the snapshot uses to read children.
+
+    Built from the metadata the runtime creates databases from, not from the
+    reference schema file, because those two have drifted before and only one of
+    them decides what a running instance actually indexes.
+    """
+    import sqlalchemy as sa
+
+    from lionagi.state.schema_meta import metadata
+    from lionagi.studio.services.active_snapshot import _not_engine_mirror
+
+    predicate = _not_engine_mirror("sessions")
+    statements = {
+        "capped": (
+            f"SELECT * FROM sessions WHERE status = 'running' AND invocation_id = 'inv1' "
+            f"AND {predicate} ORDER BY created_at, id LIMIT 50"
+        ),
+        "narrow": (
+            f"SELECT * FROM sessions WHERE status = 'running' "
+            f"AND invocation_id IN ('a','b','c') AND {predicate} "
+            f"ORDER BY invocation_id, created_at, id"
+        ),
+    }
+    engine = sa.create_engine("sqlite://")
+    plans = {}
+    with engine.begin() as conn:
+        metadata.create_all(conn)
+        for name, statement in statements.items():
+            rows = conn.execute(sa.text("EXPLAIN QUERY PLAN " + statement))
+            plans[name] = [str(row[-1]) for row in rows]
+    return plans
+
+
+def test_reading_an_invocations_children_neither_sorts_nor_scans_the_table():
+    """The cap bounds the rows returned, which is not the same as bounding the
+    work. Without an index carrying the filter and the sort order, sqlite
+    matched on status alone and ordered the result in a temp b-tree, so a poll
+    visited and sorted every running session in the database before the limit
+    could discard any of them. Polling is what makes that repeatable."""
+    plans = _child_read_plans()
+
+    for name, plan in plans.items():
+        assert not any("TEMP B-TREE" in step.upper() for step in plan), f"{name} plan sorts: {plan}"
+        assert any("idx_sessions_invocation_status_created" in step for step in plan), (
+            f"{name} plan does not seek by invocation: {plan}"
+        )
+
+
+def test_the_plan_guard_can_see_a_sort():
+    """Control: the assertion above passes trivially if EXPLAIN QUERY PLAN stops
+    reporting sorts, or if the strings it matches on ever change spelling. This
+    orders by a column no index covers, so a working guard must find a sort."""
+    import sqlalchemy as sa
+
+    from lionagi.state.schema_meta import metadata
+
+    engine = sa.create_engine("sqlite://")
+    with engine.begin() as conn:
+        metadata.create_all(conn)
+        rows = conn.execute(
+            sa.text(
+                "EXPLAIN QUERY PLAN SELECT * FROM sessions "
+                "WHERE invocation_id = 'inv1' ORDER BY name"
+            )
+        )
+        plan = [str(row[-1]) for row in rows]
+
+    assert any("TEMP B-TREE" in step.upper() for step in plan), plan

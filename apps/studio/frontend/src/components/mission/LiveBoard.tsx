@@ -47,6 +47,24 @@ export function isUnknownHealth(health: string | null | undefined): boolean {
   return health === "unknown";
 }
 
+/**
+ * Whether an invocation's health verdict is settled enough to present.
+ *
+ * The verdict is worst-of across child sessions, so one read from a capped
+ * sample can only err toward looking well: an unread child could be
+ * unresponsive behind a sampled "idle". A verdict that already says the
+ * process is gone survives truncation, because reading the rest could only
+ * agree. Anything else from a partial sample is not evidence of health, and
+ * it reads as unknown rather than as running.
+ */
+export function isUnsettledHealth(inv: {
+  health?: string | null;
+  health_from_partial_children?: boolean;
+}): boolean {
+  if (isUnknownHealth(inv.health)) return true;
+  return inv.health_from_partial_children === true && !isDeadHealth(inv.health);
+}
+
 /** Placeholder card count while the first fetch is in flight. */
 const SKELETON_CARDS = 4;
 
@@ -125,7 +143,7 @@ function InvocationCard({ inv, nowSec }: { inv: InvocationSummary; nowSec: numbe
   // Health axis, same as RunCard: never an unconditional "running" dot
   // regardless of whether there's evidence behind it (issue #2851).
   const dead = isDeadHealth(inv.health);
-  const unknown = isUnknownHealth(inv.health);
+  const unknown = isUnsettledHealth(inv);
   // last_activity_at is the real worst-of child-session heartbeat now that
   // the backend computes one; updated_at (bumped on any row change, not
   // strictly a heartbeat) is only the fallback for older/unhealthy rows.
@@ -297,7 +315,7 @@ function BoardTableRow({ card, nowSec }: { card: LiveCard; nowSec: number }) {
   const dead = isRun
     ? isDeadHealth(card.run.effective_health)
     : isDeadHealth(card.invocation.health);
-  const unknown = !isRun && isUnknownHealth(card.invocation.health);
+  const unknown = !isRun && isUnsettledHealth(card.invocation);
   const status = isRun ? card.run.status : card.invocation.status;
   const linkProps = isRun ? runDeepLink(card.run.run_id) : invocationDeepLink();
 

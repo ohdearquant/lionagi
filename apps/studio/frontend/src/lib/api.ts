@@ -1436,6 +1436,11 @@ export interface InvocationSummary {
   // no child sessions yet (issue #2851) — same vocabulary runs use, plus
   // "unknown" for a case runs never hit (a run always has itself).
   health?: "healthy" | "idle" | "unresponsive" | "stale" | "orphaned" | "zombie" | "unknown" | null;
+  // The verdict above is worst-of across children, so reading it from a
+  // capped sample can only err toward looking well. When this is true the
+  // sample was cut short and an unread child could be worse than what
+  // `health` says; a reader must not present the verdict as settled.
+  health_from_partial_children?: boolean;
   last_activity_at?: number | null;
 }
 

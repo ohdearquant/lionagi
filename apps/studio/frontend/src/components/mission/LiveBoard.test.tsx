@@ -234,6 +234,33 @@ describe("LiveBoard — InvocationCard health rendering (issue #2851)", () => {
     // Not the dead label either — "unknown" is not a confirmed-dead verdict.
     expect(container.textContent).not.toContain("quiet — check?");
   });
+
+  it("does not claim liveness from a healthy verdict the server read off a partial sample", () => {
+    mount([invocation({ health: "idle", health_from_partial_children: true })]);
+    const dot = container.querySelector('[aria-hidden="true"].rounded-full');
+    expect(dot).not.toBeNull();
+    // Worst-of over a truncated set can only look better than the truth, so
+    // an unread child could be unresponsive behind this "idle".
+    expect(dot?.className).not.toContain("live-pulse-dot");
+    expect(container.textContent).not.toContain("quiet — check?");
+  });
+
+  it("still reports a dead verdict as dead when the sample was partial", () => {
+    // Control, and the reason the partial flag cannot simply override the
+    // verdict: reading the remaining children could only agree with "gone".
+    mount([invocation({ health: "orphaned", health_from_partial_children: true })]);
+    const dot = container.querySelector('[aria-hidden="true"].rounded-full');
+    expect(dot?.className).not.toContain("live-pulse-dot");
+    expect(container.textContent).toContain("quiet — check?");
+  });
+
+  it("keeps the live dot when a healthy verdict came from the whole set", () => {
+    // Control for the two above: without this, a rule that always suppressed
+    // the live dot would pass them both.
+    mount([invocation({ health: "healthy", health_from_partial_children: false })]);
+    const dot = container.querySelector('[aria-hidden="true"].rounded-full');
+    expect(dot?.className).toContain("live-pulse-dot");
+  });
 });
 
 describe("LiveBoard — combined card order and view switching", () => {
