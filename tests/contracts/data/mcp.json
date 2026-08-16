@@ -1583,6 +1583,12 @@
             "description": "Resume a checkpointed flow from a prior process (by run id, or any session/invocation/play id backed by one). Replays the persisted plan verbatim \u2014 no planner call, no other flow flags read (model/prompt/playbook/etc. all come from the checkpoint). Distinct from `li o ctl resume`, which un-pauses a still-running session.",
             "x-flag": "--resume"
           },
+          "retry_failed": {
+            "type": "boolean",
+            "description": "With `resume`: run the ops the checkpoint recorded as failed again, instead of refusing. Their reactive children from the superseded attempt are dropped so the re-run decides its own. Without this flag a checkpoint holding any failed op refuses loudly, naming them, because replaying one as terminal skips it and everything downstream. Re-running re-executes whatever side effects the first attempt already had.",
+            "default": false,
+            "x-flag": "--retry-failed"
+          },
           "allow_degraded_context": {
             "type": "boolean",
             "description": "With `resume`: proceed even when a pending op declared inherit_context \u2014 it runs against an empty branch instead of its predecessor's conversation history, which resume does not restore. Without this flag such ops refuse loudly, naming them.",

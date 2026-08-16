@@ -289,6 +289,7 @@ li o flow [model] prompt [flags]
 | `--reactive MODE` | `all` | Roles allowed to emit `SpawnRequest`: `all`, `off`, or a comma-separated role list |
 | `--resume ID` | none | Restart a checkpointed flow without re-planning; does not read other planning flags |
 | `--allow-degraded-context` | false | Permit resumed inherited-context operations to run with empty predecessor history |
+| `--retry-failed` | false | Re-run the ops a resumed checkpoint recorded as failed, instead of refusing; their reactive children from the superseded attempt are dropped |
 | `--notify CMD` | none | Run a terminal callback template with status/invocation payload values |
 
 `-f` and `-p` are mutually exclusive. `--team-mode` and `--team-attach` are mutually exclusive. Source: `cli/orchestrate/__init__.py`. `--background` re-invokes `python -m lionagi.cli` without itself. Common flags apply.

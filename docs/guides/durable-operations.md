@@ -94,6 +94,14 @@ pending operation that requested inherited context. LionAGI refuses that case
 by default. `--allow-degraded-context` opts into running such an operation with
 empty predecessor conversation state; use it only when that loss is acceptable.
 
+A checkpoint that recorded any operation as failed is also refused by default.
+Replaying a failed operation as terminal marks it failed without running it, so
+the executor skips it and everything downstream, and the resume finishes
+nothing. `--retry-failed` runs those operations again instead. It re-executes
+whatever side effects their first attempt already had, which is why it is an
+opt-in. Reactive children recorded under a re-running operation are dropped, so
+the new attempt derives its own rather than inheriting the superseded run's.
+
 ## Diagnose a stuck or failed run
 
 1. Run `li o ctl status ID` to read the recorded lifecycle and reason.
