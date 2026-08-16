@@ -1059,11 +1059,21 @@ def _reconstruct_spawned_nodes(
     dag_state: _DagState,
     checkpoint_ops: dict[str, dict],
     checkpoint_spawned: list[dict],
+    *,
+    retry_failed: bool = False,
 ) -> None:
     """Rebuild reactively spawned nodes from a checkpoint into the fresh
     graph, pre-completed like a planned node. See docs/internals/cli.md for
     the three soundness checks (operation field, parent-terminal, spawn_id)
-    each entry must pass before any node is added to the graph."""
+    each entry must pass before any node is added to the graph.
+
+    With retry_failed, an entry the checkpoint recorded as failed is rebuilt
+    to run rather than rebuilt as already-failed, and a failed planned op is
+    no longer terminal for the parent-terminal check: it is about to run
+    again, so the spawn decision it recorded is not one this resume can
+    replay. Children of such a parent are expected to have been dropped
+    before this point; excluding it here means any that were not are refused
+    by that check rather than kept against a superseded parent."""
     from uuid import UUID as _UUID
 
     from lionagi.operations.node import create_operation
@@ -1104,10 +1114,11 @@ def _reconstruct_spawned_nodes(
 
     known_ids = {str(n) for n in dag_state.node_ids}
     candidate_ids = {e["node_id"] for e in checkpoint_spawned}
+    replayable = ("completed",) if retry_failed else ("completed", "failed")
     terminal_planned_ids = {
         str(node_id)
         for agent_id, node_id in zip(plan_result.agent_ids, dag_state.node_ids, strict=True)
-        if (checkpoint_ops.get(agent_id) or {}).get("status") in ("completed", "failed")
+        if (checkpoint_ops.get(agent_id) or {}).get("status") in replayable
     }
 
     unsound = [
@@ -1150,10 +1161,16 @@ def _reconstruct_spawned_nodes(
             id=_UUID(node_id),
             metadata=metadata,
         )
-        node.execution.status = (
-            EventStatus.COMPLETED if entry["status"] == "completed" else EventStatus.FAILED
-        )
-        node.execution.response = entry.get("response")
+        if entry["status"] == "completed":
+            node.execution.status = EventStatus.COMPLETED
+            node.execution.response = entry.get("response")
+        elif not retry_failed:
+            node.execution.status = EventStatus.FAILED
+            node.execution.response = entry.get("response")
+        # else: rebuilt with its default pending status and no response, so the
+        # executor runs it. The prior failure produced no result to carry, and
+        # the node is fully reconstructible from its recorded operation,
+        # instruction and context.
         role_branch = dag_state.role_base.get(assignee) if assignee else None
         if role_branch is not None:
             node.branch_id = role_branch.id
@@ -1169,6 +1186,31 @@ def _reconstruct_spawned_nodes(
         graph.add_edge(Edge(head=parent_uuid, tail=built[entry["node_id"]].id, label=["spawn"]))
 
 
+def _drop_spawns_under_rerun_parents(
+    checkpoint_spawned: list[dict], rerun_node_ids: set[str]
+) -> list[dict]:
+    """Drop every recorded spawn descended from a node that is about to re-run.
+
+    A re-running op decides its own reactive spawns, and there is no reason the
+    second attempt makes the same ones. Keeping the first attempt's children
+    would leave work attributed to a parent execution that no longer exists,
+    and would double it the moment the re-run spawns its own. Dropping them is
+    the re-derive half of "invalidate or re-derive": the parent produces its
+    children again, or produces none.
+
+    The walk is transitive, because a dropped spawn's own children are
+    descended from the same superseded run.
+    """
+    dropped = set(rerun_node_ids)
+    remaining = list(checkpoint_spawned)
+    while True:
+        keep = [e for e in remaining if e.get("parent_id") not in dropped]
+        if len(keep) == len(remaining):
+            return keep
+        dropped.update(e["node_id"] for e in remaining if e.get("parent_id") in dropped)
+        remaining = keep
+
+
 def _apply_checkpoint_precompletion(
     env: OrchestrationEnv,
     plan_result: _PlanResult,
@@ -1176,17 +1218,54 @@ def _apply_checkpoint_precompletion(
     checkpoint_ops: dict[str, dict],
     *,
     allow_degraded_context: bool,
+    retry_failed: bool = False,
     checkpoint_spawned: list[dict] | None = None,
 ) -> None:
     """Mark nodes the checkpoint recorded as terminal so the executor's
     pre-completed seam short-circuits them. A pending op with inherit_context
     is refused unless allow_degraded_context is passed (v1 resume restores
     results-context only). checkpoint_spawned is rebuilt the same way — see
-    _reconstruct_spawned_nodes."""
+    _reconstruct_spawned_nodes.
+
+    A node the checkpoint recorded as failed refuses the resume unless
+    retry_failed is passed. Replaying it as terminal is what the executor's
+    pre-completed seam does with any terminal status, so the node is skipped
+    and nothing downstream of it ever becomes runnable — a run that died on
+    its deadline can never be finished by resuming it. Re-running it silently
+    is the other way to be wrong, because it re-executes whatever side effects
+    the first attempt already had, so the choice is the caller's to make."""
     from lionagi.protocols.types import EventStatus
 
+    failed_agent_ids = []
+    failed_node_ids = set()
+    for agent_id, node_id in zip(plan_result.agent_ids, dag_state.node_ids, strict=True):
+        if (checkpoint_ops.get(agent_id) or {}).get("status") == "failed":
+            failed_agent_ids.append(agent_id)
+            failed_node_ids.add(str(node_id))
+    failed_spawned_ids = [
+        entry["node_id"] for entry in (checkpoint_spawned or []) if entry.get("status") == "failed"
+    ]
+    if (failed_agent_ids or failed_spawned_ids) and not retry_failed:
+        named = ", ".join([*failed_agent_ids, *failed_spawned_ids])
+        raise FlowResumeError(
+            f"Resume refused: the checkpoint recorded [{named}] as failed. "
+            "Replaying a failed node as terminal skips it and everything "
+            "downstream of it, so resuming would finish nothing. Pass "
+            "--retry-failed to run them again instead, which re-executes any "
+            "side effects their first attempt already had."
+        )
+
+    if checkpoint_spawned and failed_node_ids:
+        checkpoint_spawned = _drop_spawns_under_rerun_parents(checkpoint_spawned, failed_node_ids)
     if checkpoint_spawned:
-        _reconstruct_spawned_nodes(env, plan_result, dag_state, checkpoint_ops, checkpoint_spawned)
+        _reconstruct_spawned_nodes(
+            env,
+            plan_result,
+            dag_state,
+            checkpoint_ops,
+            checkpoint_spawned,
+            retry_failed=retry_failed,
+        )
 
     graph = env.builder.get_graph()
     degraded: list[str] = []
@@ -1199,10 +1278,13 @@ def _apply_checkpoint_precompletion(
         if entry and entry.get("status") == "completed":
             node.execution.status = EventStatus.COMPLETED
             node.execution.response = entry.get("response")
-        elif entry and entry.get("status") == "failed":
+        elif entry and entry.get("status") == "failed" and not retry_failed:
             node.execution.status = EventStatus.FAILED
             node.execution.response = entry.get("response")
         elif node.metadata.get("inherit_context"):
+            # A failed op being re-run reaches here too, and correctly: it is
+            # about to run for real, so it needs the same context its first
+            # attempt had and resume cannot restore it either.
             degraded.append(agent_id)
 
     if degraded and not allow_degraded_context:
@@ -2481,6 +2563,7 @@ async def _run_flow(
     pack: str | None = None,
     resume_checkpoint: dict | None = None,
     allow_degraded_context: bool = False,
+    retry_failed: bool = False,
     notify: str | None = None,
     mcp_config: str | None = None,
     no_mcp_config: bool = False,
@@ -2663,6 +2746,7 @@ async def _run_flow(
         reactive_spec=reactive_spec,
         resume_checkpoint=resume_checkpoint,
         allow_degraded_context=allow_degraded_context,
+        retry_failed=retry_failed,
         checkpoint_config=_checkpoint_config,
     )
     _terminal_status = "completed"
@@ -2813,6 +2897,7 @@ async def _run_flow_inner(
     reactive_spec: str = "all",
     resume_checkpoint: dict | None = None,
     allow_degraded_context: bool = False,
+    retry_failed: bool = False,
     checkpoint_config: dict | None = None,
 ) -> str:
     """Sequence the flow phases: plan → [dry-run] → build → execute → synthesize → finalize."""
@@ -3038,6 +3123,7 @@ async def _run_flow_inner(
             dag_state,
             resume_checkpoint.get("ops") or {},
             allow_degraded_context=allow_degraded_context,
+            retry_failed=retry_failed,
             checkpoint_spawned=resume_checkpoint.get("spawned") or None,
         )
         checkpoint_plan = resume_checkpoint["plan"]
@@ -3099,6 +3185,7 @@ async def _resume_flow(
     target: str,
     *,
     allow_degraded_context: bool = False,
+    retry_failed: bool = False,
     dry_run: bool = False,
     show_graph: bool = False,
     notify: str | None = None,
@@ -3116,5 +3203,6 @@ async def _resume_flow(
         prompt=checkpoint.get("prompt", ""),
         resume_checkpoint=checkpoint,
         allow_degraded_context=allow_degraded_context,
+        retry_failed=retry_failed,
         **config,
     )

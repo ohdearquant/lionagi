@@ -449,8 +449,17 @@ def test_apply_checkpoint_precompletion_no_degraded_ops_is_a_silent_noop():
     assert nodes["n-worker"].execution.response == "done"
 
 
-def test_apply_checkpoint_precompletion_preserves_failed_ops_as_terminal_not_rerun():
-    """A checkpointed 'failed' op is restored as terminal FAILED, not re-run -- it may have already produced side effects and resume must not guess at retry semantics."""
+def test_apply_checkpoint_precompletion_refuses_a_failed_op_rather_than_guessing():
+    """A checkpointed 'failed' op refuses the resume, naming it.
+
+    The op may already have produced side effects, and resume must not guess at
+    retry semantics. Restoring it as terminal FAILED was the earlier way of not
+    guessing, and it guesses in the other direction just as hard: the executor's
+    pre-completed seam skips any node carrying a terminal status, so the node
+    never runs and nothing downstream of it ever becomes runnable. A run that
+    died on its deadline could not be finished by resuming it. Refusing puts the
+    choice in front of the caller instead of making it for them silently.
+    """
     nodes = {"n-worker": _FakeNode("n-worker")}
     env = SimpleNamespace(
         builder=SimpleNamespace(get_graph=lambda: SimpleNamespace(internal_nodes=nodes))
@@ -476,12 +485,96 @@ def test_apply_checkpoint_precompletion_preserves_failed_ops_as_terminal_not_rer
         "worker": {"agent_id": "worker", "status": "failed", "response": {"error": "boom"}}
     }
 
+    with pytest.raises(FlowResumeError, match="worker"):
+        _apply_checkpoint_precompletion(
+            env, plan_result, dag_state, checkpoint_ops, allow_degraded_context=False
+        )
+
+    # Refused before mutating anything, like the other pre-flight refusals here:
+    # a caller that catches this and resumes differently must not find the graph
+    # half-marked from the attempt that refused.
+    assert nodes["n-worker"].execution.status is None
+    assert nodes["n-worker"].execution.response is None
+
+
+def test_apply_checkpoint_precompletion_reruns_a_failed_op_on_opt_in():
+    """What --retry-failed buys: the node is left runnable rather than skipped."""
+    nodes = {"n-worker": _FakeNode("n-worker")}
+    env = SimpleNamespace(
+        builder=SimpleNamespace(get_graph=lambda: SimpleNamespace(internal_nodes=nodes))
+    )
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="do it", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["n-worker"],
+        known_nodes={"n-worker"},
+        deps_by_node={},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=[],
+    )
+    checkpoint_ops = {
+        "worker": {"agent_id": "worker", "status": "failed", "response": {"error": "boom"}}
+    }
+
     _apply_checkpoint_precompletion(
-        env, plan_result, dag_state, checkpoint_ops, allow_degraded_context=False
+        env,
+        plan_result,
+        dag_state,
+        checkpoint_ops,
+        allow_degraded_context=False,
+        retry_failed=True,
     )
 
-    assert nodes["n-worker"].execution.status == EventStatus.FAILED
-    assert nodes["n-worker"].execution.response == {"error": "boom"}
+    assert nodes["n-worker"].execution.status is None, (
+        "a re-run op must not carry a terminal status, or the executor skips it again"
+    )
+    assert nodes["n-worker"].execution.response is None, (
+        "the failed attempt produced no result to carry into the re-run"
+    )
+
+
+def test_apply_checkpoint_precompletion_still_replays_completed_ops_when_retrying_failed():
+    """The opt-in is scoped to failures. Completed work is still not re-run."""
+    nodes = {"n-worker": _FakeNode("n-worker")}
+    env = SimpleNamespace(
+        builder=SimpleNamespace(get_graph=lambda: SimpleNamespace(internal_nodes=nodes))
+    )
+    plan_result = _PlanResult(
+        assignments=[TaskAssignment(task="do it", assignee="worker")],
+        agent_ids=["worker"],
+        dep_indices=[[]],
+        pool=[],
+        budget_preambles={},
+    )
+    dag_state = _DagState(
+        node_ids=["n-worker"],
+        known_nodes={"n-worker"},
+        deps_by_node={},
+        reactive=False,
+        spawn_roles=None,
+        role_base={},
+        worker_models=[],
+    )
+    checkpoint_ops = {"worker": {"agent_id": "worker", "status": "completed", "response": "done"}}
+
+    _apply_checkpoint_precompletion(
+        env,
+        plan_result,
+        dag_state,
+        checkpoint_ops,
+        allow_degraded_context=False,
+        retry_failed=True,
+    )
+
+    assert nodes["n-worker"].execution.status == EventStatus.COMPLETED
+    assert nodes["n-worker"].execution.response == "done"
 
 
 def test_apply_checkpoint_precompletion_refuses_when_spawned_entries_present():
@@ -2325,3 +2418,201 @@ async def test_checkpoint_observer_skips_a_declared_node_and_still_records_a_rea
     # planned keyspace by the other branch.
     assert data["ops"]["worker"]["status"] == "completed"
     assert "synthesis" not in data["ops"]
+
+
+# ── --retry-failed and reactively spawned children ────────────────────────────
+#
+# A re-running op decides its own reactive spawns, and nothing says the second
+# attempt makes the same ones. The rule these cover: children derived from the
+# superseded parent run must never survive as current. They are dropped so the
+# re-run derives its own, or they are refused; they are never silently kept.
+
+
+def _spawn_entry(node_id: str, parent_id: str, *, status: str = "completed", spawn_id: str) -> dict:
+    return {
+        "node_id": node_id,
+        "status": status,
+        "response": "child result",
+        "operation": "operate",
+        "assignee": "worker",
+        "instruction": "follow-up task",
+        "parent_id": parent_id,
+        "spawn_id": spawn_id,
+        "context": None,
+    }
+
+
+def _spawn_dag_state(parent_id, worker_branch) -> _DagState:
+    return _DagState(
+        node_ids=[parent_id],
+        known_nodes={parent_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=["worker"],
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+
+
+def test_a_failed_spawned_child_refuses_the_resume_even_when_every_planned_op_completed():
+    """The refusal is about failures anywhere in the checkpoint, not just planned ops.
+
+    A spawned child is as capable of being the thing a deadline killed, and
+    replaying it as terminal skips it identically.
+    """
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+
+    with pytest.raises(FlowResumeError, match=child_id):
+        _apply_checkpoint_precompletion(
+            env,
+            plan_result,
+            _spawn_dag_state(parent_id, worker_branch),
+            checkpoint_ops,
+            allow_degraded_context=False,
+            checkpoint_spawned=[
+                _spawn_entry(child_id, str(parent_id), status="failed", spawn_id="spawn-1")
+            ],
+        )
+
+
+def test_a_failed_spawned_child_of_a_completed_parent_is_rebuilt_to_run():
+    """Its parent is not re-running, so dropping it would silently lose the work.
+
+    It is fully reconstructible from its recorded operation and instruction, so
+    the honest answer is to rebuild it and let it run in place.
+    """
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id)
+    child_id = str(uuid4())
+
+    _apply_checkpoint_precompletion(
+        env,
+        plan_result,
+        _spawn_dag_state(parent_id, worker_branch),
+        checkpoint_ops,
+        allow_degraded_context=False,
+        retry_failed=True,
+        checkpoint_spawned=[
+            _spawn_entry(child_id, str(parent_id), status="failed", spawn_id="spawn-1")
+        ],
+    )
+
+    graph = builder.get_graph()
+    child = graph.internal_nodes[UUID(child_id)]
+    # PENDING is a real operation's untouched default: nothing pre-marked it, so
+    # the executor's terminal short-circuit does not skip it.
+    assert child.execution.status == EventStatus.PENDING, (
+        "rebuilt to run, not rebuilt as already-failed"
+    )
+    assert child.execution.response is None
+
+
+def test_children_of_a_rerunning_parent_are_dropped_so_the_rerun_derives_its_own():
+    """Keeping them would attribute work to a parent execution that no longer
+    exists, and would double it the moment the re-run spawns its own."""
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id, status="failed")
+    child_id = str(uuid4())
+
+    _apply_checkpoint_precompletion(
+        env,
+        plan_result,
+        _spawn_dag_state(parent_id, worker_branch),
+        checkpoint_ops,
+        allow_degraded_context=False,
+        retry_failed=True,
+        checkpoint_spawned=[_spawn_entry(child_id, str(parent_id), spawn_id="spawn-1")],
+    )
+
+    graph = builder.get_graph()
+    assert UUID(child_id) not in graph.internal_nodes
+    assert graph.internal_nodes[parent_id].execution.status == EventStatus.PENDING, (
+        "control: the parent really is the one re-running"
+    )
+
+
+def test_dropping_children_of_a_rerunning_parent_is_transitive():
+    """A dropped child's own children came from the same superseded run.
+
+    Stopping at one level would leave a grandchild wired to a parent that is no
+    longer in the graph.
+    """
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    plan_result, checkpoint_ops = _terminal_plan_and_ops("worker", parent_id, status="failed")
+    child_id, grandchild_id = str(uuid4()), str(uuid4())
+
+    _apply_checkpoint_precompletion(
+        env,
+        plan_result,
+        _spawn_dag_state(parent_id, worker_branch),
+        checkpoint_ops,
+        allow_degraded_context=False,
+        retry_failed=True,
+        checkpoint_spawned=[
+            _spawn_entry(child_id, str(parent_id), spawn_id="spawn-1"),
+            _spawn_entry(grandchild_id, child_id, spawn_id="spawn-2"),
+        ],
+    )
+
+    graph = builder.get_graph()
+    assert UUID(child_id) not in graph.internal_nodes
+    assert UUID(grandchild_id) not in graph.internal_nodes
+
+
+def test_children_of_a_completed_parent_survive_a_retry_of_a_different_op():
+    """The drop is scoped by ancestry, not by the presence of the flag.
+
+    Without this, opting in to retry one failed op would quietly discard every
+    reactive result the run had already earned elsewhere.
+    """
+    builder, parent_id, worker_branch = _real_planned_node("worker")
+    env = SimpleNamespace(builder=builder)
+    plan_result = _PlanResult(
+        assignments=[
+            TaskAssignment(task="do it", assignee="worker"),
+            TaskAssignment(task="other", assignee="other"),
+        ],
+        agent_ids=["worker", "other"],
+        dep_indices=[[], []],
+        pool=[],
+        budget_preambles={},
+    )
+    other_id = builder.add_operation("operate", branch=worker_branch, instruction="other")
+    checkpoint_ops = {
+        "worker": {"agent_id": "worker", "status": "completed", "response": "done"},
+        "other": {"agent_id": "other", "status": "failed", "response": {"error": "boom"}},
+    }
+    dag_state = _DagState(
+        node_ids=[parent_id, other_id],
+        known_nodes={parent_id, other_id},
+        deps_by_node={},
+        reactive=True,
+        spawn_roles=["worker"],
+        role_base={"worker": worker_branch},
+        worker_models=[],
+    )
+    child_id = str(uuid4())
+
+    _apply_checkpoint_precompletion(
+        env,
+        plan_result,
+        dag_state,
+        checkpoint_ops,
+        allow_degraded_context=False,
+        retry_failed=True,
+        checkpoint_spawned=[_spawn_entry(child_id, str(parent_id), spawn_id="spawn-1")],
+    )
+
+    graph = builder.get_graph()
+    child = graph.internal_nodes[UUID(child_id)]
+    assert child.execution.status == EventStatus.COMPLETED
+    assert child.execution.response == "child result"
+    assert graph.internal_nodes[other_id].execution.status == EventStatus.PENDING, (
+        "control: the other op really is re-running"
+    )
