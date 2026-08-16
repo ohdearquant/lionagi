@@ -4015,13 +4015,21 @@ class StateDB:
         # goes through this method, which is what makes one trim here enough.
         # terminal_deliveries holds an FK into status_transitions: children
         # first, matching delete_session below.
+        #
+        # The tiebreaker is `id`, which this store uses everywhere and which
+        # both dialects have. It is a random UUID, so two transitions written
+        # inside one clock tick trim in an arbitrary order — immaterial for a
+        # retention bound, where any N of the newest will do. Ordering them by
+        # when they were actually written needs a monotonic column that this
+        # table does not have; `rowid` would do it on SQLite alone, and this
+        # class runs on PostgreSQL too.
         doomed = (
             "SELECT id FROM status_transitions "
             "WHERE entity_type = 'schedule' AND entity_id = :id "
             "AND id NOT IN ("
             "  SELECT id FROM status_transitions "
             "  WHERE entity_type = 'schedule' AND entity_id = :id "
-            "  ORDER BY created_at DESC, rowid DESC LIMIT :keep"
+            "  ORDER BY created_at DESC, id DESC LIMIT :keep"
             ")"
         )
         params = {"id": schedule_id, "keep": SCHEDULE_LIFECYCLE_HISTORY_LIMIT}
@@ -4174,10 +4182,7 @@ class StateDB:
                             "reason_code, reason_summary, evidence_refs, source, actor, "
                             "created_at, metadata FROM status_transitions "
                             "WHERE entity_type = 'schedule' AND entity_id = :id "
-                            # rowid, not id: the primary key is a random UUID,
-                            # so it orders two transitions written in the same
-                            # clock tick arbitrarily. rowid is insertion order.
-                            "ORDER BY created_at DESC, rowid DESC LIMIT :limit"
+                            "ORDER BY created_at DESC, id DESC LIMIT :limit"
                         ),
                         {"id": schedule_id, "limit": limit},
                     )

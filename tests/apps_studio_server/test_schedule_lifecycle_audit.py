@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -271,6 +273,21 @@ def test_a_request_that_claims_no_name_records_no_claim(
     assert "claimed_actor_unverified" not in history[0]["metadata"]
 
 
+def _stamp_clock(monkeypatch: pytest.MonkeyPatch, start: float = 1_000.0) -> None:
+    """Give every audit write a distinct, increasing created_at.
+
+    time.time() is coarse enough on this platform that a run of back-to-back
+    writes lands several rows on one value, and the tiebreaker behind it is a
+    random UUID. Ordering by "newest" is only a well-defined question once the
+    timestamps differ, so the tests state the order instead of racing a clock
+    for it.
+    """
+    import lionagi.state.lifecycle.service as lifecycle_service
+
+    ticks = itertools.count(start)
+    monkeypatch.setattr(lifecycle_service, "time", SimpleNamespace(time=lambda: next(ticks)))
+
+
 async def _append(db: StateDB, schedule_id: str, n: int) -> None:
     """Write *n* transitions through the one method every write path uses."""
     for i in range(n):
@@ -291,11 +308,11 @@ async def test_history_stops_growing_at_its_bound_rather_than_at_the_disk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Toggling is an operator action with no natural end, so the row count
-    has to be bounded by policy. Every flip is written in the same tick here,
-    which is also what makes this exercise the insertion-order tiebreaker:
-    ``created_at`` alone cannot say which three are newest."""
+    has to be bounded by policy, and the rows it keeps have to be the recent
+    ones rather than whichever three the trim happened to reach."""
     _patch_db(monkeypatch, tmp_path / "state.db")
     monkeypatch.setattr(state_db_mod, "SCHEDULE_LIFECYCLE_HISTORY_LIMIT", 3)
+    _stamp_clock(monkeypatch)
     schedule_id = uuid.uuid4().hex[:12]
 
     async with StateDB() as db:
@@ -310,7 +327,7 @@ async def test_history_stops_growing_at_its_bound_rather_than_at_the_disk(
         rows = await db.fetch_all(
             "SELECT reason_summary FROM status_transitions "
             "WHERE entity_type = 'schedule' AND entity_id = :id "
-            "ORDER BY created_at DESC, rowid DESC",
+            "ORDER BY created_at DESC, id DESC",
             {"id": schedule_id},
         )
     assert [r["reason_summary"] for r in rows] == ["flip 7", "flip 6", "flip 5"]
@@ -325,6 +342,7 @@ async def test_the_trim_does_not_orphan_a_delivery_row_that_points_at_it(
     acknowledged a transition."""
     _patch_db(monkeypatch, tmp_path / "state.db")
     monkeypatch.setattr(state_db_mod, "SCHEDULE_LIFECYCLE_HISTORY_LIMIT", 2)
+    _stamp_clock(monkeypatch)
     schedule_id = uuid.uuid4().hex[:12]
 
     async with StateDB() as db:
