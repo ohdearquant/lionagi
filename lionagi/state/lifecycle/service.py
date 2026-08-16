@@ -469,7 +469,16 @@ class SQLAlchemyLifecycleService:
                 # measured_here, because a caller who supplies both an end and
                 # the bit is recording a reconstructed end deliberately, and
                 # that end is no more subtractable than a repaired one.
-                if "duration_ms" not in patch and not patch["ended_at_is_approximate"]:
+                if patch["ended_at_is_approximate"]:
+                    # Cleared, not merely left uncomputed. Both readers already
+                    # discard a stored duration when this bit is set, so one
+                    # persisted beside it is a value nothing can ever surface,
+                    # and the row asserts a measured length for an end nobody
+                    # measured. The schema-version repair clears it in the same
+                    # write that sets the bit for exactly this reason; a
+                    # transition that sets the bit owes the same.
+                    patch["duration_ms"] = None
+                elif "duration_ms" not in patch:
                     started_at = row["started_at"]
                     if isinstance(started_at, int | float):
                         patch["duration_ms"] = max(0.0, (ended_at_value - started_at) * 1000)

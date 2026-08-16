@@ -829,3 +829,74 @@ async def test_a_measured_end_still_gets_its_duration(
     assert row is not None
     assert row["ended_at_is_approximate"] is False
     assert row["duration_ms"] == pytest.approx(300.0 * 1000)
+
+
+async def test_a_supplied_duration_does_not_survive_an_approximate_end(
+    db: StateDB,
+) -> None:
+    """Sending a duration with an approximate end must not persist the duration.
+
+    Not computing one is only half the contract. Both readers discard a stored
+    duration when the flag is set, so a persisted one is a value nothing can
+    surface, on a row that then asserts a measured length for an end nobody
+    measured. The schema-version repair clears it in the same write that sets
+    the bit; a transition that sets the bit owes the same.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET started_at = :started WHERE id = :id"),
+            {"started": 100.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(
+            entity_id=sid,
+            to_status="completed",
+            patch={
+                "ended_at": 400.0,
+                "ended_at_is_approximate": 1,
+                "duration_ms": 300000.0,
+            },
+        )
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at_is_approximate"] is True
+    assert row["duration_ms"] is None, (
+        "a caller-supplied duration was kept beside an approximate end"
+    )
+
+
+async def test_a_stored_duration_is_cleared_when_a_transition_marks_the_end_approximate(
+    db: StateDB,
+) -> None:
+    """The same holds for a duration already on the row rather than in the patch.
+
+    A row can carry a duration written by an earlier terminal transition and
+    then be re-marked approximate. Guarding only the patch would leave that one
+    in place, which is the same contradiction reached from the store side.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "UPDATE sessions SET started_at = :started, duration_ms = :duration WHERE id = :id"
+            ),
+            {"started": 100.0, "duration": 999.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(
+            entity_id=sid,
+            to_status="completed",
+            patch={"ended_at": 400.0, "ended_at_is_approximate": 1},
+        )
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["duration_ms"] is None, "a pre-existing duration outlived the approximate mark"
