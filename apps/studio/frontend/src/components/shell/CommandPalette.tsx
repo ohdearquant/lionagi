@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useLocale, useTranslations } from "use-intl";
 import { buildRegistry, fuzzyMatch, type Command } from "@/lib/commands";
+import { isTopmostOverlay, popOverlay, pushOverlay } from "@/lib/overlayStack";
 
 interface Props {
   open: boolean;
@@ -72,6 +73,20 @@ function PaletteInner({ onClose, toggleTheme, toggleOperator }: Omit<Props, "ope
     el?.scrollIntoView?.({ block: "nearest" });
   }, [active]);
 
+  // Registered on its own, because the key handler below re-subscribes on every
+  // keystroke that changes the filtered list. Registering there would re-push
+  // the palette to the top of the stack constantly, which is harmless only for
+  // as long as nothing ever opens above it.
+  const overlayRef = useRef<symbol | null>(null);
+  useEffect(() => {
+    const overlay = pushOverlay("CommandPalette");
+    overlayRef.current = overlay;
+    return () => {
+      popOverlay(overlay);
+      overlayRef.current = null;
+    };
+  }, []);
+
   // Keyboard handler for navigation within the palette. Enter only executes
   // a result while focus is on the command surface; pressing Enter on the
   // close control must remain a close action.
@@ -80,6 +95,8 @@ function PaletteInner({ onClose, toggleTheme, toggleOperator }: Omit<Props, "ope
       // Never react while an IME composition is in flight (zh input):
       // Enter/arrows there confirm the composition, not a command.
       if (e.isComposing) return;
+      // Another overlay opened on top of the palette; it owns the keyboard.
+      if (!overlayRef.current || !isTopmostOverlay(overlayRef.current)) return;
       const target = e.target instanceof Node ? e.target : null;
       const isCommandSurface =
         target === inputRef.current || Boolean(target && listboxRef.current?.contains(target));

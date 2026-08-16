@@ -10,6 +10,7 @@ import StatusPill from "@/components/ui/StatusPill";
 import { IconArrowUpRight, IconClose } from "@/components/ui/icons";
 import { useToast } from "@/components/ui/Toast";
 import ErrorBanner from "@/components/ui/ErrorBanner";
+import { isTopmostOverlay, popOverlay, pushOverlay } from "@/lib/overlayStack";
 import EnabledToggle from "./EnabledToggle";
 import TemplateVarChips from "./TemplateVarChips";
 import { classifyError } from "./errorClassify";
@@ -272,8 +273,25 @@ export default function ScheduleDetailModal({
     };
   }, []);
 
+  // Registered on its own, because the key handler below re-subscribes whenever
+  // `requestClose` changes. Registering there would re-push this dialog to the
+  // top of the stack mid-life and take the keyboard back from an overlay the
+  // operator opened over it.
+  const overlayRef = useRef<symbol | null>(null);
+  useEffect(() => {
+    const overlay = pushOverlay("ScheduleDetailModal");
+    overlayRef.current = overlay;
+    return () => {
+      popOverlay(overlay);
+      overlayRef.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      // Another overlay opened on top of this one. It owns the keyboard, and
+      // the focus check below would read its focus as focus that escaped here.
+      if (!overlayRef.current || !isTopmostOverlay(overlayRef.current)) return;
       if (e.key === "Escape") {
         e.preventDefault();
         requestClose();

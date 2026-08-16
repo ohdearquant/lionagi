@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import Modal from "@/components/ui/Modal";
 import { ToastProvider } from "@/components/ui/Toast";
 import enMessages from "@/messages/en.json";
 import type { ScheduleDetail } from "@/lib/types";
@@ -225,5 +226,37 @@ describe("ScheduleDetailModal interactions", () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("leaves the keyboard to a dialog opened over it", async () => {
+    // This editor traps keys with a listener above the tree, and it was added
+    // before the one on top, so it sees every key first. Without a check for
+    // which surface is topmost it answers Escape meant for the newer dialog,
+    // and its Tab trap pulls focus down out of it for the same reason.
+    const closeOverlay = vi.fn<() => void>();
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <ToastProvider>
+            <ScheduleDetailModal
+              scheduleId="schedule-1"
+              onClose={onClose}
+              onChanged={vi.fn<() => void>()}
+            />
+            <Modal title="On top" closeLabel="Close overlay" onClose={closeOverlay}>
+              <button type="button">Overlay action</button>
+            </Modal>
+          </ToastProvider>
+        </IntlProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+
+    expect(closeOverlay).toHaveBeenCalledOnce();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef } from "react";
 import type { ReactNode } from "react";
+import { isTopmostOverlay, popOverlay, pushOverlay } from "../../lib/overlayStack";
 import IconButton from "./IconButton";
 import { IconClose } from "./icons";
 
@@ -61,7 +62,12 @@ export default function Modal({
           element.getAttribute("aria-hidden") !== "true",
       );
 
+    const overlay = pushOverlay("Modal");
+
     const onKey = (e: KeyboardEvent) => {
+      // Another overlay opened on top of this one. It owns the keyboard, and
+      // the focus check below would read its focus as focus that escaped here.
+      if (!isTopmostOverlay(overlay)) return;
       if (e.key === "Escape") {
         e.preventDefault();
         onCloseRef.current();
@@ -98,6 +104,7 @@ export default function Modal({
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
+      popOverlay(overlay);
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
     };
   }, []);

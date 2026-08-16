@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import enMessages from "@/messages/en.json";
+import Modal from "@/components/ui/Modal";
 import CommandPalette from "./CommandPalette";
 
 const commandAction = vi.fn();
@@ -87,5 +88,67 @@ describe("CommandPalette keyboard behavior", () => {
       );
     });
     expect(document.activeElement).toBe(launcher);
+  });
+
+  it("keeps focus inside itself when a dialog is already open underneath", async () => {
+    // Both surfaces trap Tab with a listener above the tree, and the dialog's
+    // was added first, so it sees the key first. Its trap finds focus sitting
+    // outside itself, which is what the palette on top looks like, and without
+    // the topmost check it pulls focus down into the dialog the operator left.
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <Modal title="Underneath" closeLabel="Close dialog" onClose={vi.fn<() => void>()}>
+            <button type="button">Dialog first</button>
+            <button type="button">Dialog last</button>
+          </Modal>
+          <CommandPalette
+            open
+            onClose={onClose}
+            toggleTheme={vi.fn<() => void>()}
+            toggleOperator={vi.fn<() => void>()}
+          />
+        </IntlProvider>,
+      );
+    });
+
+    const dialog = Array.from(container.querySelectorAll<HTMLElement>("button"))
+      .find((button) => button.textContent === "Dialog first")
+      ?.closest<HTMLElement>('[role="dialog"]');
+    const input = container.querySelector<HTMLInputElement>('[role="combobox"]');
+    const paletteClose = container.querySelector<HTMLButtonElement>('button[aria-label="Close"]');
+    expect(dialog).toBeTruthy();
+    expect(document.activeElement).toBe(input);
+
+    input?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }),
+    );
+
+    expect(dialog?.contains(document.activeElement)).toBe(false);
+    expect(document.activeElement).toBe(paletteClose);
+  });
+
+  it("closes only the topmost surface on Escape", async () => {
+    const closeDialog = vi.fn<() => void>();
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <Modal title="Underneath" closeLabel="Close dialog" onClose={closeDialog}>
+            <button type="button">Dialog first</button>
+          </Modal>
+          <CommandPalette
+            open
+            onClose={onClose}
+            toggleTheme={vi.fn<() => void>()}
+            toggleOperator={vi.fn<() => void>()}
+          />
+        </IntlProvider>,
+      );
+    });
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(closeDialog).not.toHaveBeenCalled();
   });
 });
