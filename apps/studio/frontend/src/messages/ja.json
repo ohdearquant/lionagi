@@ -1163,6 +1163,7 @@
     "showEarlier": "{count, plural, other {# 件の古いメッセージを表示}}",
     "noArgs": "(引数なし)",
     "noOutput": "(出力なし)",
+    "outputWithheld": "未読み込み",
     "roleUser": "ユーザー",
     "roleThinking": "思考",
     "roleResponse": "応答",

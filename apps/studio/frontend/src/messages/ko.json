@@ -1163,6 +1163,7 @@
     "showEarlier": "이전 메시지 {count, number}개 표시",
     "noArgs": "(인수 없음)",
     "noOutput": "(출력 없음)",
+    "outputWithheld": "읽지 않음",
     "roleUser": "사용자",
     "roleThinking": "생각 중",
     "roleResponse": "응답",

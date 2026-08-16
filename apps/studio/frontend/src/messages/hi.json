@@ -1163,6 +1163,7 @@
     "showEarlier": "{count, plural, one {# पुराना मैसेज दिखाएँ} other {# पुराने मैसेज दिखाएँ}}",
     "noArgs": "(कोई args नहीं)",
     "noOutput": "(कोई आउटपुट नहीं)",
+    "outputWithheld": "पढ़ा नहीं गया",
     "roleUser": "यूज़र",
     "roleThinking": "सोच रहा है",
     "roleResponse": "रिस्पॉन्स",

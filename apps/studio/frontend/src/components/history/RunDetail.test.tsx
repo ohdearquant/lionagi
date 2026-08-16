@@ -1003,15 +1003,96 @@ describe("history/RunDetail.tsx — overview aggregates are lifetime totals", ()
         },
         { toolCallCount: 2, errorCount: 1 },
       ),
-    ).toEqual({ toolCallCount: 21_741, errorCount: 42 });
+    ).toEqual({ toolCallCount: 21_741, errorCount: 42, countsAreFloors: false });
   });
 
-  it("does not select recent-qualified labels for partial message windows", () => {
-    const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
-    const start = src.indexOf("function OverviewSection");
-    const end = src.indexOf("// ── Branches section", start);
-    const overview = src.slice(start, end);
-    expect(overview).not.toMatch(/statToolCallsRecent|statErrorsRecent/);
+  it("reports the counts as floors when the server says its pass was bounded", async () => {
+    const { resolveOverviewCounts } = await import("./RunDetail");
+    expect(
+      resolveOverviewCounts(
+        {
+          message_count: 30_525,
+          roles: {},
+          tool_call_count: 21_741,
+          error_count: 42,
+          files: [],
+          bounded: true,
+        },
+        { toolCallCount: 2, errorCount: 1 },
+      ),
+    ).toEqual({ toolCallCount: 21_741, errorCount: 42, countsAreFloors: true });
+  });
+
+  async function mountOverview(messageStats: Record<string, unknown>) {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockResolvedValue({
+      id: "run-overview-labels",
+      name: "run-overview-labels",
+      created_at: 0,
+      updated_at: 0,
+      status: "completed",
+      branches: [],
+      message_stats: messageStats,
+    } as never);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <RunDetail id="run-overview-labels" />
+        </IntlProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return {
+      container,
+      unmount: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  const FULL_STATS = {
+    message_count: 30_525,
+    roles: {},
+    tool_call_count: 21_741,
+    error_count: 0,
+    files: [],
+  };
+
+  it("labels the count tiles as totals when the server read the whole surface", async () => {
+    const { container, unmount } = await mountOverview(FULL_STATS);
+    try {
+      // Control for the assertion below: the unqualified labels have to be
+      // reachable, or finding the qualified ones proves nothing.
+      expect(container.textContent).toContain("Tool calls");
+      expect(container.textContent).not.toContain("Tool calls (recent)");
+      expect(container.textContent).not.toContain("Errors (recent)");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("qualifies the count tiles as recent when the server's pass was bounded", async () => {
+    const { container, unmount } = await mountOverview({ ...FULL_STATS, bounded: true });
+    try {
+      // The counts came from the newest slice of a long session's action rows,
+      // so they are floors. Under the plain label a floor reads as a total,
+      // and a zero error count reads as a clean run.
+      expect(container.textContent).toContain("Tool calls (recent)");
+      expect(container.textContent).toContain("Errors (recent)");
+    } finally {
+      unmount();
+    }
   });
 });
 
@@ -2865,5 +2946,169 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
       act(() => root.unmount());
       container.remove();
     }
+  });
+});
+
+function openConversationTab(container: HTMLElement): void {
+  const tab = container.querySelector<HTMLButtonElement>('[id$="-tab-conversation"]');
+  if (!tab) throw new Error("conversation tab not rendered");
+  act(() => {
+    tab.click();
+  });
+}
+
+describe("history/RunDetail.tsx — a tool result nobody read is not a tool call that worked", () => {
+  // The server withholds a message payload past its per-row size ceiling and
+  // marks the row `content_withheld`. Every consumer here decides success by
+  // reading the output, and a withheld output is an empty string, so without
+  // the flag a call whose result nobody has seen renders with a green check.
+  const withheldBranch = (contentWithheld: boolean) => ({
+    id: "branch-withheld",
+    name: "worker",
+    created_at: 10,
+    message_total: 2,
+    messages: [
+      {
+        id: "req-1",
+        role: "action",
+        content: {
+          function: "Bash",
+          arguments: { command: "ls" },
+          action_response_id: "resp-1",
+        },
+        sender: "worker",
+        timestamp: 11,
+        lion_class: "ActionRequest",
+      },
+      {
+        id: "resp-1",
+        role: "action",
+        content: contentWithheld ? null : { function: "Bash", output: "a.txt" },
+        content_withheld: contentWithheld,
+        sender: "tool",
+        timestamp: 12,
+        lion_class: "ActionResponse",
+      },
+    ],
+  });
+
+  it("marks a paired call whose response payload was withheld", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldBranch(true) as never, "completed");
+    const [call] = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(call.status).toBe("withheld");
+  });
+
+  it("still reports an ordinary call as ok", async () => {
+    // Control: "withheld" has to be reachable only through the flag, or the
+    // assertion above is satisfied by a status that is always withheld.
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldBranch(false) as never, "completed");
+    const [call] = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(call.status).toBe("ok");
+  });
+
+  // A withheld REQUEST is the harder half. Its payload is what carries the
+  // function name, the arguments and the forward link to its response, so a
+  // consumer reading only the response's flag sees an ordinary call with a
+  // blank name, and the response it could no longer point at renders as a
+  // second one. Two green checks, for one call nobody could read.
+  const withheldRequestBranch = () => ({
+    id: "branch-withheld-req",
+    name: "worker",
+    created_at: 10,
+    message_total: 2,
+    messages: [
+      {
+        id: "req-1",
+        role: "action",
+        content: null,
+        content_withheld: true,
+        sender: "worker",
+        timestamp: 11,
+        lion_class: "ActionRequest",
+      },
+      {
+        id: "resp-1",
+        role: "action",
+        content: { function: "Bash", output: "a.txt", action_request_id: "req-1" },
+        sender: "tool",
+        timestamp: 12,
+        lion_class: "ActionResponse",
+      },
+    ],
+  });
+
+  it("marks a call whose own request payload was withheld", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldRequestBranch() as never, "completed");
+    const calls = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(calls.map((c) => c.status)).toEqual(["withheld"]);
+  });
+
+  it("pairs a withheld request with its response from the response's own end", async () => {
+    // One row, not two: the response names its request in a payload the
+    // request's withholding cannot reach, so the pairing survives it.
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldRequestBranch() as never, "completed");
+    expect((step.messages ?? []).filter((m) => m.role === "tool_call")).toHaveLength(1);
+  });
+
+  it("marks an unpaired response whose own payload was withheld", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const branch = withheldBranch(true) as never as { messages: unknown[] };
+    const step = branchToRunStep(
+      { ...branch, messages: [branch.messages[1]] } as never,
+      "completed",
+    );
+    const [call] = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(call.status).toBe("withheld");
+  });
+
+  it("renders the withheld badge instead of the success check", () => {
+    const withheld = {
+      step: "s1",
+      status: "completed",
+      timestamp: 1,
+      messages: [
+        {
+          role: "tool_call",
+          function: "Bash",
+          summary: "ls",
+          output: "",
+          status: "withheld",
+          timestamp: 1,
+        },
+      ],
+    };
+    const { container } = renderRunStepCards([withheld as never], true);
+    openConversationTab(container);
+    expect(container.textContent).toContain("not read");
+  });
+
+  it("does not render the withheld badge for an ordinary call", () => {
+    // Control for the render: "not read" must be absent when the status is ok,
+    // or its presence above says nothing about the status.
+    const ok = {
+      step: "s1",
+      status: "completed",
+      timestamp: 1,
+      messages: [
+        {
+          role: "tool_call",
+          function: "Bash",
+          summary: "ls",
+          output: "a.txt",
+          status: "ok",
+          timestamp: 1,
+        },
+      ],
+    };
+    const { container } = renderRunStepCards([ok as never], true);
+    openConversationTab(container);
+    // The tool call is on screen -- this is the same panel the assertion above
+    // reads, so its silence is about the status and not about the tab.
+    expect(container.textContent).toContain("ls");
+    expect(container.textContent).not.toContain("not read");
   });
 });

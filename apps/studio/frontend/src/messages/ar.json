@@ -1163,6 +1163,7 @@
     "showEarlier": "{count, plural, zero {لا رسائل أقدم} one {عرض رسالة أقدم واحدة} two {عرض رسالتين أقدم} few {عرض # رسائل أقدم} many {عرض # رسالة أقدم} other {عرض # رسالة أقدم}}",
     "noArgs": "(لا وسائط)",
     "noOutput": "(لا مخرجات)",
+    "outputWithheld": "لم تتم القراءة",
     "roleUser": "المستخدم",
     "roleThinking": "يفكّر",
     "roleResponse": "رد",

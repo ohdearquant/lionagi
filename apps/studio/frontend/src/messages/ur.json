@@ -1163,6 +1163,7 @@
     "showEarlier": "پچھلے {count, number} پیغامات دکھائیں",
     "noArgs": "(کوئی args نہیں)",
     "noOutput": "(کوئی output نہیں)",
+    "outputWithheld": "پڑھا نہیں گیا",
     "roleUser": "یوزر",
     "roleThinking": "سوچ رہا ہے",
     "roleResponse": "جواب",

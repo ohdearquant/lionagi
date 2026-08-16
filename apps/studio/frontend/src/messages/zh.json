@@ -1163,6 +1163,7 @@
     "showEarlier": "显示更早的 {count, number} 条消息",
     "noArgs": "(无参数)",
     "noOutput": "(无输出)",
+    "outputWithheld": "未读取",
     "roleUser": "用户",
     "roleThinking": "思考",
     "roleResponse": "回复",

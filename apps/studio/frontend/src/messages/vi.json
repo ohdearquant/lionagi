@@ -1163,6 +1163,7 @@
     "showEarlier": "hiển thị {count, number} tin nhắn trước đó",
     "noArgs": "(không có đối số)",
     "noOutput": "(không có đầu ra)",
+    "outputWithheld": "chưa đọc",
     "roleUser": "người dùng",
     "roleThinking": "đang nghĩ",
     "roleResponse": "phản hồi",
