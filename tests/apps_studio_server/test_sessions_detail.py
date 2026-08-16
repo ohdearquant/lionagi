@@ -925,6 +925,7 @@ async def test_get_session_messages_after_handles_branch_over_sqlite_variable_li
             "id": "huge-1",
             "role": "assistant",
             "content": {"text": "in range"},
+            "content_withheld": False,
             "sender": "worker",
             "timestamp": 150.0,
             "lion_class": "__unknown__",
@@ -937,7 +938,11 @@ async def test_get_session_messages_after_message_shape_matches_expected_fields(
     patched_sessions_db,
 ):
     """Message shape parity: id/created_at/content/sender/role/lion_class/branch_id
-    must be present and match the pre-fix _format_message() output exactly."""
+    must be present and match the pre-fix _format_message() output exactly.
+
+    `content_withheld` joins them: this endpoint returns no per-session bounds
+    alongside the rows, so it is the only place a caller can learn that a payload
+    was refused rather than absent."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-shape")
     await seed_branch(db_path, branch_id="br-shape", session_id="sess-shape", msg_ids=["shape-1"])
@@ -963,6 +968,7 @@ async def test_get_session_messages_after_message_shape_matches_expected_fields(
             "id": "shape-1",
             "role": "assistant",
             "content": {"text": "hello shape"},
+            "content_withheld": False,
             "sender": "worker",
             "timestamp": 111.0,
             "lion_class": "lionagi.protocols.messages.assistant_response.AssistantResponse",
@@ -1588,3 +1594,83 @@ def test_a_change_list_inside_the_budget_is_reported_whole(sessions_svc, monkeyp
     assert summary["truncated"] is False
     assert summary["total"] == 5
     assert changes.yielded == 5
+
+
+async def _seed_one_action(db_path: Path, *, session_id: str, changes: int) -> None:
+    """A single ActionRequest whose payload size is set by its change count."""
+    msg_id = f"{session_id}-big"
+    await seed_branch(db_path, branch_id="b1", session_id=session_id, msg_ids=[msg_id])
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": msg_id,
+                "created_at": 100.0,
+                "content": {
+                    "function": "MultiEdit",
+                    "arguments": {
+                        "changes": [{"file_path": f"/run/f{i}.py"} for i in range(changes)]
+                    },
+                },
+                "sender": "worker",
+                "recipient": "tool",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                },
+            }
+        )
+
+
+async def test_an_oversized_action_payload_never_reaches_the_parser(
+    patched_sessions_db, monkeypatch
+):
+    """The row and resolve budgets both count things, which bounds the work only
+    while one thing costs a bounded amount to handle. A stored payload has no
+    ceiling and decoding it is what builds the object graph, so the size test has
+    to happen before the parser sees the value rather than inside the walk."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 400)
+
+    seen_lengths: list[int] = []
+    real_parse = svc._parse_json_col
+
+    def spy(value):
+        if isinstance(value, str):
+            seen_lengths.append(len(value))
+        return real_parse(value)
+
+    monkeypatch.setattr(svc, "_parse_json_col", spy)
+    await seed_session(db_path, session_id="sess-oversized", artifacts_path="/run")
+    await _seed_one_action(db_path, session_id="sess-oversized", changes=500)
+
+    detail = await svc.get_session("sess-oversized")
+
+    assert detail is not None
+    # The whole point: no string above the ceiling was ever decoded.
+    assert seen_lengths, "parser was never called at all, so this proves nothing"
+    assert max(seen_lengths) <= 400, seen_lengths
+    # And the caller is told the surface it got back is not the whole one.
+    assert detail["message_stats"]["bounded"] is True
+    assert detail["run_files"]["bounded"] is True
+
+
+async def test_a_payload_inside_the_ceiling_is_parsed_and_reported_whole(
+    patched_sessions_db, monkeypatch
+):
+    """Control: the assertions above pass trivially if nothing is ever parsed or
+    if `bounded` is stuck on. Same shape of row, small enough to keep."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 1_048_576)
+    await seed_session(db_path, session_id="sess-normal", artifacts_path="/run")
+    await _seed_one_action(db_path, session_id="sess-normal", changes=3)
+
+    detail = await svc.get_session("sess-normal")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is False
+    assert detail["run_files"]["bounded"] is False
+    assert {item["path"] for item in detail["run_files"]["items"]} == {
+        "f0.py",
+        "f1.py",
+        "f2.py",
+    }

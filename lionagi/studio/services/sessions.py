@@ -82,6 +82,35 @@ MAX_RUN_FILE_SCANNED_REQUESTS = 20_000
 # so a run that trips it is described as bounded rather than as small.
 MAX_RUN_FILE_SCANNED_PATHS = 20_000
 
+# The largest single action payload this hydration will decode.  The two bounds
+# above count things -- rows, then resolves -- and counting only bounds the work
+# while each counted thing costs a bounded amount.  One `messages.content` value
+# does not: it is written from a caller's own tool arguments and has no ceiling,
+# and decoding it builds an object graph several times the size of the text.  So
+# a single row could cost more than every bound above allows in total, and the
+# file-preview path reaches this while asking for one message, where a bound on
+# the number of rows does not apply at all.
+#
+# The test is applied in SQL, before the value is handed to a parser, because a
+# check written in Python has already paid the cost it is meant to refuse.  An
+# oversized row still contributes its identity and timing; only its content is
+# withheld, and the read reports itself as bounded so nothing downstream presents
+# the result as the whole surface.  The ceiling is set far above any plausible
+# tool call, so this refuses payloads that are already pathological rather than
+# trimming ordinary ones.
+MAX_ACTION_CONTENT_CHARS = 1_048_576
+
+# Selected in place of `m.content` by every query that hydrates a message row.
+# The ceiling is one property of the data, so it belongs to the column rather
+# than to whichever reader was being looked at when the cost was noticed: there
+# are several readers, they were added at different times, and bounding them one
+# at a time is how the next one gets added unbounded.  Takes the ceiling twice,
+# as the first two bind parameters of the statement it appears in.
+_BOUNDED_CONTENT_COLUMNS = (
+    "CASE WHEN length(m.content) > ? THEN NULL ELSE m.content END AS content, "
+    "CASE WHEN length(m.content) > ? THEN 1 ELSE 0 END AS content_oversized"
+)
+
 # How many action rows one session detail will pull out of the database, newest
 # first, across all of its branches together.  The bound above limits the work a
 # pass does over rows already in hand; this one limits how many are held at all,
@@ -433,10 +462,21 @@ def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
 
 
 def _format_message(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
+    """Shape one hydrated message row for the API.
+
+    Reads `content_oversized`, and so raises on a row selected without
+    ``_BOUNDED_CONTENT_COLUMNS``. That is the point: the alternative to failing
+    here is a query that silently decodes payloads of any size, which is what
+    this reads as when it is missing.
+    """
     return {
         "id": row["id"],
         "role": row["role"],
         "content": _parse_json_col(row["content"]),
+        # The row is still listed, with its identity and timing intact; only the
+        # payload is withheld, and a reader has to be able to tell that apart
+        # from a message that carried no content.
+        "content_withheld": bool(row["content_oversized"]),
         "sender": row["sender"],
         "timestamp": row["created_at"],
         "lion_class": row["lion_class_str"] or "",
@@ -881,13 +921,14 @@ async def _fetch_messages_by_ids(
         placeholders = ",".join("?" for _ in chunk)
         cur = await db.execute(
             f"""
-            SELECT m.id, m.created_at, m.content, m.sender, m.role,
+            SELECT m.id, m.created_at, m.sender, m.role,
+                   {_BOUNDED_CONTENT_COLUMNS},
                    mt.lion_class AS lion_class_str
             FROM messages m
             LEFT JOIN message_types mt ON m.lion_class = mt.type_id
             WHERE m.id IN ({placeholders})
             """,  # noqa: S608
-            chunk,
+            [MAX_ACTION_CONTENT_CHARS, MAX_ACTION_CONTENT_CHARS, *chunk],
         )
         for row in await cur.fetchall():
             rows_by_id[row["id"]] = _format_message(row)
@@ -966,6 +1007,7 @@ async def _fetch_action_messages(
     type_ids = list(lion_class_by_type_id)
     type_placeholders = ",".join("?" for _ in type_ids)
     bounded = False
+    oversized_seen = False
     for chunk_end in range(len(msg_ids), 0, -500):
         chunk_start = max(0, chunk_end - 500)
         chunk = msg_ids[chunk_start:chunk_end]
@@ -975,14 +1017,17 @@ async def _fetch_action_messages(
         # action-class row in the whole table per chunk (minutes of I/O at scale).
         cur = await db.execute(
             f"""
-            SELECT m.id, m.created_at, m.content, m.sender, m.role, m.lion_class
+            SELECT m.id, m.created_at, m.sender, m.role, m.lion_class,
+                   {_BOUNDED_CONTENT_COLUMNS}
             FROM messages m
             WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
             """,  # noqa: S608
-            [*chunk, *type_ids],
+            [MAX_ACTION_CONTENT_CHARS, MAX_ACTION_CONTENT_CHARS, *chunk, *type_ids],
         )
         for row in await cur.fetchall():
             data = dict(row)
+            if data["content_oversized"]:
+                oversized_seen = True
             data["lion_class_str"] = lion_class_by_type_id.get(data.pop("lion_class"))
             rows_by_id[data["id"]] = _format_message(data)
         if len(rows_by_id) >= limit:
@@ -992,7 +1037,9 @@ async def _fetch_action_messages(
             bounded = chunk_start > 0 or len(rows_by_id) > limit
             break
     ordered = [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
-    return ordered[-limit:], bounded
+    # A withheld payload is a bounded read for the same reason a stopped walk is:
+    # what the caller gets back describes less than what is there.
+    return ordered[-limit:], bounded or oversized_seen
 
 
 def _branch_message_stats(
@@ -1359,8 +1406,9 @@ async def get_session_messages_after(session_id: str, after_ts: float) -> list[d
 
     async with _open_db(store_path()) as db:
         cur = await db.execute(
-            """
-            SELECT m.id, m.created_at, m.content, m.sender, m.role,
+            f"""
+            SELECT m.id, m.created_at, m.sender, m.role,
+                   {_BOUNDED_CONTENT_COLUMNS},
                    mt.lion_class AS lion_class_str, b.id AS branch_id
             FROM branches b
             JOIN progressions p ON p.id = b.progression_id
@@ -1369,8 +1417,8 @@ async def get_session_messages_after(session_id: str, after_ts: float) -> list[d
             LEFT JOIN message_types mt ON m.lion_class = mt.type_id
             WHERE b.session_id = ? AND m.created_at > ?
             ORDER BY m.created_at
-            """,
-            (session_id, after_ts),
+            """,  # noqa: S608
+            (MAX_ACTION_CONTENT_CHARS, MAX_ACTION_CONTENT_CHARS, session_id, after_ts),
         )
         rows = await cur.fetchall()
 
