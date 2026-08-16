@@ -72,6 +72,7 @@ from lionagi.state.schema_meta import definitions as _definitions_table
 from lionagi.state.schema_meta import metadata
 from lionagi.state.schema_meta import schedules as _schedules_table
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS as _MIGRATION_COLUMNS
+from lionagi.state.schema_migrations import MIGRATION_CONSTRAINTS as _MIGRATION_CONSTRAINTS
 from lionagi.state.schema_migrations import MIGRATION_INDEXES as _MIGRATION_INDEXES
 
 _RUN_DEFAULTS: dict[str, str] = {
@@ -971,6 +972,10 @@ class StateDB:
             # real, distinct value.
             await self._backfill_attention_dispositions_once(conn)
             await self._reconcile_indexes(conn)
+            # After create_all, which is what guarantees sessions exists for a
+            # store that never had it, and before any write that carries a
+            # value the pre-existing CHECK does not name.
+            await self._reconcile_constraints(conn)
             await conn.execute(
                 text(
                     "UPDATE engine_runs SET parent_session_id = session_id "
@@ -1017,6 +1022,7 @@ class StateDB:
 
     _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = _MIGRATION_COLUMNS
     _MIGRATION_INDEXES: dict[str, tuple[str, ...]] = _MIGRATION_INDEXES
+    _MIGRATION_CONSTRAINTS: dict[str, tuple[str, ...]] = _MIGRATION_CONSTRAINTS
 
     async def _reconcile_columns(self) -> None:
         for table, columns in self._MIGRATION_COLUMNS.items():
@@ -1059,6 +1065,17 @@ class StateDB:
     async def _reconcile_indexes(self, conn) -> None:
         """Create indexes that ``metadata.create_all`` cannot add to existing tables."""
         for statement in self._MIGRATION_INDEXES.get(self.dialect, ()):
+            await conn.execute(text(statement))
+
+    async def _reconcile_constraints(self, conn) -> None:
+        """Widen CHECK constraints that ``metadata.create_all`` cannot alter.
+
+        SQLite is not in the table: it cannot alter a CHECK in place, so
+        ``_rebuild_legacy_sessions_table`` copies the whole table there
+        instead. Every statement is written to be a no-op once applied, so
+        this does not take a table lock on each open.
+        """
+        for statement in self._MIGRATION_CONSTRAINTS.get(self.dialect, ()):
             await conn.execute(text(statement))
 
     async def _backfill_dispatched_at_once(self, conn) -> None:
