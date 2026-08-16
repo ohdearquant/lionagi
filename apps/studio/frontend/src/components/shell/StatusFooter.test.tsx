@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
-import StatusFooter, { STATS_INITIAL_DELAY_MS } from "./StatusFooter";
+import StatusFooter, { HEALTH_PROBE_TIMEOUT_MS, STATS_INITIAL_DELAY_MS } from "./StatusFooter";
 import enMessages from "@/messages/en.json";
 
 const getStats = vi.fn();
@@ -200,5 +200,38 @@ describe("StatusFooter DB reading", () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(getStats).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up on a health probe that never answers and keeps polling", async () => {
+    // A daemon that accepts the connection and then says nothing. Without a
+    // deadline the in-flight guard stays latched, the dot keeps reporting the
+    // reading it had, and no later probe ever runs.
+    const settled: Array<(value: Response) => void> = [];
+    const fetchMock = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          settled.push(resolve);
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    getStats.mockResolvedValue(statsWith({ size_bytes: 120 * MB, size_alert: false }));
+    root = await mountFooter(container);
+
+    // Still hanging: nothing has decided the reading yet.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[aria-label="Backend unreachable"]')).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(HEALTH_PROBE_TIMEOUT_MS);
+    });
+    expect(healthDot(container).getAttribute("aria-label")).toBe("Backend unreachable");
+
+    // The guard released, so the next cadence actually probes again rather
+    // than returning at a latch left set by the abandoned request.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

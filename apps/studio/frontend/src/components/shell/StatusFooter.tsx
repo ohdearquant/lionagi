@@ -4,6 +4,9 @@ import { getStats, resolveApiBase, type StudioStats } from "@/lib/api";
 
 const HEALTH_POLL_MS = 30_000;
 const STATS_POLL_MS = 5 * 60_000;
+/** Deadline on one health probe. Must stay under HEALTH_POLL_MS so a probe that
+ *  hangs is abandoned before the next one is due. */
+export const HEALTH_PROBE_TIMEOUT_MS = 10_000;
 export const STATS_INITIAL_DELAY_MS = 2_000;
 
 function formatBytes(b: number): string {
@@ -28,12 +31,20 @@ export default function StatusFooter() {
     async function pollHealth() {
       if (healthInFlight) return;
       healthInFlight = true;
+      // A probe that never settles never reaches the reset below, and every
+      // later poll then returns at the guard above, so the dot keeps showing
+      // whatever it last said for as long as the page is open. A daemon that
+      // accepts the connection and then answers nothing is exactly the case
+      // this footer exists to report, so the probe carries its own deadline.
+      const controller = new AbortController();
+      const deadline = setTimeout(() => controller.abort(), HEALTH_PROBE_TIMEOUT_MS);
       try {
-        const response = await fetch(`${apiBase}/health`);
+        const response = await fetch(`${apiBase}/health`, { signal: controller.signal });
         if (active) setHealthy(response.ok);
       } catch {
         if (active) setHealthy(false);
       } finally {
+        clearTimeout(deadline);
         healthInFlight = false;
       }
     }
