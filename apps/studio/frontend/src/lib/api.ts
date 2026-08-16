@@ -1193,7 +1193,19 @@ export interface SessionSummary {
 export interface SessionMessage {
   id: string;
   role: string;
-  content: Record<string, unknown>;
+  /**
+   * Null when the server refused to decode this payload, which it does above a
+   * size ceiling. Nullable rather than optional on purpose: the withholding is
+   * a state a renderer has to handle, and an optional field reads as one a
+   * caller may ignore.
+   */
+  content: Record<string, unknown> | null;
+  /**
+   * True when `content` is null because it was refused, as opposed to a message
+   * that carried none. This endpoint returns no per-session bounds beside the
+   * rows, so this flag is the only place that distinction is available.
+   */
+  content_withheld?: boolean;
   sender: string | null;
   timestamp: number;
   lion_class: string;

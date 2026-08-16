@@ -925,6 +925,7 @@ async def test_get_session_messages_after_handles_branch_over_sqlite_variable_li
             "id": "huge-1",
             "role": "assistant",
             "content": {"text": "in range"},
+            "content_withheld": False,
             "sender": "worker",
             "timestamp": 150.0,
             "lion_class": "__unknown__",
@@ -963,6 +964,7 @@ async def test_get_session_messages_after_message_shape_matches_expected_fields(
             "id": "shape-1",
             "role": "assistant",
             "content": {"text": "hello shape"},
+            "content_withheld": False,
             "sender": "worker",
             "timestamp": 111.0,
             "lion_class": "lionagi.protocols.messages.assistant_response.AssistantResponse",
@@ -1448,3 +1450,218 @@ async def test_session_reads_work_against_a_store_from_the_previous_schema_versi
     listed = await svc.list_sessions(limit=10)
     assert [row["id"] for row in listed] == ["sess-prev-schema"]
     assert listed[0]["ended_at_is_approximate"] is False
+
+
+# What one session read is allowed to decode: row count, per-payload size, and
+# the total of the two.
+
+
+async def _seed_action_requests(
+    db_path: Path,
+    *,
+    branch_id: str,
+    session_id: str,
+    count: int,
+    start: int = 0,
+    content_for=None,
+) -> None:
+    """One ActionRequest per file, in progression order, oldest first."""
+    ids = [f"{branch_id}-act-{i}" for i in range(start, start + count)]
+    await seed_branch(db_path, branch_id=branch_id, session_id=session_id, msg_ids=ids)
+    async with StateDB(db_path) as db:
+        for i, msg_id in enumerate(ids, start=start):
+            content = (
+                content_for(i)
+                if content_for
+                else {"function": "Read", "arguments": {"file_path": f"/run/f{i}.py"}}
+            )
+            await db.insert_message(
+                {
+                    "id": msg_id,
+                    "created_at": 100.0 + i,
+                    "content": content,
+                    "sender": "worker",
+                    "recipient": "tool",
+                    "role": "action",
+                    "node_metadata": {
+                        "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                    },
+                }
+            )
+
+
+async def test_action_hydration_stops_at_its_bound_and_keeps_the_newest(
+    patched_sessions_db, monkeypatch
+):
+    """A session accumulates action rows for as long as it runs, so the detail
+    read has to stop somewhere. It stops at the newest end, because that is the
+    part every field derived from these rows is describing, and it says that it
+    stopped rather than reporting a short list as a complete one."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 3)
+    await seed_session(db_path, session_id="sess-hydration")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-hydration", count=8)
+
+    detail = await svc.get_session("sess-hydration")
+
+    assert detail is not None
+    stats = detail["message_stats"]
+    assert stats["bounded"] is True
+    assert stats["tool_call_count"] == 3
+    assert set(stats["files"]) == {"/run/f5.py", "/run/f6.py", "/run/f7.py"}
+
+
+async def test_an_unbounded_session_reports_the_whole_action_surface(patched_sessions_db):
+    """Control: the flag above has to be able to read false, or a caller cannot
+    tell a bounded read from a complete one."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-hydration-small")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-hydration-small", count=3)
+
+    detail = await svc.get_session("sess-hydration-small")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is False
+    assert detail["message_stats"]["tool_call_count"] == 3
+
+
+async def test_the_hydration_budget_is_spent_on_the_newest_branch(patched_sessions_db, monkeypatch):
+    """The budget covers the session, not each branch, so where it is spent is
+    a real choice. Spending it in branch order would hand back the oldest
+    branch's activity under a heading about this run."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 2)
+    await seed_session(db_path, session_id="sess-two-branches")
+    await _seed_action_requests(db_path, branch_id="older", session_id="sess-two-branches", count=3)
+    await _seed_action_requests(
+        db_path, branch_id="newer", session_id="sess-two-branches", count=3, start=10
+    )
+
+    detail = await svc.get_session("sess-two-branches")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is True
+    # Both branches together hold six requests and the budget is two, so the
+    # two that survive must both come from the branch created last.
+    assert set(detail["message_stats"]["files"]) == {"/run/f11.py", "/run/f12.py"}
+
+
+async def test_an_oversized_action_payload_never_reaches_the_parser(
+    patched_sessions_db, monkeypatch
+):
+    """A row count bounds how many payloads are decoded, not what one costs.
+    `messages.content` is written from a caller's own tool arguments and has no
+    ceiling of its own, so one row can cost more than a whole bounded set of
+    ordinary ones. The row stays listed with its identity and timing; only the
+    payload is withheld, and the read says it was bounded."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    await seed_session(db_path, session_id="sess-oversized")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-oversized",
+        count=1,
+        content_for=lambda i: {"function": "Read", "arguments": {"file_path": "/run/" + "x" * 500}},
+    )
+
+    detail = await svc.get_session("sess-oversized")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is True
+    # Withheld, not dropped: the row still counts as a tool call, because its
+    # identity and timing survive. Only what the payload would have told us --
+    # here, which file the call touched -- is gone.
+    assert detail["message_stats"]["tool_call_count"] == 1
+    assert detail["message_stats"]["files"] == []
+
+
+async def test_a_payload_inside_the_ceiling_is_parsed_and_reported_whole(patched_sessions_db):
+    """Control for the ceiling: an ordinary payload is decoded and the read
+    does not call itself bounded."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-normal-payload")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-normal-payload", count=1)
+
+    detail = await svc.get_session("sess-normal-payload")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is False
+    assert detail["message_stats"]["tool_call_count"] == 1
+    assert detail["message_stats"]["files"] == ["/run/f0.py"]
+
+
+async def test_the_decoded_total_is_bounded_not_just_the_row_count_and_the_row_size(
+    patched_sessions_db, monkeypatch
+):
+    """The two bounds above are bounds on different things, and two bounds on
+    different things multiply. A row count of N and a payload ceiling of M
+    permit N*M, which is the number that has to fit in memory -- so the total
+    is bounded in its own right, under both of them rather than beside them.
+
+    Every row here is comfortably inside the per-payload ceiling and the count
+    is inside the row bound, so neither of the other two can be what stops it.
+    """
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_CONTENT_CHARS", 400)
+    await seed_session(db_path, session_id="sess-total")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-total",
+        count=8,
+        content_for=lambda i: {
+            "function": "Read",
+            "arguments": {"file_path": f"/run/f{i}.py", "pad": "y" * 150},
+        },
+    )
+
+    detail = await svc.get_session("sess-total")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is True
+    # The walk stopped on the total, so it held fewer than the eight rows the
+    # row bound would have allowed.
+    assert detail["message_stats"]["tool_call_count"] < 8
+
+
+async def test_a_session_inside_every_bound_reports_itself_complete(patched_sessions_db):
+    """Control for the total: with all three bounds at their real values, an
+    ordinary session is not bounded by any of them."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-complete")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-complete", count=5)
+
+    detail = await svc.get_session("sess-complete")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is False
+    assert detail["message_stats"]["tool_call_count"] == 5
+
+
+async def test_the_walk_reads_from_the_newest_end_across_more_than_one_chunk(
+    patched_sessions_db, monkeypatch
+):
+    """Which end the walk starts from is only observable past one chunk.
+
+    Inside a single chunk every row is read and the newest are selected
+    afterwards, so both directions agree and a small fixture cannot tell them
+    apart -- it passes against a walk that reads the whole progression and
+    throws most of it away. Past the chunk size the two diverge: an oldest-first
+    walk fills its budget from the start of the progression and stops there,
+    handing back the oldest rows under a heading about recent activity.
+    """
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 3)
+    await seed_session(db_path, session_id="sess-chunks")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-chunks", count=600)
+
+    detail = await svc.get_session("sess-chunks")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is True
+    assert set(detail["message_stats"]["files"]) == {
+        "/run/f597.py",
+        "/run/f598.py",
+        "/run/f599.py",
+    }
