@@ -21,8 +21,8 @@ written down in these hand-maintained forms:
 
 1. `lionagi/state/schema_meta.py` (1,224 lines): a SQLAlchemy `MetaData` declaring 32 tables,
    380 columns and 83 `Index(...)` objects. Its own docstring calls it the "single source of
-   truth for schema DDL". It is what production actually creates from: `metadata.create_all`
-   at `state/db.py:966`.
+   truth for schema DDL". It is what production actually creates from:
+   `await conn.run_sync(metadata.create_all)` at `state/db.py:981`.
 2. `lionagi/state/schema.sql` (1,021 lines): 32 `CREATE TABLE` and 87 `CREATE INDEX`
    statements declaring the same schema in DDL text. Its header line reads
    `-- lionagi state schema v1` while line 22 seeds `version` `'3'`. It is bound to
@@ -108,12 +108,12 @@ identity.** Schema evolution is `MIGRATION_COLUMNS` applied at startup plus besp
 copy-and-rename rebuilds for anything SQLite's `ALTER TABLE` cannot express (`sessions_new`,
 `invocations_new`, `schedule_runs_new`, `schedules_new`). There is no introspection of the live
 schema, no diff against the declared schema, and no risk classification. `_reconcile_columns`
-wraps its inspection in `except Exception: continue` (`state/db.py:1023`), and the open sequence
+wraps its inspection in `except Exception: continue` (`state/db.py:1045-1046`), and the open sequence
 then stamps `SCHEMA_VERSION` unconditionally — so a database whose columns could not be
 inspected still reports the current version. `version = 3` means "this build opened it", not
 "this shape is known". Notably, the schedules rebuild already *derives its target table from
-`schema_meta.py`* via `to_metadata` (`state/db.py:1490`) — the generated path half-exists and
-works on SQLite.
+`schema_meta.py`* via `to_metadata` (`state/db.py:1631`, and again verbatim at `:1737`) — the
+generated path half-exists and works on SQLite.
 
 **P6 — the layer is decoupled from the rest of the codebase and oversized for what it does.**
 `state/` (13,677 lines, 25 files) plus `studio/` (37,197 lines, 79 files) together exceed the
