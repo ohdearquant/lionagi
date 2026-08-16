@@ -80,6 +80,7 @@ The highest-severity gaps in the auth module are:
 ```text
 ~/.lionagi/runs/<run_id>/
   checkpoint.json                    # resumable flow plan and operation state
+  checkpoint.json.journal            # ordered deltas since the latest compacted base
   branches/<branch_id>.json          # branch snapshot — restore point for -r
   stream/<branch_id>.buffer.jsonl    # live chunk buffer during stream
 

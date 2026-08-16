@@ -32,7 +32,12 @@ from .._logging import progress
 from .._logging import warn as _warn
 from .._providers import parse_model_spec
 from .._util import classify_exception
-from ._checkpoint import CheckpointWriter, FlowResumeError, resolve_checkpoint_target
+from ._checkpoint import (
+    CHECKPOINT_VERSION,
+    CheckpointWriter,
+    FlowResumeError,
+    resolve_checkpoint_target,
+)
 from ._common import (
     _build_worker_operate_node,
     _create_fanout_team,
@@ -1289,6 +1294,7 @@ async def _execute_dag(
             prompt=checkpoint_prompt,
             plan=checkpoint_plan or [],
             config=checkpoint_config,
+            version=CHECKPOINT_VERSION,
             max_spawn=max_spawn,
             # Seed with prior-checkpoint state (empty on a fresh run) so a
             # resume-of-a-resume can't silently lose context before the next flush.

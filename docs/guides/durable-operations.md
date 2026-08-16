@@ -62,14 +62,17 @@ Each CLI run owns a state directory:
 ~/.lionagi/runs/<run-id>/
 ├── run.json
 ├── checkpoint.json
+├── checkpoint.json.journal
 ├── branches/
 └── stream/
 ```
 
 `run.json` records the state and artifact roots. `branches/` contains resumable
-branch snapshots. `checkpoint.json` records flow progress. When `--save DIR`
-is present, worker and synthesis artifacts go to that directory; otherwise
-they live below the run's own `artifacts/` directory.
+branch snapshots. `checkpoint.json` is the flow's atomic base snapshot and
+`checkpoint.json.journal` records ordered completion deltas between bounded
+compactions. Resume reads both through the checkpoint loader. When `--save DIR`
+is present, worker and synthesis artifacts go to that directory; otherwise they
+live below the run's own `artifacts/` directory.
 
 ## Resume after a process stops
 

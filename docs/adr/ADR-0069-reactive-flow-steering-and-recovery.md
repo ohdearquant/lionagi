@@ -283,7 +283,26 @@ Code anchor: `lionagi/operations/flow.py` (`_render_operator_messages`,
 `_render_pending_operator_steers`); `lionagi/cli/orchestrate/flow.py`
 (`_apply_session_control`).
 
-### D4 — Checkpoints are full JSON snapshots replaced atomically
+### D4 — Checkpoints use an atomic base plus a durable delta journal
+
+Version 3 replaces the per-completion full rewrite with two run-local files:
+
+- `checkpoint.json` is an atomic base snapshot carrying a generation id.
+- `checkpoint.json.journal` is newline-delimited, append-only operation, spawn, and top-level
+  context deltas for that generation.
+- A completion is acknowledged only after its journal record is flushed and fsynced. Serialization
+  and filesystem work run in a worker thread while one async lock preserves writer order.
+- Context snapshots are reduced to changed and deleted top-level keys. Completed operation responses
+  remain individually durable.
+- After 128 deltas, the writer atomically replaces the base with the recovered current state under a
+  new generation and then clears the journal. A journal from an older generation is never replayed
+  onto the new base.
+- Recovery applies the valid journal prefix in sequence order. A torn final line is ignored and
+  disclosed in `_recovery`; gaps, malformed records, and stale generations are also reported.
+- Versions 1 and 2 remain readable as single-file checkpoints. `CheckpointWriter` retains version 2
+  as its compatibility default; the flow runtime opts into version 3 explicitly.
+
+The following describes the retired single-file writer retained for compatibility.
 
 The writer is a run-local dataclass:
 
@@ -346,7 +365,7 @@ Wire shape:
 }
 ```
 
-Exact persistence semantics:
+Legacy version 1/2 persistence semantics:
 
 - A writer is created only when checkpoint configuration is provided. Fresh and resumed CLI flows
   construct one; unit seams that omit configuration do not.
@@ -372,9 +391,9 @@ Exact persistence semantics:
 `CHECKPOINT_VERSION = 1` marks the initial shipped shape. No rationale beyond initial format
 versioning is recorded.
 
-Why this way: full snapshots are simple to inspect and avoid a partial event-log replay protocol.
-Atomic replacement protects readers from torn target files. The cost is write amplification after
-every completion and the lack of fsync-level durability or schema migration enforcement.
+Why version 3: atomic replacement still protects the compacted base, while fsynced deltas keep
+completion writes proportional to the new data rather than all prior state. Generation ids make the
+two-file compaction boundary recoverable without replaying an obsolete journal.
 
 ### D5 — Resume replays the original plan and refuses unfaithful topology
 
