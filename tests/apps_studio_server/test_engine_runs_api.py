@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
@@ -153,6 +154,32 @@ async def test_service_get_returns_none_for_missing(patched_engine_runs_svc):
     await _seed_engine_run(db_path)
     result = await svc.get_engine_run("nonexistent-id")
     assert result is None
+
+
+async def test_service_get_redacts_a_free_text_credential_in_both_projections(
+    patched_engine_runs_svc,
+):
+    """A spec carries prose, not just structured fields, and a credential
+    written into that prose has no dict key to be recognized by.
+
+    Both projections are asserted because they are two calls with two
+    different caps, and a fix applied to one of them reads as a fix.
+    """
+    svc, db_path = patched_engine_runs_svc
+    secret = "s3cr3t-value-abc123def456"
+    rid = await _seed_engine_run(
+        db_path,
+        kind="research",
+        spec_json={"topic": "reach the API", "notes": f"send Authorization=Token {secret}"},
+    )
+
+    row = await svc.get_engine_run(rid, include_spec=True)
+    assert row is not None
+    assert secret not in json.dumps(row["spec_preview"])
+    assert secret not in json.dumps(row["spec_json"])
+    # The scheme names a mechanism and is not a credential, so it survives
+    # and the reader can still see what kind of auth the spec asked for.
+    assert "Authorization=Token [redacted]" in row["spec_json"]["notes"]
 
 
 async def test_service_spec_json_round_trips(patched_engine_runs_svc):

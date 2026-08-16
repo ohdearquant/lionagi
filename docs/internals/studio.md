@@ -1345,8 +1345,22 @@ to the same spelling) so the marker list only needs one spelling per
 concept. A short, closed set of names (`auth`, `authentication`, `bearer`)
 is matched by exact equality rather than substring, because those words
 also occur inside unrelated field names (`author`, `authorized_keys_count`)
-that must not be redacted. `redact_arguments` applies the same field-name
-judgment recursively, carrying the parent key down into nested containers
+that must not be redacted. The free-text rule asks the same question: a
+`name=value` or `name: value` assignment in prose is matched generically and
+then judged by `is_secret_field_name`, so a name the mapping layer calls a
+credential cannot be one the prose layer serves. That gap was real —
+`Authorization=Token ...` written into a spec's own free text kept its value
+while the same name used as a key had it removed, and `auth_token=`,
+`credential=` and `MY_API_KEY=` behaved the same way. Two consequences follow
+from sharing the rule. An auth header keeps its scheme
+(`Authorization: Bearer [redacted]`), because the scheme names a mechanism
+and not a credential, and an unrecognized scheme is taken along with the
+credential rather than left standing in front of it. And a purely numeric
+value is left alone, since the marker test matches by substring and
+`max_tokens: 4096` is a count — the mapping layer already lets that through,
+because `redact_scalar` only redacts strings. `redact_arguments` applies the
+same field-name judgment recursively, carrying the parent key down into
+nested containers
 — without that, `{"auth": "..."}` was withheld while `{"auth": {"value":
 "..."}}` was served, the same field-name gap recurring one level down.
 Two independent byte caps (`cap_by_bytes` for a list of items,

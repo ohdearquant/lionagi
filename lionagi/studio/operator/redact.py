@@ -89,20 +89,66 @@ _SECRET_TOKEN_RE = re.compile(
     r"(?<![\w])((?:sk|ghp|gho|ghu|ghs|xox[baprs]|AKIA)[A-Za-z0-9_\-]{10,}"
     r"|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})"
 )
-# Generic "Header: value"/"Header: Bearer value" forms — catches an ordinary
-# Authorization header regardless of the specific token shape it carries,
-# which _SECRET_TOKEN_RE's fixed-prefix list cannot.
-_HEADER_SECRET_RE = re.compile(r"(?i)\b(Authorization|X-Api-Key|Api-Key)\s*:\s*\S+(?:\s+\S+)?")
-# A bare "Bearer <token>" outside of a "Header:" line (e.g. embedded in a
-# free-text tool-call argument or command string).
+# A bare "Bearer <token>" with no field name in front of it (e.g. embedded in
+# a free-text tool-call argument or command string).
 _BEARER_TOKEN_RE = re.compile(r"(?i)\bBearer\s+\S+")
-# Shell/env-style secret assignments ("API_KEY=...", "token: ...") embedded
-# in free text such as a command argument — the key marker is descriptive and
-# kept; only the assigned value is redacted.
-_ASSIGNMENT_SECRET_RE = re.compile(
-    r"(?i)\b((?:api[_-]?key|secret[_-]?key|client[_-]?secret|access[_-]?key"
-    r"|private[_-]?key|password|passwd|secret|token)\w*)\s*[:=]\s*(\S+)"
+# Names whose value is an RFC 7235 "<scheme> <credentials>" pair rather than a
+# bare secret. The scheme names a mechanism and is not itself a credential, so
+# it survives; what follows it does not.
+_AUTH_PAIR_FIELD_NAMES = frozenset(
+    {"authorization", "proxy_authorization", "www_authenticate", "proxy_authenticate"}
 )
+_AUTH_SCHEME = (
+    r"(?:Bearer|Basic|Digest|Token|ApiKey|Negotiate|Mutual|HOBA|OAuth|vapid"
+    r"|SCRAM-SHA-1|SCRAM-SHA-256)"
+)
+# An auth header in free text. An unrecognized scheme falls to the second
+# branch, which takes both tokens rather than leaving the credential behind
+# the word in front of it.
+_AUTH_PAIR_RE = re.compile(
+    r"(?i)(?<![\w.\-])((?:proxy[_\-]?)?authorization|(?:www|proxy)[_\-]?authenticate)"
+    r"(\s*[:=]\s*)"
+    r"(?:(" + _AUTH_SCHEME + r")([ \t]+)\S+|\S+(?:[ \t]+\S+)?)"
+)
+# Shell/env-style assignments ("API_KEY=...", "token: ...") embedded in free
+# text such as a command argument. The name is matched generically and then
+# judged by is_secret_field_name, the same rule the field-name layer applies
+# to a mapping key, so the two layers cannot drift apart over which names mean
+# a credential — the free-text half used to carry its own shorter list and
+# passed "Authorization=", "auth_token=", "credential=" and "MY_API_KEY="
+# through untouched while the field-name half redacted every one of them.
+# The name marker is descriptive and kept; only the assigned value goes.
+_ASSIGNMENT_SECRET_RE = re.compile(r"(?<![\w.\-])([A-Za-z][\w.\-]{0,63})(\s*[:=]\s*)(\S+)")
+# Punctuation that ends a sentence or a list item rather than belonging to the
+# value, stripped before the value is judged and put back afterwards.
+_VALUE_TRAILING_PUNCT = ",;.)]}\"'"
+_NUMERIC_VALUE_RE = re.compile(r"^[-+]?\d+(?:[._]\d+)*$")
+
+
+def _redact_auth_pair(match: re.Match[str]) -> str:
+    name, separator, scheme, gap = match.group(1), match.group(2), match.group(3), match.group(4)
+    if scheme:
+        return f"{name}{separator}{scheme}{gap}[redacted]"
+    return f"{name}{separator}[redacted]"
+
+
+def _redact_assignment(match: re.Match[str]) -> str:
+    name, separator, value = match.group(1), match.group(2), match.group(3)
+    folded = fold_field_name(name)
+    # Already handled with its scheme kept, by the pass above.
+    if folded in _AUTH_PAIR_FIELD_NAMES or not is_secret_field_name(name):
+        return match.group(0)
+    core = value.rstrip(_VALUE_TRAILING_PUNCT)
+    if _NUMERIC_VALUE_RE.match(core):
+        # A count is not a credential, and the marker test matches by
+        # substring, so "max_tokens" and "prompt_tokens" reach here. The
+        # field-name layer already lets those through: redact_scalar only
+        # redacts strings, so `"max_tokens": 4096` survives it, and the same
+        # reading written out in free text has to survive this.
+        return match.group(0)
+    return f"{name}{separator}[redacted]{value[len(core) :]}"
+
+
 _SECRET_KEY_MARKERS = (
     "secret",
     "token",
@@ -172,6 +218,13 @@ def scrub_text(text: str, *, known_values: frozenset[str] | None = None) -> str:
     embedded in free text. A leaf filename survives; the directory layout and
     the token itself do not.
 
+    A ``name=value`` or ``name: value`` assignment is redacted whenever
+    ``is_secret_field_name`` calls the name a credential, so free text and a
+    mapping key are judged by one rule. An auth header keeps its scheme
+    (``Authorization: Bearer [redacted]``) and a purely numeric value is left
+    alone, since the marker test matches by substring and a token count is
+    not a token.
+
     Also strips any literal value from ``known_values`` (default:
     `known_secret_values()`, this process's own env-derived secret values) --
     the complement to the shape-based patterns above, catching a genuine
@@ -179,9 +232,9 @@ def scrub_text(text: str, *, known_values: frozenset[str] | None = None) -> str:
     """
     if not text:
         return text
-    text = _HEADER_SECRET_RE.sub(lambda m: f"{m.group(1)}: [redacted]", text)
+    text = _AUTH_PAIR_RE.sub(_redact_auth_pair, text)
+    text = _ASSIGNMENT_SECRET_RE.sub(_redact_assignment, text)
     text = _BEARER_TOKEN_RE.sub("Bearer [redacted]", text)
-    text = _ASSIGNMENT_SECRET_RE.sub(lambda m: f"{m.group(1)}=[redacted]", text)
     text = _ABS_POSIX_RE.sub(_leaf, text)
     text = _ABS_WIN_RE.sub(_leaf, text)
     text = _SECRET_TOKEN_RE.sub("[redacted]", text)
