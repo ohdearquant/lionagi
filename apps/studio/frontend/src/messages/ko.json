@@ -530,6 +530,7 @@
       "graphNodeStatusDone": "완료",
       "graphNodeStatusFailed": "실패",
       "graphNodeStatusSkipped": "건너뜀",
+      "graphNodeStatusCancelled": "취소됨",
       "graphNodeStatusEscalated": "에스컬레이션",
       "progressTotal": "전체",
       "progressCompleted": "완료",

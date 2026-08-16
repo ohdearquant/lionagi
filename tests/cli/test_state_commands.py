@@ -878,7 +878,28 @@ async def test_import_of_a_completed_run_derives_duration_ms(temp_db_path: Path,
     assert session["status"] == "completed"
     assert session["started_at"] == 100.0
     assert session["ended_at"] == 130.0
+    assert session["ended_at_is_approximate"] is False
     assert session["duration_ms"] == 30000.0
+
+
+async def test_import_filesystem_end_is_explicitly_approximate(temp_db_path: Path, tmp_path: Path):
+    from lionagi.cli.state import _import_one_run
+
+    run_dir = tmp_path / "runs" / "run-fs-end"
+    run_dir.mkdir(parents=True)
+
+    async with StateDB() as db:
+        await _import_one_run(
+            db,
+            "run-fs-end",
+            run_dir,
+            {"kind": "agent", "status": "completed", "started_at": 100.0},
+        )
+        session = await db.get_session("run-fs-end")
+
+    assert session["ended_at"] == pytest.approx(run_dir.stat().st_mtime)
+    assert session["ended_at_is_approximate"] is True
+    assert session["duration_ms"] is None
 
 
 async def test_import_of_a_running_run_leaves_duration_ms_null(temp_db_path: Path, tmp_path: Path):

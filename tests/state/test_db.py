@@ -600,6 +600,7 @@ async def test_apply_schema_adds_missing_columns_on_old_db(tmp_path):
             "status",
             "started_at",
             "ended_at",
+            "ended_at_is_approximate",
             "invocation_kind",
             "playbook_name",
             "agent_name",

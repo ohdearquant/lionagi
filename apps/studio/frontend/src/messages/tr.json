@@ -530,6 +530,7 @@
       "graphNodeStatusDone": "tamamlandı",
       "graphNodeStatusFailed": "başarısız",
       "graphNodeStatusSkipped": "atlandı",
+      "graphNodeStatusCancelled": "iptal edildi",
       "graphNodeStatusEscalated": "yükseltildi",
       "progressTotal": "Toplam",
       "progressCompleted": "Tamamlandı",

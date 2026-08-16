@@ -161,6 +161,17 @@ describe("history/RunDetail.tsx — fullPage prop removed", () => {
   });
 });
 
+describe("history/RunDetail.tsx — bounded incremental signal projection", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+
+  it("feeds the stream into SignalProjection instead of an ever-growing React array", () => {
+    expect(src).toMatch(/const projection = new SignalProjection\(\)/);
+    expect(src).toMatch(/projection\.append\(sig\)/);
+    expect(src).not.toMatch(/setSignalEvents/);
+    expect(src).not.toMatch(/prev\.some\(\(e\) => e\.id === sig\.id\)/);
+  });
+});
+
 describe("fleet/SessionDetail.tsx — renders RunDetail without fullPage", () => {
   it("passes only id to RunDetail", () => {
     const src = fs.readFileSync(path.resolve(HISTORY_DIR, "../fleet/SessionDetail.tsx"), "utf-8");
@@ -1027,6 +1038,25 @@ describe("history/RunDetail.tsx — badgeForEvent escalation presentation", () =
     expect(failed.label).toBe("failed");
     expect(failed.tone).toMatch(/error/);
     expect(failed.tone).not.toMatch(/warning/);
+  });
+});
+
+describe("history/RunDetail.tsx — cancellation presentation", () => {
+  it("labels NodeCancelled explicitly without the failure tone", async () => {
+    const { badgeForEvent } = await import("./RunDetail");
+    const badge = badgeForEvent({
+      id: "cancel-1",
+      session_id: "session-1",
+      seq: 2,
+      kind: "NodeCancelled",
+      op_id: "op-1",
+      ts: 2,
+      payload: { name: "work" },
+    });
+
+    expect(badge.label).toBe("cancelled");
+    expect(badge.tone).toContain("status-warning");
+    expect(badge.tone).not.toContain("status-error");
   });
 });
 

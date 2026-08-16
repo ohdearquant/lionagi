@@ -530,6 +530,7 @@
       "graphNodeStatusDone": "xong",
       "graphNodeStatusFailed": "thất bại",
       "graphNodeStatusSkipped": "đã bỏ qua",
+      "graphNodeStatusCancelled": "đã hủy",
       "graphNodeStatusEscalated": "đã leo thang",
       "progressTotal": "Tổng",
       "progressCompleted": "Hoàn tất",

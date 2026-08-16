@@ -106,12 +106,13 @@ def _derive_import_status(manifest: dict[str, Any]) -> str:
 def _derive_timestamps(
     manifest: dict[str, Any],
     run_dir: Path,
-) -> tuple[float, float]:
-    """Return (started_at, ended_at) as floats; falls back to fs timestamps."""
+) -> tuple[float, float, bool]:
+    """Return timestamps plus whether the end came from filesystem evidence."""
     import time as _time
 
     started_at = manifest.get("started_at")
     ended_at = manifest.get("ended_at")
+    ended_at_is_approximate = ended_at is None
 
     try:
         stat = run_dir.stat()
@@ -141,8 +142,9 @@ def _derive_timestamps(
             ended_at = datetime.datetime.fromisoformat(ended_at).timestamp()
         except ValueError:
             ended_at = fs_mtime
+            ended_at_is_approximate = True
 
-    return float(started_at), float(ended_at)
+    return float(started_at), float(ended_at), ended_at_is_approximate
 
 
 async def _import_one_run(
@@ -155,7 +157,7 @@ async def _import_one_run(
     session_name = manifest.get("kind") or "agent"
 
     status = _derive_import_status(manifest)
-    started_at, ended_at = _derive_timestamps(manifest, run_dir)
+    started_at, ended_at, ended_at_is_approximate = _derive_timestamps(manifest, run_dir)
 
     session_prog_id = str(uuid.uuid4())
     await db.create_progression(session_prog_id)
@@ -195,6 +197,7 @@ async def _import_one_run(
             "status": status,
             "started_at": started_at,
             "ended_at": ended_at,
+            "ended_at_is_approximate": ended_at_is_approximate,
         }
     )
 
