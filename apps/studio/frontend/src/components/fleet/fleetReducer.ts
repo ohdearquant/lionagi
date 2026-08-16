@@ -22,6 +22,7 @@
 
 import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
+import { isUnsettledHealth } from "@/lib/health";
 import { deriveDisplayStatus, isEffectivelyActive, type RunStatusInput } from "@/lib/runStatus";
 import { resolveRunLabel } from "@/lib/runLabel";
 
@@ -54,6 +55,11 @@ export interface OrgUnit {
   session_count: number;
   agents: AgentRow[];
   needsAttention: boolean;
+  /**
+   * The invocation's health verdict came from a capped sample of its children,
+   * so it is a floor: an unread child could be worse than what it says.
+   */
+  healthUnsettled: boolean;
 }
 
 export interface FleetCounts {
@@ -191,6 +197,7 @@ function buildOrgUnits(
       session_count: inv.session_count,
       agents: [],
       needsAttention: false,
+      healthUnsettled: isUnsettledHealth(inv),
     });
   }
 
@@ -235,8 +242,14 @@ function buildOrgUnits(
     // session_count is global, so rendering it beside a filtered child list
     // states a total that belongs to a different question.
     if (scoped) unit.session_count = unit.agents.length;
+    // A verdict read off a partial sample is not evidence that nothing is
+    // wrong: the children it did not read are exactly the ones nothing here
+    // has looked at. Flagging it says the row could not be assessed, which is
+    // the honest reading -- and it only ever fires on an invocation whose
+    // running children outnumbered the server's cap.
     unit.needsAttention =
       ATTENTION_STATUSES.has(unit.status.toLowerCase()) ||
+      unit.healthUnsettled ||
       unit.agents.some((a) => needsAttention(a));
     units.push(unit);
   }
@@ -256,6 +269,9 @@ function buildOrgUnits(
       skill: "direct",
       plugin: null,
       status: "running",
+      // Synthetic group: these runs belong to no invocation, so there is no
+      // sampled child verdict to be a floor of.
+      healthUnsettled: false,
       elapsedSec: null,
       session_count: directAgents.length,
       agents: directAgents,

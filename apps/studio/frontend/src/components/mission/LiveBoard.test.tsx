@@ -45,12 +45,8 @@ vi.mock("@tanstack/react-router", () => ({
   ),
 }));
 
-const {
-  default: LiveBoard,
-  DEAD_HEALTH,
-  isDeadHealth,
-  isUnknownHealth,
-} = await import("./LiveBoard");
+const { default: LiveBoard } = await import("./LiveBoard");
+const { DEAD_HEALTH, isDeadHealth, isUnknownHealth } = await import("@/lib/health");
 
 describe("isDeadHealth", () => {
   it("is true for every DEAD_HEALTH member", () => {

@@ -501,6 +501,70 @@ describe("fleetReducer — attention flagging on org units", () => {
     );
     expect(s.orgUnits[0].needsAttention).toBe(false);
   });
+
+  it("flags an invocation whose health came from a capped sample of its children", () => {
+    // The server's verdict is worst-of across children, so one read off a
+    // partial sample can only err toward looking well. A child it never read
+    // could be unresponsive behind this "idle", and nothing else on this row
+    // would ever say so.
+    const s = dispatchOk(
+      initialFleetState(),
+      [
+        makeInvocation({
+          id: "i1",
+          status: "running",
+          skill: "s",
+          health: "idle",
+          health_from_partial_children: true,
+        }),
+      ],
+      [makeRun({ run_id: "r1", status: "running", invocation_id: "i1", started_at: 1_000_000 })],
+      1_000_000 + 30,
+    );
+    expect(s.orgUnits[0].healthUnsettled).toBe(true);
+    expect(s.orgUnits[0].needsAttention).toBe(true);
+  });
+
+  it("does not flag an invocation whose health covered every child", () => {
+    // Control: the assertion above passes if the flag is stuck on, or if every
+    // invocation carrying a health value is flagged regardless of coverage.
+    const s = dispatchOk(
+      initialFleetState(),
+      [
+        makeInvocation({
+          id: "i1",
+          status: "running",
+          skill: "s",
+          health: "idle",
+          health_from_partial_children: false,
+        }),
+      ],
+      [makeRun({ run_id: "r1", status: "running", invocation_id: "i1", started_at: 1_000_000 })],
+      1_000_000 + 30,
+    );
+    expect(s.orgUnits[0].healthUnsettled).toBe(false);
+    expect(s.orgUnits[0].needsAttention).toBe(false);
+  });
+
+  it("leaves an already-dead verdict flagged for its own reason, not the sample", () => {
+    // A verdict that says the process is gone survives truncation: reading the
+    // rest could only agree with it.
+    const s = dispatchOk(
+      initialFleetState(),
+      [
+        makeInvocation({
+          id: "i1",
+          status: "running",
+          skill: "s",
+          health: "orphaned",
+          health_from_partial_children: true,
+        }),
+      ],
+      [makeRun({ run_id: "r1", status: "running", invocation_id: "i1", started_at: 1_000_000 })],
+      1_000_000 + 30,
+    );
+    expect(s.orgUnits[0].healthUnsettled).toBe(false);
+  });
 });
 
 // ─── Sort order ───────────────────────────────────────────────────────────────

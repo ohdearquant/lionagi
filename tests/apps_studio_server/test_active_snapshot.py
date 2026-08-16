@@ -571,3 +571,44 @@ def test_the_plan_guard_can_see_a_sort():
         plan = [str(row[-1]) for row in rows]
 
     assert any("TEMP B-TREE" in step.upper() for step in plan), plan
+
+
+async def test_an_existing_store_gains_the_child_index_when_it_is_opened(tmp_path):
+    """Declaring an index in the table metadata reaches new databases only:
+    `metadata.create_all` skips a table that already exists and skips its
+    indexes with it. Every store created before the declaration would keep
+    running the scan the index exists to remove, which is every store that
+    matters."""
+    import aiosqlite as aio
+
+    from lionagi.state.db import StateDB
+
+    name = "idx_sessions_invocation_status_created"
+    db_path = tmp_path / "state.db"
+
+    async def index_names() -> set[str]:
+        """Read without StateDB. Opening one runs the migration, so a read that
+        went through it would create the index it is being asked about."""
+        async with aio.connect(str(db_path)) as conn:
+            cursor = await conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sessions'"
+            )
+            return {row[0] for row in await cursor.fetchall()}
+
+    async with StateDB(db_path):
+        pass
+    assert name in await index_names(), "a fresh store should already have it"
+
+    # Stand in for a database created before the index was declared.
+    async with aio.connect(str(db_path)) as conn:
+        await conn.execute(f"DROP INDEX IF EXISTS {name}")
+        await conn.commit()
+    without = await index_names()
+    assert name not in without
+    # Control: dropping one index did not empty the set, so the read works.
+    assert len(without) > 3, without
+
+    async with StateDB(db_path):
+        pass
+
+    assert name in await index_names()
