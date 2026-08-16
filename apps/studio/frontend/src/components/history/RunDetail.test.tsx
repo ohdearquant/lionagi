@@ -2792,3 +2792,142 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
     }
   });
 });
+
+describe("what a refresh must not throw away", () => {
+  const loadedStatistics = {
+    session_id: "run-stats",
+    message_stats_loaded: true as const,
+    message_stats: { message_count: 4_812, roles: { assistant: 2_400 } },
+    branches: {
+      "branch-a": {
+        message_total: 4_000,
+        message_stats: { message_count: 4_000, roles: { assistant: 2_000 } },
+        first_message_at: 1,
+        last_message_at: 9,
+      },
+    },
+  };
+
+  const freshWithoutStatistics = {
+    id: "run-stats",
+    name: "run-stats",
+    created_at: 0,
+    updated_at: 0,
+    status: "completed",
+    message_stats: null,
+    branches: [{ id: "branch-a", name: "A", created_at: 0, messages: [], message_total: 12 }],
+  };
+
+  it("a session re-read without statistics keeps the exact totals already loaded", async () => {
+    const { applyLoadedStatistics } = await import("./RunDetail");
+    const merged = applyLoadedStatistics(
+      freshWithoutStatistics as never,
+      loadedStatistics as never,
+    );
+    // The re-read carries the bounded tail's approximations; the exact answer
+    // was already paid for and is not asked for again.
+    expect(merged.message_stats?.message_count).toBe(4_812);
+    expect(merged.message_stats_loaded).toBe(true);
+    expect(merged.branches[0].message_total).toBe(4_000);
+  });
+
+  it("statistics belonging to another run are not grafted onto this one", async () => {
+    const { applyLoadedStatistics } = await import("./RunDetail");
+    const other = { ...freshWithoutStatistics, id: "a-different-run" };
+    expect(applyLoadedStatistics(other as never, loadedStatistics as never)).toBe(other);
+    expect(applyLoadedStatistics(freshWithoutStatistics as never, null)).toBe(
+      freshWithoutStatistics,
+    );
+  });
+});
+
+describe("the signal projection is built from the run's history", () => {
+  let root: Root | null = null;
+  let container: HTMLDivElement | null = null;
+
+  // Cleared going IN, not only coming out: earlier tests in this file mount
+  // RunDetail too, so a call-history assertion that reads the first recorded
+  // call is answering about one of theirs.
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    if (root) act(() => root!.unmount());
+    container?.remove();
+    root = null;
+    container = null;
+    vi.clearAllMocks();
+  });
+
+  async function mount(session: unknown) {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockResolvedValue(session as never);
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <RunDetail id="run-signals" />
+        </IntlProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  const session = {
+    id: "run-signals",
+    name: "run-signals",
+    created_at: 0,
+    updated_at: 0,
+    status: "running",
+    branches: [{ id: "branch-a", name: "A", created_at: 0, messages: [] }],
+    // The detail reports where the persisted signals end. Resuming there with
+    // nothing to resume onto is what skipped every node status, activity, gate
+    // and operation-graph entry the run had already recorded.
+    stream_cursors: { messages: null, signals: 41 },
+  };
+
+  it("subscribes from the beginning rather than after the last persisted signal", async () => {
+    const { streamSignals } = await import("@/lib/api");
+    await mount(session);
+    const calls = vi.mocked(streamSignals).mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe("run-signals");
+    const cursor = calls[0][2];
+    expect(cursor == null || cursor === 0).toBe(true);
+  });
+
+  it("a resync refetch that resolves after a run switch does not replace the run on screen", async () => {
+    const { streamSignals, getSession } = await import("@/lib/api");
+    let emit: ((event: { type: string }) => void) | null = null;
+    vi.mocked(streamSignals).mockImplementationOnce((_id, cb) => {
+      emit = cb as (event: { type: string }) => void;
+      return () => {};
+    });
+    await mount(session);
+
+    // The refetch a resync triggers answers for whichever run was current when
+    // it was issued. Left unguarded, its late arrival silently swaps the pane's
+    // contents for another run's.
+    vi.mocked(getSession).mockResolvedValue({
+      ...session,
+      id: "a-different-run",
+      name: "a-different-run",
+    } as never);
+    expect(emit).not.toBeNull();
+    await act(async () => {
+      emit!({ type: "resync" });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container!.textContent).not.toContain("a-different-run");
+  });
+});

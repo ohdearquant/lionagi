@@ -374,6 +374,43 @@ class TestSeekableSessionCursor:
                 )
             )
 
+    def test_a_cursor_is_bound_to_the_kinds_filter_it_was_minted_under(self, seeded):
+        """where() applies the kinds filter, so the cursor's keyset boundary
+        describes that row set and no other. Replayed under a different kinds
+        filter it is a boundary from somewhere else: the page skips rows that
+        belong in it, or comes back short, with nothing to say it happened."""
+        import asyncio
+
+        from lionagi.studio.services import sessions as sessions_svc
+
+        first = asyncio.run(
+            sessions_svc.list_sessions_page(
+                limit=2,
+                where=sessions_svc.SessionFilter(kinds={"agent"}),
+            )
+        )
+        assert first.next_cursor
+
+        with pytest.raises(sessions_svc.SessionListCursorError):
+            asyncio.run(
+                sessions_svc.list_sessions_page(
+                    limit=2,
+                    cursor=first.next_cursor,
+                    where=sessions_svc.SessionFilter(kinds={"flow"}),
+                )
+            )
+
+        # The same filter still pages, so this rejects a changed query rather
+        # than every cursor.
+        again = asyncio.run(
+            sessions_svc.list_sessions_page(
+                limit=2,
+                cursor=first.next_cursor,
+                where=sessions_svc.SessionFilter(kinds={"agent"}),
+            )
+        )
+        assert {row["id"] for row in again.items}.isdisjoint({row["id"] for row in first.items})
+
     def test_deep_offset_compatibility_path_is_refused(self, client):
         from lionagi.studio.services import sessions as sessions_svc
 

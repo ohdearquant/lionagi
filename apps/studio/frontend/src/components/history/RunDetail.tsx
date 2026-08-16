@@ -386,6 +386,18 @@ export function mergeCompletedSession(
   return { ...previous, ...fresh, branches };
 }
 
+// Lifetime statistics are a separate, deliberately slower read, and every
+// refresh path re-reads the session without them. Applying a fresh session as
+// it arrives therefore replaces exact file, tool-call, error and branch totals
+// with the bounded tail's approximations, and nothing asks for them again.
+export function applyLoadedStatistics(
+  fresh: SessionDetail,
+  loaded: SessionStatistics | null,
+): SessionDetail {
+  if (!loaded || loaded.session_id !== fresh.id) return fresh;
+  return mergeSessionStatistics(fresh, loaded);
+}
+
 export function mergeSessionStatistics(
   session: SessionDetail,
   statistics: SessionStatistics,
@@ -1880,12 +1892,21 @@ export default function RunDetail({ id }: RunDetailProps) {
   const suppressAutoScrollRef = useRef(false);
   const initialScrollDoneRef = useRef(false);
   const olderSentinelRef = useRef<HTMLDivElement>(null);
+  // Holding the loaded statistics lets every refresh path put them back,
+  // rather than each one remembering to.
+  const loadedStatisticsRef = useRef<SessionStatistics | null>(null);
+  const withLoadedStatistics = useCallback(
+    (fresh: SessionDetail): SessionDetail =>
+      applyLoadedStatistics(fresh, loadedStatisticsRef.current),
+    [],
+  );
 
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
     setSession(null);
+    loadedStatisticsRef.current = null;
     setRunGraph(null);
     setLive(false);
     setDone(false);
@@ -1969,6 +1990,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         void getSessionStatistics(id)
           .then((statistics) => {
             if (cancelled) return;
+            loadedStatisticsRef.current = statistics;
             setSession((previous) =>
               previous?.id === statistics.session_id
                 ? mergeSessionStatistics(previous, statistics)
@@ -1999,8 +2021,9 @@ export default function RunDetail({ id }: RunDetailProps) {
         // that follows is ordered after the worker's terminal transition and
         // therefore includes its final persisted messages.
         const invocation = await getInvocation(resumeWatch.invocation_id);
-        const fresh = await getSession(id);
+        const raw = await getSession(id);
         if (cancelled) return;
+        const fresh = withLoadedStatistics(raw);
         setSession((previous) =>
           previous && previous.id === fresh.id ? mergeCompletedSession(previous, fresh) : fresh,
         );
@@ -2027,11 +2050,10 @@ export default function RunDetail({ id }: RunDetailProps) {
       cancelled = true;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [id, resumeWatch]);
+  }, [id, resumeWatch, withLoadedStatistics]);
 
   const activeSessionId = session?.id;
   const messageStreamCursor = session?.stream_cursors?.messages;
-  const signalStreamCursor = session?.stream_cursors?.signals;
 
   useEffect(() => {
     if (!id || activeSessionId !== id) return;
@@ -2043,7 +2065,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         if (event.type === "resync") {
           getSession(id)
             .then((fresh) => {
-              if (!cancelled) setSession(fresh);
+              if (!cancelled) setSession(withLoadedStatistics(fresh));
             })
             .catch(() => {});
           return;
@@ -2057,8 +2079,9 @@ export default function RunDetail({ id }: RunDetailProps) {
           // Guarded on id: if the viewer navigates to a different run before
           // this resolves, it must not clobber that run's freshly-fetched state.
           getSession(id)
-            .then((fresh) => {
+            .then((raw) => {
               if (cancelled) return;
+              const fresh = withLoadedStatistics(raw);
               setSession((prev) =>
                 prev && prev.id === fresh.id ? mergeCompletedSession(prev, fresh) : prev,
               );
@@ -2082,7 +2105,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       cancelled = true;
       stop();
     };
-  }, [activeSessionId, id, messageStreamCursor]);
+  }, [activeSessionId, id, messageStreamCursor, withLoadedStatistics]);
 
   useEffect(() => {
     if (!id || activeSessionId !== id) return;
@@ -2110,7 +2133,14 @@ export default function RunDetail({ id }: RunDetailProps) {
             projection = new SignalProjection();
             publish();
             getSession(id)
-              .then((fresh) => setSession(fresh))
+              .then((fresh) => {
+                // The viewer can switch runs while this is in flight. Without
+                // both checks the previous run's session replaces the one now
+                // on screen, and the swap is invisible: the pane simply shows
+                // another run's branches under this run's heading.
+                if (cancelled || fresh.id !== id) return;
+                setSession(withLoadedStatistics(fresh));
+              })
               .catch(() => {});
           }
           return;
@@ -2118,13 +2148,19 @@ export default function RunDetail({ id }: RunDetailProps) {
         const sig = event as SignalEvent;
         if (projection.append(sig)) publish();
       },
-      signalStreamCursor,
+      // Deliberately from the beginning, not from the detail's signal cursor.
+      // That cursor sits after every persisted signal, and the session detail
+      // carries no projection snapshot to resume from, so starting there hands
+      // an empty projection to a stream that will only ever deliver what
+      // happens next: node status, activity, gates and the operation graph all
+      // read as if the run had just begun. Resuming needs a snapshot to resume
+      // onto; until there is one, the projection is built from the history.
     );
     return () => {
       cancelled = true;
       stop();
     };
-  }, [activeSessionId, id, signalStreamCursor]);
+  }, [activeSessionId, id, withLoadedStatistics]);
 
   useEffect(() => {
     if (suppressAutoScrollRef.current) {
@@ -2287,11 +2323,11 @@ export default function RunDetail({ id }: RunDetailProps) {
     getSession(id)
       .then((fresh) => {
         setOlderCursor(fresh.message_next_cursor ?? null);
-        setSession(fresh);
+        setSession(withLoadedStatistics(fresh));
       })
       .catch((e: unknown) => setError(String(e)))
       .finally(() => setLoadingOlder(false));
-  }, [id]);
+  }, [id, withLoadedStatistics]);
 
   // Scroll-up trigger: an always-mounted sentinel just above the message
   // list. handleLoadOlder no-ops without a cursor or mid-flight, so this can
@@ -2332,7 +2368,7 @@ export default function RunDetail({ id }: RunDetailProps) {
       setLive(true);
       setResumeWatch(result);
       try {
-        const fresh = await getSession(id);
+        const fresh = withLoadedStatistics(await getSession(id));
         setSession((previous) =>
           previous && previous.id === fresh.id ? mergeCompletedSession(previous, fresh) : fresh,
         );
@@ -2342,7 +2378,7 @@ export default function RunDetail({ id }: RunDetailProps) {
         // refresh races a transient daemon disconnect.
       }
     },
-    [id],
+    [id, withLoadedStatistics],
   );
 
   // Confirming a pause proposal marks the request locally; derivePausePhase

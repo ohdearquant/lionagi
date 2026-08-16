@@ -142,6 +142,7 @@ class SessionTailBroker:
         connect: ConnectFactory = _default_connect,
         read_tick: ReadTick = _default_read_tick,
         poll_interval: float = 0.5,
+        reader_retry_interval: float = 1.0,
         # One normal server batch must fit before the consumer task gets its
         # first scheduling turn; overflow remains explicit beyond that bound.
         subscriber_queue_size: int = 1_024,
@@ -151,6 +152,7 @@ class SessionTailBroker:
         self._connect = connect
         self._read_tick = read_tick
         self._poll_interval = max(0.0, poll_interval)
+        self._reader_retry_interval = max(0.0, reader_retry_interval)
         self._subscriber_queue_size = max(1, subscriber_queue_size)
         self._subscribers: dict[int, TailSubscription] = {}
         self._next_subscription_id = 0
@@ -247,12 +249,23 @@ class SessionTailBroker:
 
     async def _unsubscribe(self, subscription_id: int) -> None:
         task: asyncio.Task[None] | None = None
-        async with self._lock:
+        # Registry lock first, then the broker's own, everywhere both are held.
+        async with _BROKERS_LOCK, self._lock:
             self._subscribers.pop(subscription_id, None)
-            if not self._subscribers and self._task is not None:
-                task = self._task
-                self._task = None
-                task.cancel()
+            if not self._subscribers:
+                # The histories are bounded per session; the registry is not.
+                # Keeping a broker after its last viewer leaves turns "at most
+                # two thousand events" into "at most two thousand events per
+                # session anyone has ever opened, for the life of the daemon",
+                # which is the same as unbounded. It goes when they go.
+                if _BROKERS.get(self.session_id) is self:
+                    del _BROKERS[self.session_id]
+                self._message_history.clear()
+                self._signal_history.clear()
+                if self._task is not None:
+                    task = self._task
+                    self._task = None
+                    task.cancel()
         if task is not None and task is not asyncio.current_task():
             await asyncio.gather(task, return_exceptions=True)
 
@@ -288,65 +301,25 @@ class SessionTailBroker:
 
     async def _run(self) -> None:
         try:
-            async with self._connect() as db:
-                while True:
+            while True:
+                try:
+                    await self._read_until_done()
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # A read or connection failure is not the end of the
+                    # stream, and letting the task die makes it look like one
+                    # from nowhere: the SSE generators stay open and keep
+                    # sending heartbeats, so a viewer sees a healthy connection
+                    # that will never carry another event. Subscribers are told
+                    # to resync, since their cursors may now have a gap, and
+                    # the reader reconnects.
                     async with self._lock:
-                        read_messages = bool(self._channel_subscribers("messages"))
-                        read_signals = bool(self._channel_subscribers("signals"))
-                        if not read_messages and not read_signals:
+                        if not self._subscribers:
                             return
-                        message_cursor = self._message_cursor
-                        signal_cursor = self._signal_cursor
-                    batch = await self._read_tick(
-                        db,
-                        self.session_id,
-                        message_cursor,
-                        signal_cursor,
-                        read_messages=read_messages,
-                        read_signals=read_signals,
-                    )
-                    async with self._lock:
-                        if batch.messages:
-                            message_events = [
-                                TailEvent(
-                                    "data",
-                                    message,
-                                    (float(message.get("timestamp") or 0.0), str(message["id"])),
-                                )
-                                for message in batch.messages
-                            ]
-                            self._message_cursor = batch.message_cursor
-                            self._publish(
-                                "messages",
-                                message_events,
-                                self._message_cursor,
-                            )
-                        if batch.signals:
-                            signal_events = [
-                                TailEvent("data", signal, int(signal["seq"]))
-                                for signal in batch.signals
-                            ]
-                            self._signal_cursor = batch.signal_cursor
-                            self._publish("signals", signal_events, self._signal_cursor)
-                        done = False
-                        if batch.state is not None:
-                            from .sessions import is_session_stream_done
-
-                            done = is_session_stream_done(batch.state, now=time.time())
-                        active_caught_up = (not read_messages or batch.messages_caught_up) and (
-                            not read_signals or batch.signals_caught_up
-                        )
-                        if done and active_caught_up:
-                            done_event = TailEvent("done", {"type": "done"})
-                            self._publish("messages", [done_event], self._message_cursor)
-                            self._publish("signals", [done_event], self._signal_cursor)
-                            return
-                    if (read_messages and not batch.messages_caught_up) or (
-                        read_signals and not batch.signals_caught_up
-                    ):
-                        await asyncio.sleep(0)
-                    else:
-                        await asyncio.sleep(self._poll_interval)
+                        self._notify_resync_locked()
+                    await asyncio.sleep(self._reader_retry_interval)
         except asyncio.CancelledError:
             raise
         finally:
@@ -354,29 +327,108 @@ class SessionTailBroker:
                 if self._task is asyncio.current_task():
                     self._task = None
 
+    def _notify_resync_locked(self) -> None:
+        for channel in ("messages", "signals"):
+            cursor = self._message_cursor if channel == "messages" else self._signal_cursor
+            for subscription in self._channel_subscribers(channel):
+                subscription._put_batch(
+                    [TailEvent("resync", {"type": "resync"}, cursor)],
+                    resume_cursor=cursor,
+                )
+
+    async def _read_until_done(self) -> None:
+        async with self._connect() as db:
+            while True:
+                async with self._lock:
+                    read_messages = bool(self._channel_subscribers("messages"))
+                    read_signals = bool(self._channel_subscribers("signals"))
+                    if not read_messages and not read_signals:
+                        return
+                    message_cursor = self._message_cursor
+                    signal_cursor = self._signal_cursor
+                batch = await self._read_tick(
+                    db,
+                    self.session_id,
+                    message_cursor,
+                    signal_cursor,
+                    read_messages=read_messages,
+                    read_signals=read_signals,
+                )
+                async with self._lock:
+                    if batch.messages:
+                        message_events = [
+                            TailEvent(
+                                "data",
+                                message,
+                                (float(message.get("timestamp") or 0.0), str(message["id"])),
+                            )
+                            for message in batch.messages
+                        ]
+                        self._message_cursor = batch.message_cursor
+                        self._publish(
+                            "messages",
+                            message_events,
+                            self._message_cursor,
+                        )
+                    if batch.signals:
+                        signal_events = [
+                            TailEvent("data", signal, int(signal["seq"]))
+                            for signal in batch.signals
+                        ]
+                        self._signal_cursor = batch.signal_cursor
+                        self._publish("signals", signal_events, self._signal_cursor)
+                    done = False
+                    if batch.state is not None:
+                        from .sessions import is_session_stream_done
+
+                        done = is_session_stream_done(batch.state, now=time.time())
+                    active_caught_up = (not read_messages or batch.messages_caught_up) and (
+                        not read_signals or batch.signals_caught_up
+                    )
+                    if done and active_caught_up:
+                        done_event = TailEvent("done", {"type": "done"})
+                        self._publish("messages", [done_event], self._message_cursor)
+                        self._publish("signals", [done_event], self._signal_cursor)
+                        return
+                if (read_messages and not batch.messages_caught_up) or (
+                    read_signals and not batch.signals_caught_up
+                ):
+                    await asyncio.sleep(0)
+                else:
+                    await asyncio.sleep(self._poll_interval)
+
 
 _BROKERS: dict[str, SessionTailBroker] = {}
 _BROKERS_LOCK = asyncio.Lock()
 
 
-async def _broker_for(session_id: str) -> SessionTailBroker:
-    async with _BROKERS_LOCK:
-        broker = _BROKERS.get(session_id)
-        if broker is None or broker._closed:
-            broker = SessionTailBroker(session_id)
-            _BROKERS[session_id] = broker
-        return broker
+def _broker_for(session_id: str) -> SessionTailBroker:
+    """Caller holds `_BROKERS_LOCK`.
+
+    Lookup and the subscription that follows it have to happen under the same
+    hold. Between them a broker can lose its last viewer and be evicted, and a
+    caller holding the reference would then attach to something no longer
+    reachable -- a private reader for one viewer, which is the sharing this
+    module exists to do.
+    """
+    broker = _BROKERS.get(session_id)
+    if broker is None or broker._closed:
+        broker = SessionTailBroker(session_id)
+        _BROKERS[session_id] = broker
+    return broker
 
 
 async def subscribe_session_messages(
     session_id: str,
     cursor: MessageCursor | None,
 ) -> TailSubscription:
-    return await (await _broker_for(session_id)).subscribe_messages(cursor)
+    async with _BROKERS_LOCK:
+        return await _broker_for(session_id).subscribe_messages(cursor)
 
 
 async def subscribe_session_signals(session_id: str, cursor: int) -> TailSubscription:
-    return await (await _broker_for(session_id)).subscribe_signals(cursor)
+    async with _BROKERS_LOCK:
+        return await _broker_for(session_id).subscribe_signals(cursor)
 
 
 async def close_all_tail_brokers() -> None:

@@ -289,3 +289,100 @@ async def test_restarted_message_broker_uses_the_new_snapshot_high_water():
         await second.close()
         release.set()
         await broker.close()
+
+
+async def test_a_broker_leaves_the_registry_with_its_last_viewer():
+    """The histories are bounded per session; the registry is not. A broker kept
+    after its last viewer leaves holds its event deques for the daemon's
+    lifetime, so opening and closing streams across many sessions grows memory
+    without bound -- one bounded buffer at a time."""
+    from lionagi.studio.services import tail_broker as broker_mod
+
+    @asynccontextmanager
+    async def connect():
+        yield object()
+
+    async def read_tick(
+        _db,
+        _session_id,
+        message_cursor,
+        signal_cursor,
+        *,
+        read_messages,
+        read_signals,
+    ):
+        await asyncio.sleep(0)
+        return broker_mod.TailRead([], [], None, message_cursor, signal_cursor, True, True)
+
+    original = dict(broker_mod._BROKERS)
+    broker_mod._BROKERS.clear()
+    try:
+        broker = broker_mod.SessionTailBroker("evicted", connect=connect, read_tick=read_tick)
+        broker_mod._BROKERS["evicted"] = broker
+        subscription = await broker.subscribe_messages(None)
+        await asyncio.sleep(0)
+        assert "evicted" in broker_mod._BROKERS
+
+        await subscription.close()
+
+        assert "evicted" not in broker_mod._BROKERS
+        assert not broker._message_history and not broker._signal_history
+        assert not broker.running
+    finally:
+        broker_mod._BROKERS.clear()
+        broker_mod._BROKERS.update(original)
+
+
+async def test_a_failed_read_tells_viewers_to_resync_and_reconnects():
+    """A reader exception used to end the task outright. The SSE generators
+    stayed open and went on sending heartbeats, so a viewer saw a healthy
+    connection that would never carry another event and had no reason to
+    reconnect."""
+    from lionagi.studio.services.tail_broker import SessionTailBroker, TailRead
+
+    connect_count = 0
+    reads = 0
+
+    @asynccontextmanager
+    async def connect():
+        nonlocal connect_count
+        connect_count += 1
+        yield object()
+
+    async def read_tick(
+        _db,
+        _session_id,
+        message_cursor,
+        signal_cursor,
+        *,
+        read_messages,
+        read_signals,
+    ):
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            raise RuntimeError("injected read failure")
+        await asyncio.sleep(0)
+        return TailRead([], [], None, message_cursor, signal_cursor, True, True)
+
+    broker = SessionTailBroker(
+        "failing",
+        connect=connect,
+        read_tick=read_tick,
+        poll_interval=0,
+        reader_retry_interval=0,
+    )
+    subscription = await broker.subscribe_messages(None)
+    try:
+        event = await asyncio.wait_for(subscription.next_event(), timeout=2)
+        assert event.kind == "resync"
+        await asyncio.wait_for(_wait_for(lambda: connect_count >= 2), timeout=2)
+        assert broker.running, "the reader stopped instead of reconnecting"
+    finally:
+        await subscription.close()
+        await broker.close()
+
+
+async def _wait_for(predicate) -> None:
+    while not predicate():
+        await asyncio.sleep(0)

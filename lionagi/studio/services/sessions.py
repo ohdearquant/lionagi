@@ -230,6 +230,12 @@ class SessionFilter:
         return {
             "playbook": self.playbook,
             "statuses": sorted(self.statuses) if self.statuses else [],
+            # Every filter where() applies belongs here. A cursor is only sound
+            # against the query that produced it, and one minted under a kinds
+            # filter, replayed under another, carries a keyset boundary from a
+            # different row set: the page silently skips rows or comes back
+            # short, with nothing to say it happened.
+            "kinds": sorted(self.kinds) if self.kinds else [],
             "project": self.project,
             "project_null": self.project_null,
             "tags": sorted(self.tags) if self.tags else [],
