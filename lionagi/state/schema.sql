@@ -213,6 +213,15 @@ CREATE INDEX IF NOT EXISTS idx_sessions_status_last_msg
 -- The grouped runs view fetches all sessions for an invocation.
 CREATE INDEX IF NOT EXISTS idx_sessions_invocation
   ON sessions(invocation_id) WHERE invocation_id IS NOT NULL;
+-- The active snapshot reads one invocation's running children in creation
+-- order, once per poll. On the index above, sqlite matched only `status` and
+-- then built a temp b-tree to order the result, so every running session in the
+-- database was visited and sorted before a LIMIT could discard any of it.
+-- Carrying status and the sort columns lets that read seek straight to the
+-- invocation and stop at its limit. The narrower index above is a prefix of
+-- this one and stays only because dropping it is a separate migration.
+CREATE INDEX IF NOT EXISTS idx_sessions_invocation_status_created
+  ON sessions(invocation_id, status, created_at, id) WHERE invocation_id IS NOT NULL;
 -- Project-scoped session listing in Studio.
 CREATE INDEX IF NOT EXISTS idx_sessions_project
   ON sessions(project) WHERE project IS NOT NULL;

@@ -259,6 +259,17 @@ _ATTENTION_HISTORY_SEQUENCE_INDEX = (
     "ON attention_disposition_history(sequence)",
 )
 
+# Declaring an index in the table metadata only reaches databases created after
+# the declaration: `metadata.create_all` skips a table that already exists, and
+# skips its indexes with it. Every store that predates the declaration therefore
+# keeps running the query the index exists to fix. That is what this table is
+# for, and an index that lives only in the metadata is an index most installs
+# will never have.
+_ACTIVE_SNAPSHOT_CHILD_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_sessions_invocation_status_created "
+    "ON sessions(invocation_id, status, created_at, id) WHERE invocation_id IS NOT NULL",
+)
+
 MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
     "sqlite": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
@@ -274,6 +285,7 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
         "ON branches(session_id, created_at)",
         *_ATTENTION_HISTORY_SEQUENCE_INDEX,
+        *_ACTIVE_SNAPSHOT_CHILD_INDEX,
     ),
     "postgresql": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
@@ -289,5 +301,6 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
         "ON branches(session_id, created_at)",
         *_ATTENTION_HISTORY_SEQUENCE_INDEX,
+        *_ACTIVE_SNAPSHOT_CHILD_INDEX,
     ),
 }
