@@ -68,6 +68,15 @@ MAX_RUN_FILE_ITEMS = 100
 # the floor as the number.
 MAX_RUN_FILE_SCANNED_REQUESTS = 20_000
 
+# How many action rows one session detail will pull out of the database, newest
+# first, across all of its branches together.  The bound above limits the work a
+# pass does over rows already in hand; this one limits how many are held at all,
+# which is the part that scales with how long a run went on rather than with how
+# much of it anyone is looking at.  Everything derived from action messages --
+# the file summary, the tool and error counts, the error list -- reads this set,
+# so all of them say so when it binds.
+MAX_HYDRATED_ACTION_MESSAGES = 20_000
+
 _READ_FILE_TOOLS = frozenset({"read", "read_file"})
 _WRITE_FILE_TOOLS = frozenset(
     {
@@ -221,13 +230,18 @@ def _derive_run_files(
     *,
     artifact_root: Path | None,
     limit: int = MAX_RUN_FILE_ITEMS,
+    hydration_bounded: bool = False,
 ) -> dict[str, Any]:
-    """Derive a bounded, privacy-preserving file summary from tool requests."""
+    """Derive a bounded, privacy-preserving file summary from tool requests.
+
+    ``hydration_bounded`` says the caller's own list was already cut short, so
+    a summary derived from it is a floor even when this walk reads all of it.
+    """
     capped_limit = max(1, min(int(limit), MAX_RUN_FILE_ITEMS))
     files: dict[str, dict[str, Any]] = {}
     redacted_hashes: set[str] = set()
     scanned = 0
-    bounded = False
+    bounded = hydration_bounded
     try:
         resolved_artifact_root = artifact_root.resolve(strict=False) if artifact_root else None
     except (OSError, RuntimeError):
@@ -239,7 +253,12 @@ def _derive_run_files(
     # order is not otherwise load-bearing: every per-path field below merges by
     # max, or, or set union, and the final sort breaks ties on the path itself,
     # so a run that fits inside the budget produces the same summary either way.
-    for sequence, message in reversed(list(enumerate(action_messages))):
+    # Indexed backwards rather than reversed(list(enumerate(...))): that form
+    # materializes a second copy of every action message before the budget
+    # below has bounded anything, which puts the peak cost back on the run's
+    # size instead of on the budget.
+    for sequence in range(len(action_messages) - 1, -1, -1):
+        message = action_messages[sequence]
         if _short_lion_class(str(message.get("lion_class") or "")) != "ActionRequest":
             continue
         if scanned >= MAX_RUN_FILE_SCANNED_REQUESTS:
@@ -818,6 +837,11 @@ def _init_message_stats() -> dict[str, Any]:
         "error_count": 0,
         "errors": [],
         "files": [],
+        # True when the action-message pass stopped at its bound, so the four
+        # fields above describe the session's most recent action messages
+        # rather than all of them: the counts are floors and the errors and
+        # files are the ones that fell inside the window.
+        "bounded": False,
     }
 
 
@@ -885,12 +909,26 @@ async def _fetch_message_bounds(
 
 
 async def _fetch_action_messages(
-    db: aiosqlite.Connection, msg_ids: list[str]
-) -> list[dict[str, Any]]:
-    """Hydrate only the ActionRequest/ActionResponse rows among msg_ids, in progression
-    order — the only kinds tool/error/file aggregates need, keeping the pass cheap."""
-    if not msg_ids:
-        return []
+    db: aiosqlite.Connection, msg_ids: list[str], *, limit: int
+) -> tuple[list[dict[str, Any]], bool]:
+    """Hydrate at most *limit* ActionRequest/ActionResponse rows among msg_ids,
+    newest first, returned in progression order.
+
+    These are the only kinds the tool/error/file aggregates need, and the cap is
+    on the hydration rather than on some later pass because the rows are the
+    cost: their content is what has to be held, and a long-running session has
+    no natural end to how many it accumulates.
+
+    Newest first is what makes the cap safe to apply here. A response always
+    sits later in the progression than the request it answers, so a window taken
+    from the newest end never keeps a request whose response it dropped; it
+    drops whole request/response pairs off the old end instead.
+
+    Returns (messages, bounded), where bounded says the walk stopped before
+    reading the whole progression.
+    """
+    if not msg_ids or limit <= 0:
+        return [], bool(msg_ids)
     class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
     cur = await db.execute(
         f"SELECT type_id, lion_class FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
@@ -898,13 +936,15 @@ async def _fetch_action_messages(
     )
     lion_class_by_type_id = {row["type_id"]: row["lion_class"] for row in await cur.fetchall()}
     if not lion_class_by_type_id:
-        return []
+        return [], False
 
     rows_by_id: dict[str, dict[str, Any]] = {}
     type_ids = list(lion_class_by_type_id)
     type_placeholders = ",".join("?" for _ in type_ids)
-    for chunk_start in range(0, len(msg_ids), 500):
-        chunk = msg_ids[chunk_start : chunk_start + 500]
+    bounded = False
+    for chunk_end in range(len(msg_ids), 0, -500):
+        chunk_start = max(0, chunk_end - 500)
+        chunk = msg_ids[chunk_start:chunk_end]
         placeholders = ",".join("?" for _ in chunk)
         # `+m.lion_class` disqualifies the lion_class index so the planner probes
         # the id primary key for the IN list instead of rescanning every
@@ -921,7 +961,14 @@ async def _fetch_action_messages(
             data = dict(row)
             data["lion_class_str"] = lion_class_by_type_id.get(data.pop("lion_class"))
             rows_by_id[data["id"]] = _format_message(data)
-    return [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
+        if len(rows_by_id) >= limit:
+            # Stop reading rather than read everything and slice: the ids left
+            # unread are older than everything already held, so nothing further
+            # back can belong in a newest-first window this size.
+            bounded = chunk_start > 0 or len(rows_by_id) > limit
+            break
+    ordered = [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
+    return ordered[-limit:], bounded
 
 
 def _branch_message_stats(
@@ -1054,10 +1101,14 @@ async def get_session(
         full_stats = _init_message_stats()
         all_action_messages: list[dict[str, Any]] = []
         next_branch_anchors: dict[str, str] = {}
+
+        # Progressions are id lists and cheap to read; hydrating the rows they
+        # name is what costs. Read them all first so the hydration budget can be
+        # spent deliberately rather than in whatever order the branches happen
+        # to come back in.
+        progression_ids: dict[str, list[str]] = {}
         for br in branch_rows:
-            branch_id = br["id"]
-            full_msg_ids: list[str] = []
-            message_total = 0
+            ids: list[str] = []
             prog_id = br["progression_id"]
             if prog_id:
                 prog_cur = await db.execute(
@@ -1067,10 +1118,30 @@ async def get_session(
                 prog_row = await prog_cur.fetchone()
                 if prog_row and prog_row["collection"]:
                     try:
-                        full_msg_ids = json.loads(prog_row["collection"])
+                        ids = json.loads(prog_row["collection"])
                     except (json.JSONDecodeError, TypeError):
-                        full_msg_ids = []
-                    message_total = len(full_msg_ids)
+                        ids = []
+            progression_ids[br["id"]] = ids
+
+        # One budget for the session rather than one per branch, spent newest
+        # branch first: a per-branch bound would multiply by the branch count,
+        # and spending it oldest-first would drop exactly the recent activity
+        # every consumer of this data is asking about.
+        action_by_branch: dict[str, list[dict[str, Any]]] = {}
+        action_message_budget = MAX_HYDRATED_ACTION_MESSAGES
+        action_messages_bounded = False
+        for br in reversed(branch_rows):
+            fetched, branch_bounded = await _fetch_action_messages(
+                db, progression_ids[br["id"]], limit=action_message_budget
+            )
+            action_message_budget -= len(fetched)
+            action_messages_bounded = action_messages_bounded or branch_bounded
+            action_by_branch[br["id"]] = fetched
+
+        for br in branch_rows:
+            branch_id = br["id"]
+            full_msg_ids = progression_ids[branch_id]
+            message_total = len(full_msg_ids)
 
             # Window from the tail: offset/cursor 0 = the newest page,
             # each page further back prepends older history.
@@ -1090,7 +1161,7 @@ async def get_session(
 
             role_counts = await _fetch_role_counts(db, full_msg_ids)
             first_message_at, last_message_at = await _fetch_message_bounds(db, full_msg_ids)
-            action_messages = await _fetch_action_messages(db, full_msg_ids)
+            action_messages = action_by_branch[branch_id]
             all_action_messages.extend(action_messages)
             # message_count is the DB role-aggregate, not message_total: a
             # progression can reference ids whose row was pruned, so the two can diverge.
@@ -1142,7 +1213,12 @@ async def get_session(
             if isinstance(session_row["artifacts_path"], str) and session_row["artifacts_path"]
             else None
         )
-        run_files = _derive_run_files(all_action_messages, artifact_root=artifact_root)
+        full_stats["bounded"] = action_messages_bounded
+        run_files = _derive_run_files(
+            all_action_messages,
+            artifact_root=artifact_root,
+            hydration_bounded=action_messages_bounded,
+        )
         # Compatibility for existing clients: retain the flat field, but make
         # it mirror the same bounded safe surface instead of raw arguments.
         full_stats["files"] = [item["path"] for item in run_files["items"]]

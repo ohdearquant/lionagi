@@ -1425,3 +1425,89 @@ async def test_session_reads_work_against_a_store_from_the_previous_schema_versi
     listed = await svc.list_sessions(limit=10)
     assert [row["id"] for row in listed] == ["sess-prev-schema"]
     assert listed[0]["ended_at_is_approximate"] is False
+
+
+async def _seed_action_requests(
+    db_path: Path, *, branch_id: str, session_id: str, count: int, start: int = 0
+) -> None:
+    """One ActionRequest per file, in progression order, oldest first."""
+    ids = [f"{branch_id}-act-{i}" for i in range(start, start + count)]
+    await seed_branch(db_path, branch_id=branch_id, session_id=session_id, msg_ids=ids)
+    async with StateDB(db_path) as db:
+        for i, msg_id in enumerate(ids, start=start):
+            await db.insert_message(
+                {
+                    "id": msg_id,
+                    "created_at": 100.0 + i,
+                    "content": {"function": "Read", "arguments": {"file_path": f"/run/f{i}.py"}},
+                    "sender": "worker",
+                    "recipient": "tool",
+                    "role": "action",
+                    "node_metadata": {
+                        "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                    },
+                }
+            )
+
+
+async def test_action_hydration_stops_at_its_bound_and_keeps_the_newest(
+    patched_sessions_db, monkeypatch
+):
+    """A session accumulates action rows for as long as it runs, so the detail
+    read has to stop somewhere. It stops at the newest end, because that is the
+    part every field derived from these rows is describing, and it says that it
+    stopped rather than reporting a short list as a complete one."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 3)
+    await seed_session(db_path, session_id="sess-hydration", artifacts_path="/run")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-hydration", count=8)
+
+    detail = await svc.get_session("sess-hydration")
+
+    assert detail is not None
+    stats = detail["message_stats"]
+    assert stats["bounded"] is True
+    assert stats["tool_call_count"] == 3
+    assert detail["run_files"]["bounded"] is True
+    assert detail["run_files"]["truncated"] is True
+    assert {item["path"] for item in detail["run_files"]["items"]} == {
+        "f5.py",
+        "f6.py",
+        "f7.py",
+    }
+
+
+async def test_an_unbounded_session_reports_the_whole_action_surface(patched_sessions_db):
+    """Control: the flags above have to be able to read false, or a caller
+    cannot tell a bounded read from a complete one."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-hydration-small", artifacts_path="/run")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-hydration-small", count=3)
+
+    detail = await svc.get_session("sess-hydration-small")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is False
+    assert detail["message_stats"]["tool_call_count"] == 3
+    assert detail["run_files"]["bounded"] is False
+
+
+async def test_the_hydration_budget_is_spent_on_the_newest_branch(patched_sessions_db, monkeypatch):
+    """The budget covers the session, not each branch, so where it is spent is
+    a real choice. Spending it in branch order would hand back the oldest
+    branch's files under a heading about this run."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 2)
+    await seed_session(db_path, session_id="sess-two-branches", artifacts_path="/run")
+    await _seed_action_requests(db_path, branch_id="older", session_id="sess-two-branches", count=3)
+    await _seed_action_requests(
+        db_path, branch_id="newer", session_id="sess-two-branches", count=3, start=10
+    )
+
+    detail = await svc.get_session("sess-two-branches")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is True
+    # Both branches together hold six requests and the budget is two, so the
+    # two that survive must both come from the branch created last.
+    assert {item["path"] for item in detail["run_files"]["items"]} == {"f11.py", "f12.py"}
