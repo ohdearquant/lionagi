@@ -225,8 +225,12 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // shown when a run carries no project for a control to be authorized
   // against. Natively translated in all 16, so unlike its two siblings it adds
   // nothing to the identity-leak baseline below.
-  it("en.json has 1100 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1100);
+  //
+  // 1103 = 1100 + the three schedules.detail leaves for the discard-changes
+  // confirmation (discardWarning, keepEditing, discardChanges). Natively
+  // translated in all 16, so they add nothing to the identity-leak baseline.
+  it("en.json has 1103 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1103);
   });
 
   it.each(LOCALES.map((l) => l.code))(
