@@ -2644,3 +2644,179 @@ async def test_stale_sweep_leaves_another_hosts_rows_alone(
     assert local_after["status"] == "cancelled", (
         "a local stale row must still be swept — otherwise this test passes on a dead sweep"
     )
+
+
+# runtimes this CLI does not manage: the identity mode decides whether the
+# recorded pid names the run's own process at all
+
+
+async def test_kill_refuses_a_runtime_this_cli_does_not_manage(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An identity mode this code does not know has its stop protocol elsewhere.
+
+    The host and boot markers can both agree and the pid can be alive right
+    here, and the number still does not name a process this path may signal.
+    Reading it as one stops whatever holds it and writes a cancellation for
+    work that never stopped.
+    """
+    signalled: list[int] = []
+
+    def _fake_terminate(pid, **kw):
+        signalled.append(pid)
+        return "sigterm"
+
+    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", _fake_terminate)
+    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+
+    async with StateDB() as db:
+        sid = await _seed_session(
+            db,
+            status="running",
+            pid=os.getpid(),
+            extra_meta={
+                "pid_host": "this-host",
+                "process_identity_mode": "external",
+            },
+        )
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="")
+
+    assert signalled == [], "a run this CLI does not manage must not be signalled"
+    assert result["signal"] == "foreign_mode"
+    assert result["signal"] in _NOT_STOPPED_SIGNALS
+
+    async with StateDB() as db:
+        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+    assert after["status"] == "running", (
+        "refusing to signal must also refuse to write a cancellation"
+    )
+
+
+async def test_kill_refuses_an_unmanaged_runtime_that_recorded_no_pid(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The row with no pid is the dangerous one, not the safe one.
+
+    With the identity check inside the branch that runs when a pid exists, a
+    row carrying no pid skipped it entirely, fell through to "no pid found",
+    and had a cancellation written for it — the exact outcome the check was
+    added to prevent, reached by having less information rather than more.
+    """
+    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+
+    async with StateDB() as db:
+        sid = await _seed_session(
+            db,
+            status="running",
+            extra_meta={"process_identity_mode": "external"},
+        )
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="")
+
+    async with StateDB() as db:
+        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+        tr = await db.fetch_one(
+            "SELECT COUNT(*) AS n FROM status_transitions "
+            "WHERE entity_id = ? AND status = 'cancelled'",
+            (sid,),
+        )
+
+    assert after["status"] == "running"
+    assert tr["n"] == 0, "no cancellation may reach history either"
+    assert result["signal"] == "foreign_mode"
+
+
+async def test_kill_refuses_a_foreign_host_row_that_recorded_no_pid(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The same hole on the host marker: no pid meant no host check."""
+    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+
+    async with StateDB() as db:
+        sid = await _seed_session(
+            db,
+            status="running",
+            extra_meta={"pid_host": "some-other-host"},
+        )
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="")
+
+    async with StateDB() as db:
+        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+
+    assert after["status"] == "running"
+    assert result["signal"] == "host_mismatch"
+
+
+async def test_stale_sweep_leaves_runtimes_it_does_not_manage_alone(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`--all-stale` skipped only on the host marker, so local-looking rows fell through.
+
+    An `in_process` run and an `external` one both reach the sweep with no pid
+    of their own. Neither has a liveness reading to contest the sweep, so both
+    were cancelled on the strength of nothing at all. The local row is the
+    discriminator: without it a sweep that had stopped working entirely would
+    pass this test.
+    """
+    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+
+    old = time.time() - 86400
+    async with StateDB() as db:
+        hosted = await _seed_session(
+            db,
+            status="running",
+            started_at=old,
+            extra_meta={
+                "pid_host": "this-host",
+                "process_identity_mode": "in_process",
+                "host_pid": os.getpid(),
+            },
+        )
+        unmanaged = await _seed_session(
+            db,
+            status="running",
+            started_at=old,
+            pid=4242,
+            extra_meta={
+                "pid_host": "this-host",
+                "process_identity_mode": "external",
+            },
+        )
+        local = await _seed_session(
+            db,
+            status="running",
+            pid=4243,
+            started_at=old,
+            extra_meta={"pid_host": "this-host", "process_identity_mode": "local"},
+        )
+
+    await _do_kill_all_stale(threshold_seconds=60, dry_run=False)
+
+    async with StateDB() as db:
+        hosted_after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (hosted,))
+        unmanaged_after = await db.fetch_one(
+            "SELECT status FROM sessions WHERE id = ?", (unmanaged,)
+        )
+        local_after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (local,))
+
+    assert hosted_after["status"] == "running", (
+        "a run inside a shared host process is not swept by a pid table that never saw it"
+    )
+    assert unmanaged_after["status"] == "running", (
+        "a runtime this CLI does not manage is not swept on a local pid reading"
+    )
+    assert local_after["status"] == "cancelled", (
+        "a local stale row must still be swept — otherwise this test passes on a dead sweep"
+    )

@@ -1116,8 +1116,13 @@ async def _doctor(
 
     from sqlalchemy import text
 
-    from lionagi.cli._util import pid_alive, recorded_pid_is_foreign
-    from lionagi.cli.kill import _check_pid_identity, _read_pid_from_entity
+    from lionagi.cli._util import pid_alive
+    from lionagi.cli.kill import (
+        _NOT_JUDGEABLE_HERE,
+        _check_pid_identity,
+        _read_pid_from_entity,
+        _unaddressable_pid_reason,
+    )
 
     async with StateDB() as db:
         async with db._read() as conn:
@@ -1152,12 +1157,13 @@ async def _doctor(
                 except ValueError:
                     meta = None
             entity["node_metadata"] = meta if isinstance(meta, dict) else None
-            if recorded_pid_is_foreign(entity["node_metadata"]):
-                # Recorded on another machine. Every check below asks this
-                # host's process table about that host's pid, so a dead answer
-                # here says nothing about the run: it would sweep a working
-                # session on the strength of a number that means something
-                # else locally.
+            if _unaddressable_pid_reason(entity["node_metadata"] or {}) in _NOT_JUDGEABLE_HERE:
+                # Recorded on another machine, or against a runtime this CLI
+                # does not manage. Every check below asks this host's process
+                # table about a pid that means something else here, or about no
+                # pid at all, so a dead answer says nothing about the run: it
+                # would sweep a working session on the strength of a number
+                # that belongs to something unrelated.
                 skipped += 1
                 continue
             pid = _read_pid_from_entity(entity)

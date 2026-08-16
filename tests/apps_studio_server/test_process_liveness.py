@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the shared tri-state process-liveness oracle."""
 
-import asyncio
 import json
 import os
 import subprocess
@@ -211,6 +210,69 @@ def test_a_boot_time_from_before_the_last_reboot_is_dead(monkeypatch):
             "pid_create_time": psutil.Process(os.getpid()).create_time(),
             "pid_host": "this-host",
             "pid_boot_time": psutil.boot_time() - 86400.0,
+        },
+    }
+
+    assert process_liveness(session, None, ps_snapshot="") is False
+
+
+def test_a_boot_time_that_cannot_be_read_does_not_make_a_live_process_unknown(monkeypatch):
+    """A failed boot-time read leaves one check unevaluated; it is not an answer.
+
+    Reporting unknown here is worse than never having had the check: the
+    lifecycle reapers read any non-True liveness as death once the row goes
+    stale, so on a machine where this read keeps failing every live session
+    would eventually be reaped. The pid checks still run, which is the same
+    best-effort stance the status and create-time reads already take.
+    """
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+
+    recorded_boot = psutil.boot_time()
+
+    def _unreadable_boot_time():
+        raise OSError("boot time unavailable")
+
+    monkeypatch.setattr(psutil, "boot_time", _unreadable_boot_time)
+
+    session = {
+        "id": "live-session",
+        "node_metadata": {
+            "pid": os.getpid(),
+            "pid_create_time": psutil.Process(os.getpid()).create_time(),
+            "pid_host": "this-host",
+            "pid_boot_time": recorded_boot,
+        },
+    }
+
+    assert process_liveness(session, None, ps_snapshot="") is True
+
+
+def test_a_failed_boot_time_read_still_reports_a_dead_pid_as_dead(monkeypatch):
+    """The control: falling through to the pid checks means they still decide.
+
+    Without this, returning True unconditionally on a read failure would pass
+    the test above while reporting every dead session as alive.
+    """
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+
+    recorded_boot = psutil.boot_time()
+    dead = _dead_pid()
+
+    def _unreadable_boot_time():
+        raise OSError("boot time unavailable")
+
+    monkeypatch.setattr(psutil, "boot_time", _unreadable_boot_time)
+
+    session = {
+        "id": "dead-session",
+        "node_metadata": {
+            "pid": dead,
+            "pid_host": "this-host",
+            "pid_boot_time": recorded_boot,
         },
     }
 

@@ -63,7 +63,7 @@ _CREATE_TIME_TOLERANCE = 0.1
 #: Outcomes where nothing was stopped and no cancellation was written. A caller
 #: that reports these as a kill is claiming a stop that did not happen.
 _NOT_STOPPED_SIGNALS = frozenset(
-    {"identity_mismatch", "in_process", "host_mismatch", "boot_mismatch"}
+    {"identity_mismatch", "in_process", "host_mismatch", "boot_mismatch", "foreign_mode"}
 )
 
 #: Refusals to signal, and how to say each one. A pid names a process only
@@ -75,12 +75,31 @@ _REFUSED_SIGNAL_REASONS: dict[str, str] = {
     "identity_mismatch": "did not match the expected lionagi process",
     "host_mismatch": "was recorded on a different host",
     "boot_mismatch": "was recorded before this machine last booted",
+    "in_process": (
+        "runs inside a shared host process, so no signal reaches it alone — "
+        "use the Studio cancel for this run"
+    ),
+    "foreign_mode": "records a process identity this CLI does not manage",
 }
 
 #: Re-exported so the module's own tests and readers find it where the check
 #: that uses it lives. The value is defined once in ``_util`` beside the host
 #: check, because the Studio liveness probe compares the same recorded value.
 _BOOT_TIME_TOLERANCE = BOOT_TIME_TOLERANCE
+
+
+#: Reasons that also disqualify a row from being SWEPT, not just from being
+#: signalled. ``boot_mismatch`` is deliberately absent: a pid recorded before
+#: this machine last booted cannot be signalled, but the mismatch is itself
+#: proof the recorded process is gone, so a sweep has grounds to write the
+#: cancellation. The other three mean this host cannot tell whether the run is
+#: alive at all, and a sweep that writes cancelled on those is guessing.
+_NOT_JUDGEABLE_HERE = frozenset({"host_mismatch", "in_process", "foreign_mode"})
+
+#: Process identity modes whose runs this CLI can signal. ``in_process`` is
+#: excluded on purpose even though it is locally observable: the run shares a
+#: host process with others, so there is no signal that reaches it alone.
+_LOCALLY_SIGNALLABLE_MODES = frozenset({"local"})
 
 
 def _unaddressable_pid_reason(meta: dict[str, Any]) -> str | None:
@@ -93,11 +112,22 @@ def _unaddressable_pid_reason(meta: dict[str, Any]) -> str | None:
     before this machine rebooted has the same problem: the numbers were
     reissued from scratch.
 
+    The recorded identity mode is asked first, because it decides whether the
+    pid names the run's own process at all. An ``in_process`` run executes
+    inside a shared host, and any mode this code does not know is by definition
+    one whose stop protocol lives somewhere else. Reading their pid markers as
+    though they named a signallable process is how a row gets marked cancelled
+    while the work carries on.
+
     Absent markers return None rather than refusing. A row written before
     these were recorded cannot be judged either way, and not knowing where a
     pid came from is not evidence that it is foreign; the process identity
     check downstream still has to pass for anything to be signalled.
     """
+    mode = meta.get("process_identity_mode")
+    if isinstance(mode, str) and mode not in _LOCALLY_SIGNALLABLE_MODES:
+        return "in_process" if mode == "in_process" else "foreign_mode"
+
     if _recorded_pid_is_foreign(meta):
         return "host_mismatch"
 
@@ -474,22 +504,20 @@ async def _kill_one(
     """Kill one entity: terminate process, persist cancellation."""
     from lionagi.state.reasons import RunReasons
 
-    row_meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
-    if row_meta.get("process_identity_mode") == "in_process":
-        # This run has no OS process of its own: it executes inside a
-        # long-lived host. There is nothing here to signal, and signalling the
-        # host would stop every other run it carries. Persisting a
-        # cancellation would report a stop that did not happen, so this path
-        # reports that it did not stop anything. Studio's operator cancel
-        # reaches these by cancelling the driving task.
-        warn(
-            f"  {entity_type} {entity_id[:12]}: runs inside a host process, "
-            "not cancellable from here — use the Studio cancel for this run"
-        )
+    meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
+    # Asked before the pid is even read, and not only when one is recorded. A
+    # row this host cannot judge stays untouched whether or not it carries a
+    # pid: with the check inside the pid branch, a pid-less row from another
+    # host or another runtime fell through to "no pid found" and had a
+    # cancellation written for it anyway, which reports a stop that did not
+    # happen and leaves the row lying about work that is still running.
+    unaddressable = _unaddressable_pid_reason(meta)
+    if unaddressable in _NOT_JUDGEABLE_HERE:
+        warn(f"  {entity_type} {entity_id[:12]}: {_REFUSED_SIGNAL_REASONS[unaddressable]}")
         return {
             "entity_type": entity_type,
             "entity_id": entity_id,
-            "signal": "in_process",
+            "signal": unaddressable,
             "pid": None,
         }
 
@@ -497,12 +525,11 @@ async def _kill_one(
     signal_used = "no_pid"
 
     if pid is not None:
-        meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
-        # Asked before anything is signalled: once the pid is known to have come
-        # from another host or another boot, the local process wearing that
-        # number is a stranger, and even the identity check inside _terminate_pid
-        # would be inspecting the wrong process.
-        unaddressable = _unaddressable_pid_reason(meta)
+        # Only ``boot_mismatch`` can still be pending here; the others returned
+        # above. It is refused the same way further down, and is kept out of
+        # the early return only because the stale sweep treats it differently:
+        # the mismatch is evidence the recorded process is gone, which a sweep
+        # can act on and a targeted kill has no reason to.
         if unaddressable is not None:
             signal_used = unaddressable
         else:
@@ -724,7 +751,7 @@ async def _do_kill_all_stale(
     skipped_live = 0
     skipped_recent = 0
     skipped_unverifiable = 0
-    skipped_foreign_host = 0
+    skipped_unjudgeable = 0
     skipped_unlinked_plays = 0
     unverifiable_tracked = 0
 
@@ -765,16 +792,21 @@ async def _do_kill_all_stale(
                     if isinstance(row_dict.get("node_metadata"), dict)
                     else {}
                 )
-                if _recorded_pid_is_foreign(row_meta_for_host):
-                    # Recorded on another machine. Both branches below read this
-                    # host's process table, so both answer about whatever local
-                    # process holds that number: a dead reading would sweep a
-                    # run that is working fine where it actually lives.
-                    skipped_foreign_host += 1
+                unjudgeable = _unaddressable_pid_reason(row_meta_for_host)
+                if unjudgeable in _NOT_JUDGEABLE_HERE:
+                    # Recorded on another machine, or against a runtime whose
+                    # process this CLI does not manage. Both branches below read
+                    # this host's process table, so both answer about whatever
+                    # local process holds that number, or about no process at
+                    # all: either way a dead reading would sweep a run that is
+                    # working fine where it actually lives. A row with no pid is
+                    # the dangerous case rather than the safe one, since it
+                    # reaches the sweep without any liveness reading to contest.
+                    skipped_unjudgeable += 1
                     if verbose:
                         print(
                             f"  skip {entity_type} {entity_id[:12]}: "
-                            "recorded on another host — not judgeable from here"
+                            f"{_REFUSED_SIGNAL_REASONS[unjudgeable]} — not judgeable from here"
                         )
                     continue
 
@@ -1002,7 +1034,7 @@ async def _do_kill_all_stale(
         f"\n{prefix} {killed} stale entities "
         f"[skipped_recent={skipped_recent}, skipped_live_pid={skipped_live}, "
         f"skipped_unverifiable_pid={skipped_unverifiable}, "
-        f"skipped_foreign_host={skipped_foreign_host}, "
+        f"skipped_unjudgeable={skipped_unjudgeable}, "
         f"skipped_unlinked_plays={skipped_unlinked_plays}]"
     )
     if unverifiable_tracked:

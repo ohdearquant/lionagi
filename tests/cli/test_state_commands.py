@@ -920,3 +920,44 @@ async def test_import_of_a_running_run_leaves_duration_ms_null(temp_db_path: Pat
 
     assert session["status"] == "running"
     assert session["duration_ms"] is None
+
+
+async def test_doctor_skips_runtimes_it_cannot_judge(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`state doctor` asks this host's process table, so it may only judge rows about it.
+
+    It skipped on the recorded host alone, which left two shapes it still
+    swept: a run hosted inside a shared process, and one whose runtime this
+    CLI does not manage. Neither records a pid of its own, so both arrived
+    with no liveness reading to contest the sweep and were marked aborted
+    while still working. The local row is the discriminator: without it a
+    doctor that had stopped sweeping entirely would pass this test.
+    """
+    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+
+    old = time.time() - (48 * 3600)
+    async with StateDB() as db:
+        hosted = await _seed_session(db, status="running")
+        unmanaged = await _seed_session(db, status="running")
+        local = await _seed_session(db, status="running")
+        for sid, meta in (
+            (hosted, {"pid_host": "this-host", "process_identity_mode": "in_process"}),
+            (unmanaged, {"pid_host": "this-host", "process_identity_mode": "external"}),
+            (local, {"pid_host": "this-host", "process_identity_mode": "local"}),
+        ):
+            await db.execute(
+                "UPDATE sessions SET started_at = ?, node_metadata = ? WHERE id = ?",
+                (old, json.dumps(meta), sid),
+            )
+
+    result = await _doctor(stale_hours=24, dry_run=False)
+
+    async with StateDB() as db:
+        assert (await db.get_session(hosted))["status"] == "running"
+        assert (await db.get_session(unmanaged))["status"] == "running"
+        assert (await db.get_session(local))["status"] == "aborted", (
+            "a local stale row must still be swept — otherwise this passes on a dead doctor"
+        )
+    assert result["skipped"] == 2
+    assert result["swept"] == 1

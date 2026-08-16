@@ -484,6 +484,7 @@ def process_liveness(
     if pid is not None and pid_host is not None and pid_host != socket.gethostname():
         return None
     if pid is not None and pid_boot_time is not None:
+        rebooted_since = False
         try:
             import psutil
 
@@ -497,10 +498,18 @@ def process_liveness(
             # second on a machine that never rebooted — and reading that as a
             # reboot reports a healthy local session as dead, which is what
             # the lifecycle reapers act on.
-            if abs(psutil.boot_time() - pid_boot_time) > BOOT_TIME_TOLERANCE:
-                return False
+            rebooted_since = abs(psutil.boot_time() - pid_boot_time) > BOOT_TIME_TOLERANCE
         except Exception:
-            return None
+            # Failing to read the boot time leaves this one check unevaluated;
+            # it does not make the run unknowable. Answering "unknown" here
+            # would be worse than not having the check at all: the lifecycle
+            # reapers read any non-True liveness as death once the row goes
+            # stale, so a machine where this read keeps failing would reap
+            # every live session it has. The pid checks below still run, which
+            # is the same best-effort stance the status/start-time read takes.
+            _log.debug("boot-time comparison for pid %s failed", pid, exc_info=True)
+        if rebooted_since:
+            return False
 
     if pid is None and artifacts_path is not None and artifacts_path.exists():
         pid = _find_pid_file(artifacts_path)
