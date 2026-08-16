@@ -470,6 +470,7 @@ def test_admin_health_response_shape(tmp_path, monkeypatch):
         "code_identity",
         "db",
         "diagnostic_run_at",
+        "process_snapshot",
         "scheduler_timezone",
         "sessions",
     ]
@@ -574,6 +575,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "duration_ms",
         "effort",
         "ended_at",
+        "ended_at_is_approximate",
         "graph",
         "has_control_consumer",
         "id",

@@ -10,6 +10,7 @@ from .observer import SessionObserver
 from .session import Session
 from .signal import (
     NodeAwaitingApproval,
+    NodeCancelled,
     NodeEscalated,
     NodeLifecycleState,
     NodePaused,
@@ -29,6 +30,7 @@ __all__ = [
     "Exchange",
     "Message",
     "NodeAwaitingApproval",
+    "NodeCancelled",
     "NodeEscalated",
     "NodeLifecycleState",
     "NodePaused",

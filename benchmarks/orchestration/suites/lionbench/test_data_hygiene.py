@@ -34,7 +34,7 @@ _BANNED_SUBSTRINGS = (
 _UUID_RE = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
-# Internal actor identifiers look like "lambda:leo"/"lambda:khive" — no space after
+# Internal actor identifiers are spelled "lambda:<name>" — no space after
 # the colon. A bare "lambda:" substring also matches Python's own zero-arg lambda
 # syntax ("lambda: mock_db"), which is unavoidable in harvested test_patch content
 # (any repo with mocked callables uses it) and is not a leak. ruff-formatted Python

@@ -339,7 +339,7 @@ class TestStoreProbe:
         assert "did not answer" in body["detail"]
 
     def test_a_real_lock_leaves_no_connection_running_behind_the_timeout(self, seeded, monkeypatch):
-        """The probe gives up on a genuinely locked store and takes its thread with it.
+        """The probe gives up on a genuinely locked store and closes what it opened.
 
         A slow verdict is a cancellation, so the code that closes the connection
         runs inside a scope that has already been cancelled. If that close is
@@ -347,64 +347,58 @@ class TestStoreProbe:
         thread outlives the probe holding an open database — until the event
         loop closes underneath it and it raises from a thread nobody is
         watching. Nothing about the response body shows this, which is why the
-        assertion is on the thread rather than on the verdict.
+        assertion is on the connection rather than on the verdict.
 
         The lock is a real one taken by another connection. A slow double can
         be made to hang, but only a real lock produces the real connection, the
         real worker thread and the real cleanup path that was wrong.
         """
         import asyncio
-        import threading
 
-        from aiosqlite.core import _connection_worker_thread
+        import aiosqlite
 
         from lionagi.studio.services import admin as admin_svc
 
         db_path, _ = seeded
 
-        def _workers() -> int:
-            return sum(
-                1
-                for t in threading.enumerate()
-                if _is_live_connection_worker(t, _connection_worker_thread)
-            )
+        # Hold every connection the probe opens. Keeping the reference is part
+        # of the measurement rather than bookkeeping: dropping it runs
+        # aiosqlite's finalizer, which stops the worker on its own and would
+        # hide a connection the probe failed to close.
+        opened = []
+        real_connect = aiosqlite.connect
+
+        def _recording_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            opened.append(conn)
+            return conn
+
+        monkeypatch.setattr(aiosqlite, "connect", _recording_connect)
 
         blocker = _hold_the_write_lock(db_path)
         try:
-            before = _workers()
             body = asyncio.run(admin_svc.store_probe(timeout_ms=50))
             assert body["status"] == "slow", body
-            assert _workers() == before, "a connection worker outlived the probe"
+            assert len(opened) == 1, opened
+            # Asked of the connection, not of the thread listing. Counting live
+            # workers cannot answer this in either direction: on the correct
+            # path the worker resolves the close future and only then leaves
+            # its loop, so it is still alive for a moment after close()
+            # returns; and a genuinely leaked worker stays visible only until
+            # its blocked statement gives up, which the probe caps at its own
+            # deadline. Both windows are that same handful of milliseconds and
+            # only timing separates them, so an immediate count is a race --
+            # it is what reddened an unrelated PR's CI on a loaded runner --
+            # while any settling window simply waits out the leak it is meant
+            # to catch. Closing sets both of the below, and neither depends on
+            # when the worker thread happens to be scheduled.
+            conn = opened[0]
+            assert conn._connection is None and not conn._running, (
+                "the probe returned without closing the connection it opened"
+            )
         finally:
             blocker.rollback()
             blocker.close()
-
-        # The real-thread assertion above passes the same way whether or not
-        # the predicate checks is_alive() -- by the time it runs, a
-        # correctly-cleaned-up worker has already dropped out of
-        # threading.enumerate() entirely, so a target-only predicate and the
-        # correct one agree by coincidence, not because either was exercised.
-        # Force the discriminating case: splice a terminating-but-not-alive
-        # stand-in into the real thread listing and confirm _workers() (the
-        # same computation the assertion above relies on) does not count it.
-        real_enumerate = threading.enumerate
-
-        class _TerminatingWorker:
-            def __init__(self) -> None:
-                # Set on the instance, not the class -- a plain function
-                # assigned as a class attribute binds as a method on access
-                # (breaking `is target` identity below).
-                self._target = _connection_worker_thread
-
-            def is_alive(self) -> bool:
-                return False
-
-        monkeypatch.setattr(
-            threading, "enumerate", lambda: [*real_enumerate(), _TerminatingWorker()]
-        )
-        assert _workers() == before, (
-            "a terminating-but-not-alive worker must not be counted as live"
-        )
 
     def test_a_caller_that_gives_up_first_also_leaves_nothing_running(self, seeded, monkeypatch):
         """The same cleanup, with the cancellation coming from outside.
@@ -453,6 +447,12 @@ class TestStoreProbe:
                     await admin_svc.store_probe(timeout_ms=1000)
 
             anyio.run(_abandon)
+            # Read immediately, and deliberately so -- see this test's
+            # docstring. What the probe owes an abandoned caller is a
+            # connection already closed by the time it returns, so any
+            # settling window here would accept the exact regression the
+            # test exists to catch: an unshielded close that lets the worker
+            # outlive the probe and finish later on its own.
             assert _workers() == before, "a connection worker outlived an abandoned probe"
         finally:
             blocker.rollback()

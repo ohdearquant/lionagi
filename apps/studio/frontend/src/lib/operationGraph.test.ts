@@ -43,6 +43,10 @@ describe("laneFor — status projection", () => {
     expect(laneFor(["NodeFailed"])).toBe("failed");
   });
 
+  it("NodeCancelled → cancelled instead of staying queued", () => {
+    expect(laneFor(["NodeQueued", "NodeCancelled"])).toBe("cancelled");
+  });
+
   it("NodeEscalated → escalated", () => {
     expect(laneFor(["NodeEscalated"])).toBe("escalated");
   });
@@ -168,6 +172,11 @@ describe("buildOperationGraph — status fold", () => {
     ];
     const g = buildOperationGraph(events);
     expect(g.nodes[0]!.status).toBe("succeeded");
+  });
+
+  it("queued→cancelled yields cancelled, not a queued phantom", () => {
+    const events = [ev("1", "NodeQueued", "op-a", {}, 1), ev("2", "NodeCancelled", "op-a", {}, 2)];
+    expect(buildOperationGraph(events).nodes[0]!.status).toBe("cancelled");
   });
 
   it("failed then NodeStarted resets to running (re-queue semantics)", () => {

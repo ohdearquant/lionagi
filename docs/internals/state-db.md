@@ -36,6 +36,28 @@ Two kinds of schema change show up in the code:
   it runs exactly once even if an earlier release already added the column
   without running the corresponding update.
 
+### Historical session end times are approximate, not measured
+
+Every live transition from a nonterminal session status to a terminal one
+persists `ended_at` in the same transaction as `status`; when `started_at` is
+known it also persists the measured `duration_ms`. Older databases can contain
+terminal rows from before that invariant. Schema version 4 repairs those rows
+in batches of at most 500 per transaction, choosing the latest available value
+among `updated_at`, `last_message_at`, `started_at`, and `created_at` as an
+explicit approximation. It sets `ended_at_is_approximate = 1` and deliberately
+leaves `duration_ms` null: the evidence proves the run was no longer active by
+roughly that time, not its exact wall-clock duration.
+
+The batch completion marker is written only after an empty probe. If an open is
+interrupted, repaired rows remain excluded by `ended_at IS NULL` and the next
+writable open resumes the remaining batches. Rows with `status IS NULL` are not
+eligible: that state means a terminal status itself was never recorded and is
+owned by the stale-session reaper. Filesystem imports apply the same provenance
+rule prospectively: a manifest-provided end is measured, while an `st_mtime`
+fallback is marked approximate. Consumers such as Operator expose an
+approximate end but report duration as unknown rather than deriving a number or
+letting a terminal row's clock grow against the current time.
+
 ### The SQLite rebuild hazard: PRAGMA foreign_keys inside a transaction
 
 Rebuilding a table that other tables have a foreign key into (`schedules`,
