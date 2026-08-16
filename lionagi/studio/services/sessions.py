@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import heapq
 import json
 import time
 from typing import Any
@@ -739,12 +740,20 @@ async def _fetch_action_messages(
     no natural end to how many it accumulates.
 
     Newest first is what makes the cap safe to apply here. A response always
-    sits later in the progression than the request it answers, so a window taken
-    from the newest end never keeps a request whose response it dropped; it
-    drops whole request/response pairs off the old end instead.
+    sits later in the progression than the request it answers, so a window
+    taken from the newest end never keeps a request whose response it dropped;
+    it drops whole request/response pairs off the old end instead.
 
-    Returns (messages, bounded), where bounded says the walk stopped before
-    reading the whole progression.
+    Which rows, then those rows -- two passes, because they cannot be one. A
+    single sorted query that also selects content makes SQLite buffer every
+    matching row, payloads included, into its sorter before it yields the
+    first, so the bound below would be applied to work already done. The first
+    pass reads ids and timestamps only, over the whole progression rather than
+    its last chunk, since the newest rows of the last chunk are not the newest
+    rows of the run wherever progression order and time order disagree.
+
+    Returns (messages, bounded), where bounded says the answer describes less
+    than what is there.
     """
     if not msg_ids or limit <= 0:
         return [], bool(msg_ids)
@@ -755,71 +764,53 @@ async def _fetch_action_messages(
         return [], True
     class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
     cur = await db.execute(
-        f"SELECT type_id, lion_class FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
+        f"SELECT type_id FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
         _ACTION_LION_CLASSES,
     )
-    lion_class_by_type_id = {row["type_id"]: row["lion_class"] for row in await cur.fetchall()}
-    if not lion_class_by_type_id:
+    type_ids = [row["type_id"] for row in await cur.fetchall()]
+    if not type_ids:
         return [], False
-
-    rows_by_id: dict[str, dict[str, Any]] = {}
-    type_ids = list(lion_class_by_type_id)
     type_placeholders = ",".join("?" for _ in type_ids)
-    stopped_early = False
-    oversized_seen = False
-    for chunk_end in range(len(msg_ids), 0, -500):
-        chunk_start = max(0, chunk_end - 500)
-        chunk = msg_ids[chunk_start:chunk_end]
+
+    # A heap of the newest `limit` seen so far, rather than every candidate
+    # sorted at the end: what is held is then the size of the answer and not
+    # the size of the progression, which is the whole point of the cap.
+    newest: list[tuple[float, str]] = []
+    candidates = 0
+    for chunk_start in range(0, len(msg_ids), 500):
+        chunk = msg_ids[chunk_start : chunk_start + 500]
         placeholders = ",".join("?" for _ in chunk)
-        # `+m.lion_class` disqualifies the lion_class index so the planner probes
-        # the id primary key for the IN list instead of rescanning every
-        # action-class row in the whole table per chunk (minutes of I/O at scale).
-        #
-        # Ordered rather than left to the planner. An IN list comes back in
-        # whatever order the index walk produces, so a walk that stops partway
-        # through a chunk -- on the limit or on the budget -- keeps whichever
-        # rows arrived first rather than the newest ones, which is the opposite
-        # of what this function promises.
+        # `+m.lion_class` disqualifies the lion_class index so the planner
+        # probes the id primary key for the IN list instead of rescanning every
+        # action-class row in the whole table per chunk.
         cur = await db.execute(
             f"""
-            SELECT m.id, m.created_at, m.sender, m.role, m.lion_class,
-                   {_BOUNDED_CONTENT_COLUMNS}
+            SELECT m.id, m.created_at
             FROM messages m
             WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
-            ORDER BY m.created_at DESC, m.id DESC
             """,  # noqa: S608
-            [
-                MAX_ACTION_CONTENT_CHARS,
-                MAX_ACTION_CONTENT_CHARS,
-                MAX_ACTION_CONTENT_CHARS,
-                *chunk,
-                *type_ids,
-            ],
+            [*chunk, *type_ids],
         )
-        # Iterated rather than fetchall'd, and both stops are checked per row:
-        # a bound can only bound what has not been read yet, and a check that
-        # runs once per chunk lets a request for three rows decode five hundred.
         async for row in cur:
-            if len(rows_by_id) >= limit:
-                stopped_early = True
-                break
-            data = dict(row)
-            if not budget.admits(int(data.pop("content_length") or 0)):
-                stopped_early = True
-                break
-            if data["content_oversized"]:
-                oversized_seen = True
-            data["lion_class_str"] = lion_class_by_type_id.get(data.pop("lion_class"))
-            rows_by_id[data["id"]] = _format_message(data)
-        if stopped_early:
-            # Stop reading rather than read everything and slice: the ids left
-            # unread are older than everything already held, so nothing further
-            # back can belong in a newest-first window this size.
-            break
-    ordered = [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
-    # A withheld payload is a bounded read for the same reason a stopped walk is:
-    # what the caller gets back describes less than what is there.
-    return ordered, stopped_early or oversized_seen
+            candidates += 1
+            key = (row["created_at"] or 0.0, row["id"])
+            if len(newest) < limit:
+                heapq.heappush(newest, key)
+            elif key > newest[0]:
+                heapq.heapreplace(newest, key)
+
+    selected = {message_id for _, message_id in newest}
+    ordered_ids = [message_id for message_id in msg_ids if message_id in selected]
+    messages = await _fetch_messages_by_ids(db, ordered_ids, budget=budget)
+    # Three ways this describes less than what is there, and they are all the
+    # same answer to a caller: the cap dropped older rows, the budget stopped
+    # the hydration short, or a payload was withheld for its size.
+    bounded = (
+        candidates > limit
+        or len(messages) < len(ordered_ids)
+        or any(message["content_withheld"] for message in messages)
+    )
+    return messages, bounded
 
 
 def _branch_message_stats(

@@ -1162,8 +1162,13 @@ async def test_get_session_full_aggregates_do_not_hydrate_every_message_row(
 
     result = await svc.get_session("sess-paged", message_limit=3)
 
-    assert len(calls) == 1
-    assert calls[0] == ["pmsg-47", "pmsg-48", "pmsg-49"]
+    # Every hydration is a chosen set, not the progression. Asserted as "no
+    # call was handed all fifty ids" rather than as a call count: the aggregate
+    # pass hydrates through this helper too, so counting calls measures how the
+    # readers are wired and not whether the whole history was decoded.
+    assert calls, "the spy never fired"
+    assert all(len(ids) <= 3 for ids in calls), calls
+    assert ["pmsg-47", "pmsg-48", "pmsg-49"] in calls
     assert result["message_stats"]["message_count"] == 50
 
 
@@ -1908,3 +1913,70 @@ async def test_the_tail_read_stops_on_the_row_allowance_too(patched_sessions_db,
         seen.extend(more)
     # Deferred, not dropped, exactly as under the character bound.
     assert [m["id"] for m in seen] == [f"b1-act-{i}" for i in range(12)]
+
+
+async def test_the_newest_action_rows_are_chosen_across_the_whole_progression(
+    patched_sessions_db, monkeypatch
+):
+    """Progression order and time order are not the same order.
+
+    Selecting the newest from the last chunk of the progression gives the
+    newest of that chunk, which is only the newest of the run while the two
+    orders agree. They stop agreeing whenever a branch merges history, resumes,
+    or replays -- and the answer then reads as this run's recent activity while
+    describing rows from the middle of it.
+    """
+    import aiosqlite as aio
+
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 3)
+    await seed_session(db_path, session_id="sess-order-disagrees")
+    await _seed_action_requests(
+        db_path, branch_id="b1", session_id="sess-order-disagrees", count=600
+    )
+
+    # The three newest rows now sit at the front of the progression, more than
+    # a chunk away from its end.
+    async with aio.connect(str(db_path)) as raw:
+        for offset, msg_id in enumerate(["b1-act-0", "b1-act-1", "b1-act-2"]):
+            await raw.execute(
+                "UPDATE messages SET created_at = ? WHERE id = ?", (9_000.0 + offset, msg_id)
+            )
+        await raw.commit()
+
+    detail = await svc.get_session("sess-order-disagrees")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is True
+    assert set(detail["message_stats"]["files"]) == {"/run/f0.py", "/run/f1.py", "/run/f2.py"}
+
+
+async def test_choosing_which_action_rows_to_keep_reads_no_payloads(patched_sessions_db):
+    """Sorting a query that also selects content makes SQLite buffer every
+    matching row -- payloads included -- into its sorter before it yields the
+    first, so a bound applied afterwards is applied to work already done. The
+    pass that decides which rows to keep therefore selects no content at all.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-select-cost")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-select-cost", count=8)
+    ids = [f"b1-act-{i}" for i in range(8)]
+
+    statements: list[str] = []
+
+    async with svc._open_db(db_path) as db:
+        original = db.execute
+
+        async def spy(sql, *args, **kwargs):
+            statements.append(" ".join(sql.split()))
+            return await original(sql, *args, **kwargs)
+
+        db.execute = spy  # type: ignore[method-assign]
+        await svc._fetch_action_messages(db, ids, limit=3, budget=svc._HydrationBudget())
+
+    assert statements, "the spy never fired"
+    # Control: the hydration pass does select content, so "no statement selects
+    # content" would pass for the wrong reason.
+    assert any("m.content" in sql for sql in statements), statements
+    ordering = [sql for sql in statements if "ORDER BY" in sql]
+    assert not [sql for sql in ordering if "m.content" in sql], ordering
