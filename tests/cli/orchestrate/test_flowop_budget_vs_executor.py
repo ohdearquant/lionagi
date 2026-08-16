@@ -44,6 +44,7 @@ sit within 0.06 of an integer.
 """
 
 import asyncio
+import sys
 import time
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -101,9 +102,14 @@ async def _measure(
 
     Contention — other tests on the same machine, or a parallel test runner —
     can only push two ops that would have overlapped apart, which inflates a
-    reading. Nothing makes a flow consume less than it really does. So the
-    smallest reading is the truest one, and a busy machine cannot manufacture
-    either a coverage failure or a changed-behaviour failure out of noise.
+    reading. Nothing makes a flow consume less than it really does, so the
+    smallest reading is the truest one.
+
+    That makes the error one-sided but not bounded: enough load and every one of
+    a handful of attempts is inflated, which is a reading above the truth and no
+    way to tell it from a real change. Taking the minimum is what makes the
+    remedy safe rather than what removes the need for one — see
+    `_measure_patiently`.
 
     Peak concurrency is taken as the MAXIMUM across attempts, since a cap breach
     is a breach whenever it happens.
@@ -117,6 +123,42 @@ async def _measure(
         best = min(best, consumed)
         peak = max(peak, attempt_peak)
     return best, peak
+
+
+# Rounds spent before believing a reading that came in HIGH. Only high readings
+# buy them, and only once.
+PATIENT_ATTEMPTS = 8
+
+
+async def _measure_patiently(
+    dep_indices: list[list[int]],
+    num_ops: int,
+    max_concurrent: int,
+    durations: list[float] | None = None,
+    *,
+    at_most: float,
+    attempts: int = 3,
+) -> tuple[float, int]:
+    """`_measure`, given more rounds when the first reading lands above `at_most`.
+
+    This is not sampling until the answer is convenient. The error is one-sided:
+    a flow cannot consume less than it really does, so more rounds move the
+    minimum down toward the truth and never below it. A shape whose consumption
+    genuinely changed reads high in every round, however many are spent, which
+    is what `test_extra_rounds_do_not_rescue_a_genuinely_slower_shape` holds to.
+
+    Spending the rounds only on high readings keeps the suite's cost where the
+    ordinary case is, and a reading that comes in low is already the assertion's
+    own answer — re-measuring it could only raise it, which is the direction the
+    minimum exists to discard.
+    """
+    consumed, peak = await _measure(dep_indices, num_ops, max_concurrent, durations, attempts)
+    if consumed <= at_most:
+        return consumed, peak
+    patient, patient_peak = await _measure(
+        dep_indices, num_ops, max_concurrent, durations, PATIENT_ATTEMPTS
+    )
+    return min(consumed, patient), max(peak, patient_peak)
 
 
 async def _run_real_flow(
@@ -209,7 +251,7 @@ async def _run_real_flow(
 @pytest.mark.asyncio
 async def test_a_straight_chain_consumes_one_budget_per_op():
     """Also prices this machine's overhead, in the units everything else uses."""
-    consumed, peak = await _measure([[], [0], [1], [2]], 4, 2)
+    consumed, peak = await _measure_patiently([[], [0], [1], [2]], 4, 2, at_most=4 + TOLERANCE)
     assert peak == 1  # a chain can never overlap, whatever the cap allows
     assert consumed == pytest.approx(4, abs=TOLERANCE), (
         f"a four-op chain consumed {consumed:.2f} budgets where it must consume 4. "
@@ -220,9 +262,40 @@ async def test_a_straight_chain_consumes_one_budget_per_op():
 
 @pytest.mark.asyncio
 async def test_independent_ops_fill_the_cap_and_no_more():
-    consumed, peak = await _measure([[], [], [], []], 4, 2)
+    consumed, peak = await _measure_patiently([[], [], [], []], 4, 2, at_most=2 + TOLERANCE)
     assert peak == 2
     assert consumed == pytest.approx(2, abs=TOLERANCE)
+
+
+@pytest.mark.asyncio
+async def test_extra_rounds_do_not_rescue_a_genuinely_slower_shape(monkeypatch):
+    """The patient re-measure is a better estimator, not a softer gate.
+
+    A shape that really consumes more than its bound reads high in every round,
+    so the extra rounds cannot turn it into a pass. Without this, the remedy for
+    a load-sensitive timing assertion is indistinguishable from deleting it.
+    """
+    rounds = 0
+    real = _run_real_flow
+
+    async def counted(*args, **kwargs):
+        nonlocal rounds
+        rounds += 1
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_real_flow", counted)
+
+    # One op that really takes half a budget, held to a fifth of one.
+    consumed, _peak = await _measure_patiently([[]], 1, 1, [BUDGET / 2], at_most=0.2, attempts=3)
+
+    assert rounds == 3 + PATIENT_ATTEMPTS, (
+        f"the patient path ran {rounds} rounds where it must run {3 + PATIENT_ATTEMPTS}. "
+        f"A guard that never reaches the retry says nothing about the retry."
+    )
+    assert consumed > 0.2, (
+        f"{PATIENT_ATTEMPTS} extra rounds pulled a genuinely slow shape down to "
+        f"{consumed:.2f} budgets, under a bound of 0.2 — the retry is hiding changes."
+    )
 
 
 # The claim.
@@ -279,8 +352,13 @@ async def test_the_divisor_covers_every_schedule_this_shape_can_produce(
 
     worst = 0.0
     worst_pattern = ""
+    # Both assertions below fail upward, so a pattern only needs the patient
+    # re-measure when it lands above the lower of the two bounds it will face.
+    believable = min(divisor, consumed) + TOLERANCE
     for pattern_name, durations in _duration_patterns(num_ops):
-        budgets, peak = await _measure(deps, num_ops, cap, durations, attempts=2)
+        budgets, peak = await _measure_patiently(
+            deps, num_ops, cap, durations, at_most=believable, attempts=2
+        )
         assert peak <= cap, (
             f"{name}: {peak} ops in flight under a cap of {cap} — the cap was not "
             f"enforced, so this run says nothing about sequencing"
