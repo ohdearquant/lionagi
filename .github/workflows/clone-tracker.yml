@@ -74,7 +74,32 @@ jobs:
           # week, and the thing it would eventually be red ABOUT is a missing
           # measurement. Skipping writes no ledger entry, so a gap in the data
           # stays a visible gap rather than becoming a recorded zero.
+          #
+          # A warning on its own has no consumer: nothing fails, blocks or
+          # notifies if it goes unread, so the bound on how long the gap may
+          # grow is a promise rather than a control. Past the date below, a
+          # cycle that still finds no token fails instead, which sends the one
+          # notification a warning never sends. The window then closes and later
+          # cycles go back to warning, so this does not become the every-cycle
+          # red the paragraph above rejects.
+          #
+          # The window is 14 days because the largest gap between scheduled runs
+          # is 13 (the 1st to the 14th, and the 14th to the 27th), so at least
+          # one run always lands inside it. Around a month boundary the 27th and
+          # the 1st are closer together and two runs can land inside instead.
+          # That is the deliberate trade: a window narrow enough to guarantee
+          # exactly one run could fall between two runs and notify nobody at all,
+          # which is the failure this whole step exists to prevent.
+          ESCALATE_FROM=2026-08-16
+          ESCALATE_DAYS=14
           if [ -z "${GH_TOKEN:-}" ]; then
+            now=$(date -u +%s)
+            from=$(date -u -d "${ESCALATE_FROM}" +%s)
+            until=$(( from + ESCALATE_DAYS * 86400 ))
+            if [ "$now" -ge "$from" ] && [ "$now" -lt "$until" ]; then
+              echo "::error::TRAFFIC_READ_TOKEN has been missing since ${ESCALATE_FROM} and the traffic API keeps only 14 days, so every cycle without it loses that window's clone and view counts permanently. Store a fine-grained token carrying only Administration: read as TRAFFIC_READ_TOKEN. This run fails once to say so; later runs go back to warning."
+              exit 1
+            fi
             echo "::warning::TRAFFIC_READ_TOKEN is not set, so no traffic was read and nothing was appended. The ledger has a gap for this run, not a zero."
             echo "skipped=true" >> "$GITHUB_OUTPUT"
             exit 0
