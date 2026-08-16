@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -15,6 +17,7 @@ import pytest
 from lionagi.cli.orchestrate._checkpoint import (
     CHECKPOINT_VERSION,
     CheckpointWriter,
+    JournalPathError,
     load_checkpoint,
 )
 
@@ -353,3 +356,206 @@ async def test_context_snapshot_falls_back_when_a_value_refuses_deep_copy(tmp_pa
     assert snapshot["nested"] == {"keep": 1}
     assert snapshot["nested"] is not source["nested"]
     assert snapshot["opaque"] == "opaque"
+
+
+# --- The journal is a named file, so its name is an attack surface -----------
+
+
+async def test_a_symlinked_journal_is_refused_instead_of_followed(tmp_path: Path):
+    """The journal is appended to and read back by name, never by descriptor
+    held across the run. A symlink planted at that name sends every delta into
+    whatever it points at, so a run's prompts and responses land in a file the
+    run never chose."""
+    path = tmp_path / "checkpoint.json"
+    elsewhere = tmp_path / "elsewhere.txt"
+    elsewhere.write_bytes(b"")
+    writer = _writer(path)
+    await writer.flush()
+
+    journal = writer.journal_path
+    journal.unlink()
+    journal.symlink_to(elsewhere)
+
+    with pytest.raises(JournalPathError):
+        await writer.record("agent-1", status="completed", response=1)
+    # And nothing was appended to the target before the refusal.
+    assert elsewhere.read_bytes() == b""
+
+
+async def test_recovery_refuses_a_symlinked_journal_rather_than_reading_it(tmp_path: Path):
+    """Recovery is the other half: contents arriving through a symlink were
+    written by whoever planted it, and they are applied to state."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.record("agent-1", status="completed", response=1)
+
+    planted = tmp_path / "planted.journal"
+    planted.write_bytes(writer.journal_path.read_bytes())
+    writer.journal_path.unlink()
+    writer.journal_path.symlink_to(planted)
+
+    with pytest.raises(JournalPathError):
+        load_checkpoint(path)
+
+
+async def test_an_ordinary_journal_is_still_written_and_recovered(tmp_path: Path):
+    """Control: the two refusals above pass if the journal stops working at all."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+
+    await writer.record("agent-1", status="completed", response=1)
+
+    assert not writer.journal_path.is_symlink()
+    assert load_checkpoint(path)["ops"]["agent-1"]["response"] == 1
+
+
+# --- Context deltas are decided by comparison, so the comparison is a contract
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        (1, 1.0),
+        ([1], [1.0]),
+        (True, 1),
+        ({"n": 1}, {"n": 1.0}),
+    ],
+)
+async def test_a_json_visible_context_change_is_journaled(tmp_path: Path, before, after):
+    """Python equality is coarser than JSON in the direction that loses data:
+    1 == 1.0 and True == 1 both hold. A value that changed compares equal,
+    journals nothing, and recovery restores the older one from the base."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+
+    await writer.record("agent-1", status="completed", response=1, flow_context={"v": before})
+    await writer.record("agent-2", status="completed", response=2, flow_context={"v": after})
+
+    recovered = load_checkpoint(path)
+    assert recovered["flow_context"]["v"] == after
+    assert repr(recovered["flow_context"]["v"]) == repr(after)
+
+
+async def test_an_unchanged_context_still_journals_no_delta(tmp_path: Path):
+    """Control: the parametrized test above passes if every record journals a
+    context delta regardless of whether anything changed, which would give back
+    the write amplification the delta format exists to avoid."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+
+    await writer.record("agent-1", status="completed", response=1, flow_context={"v": 1})
+    await writer.record("agent-2", status="completed", response=2, flow_context={"v": 1})
+
+    records = writer.journal_records()
+    assert "flow_context" in records[0]
+    assert "flow_context" not in records[1]
+
+
+async def test_a_reordered_context_dict_is_not_reported_as_a_change(tmp_path: Path):
+    """Same key set, different insertion order, is the same JSON document."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+
+    await writer.record("a", status="completed", response=1, flow_context={"v": {"x": 1, "y": 2}})
+    await writer.record("b", status="completed", response=2, flow_context={"v": {"y": 2, "x": 1}})
+
+    assert "flow_context" not in writer.journal_records()[1]
+
+
+# --- A record this build cannot read is not a record it may apply ------------
+
+
+async def test_recovery_stops_at_an_unknown_record_version(tmp_path: Path):
+    """An unreadable record applied anyway writes a guess into recovered state
+    under the authority of a durable record."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.record("agent-1", status="completed", response=1)
+
+    state = json.loads(path.read_text())
+    forged = {
+        "version": CHECKPOINT_VERSION + 996,
+        "generation": state["generation"],
+        "seq": 2,
+        "kind": "op",
+        "entry": {"agent_id": "agent-2", "status": "completed", "response": 2},
+    }
+    with writer.journal_path.open("ab") as stream:
+        stream.write(json.dumps(forged).encode() + b"\n")
+
+    recovered = load_checkpoint(path)
+
+    assert recovered["_recovery"]["unsupported_record_version"] is True
+    assert recovered["_recovery"]["actual"] == CHECKPOINT_VERSION + 996
+    # The record was reported, not applied, and the ones before it survive.
+    assert "agent-2" not in recovered["ops"]
+    assert "agent-1" in recovered["ops"]
+
+
+# --- fsync decides durability, not whether the bytes are there ---------------
+
+
+async def test_a_record_that_reached_the_file_does_not_reuse_its_sequence(
+    tmp_path: Path, monkeypatch
+):
+    """A failing fsync leaves the record in the file: the write and the flush
+    already happened, and fsync only says whether it survives a power loss. If
+    the sequence number is treated as unspent, the next record carries the same
+    seq, and recovery reads the duplicate as corruption, stops there, and throws
+    away every completed record after it."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.flush()
+
+    real_fsync = os.fsync
+    armed = {"value": True}
+
+    def flaky_fsync(descriptor):
+        if armed["value"]:
+            armed["value"] = False
+            # Let the data land first, then fail. Failing before the real call
+            # would be a different fault: bytes that never reached the file.
+            real_fsync(descriptor)
+            raise OSError(errno.EIO, "injected fsync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", flaky_fsync)
+
+    with pytest.raises(OSError):
+        await writer.record("agent-1", status="completed", response=1)
+    assert armed["value"] is False, "the injected failure never fired"
+
+    await writer.record("agent-2", status="completed", response=2)
+
+    assert [record["seq"] for record in writer.journal_records()] == [1, 2]
+    recovered = load_checkpoint(path)
+    assert "_recovery" not in recovered, recovered.get("_recovery")
+    assert set(recovered["ops"]) == {"agent-1", "agent-2"}
+
+
+async def test_a_record_that_never_reached_the_file_leaves_its_sequence_unspent(
+    tmp_path: Path, monkeypatch
+):
+    """The other side of the same decision. A write that failed before anything
+    was appended must not consume a number, or the journal gains a gap and
+    recovery stops at it for the mirror-image reason."""
+    path = tmp_path / "checkpoint.json"
+    writer = _writer(path)
+    await writer.flush()
+
+    import lionagi.cli.orchestrate._checkpoint as checkpoint_mod
+
+    def refuse_open(*args, **kwargs):
+        raise OSError(errno.EACCES, "injected open failure")
+
+    monkeypatch.setattr(checkpoint_mod, "_open_no_follow", refuse_open)
+    with pytest.raises(OSError):
+        await writer.record("agent-1", status="completed", response=1)
+    monkeypatch.undo()
+
+    await writer.record("agent-2", status="completed", response=2)
+
+    assert [record["seq"] for record in writer.journal_records()] == [1]
+    recovered = load_checkpoint(path)
+    assert "_recovery" not in recovered, recovered.get("_recovery")
+    assert set(recovered["ops"]) == {"agent-2"}

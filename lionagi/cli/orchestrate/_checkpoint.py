@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import errno
 import json
 import os
 import uuid
@@ -80,13 +81,18 @@ class CheckpointWriter:
         if not self.journal_path.exists():
             return []
         records: list[dict[str, Any]] = []
-        for line in self.journal_path.read_bytes().splitlines():
+        for line in _read_bytes_no_follow(self.journal_path).splitlines():
             try:
                 record = json.loads(line)
             except (json.JSONDecodeError, UnicodeDecodeError):
                 break
-            if isinstance(record, dict) and record.get("generation") == self._generation:
-                records.append(record)
+            if not isinstance(record, dict) or record.get("generation") != self._generation:
+                continue
+            # Stops where recovery stops. A diagnostic that lists records
+            # recovery would refuse describes a state the run cannot reach.
+            if record.get("version") != CHECKPOINT_VERSION:
+                break
+            records.append(record)
         return records
 
     def to_dict(self) -> dict[str, Any]:
@@ -243,11 +249,27 @@ class CheckpointWriter:
             "seq": next_seq,
             **delta,
         }
-        written = await _durable_to_thread(_append_journal_record, self.journal_path, record)
-        self._bytes_written += written
-        self._journal_seq = next_seq
-        self._delta_count += 1
-        self._seq += 1
+        written = 0
+        try:
+            written = await _durable_to_thread(_append_journal_record, self.journal_path, record)
+        except _RecordReachedFileError as exc:
+            # The record is in the file even though its durability is
+            # unconfirmed, so this sequence number is spent. Leaving it unspent
+            # would let a retry write a second record carrying the same seq;
+            # recovery treats that as corruption, stops at it, and discards
+            # every completed record after it. The error still propagates: the
+            # caller asked for a durable write and did not get one.
+            written = exc.written
+            # Re-raise what actually failed. This wrapper is only how the byte
+            # count travels back from the worker thread; callers still see the
+            # OSError their fsync raised, not a new exception type from here.
+            raise exc.cause from None
+        finally:
+            if written:
+                self._bytes_written += written
+                self._journal_seq = next_seq
+                self._delta_count += 1
+                self._seq += 1
 
     async def _maybe_compact_locked(self) -> None:
         if self._delta_count >= self.compact_every:
@@ -276,6 +298,42 @@ class CheckpointWriter:
 def _serialize_json(value: Any) -> bytes:
     raise_if_non_finite(value, default=str)
     return json.dumps(value, default=str, separators=(",", ":")).encode()
+
+
+# Refuses a final path component that is a symlink. The journal is appended to
+# by name on every delta and read back by name during recovery, so a symlink
+# planted at that name redirects the writer into an arbitrary file and feeds
+# recovery contents this process never wrote. The intermediate directories are
+# not covered, and neither is any platform without the flag, where this degrades
+# to an ordinary open.
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+class JournalPathError(LionError):
+    """Raised when a journal path is not the regular file it must be."""
+
+
+def _open_no_follow(path: Path, flags: int, mode: int = 0o600) -> int:
+    try:
+        return os.open(path, flags | _NOFOLLOW, mode)
+    except OSError as exc:
+        # ELOOP is what O_NOFOLLOW reports for a symlinked final component.
+        if exc.errno == errno.ELOOP:
+            raise JournalPathError(f"refusing to use a symlinked path: {path}") from exc
+        raise
+
+
+def _read_bytes_no_follow(path: Path) -> bytes:
+    descriptor = _open_no_follow(path, os.O_RDONLY)
+    try:
+        stream = os.fdopen(descriptor, "rb")
+    except BaseException:
+        # fdopen takes ownership only once it returns, so this is the one window
+        # where the descriptor is still ours to close.
+        os.close(descriptor)
+        raise
+    with stream:
+        return stream.read()
 
 
 async def _durable_to_thread(function: Any, *args: Any) -> Any:
@@ -327,13 +385,38 @@ def _atomic_write_json(path: Path, value: Any) -> int:
     return _atomic_write_bytes(path, _serialize_json(value))
 
 
+class _RecordReachedFileError(Exception):
+    """A journal record was written but its durability could not be confirmed.
+
+    Carries the byte count so the caller can settle its bookkeeping against what
+    the file now holds rather than against what the call returned.
+    """
+
+    def __init__(self, written: int, cause: BaseException) -> None:
+        super().__init__(str(cause))
+        self.written = written
+        self.cause = cause
+
+
 def _append_journal_record(path: Path, record: dict[str, Any]) -> int:
     payload = _serialize_json(record) + b"\n"
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("ab") as stream:
+    descriptor = _open_no_follow(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+    try:
+        stream = os.fdopen(descriptor, "ab")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    with stream:
         stream.write(payload)
         stream.flush()
-        os.fsync(stream.fileno())
+        # Past this point the bytes are in the file. fsync decides whether they
+        # survive a power loss, not whether they are there, so a failure here
+        # must not be reported as a write that did not happen.
+        try:
+            os.fsync(stream.fileno())
+        except OSError as exc:
+            raise _RecordReachedFileError(len(payload), exc) from exc
     return len(payload)
 
 
@@ -380,6 +463,33 @@ def _capture_context(current: dict[str, Any] | None) -> dict[str, Any] | None:
     return _context_snapshot(current)
 
 
+def _same_once_serialized(previous: Any, current: Any) -> bool:
+    """Whether two values are the same *as the journal will store them*.
+
+    Python equality is the wrong test here because it is coarser than JSON in
+    exactly the direction that loses data. ``1 == 1.0`` and ``True == 1`` both
+    hold, and ``[1] == [1.0]`` follows, so a context whose value changed from
+    ``1`` to ``1.0`` compared equal, journaled nothing, and left recovery
+    restoring the older value from the base -- permanently, since the next
+    comparison found no difference either.
+
+    Keys are sorted so that a dict rebuilt in a different order is not reported
+    as a change. Where a value cannot be serialized at all, the answer is
+    "different": journaling a delta that turns out to be unnecessary costs a
+    record, and skipping one that was necessary costs the value.
+    """
+    if previous is current:
+        return True
+    try:
+        return _canonical_json(previous) == _canonical_json(current)
+    except (TypeError, ValueError, RecursionError):
+        return False
+
+
+def _canonical_json(value: Any) -> bytes:
+    return json.dumps(value, default=str, separators=(",", ":"), sort_keys=True).encode()
+
+
 def _context_delta(
     previous: dict[str, Any], current: dict[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -388,7 +498,7 @@ def _context_delta(
     changed = {
         key: value
         for key, value in current.items()
-        if key not in previous or previous[key] != value
+        if key not in previous or not _same_once_serialized(previous[key], value)
     }
     removed = [key for key in previous if key not in current]
     if not changed and not removed:
@@ -414,7 +524,7 @@ def load_checkpoint(path: Path) -> dict[str, Any]:
     recovery: dict[str, Any] = {}
     expected_seq = int(state.get("journal_seq") or 0) + 1
     stale_records = 0
-    raw = journal_path.read_bytes()
+    raw = _read_bytes_no_follow(journal_path)
     for line_number, line in enumerate(raw.splitlines(keepends=True), start=1):
         if not line.endswith(b"\n"):
             recovery.update({"torn_final_record": True, "line": line_number})
@@ -436,6 +546,22 @@ def load_checkpoint(path: Path) -> dict[str, Any]:
         if record.get("generation") != state.get("generation"):
             stale_records += 1
             continue
+        # Checked only for records of the active generation, and before the
+        # record is applied. A version this build does not know is a record
+        # whose meaning it cannot read: applying it anyway would write a
+        # guess into recovered state under the name of a durable record.
+        # Stopping here is the same treatment a torn or malformed record gets,
+        # and it leaves everything already applied intact.
+        if record.get("version") != CHECKPOINT_VERSION:
+            recovery.update(
+                {
+                    "unsupported_record_version": True,
+                    "line": line_number,
+                    "expected": CHECKPOINT_VERSION,
+                    "actual": record.get("version"),
+                }
+            )
+            break
         if record.get("seq") != expected_seq:
             recovery.update(
                 {
@@ -460,6 +586,11 @@ def load_checkpoint(path: Path) -> dict[str, Any]:
 
 
 def _apply_journal_record(state: dict[str, Any], record: dict[str, Any]) -> bool:
+    # Repeated from the recovery loop deliberately. This is the only function
+    # that turns a record into state, so the version test belongs where the
+    # application happens and not only at the one call site that exists today.
+    if record.get("version") != CHECKPOINT_VERSION:
+        return False
     entry = record.get("entry")
     if not isinstance(entry, dict):
         return False
