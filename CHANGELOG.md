@@ -28,6 +28,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   on POSIX. Cross-platform descendant containment remains out of scope and is
   tracked in #2576.
 
+### Fixed
+
+- `Params` subclasses now receive their declared dataclass defaults, including a fresh value
+  from each `default_factory`, instead of replacing every omitted field with `Unset`.
+
 ### Deprecated
 
 - `--resume-on-timeout` on `li o fanout` and `li o flow`. The flag is accepted
