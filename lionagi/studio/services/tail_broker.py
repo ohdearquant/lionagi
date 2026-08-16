@@ -164,6 +164,13 @@ class SessionTailBroker:
         # on that channel. Once it has dropped an event, a replay taken from it
         # can no longer be shown to start where a joining viewer left off.
         self._history_whole: dict[Channel, bool] = {"messages": True, "signals": True}
+        # Where the reader began on each channel. The history covers the range
+        # from here forward and nothing before it, so this is the other end of
+        # the same question `_history_whole` answers.
+        self._history_origin: dict[Channel, MessageCursor | int | None] = {
+            "messages": None,
+            "signals": None,
+        }
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
         self._closed = False
@@ -204,7 +211,7 @@ class SessionTailBroker:
                     item.channel == "messages" and item is not subscription
                     for item in self._subscribers.values()
                 ):
-                    self._message_cursor = start
+                    self._begin_channel_locked("messages", start)
                 else:
                     self._replay_or_resync(subscription, start, self._message_history)
             else:
@@ -213,7 +220,7 @@ class SessionTailBroker:
                     item.channel == "signals" and item is not subscription
                     for item in self._subscribers.values()
                 ):
-                    self._signal_cursor = start_seq
+                    self._begin_channel_locked("signals", start_seq)
                 else:
                     self._replay_or_resync(subscription, start_seq, self._signal_history)
             if self._task is None or self._task.done():
@@ -254,6 +261,30 @@ class SessionTailBroker:
             await subscription.close()
             raise
         return subscription
+
+    def _begin_channel_locked(
+        self,
+        channel: Channel,
+        origin: MessageCursor | int | None,
+    ) -> None:
+        """Point the reader at `origin` and start that channel's history there.
+
+        Whatever the history holds describes the range the previous reader
+        covered, and this one covers a different range. Keeping those events
+        would let a later joiner be replayed across the seam between the two.
+
+        The cursor and the origin are the same fact read two ways, so they are
+        written together here rather than at each caller, where they could
+        drift apart and leave a replay vouching for a range nobody read.
+        """
+        if channel == "messages":
+            self._message_cursor = origin if isinstance(origin, tuple) else None
+            self._message_history.clear()
+        else:
+            self._signal_cursor = int(origin or 0)
+            self._signal_history.clear()
+        self._history_whole[channel] = True
+        self._history_origin[channel] = origin
 
     def _replay_or_resync(
         self,
@@ -298,10 +329,19 @@ class SessionTailBroker:
         joining viewer is resuming from, and handing those over presents a gap
         as a continuous replay. The viewer never learns it missed anything.
 
-        A history that has never dropped anything reaches every cursor. One
-        that has still reaches a cursor at or after its oldest retained event,
-        because a deque only ever drops from that end.
+        The same holds at the other end. The history begins where the reader
+        began, and a viewer resuming from before that point is asking for
+        events this broker never read: keeping every event it did read says
+        nothing about the ones ahead of its first.
+
+        Within those two bounds, a history that has never dropped anything
+        reaches every cursor, and one that has still reaches a cursor at or
+        after its oldest retained event, because a deque only ever drops from
+        that end.
         """
+        origin = self._history_origin[channel]
+        if origin is not None and (cursor is None or cursor < origin):  # type: ignore[operator]
+            return False
         if self._history_whole[channel]:
             return True
         if cursor is None or not history:
@@ -325,6 +365,7 @@ class SessionTailBroker:
                 self._message_history.clear()
                 self._signal_history.clear()
                 self._history_whole = {"messages": True, "signals": True}
+                self._history_origin = {"messages": None, "signals": None}
                 if self._task is not None:
                     task = self._task
                     self._task = None

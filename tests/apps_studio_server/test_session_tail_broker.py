@@ -355,6 +355,116 @@ async def test_a_viewer_joining_past_the_retained_history_is_told_to_resync():
         await broker.close()
 
 
+async def test_a_viewer_joining_before_the_reader_started_is_told_to_resync():
+    """A full history is only full from where the reader began. Everything the
+    broker published can still start well after a joining viewer's position,
+    because the events between the two were never read at all -- and a history
+    that has dropped nothing looks complete from the inside."""
+    from lionagi.studio.services.tail_broker import SessionTailBroker, TailRead
+
+    @asynccontextmanager
+    async def connect():
+        yield object()
+
+    async def read_tick(
+        _db,
+        _session_id,
+        message_cursor,
+        signal_cursor,
+        *,
+        read_messages,
+        read_signals,
+    ):
+        await asyncio.sleep(0)
+        return TailRead([], [], None, message_cursor, signal_cursor, True, True)
+
+    broker = SessionTailBroker("origin", connect=connect, read_tick=read_tick, history_size=100)
+    resident = await broker.subscribe_messages((5.0, "m-5"))
+    try:
+        for index in (6, 7):
+            broker._publish("messages", [_message_event(index)], (float(index), f"m-{index}"))
+        assert broker._history_whole["messages"], (
+            "the history must have dropped nothing for this to be about the reader's start"
+        )
+
+        joining = await broker.subscribe_messages((1.0, "m-1"))
+        try:
+            event = await asyncio.wait_for(joining.next_event(), timeout=1)
+            assert event.kind == "resync", (
+                f"messages 2..5 were never read, and the replay presented the gap: {event.kind}"
+            )
+            assert joining.queue_size == 0
+        finally:
+            await joining.close()
+
+        # Control: a cursor at or after where the reader began still replays,
+        # or the assertion above is satisfied by resyncing everyone.
+        covered = await broker.subscribe_messages((6.0, "m-6"))
+        try:
+            assert covered.queue_size == 1
+            first = await asyncio.wait_for(covered.next_event(), timeout=1)
+            assert first.kind == "message"
+            assert first.resume_cursor == (7.0, "m-7")
+        finally:
+            await covered.close()
+    finally:
+        await resident.close()
+        await broker.close()
+
+
+async def test_a_restarted_channel_does_not_replay_the_previous_readers_history():
+    """The retained events describe the range the last reader covered. A new
+    first viewer moves the cursor somewhere else, and holding those events lets
+    the next joiner be handed a replay that spans the seam between the two."""
+    from lionagi.studio.services.tail_broker import SessionTailBroker, TailRead
+
+    @asynccontextmanager
+    async def connect():
+        yield object()
+
+    async def read_tick(
+        _db,
+        _session_id,
+        message_cursor,
+        signal_cursor,
+        *,
+        read_messages,
+        read_signals,
+    ):
+        await asyncio.sleep(0)
+        return TailRead([], [], None, message_cursor, signal_cursor, True, True)
+
+    broker = SessionTailBroker("restarted", connect=connect, read_tick=read_tick, history_size=100)
+    # A viewer on the other channel, so the broker survives the message
+    # channel emptying: this is the same run open in the same pane, whose
+    # signal stream stays up while the message stream reconnects.
+    watcher = await broker.subscribe_signals(0)
+    first = await broker.subscribe_messages((1.0, "m-1"))
+    for index in (2, 3):
+        broker._publish("messages", [_message_event(index)], (float(index), f"m-{index}"))
+    await first.close()
+
+    resident = await broker.subscribe_messages((20.0, "m-20"))
+    try:
+        assert list(broker._message_history) == [], (
+            "the previous reader's events are not part of this reader's range"
+        )
+        broker._publish("messages", [_message_event(21)], (21.0, "m-21"))
+
+        joining = await broker.subscribe_messages((3.0, "m-3"))
+        try:
+            event = await asyncio.wait_for(joining.next_event(), timeout=1)
+            assert event.kind == "resync", (
+                f"a replay spanned the gap between two reader ranges: {event.kind}"
+            )
+        finally:
+            await joining.close()
+    finally:
+        await resident.close()
+        await watcher.close()
+        await broker.close()
+
+
 async def test_a_broker_leaves_the_registry_with_its_last_viewer():
     """The histories are bounded per session; the registry is not. A broker kept
     after its last viewer leaves holds its event deques for the daemon's

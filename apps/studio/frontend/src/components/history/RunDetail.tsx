@@ -330,6 +330,24 @@ export function isSessionMessageEvent(event: Record<string, unknown>): boolean {
 // fit.
 const REBUILD_ATTEMPTS = 2;
 
+// What one resync does to the rebuild counters. A rebuild ends in a resync
+// whatever it absorbed, so "took in something" does not mean it converged: the
+// same opening signals replay, overrun the same bounded queue, and the count
+// starts over forever. An attempt counts as progress only when it reaches
+// further than any attempt before it, which a finite history can only do
+// finitely often.
+export function afterRebuildAttempt(
+  absorbed: number,
+  best: number,
+  fruitless: number,
+): { best: number; fruitless: number } {
+  const advanced = absorbed > best;
+  return {
+    best: advanced ? absorbed : best,
+    fruitless: advanced ? 0 : fruitless + 1,
+  };
+}
+
 // A live message makes the lifetime statistics an answer about a moment that
 // has passed. They were computed over every branch's full progression at the
 // time of a separate read, and the counts and file union are rendered as the
@@ -1935,11 +1953,21 @@ export default function RunDetail({ id }: RunDetailProps) {
   // stops being right when the rebuild is itself what fails: the same history
   // replays, overruns the same bounded queue, resyncs again, and the run
   // reconnects for as long as it is open with nothing on screen. After rebuilds
-  // that took in no signals at all, the stream is joined at the position the
-  // server reports instead. That projection is missing whatever came before,
-  // which is worse than complete and better than empty forever, and it is the
-  // only join that is guaranteed not to replay what would not fit.
+  // that get no further than an earlier one already did, the stream is joined
+  // at the position the server reports instead. That projection is missing
+  // whatever came before, which is worse than complete and better than empty
+  // forever, and it is the only join that is guaranteed not to replay what
+  // would not fit.
   const fruitlessRebuildsRef = useRef(0);
+  // What "getting further" is measured against. Absorbing something is not the
+  // same as converging: a replay that takes in the same opening signals and
+  // then overruns the same queue has made no more progress than the attempt
+  // before it, and reading that as progress resets the count every time, so
+  // the fallback below is never reached and the run reconnects from the start
+  // of the stream for as long as it is open. Comparing against the best any
+  // attempt has managed terminates instead, because the history is finite:
+  // either an attempt finally reaches the end, or one of them stops improving.
+  const bestRebuildProgressRef = useRef(0);
   const signalResumeRef = useRef<number | undefined>(undefined);
   const [resumeWatch, setResumeWatch] = useState<RunResumeResponse | null>(null);
   // State rather than a ref because the affordance for loading older history
@@ -1971,6 +1999,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     setSession(null);
     loadedStatisticsRef.current = null;
     fruitlessRebuildsRef.current = 0;
+    bestRebuildProgressRef.current = 0;
     signalResumeRef.current = undefined;
     setRunGraph(null);
     setLive(false);
@@ -2210,9 +2239,16 @@ export default function RunDetail({ id }: RunDetailProps) {
       (event) => {
         if ("type" in event) {
           if (event.type === "resync") {
-            // A rebuild that took in nothing is what does not converge; one
-            // that made progress starts the count over.
-            fruitlessRebuildsRef.current = absorbed === 0 ? fruitlessRebuildsRef.current + 1 : 0;
+            // A rebuild that got no further than an earlier one is what does
+            // not converge; one that reached further than any before it starts
+            // the count over.
+            const progress = afterRebuildAttempt(
+              absorbed,
+              bestRebuildProgressRef.current,
+              fruitlessRebuildsRef.current,
+            );
+            bestRebuildProgressRef.current = progress.best;
+            fruitlessRebuildsRef.current = progress.fruitless;
             // The stream is saying its history no longer lines up with what we
             // have. Appending onward would leave the snapshot a mix of two
             // different histories, each internally consistent and jointly

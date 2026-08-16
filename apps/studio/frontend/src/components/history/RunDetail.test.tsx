@@ -205,6 +205,58 @@ describe("history/RunDetail.tsx — bounded incremental signal projection", () =
   });
 });
 
+describe("history/RunDetail.tsx — a rebuild counts as progress only if it got further", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+
+  it("a replay that keeps absorbing the same opening signals reaches the fallback", async () => {
+    // The loop this closes: each attempt takes in the same few signals, then
+    // overruns the same queue and resyncs. Absorbing something read as
+    // progress, so the count went back to zero every time and the stream
+    // reconnected from sequence zero for as long as the run stayed open.
+    const { afterRebuildAttempt } = await import("./RunDetail");
+    let state = { best: 0, fruitless: 0 };
+    state = afterRebuildAttempt(40, state.best, state.fruitless);
+    expect(state).toEqual({ best: 40, fruitless: 0 });
+    state = afterRebuildAttempt(40, state.best, state.fruitless);
+    expect(state).toEqual({ best: 40, fruitless: 1 });
+    state = afterRebuildAttempt(40, state.best, state.fruitless);
+    expect(state.fruitless).toBeGreaterThanOrEqual(2);
+  });
+
+  it("an attempt that reaches further than every earlier one starts the count over", async () => {
+    const { afterRebuildAttempt } = await import("./RunDetail");
+    let state = afterRebuildAttempt(10, 0, 0);
+    state = afterRebuildAttempt(10, state.best, state.fruitless);
+    expect(state.fruitless).toBe(1);
+    state = afterRebuildAttempt(11, state.best, state.fruitless);
+    expect(state).toEqual({ best: 11, fruitless: 0 });
+  });
+
+  it("a rebuild that absorbed nothing is never progress, whatever came before", async () => {
+    const { afterRebuildAttempt } = await import("./RunDetail");
+    expect(afterRebuildAttempt(0, 0, 0)).toEqual({ best: 0, fruitless: 1 });
+    expect(afterRebuildAttempt(0, 50, 3)).toEqual({ best: 50, fruitless: 4 });
+  });
+
+  it("the signal-stream resync branch drives its counters through that function", () => {
+    // Anchored inside the signal effect: the message stream handles a resync
+    // too and comes first in the file.
+    const start = src.indexOf("let projection = new SignalProjection()");
+    expect(start).toBeGreaterThan(-1);
+    const end = src.indexOf("resyncGeneration, withLoadedStatistics]);", start);
+    expect(end).toBeGreaterThan(start);
+    const effect = src.slice(start, end);
+    expect(effect).toMatch(/afterRebuildAttempt\(\s*absorbed,/);
+    // The predicate that made the counter unreachable, in the form it had.
+    expect(effect).not.toMatch(/absorbed === 0 \?/);
+  });
+
+  it("both counters reset when the pane switches runs", () => {
+    expect(src).toMatch(/fruitlessRebuildsRef\.current = 0;/);
+    expect(src).toMatch(/bestRebuildProgressRef\.current = 0;/);
+  });
+});
+
 describe("fleet/SessionDetail.tsx — renders RunDetail without fullPage", () => {
   it("passes only id to RunDetail", () => {
     const src = fs.readFileSync(path.resolve(HISTORY_DIR, "../fleet/SessionDetail.tsx"), "utf-8");
