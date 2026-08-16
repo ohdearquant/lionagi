@@ -1883,21 +1883,18 @@ _ENTITY_EXTRA: dict[str, tuple[str, ...]] = {
 }
 
 
-# SQLite hands these back as 0 and 1. The other machine-readable reader emits
-# JSON booleans for the same field names, and a caller should not have to know
-# which endpoint produced a payload in order to read it.
+# Normalized through the same helper the other machine-readable reader uses, so
+# a caller reading both does not have to know which endpoint produced a payload.
 _ENTITY_BOOL_FIELDS = frozenset({"ended_at_is_approximate"})
 
 
 def _machine_entity(kind: str, row: dict[str, Any]) -> dict[str, Any]:
+    from .machine import optional_flag
+
     entity: dict[str, Any] = {"kind": kind}
     for field in (*_ENTITY_CORE, *_ENTITY_EXTRA[kind]):
         value = row.get(field)
-        # None stays None: a field the row does not carry is unknown, which is
-        # not the same answer as false.
-        if value is not None and field in _ENTITY_BOOL_FIELDS:
-            value = bool(value)
-        entity[field] = value
+        entity[field] = optional_flag(value) if field in _ENTITY_BOOL_FIELDS else value
     return entity
 
 

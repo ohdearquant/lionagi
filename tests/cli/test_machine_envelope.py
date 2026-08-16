@@ -543,3 +543,53 @@ def test_lifecycle_states_the_provenance_key_on_every_branch():
     for summary in (nothing_recorded, still_running):
         assert "ended_at_is_approximate" in summary
         assert summary["ended_at_is_approximate"] is None
+
+
+def test_lifecycle_summary_reports_unknown_when_the_row_has_no_flag_column():
+    """A store predating the column is a real shape, not a hypothetical.
+
+    The machine readers open read-only where the backend supports it, and a
+    read-only open deliberately does not reconcile the schema, because doing so
+    would write to the store being reported on. The query is SELECT *, so rows
+    from such a store arrive with no key at all. Coercing that to false would
+    answer "this end was measured" about a row where nothing recorded whether
+    it was, which is the confusion the column exists to remove.
+    """
+    from lionagi.cli.machine import _lifecycle_summary
+
+    legacy = {
+        "id": "s1",
+        "status": "completed",
+        "started_at": 100.0,
+        "ended_at": 400.0,
+    }
+    assert "ended_at_is_approximate" not in legacy
+
+    out = _lifecycle_summary([legacy])
+
+    assert out["sessions"][0]["ended_at_is_approximate"] is None
+    assert out["ended_at_is_approximate"] is None
+    assert out["ended_at"] == 400.0
+
+
+def test_lifecycle_summary_still_reports_false_when_the_column_says_measured():
+    """Control for the test above: unknown is preserved, not manufactured.
+
+    A row that carries the column and records a measured end must still come
+    back false. Reporting null there would lose the very provenance the field
+    was added to carry.
+    """
+    from lionagi.cli.machine import _lifecycle_summary
+
+    measured = {
+        "id": "s1",
+        "status": "completed",
+        "started_at": 100.0,
+        "ended_at": 400.0,
+        "ended_at_is_approximate": 0,
+    }
+
+    out = _lifecycle_summary([measured])
+
+    assert out["sessions"][0]["ended_at_is_approximate"] is False
+    assert out["ended_at_is_approximate"] is False

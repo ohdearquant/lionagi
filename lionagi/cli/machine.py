@@ -148,6 +148,19 @@ def unavailable(reason_code: str, detail: str | None = None) -> dict[str, Any]:
     return {"available": False, "value": None, "reason_code": reason_code, "detail": detail}
 
 
+def optional_flag(value: Any) -> bool | None:
+    """Normalize a stored boolean that the row may not carry at all.
+
+    SQLite returns 0 and 1; JSON consumers expect true and false. Absent is
+    neither: a read-only open does not reconcile the schema, so a store
+    predating a boolean column hands back rows with no such key, and
+    ``bool(None)`` would answer "false" to a question nobody asked. For
+    ``ended_at_is_approximate`` that answer is "this end was measured", about
+    a row where nothing recorded whether it was.
+    """
+    return None if value is None else bool(value)
+
+
 def read_json_file(path: Path) -> dict[str, Any]:
     """Read a JSON document into the availability wrapper.
 
@@ -529,7 +542,7 @@ def _lifecycle_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             # Travels with the `ended_at` beside it. A row repaired after the
             # fact carries an end nobody observed, and handed over bare it is
             # arithmetic-identical to a measured one.
-            "ended_at_is_approximate": bool(row.get("ended_at_is_approximate")),
+            "ended_at_is_approximate": optional_flag(row.get("ended_at_is_approximate")),
             "reason_code": row.get("status_reason_code"),
             "reason_summary": row.get("status_reason_summary"),
         }

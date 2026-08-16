@@ -2310,13 +2310,14 @@ async def test_show_detail_marks_blocked_play_as_done(temp_db_path: Path) -> Non
     assert "[wait]" in gated_line, "an undecided play is unfinished, not done"
 
 
-def test_terminal_rows_with_no_recorded_end_report_unknown_for_every_entity():
+def test_terminal_invocation_and_play_rows_with_no_recorded_end_report_unknown():
     """Sessions are not the only population with this shape.
 
-    Measured against a real store: 6961 terminal sessions, 58 terminal plays
-    and 3 terminal invocations carry no recorded end. Fixing the session row
-    alone leaves the other two rendering a span that grows on every redraw,
-    which is the same defect wearing a different table.
+    Invocations and plays reach a terminal status with no recorded end too, in
+    real stores and not just in principle, so fixing the session row alone
+    leaves these two rendering a span that grows on every redraw. The session
+    case has its own test above; this one exists because the sibling tables
+    were the part it was tempting to reason about instead of check.
     """
     from lionagi.cli.monitor import _invocation_to_row, _play_to_row
 
