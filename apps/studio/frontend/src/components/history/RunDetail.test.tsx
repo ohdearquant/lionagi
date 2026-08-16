@@ -161,6 +161,17 @@ describe("history/RunDetail.tsx — fullPage prop removed", () => {
   });
 });
 
+describe("history/RunDetail.tsx — bounded incremental signal projection", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+
+  it("feeds the stream into SignalProjection instead of an ever-growing React array", () => {
+    expect(src).toMatch(/const projection = new SignalProjection\(\)/);
+    expect(src).toMatch(/projection\.append\(sig\)/);
+    expect(src).not.toMatch(/setSignalEvents/);
+    expect(src).not.toMatch(/prev\.some\(\(e\) => e\.id === sig\.id\)/);
+  });
+});
+
 describe("fleet/SessionDetail.tsx — renders RunDetail without fullPage", () => {
   it("passes only id to RunDetail", () => {
     const src = fs.readFileSync(path.resolve(HISTORY_DIR, "../fleet/SessionDetail.tsx"), "utf-8");
