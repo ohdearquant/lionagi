@@ -121,6 +121,7 @@ function NodePanel({
         <h3 className="font-mono text-sm font-semibold text-content-primary">{data.label}</h3>
         {editable && onDelete && (
           <button
+            type="button"
             onClick={() => onDelete("node", id)}
             className="text-xs text-content-muted hover:text-status-error"
           >
@@ -290,6 +291,7 @@ function EdgePanel({
         <h3 className="text-sm font-semibold text-content-primary">Link</h3>
         {editable && onDelete && (
           <button
+            type="button"
             onClick={() => onDelete("edge", id)}
             className="text-xs text-content-muted hover:text-status-error"
           >
@@ -305,6 +307,7 @@ function EdgePanel({
           <div className="flex gap-1">
             {(["simple", "code"] as const).map((m) => (
               <button
+                type="button"
                 key={m}
                 onClick={() => update("mode", m)}
                 className={`rounded px-3 py-1 text-xs font-medium ${
