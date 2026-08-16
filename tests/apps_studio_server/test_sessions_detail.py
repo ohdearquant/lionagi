@@ -1511,3 +1511,80 @@ async def test_the_hydration_budget_is_spent_on_the_newest_branch(patched_sessio
     # Both branches together hold six requests and the budget is two, so the
     # two that survive must both come from the branch created last.
     assert {item["path"] for item in detail["run_files"]["items"]} == {"f11.py", "f12.py"}
+
+
+@pytest.fixture
+def sessions_svc():
+    import lionagi.studio.services.sessions as svc
+
+    return svc
+
+
+class _CountingChanges(list):
+    """A real list (so the isinstance check still passes) that records how far
+    something iterated it. Nothing else can tell whether the walk stopped early
+    or read the whole payload and threw the rest away."""
+
+    def __init__(self, items):
+        super().__init__(items)
+        self.yielded = 0
+
+    def __iter__(self):
+        for item in super().__iter__():
+            self.yielded += 1
+            yield item
+
+
+def _multiedit_message(changes, *, sequence=0):
+    return {
+        "lion_class": "lionagi.protocols.messages.action_request.ActionRequest",
+        "timestamp": float(sequence),
+        "content": {"function": "multi_edit", "arguments": {"changes": changes}},
+    }
+
+
+def test_one_oversized_change_list_cannot_outrun_the_scan_budget(sessions_svc, monkeypatch):
+    """The request budget counts rows, and a row is not a bounded amount of
+    work: one call carries as many structured changes as its caller wrote. The
+    file-preview path reaches this with a single message, where a bound on the
+    number of messages is not in play at all."""
+    monkeypatch.setattr(sessions_svc, "MAX_RUN_FILE_SCANNED_PATHS", 3)
+    changes = [{"file_path": f"f{i}.py"} for i in range(50)]
+
+    summary = sessions_svc._derive_run_files([_multiedit_message(changes)], artifact_root=None)
+
+    assert summary["bounded"] is True
+    assert summary["truncated"] is True
+    # Three resolves bought at most three paths; the other 47 were never spent.
+    assert summary["total"] <= 3
+
+
+def test_the_change_walk_stops_at_the_budget_instead_of_materializing_the_list(
+    sessions_svc, monkeypatch
+):
+    """Bounding what is kept is not the same as bounding what is read. The cost
+    this finding is about is the resolve per entry, which is paid during the
+    walk, so the walk itself has to stop."""
+    monkeypatch.setattr(sessions_svc, "MAX_RUN_FILE_SCANNED_PATHS", 4)
+    changes = _CountingChanges({"file_path": f"f{i}.py"} for i in range(1000))
+
+    sessions_svc._derive_run_files([_multiedit_message(changes)], artifact_root=None)
+
+    # The generator is abandoned once the budget is spent, so iteration stops a
+    # bounded distance past it rather than running to the end of the payload.
+    assert changes.yielded <= 5
+    assert changes.yielded < 1000
+
+
+def test_a_change_list_inside_the_budget_is_reported_whole(sessions_svc, monkeypatch):
+    """Control: both flags above must be able to read false and every path must
+    survive, or the test cannot tell a working bound from a broken walk."""
+    monkeypatch.setattr(sessions_svc, "MAX_RUN_FILE_SCANNED_PATHS", 20)
+    changes = _CountingChanges({"file_path": f"f{i}.py"} for i in range(5))
+
+    summary = sessions_svc._derive_run_files([_multiedit_message(changes)], artifact_root=None)
+
+    assert summary["bounded"] is False
+    assert summary["truncated"] is False
+    assert summary["total"] == 5
+    assert changes.yielded == 5

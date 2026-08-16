@@ -7,6 +7,7 @@ import json
 import re
 import time
 import unicodedata
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,19 @@ MAX_RUN_FILE_ITEMS = 100
 # the floor as the number.
 MAX_RUN_FILE_SCANNED_REQUESTS = 20_000
 
+# The same cost measured one level down.  The bound above counts requests, which
+# reads as a bound on the work only while a request costs a bounded amount to
+# examine.  It does not: a single MultiEdit-style call carries one structured
+# change per edit, each with its own path to resolve, and nothing limits how many
+# changes one call may carry.  So a run of one request can cost as much as a run
+# of a million, and the file-preview path reaches this derivation while asking for
+# a single message, where the request bound is not even in play.
+#
+# Counting resolves directly is what makes the budget mean what the comment above
+# claims.  It is spent in the same newest-first order and reported the same way,
+# so a run that trips it is described as bounded rather than as small.
+MAX_RUN_FILE_SCANNED_PATHS = 20_000
+
 # How many action rows one session detail will pull out of the database, newest
 # first, across all of its branches together.  The bound above limits the work a
 # pass does over rows already in hand; this one limits how many are held at all,
@@ -113,13 +127,17 @@ def _normalized_tool_name(function: object) -> str:
     return str(function or "").lower().replace("-", "_").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
 
 
-def _run_file_argument_paths(arguments: dict[str, Any]) -> list[str]:
-    """Extract only structured path fields; never parse shell commands or prose."""
-    paths: list[str] = []
+def _run_file_argument_paths(arguments: dict[str, Any]) -> Iterator[str]:
+    """Extract only structured path fields; never parse shell commands or prose.
+
+    Yields rather than returns a list.  The number of changes one call carries is
+    caller-controlled, so building the whole list first would spend the cost the
+    caller's budget exists to bound before the budget can stop anything.
+    """
     for key in _RUN_FILE_ARGUMENT_KEYS:
         value = arguments.get(key)
         if isinstance(value, str) and value:
-            paths.append(value)
+            yield value
 
     # MultiEdit-style calls carry one explicit path per structured change.
     changes = arguments.get("changes")
@@ -130,9 +148,8 @@ def _run_file_argument_paths(arguments: dict[str, Any]) -> list[str]:
             for key in _RUN_FILE_ARGUMENT_KEYS:
                 value = change.get(key)
                 if isinstance(value, str) and value:
-                    paths.append(value)
+                    yield value
                     break
-    return paths
 
 
 def _run_file_access(tool_name: str, arguments: dict[str, Any]) -> tuple[str | None, bool]:
@@ -241,6 +258,7 @@ def _derive_run_files(
     files: dict[str, dict[str, Any]] = {}
     redacted_hashes: set[str] = set()
     scanned = 0
+    paths_scanned = 0
     bounded = hydration_bounded
     try:
         resolved_artifact_root = artifact_root.resolve(strict=False) if artifact_root else None
@@ -261,7 +279,7 @@ def _derive_run_files(
         message = action_messages[sequence]
         if _short_lion_class(str(message.get("lion_class") or "")) != "ActionRequest":
             continue
-        if scanned >= MAX_RUN_FILE_SCANNED_REQUESTS:
+        if scanned >= MAX_RUN_FILE_SCANNED_REQUESTS or paths_scanned >= MAX_RUN_FILE_SCANNED_PATHS:
             # Stop reading rather than stop recording: the remaining messages
             # would each cost a path resolve, and the walk itself is the part
             # that scales with the run.
@@ -280,6 +298,12 @@ def _derive_run_files(
         sort_timestamp = float(timestamp) if isinstance(timestamp, (int, float)) else float("-inf")
 
         for raw_path in _run_file_argument_paths(arguments):
+            if paths_scanned >= MAX_RUN_FILE_SCANNED_PATHS:
+                # Leaves the generator suspended, so the rest of this row's
+                # changes are never walked.  The outer check ends the pass.
+                bounded = True
+                break
+            paths_scanned += 1
             safe = _safe_run_file_path(raw_path, resolved_artifact_root)
             if safe is None:
                 # Keep only an irreversible identity so duplicate redactions do
