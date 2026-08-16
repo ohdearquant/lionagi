@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
@@ -350,6 +351,112 @@ def _mutually_exclusive(parser: argparse.ArgumentParser) -> list[dict[str, Any]]
     return groups
 
 
+# A run of flag spellings offered as alternatives, e.g. ``-r / --resume``.
+_FLAG_ALTERNATIVES = re.compile(r"--?[A-Za-z][\w-]*(?:\s*/\s*--?[A-Za-z][\w-]*)*")
+
+# Spans of help text that are meant to be read exactly as written, so a flag
+# inside one is the point rather than a reference to a parameter.
+_PROTECTED_SPANS = (
+    # Already-literal: a backtick-quoted span, typically a whole command.
+    re.compile(r"`[^`]*`"),
+    # A usage-block line: one that *is* a command, not one that mentions one.
+    # Anchored at the line start so prose quoting a command inline keeps its
+    # own flag references rewritable; the quoted span covers the command itself.
+    re.compile(r"^[ \t]*li\s+[a-z][^\n]*$", re.MULTILINE),
+    # A worked example, from its marker to the end of the parenthetical or the
+    # sentence carrying it -- NOT to the end of the description. A sentence that
+    # merely follows an example still refers to parameters like any other.
+    re.compile(r"(?:e\.g\.|Example\b[^:.]*:?)(?:[^.)\n]|\.(?!\s))*[.)]?", re.IGNORECASE),
+)
+
+
+def _protected_ranges(text: str) -> list[tuple[int, int]]:
+    """Character ranges of *text* that must survive verbatim, merged."""
+    spans = sorted(m.span() for pattern in _PROTECTED_SPANS for m in pattern.finditer(text))
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _flag_properties(parser: argparse.ArgumentParser) -> dict[str, str]:
+    """Every flag spelling *parser* accepts, mapped to the property it becomes."""
+    out: dict[str, str] = {}
+    for action in parser._actions:
+        if isinstance(action, _META_ACTIONS) or action.dest == argparse.SUPPRESS:
+            continue
+        for option in action.option_strings:
+            out[option] = action.dest
+    return out
+
+
+# A run of flag spellings offered as alternatives, e.g. ``-r / --resume``.
+_FLAG_ALTERNATIVES = re.compile(r"--?[A-Za-z][\w-]*(?:\s*/\s*--?[A-Za-z][\w-]*)*")
+
+
+def _name_parameters(text: str, flags: dict[str, str]) -> str:
+    """Rewrite flag spellings in help text as the parameters they project to.
+
+    Help text is written for someone typing a command, so it names flags. A
+    caller of this schema sends an object and can never type one, and a
+    parameter it cannot find is worse than a longer sentence would have been.
+
+    Only spellings *this* parser accepts are rewritten. Help text quotes argv
+    for other programs -- a scheduled command's own arguments, for one -- and
+    those are still meant literally, so an unrecognised flag is left exactly as
+    written rather than guessed at.
+
+    Protection is per span, not per description. A sentence that merely follows
+    an example still refers to parameters like any other, and skipping the whole
+    description on the strength of one ``e.g.`` elsewhere in it leaves exactly
+    the references this exists to fix.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        spellings = [part.strip() for part in match.group(0).split("/")]
+        named = [flags[s] for s in spellings if s in flags]
+        if not named:
+            return match.group(0)
+        # Alternative spellings of one flag are one parameter, so the run
+        # collapses rather than repeating the same name several times.
+        seen = list(dict.fromkeys(named))
+        return " / ".join(f"`{name}`" for name in seen)
+
+    out: list[str] = []
+    cursor = 0
+    for start, end in _protected_ranges(text):
+        out.append(_FLAG_ALTERNATIVES.sub(replace, text[cursor:start]))
+        out.append(text[start:end])
+        cursor = end
+    out.append(_FLAG_ALTERNATIVES.sub(replace, text[cursor:]))
+    return "".join(out)
+
+
+def _rewrite_descriptions(node: Any, flags: dict[str, str]) -> Any:
+    """Copy *node* with flags in every description named as parameters.
+
+    Returns a new structure rather than editing in place: a JSON-valued
+    argument's schema is only shallow-copied from the ``JsonArgument`` that
+    declares it, so mutating nested objects would write these projection-only
+    rewrites back into a schema other callers share.
+    """
+    if isinstance(node, dict):
+        return {
+            key: (
+                _name_parameters(value, flags)
+                if key == "description" and isinstance(value, str)
+                else _rewrite_descriptions(value, flags)
+            )
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [_rewrite_descriptions(item, flags) for item in node]
+    return node
+
+
 def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, Any]:
     """Translate one fully-resolved parser into a JSON Schema object."""
     nested = _subparser_actions(parser)
@@ -366,12 +473,16 @@ def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, A
     unenforced: list[str] = []
     positionals: list[str] = []
 
+    flags = _flag_properties(parser)
+
     for action in parser._actions:
         if isinstance(action, _META_ACTIONS):
             continue
         if action.dest == argparse.SUPPRESS:
             continue
-        properties[action.dest] = _project_action(path, parser, action)
+        properties[action.dest] = _rewrite_descriptions(
+            _project_action(path, parser, action), flags
+        )
         if _accepts_no_values(action):
             unenforced.append(action.dest)
         elif action.required:
@@ -386,7 +497,7 @@ def project_parser(parser: argparse.ArgumentParser, *, path: str) -> dict[str, A
         "additionalProperties": False,
     }
     if parser.description:
-        schema["description"] = parser.description.strip()
+        schema["description"] = _name_parameters(parser.description.strip(), flags)
     if required:
         schema["required"] = required
     if unenforced:
