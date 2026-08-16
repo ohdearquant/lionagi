@@ -2790,7 +2790,7 @@ async def test_the_file_union_stops_on_rows_read_even_when_the_answer_is_small(
     work of getting there, and the run that pays most for it is the one that
     touches a single file over and over: the set stays at one name, so nothing
     about the answer ever grows enough to stop the scan. Both reads return the
-    same one path, which leaves the ceiling on rows read as the only thing the
+    same one path, which leaves the ceiling on the scan as the only thing the
     flag can be reporting."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-files-rescanned")
@@ -2814,4 +2814,113 @@ async def test_the_file_union_stops_on_rows_read_even_when_the_answer_is_small(
 
     assert whole is not None
     assert whole["message_stats"]["files"] == ["/run/same.py"]
+    assert whole["message_stats"]["files_bounded"] is False
+
+
+async def test_the_scan_ceiling_charges_for_rows_the_query_filters_out(
+    patched_sessions_db, monkeypatch
+):
+    """A ceiling that counts replies is not a ceiling on the walk.
+
+    The union walks a whole progression, and the query it runs per chunk keeps
+    only action rows. A session of ordinary assistant messages therefore hands
+    back almost nothing while costing the full walk, so a ceiling charged for
+    what came back would let a progression of any length through untouched --
+    the exact shape a caller controls. Charged for the ids handed to the query
+    instead, the walk stops and says it stopped, even though the answer it
+    reached is one path either way.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-files-filtered")
+
+    chatter = [f"b1-chat-{i}" for i in range(40)]
+    prog = [*chatter, "b1-act-0"]
+    await seed_branch(db_path, branch_id="b1", session_id="sess-files-filtered", msg_ids=prog)
+    async with StateDB(db_path) as db:
+        for i, msg_id in enumerate(chatter):
+            await db.insert_message(
+                {
+                    "id": msg_id,
+                    "created_at": 100.0 + i,
+                    "content": {"assistant_response": "thinking out loud"},
+                    "sender": "worker",
+                    "recipient": "user",
+                    "role": "assistant",
+                    "node_metadata": {
+                        "lion_class": (
+                            "lionagi.protocols.messages.assistant_response.AssistantResponse"
+                        )
+                    },
+                }
+            )
+        await db.insert_message(
+            {
+                "id": "b1-act-0",
+                "created_at": 200.0,
+                "content": {"function": "Read", "arguments": {"file_path": "/run/only.py"}},
+                "sender": "worker",
+                "recipient": "tool",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                },
+            }
+        )
+
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_ROWS_SCANNED", 5)
+    cut = await svc.get_session("sess-files-filtered")
+
+    assert cut is not None
+    assert cut["message_stats"]["files"] == ["/run/only.py"]
+    assert cut["message_stats"]["files_bounded"] is True
+
+    # Same store, same one returned row, ceiling raised past the walk: only the
+    # ids the query never matched can be what moved the flag.
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_ROWS_SCANNED", 200_000)
+    whole = await svc.get_session("sess-files-filtered")
+
+    assert whole is not None
+    assert whole["message_stats"]["files"] == ["/run/only.py"]
+    assert whole["message_stats"]["files_bounded"] is False
+
+
+async def test_an_oversized_action_row_drops_its_path_and_says_so(patched_sessions_db, monkeypatch):
+    """The one cut with no counter behind it.
+
+    An action row too heavy to read is withheld, which is right: a path pulled
+    out of a payload that size is not the short field this read is built on.
+    But nothing about withholding it raises a ceiling, so the union comes back
+    missing a name while every ceiling still reports room to spare, and a
+    reader resolving that name against the union concludes it is not a file.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-files-oversized")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-files-oversized",
+        count=2,
+        content_for=lambda i: {
+            "function": "Read",
+            "arguments": {
+                "file_path": f"/run/f{i}.py",
+                **({"bulk": "x" * 4_000} if i == 1 else {}),
+            },
+        },
+    )
+
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 500)
+    cut = await svc.get_session("sess-files-oversized")
+
+    assert cut is not None
+    assert cut["message_stats"]["files"] == ["/run/f0.py"]
+    assert cut["message_stats"]["files_bounded"] is True
+
+    # Control: the same two rows with room for both. The heavy row is the only
+    # difference between the reads, so it is the only thing the flag reported.
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 1_048_576)
+    whole = await svc.get_session("sess-files-oversized")
+
+    assert whole is not None
+    assert whole["message_stats"]["files"] == ["/run/f0.py", "/run/f1.py"]
     assert whole["message_stats"]["files_bounded"] is False

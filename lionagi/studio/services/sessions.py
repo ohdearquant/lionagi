@@ -992,7 +992,9 @@ async def _fetch_action_file_paths(
     bounded by the number of distinct paths a run touched, not by what its
     arguments weigh -- with the per-row ceiling applied here too, because a
     path read out of an oversized payload is not short, and a row past that
-    ceiling is withheld from every reader or from none.
+    ceiling is withheld from every reader or from none. Withheld and *reported*:
+    an oversized row leaves no trace in any counter, so without saying so the
+    union comes back short while every ceiling still reports room to spare.
 
     "The number of distinct paths a run touched" is still a number a caller
     chooses. A run that writes a new filename on every call grows this set
@@ -1015,6 +1017,7 @@ async def _fetch_action_file_paths(
     paths: set[str] = set()
     path_bytes = 0
     rows_scanned = 0
+    omitted_oversized = False
 
     def at_ceiling() -> bool:
         return (
@@ -1023,6 +1026,12 @@ async def _fetch_action_file_paths(
             or rows_scanned >= MAX_ACTION_FILE_ROWS_SCANNED
         )
 
+    def union_was_cut() -> bool:
+        # An omitted oversized row is a cut with no counter behind it: nothing
+        # about it raises a ceiling, so the union can be short while every
+        # ceiling reports room to spare.
+        return at_ceiling() or omitted_oversized
+
     for msg_ids in ids_by_branch.values():
         if at_ceiling():
             break
@@ -1030,20 +1039,41 @@ async def _fetch_action_file_paths(
             if at_ceiling():
                 break
             chunk = msg_ids[chunk_start : chunk_start + 500]
+            # Charged before the query, against the ids handed to it rather than
+            # the rows it gives back. Counting replies would let a progression of
+            # any length pass through free as long as its rows are filtered out
+            # here, which is the traversal this ceiling exists to stop.
+            rows_scanned += len(chunk)
             placeholders = ",".join("?" for _ in chunk)
             cur = await db.execute(
                 f"""
-                SELECT json_extract(m.content, '$.function') AS fn,
-                       json_extract(m.content, '$.arguments.file_path') AS file_path,
-                       json_extract(m.content, '$.arguments.path') AS path
+                SELECT CASE WHEN length(m.content) <= ?
+                            THEN json_extract(m.content, '$.function') END AS fn,
+                       CASE WHEN length(m.content) <= ?
+                            THEN json_extract(m.content, '$.arguments.file_path') END AS file_path,
+                       CASE WHEN length(m.content) <= ?
+                            THEN json_extract(m.content, '$.arguments.path') END AS path,
+                       length(m.content) > ? AS oversized
                 FROM messages m
                 WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
-                      AND length(m.content) <= ?
                 """,  # noqa: S608
-                [*chunk, *type_ids, MAX_ACTION_CONTENT_CHARS],
+                [
+                    MAX_ACTION_CONTENT_CHARS,
+                    MAX_ACTION_CONTENT_CHARS,
+                    MAX_ACTION_CONTENT_CHARS,
+                    MAX_ACTION_CONTENT_CHARS,
+                    *chunk,
+                    *type_ids,
+                ],
             )
             async for row in cur:
-                rows_scanned += 1
+                # Selected rather than filtered, so the row still arrives and can
+                # be reported. The payload stays in SQLite either way: the CASE
+                # guards keep the extraction off oversized content, and only the
+                # short fields cross.
+                if row["oversized"]:
+                    omitted_oversized = True
+                    continue
                 found = _action_file_path(
                     row["fn"], {"file_path": row["file_path"], "path": row["path"]}
                 )
@@ -1056,7 +1086,7 @@ async def _fetch_action_file_paths(
     # would have exceeded it, so a run sitting exactly on one reports bounded
     # and a reader treats the union as possibly short. That is the safe
     # direction for a set used to decide whether a name is a file.
-    return sorted(paths), at_ceiling()
+    return sorted(paths), union_was_cut()
 
 
 def _branch_message_stats(
