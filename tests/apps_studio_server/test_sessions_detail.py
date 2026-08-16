@@ -2454,3 +2454,63 @@ async def test_a_page_that_does_not_move_the_cursor_does_not_spin(monkeypatch):
 
 async def _true() -> bool:
     return True
+
+
+def test_a_window_the_budget_stopped_inside_resumes_at_the_oldest_row_delivered():
+    """The window is picked from the progression before anything is decoded,
+    and the budget then admits from the newest end. Anchoring the next page at
+    the window's own oldest id steps over exactly the rows the budget refused:
+    they sit inside this window and before the next one, so nothing asks for
+    them again."""
+    import lionagi.studio.services.sessions as svc
+
+    window = ["m-1", "m-2", "m-3", "m-4"]  # oldest first, as the progression orders them
+
+    # Only the newest two fit.
+    has_older, anchor = svc._resume_anchor(
+        window,
+        ["m-3", "m-4"],
+        has_older=True,
+        next_anchor="m-1",
+        current_anchor=None,
+    )
+
+    assert anchor == "m-3", "the next page has to begin where this one actually stopped"
+    assert has_older is True
+
+
+def test_a_fully_delivered_window_keeps_the_anchor_the_progression_chose():
+    """Control: with nothing refused there is nothing to resume, so the paging
+    anchor is the one the window logic already computed."""
+    import lionagi.studio.services.sessions as svc
+
+    window = ["m-1", "m-2"]
+
+    assert svc._resume_anchor(
+        window, ["m-1", "m-2"], has_older=True, next_anchor="m-1", current_anchor="m-9"
+    ) == (True, "m-1")
+    # And an exhausted branch stays exhausted rather than acquiring an anchor.
+    assert svc._resume_anchor([], [], has_older=False, next_anchor=None, current_anchor=None) == (
+        False,
+        None,
+    )
+
+
+def test_a_window_that_fit_nothing_is_asked_for_again_rather_than_skipped():
+    """Nothing was delivered, so the window has not been read. Moving the
+    anchor past it would retire a page the caller never saw."""
+    import lionagi.studio.services.sessions as svc
+
+    has_older, anchor = svc._resume_anchor(
+        ["m-1", "m-2"], [], has_older=True, next_anchor="m-1", current_anchor="m-3"
+    )
+
+    assert anchor == "m-3", "the caller's own anchor repeats the window it did not get"
+    assert has_older is True
+
+    # On a first page there is no value meaning "this same window", so the
+    # branch reports older messages and offers no cursor, rather than handing
+    # back one that skips them.
+    assert svc._resume_anchor(
+        ["m-1", "m-2"], [], has_older=True, next_anchor="m-1", current_anchor=None
+    ) == (True, None)

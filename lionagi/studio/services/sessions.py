@@ -609,6 +609,39 @@ def _window_message_ids(
     return window_ids, has_older, next_anchor
 
 
+def _resume_anchor(
+    window_ids: list[str],
+    present_ids: list[str],
+    *,
+    has_older: bool,
+    next_anchor: str | None,
+    current_anchor: str | None,
+) -> tuple[bool, str | None]:
+    """Where the next page starts, once hydration stopped inside this one.
+
+    The window is chosen from the progression before any row is decoded, and
+    the budget then admits from the newest end, so the rows it stops short of
+    are the oldest of the window. Anchoring the next page at the window's own
+    oldest id steps straight over them: they sit inside this window and before
+    the next one, and nothing ever asks for them again. The anchor is the
+    oldest row that was actually handed over instead, which makes the rows the
+    budget refused the start of the next page rather than a hole.
+
+    When nothing fit at all, this window has not been delivered, so the next
+    request has to ask for it again rather than move past it. That is only
+    expressible while the caller gave an anchor to repeat; on a first page
+    there is no value that means "this same window", so the branch reports
+    that older messages exist and offers no cursor to reach them. Reaching
+    that state needs a request whose budget cannot afford one row of the
+    newest page.
+    """
+    if len(present_ids) == len(window_ids):
+        return has_older, next_anchor
+    if present_ids:
+        return True, present_ids[0]
+    return True, current_anchor
+
+
 def _short_lion_class(lion_class: str) -> str:
     """Strip a fully-qualified lion_class path to its bare class name, so legacy
     short-name rows and canonical dotted-path rows compare equal."""
@@ -1142,14 +1175,19 @@ async def get_session(
                 cursor_anchors=cursor_anchors,
                 legacy_offset=message_offset if cursor_anchors is None else 0,
             )
-            if next_anchor:
-                next_branch_anchors[branch_id] = next_anchor
             window_messages = await _fetch_messages_by_ids(db, window_ids, budget=content_budget)
             by_id = {m["id"]: m for m in window_messages}
-            window_by_branch[branch_id] = (
-                [by_id[mid] for mid in window_ids if mid in by_id],
-                has_older,
+            present = [by_id[mid] for mid in window_ids if mid in by_id]
+            has_older, next_anchor = _resume_anchor(
+                window_ids,
+                [m["id"] for m in present],
+                has_older=has_older,
+                next_anchor=next_anchor,
+                current_anchor=cursor_anchors.get(branch_id) if cursor_anchors else None,
             )
+            if next_anchor:
+                next_branch_anchors[branch_id] = next_anchor
+            window_by_branch[branch_id] = (present, has_older)
 
         # Row count gets its own ceiling for the same reason, and it is spent
         # over the session rather than shared out branch by branch: which rows
