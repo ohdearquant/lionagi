@@ -172,6 +172,8 @@ async def _run_real_flow(
     num_ops: int,
     max_concurrent: int,
     durations: list[float] | None = None,
+    *,
+    admitted_order: list[int] | None = None,
 ) -> tuple[float, int]:
     """Execute this shape on the real executor; return (budgets consumed, peak).
 
@@ -179,6 +181,10 @@ async def _run_real_flow(
     op index, because the point of a long op is that it occupies a slot, and
     which op holds a slot is a scheduling outcome rather than a property of the
     graph.
+
+    Pass `admitted_order` to collect the op indices in the order they were let
+    in, which is the only direct reading of the executor's schedule; everything
+    else here infers it from a span.
 
     Peak concurrency comes from a counter incremented and decremented inside the
     work itself, so it reports ops genuinely in flight. Deriving it from span
@@ -205,6 +211,8 @@ async def _run_real_flow(
     async def work(**_kwargs):
         nonlocal admitted, in_flight, peak
         length = BUDGET if durations is None else durations[admitted % len(durations)]
+        if admitted_order is not None:
+            admitted_order.append(_kwargs["idx"])
         admitted += 1
         in_flight += 1
         peak = max(peak, in_flight)
@@ -271,6 +279,43 @@ async def test_independent_ops_fill_the_cap_and_no_more():
     consumed, peak = await _measure_patiently([[], [], [], []], 4, 2, at_most=2 + TOLERANCE)
     assert peak == 2
     assert consumed == pytest.approx(2, abs=TOLERANCE)
+
+
+@pytest.mark.asyncio
+async def test_the_executor_admits_ready_ops_in_one_order():
+    """The premise every minimum in this file rests on.
+
+    `_measure_patiently` keeps the lowest of several readings. That is a noise
+    floor only where a shape has one schedule. If the executor could admit two
+    simultaneously ready ops in either order, the lowest reading would be the
+    cheaper of two real schedules rather than the cleanest reading of the only
+    one, and every timing assertion below would be pinned to a best case.
+
+    It admits in one order. The executor hands its operations to the concurrent
+    dispatcher in graph insertion order and bounds them with a capacity limiter,
+    which releases slots in the order they were asked for, so ops that become
+    ready together go in by insertion order.
+
+    Held here rather than argued in a comment. A change to either half, handing
+    the ops over in some other order or a limiter that stops queueing fairly,
+    turns every minimum in this file into a choice between schedules, and this
+    is what would say so.
+    """
+    for _ in range(5):
+        order: list[int] = []
+        await _run_real_flow([[], [], [], []], 4, 1, [BUDGET / 8] * 4, admitted_order=order)
+        assert order == [0, 1, 2, 3], (
+            f"four ops ready together under one slot were admitted {order} rather than "
+            f"in insertion order — a minimum across rounds is now choosing a schedule"
+        )
+
+    for _ in range(5):
+        order = []
+        await _run_real_flow([[], [], [0]], 3, 2, [BUDGET / 8] * 3, admitted_order=order)
+        assert order == [0, 1, 2], (
+            f"two ops ready together with a third waiting on the first were admitted "
+            f"{order}; which of the two goes first decides when the third is released"
+        )
 
 
 @pytest.mark.asyncio
@@ -349,6 +394,55 @@ async def test_extra_rounds_do_not_rescue_a_shape_that_is_slow_from_its_cap(monk
     assert consumed == pytest.approx(0.75, abs=TOLERANCE), (
         f"the rounds settled on {consumed:.2f} budgets where the cap and the work lengths "
         f"require 0.75; the reading is not measuring what this shape costs."
+    )
+
+
+@pytest.mark.asyncio
+async def test_extra_rounds_do_not_rescue_a_shape_with_two_real_orderings(monkeypatch):
+    """The same guard where the executor genuinely has a schedule to choose.
+
+    The two guards above hold a cap of one, so there is a single ordering and
+    the extra rounds have nothing to pick between. This shape does have two, and
+    they cost different amounts.
+
+    Two independent ops share both slots, and a third waits on the first of them.
+    Work lengths are handed out in admission order, so whichever of the two is
+    admitted first gets the quarter-budget op:
+
+      first op admitted first  -> it ends at 1/4, the waiter runs 1/4 -> 1/2
+      other op admitted first  -> the first ends at 1/2, waiter runs 1/4 -> 3/4
+
+    Both orderings cost more than the bound below, so the minimum across rounds
+    cannot buy a pass whichever one the executor picks. If it could pick the
+    cheaper of two real schedules and pass on that, this is the shape that would
+    show it.
+    """
+    rounds = 0
+    real = _run_real_flow
+
+    async def counted(*args, **kwargs):
+        nonlocal rounds
+        rounds += 1
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_real_flow", counted)
+
+    consumed, peak = await _measure_patiently(
+        [[], [], [0]], 3, 2, [BUDGET / 4, BUDGET / 2, BUDGET / 4], at_most=0.3, attempts=3
+    )
+
+    assert rounds == 3 + PATIENT_ATTEMPTS, (
+        f"the patient path ran {rounds} rounds where it must run {3 + PATIENT_ATTEMPTS}. "
+        f"A guard that never reaches the retry says nothing about the retry."
+    )
+    assert peak == 2, (
+        f"{peak} ops in flight under a cap of 2 — this shape never overlapped, so it "
+        f"says nothing about a concurrent schedule"
+    )
+    assert consumed > 0.3, (
+        f"{PATIENT_ATTEMPTS} extra rounds found a {consumed:.2f}-budget ordering of a shape "
+        f"whose cheapest ordering costs 0.5 — the minimum is picking between schedules, "
+        f"not discarding contention."
     )
 
 
