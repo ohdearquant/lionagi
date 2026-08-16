@@ -7,12 +7,18 @@ from __future__ import annotations
 
 import hashlib
 import re
+from functools import lru_cache
 from typing import Any
 
+import anyio
 from pydantic import Field
 
 from lionagi.casts.emission import Finding, Verdict
 from lionagi.ln import gather as ln_gather
+from lionagi.ln.concurrency._compat import (
+    get_exception_group_exceptions,
+    is_exception_group,
+)
 from lionagi.providers._provider_errors import ProviderError
 
 from .engine import Engine, EngineEvent, EngineRun
@@ -25,6 +31,93 @@ __all__ = (
     "ReviewEngine",
     "DEFAULT_DIMENSIONS",
 )
+
+
+# Transport failures that kill one dimension's worker without saying anything
+# about the run. A dropped MCP connection surfaces as the MCP SDK's own
+# McpError, which derives from Exception rather than from ProviderError, and a
+# dropped stream surfaces as anyio's — so neither is reachable by a
+# ProviderError-only except clause even though both are exactly the
+# "ordinary provider/transport failure" this stage means to isolate.
+_TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
+    anyio.ClosedResourceError,
+    anyio.BrokenResourceError,
+    # A closed MCP response stream surfaces here: the SDK reads replies with
+    # `await response_stream_reader.receive()`, which raises EndOfStream rather
+    # than ClosedResourceError once the peer is gone.
+    anyio.EndOfStream,
+)
+
+_ISOLATED_ERRORS: tuple[type[BaseException], ...] = (ProviderError, *_TRANSPORT_ERRORS)
+
+
+@lru_cache(maxsize=1)
+def _mcp_error_type() -> type[BaseException] | None:
+    """Return mcp's ``McpError``, or ``None`` when the optional extra is absent.
+
+    Resolved on first use rather than at module import. ``mcp`` is an optional
+    extra, importing it pulls the whole package in, and every process that
+    touches the engines package would pay that cost to obtain a type only a
+    transport failure ever consults.
+
+    A missing ``mcp`` is a normal configuration and yields ``None``. An ``mcp``
+    that is present but fails to import is a broken installation and raises, so
+    it cannot masquerade as "the extra is not installed" and silently disable
+    the isolation this module depends on.
+    """
+    try:
+        from mcp.shared.exceptions import McpError
+    except ModuleNotFoundError as exc:
+        if exc.name != "mcp":
+            # The top-level package resolved but a submodule or dependency is
+            # missing — a broken install, not an uninstalled extra.
+            raise
+        return None
+    return McpError
+
+
+# The MCP SDK spells only two conditions as McpError itself: a closed
+# connection and a request timeout. Every other McpError relays a server-side
+# error object verbatim — authorization refusals, application failures — which
+# says something about the request, not the transport, and must not be
+# swallowed as if the wire had dropped.
+_MCP_TRANSPORT_CODES: frozenset[int] = frozenset(
+    {
+        -32000,  # mcp.types.CONNECTION_CLOSED
+        408,  # httpx.codes.REQUEST_TIMEOUT, used by the SDK's own timeout raise
+    }
+)
+
+
+def _is_transport_mcp_error(exc: BaseException) -> bool:
+    mcp_error = _mcp_error_type()
+    if mcp_error is None or not isinstance(exc, mcp_error):
+        return False
+    error = getattr(exc, "error", None)
+    return getattr(error, "code", None) in _MCP_TRANSPORT_CODES
+
+
+def _is_all_isolated_failure(exc: BaseException) -> bool:
+    """True iff every leaf is a per-dimension provider/transport failure, recursing into nested groups."""
+    if isinstance(exc, _ISOLATED_ERRORS):
+        return True
+    if _is_transport_mcp_error(exc):
+        return True
+    if is_exception_group(exc):
+        return all(_is_all_isolated_failure(e) for e in get_exception_group_exceptions(exc))
+    return False
+
+
+def _failure_label(exc: BaseException) -> str:
+    """Name the leaf cause(s), so a group reports what actually failed rather than 'ExceptionGroup'."""
+    if not is_exception_group(exc):
+        return type(exc).__name__
+    seen: list[str] = []
+    for leaf in get_exception_group_exceptions(exc):
+        name = _failure_label(leaf)
+        if name not in seen:
+            seen.append(name)
+    return "+".join(seen) if seen else type(exc).__name__
 
 
 class IssueFound(Finding):
@@ -303,8 +396,21 @@ class ReviewEngine(Engine):
     ) -> None:
         try:
             await self._review_dimension(run, artifact, dimension)
-        except ProviderError as exc:
-            error_type = type(exc).__name__
+        except Exception as exc:
+            # Catch broadly and let the predicate decide, rather than naming the
+            # isolated types in the clause: McpError is resolved lazily and so
+            # cannot appear in a static tuple here. Anything the predicate does
+            # not claim is re-raised unchanged. Cancellation derives from
+            # BaseException and is therefore never caught.
+            #
+            # A group reaches here when the dimension's own task group collects
+            # several transport failures at once. Isolate only when every leaf
+            # is one: a mixed group carries something this stage has no claim
+            # to swallow (budget exhaustion, a genuine defect), and laundering
+            # it into a per-dimension degrade would hide it behind a verdict.
+            if not _is_all_isolated_failure(exc):
+                raise
+            error_type = _failure_label(exc)
             run.notify(
                 "dimension_failed",
                 dimension=dimension,
