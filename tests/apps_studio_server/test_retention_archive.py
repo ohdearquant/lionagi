@@ -382,6 +382,54 @@ def test_chunk_selection_is_stable_and_bounded(tmp_path, monkeypatch):
     assert len(flat) == len(set(flat))
 
 
+def test_candidate_selection_is_read_one_chunk_at_a_time(tmp_path, monkeypatch):
+    """The pass never asks the DB for more than one chunk of candidate ids.
+
+    Chunking a list of ids bounds the deletes but not the read that produced
+    the list: every eligible id was already in memory by the time the first
+    chunk was archived, so an aged backlog was unbounded exactly where it was
+    largest. The result rows look identical either way, so this reads the SQL
+    the pass issued rather than what it returned.
+    """
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+    _patch_prune_config(monkeypatch, archive_dir=None, chunk_rows=2)
+
+    old_ts = time.time() - 40 * 86400
+    issued: list[tuple[str, tuple]] = []
+    original_q = maint._q
+
+    def record(sql, params):
+        issued.append((sql, tuple(params)))
+        return original_q(sql, params)
+
+    monkeypatch.setattr(maint, "_q", record)
+
+    async def seed():
+        async with StateDB(db_path) as db:
+            return [
+                await _make_session(db, status="completed", started_at=old_ts) for _ in range(5)
+            ]
+
+    ids = run_async(seed())
+    result = run_async(maint.prune_old_data(keep_days=30, actor="test"))
+
+    # The pass still prunes everything; only how it reads changed.
+    assert result["sessions_pruned"] == len(ids) == 5
+
+    candidate_reads = [(s, p) for s, p in issued if s.startswith("SELECT id FROM sessions WHERE")]
+    assert candidate_reads, "the pass issued no candidate selection at all"
+    paged = [(s, p) for s, p in candidate_reads if s.endswith("ORDER BY id LIMIT ?")]
+    # Five candidates at two per read cannot be covered by one read, so this
+    # fails if the selection goes back to fetching every eligible id at once.
+    assert len(paged) >= 3, f"candidate selection was not paged: {candidate_reads}"
+    # Every read carries the chunk size as its bound, so no single read can
+    # return more rows than a chunk holds.
+    assert {p[-1] for _, p in paged} == {2}
+
+
 def test_interrupt_after_n_chunks_keeps_completed_chunks(tmp_path, monkeypatch):
     """An exception after N chunks commit must leave those N chunks' deletions in place."""
     from lionagi.studio.services import db_maintenance as maint

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -251,9 +251,36 @@ def get_db_size_alert(size_bytes: int) -> tuple[bool, int]:
     return size_bytes >= threshold, threshold
 
 
-def _row_chunks(ids: Sequence[str], size: int) -> list[list[str]]:
-    """Split *ids* (already sorted) into stable, bounded, non-overlapping chunks."""
-    return [list(ids[i : i + size]) for i in range(0, len(ids), size)]
+async def _candidate_chunks(
+    db: StateDB,
+    *,
+    table: str,
+    where_sql: str,
+    params: Sequence[Any],
+    size: int,
+) -> AsyncIterator[list[str]]:
+    """Yield ids eligible under *where_sql* in bounded, ascending-id chunks.
+
+    The scan reads one chunk at a time instead of every eligible id at once,
+    so a pass holds at most *size* ids however far the aged backlog has grown.
+    Each chunk is read in its own short transaction, which keeps the selection
+    off the write lock the chunk deletes then take.
+
+    The cursor advances by id rather than by "what is still eligible", because
+    a chunk can legitimately delete nothing: `_prune_session_chunk` re-checks
+    each row under the write lock and skips one that stopped being terminal.
+    Re-asking the same question would hand that row back forever.
+    """
+    after = ""
+    while True:
+        sql = f"SELECT id FROM {table} WHERE ({where_sql}) AND id > ? ORDER BY id LIMIT ?"  # noqa: S608
+        async with db.transaction() as conn:
+            rows = (await conn.execute(*_q(sql, (*params, after, size)))).fetchall()
+        ids = sorted({r[0] for r in rows})
+        if not ids:
+            return
+        yield ids
+        after = ids[-1]
 
 
 async def _after_prune_chunk_committed(*, chunk_index: int, chunk_ids: list[str]) -> None:
@@ -626,7 +653,12 @@ async def prune_old_data(
     and deleted in its own short transaction, so an interrupted run keeps
     every chunk that already committed; a failed archive write aborts the
     remainder of the pass. Soft-FK children are nullified before DELETE
-    since they lack CASCADE. See studio.md."""
+    since they lack CASCADE. See studio.md.
+
+    Candidate ids are read one chunk at a time as well, so the pass holds
+    ``PRUNE_CHUNK_ROWS`` ids at a time rather than every id an aged backlog
+    made eligible. Total work still scales with that backlog; what is bounded
+    is the memory a pass occupies and the length of any one lock it takes."""
     from lionagi.studio.config import (
         DISPATCH_RETENTION_DEAD_LETTER_DAYS,
         DISPATCH_RETENTION_SUCCESS_DAYS,
@@ -657,14 +689,17 @@ async def prune_old_data(
     dispatch_archive_ids: list[str] = []
 
     async with StateDB() as db:
-        # ── find session IDs to prune (read-only candidate selection) ──────
-        async with db.transaction() as conn:
-            sql = f"SELECT id FROM sessions WHERE {retention_sql}"  # noqa: S608
-            rows = (await conn.execute(*_q(sql, retention_params))).fetchall()
-            session_ids = sorted({r[0] for r in rows})
-
         # ── archive-then-delete in bounded, independently committed chunks ─
-        for chunk_index, chunk_ids in enumerate(_row_chunks(session_ids, PRUNE_CHUNK_ROWS)):
+        # Candidate ids arrive one chunk at a time; see _candidate_chunks.
+        chunk_index = -1
+        async for chunk_ids in _candidate_chunks(
+            db,
+            table="sessions",
+            where_sql=retention_sql,
+            params=retention_params,
+            size=PRUNE_CHUNK_ROWS,
+        ):
+            chunk_index += 1
             archive_id = archive_chunk_id(cutoff=cutoff, chunk_index=chunk_index)
             async with db.transaction() as conn:
                 chunk_pruned = await _prune_session_chunk(
@@ -693,12 +728,15 @@ async def prune_old_data(
         # ── schedule_run retention: archive-then-delete in bounded, ────────
         # independently committed chunks (ADR-R3 shape, applied to runs).
         run_retention_sql, run_retention_params = _run_retention_predicate(cutoff)
-        async with db.transaction() as conn:
-            sql = f"SELECT id FROM schedule_runs WHERE {run_retention_sql}"  # noqa: S608
-            rows = (await conn.execute(*_q(sql, run_retention_params))).fetchall()
-            run_ids = sorted({r[0] for r in rows})
-
-        for chunk_index, chunk_ids in enumerate(_row_chunks(run_ids, PRUNE_CHUNK_ROWS)):
+        chunk_index = -1
+        async for chunk_ids in _candidate_chunks(
+            db,
+            table="schedule_runs",
+            where_sql=run_retention_sql,
+            params=run_retention_params,
+            size=PRUNE_CHUNK_ROWS,
+        ):
+            chunk_index += 1
             archive_id = archive_chunk_id(cutoff=cutoff, chunk_index=chunk_index, kind="run")
             async with db.transaction() as conn:
                 chunk_pruned = await _prune_run_chunk(
@@ -725,13 +763,16 @@ async def prune_old_data(
         dispatch_retention_sql, dispatch_retention_params = _dispatch_retention_predicate(
             dispatch_success_cutoff, dispatch_dead_letter_cutoff
         )
-        async with db.transaction() as conn:
-            sql = f"SELECT id FROM dispatch_outbox WHERE {dispatch_retention_sql}"  # noqa: S608
-            rows = (await conn.execute(*_q(sql, dispatch_retention_params))).fetchall()
-            dispatch_ids = sorted({r[0] for r in rows})
-
         dispatch_purged = 0
-        for chunk_index, chunk_ids in enumerate(_row_chunks(dispatch_ids, PRUNE_CHUNK_ROWS)):
+        chunk_index = -1
+        async for chunk_ids in _candidate_chunks(
+            db,
+            table="dispatch_outbox",
+            where_sql=dispatch_retention_sql,
+            params=dispatch_retention_params,
+            size=PRUNE_CHUNK_ROWS,
+        ):
+            chunk_index += 1
             archive_id = archive_chunk_id(
                 cutoff=dispatch_success_cutoff, chunk_index=chunk_index, kind="dispatch"
             )
