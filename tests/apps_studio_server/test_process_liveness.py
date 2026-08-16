@@ -4,6 +4,7 @@
 
 import json
 import os
+import socket
 import subprocess
 import time
 from unittest.mock import AsyncMock
@@ -162,6 +163,33 @@ def test_process_identity_from_another_host_is_unknown(monkeypatch):
     }
 
     assert process_liveness(session, None, ps_snapshot="") is None
+
+
+def test_an_unreadable_identity_mode_is_unknown_not_local():
+    """A mode marker of the wrong type must not be read as no marker at all.
+
+    Everything else on this row is a genuine live local process, so the two
+    readings give opposite answers: absent-marker takes the local path and
+    reports the run alive, while present-but-unreadable reports unknown. The
+    first is a positive liveness claim about a run whose stop-and-liveness
+    protocol this code does not implement.
+    """
+    markers = {
+        "pid": os.getpid(),
+        "pid_create_time": psutil.Process(os.getpid()).create_time(),
+        "pid_host": socket.gethostname(),
+        "pid_boot_time": psutil.boot_time(),
+    }
+
+    # Control: without a mode marker at all, this exact row is observed alive.
+    assert process_liveness({"id": "s", "node_metadata": dict(markers)}, None) is True
+
+    for unreadable in (123, {"kind": "remote"}, ["external"]):
+        session = {
+            "id": "s",
+            "node_metadata": {**markers, "process_identity_mode": unreadable},
+        }
+        assert process_liveness(session, None) is None
 
 
 def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(monkeypatch):

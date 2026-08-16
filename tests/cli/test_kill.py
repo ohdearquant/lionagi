@@ -971,6 +971,27 @@ async def test_kill_one_refuses_an_in_process_run(temp_db_path: Path):
         assert result["pid"] is None
 
 
+async def test_kill_one_refuses_a_mode_marker_that_is_not_a_string(temp_db_path: Path):
+    """A marker written with the wrong type is an unknown mode, not a missing one.
+
+    Only one of those permits signalling. A row with no marker at all predates
+    the marker and is judged by the other checks; a row carrying something this
+    code cannot read names a stop protocol living elsewhere, and reading it as
+    the first case is how a foreign row gets a cancellation written for it.
+    """
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", extra_meta={"process_identity_mode": 123})
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="test")
+
+        assert result["signal"] == "foreign_mode"
+        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+        assert after["status"] == "running"
+
+
 async def test_kill_one_still_cancels_a_local_run_without_a_pid(temp_db_path: Path):
     """The in-process guard keys on identity mode, not on a missing pid.
 

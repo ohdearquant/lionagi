@@ -19,6 +19,7 @@ from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 from ._logging import log_error, warn
 from ._util import _TABLE_TO_ENTITY_TYPE, BOOT_TIME_TOLERANCE, AmbiguousIdError
 from ._util import pid_alive as _pid_alive
+from ._util import recorded_identity_mode as _recorded_identity_mode
 from ._util import recorded_pid_is_foreign as _recorded_pid_is_foreign
 from ._util import resolve_entity as _resolve_entity
 
@@ -124,8 +125,8 @@ def _unaddressable_pid_reason(meta: dict[str, Any]) -> str | None:
     pid came from is not evidence that it is foreign; the process identity
     check downstream still has to pass for anything to be signalled.
     """
-    mode = meta.get("process_identity_mode")
-    if isinstance(mode, str) and mode not in _LOCALLY_SIGNALLABLE_MODES:
+    mode = _recorded_identity_mode(meta)
+    if mode is not None and mode not in _LOCALLY_SIGNALLABLE_MODES:
         return "in_process" if mode == "in_process" else "foreign_mode"
 
     if _recorded_pid_is_foreign(meta):

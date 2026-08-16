@@ -166,6 +166,36 @@ def recorded_pid_is_foreign(metadata: dict[str, Any] | None) -> bool:
     return isinstance(host, str) and bool(host) and host != socket.gethostname()
 
 
+# Stands in for a recorded identity mode that is present but not a string.
+# Deliberately a string, so every caller's "is this a mode I know" comparison
+# keeps working unchanged, and deliberately one no writer produces.
+UNRECOGNIZED_IDENTITY_MODE = "<unrecognized>"
+
+
+def recorded_identity_mode(metadata: dict[str, Any] | None) -> str | None:
+    """The run's recorded process identity mode, or None if none was recorded.
+
+    The distinction this preserves is between a row that never carried the
+    marker and a row that carries one this code cannot read. Only the first is
+    a legacy row that has to be judged by the other checks; the second names a
+    stop-and-liveness protocol living somewhere else, and is exactly the case
+    every caller here refuses.
+
+    An ``isinstance(mode, str)`` test at the call site collapses the two, and
+    it collapses them in the permissive direction: a mode recorded as a number
+    or a nested object reads as absent, and the row is then treated as an
+    ordinary local one whose pid can be signalled and whose silence can be
+    read as death. So the type check happens here, once, and a present
+    non-string comes back as `UNRECOGNIZED_IDENTITY_MODE` rather than as None.
+    """
+    if not isinstance(metadata, dict):
+        return None
+    mode = metadata.get("process_identity_mode")
+    if mode is None:
+        return None
+    return mode if isinstance(mode, str) else UNRECOGNIZED_IDENTITY_MODE
+
+
 # Boot time is read from the OS on each side of the comparison and can drift by
 # a little across clock adjustments and suspend/resume cycles. A real reboot
 # moves it by far more than this, so the tolerance costs nothing and avoids

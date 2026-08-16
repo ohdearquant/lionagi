@@ -580,3 +580,12 @@ def test_process_identity_is_foreign_reads_host_and_unknown_modes(monkeypatch):
     # Stored as JSON text by some read paths; the same answer either way.
     assert foreign({"node_metadata": '{"pid_host": "other-host"}'}) is True
     assert foreign({"node_metadata": "not json at all"}) is False
+
+    # A marker recorded with the wrong type is still a marker, and it still
+    # names a mode this code cannot check. Read as an absent one it would put
+    # the row back in reach of the reapers, which treat a non-True liveness as
+    # death once the row goes stale.
+    assert foreign({"node_metadata": {"process_identity_mode": 123}}) is True
+    assert foreign({"node_metadata": {"process_identity_mode": {"kind": "remote"}}}) is True
+    # Absence keeps its own meaning: an old row is judged by the host check.
+    assert foreign({"node_metadata": {"process_identity_mode": None}}) is False

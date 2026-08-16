@@ -412,7 +412,7 @@ def process_identity_is_foreign(session: dict[str, Any]) -> bool:
     somewhere this daemon cannot see. With a shared state store that turns
     into one host marking another host's working runs failed.
     """
-    from lionagi.cli._util import recorded_pid_is_foreign
+    from lionagi.cli._util import recorded_identity_mode, recorded_pid_is_foreign
 
     meta = session.get("node_metadata")
     if isinstance(meta, str):
@@ -423,8 +423,8 @@ def process_identity_is_foreign(session: dict[str, Any]) -> bool:
     if not isinstance(meta, dict):
         return False
 
-    mode = meta.get("process_identity_mode")
-    if isinstance(mode, str) and mode not in ("local", "in_process"):
+    mode = recorded_identity_mode(meta)
+    if mode is not None and mode not in ("local", "in_process"):
         return True
 
     # Asked of the host alone, not of "host and a readable pid": a row from
@@ -455,9 +455,9 @@ def process_liveness(
         except ValueError:
             meta = None
     if isinstance(meta, dict):
-        raw_mode = meta.get("process_identity_mode")
-        if isinstance(raw_mode, str):
-            identity_mode = raw_mode
+        from lionagi.cli._util import recorded_identity_mode
+
+        identity_mode = recorded_identity_mode(meta)
         # An in-process run has no process of its own; it records the process
         # hosting it under separate keys, deliberately not "pid", so that the
         # kill path cannot mistake the host for the run's own process. The
