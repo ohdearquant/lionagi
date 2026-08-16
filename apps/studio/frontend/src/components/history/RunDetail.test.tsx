@@ -187,7 +187,15 @@ describe("history/RunDetail.tsx — bounded incremental signal projection", () =
     expect(start, "the signal-stream effect must exist for this to mean anything").toBeGreaterThan(
       -1,
     );
-    const effect = src.slice(start, start + 2000);
+    // Bounded by where the effect actually ends rather than by a character
+    // count: a window sized to today's body reports "not in this effect" for
+    // anything written above it, which is a claim about length, not placement.
+    const end = src.indexOf("resyncGeneration, withLoadedStatistics]);", start);
+    expect(
+      end,
+      "the signal-stream effect has to close for this window to bound anything",
+    ).toBeGreaterThan(start);
+    const effect = src.slice(start, end);
     expect(effect).toMatch(/event\.type === "resync"/);
     expect(effect).toMatch(/projection\.append\(sig\)/);
     // A REASSIGNMENT, so the line must start with the name. Without that the
@@ -3036,6 +3044,51 @@ describe("the signal projection is built from the run's history", () => {
     expect(cursor == null || cursor === 0).toBe(true);
   });
 
+  async function resyncTwice(deliverASignalBetween: boolean) {
+    const { streamSignals } = await import("@/lib/api");
+    const emitters: ((event: unknown) => void)[] = [];
+    vi.mocked(streamSignals).mockImplementation((_id, cb) => {
+      emitters.push(cb as (event: unknown) => void);
+      return () => {};
+    });
+    await mount(session);
+
+    for (const round of [0, 1]) {
+      const emit = emitters[emitters.length - 1];
+      await act(async () => {
+        if (deliverASignalBetween) emit(sig({ id: `e-${round}`, seq: round + 1 }));
+        emit({ type: "resync" });
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+    return vi.mocked(streamSignals).mock.calls;
+  }
+
+  it("joins where the stream is once rebuilding from the start has not converged", async () => {
+    // The rebuild replays the run's whole signal history. When that replay is
+    // itself what overruns the bounded queue, it resyncs, the rebuild starts
+    // over, and the run reconnects for as long as it is open with an empty
+    // graph. After rebuilds that took in no signals at all, it joins at the
+    // position the server reports: incomplete, and no longer a loop.
+    const calls = await resyncTwice(false);
+    expect(calls).toHaveLength(3);
+    const firstRetry = calls[1][2];
+    expect(firstRetry == null || firstRetry === 0).toBe(true);
+    expect(calls[2][2]).toBe(41);
+  });
+
+  it("a rebuild that took in signals starts the count over", async () => {
+    // The control. Joining mid-stream costs the history before the join, so it
+    // is only for rebuilds that get nowhere -- a resync after a replay that was
+    // being delivered has to go back to rebuilding from the start.
+    const calls = await resyncTwice(true);
+    expect(calls).toHaveLength(3);
+    const cursor = calls[2][2];
+    expect(cursor == null || cursor === 0).toBe(true);
+  });
+
   it("reconnects the message stream after a resync that leaves its cursor unchanged", async () => {
     const { streamSession } = await import("@/lib/api");
     let emit: ((event: { type: string }) => void) | null = null;
@@ -3212,6 +3265,82 @@ describe("exact lifetime totals stop being an answer once the run moves past the
     // test above while deleting the behaviour it protects.
     await runToCompletion(false);
     expect(container!.textContent).not.toContain("507");
+  });
+
+  // The statistics read is slow by design, so it can still be in flight when a
+  // live message arrives. `withLiveMessage` decides whether one does.
+  async function statisticsLandsLate(withLiveMessage: boolean) {
+    const { getSession, getSessionStatistics, streamSession } = await import("@/lib/api");
+    let emit: ((event: Record<string, unknown>) => void) | null = null;
+    let answerStatistics: ((value: unknown) => void) | null = null;
+    vi.mocked(streamSession).mockImplementationOnce((_id, cb) => {
+      emit = cb as (event: Record<string, unknown>) => void;
+      return () => {};
+    });
+    vi.mocked(getSessionStatistics).mockReturnValueOnce(
+      new Promise((resolve) => {
+        answerStatistics = resolve;
+      }) as never,
+    );
+
+    await mount(sessionWith({ message_total: null }));
+    expect(emit).not.toBeNull();
+    expect(answerStatistics).not.toBeNull();
+
+    if (withLiveMessage) {
+      await act(async () => {
+        emit!(streamedMessage);
+        await Promise.resolve();
+      });
+    }
+
+    // The slow read finally answers, describing the session as it stood when
+    // it started.
+    await act(async () => {
+      answerStatistics!(statistics);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    vi.mocked(getSession).mockResolvedValue(sessionWith({ message_total: 507 }) as never);
+    await act(async () => {
+      emit!({ type: "done" });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it("a statistics read landing after a live message does not put the snapshot back", async () => {
+    await statisticsLandsLate(true);
+    expect(container!.textContent).toContain("507");
+  });
+
+  it("a statistics read landing with no live message in between is still applied", async () => {
+    // The control for the one above. Discarding every late answer would pass
+    // that test by turning the slow read off.
+    await statisticsLandsLate(false);
+    expect(container!.textContent).not.toContain("507");
+  });
+
+  it("appending a live message drops the totals it is not counted in", async () => {
+    const { appendStreamedMessage } = await import("./RunDetail");
+    const existing = { ...streamedMessage, id: "m-existing", timestamp: 1 };
+    const before = {
+      ...sessionWith({ message_total: 2, messages: [existing] }),
+      message_stats: statistics.message_stats,
+      message_stats_loaded: true,
+    } as never as Parameters<typeof appendStreamedMessage>[0];
+
+    const after = appendStreamedMessage(before, "branch-a", streamedMessage as never);
+
+    expect(after.message_stats).toBeNull();
+    expect(after.message_stats_loaded).toBe(false);
+
+    // Control: a message already present adds nothing, so the totals stand.
+    const again = appendStreamedMessage(before, "branch-a", existing as never);
+    expect(again).toBe(before);
+    expect(again.message_stats).not.toBeNull();
   });
 
   it("says the error and file lists cover only the loaded messages when no total arrived", async () => {

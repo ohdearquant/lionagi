@@ -160,6 +160,10 @@ class SessionTailBroker:
         self._signal_cursor = 0
         self._message_history: deque[TailEvent] = deque(maxlen=max(1, history_size))
         self._signal_history: deque[TailEvent] = deque(maxlen=max(1, history_size))
+        # Whether each history still holds everything the reader has published
+        # on that channel. Once it has dropped an event, a replay taken from it
+        # can no longer be shown to start where a joining viewer left off.
+        self._history_whole: dict[Channel, bool] = {"messages": True, "signals": True}
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
         self._closed = False
@@ -169,16 +173,18 @@ class SessionTailBroker:
         return self._task is not None and not self._task.done()
 
     async def subscribe_messages(self, cursor: MessageCursor | None) -> TailSubscription:
-        return await self._subscribe("messages", cursor)
+        subscription, started_reader = await self._register("messages", cursor)
+        return await self._settle(subscription, started_reader)
 
     async def subscribe_signals(self, cursor: int) -> TailSubscription:
-        return await self._subscribe("signals", max(0, cursor))
+        subscription, started_reader = await self._register("signals", max(0, cursor))
+        return await self._settle(subscription, started_reader)
 
-    async def _subscribe(
+    async def _register(
         self,
         channel: Channel,
         cursor: MessageCursor | int | None,
-    ) -> TailSubscription:
+    ) -> tuple[TailSubscription, bool]:
         started_reader = False
         async with self._lock:
             if self._closed:
@@ -216,23 +222,37 @@ class SessionTailBroker:
                     name=f"studio-tail-{self.session_id}",
                 )
                 started_reader = True
-        if started_reader:
-            # Let the task enter its connection context before exposing the
-            # subscription.  Otherwise an immediately-disconnected viewer can
-            # cancel a not-yet-started task and skip resource cleanup entirely.
-            #
-            # Cleanup for this await belongs here and cannot belong to the
-            # caller. The caller installs its `finally` around the subscription
-            # it received, and a cancellation landing on this line means it
-            # never receives one -- while the registration and the reader task
-            # above have already happened. The subscriber queue would stay in
-            # `_subscribers` and the reader would keep polling, for a viewer
-            # that is gone, once per aborted request.
-            try:
-                await asyncio.sleep(0)
-            except BaseException:
-                await subscription.close()
-                raise
+        return subscription, started_reader
+
+    async def _settle(
+        self,
+        subscription: TailSubscription,
+        started_reader: bool,
+    ) -> TailSubscription:
+        """Let a just-started reader begin before the subscription is handed out.
+
+        Otherwise an immediately-disconnected viewer can cancel a not-yet-started
+        task and skip its resource cleanup entirely.
+
+        Cleanup for this await belongs here and cannot belong to the caller. The
+        caller installs its `finally` around the subscription it received, and a
+        cancellation landing on this line means it never receives one -- while
+        registration and the reader task have already happened. The subscriber
+        queue would stay in `_subscribers` and the reader would keep polling, for
+        a viewer that is gone, once per aborted request.
+
+        This runs outside `_BROKERS_LOCK` on purpose, because the cleanup takes
+        that lock to evict an emptied broker. Registration holds it; this does
+        not, and between the two the subscription is already registered, so
+        there is nothing for the gap to lose.
+        """
+        if not started_reader:
+            return subscription
+        try:
+            await asyncio.sleep(0)
+        except BaseException:
+            await subscription.close()
+            raise
         return subscription
 
     def _replay_or_resync(
@@ -246,11 +266,16 @@ class SessionTailBroker:
         )
         if cursor == current:
             return
-        replay = [
-            event
-            for event in history
-            if event.resume_cursor is not None and (cursor is None or event.resume_cursor > cursor)
-        ]
+        replay = (
+            [
+                event
+                for event in history
+                if event.resume_cursor is not None
+                and (cursor is None or event.resume_cursor > cursor)
+            ]
+            if self._history_reaches(subscription.channel, cursor, history)
+            else []
+        )
         if replay:
             subscription._put_batch(replay, resume_cursor=current)
             return
@@ -258,6 +283,31 @@ class SessionTailBroker:
             [TailEvent("resync", {"type": "resync"}, current)],
             resume_cursor=current,
         )
+
+    def _history_reaches(
+        self,
+        channel: Channel,
+        cursor: MessageCursor | int | None,
+        history: deque[TailEvent],
+    ) -> bool:
+        """Whether a replay from `history` would start where `cursor` left off.
+
+        Selecting everything newer than a cursor says nothing about what sits
+        between the two. Once the bounded history has dropped an event, the
+        newest events it still holds can begin well after the position a
+        joining viewer is resuming from, and handing those over presents a gap
+        as a continuous replay. The viewer never learns it missed anything.
+
+        A history that has never dropped anything reaches every cursor. One
+        that has still reaches a cursor at or after its oldest retained event,
+        because a deque only ever drops from that end.
+        """
+        if self._history_whole[channel]:
+            return True
+        if cursor is None or not history:
+            return False
+        oldest = history[0].resume_cursor
+        return oldest is not None and oldest <= cursor  # type: ignore[operator]
 
     async def _unsubscribe(self, subscription_id: int) -> None:
         task: asyncio.Task[None] | None = None
@@ -274,6 +324,7 @@ class SessionTailBroker:
                     del _BROKERS[self.session_id]
                 self._message_history.clear()
                 self._signal_history.clear()
+                self._history_whole = {"messages": True, "signals": True}
                 if self._task is not None:
                     task = self._task
                     self._task = None
@@ -307,6 +358,8 @@ class SessionTailBroker:
         cursor: MessageCursor | int | None,
     ) -> None:
         history = self._message_history if channel == "messages" else self._signal_history
+        if history.maxlen is not None and len(history) + len(events) > history.maxlen:
+            self._history_whole[channel] = False
         history.extend(events)
         for subscription in self._channel_subscribers(channel):
             subscription._put_batch(events, resume_cursor=cursor)
@@ -417,11 +470,13 @@ _BROKERS_LOCK = asyncio.Lock()
 def _broker_for(session_id: str) -> SessionTailBroker:
     """Caller holds `_BROKERS_LOCK`.
 
-    Lookup and the subscription that follows it have to happen under the same
+    Lookup and the registration that follows it have to happen under the same
     hold. Between them a broker can lose its last viewer and be evicted, and a
     caller holding the reference would then attach to something no longer
     reachable -- a private reader for one viewer, which is the sharing this
-    module exists to do.
+    module exists to do. Once registered the subscription is what keeps the
+    broker from being evicted, so the rest of the subscribe path does not need
+    the hold and must not take it.
     """
     broker = _BROKERS.get(session_id)
     if broker is None or broker._closed:
@@ -435,12 +490,16 @@ async def subscribe_session_messages(
     cursor: MessageCursor | None,
 ) -> TailSubscription:
     async with _BROKERS_LOCK:
-        return await _broker_for(session_id).subscribe_messages(cursor)
+        broker = _broker_for(session_id)
+        subscription, started_reader = await broker._register("messages", cursor)
+    return await broker._settle(subscription, started_reader)
 
 
 async def subscribe_session_signals(session_id: str, cursor: int) -> TailSubscription:
     async with _BROKERS_LOCK:
-        return await _broker_for(session_id).subscribe_signals(cursor)
+        broker = _broker_for(session_id)
+        subscription, started_reader = await broker._register("signals", max(0, cursor))
+    return await broker._settle(subscription, started_reader)
 
 
 async def close_all_tail_brokers() -> None:

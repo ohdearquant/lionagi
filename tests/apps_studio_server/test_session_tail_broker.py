@@ -291,6 +291,70 @@ async def test_restarted_message_broker_uses_the_new_snapshot_high_water():
         await broker.close()
 
 
+def _message_event(index: int):
+    from lionagi.studio.services.tail_broker import TailEvent
+
+    return TailEvent("message", {"i": index}, (float(index), f"m-{index}"))
+
+
+async def test_a_viewer_joining_past_the_retained_history_is_told_to_resync():
+    """Selecting "everything newer than your cursor" says nothing about what sat
+    between the two. Once the bounded history has dropped events, the newest
+    ones it still holds begin after the joining viewer's position, and sending
+    them presents a gap as a continuous replay -- the viewer never learns it
+    missed anything."""
+    from lionagi.studio.services.tail_broker import SessionTailBroker, TailRead
+
+    @asynccontextmanager
+    async def connect():
+        yield object()
+
+    async def read_tick(
+        _db,
+        _session_id,
+        message_cursor,
+        signal_cursor,
+        *,
+        read_messages,
+        read_signals,
+    ):
+        await asyncio.sleep(0)
+        return TailRead([], [], None, message_cursor, signal_cursor, True, True)
+
+    broker = SessionTailBroker("evicted", connect=connect, read_tick=read_tick, history_size=3)
+    resident = await broker.subscribe_messages((0.0, "m-0"))
+    try:
+        for index in range(1, 6):
+            broker._publish("messages", [_message_event(index)], (float(index), f"m-{index}"))
+        assert [event.resume_cursor for event in broker._message_history] == [
+            (3.0, "m-3"),
+            (4.0, "m-4"),
+            (5.0, "m-5"),
+        ], "the history has to have dropped events for this to be about eviction"
+
+        joining = await broker.subscribe_messages((1.0, "m-1"))
+        try:
+            event = await asyncio.wait_for(joining.next_event(), timeout=1)
+            assert event.kind == "resync", f"a gap was replayed as history: {event.kind}"
+            assert joining.queue_size == 0
+        finally:
+            await joining.close()
+
+        # Control: a cursor the retained history still reaches gets the replay,
+        # or the assertion above is satisfied by resyncing everyone.
+        covered = await broker.subscribe_messages((3.0, "m-3"))
+        try:
+            assert covered.queue_size == 2
+            first = await asyncio.wait_for(covered.next_event(), timeout=1)
+            assert first.kind == "message"
+            assert first.resume_cursor == (4.0, "m-4")
+        finally:
+            await covered.close()
+    finally:
+        await resident.close()
+        await broker.close()
+
+
 async def test_a_broker_leaves_the_registry_with_its_last_viewer():
     """The histories are bounded per session; the registry is not. A broker kept
     after its last viewer leaves holds its event deques for the daemon's
@@ -433,6 +497,68 @@ async def test_a_subscribe_cancelled_after_registration_leaves_nothing_behind():
 
     assert broker._subscribers == {}, broker._subscribers
     assert not broker.running
+
+
+async def test_an_aborted_subscribe_through_the_registry_leaves_the_registry_usable():
+    """The same abort, taken through the entry point the daemon actually calls.
+
+    That path holds the process-wide registry lock across registration, and the
+    cleanup an aborted subscribe performs takes that same lock. Doing the
+    cleanup under the hold leaves the lock held for good, which stops every
+    later message and signal subscription for every session, not just this one.
+    """
+    import lionagi.studio.services.tail_broker as broker_mod
+
+    @asynccontextmanager
+    async def connect():
+        yield object()
+
+    async def read_tick(
+        _db,
+        _session_id,
+        message_cursor,
+        signal_cursor,
+        *,
+        read_messages,
+        read_signals,
+    ):
+        await asyncio.sleep(0)
+        return broker_mod.TailRead([], [], None, message_cursor, signal_cursor, True, True)
+
+    def register(session_id: str) -> None:
+        broker_mod._BROKERS[session_id] = broker_mod.SessionTailBroker(
+            session_id, connect=connect, read_tick=read_tick
+        )
+
+    register("registry-abort")
+    try:
+        task = asyncio.create_task(broker_mod.subscribe_session_messages("registry-abort", None))
+        # One turn reaches the yield the registry lock is already released for.
+        await asyncio.sleep(0)
+        task.cancel()
+
+        # A hang here is the failure this test is about, so it is bounded.
+        _done, pending = await asyncio.wait([task], timeout=2)
+        assert not pending, "the aborted subscribe never finished unwinding"
+        assert task.cancelled()
+        assert not broker_mod._BROKERS_LOCK.locked()
+
+        # A free lock is the mechanism. A subscribe that still returns is the
+        # consequence, and it is the half a later reader would notice.
+        register("registry-after")
+        subscription = await asyncio.wait_for(
+            broker_mod.subscribe_session_messages("registry-after", None), timeout=2
+        )
+        await subscription.close()
+    finally:
+        # Deliberately not close_all_tail_brokers(): that takes the registry
+        # lock, which is exactly what a failure here leaves held, so the
+        # teardown would turn a failing assertion into a hung suite.
+        task.cancel()
+        await asyncio.wait([task], timeout=2)
+        brokers = list(broker_mod._BROKERS.values())
+        broker_mod._BROKERS.clear()
+        await asyncio.gather(*(b.close() for b in brokers), return_exceptions=True)
 
 
 async def test_a_subscribe_that_completes_leaves_a_live_subscriber():

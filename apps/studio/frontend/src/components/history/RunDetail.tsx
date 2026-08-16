@@ -324,6 +324,24 @@ export function isSessionMessageEvent(event: Record<string, unknown>): boolean {
   return !!(event.id && event.role && event.branch_id && typeof event.timestamp === "number");
 }
 
+// How many times the signal projection is rebuilt from the start of the stream
+// before the stream is joined where it currently is instead. One retry, because
+// the first resync may well be a reader hiccup rather than a replay that cannot
+// fit.
+const REBUILD_ATTEMPTS = 2;
+
+// A live message makes the lifetime statistics an answer about a moment that
+// has passed. They were computed over every branch's full progression at the
+// time of a separate read, and the counts and file union are rendered as the
+// run's totals, so keeping them past a message they do not include shows a
+// number that is wrong rather than one that is merely old. Dropping them falls
+// back to counting what is loaded, which the partial-window disclosure already
+// describes.
+function withoutLifetimeStatistics(session: SessionDetail): SessionDetail {
+  if (session.message_stats == null && !session.message_stats_loaded) return session;
+  return { ...session, message_stats: null, message_stats_loaded: false };
+}
+
 export function appendStreamedMessage(
   session: SessionDetail,
   branchId: string,
@@ -332,7 +350,7 @@ export function appendStreamedMessage(
   const existing = session.branches.find((branch) => branch.id === branchId);
   if (!existing) {
     return {
-      ...session,
+      ...withoutLifetimeStatistics(session),
       branches: [
         ...session.branches,
         {
@@ -350,7 +368,7 @@ export function appendStreamedMessage(
   if (existing.messages.some((candidate) => candidate.id === message.id)) return session;
 
   return {
-    ...session,
+    ...withoutLifetimeStatistics(session),
     branches: session.branches.map((branch) => {
       if (branch.id !== branchId) return branch;
       const firstMessageAt = branch.first_message_at ?? branch.started_at;
@@ -1912,6 +1930,17 @@ export default function RunDetail({ id }: RunDetailProps) {
   // the feed stopped. Bumping this re-runs both stream effects, which tear the
   // dead subscriptions down and open new ones.
   const [resyncGeneration, setResyncGeneration] = useState(0);
+  // A resync rebuilds the signal projection from the start of the stream, which
+  // is the only way to get a complete one back and is right the first time. It
+  // stops being right when the rebuild is itself what fails: the same history
+  // replays, overruns the same bounded queue, resyncs again, and the run
+  // reconnects for as long as it is open with nothing on screen. After rebuilds
+  // that took in no signals at all, the stream is joined at the position the
+  // server reports instead. That projection is missing whatever came before,
+  // which is worse than complete and better than empty forever, and it is the
+  // only join that is guaranteed not to replay what would not fit.
+  const fruitlessRebuildsRef = useRef(0);
+  const signalResumeRef = useRef<number | undefined>(undefined);
   const [resumeWatch, setResumeWatch] = useState<RunResumeResponse | null>(null);
   // State rather than a ref because the affordance for loading older history
   // is rendered from it: a cursor the server stopped handing back means there
@@ -1923,6 +1952,12 @@ export default function RunDetail({ id }: RunDetailProps) {
   // Holding the loaded statistics lets every refresh path put them back,
   // rather than each one remembering to.
   const loadedStatisticsRef = useRef<SessionStatistics | null>(null);
+  // Bumped whenever the run moves past what a statistics read describes. The
+  // read is slow by design and answers about the moment it ran, so one that is
+  // still in flight when a live message arrives comes back describing a state
+  // already on screen as superseded -- and would otherwise re-arm the very
+  // snapshot that message just invalidated.
+  const statisticsEpochRef = useRef(0);
   const withLoadedStatistics = useCallback(
     (fresh: SessionDetail): SessionDetail =>
       applyLoadedStatistics(fresh, loadedStatisticsRef.current),
@@ -1935,6 +1970,8 @@ export default function RunDetail({ id }: RunDetailProps) {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset stale state before async fetch; setState only fires in the effect body synchronously, not in callbacks
     setSession(null);
     loadedStatisticsRef.current = null;
+    fruitlessRebuildsRef.current = 0;
+    signalResumeRef.current = undefined;
     setRunGraph(null);
     setLive(false);
     setDone(false);
@@ -2017,9 +2054,10 @@ export default function RunDetail({ id }: RunDetailProps) {
             edges: resolveGraphEdges(graph.nodes, graph.edges),
           });
         }
+        const statisticsEpoch = statisticsEpochRef.current;
         void getSessionStatistics(id)
           .then((statistics) => {
-            if (cancelled) return;
+            if (cancelled || statisticsEpochRef.current !== statisticsEpoch) return;
             loadedStatisticsRef.current = statistics;
             setSession((previous) =>
               previous?.id === statistics.session_id
@@ -2133,8 +2171,10 @@ export default function RunDetail({ id }: RunDetailProps) {
           // number that every later refresh would put back on top of newer
           // totals -- and put back wearing the label that says it is exact.
           // Dropping it leaves the bounded read, which discloses what it does
-          // not cover.
+          // not cover. The epoch goes with it, so a read still in flight cannot
+          // land afterwards and put the same snapshot back.
           loadedStatisticsRef.current = null;
+          statisticsEpochRef.current += 1;
           const msg = event as unknown as SessionMessage;
           setSession((prev) => {
             if (!prev) return prev;
@@ -2164,11 +2204,15 @@ export default function RunDetail({ id }: RunDetailProps) {
         if (!cancelled) setSignalState({ id, snapshot: projection.snapshot() });
       });
     };
+    let absorbed = 0;
     const stop = streamSignals(
       id,
       (event) => {
         if ("type" in event) {
           if (event.type === "resync") {
+            // A rebuild that took in nothing is what does not converge; one
+            // that made progress starts the count over.
+            fruitlessRebuildsRef.current = absorbed === 0 ? fruitlessRebuildsRef.current + 1 : 0;
             // The stream is saying its history no longer lines up with what we
             // have. Appending onward would leave the snapshot a mix of two
             // different histories, each internally consistent and jointly
@@ -2184,6 +2228,12 @@ export default function RunDetail({ id }: RunDetailProps) {
                 // another run's branches under this run's heading.
                 if (cancelled || fresh.id !== id) return;
                 setSession(withLoadedStatistics(fresh));
+                if (fruitlessRebuildsRef.current >= REBUILD_ATTEMPTS) {
+                  // Only ever forward: once the from-the-start rebuild has
+                  // shown it cannot finish for this run, going back to it just
+                  // reopens the loop.
+                  signalResumeRef.current = fresh.stream_cursors?.signals ?? undefined;
+                }
               })
               .catch(() => {})
               // Reconnecting tears this effect down, so it goes last: bumping
@@ -2196,15 +2246,18 @@ export default function RunDetail({ id }: RunDetailProps) {
           return;
         }
         const sig = event as SignalEvent;
+        absorbed += 1;
         if (projection.append(sig)) publish();
       },
-      // Deliberately from the beginning, not from the detail's signal cursor.
-      // That cursor sits after every persisted signal, and the session detail
-      // carries no projection snapshot to resume from, so starting there hands
-      // an empty projection to a stream that will only ever deliver what
-      // happens next: node status, activity, gates and the operation graph all
-      // read as if the run had just begun. Resuming needs a snapshot to resume
-      // onto; until there is one, the projection is built from the history.
+      // Undefined, and so from the beginning, for as long as the rebuild can
+      // finish. The detail's signal cursor sits after every persisted signal,
+      // and the session detail carries no projection snapshot to resume from,
+      // so starting there hands an empty projection to a stream that will only
+      // ever deliver what happens next: node status, activity, gates and the
+      // operation graph all read as if the run had just begun. It is set only
+      // once rebuilding from the start has been shown not to terminate, where
+      // an incomplete projection is the better of the two answers left.
+      signalResumeRef.current,
     );
     return () => {
       cancelled = true;
