@@ -100,15 +100,24 @@ MAX_RUN_FILE_SCANNED_PATHS = 20_000
 # trimming ordinary ones.
 MAX_ACTION_CONTENT_CHARS = 1_048_576
 
+# What one session read may decode in total.  The per-payload ceiling and the
+# row count are each a bound, but they are bounds on different things, and two
+# bounds on different things multiply: twenty thousand rows of a megabyte each
+# is the product, not the larger of the two, and the product is what has to fit
+# in memory.  This is the one number that says how much a single request can
+# cost, and the other two now sit under it rather than beside it.
+MAX_HYDRATED_CONTENT_CHARS = 64 * 1_048_576
+
 # Selected in place of `m.content` by every query that hydrates a message row.
 # The ceiling is one property of the data, so it belongs to the column rather
 # than to whichever reader was being looked at when the cost was noticed: there
 # are several readers, they were added at different times, and bounding them one
-# at a time is how the next one gets added unbounded.  Takes the ceiling twice,
-# as the first two bind parameters of the statement it appears in.
+# at a time is how the next one gets added unbounded.  Takes the ceiling three
+# times, as the first three bind parameters of the statement it appears in.
 _BOUNDED_CONTENT_COLUMNS = (
     "CASE WHEN length(m.content) > ? THEN NULL ELSE m.content END AS content, "
-    "CASE WHEN length(m.content) > ? THEN 1 ELSE 0 END AS content_oversized"
+    "CASE WHEN length(m.content) > ? THEN 1 ELSE 0 END AS content_oversized, "
+    "CASE WHEN length(m.content) > ? THEN 0 ELSE length(m.content) END AS content_length"
 )
 
 # How many action rows one session detail will pull out of the database, newest
@@ -928,7 +937,7 @@ async def _fetch_messages_by_ids(
             LEFT JOIN message_types mt ON m.lion_class = mt.type_id
             WHERE m.id IN ({placeholders})
             """,  # noqa: S608
-            [MAX_ACTION_CONTENT_CHARS, MAX_ACTION_CONTENT_CHARS, *chunk],
+            [MAX_ACTION_CONTENT_CHARS, MAX_ACTION_CONTENT_CHARS, MAX_ACTION_CONTENT_CHARS, *chunk],
         )
         for row in await cur.fetchall():
             rows_by_id[row["id"]] = _format_message(row)
@@ -1008,6 +1017,8 @@ async def _fetch_action_messages(
     type_placeholders = ",".join("?" for _ in type_ids)
     bounded = False
     oversized_seen = False
+    budget_spent = False
+    content_chars = 0
     for chunk_end in range(len(msg_ids), 0, -500):
         chunk_start = max(0, chunk_end - 500)
         chunk = msg_ids[chunk_start:chunk_end]
@@ -1022,19 +1033,31 @@ async def _fetch_action_messages(
             FROM messages m
             WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
             """,  # noqa: S608
-            [MAX_ACTION_CONTENT_CHARS, MAX_ACTION_CONTENT_CHARS, *chunk, *type_ids],
+            [
+                MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_CONTENT_CHARS,
+                *chunk,
+                *type_ids,
+            ],
         )
-        for row in await cur.fetchall():
+        # Iterated rather than fetchall'd: the budget below can only bound what
+        # has not been read yet, and fetchall reads the whole chunk first.
+        async for row in cur:
+            if content_chars >= MAX_HYDRATED_CONTENT_CHARS:
+                budget_spent = True
+                break
             data = dict(row)
+            content_chars += int(data.pop("content_length") or 0)
             if data["content_oversized"]:
                 oversized_seen = True
             data["lion_class_str"] = lion_class_by_type_id.get(data.pop("lion_class"))
             rows_by_id[data["id"]] = _format_message(data)
-        if len(rows_by_id) >= limit:
+        if budget_spent or len(rows_by_id) >= limit:
             # Stop reading rather than read everything and slice: the ids left
             # unread are older than everything already held, so nothing further
             # back can belong in a newest-first window this size.
-            bounded = chunk_start > 0 or len(rows_by_id) > limit
+            bounded = budget_spent or chunk_start > 0 or len(rows_by_id) > limit
             break
     ordered = [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
     # A withheld payload is a bounded read for the same reason a stopped walk is:
@@ -1418,7 +1441,13 @@ async def get_session_messages_after(session_id: str, after_ts: float) -> list[d
             WHERE b.session_id = ? AND m.created_at > ?
             ORDER BY m.created_at
             """,  # noqa: S608
-            (MAX_ACTION_CONTENT_CHARS, MAX_ACTION_CONTENT_CHARS, session_id, after_ts),
+            (
+                MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_CONTENT_CHARS,
+                session_id,
+                after_ts,
+            ),
         )
         rows = await cur.fetchall()
 

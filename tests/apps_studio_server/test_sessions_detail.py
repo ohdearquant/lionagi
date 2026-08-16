@@ -1674,3 +1674,48 @@ async def test_a_payload_inside_the_ceiling_is_parsed_and_reported_whole(
         "f1.py",
         "f2.py",
     }
+
+
+async def test_the_decoded_total_is_bounded_not_just_the_row_count_and_the_row_size(
+    patched_sessions_db, monkeypatch
+):
+    """A cap on rows and a cap on each row's payload are bounds on different
+    things, and two such bounds multiply. Twenty thousand rows of a megabyte
+    each is the product, and the product is what has to fit in memory, so the
+    total needs a bound of its own."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 100_000)
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 50)
+    monkeypatch.setattr(svc, "MAX_HYDRATED_CONTENT_CHARS", 2_000)
+    await seed_session(db_path, session_id="sess-total", artifacts_path="/run")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-total", count=40)
+
+    detail = await svc.get_session("sess-total")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is True
+    # Neither of the other two bounds was reached: 40 rows is under the row cap
+    # of 50, and each row is far under the per-payload ceiling. Only the total
+    # can have stopped this.
+    kept = detail["message_stats"]["tool_call_count"]
+    assert 0 < kept < 40, kept
+
+
+async def test_a_session_inside_every_bound_reports_itself_complete(
+    patched_sessions_db, monkeypatch
+):
+    """Control: the test above passes if `bounded` is stuck on, or if the new
+    budget binds on ordinary sessions. Same rows, a total large enough to hold
+    them."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 100_000)
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 50)
+    monkeypatch.setattr(svc, "MAX_HYDRATED_CONTENT_CHARS", 10_000_000)
+    await seed_session(db_path, session_id="sess-total-ok", artifacts_path="/run")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-total-ok", count=40)
+
+    detail = await svc.get_session("sess-total-ok")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is False
+    assert detail["message_stats"]["tool_call_count"] == 40
