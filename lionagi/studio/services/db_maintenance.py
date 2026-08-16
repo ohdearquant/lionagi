@@ -227,6 +227,22 @@ async def get_last_checkpoint_at() -> float | None:
     return None
 
 
+async def get_last_prune_at() -> float | None:
+    """Return the ``created_at`` of the most recent prune event, or None if a
+    prune has never been recorded.
+
+    Unlike ``get_last_checkpoint_at`` this does not swallow read failures. Its
+    caller uses the answer to decide when the next automatic prune is due, and
+    a failed read reported as None is indistinguishable from "never pruned",
+    which would anchor the schedule to the failure instead of retrying.
+    """
+    if state_db_known_absent():
+        return None
+    async with StateDB() as db:
+        events = await db.list_admin_events(action="prune", limit=1)
+    return events[0].get("created_at") if events else None
+
+
 def get_db_size_alert(size_bytes: int) -> tuple[bool, int]:
     """Return ``(size_alert, threshold_bytes)`` given the current DB size."""
     from lionagi.studio.config import DB_SIZE_ALERT_BYTES

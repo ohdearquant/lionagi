@@ -389,6 +389,17 @@ PRUNE_ARCHIVE_DIR: Path | None = (
 # transaction so the write lock is released between chunks and an interrupted
 # prune keeps the chunks that already committed.
 PRUNE_CHUNK_ROWS: int = max(1, int(os.environ.get("LIONAGI_STUDIO_PRUNE_CHUNK_ROWS", "100")))
+# Minimum seconds between automatic retention prunes from the scheduler tick;
+# 0 disables the automatic pass and leaves prune to the admin route. The gap is
+# measured from when a prune last committed, read back from the admin event log,
+# not from when this process started: a daemon restarted more often than the
+# interval would otherwise never reach a pass. A database that has never been
+# pruned starts its clock at process start rather than firing immediately, so
+# adopting this on an installation with a large backlog has a predictable first
+# pass instead of one during startup.
+RETENTION_INTERVAL_SECONDS: int = int(
+    os.environ.get("LIONAGI_STUDIO_RETENTION_INTERVAL_SECONDS", "86400")
+)
 
 # dispatch_outbox retention (ADR-0059 delta 3). Two windows: terminal-success
 # rows (delivered/acked) are low-signal once past the window, so they use a
