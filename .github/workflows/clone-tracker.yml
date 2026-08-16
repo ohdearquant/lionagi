@@ -69,35 +69,25 @@ jobs:
         # carry the value we actually use.
         run: |
           set -euo pipefail
-          # Until the token exists, skip loudly instead of failing. A scheduled
-          # workflow that is red on every run is one nobody reads by the second
-          # week, and the thing it would eventually be red ABOUT is a missing
-          # measurement. Skipping writes no ledger entry, so a gap in the data
-          # stays a visible gap rather than becoming a recorded zero.
+          # Without the token nothing can be read, and whether that should fail
+          # depends on which run this is. A scheduled run exists to capture a
+          # window the API is about to drop, so a scheduled run without the
+          # token is losing data that no later run can recover, and failing is
+          # how that gets said to anyone. A push or a manual run is here for
+          # some other reason, and failing those would put a missing secret on
+          # surfaces that are not about traffic at all. Either way nothing is
+          # appended, so a gap in the data stays a visible gap rather than
+          # becoming a recorded zero.
           #
-          # A warning on its own has no consumer: nothing fails, blocks or
-          # notifies if it goes unread, so the bound on how long the gap may
-          # grow is a promise rather than a control. Past the date below, a
-          # cycle that still finds no token fails instead, which sends the one
-          # notification a warning never sends. The window then closes and later
-          # cycles go back to warning, so this does not become the every-cycle
-          # red the paragraph above rejects.
-          #
-          # The window is 14 days because the largest gap between scheduled runs
-          # is 13 (the 1st to the 14th, and the 14th to the 27th), so at least
-          # one run always lands inside it. Around a month boundary the 27th and
-          # the 1st are closer together and two runs can land inside instead.
-          # That is the deliberate trade: a window narrow enough to guarantee
-          # exactly one run could fall between two runs and notify nobody at all,
-          # which is the failure this whole step exists to prevent.
-          ESCALATE_FROM=2026-08-16
-          ESCALATE_DAYS=14
+          # The scheduled failure repeats every cycle until the token is stored,
+          # which is deliberate. The alternative is a run that remembers having
+          # complained already and then stays quiet, and a control that has
+          # spent its one complaint looks exactly like a control that was never
+          # armed. Three reds a month that stop the moment the secret exists is
+          # the cheaper mistake.
           if [ -z "${GH_TOKEN:-}" ]; then
-            now=$(date -u +%s)
-            from=$(date -u -d "${ESCALATE_FROM}" +%s)
-            until=$(( from + ESCALATE_DAYS * 86400 ))
-            if [ "$now" -ge "$from" ] && [ "$now" -lt "$until" ]; then
-              echo "::error::TRAFFIC_READ_TOKEN has been missing since ${ESCALATE_FROM} and the traffic API keeps only 14 days, so every cycle without it loses that window's clone and view counts permanently. Store a fine-grained token carrying only Administration: read as TRAFFIC_READ_TOKEN. This run fails once to say so; later runs go back to warning."
+            if [ "${GITHUB_EVENT_NAME:-}" = "schedule" ]; then
+              echo "::error::TRAFFIC_READ_TOKEN is not set, so this cycle read no traffic. The API keeps only 14 days, so the clone and view counts for this window are now unrecoverable. Store a fine-grained token carrying only Administration: read as TRAFFIC_READ_TOKEN."
               exit 1
             fi
             echo "::warning::TRAFFIC_READ_TOKEN is not set, so no traffic was read and nothing was appended. The ledger has a gap for this run, not a zero."
