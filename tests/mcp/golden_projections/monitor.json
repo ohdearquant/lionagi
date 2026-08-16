@@ -2,11 +2,11 @@
   "path": "monitor",
   "schema": {
     "additionalProperties": false,
-    "description": "Show all running entities (sessions, invocations, shows, plays) in a compact table, or drill into one entity by ID. Use --watch for live refresh.",
+    "description": "Show all running entities (sessions, invocations, shows, plays) in a compact table, or drill into one entity by ID. Use `watch` for live refresh.",
     "properties": {
       "chain": {
         "default": true,
-        "description": "With --run: watch only the literal id(s) given, instead of following scheduler on_success/on_fail chain children by default.",
+        "description": "With `run_ids`: watch only the literal id(s) given, instead of following scheduler on_success/on_fail chain children by default.",
         "type": "boolean",
         "x-flag": "--no-chain"
       },
@@ -26,7 +26,7 @@
       },
       "follow": {
         "default": false,
-        "description": "With --run: keep discovering schedule_runs created after the initial set drains, instead of exiting once it is empty. Never ends on its own \u2014 pair with --max-wait.",
+        "description": "With `run_ids`: keep discovering schedule_runs created after the initial set drains, instead of exiting once it is empty. Never ends on its own \u2014 pair with `max_wait`.",
         "type": "boolean",
         "x-flag": "--follow"
       },
@@ -37,12 +37,12 @@
       },
       "interval": {
         "default": 3.0,
-        "description": "Seconds between state.db polls in --run mode (default 3). Independent of --refresh, which paces the table redraw.",
+        "description": "Seconds between state.db polls in `run_ids` mode (default 3). Independent of `refresh`, which paces the table redraw.",
         "type": "number",
         "x-flag": "--interval"
       },
       "max_wait": {
-        "description": "With --run: give up waiting after this many seconds and exit EXIT_RUNNING for whatever is still pending, instead of blocking forever on a stuck session or run. Default: 900s. Pass 0 for unlimited.",
+        "description": "With `run_ids`: give up waiting after this many seconds and exit EXIT_RUNNING for whatever is still pending, instead of blocking forever on a stuck session or run. Default: 900s. Pass 0 for unlimited.",
         "type": "number",
         "x-flag": "--max-wait"
       },
@@ -56,12 +56,12 @@
       },
       "refresh": {
         "default": 2,
-        "description": "Seconds between redraws under --watch (default 2). Ignored without it.",
+        "description": "Seconds between redraws under `watch` (default 2). Ignored without it.",
         "type": "integer",
         "x-flag": "--refresh"
       },
       "run_ids": {
-        "description": "Wait for one or more schedule_run IDs to reach a terminal state, then exit (scripting primitive; see `li monitor run --help` for the positional form). Follows scheduler on_success/on_fail chain children by default (see --no-chain). Ignores id/--watch/--since/--type/--project.",
+        "description": "Wait for one or more schedule_run IDs to reach a terminal state, then exit (scripting primitive; see `li monitor run --help` for the positional form). Follows scheduler on_success/on_fail chain children by default (see `chain`). Ignores id/`watch` / `since` / `entity_type` / `project`.",
         "type": "string",
         "x-flag": "--run"
       },
@@ -72,7 +72,7 @@
       },
       "watch": {
         "default": false,
-        "description": "Redraw the view every --refresh seconds until interrupted, instead of printing one snapshot and exiting.",
+        "description": "Redraw the view every `refresh` seconds until interrupted, instead of printing one snapshot and exiting.",
         "type": "boolean",
         "x-aliases": [
           "-w"

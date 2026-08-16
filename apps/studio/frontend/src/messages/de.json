@@ -521,6 +521,7 @@
       "graphNodeStatusDone": "fertig",
       "graphNodeStatusFailed": "fehlgeschlagen",
       "graphNodeStatusSkipped": "übersprungen",
+      "graphNodeStatusCancelled": "abgebrochen",
       "graphNodeStatusEscalated": "eskaliert",
       "progressTotal": "Gesamt",
       "progressCompleted": "Abgeschlossen",

@@ -22,6 +22,9 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("status", "TEXT"),
         ("started_at", "REAL"),
         ("ended_at", "REAL"),
+        # Per-row provenance for repaired/imported end times. INTEGER keeps
+        # SQLite/PostgreSQL migration DDL portable (0=false, 1=true).
+        ("ended_at_is_approximate", "INTEGER NOT NULL DEFAULT 0"),
         # Activity marker for staleness detection (read by ADR-0057 D6).
         ("last_message_at", "REAL"),
         # Live flow phase for the `li monitor` PHASE column.
@@ -264,6 +267,9 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "ON schedules(owner_key) WHERE owner_key IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_sessions_run_id "
         "ON sessions(run_id) WHERE run_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_terminal_missing_end ON sessions(id) "
+        "WHERE ended_at IS NULL AND status IN "
+        "('completed','completed_empty','failed','timed_out','aborted','cancelled')",
         *_MESSAGE_POINTER_INDEXES,
         "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
         "ON branches(session_id, created_at)",
@@ -276,6 +282,9 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "ON schedules(owner_key) WHERE owner_key IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_sessions_run_id "
         "ON sessions(run_id) WHERE run_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_sessions_terminal_missing_end ON sessions(id) "
+        "WHERE ended_at IS NULL AND status IN "
+        "('completed','completed_empty','failed','timed_out','aborted','cancelled')",
         *_MESSAGE_POINTER_INDEXES,
         "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
         "ON branches(session_id, created_at)",

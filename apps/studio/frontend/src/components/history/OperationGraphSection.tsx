@@ -10,6 +10,7 @@ const STATUS_BORDER: Record<OperationStatus, string> = {
   succeeded: "border-l-status-success",
   failed: "border-l-status-error",
   skipped: "border-l-content-muted",
+  cancelled: "border-l-status-warning",
   escalated: "border-l-status-warning",
 };
 
@@ -21,6 +22,7 @@ const STATUS_DOT: Record<OperationStatus, string> = {
   succeeded: "bg-status-success",
   failed: "bg-status-error",
   skipped: "bg-content-muted",
+  cancelled: "bg-status-warning",
   escalated: "bg-status-warning",
 };
 

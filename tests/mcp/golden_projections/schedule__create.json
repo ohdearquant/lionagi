@@ -39,12 +39,12 @@
         "x-flag": "--agent"
       },
       "cron": {
-        "description": "Cron expression, e.g. \"0 * * * *\". Required when --trigger-type is cron, which is the default; ignored for other trigger types.",
+        "description": "Cron expression, e.g. \"0 * * * *\". Required when `trigger_type` is cron, which is the default; ignored for other trigger types.",
         "type": "string",
         "x-flag": "--cron"
       },
       "cwd": {
-        "description": "Explicit execution root for this schedule's spawned process (must be an existing directory). Persisted at creation time so the schedule's spawn cwd never depends on where the Studio daemon is running from (default: --project's registered path, or this CLI's own working directory).",
+        "description": "Explicit execution root for this schedule's spawned process (must be an existing directory). Persisted at creation time so the schedule's spawn cwd never depends on where the Studio daemon is running from (default: `project`'s registered path, or this CLI's own working directory).",
         "type": "string",
         "x-flag": "--cwd"
       },
@@ -64,12 +64,12 @@
         "x-flag": "--github-filter"
       },
       "github_repo": {
-        "description": "GitHub repository to poll (required for --trigger-type github/github_poll).",
+        "description": "GitHub repository to poll (required for `trigger_type` github/github_poll).",
         "type": "string",
         "x-flag": "--github-repo"
       },
       "interval": {
-        "description": "Seconds between fires. Required when --trigger-type is interval; ignored for other trigger types.",
+        "description": "Seconds between fires. Required when `trigger_type` is interval; ignored for other trigger types.",
         "type": "integer",
         "x-flag": "--interval"
       },
@@ -79,12 +79,12 @@
         "x-flag": "--max-cost-usd"
       },
       "max_runs": {
-        "description": "Auto-disable this schedule once N total runs have fired (default: unlimited). Chained on_success/on_fail fires do not count toward N. Mutually exclusive with --once.",
+        "description": "Auto-disable this schedule once N total runs have fired (default: unlimited). Chained on_success/on_fail fires do not count toward N. Mutually exclusive with `once`.",
         "type": "integer",
         "x-flag": "--max-runs"
       },
       "max_tokens": {
-        "description": "Auto-disable this schedule once its cumulative session token usage (input+output) reaches N (default: unlimited). Same pre-fire cumulative semantics as --max-cost-usd.",
+        "description": "Auto-disable this schedule once its cumulative session token usage (input+output) reaches N (default: unlimited). Same pre-fire cumulative semantics as `max_cost_usd`.",
         "type": "integer",
         "x-flag": "--max-tokens"
       },
@@ -99,18 +99,18 @@
         "x-positional": true
       },
       "on_fail": {
-        "description": "Chain action to fire when this run exits non-zero, as a JSON object (same allowed keys and shallow-merge caveat as --on-success \u2014 see above). Example: --on-fail '{\"prompt\": \"alert on-call\", \"on_fail\": null}'.",
+        "description": "Chain action to fire when this run exits non-zero, as a JSON object (same allowed keys and shallow-merge caveat as `on_success` \u2014 see above). Example value: {\"prompt\": \"alert on-call\", \"on_fail\": null}",
         "type": "string",
         "x-flag": "--on-fail"
       },
       "on_success": {
-        "description": "Chain action to fire when this run exits 0, as a JSON object (allowed keys: kind/action_kind, model, prompt, agent, playbook, on_success, on_fail). WARNING \u2014 shallow merge: the chain child is built as {**this_schedule, **on_success}, so any key you omit is INHERITED from this schedule, including on_success/on_fail themselves. A 2-level chain must set the inner level's own \"on_success\": null explicitly, or the chain keeps re-firing at each depth (capped, but rarely what you want). Example: --on-success '{\"prompt\": \"notify done\", \"on_success\": null}'.",
+        "description": "Chain action to fire when this run exits 0, as a JSON object (allowed keys: kind/action_kind, model, prompt, agent, playbook, on_success, on_fail). WARNING \u2014 shallow merge: the chain child is built as {**this_schedule, **on_success}, so any key you omit is INHERITED from this schedule, including on_success/on_fail themselves. A 2-level chain must set the inner level's own \"on_success\": null explicitly, or the chain keeps re-firing at each depth (capped, but rarely what you want). Example value: {\"prompt\": \"notify done\", \"on_success\": null}",
         "type": "string",
         "x-flag": "--on-success"
       },
       "once": {
         "default": false,
-        "description": "Sugar for --max-runs 1 \u2014 fire once, then auto-disable.",
+        "description": "Sugar for `max_runs` 1 \u2014 fire once, then auto-disable.",
         "type": "boolean",
         "x-flag": "--once"
       },
@@ -130,7 +130,7 @@
         "x-flag": "--project"
       },
       "prompt": {
-        "description": "Instruction the scheduled agent runs at each fire. Required when --action-kind is agent, which is the default. A profile named by --agent supplies the model and settings, never this instruction, so a schedule created without it fires and fails.",
+        "description": "Instruction the scheduled agent runs at each fire. Required when `action_kind` is agent, which is the default. A profile named by `agent` supplies the model and settings, never this instruction, so a schedule created without it fires and fails.",
         "type": "string",
         "x-flag": "--prompt"
       },

@@ -300,8 +300,9 @@ _TOOL_DESCRIPTIONS = {
     "run_progress": (
         "Report how one run is going: status, op totals split into "
         "completed/running/failed/pending (they always sum to the total), "
-        "which ops are running right now, elapsed time, and whether it has a "
-        "graph. Accepts a run id, an id prefix, a name or playbook substring "
+        "which ops are running right now, elapsed time when it is live or "
+        "measured (null for an unknown historical duration), and whether it "
+        "has a graph. Accepts a run id, an id prefix, a name or playbook substring "
         "(minimum 3 characters; needs a project context on the turn), or "
         "'current' for the run the human is "
         "looking at. An ambiguous reference returns candidates instead of "
@@ -881,6 +882,7 @@ async def list_recent_runs(arguments: dict[str, Any]) -> dict[str, Any]:
             "project": public_project(row.get("project")),
             "startedAt": row.get("started_at"),
             "endedAt": row.get("ended_at"),
+            "endedAtApproximate": bool(row.get("ended_at_is_approximate")),
             "href": f"/runs/{row.get('id')}",
             "kind": row.get("invocation_kind"),
             "playbookName": row.get("playbook_name"),

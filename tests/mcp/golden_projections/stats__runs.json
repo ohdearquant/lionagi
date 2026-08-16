@@ -2,7 +2,7 @@
   "path": "stats runs",
   "schema": {
     "additionalProperties": false,
-    "description": "Aggregate sessions rows updated within --since into run_count, completed, and failed counts per group. Read-only: no writes, no schema changes, no PRAGMA mutations.",
+    "description": "Aggregate sessions rows updated within `since` into run_count, completed, and failed counts per group. Read-only: no writes, no schema changes, no PRAGMA mutations.",
     "properties": {
       "group_by": {
         "default": "project,kind",

@@ -20,6 +20,7 @@ const STATUS_WORD_KEY: Record<Exclude<NodeExecStatus, "pending">, string> = {
   completed: "graphNodeStatusDone",
   failed: "graphNodeStatusFailed",
   skipped: "graphNodeStatusSkipped",
+  cancelled: "graphNodeStatusCancelled",
   escalated: "graphNodeStatusEscalated",
 };
 
@@ -179,6 +180,7 @@ export type NodeExecStatus =
   | "completed"
   | "failed"
   | "skipped"
+  | "cancelled"
   | "escalated";
 
 export interface StepNodeData {
@@ -238,7 +240,11 @@ export interface NodeVisualStyle {
 
 export function computeNodeVisualStyle(status: NodeExecStatus, selected: boolean): NodeVisualStyle {
   const isTerminalError = status === "failed";
-  const isWarn = status === "awaiting_approval" || status === "paused" || status === "escalated";
+  const isWarn =
+    status === "awaiting_approval" ||
+    status === "paused" ||
+    status === "cancelled" ||
+    status === "escalated";
 
   const borderColor =
     status === "running"

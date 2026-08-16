@@ -202,28 +202,32 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  // 1097 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
+  // 1098 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
   // (library.filterHooks + 29 library.hooks.* leaves) when the shared hook
   // library and per-agent assembly landed, + history.detail token-usage stats
   // (statTokensIn/statTokensOut, natively translated in all 16 locales), + 5
   // for the Operator model picker's provider groups, legacy selection, and
-  // effort-transport explanation (also natively translated in all 16).
+  // effort-transport explanation (also natively translated in all 16),
+  // + history.detail.graphNodeStatusCancelled (1), the label for a node that
+  // stopped because its run was cancelled rather than because it failed
+  // (natively translated in all 16, which is why the baseline below is
+  // unchanged).
   // autoAllow and the hooks leaves are natively translated in
   // zh/ja/ko/es/fr/de/pt-BR/ru and English-copied in the remaining 7 locales
   // — that debt is attributed in the identity-leak baseline below.
   //
-  // 1103 = 1097 + 6 schedules.* leaves for the lifecycle audit trail
+  // 1104 = 1098 + 6 schedules.* leaves for the lifecycle audit trail
   // (detail.lastLifecycleChange, detail.noLifecycleHistory,
   // detail.unknownActor) and the disable-with-reason flow
   // (card.cancelDisable, card.disableReason, card.disableReasonHint).
   //
-  // 1104 = 1103 + schedules.detail.unverifiedActor, which qualifies the name a
+  // 1105 = 1104 + schedules.detail.unverifiedActor, which qualifies the name a
   // caller sent for itself when the lifecycle panel shows it. The audit ledger
   // stores that name as a claim rather than as the actor, so the panel has to
   // say which of the two it is displaying. Natively translated in all 16
   // locales, so it adds nothing to the identity-leak baseline below.
-  it("en.json has 1104 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1104);
+  it("en.json has 1105 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1105);
   });
 
   it.each(LOCALES.map((l) => l.code))(

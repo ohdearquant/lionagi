@@ -344,7 +344,9 @@ def test_a_window_that_cannot_be_parsed_is_refused_inside_the_envelope(home):
 def test_the_plugin_listing_is_named_and_refused_with_why(home):
     entry = next(e for e in call(help=True)["verbs"] if e["verb"] == "plugin.list")
     assert entry["available"] is False
-    assert "trust" in entry["reason"]
+    assert entry["cli_path"]
+    # the why is one targeted call away rather than in every catalog read
+    assert "trust" in call(help="plugin.list")["reason"]
     op = run_op("plugin.list")
     assert op["ok"] is False
     assert op["error"]["kind"] == "unavailable"
