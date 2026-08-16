@@ -443,10 +443,6 @@ class SQLAlchemyLifecycleService:
                     patch["ended_at"] = ended_at_value
                 else:
                     patch.setdefault("ended_at", ended_at_value)
-                if "duration_ms" not in patch:
-                    started_at = row["started_at"]
-                    if isinstance(started_at, int | float):
-                        patch["duration_ms"] = max(0.0, (ended_at_value - started_at) * 1000)
                 # The flag and the duration are one fact and move together.
                 # Leaving the bit set beside a measured duration produces a row
                 # whose own two fields disagree, and readers believe the bit:
@@ -462,6 +458,21 @@ class SQLAlchemyLifecycleService:
                     patch["ended_at_is_approximate"] = 0
                 else:
                     patch.setdefault("ended_at_is_approximate", 0)
+                # Derived only from an end that was measured. Subtracting a
+                # reconstructed end from a start yields a real-looking number
+                # for a length nobody observed, which is the thing the flag
+                # exists to prevent -- and once stored, the duration outlives
+                # every reader's chance to notice. An approximate end leaves
+                # duration unknown instead.
+                #
+                # This reads the flag settled just above rather than
+                # measured_here, because a caller who supplies both an end and
+                # the bit is recording a reconstructed end deliberately, and
+                # that end is no more subtractable than a repaired one.
+                if "duration_ms" not in patch and not patch["ended_at_is_approximate"]:
+                    started_at = row["started_at"]
+                    if isinstance(started_at, int | float):
+                        patch["duration_ms"] = max(0.0, (ended_at_value - started_at) * 1000)
                 if patch != dict(command.patch):
                     command = replace(command, patch=patch)
 

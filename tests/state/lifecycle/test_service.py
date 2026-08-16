@@ -765,3 +765,67 @@ async def test_an_explicitly_null_end_does_not_survive_the_measurement(
     assert row["ended_at"] is not None
     assert row["ended_at_is_approximate"] is False
     assert row["duration_ms"] == pytest.approx((row["ended_at"] - 100.0) * 1000)
+
+
+async def test_a_deliberately_approximate_end_leaves_the_duration_unknown(
+    db: StateDB,
+) -> None:
+    """A caller recording a reconstructed end must not get a duration from it.
+
+    Sending an end together with ``ended_at_is_approximate=1`` says the end was
+    derived, not observed. Subtracting the start from it produces a number that
+    reads as a measured length, and once persisted no reader can tell it was
+    derived -- the flag is on the row, but a consumer that trusts a stored
+    duration never consults it. ``docs/internals/state-db.md`` states the
+    contract directly: an approximate end leaves duration unknown.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET started_at = :started WHERE id = :id"),
+            {"started": 100.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(
+            entity_id=sid,
+            to_status="completed",
+            patch={"ended_at": 400.0, "ended_at_is_approximate": 1},
+        )
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at"] == 400.0
+    assert row["ended_at_is_approximate"] is True
+    assert row["duration_ms"] is None, (
+        "an approximate end was subtracted from the start and stored as a duration"
+    )
+
+
+async def test_a_measured_end_still_gets_its_duration(
+    db: StateDB,
+) -> None:
+    """Control: the gate withholds duration from approximate ends, not from all ends.
+
+    Without this, the test above would pass just as well against a transition
+    that had stopped computing durations altogether, which is the ordinary way
+    a fix of this shape goes wrong.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET started_at = :started WHERE id = :id"),
+            {"started": 100.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(entity_id=sid, to_status="completed", patch={"ended_at": 400.0})
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at_is_approximate"] is False
+    assert row["duration_ms"] == pytest.approx(300.0 * 1000)
