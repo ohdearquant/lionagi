@@ -39,9 +39,11 @@ written down in these hand-maintained forms:
 4. `MIGRATION_COLUMNS` / `MIGRATION_INDEXES` in `state/schema_migrations.py`: a per-table
    ledger of additive columns (the `sessions` list alone carries ~30 entries) and a per-dialect
    index list, both re-stating what 1 and 2 already declare.
-5. Five `_*_COLUMNS` frozensets in `state/db.py` (`_SESSION_COLUMNS` 217, `_INVOCATION_COLUMNS`
-   287, `_SHOW_COLUMNS` 301, `_PLAY_COLUMNS` 315, `_BRANCH_COLUMNS` 338) guarding the dynamic
+5. Five `_*_COLUMNS` frozensets in `state/db.py` (`_SESSION_COLUMNS` 229, `_INVOCATION_COLUMNS`
+   299, `_SHOW_COLUMNS` 313, `_PLAY_COLUMNS` 327, `_BRANCH_COLUMNS` 350) guarding the dynamic
    UPDATE builders, plus the hand-written column lists inside each `_build_*_insert_stmt`.
+   The file also holds `_MIGRATION_COLUMNS` and `_SPEND_ROLLUP_COLUMNS`, which are a different
+   thing and are not part of this five.
 6. `ALL_TABLES` in `tests/state/test_engine_schema.py:192`: a hand-typed set of all 32 table
    names, which is the population every parity assertion iterates over. A table added to the
    package and not to this set is not checked by any of them.
