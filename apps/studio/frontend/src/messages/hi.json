@@ -784,6 +784,7 @@
       "lastLifecycleChange": "नवीनतम जीवनचक्र परिवर्तन",
       "noLifecycleHistory": "इस शेड्यूल के लिए कोई जीवनचक्र परिवर्तन दर्ज नहीं है।",
       "unknownActor": "अज्ञात कर्ता",
+      "unverifiedActor": "असत्यापित",
       "descriptionPlaceholder": "वैकल्पिक विवरण…",
       "sectionTrigger": "ट्रिगर",
       "triggerType": "ट्रिगर प्रकार",

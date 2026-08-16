@@ -784,6 +784,7 @@
       "lastLifecycleChange": "Dernier changement de cycle de vie",
       "noLifecycleHistory": "Aucun changement de cycle de vie enregistré pour cette planification.",
       "unknownActor": "Auteur inconnu",
+      "unverifiedActor": "Non vérifié",
       "descriptionPlaceholder": "Description facultative…",
       "sectionTrigger": "Déclencheur",
       "triggerType": "Type de déclencheur",

@@ -784,6 +784,7 @@
       "lastLifecycleChange": "Son yaşam döngüsü değişikliği",
       "noLifecycleHistory": "Bu zamanlama için kayıtlı yaşam döngüsü değişikliği yok.",
       "unknownActor": "Bilinmeyen işlemci",
+      "unverifiedActor": "Doğrulanmamış",
       "descriptionPlaceholder": "isteğe bağlı açıklama…",
       "sectionTrigger": "tetikleyici",
       "triggerType": "tetikleyici türü",

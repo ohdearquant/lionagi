@@ -216,8 +216,14 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // (detail.lastLifecycleChange, detail.noLifecycleHistory,
   // detail.unknownActor) and the disable-with-reason flow
   // (card.cancelDisable, card.disableReason, card.disableReasonHint).
-  it("en.json has 1103 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1103);
+  //
+  // 1104 = 1103 + schedules.detail.unverifiedActor, which qualifies the name a
+  // caller sent for itself when the lifecycle panel shows it. The audit ledger
+  // stores that name as a claim rather than as the actor, so the panel has to
+  // say which of the two it is displaying. Natively translated in all 16
+  // locales, so it adds nothing to the identity-leak baseline below.
+  it("en.json has 1104 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1104);
   });
 
   it.each(LOCALES.map((l) => l.code))(

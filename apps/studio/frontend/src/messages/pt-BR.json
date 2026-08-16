@@ -784,6 +784,7 @@
       "lastLifecycleChange": "Última alteração do ciclo de vida",
       "noLifecycleHistory": "Nenhuma alteração de ciclo de vida foi registrada para este agendamento.",
       "unknownActor": "Autor desconhecido",
+      "unverifiedActor": "Não verificado",
       "descriptionPlaceholder": "Descrição opcional…",
       "sectionTrigger": "Acionador",
       "triggerType": "Tipo de acionador",

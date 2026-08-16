@@ -448,6 +448,12 @@ export default function ScheduleDetailModal({
                       {detail.last_lifecycle_change.reason_summary}
                     </p>
                   )}
+                  {detail.last_lifecycle_change.metadata?.claimed_actor_unverified && (
+                    <p className="mt-1 truncate font-data text-content-muted">
+                      {detail.last_lifecycle_change.metadata.claimed_actor_unverified} ·{" "}
+                      {t("unverifiedActor")}
+                    </p>
+                  )}
                   {detail.last_lifecycle_change.metadata?.request_cwd && (
                     <p className="mt-1 truncate font-data text-content-muted">
                       {detail.last_lifecycle_change.metadata.request_cwd}

@@ -784,6 +784,7 @@
       "lastLifecycleChange": "Thay đổi vòng đời gần nhất",
       "noLifecycleHistory": "Chưa có thay đổi vòng đời nào được ghi cho lịch này.",
       "unknownActor": "Tác nhân không xác định",
+      "unverifiedActor": "Chưa xác minh",
       "descriptionPlaceholder": "mô tả tùy chọn…",
       "sectionTrigger": "trigger",
       "triggerType": "loại trigger",

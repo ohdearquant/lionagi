@@ -784,6 +784,7 @@
       "lastLifecycleChange": "最新のライフサイクル変更",
       "noLifecycleHistory": "このスケジュールにはライフサイクル変更の記録がありません。",
       "unknownActor": "不明な実行者",
+      "unverifiedActor": "未検証",
       "descriptionPlaceholder": "任意の説明…",
       "sectionTrigger": "トリガー",
       "triggerType": "トリガータイプ",

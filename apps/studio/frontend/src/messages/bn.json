@@ -784,6 +784,7 @@
       "lastLifecycleChange": "সর্বশেষ জীবনচক্র পরিবর্তন",
       "noLifecycleHistory": "এই সময়সূচির কোনো জীবনচক্র পরিবর্তন রেকর্ড করা হয়নি।",
       "unknownActor": "অজানা কর্তা",
+      "unverifiedActor": "অযাচাইকৃত",
       "descriptionPlaceholder": "ঐচ্ছিক বিবরণ…",
       "sectionTrigger": "ট্রিগার",
       "triggerType": "ট্রিগারের ধরন",

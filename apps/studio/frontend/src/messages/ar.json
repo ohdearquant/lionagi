@@ -784,6 +784,7 @@
       "lastLifecycleChange": "آخر تغيير في دورة الحياة",
       "noLifecycleHistory": "لا توجد تغييرات مسجلة في دورة حياة هذا الجدول.",
       "unknownActor": "جهة غير معروفة",
+      "unverifiedActor": "غير متحقق منه",
       "descriptionPlaceholder": "وصف اختياري…",
       "sectionTrigger": "المشغّل",
       "triggerType": "نوع المشغّل",

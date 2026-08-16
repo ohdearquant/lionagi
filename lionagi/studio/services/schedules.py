@@ -31,21 +31,28 @@ class NameConflictError(Exception):
     """Raised when a schedule name already exists."""
 
 
-def _request_lifecycle_identity(request: Request | None) -> tuple[str, str | None, bool]:
-    """Resolve the same lightweight request identity used by Studio writes.
+# What the audit ledger's actor column is allowed to say when the server has
+# no way to establish who the caller is. Studio authenticates with a single
+# shared bearer token, or with none at all, so there is no per-caller principal
+# and every authorized caller is indistinguishable from every other.
+_UNVERIFIED_ACTOR = "operator"
 
-    The actor header already identifies attention-disposition deletes. Schedule
-    lifecycle writes reuse it, and additionally retain the submitting process's
-    resolved cwd when the CLI provides one. Both values are bounded and control
-    characters are rejected before they reach the durable audit ledger.
 
-    The third member says whether the actor came off the request. Studio
-    authenticates with one shared bearer token, or with none at all, so there
-    is no per-caller principal to bind this header to and any authorized caller
-    can send any name. Rather than let the ledger present that name the way it
-    presents a verified one, the claim is recorded as a claim: a reader can
-    then tell "this process said it was X" from "X is who it was", which is the
-    distinction an audit trail exists to preserve.
+def _request_lifecycle_identity(request: Request | None) -> tuple[str, str | None, str | None]:
+    """Resolve the request identity a schedule lifecycle write may record.
+
+    Returns the actor to persist, the submitting process's resolved cwd when
+    the CLI provides one, and the name the caller claimed for itself. Both
+    header values are bounded and control characters are rejected before they
+    reach the durable audit ledger.
+
+    The actor column never carries the claimed name. Any authorized caller can
+    send any X-Lionagi-Actor, so writing it there would let the ledger state as
+    fact something the server cannot check, and a reader has no way to tell a
+    real attribution from an invented one. Labelling it does not fix that: a
+    field that says who acted is read as who acted, whatever a neighbouring
+    field says about it. So the column holds only what the server can vouch
+    for, and the claim travels in metadata, where being a claim is its type.
     """
 
     def _safe_header(name: str, *, limit: int) -> str | None:
@@ -54,20 +61,23 @@ def _request_lifecycle_identity(request: Request | None) -> tuple[str, str | Non
             return None
         return value
 
-    claimed = _safe_header("x-lionagi-actor", limit=256)
-    return claimed or "operator", _safe_header("x-lionagi-cwd", limit=4096), claimed is not None
+    return (
+        _UNVERIFIED_ACTOR,
+        _safe_header("x-lionagi-cwd", limit=4096),
+        _safe_header("x-lionagi-actor", limit=256),
+    )
 
 
 def _lifecycle_metadata(
-    request_cwd: str | None, *, actor_self_reported: bool = False
+    request_cwd: str | None, *, claimed_actor: str | None = None
 ) -> dict[str, str]:
     metadata: dict[str, str] = {}
     if request_cwd is not None:
         metadata["request_cwd"] = request_cwd
-    if actor_self_reported:
-        # Present on exactly the records whose actor came from the request and
-        # was never verified against anything.
-        metadata["actor_attribution"] = "self-reported"
+    if claimed_actor is not None:
+        # The name the caller gave for itself, kept because it is useful and
+        # placed here because it is unverified. The key says so.
+        metadata["claimed_actor_unverified"] = claimed_actor
     return metadata
 
 
@@ -573,7 +583,7 @@ async def create_schedule(
     *,
     actor: str = "operator",
     request_cwd: str | None = None,
-    actor_self_reported: bool = False,
+    claimed_actor: str | None = None,
 ) -> dict[str, Any]:
     if not data.get("name"):
         raise ValueError("Schedule name is required")
@@ -667,9 +677,7 @@ async def create_schedule(
                 lifecycle_actor=actor,
                 lifecycle_source="operator",
                 lifecycle_reason_summary="Schedule created through Studio.",
-                lifecycle_metadata=_lifecycle_metadata(
-                    request_cwd, actor_self_reported=actor_self_reported
-                ),
+                lifecycle_metadata=_lifecycle_metadata(request_cwd, claimed_actor=claimed_actor),
             )
         except (sqlite3.IntegrityError, SAIntegrityError) as exc:
             raise NameConflictError(f"Schedule name {data['name']!r} already exists") from exc
@@ -770,7 +778,7 @@ async def delete_schedule(
     *,
     actor: str = "operator",
     request_cwd: str | None = None,
-    actor_self_reported: bool = False,
+    claimed_actor: str | None = None,
 ) -> bool:
     async with StateDB() as db:
         return await db.delete_schedule(
@@ -778,9 +786,7 @@ async def delete_schedule(
             lifecycle_actor=actor,
             lifecycle_source="operator",
             lifecycle_reason_summary="Schedule deleted through Studio.",
-            lifecycle_metadata=_lifecycle_metadata(
-                request_cwd, actor_self_reported=actor_self_reported
-            ),
+            lifecycle_metadata=_lifecycle_metadata(request_cwd, claimed_actor=claimed_actor),
         )
 
 
@@ -789,7 +795,7 @@ async def enable_schedule(
     *,
     actor: str = "operator",
     request_cwd: str | None = None,
-    actor_self_reported: bool = False,
+    claimed_actor: str | None = None,
 ) -> bool:
     async with StateDB() as db:
         schedule = await db.get_schedule(schedule_id)
@@ -817,9 +823,7 @@ async def enable_schedule(
             lifecycle_actor=actor,
             lifecycle_source="operator",
             lifecycle_reason_summary="Schedule enabled through Studio.",
-            lifecycle_metadata=_lifecycle_metadata(
-                request_cwd, actor_self_reported=actor_self_reported
-            ),
+            lifecycle_metadata=_lifecycle_metadata(request_cwd, claimed_actor=claimed_actor),
         )
 
     # A long-disabled schedule's next_fire_at may be stale; recompute now so
@@ -836,7 +840,7 @@ async def disable_schedule(
     reason: str | None = "Schedule disabled by a direct service call.",
     actor: str = "operator",
     request_cwd: str | None = None,
-    actor_self_reported: bool = False,
+    claimed_actor: str | None = None,
 ) -> bool:
     async with StateDB() as db:
         schedule = await db.get_schedule(schedule_id)
@@ -851,9 +855,7 @@ async def disable_schedule(
             lifecycle_actor=actor,
             lifecycle_source="operator",
             lifecycle_reason_summary=reason,
-            lifecycle_metadata=_lifecycle_metadata(
-                request_cwd, actor_self_reported=actor_self_reported
-            ),
+            lifecycle_metadata=_lifecycle_metadata(request_cwd, claimed_actor=claimed_actor),
         )
     return True
 
@@ -1071,13 +1073,13 @@ async def create_schedule_route(
     body: CreateScheduleRequest,
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
-    actor, request_cwd, actor_self_reported = _request_lifecycle_identity(request)
+    actor, request_cwd, claimed_actor = _request_lifecycle_identity(request)
     try:
         return await create_schedule(
             body.model_dump(exclude_none=True),
             actor=actor,
             request_cwd=request_cwd,
-            actor_self_reported=actor_self_reported,
+            claimed_actor=claimed_actor,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1117,12 +1119,12 @@ async def delete_schedule_route(
     schedule_id: str,
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
-    actor, request_cwd, actor_self_reported = _request_lifecycle_identity(request)
+    actor, request_cwd, claimed_actor = _request_lifecycle_identity(request)
     ok = await delete_schedule(
         schedule_id,
         actor=actor,
         request_cwd=request_cwd,
-        actor_self_reported=actor_self_reported,
+        claimed_actor=claimed_actor,
     )
     if not ok:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
@@ -1139,13 +1141,13 @@ async def enable_schedule_route(
     schedule_id: str,
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
-    actor, request_cwd, actor_self_reported = _request_lifecycle_identity(request)
+    actor, request_cwd, claimed_actor = _request_lifecycle_identity(request)
     try:
         ok = await enable_schedule(
             schedule_id,
             actor=actor,
             request_cwd=request_cwd,
-            actor_self_reported=actor_self_reported,
+            claimed_actor=claimed_actor,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1165,14 +1167,14 @@ async def disable_schedule_route(
     request: Request = None,  # type: ignore[assignment]
     body: DisableScheduleRequest | None = None,
 ) -> dict[str, Any]:
-    actor, request_cwd, actor_self_reported = _request_lifecycle_identity(request)
+    actor, request_cwd, claimed_actor = _request_lifecycle_identity(request)
     try:
         ok = await disable_schedule(
             schedule_id,
             reason=body.reason if body is not None else None,
             actor=actor,
             request_cwd=request_cwd,
-            actor_self_reported=actor_self_reported,
+            claimed_actor=claimed_actor,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

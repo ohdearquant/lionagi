@@ -784,6 +784,7 @@
       "lastLifecycleChange": "Letzte Lebenszyklusänderung",
       "noLifecycleHistory": "Für diesen Zeitplan wurden keine Lebenszyklusänderungen aufgezeichnet.",
       "unknownActor": "Unbekannter Akteur",
+      "unverifiedActor": "Nicht verifiziert",
       "descriptionPlaceholder": "Optionale Beschreibung…",
       "sectionTrigger": "Auslöser",
       "triggerType": "Auslösertyp",

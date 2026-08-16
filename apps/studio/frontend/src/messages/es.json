@@ -784,6 +784,7 @@
       "lastLifecycleChange": "Último cambio de ciclo de vida",
       "noLifecycleHistory": "No hay cambios de ciclo de vida registrados para esta programación.",
       "unknownActor": "Actor desconocido",
+      "unverifiedActor": "Sin verificar",
       "descriptionPlaceholder": "Descripción opcional…",
       "sectionTrigger": "Disparador",
       "triggerType": "Tipo de disparador",

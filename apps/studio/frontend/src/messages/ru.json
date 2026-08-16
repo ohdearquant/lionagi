@@ -784,6 +784,7 @@
       "lastLifecycleChange": "Последнее изменение жизненного цикла",
       "noLifecycleHistory": "Для этого расписания нет записанных изменений жизненного цикла.",
       "unknownActor": "Неизвестный исполнитель",
+      "unverifiedActor": "Не проверено",
       "descriptionPlaceholder": "Необязательное описание…",
       "sectionTrigger": "Триггер",
       "triggerType": "Тип триггера",

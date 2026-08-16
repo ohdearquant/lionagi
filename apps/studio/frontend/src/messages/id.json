@@ -784,6 +784,7 @@
       "lastLifecycleChange": "Perubahan siklus hidup terakhir",
       "noLifecycleHistory": "Belum ada perubahan siklus hidup yang tercatat untuk jadwal ini.",
       "unknownActor": "Pelaku tidak diketahui",
+      "unverifiedActor": "Belum diverifikasi",
       "descriptionPlaceholder": "Deskripsi opsional…",
       "sectionTrigger": "Pemicu",
       "triggerType": "Jenis pemicu",

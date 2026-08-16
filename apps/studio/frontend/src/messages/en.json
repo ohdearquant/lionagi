@@ -784,6 +784,7 @@
       "lastLifecycleChange": "Last lifecycle change",
       "noLifecycleHistory": "No lifecycle changes recorded for this schedule.",
       "unknownActor": "Unknown actor",
+      "unverifiedActor": "Unverified",
       "descriptionPlaceholder": "Optional description…",
       "sectionTrigger": "Trigger",
       "triggerType": "Trigger type",

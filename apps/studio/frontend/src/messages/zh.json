@@ -784,6 +784,7 @@
       "lastLifecycleChange": "最近生命周期变更",
       "noLifecycleHistory": "此计划尚无生命周期变更记录。",
       "unknownActor": "未知操作者",
+      "unverifiedActor": "未验证",
       "descriptionPlaceholder": "可选描述…",
       "sectionTrigger": "触发器",
       "triggerType": "触发类型",

@@ -486,7 +486,7 @@ export interface ScheduleLifecycleChange {
   source: string;
   actor: string | null;
   created_at: number;
-  metadata: { request_cwd?: string } | null;
+  metadata: { request_cwd?: string; claimed_actor_unverified?: string } | null;
 }
 
 export interface ScheduleDetail extends ScheduleSummary {
