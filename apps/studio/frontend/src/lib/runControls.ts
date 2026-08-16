@@ -50,10 +50,24 @@ export type ControlReasonCode =
   | "already-pause-requested"
   | "not-paused"
   | "still-pausing"
+  /** Nothing is running that would drain a control for this session. A
+   * mirrored or imported agent run carries invocation_kind "agent" like a live
+   * one, but no lionagi runner owns it, so the server refuses every control
+   * queued against it. Offered and disabled rather than hidden, on the same
+   * reasoning as agent-no-pause-seam: the limit is a property of this run, and
+   * a reader who sees no control at all cannot tell that from a missing
+   * feature. */
+  | "no-live-consumer"
   /** No command exists that would carry this verb out, so the control is
    * shown and refused rather than offered and unable to deliver. See
    * COMMAND_TYPES_BY_VERB for which verbs are backed. */
-  | "no-executable-path";
+  | "no-executable-path"
+  /** The run carries no project, so no control against it can be authorized.
+   * The server scopes a control by the project of the conversation it was
+   * proposed in, and a run with no project of its own gives that conversation
+   * nothing to be scoped to. Shown disabled rather than hidden, like the other
+   * property-of-this-run refusals. */
+  | "no-project-scope";
 
 export interface ControlState {
   /** Whether the control renders at all. A kind this ADR does not cover
@@ -89,10 +103,23 @@ export type PausePhase = "idle" | "pausing" | "paused";
  * progress counter to count, so it would hand over zero and settle straight
  * to "paused" while its operations are still in flight — offering Resume
  * before the pause gate has drained anything. Unknown holds at "pausing"
- * instead, the phase that claims nothing about what has finished. */
-export function derivePausePhase(pauseRequested: boolean, runningCount: number | null): PausePhase {
+ * instead, the phase that claims nothing about what has finished.
+ *
+ * `pauseEstablished` says the gate is already installed as far as the server
+ * is concerned, rather than requested here a moment ago. It changes only the
+ * unknown-count case, and it has to: holding an established gate at "pausing"
+ * keeps Resume disabled for as long as the count stays unknown, which on a run
+ * with no authored graph is permanently — the reader is left with a paused run
+ * and no way to release it, which is the state this argument exists to avoid.
+ * A fresh request keeps the cautious reading, since there the unknown really
+ * is unknown. */
+export function derivePausePhase(
+  pauseRequested: boolean,
+  runningCount: number | null,
+  pauseEstablished = false,
+): PausePhase {
   if (!pauseRequested) return "idle";
-  if (runningCount === null) return "pausing";
+  if (runningCount === null) return pauseEstablished ? "paused" : "pausing";
   return runningCount > 0 ? "pausing" : "paused";
 }
 
@@ -140,6 +167,42 @@ export function applyExecutablePath(verb: ControlVerb, state: ControlState): Con
   return offeredState(true, "no-executable-path");
 }
 
+/** Whether the server would admit any control for this run at all.
+ *
+ * Mirrors _admission_refusal (studio/operator/run_control.py), which admits
+ * the raw status "running" and answers "not_running" for every other value.
+ * Written as that positive test rather than as "not one of the statuses we
+ * call terminal", because the display mapping this used to read folds every
+ * status it does not recognize into "running" on purpose — sensible for a
+ * status chip, wrong for a gate. A status it did not know therefore arrived on
+ * the ENABLED side and rendered a control the server then rejected;
+ * `completed_empty` is the one that exists today, and the next one added would
+ * do the same. The positive form has no unknown side to fail open on.
+ *
+ * Reads the raw status rather than the display status for the same reason: the
+ * server's admission reads the sessions row, so anything derived in between is
+ * a second opinion this gate cannot afford. A missing status is not "running",
+ * which is what the server would conclude too. */
+export function runAdmitsControls(status: string | null | undefined): boolean {
+  return status === "running";
+}
+
+/** Layers the run's own lack of a project onto whatever the state machines
+ * decided, on the same reasoning as applyExecutablePath: the refusal has to
+ * win over the run-state reasons, since "The run is not paused" on a control
+ * that could never be authorized tells the reader to wait for something that
+ * will not help.
+ *
+ * A verb the state machine did not offer stays unoffered — this disables
+ * controls, it never adds one. */
+export function applyProjectScope(
+  project: string | null | undefined,
+  state: ControlState,
+): ControlState {
+  if (!state.offered || (typeof project === "string" && project.length > 0)) return state;
+  return offeredState(true, "no-project-scope");
+}
+
 export function pauseControlState(
   kind: ControlKind,
   runTerminal: boolean,
@@ -167,9 +230,21 @@ export function resumeControlState(
   return offeredState(true, "not-paused");
 }
 
-export function steerControlState(kind: ControlKind, runTerminal: boolean): ControlState {
+/** `hasControlConsumer` mirrors session_has_control_consumer (studio/operator/
+ * run_control.py), which is what the server's own admission asks. It is a
+ * required argument rather than an optional one so a caller cannot omit the
+ * question by accident: the failure it guards against is a steer that is
+ * offered, clicked, and then refused with "no_consumer", and that failure is
+ * invisible until someone clicks. Callers pass a strict boolean, so a response
+ * that never carried the field disables the control instead of assuming it. */
+export function steerControlState(
+  kind: ControlKind,
+  runTerminal: boolean,
+  hasControlConsumer: boolean,
+): ControlState {
   if (!CONSUMER_KINDS_BY_VERB.message.has(kind)) return NOT_OFFERED;
   if (runTerminal) return offeredState(true, "run-terminal");
+  if (!hasControlConsumer) return offeredState(true, "no-live-consumer");
   return offeredState(false);
 }
 
@@ -192,8 +267,9 @@ export function controlInstructionText(
   return `Deliver this message to the ${label} ${runId} as a steering continuation at the next turn boundary: ${(message ?? "").trim()}`;
 }
 
-function controlContext(runId: string): OperatorContextSnapshot {
+function controlContext(runId: string, project?: string | null): OperatorContextSnapshot {
   return {
+    project,
     space: "history",
     route: `/history?s=${encodeURIComponent(runId)}`,
     selection: { s: runId },
@@ -261,14 +337,20 @@ export async function proposeRunControl(
   runId: string,
   kind: ControlKind,
   verb: ControlVerb,
-  options?: { message?: string },
+  options?: { message?: string; project?: string | null },
 ): Promise<RunControlProposal> {
+  // The project rides on the conversation, not only on the turn context. A
+  // turn's context is request-body data the server stores as sent, so a
+  // control authorized from it would be authorized by its own caller. The
+  // conversation's project is written once here and has no update route, which
+  // is what the server's ownership check reads.
   const conversation = await createOperatorConversation({
+    project: options?.project,
     title: `${verb} · ${runId.slice(0, 8)}`,
   });
   const accepted = await submitOperatorTurn(conversation.id, {
     instruction: controlInstructionText(kind, verb, runId, options?.message),
-    context: controlContext(runId),
+    context: controlContext(runId, options?.project),
     expectedLastSequence: 0,
   });
   const proposal = await waitForProposal(conversation.id, accepted.acceptedSequence);
@@ -277,24 +359,15 @@ export async function proposeRunControl(
 
 /** Command types that legitimately satisfy each control verb.
  *
- * Every set is empty, and that is a finding rather than a placeholder. The
- * operator's mutating command set is prefill_schedule, launch_playbook,
- * cancel_run, resume_run and rename_session; none of them pauses a run,
- * releases a pause gate, or delivers a steering message. `resume_run` is the
- * trap: it carries command type "resume" and its own docstring says it is a
- * distinct operation from un-pausing a paused run, so it matches this verb by
- * name while doing something else.
- *
- * A control command therefore rides a natural-language instruction to a model
- * that has no tool for it, and the nearest available match to "stop this run"
- * is cancel_run. Until a backing command exists, every proposal returned for a
- * control verb is the wrong command, and refusing it is the only correct
- * outcome. Adding the backing command means adding its type here, and the
- * checks below start passing without further change. */
+ * Gate-release deliberately does not reuse the checkpoint-resume command type
+ * (`resume`): that launches another invocation, while `release_run_pause`
+ * releases the live run's existing pause gate. Keeping the types distinct lets
+ * the confirmation guard reject a model substituting one operation for the
+ * other even though both are described as "resume" in natural language. */
 const COMMAND_TYPES_BY_VERB: Record<ControlVerb, ReadonlySet<string>> = {
-  pause: new Set(),
-  resume: new Set(),
-  message: new Set(),
+  pause: new Set(["pause_run"]),
+  resume: new Set(["release_run_pause"]),
+  message: new Set(["steer_run"]),
 };
 
 /** A returned proposal does not match the control that was requested. Thrown
@@ -331,12 +404,9 @@ export function assertProposalSatisfies(
   verb: ControlVerb,
   runId: string,
   proposal: OperatorCommandProposal,
-  /** The command types that satisfy `verb`. Defaults to the table above, which
-   * is empty for every verb today — meaning every call refuses at the first
-   * check, and a test asserting any of the later refusals would pass no matter
-   * what this function did with run ids. Passing a set explicitly is what keeps
-   * each rule here separately falsifiable, and is what a backing command's own
-   * tests use before its type is added to the table. */
+  /** The command types that satisfy `verb`. Defaults to the production table;
+   * tests may pass a set explicitly to keep every mismatch rule independently
+   * falsifiable without changing the registered command surface. */
   allowed: ReadonlySet<string> = COMMAND_TYPES_BY_VERB[verb],
 ): void {
   const commandType = proposal.commandType ?? "";
