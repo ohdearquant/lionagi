@@ -2,7 +2,7 @@
   "path": "lifecycle",
   "schema": {
     "additionalProperties": false,
-    "description": "Read-only: what the lifecycle store records about one run id \u2014 whether a session was ever recorded for it, whether every one of them has ended, and with what outcome. A run stopped by `li kill` reads as cancelled here. Add --machine for the contract envelope on stdout.",
+    "description": "Read-only: what the lifecycle store records about one run id \u2014 whether a session was ever recorded for it, whether every one of them has ended, and with what outcome. A run stopped by `li kill` reads as cancelled here. Add `machine` for the contract envelope on stdout.",
     "properties": {
       "machine": {
         "default": false,

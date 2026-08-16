@@ -162,6 +162,41 @@ describe("history/RunDetail.tsx — fullPage prop removed", () => {
   });
 });
 
+describe("history/RunDetail.tsx — bounded incremental signal projection", () => {
+  const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
+
+  it("feeds the stream into SignalProjection instead of an ever-growing React array", () => {
+    expect(src).toMatch(/(?:const|let) projection = new SignalProjection\(\)/);
+    expect(src).toMatch(/projection\.append\(sig\)/);
+    expect(src).not.toMatch(/setSignalEvents/);
+    expect(src).not.toMatch(/prev\.some\(\(e\) => e\.id === sig\.id\)/);
+  });
+
+  it("rebuilds the projection on resync rather than appending across the gap", () => {
+    // A resync says the stream's history no longer lines up with ours.
+    // Appending onward leaves one snapshot holding two histories, each
+    // internally consistent, jointly describing a run that never happened.
+    // That is why the binding is reassignable rather than const.
+    //
+    // Anchored on the projection rather than on the resync branch, because the
+    // message stream handles a resync too and it comes first in the file:
+    // searching for the branch finds that one, and then asserting the rebuild
+    // inside a window after it fails for the wrong reason. All three have to
+    // sit in the same effect.
+    const start = src.indexOf("let projection = new SignalProjection()");
+    expect(start, "the signal-stream effect must exist for this to mean anything").toBeGreaterThan(
+      -1,
+    );
+    const effect = src.slice(start, start + 2000);
+    expect(effect).toMatch(/event\.type === "resync"/);
+    expect(effect).toMatch(/projection\.append\(sig\)/);
+    // A REASSIGNMENT, so the line must start with the name. Without that the
+    // pattern matches the `let projection = ...` this window is anchored on,
+    // and the assertion holds whether or not a resync rebuilds anything.
+    expect(effect).toMatch(/\n\s+projection = new SignalProjection\(\);/);
+  });
+});
+
 describe("fleet/SessionDetail.tsx — renders RunDetail without fullPage", () => {
   it("passes only id to RunDetail", () => {
     const src = fs.readFileSync(path.resolve(HISTORY_DIR, "../fleet/SessionDetail.tsx"), "utf-8");
@@ -1046,6 +1081,25 @@ describe("history/RunDetail.tsx — badgeForEvent escalation presentation", () =
     expect(failed.label).toBe("failed");
     expect(failed.tone).toMatch(/error/);
     expect(failed.tone).not.toMatch(/warning/);
+  });
+});
+
+describe("history/RunDetail.tsx — cancellation presentation", () => {
+  it("labels NodeCancelled explicitly without the failure tone", async () => {
+    const { badgeForEvent } = await import("./RunDetail");
+    const badge = badgeForEvent({
+      id: "cancel-1",
+      session_id: "session-1",
+      seq: 2,
+      kind: "NodeCancelled",
+      op_id: "op-1",
+      ts: 2,
+      payload: { name: "work" },
+    });
+
+    expect(badge.label).toBe("cancelled");
+    expect(badge.tone).toContain("status-warning");
+    expect(badge.tone).not.toContain("status-error");
   });
 });
 

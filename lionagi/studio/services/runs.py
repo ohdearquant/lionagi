@@ -561,6 +561,7 @@ def _run_row(s: dict[str, Any], now: float, *, process_alive: bool | None = None
         "status": s.get("status", "completed"),
         "started_at": s.get("started_at"),
         "ended_at": s.get("ended_at"),
+        "ended_at_is_approximate": bool(s.get("ended_at_is_approximate")),
         "created_at": s.get("created_at"),
         "updated_at": s.get("updated_at"),
         "last_message_at": s.get("last_message_at"),
@@ -619,15 +620,14 @@ async def list_runs(
     ).items
     now = time.time()
     out = []
-    snapshot: str | None = None
     for s in sessions:
         alive: bool | None = None
         if s.get("status") == "running":
-            if snapshot is None:
-                from .admin import _ps_snapshot
+            from .admin import resolve_process_liveness_probe
 
-                snapshot = _ps_snapshot()
-            alive = _session_liveness(s, snapshot)
+            alive = await resolve_process_liveness_probe(
+                lambda snapshot, row=s: _session_liveness(row, snapshot)
+            )
         out.append(_run_row(s, now, process_alive=alive))
 
     tagmap = await run_tags.tags_for_sessions([r["id"] for r in out])
@@ -784,7 +784,14 @@ async def get_run(
         "message_count": message_count,
         "last_message_at": last_message_at,
     }
-    alive = _session_liveness(detail_session) if detail_session.get("status") == "running" else None
+    if detail_session.get("status") == "running":
+        from .admin import resolve_process_liveness_probe
+
+        alive = await resolve_process_liveness_probe(
+            lambda snapshot: _session_liveness(detail_session, snapshot)
+        )
+    else:
+        alive = None
     row = _run_row(detail_session, time.time(), process_alive=alive)
 
     from . import run_tags

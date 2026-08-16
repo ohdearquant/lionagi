@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 
 -- Must match SCHEMA_VERSION in db.py, which re-stamps this row on every open
 -- so a migrated database reports the shape it now has.
-INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '3');
+INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '4');
 INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('created_at', strftime('%s', 'now'));
 
 -- ── Message types (int enum for lion_class) ───────────────────────────────
@@ -143,6 +143,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   status          TEXT,
   started_at      REAL,
   ended_at        REAL,
+  -- 1 means ended_at was reconstructed from historical activity evidence,
+  -- not observed at the terminal transition. Consumers must not derive a
+  -- measured duration from it.
+  ended_at_is_approximate INTEGER NOT NULL DEFAULT 0,
   -- ── Activity ────────────────────────────────────────────
   -- Bumped on every message INSERT so staleness_check() can answer
   -- "is this running session still active?" without scanning messages.
@@ -220,6 +224,12 @@ CREATE INDEX IF NOT EXISTS idx_sessions_cc_session
   ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_run_id
   ON sessions(run_id) WHERE run_id IS NOT NULL;
+-- Keeps the resumable v4 end-time repair linear as each completed batch
+-- removes itself from this otherwise-empty partial index.
+CREATE INDEX IF NOT EXISTS idx_sessions_terminal_missing_end
+  ON sessions(id)
+  WHERE ended_at IS NULL
+    AND status IN ('completed','completed_empty','failed','timed_out','aborted','cancelled');
 -- first_msg_id / last_msg_id are child keys of messages(id); without an
 -- index, a message delete scans the whole table looking for referrers, once
 -- per deleted row. Not partial: only a plain index is certain to serve it.

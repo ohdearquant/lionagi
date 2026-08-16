@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import pytest
 from lionagi import Branch, Session
 from lionagi.cli.orchestrate._orchestration import (
     OrchestrationEnv,
+    setup_orchestration_persist,
     start_live_persist,
     stop_live_persist,
 )
@@ -219,6 +221,238 @@ async def test_start_create_session_failure_closes_db(
     assert _aiosqlite_thread_count() <= before, (
         "DB was not closed on start failure — aiosqlite worker leaked"
     )
+
+
+class _ScriptedAdmissionDB:
+    """Small StateDB double for admission retry and cleanup assertions."""
+
+    def __init__(
+        self,
+        *,
+        dialect: str,
+        create_session_errors: list[BaseException],
+    ) -> None:
+        self.dialect = dialect
+        self.url = f"{dialect}://admission-test"
+        self._create_session_errors = list(create_session_errors)
+        self.calls: list[tuple[str, str]] = []
+        self.close_calls = 0
+
+    async def create_progression(self, progression_id: str) -> None:
+        self.calls.append(("progression", progression_id))
+
+    async def create_session(self, session: dict) -> None:
+        self.calls.append(("session", session["progression_id"]))
+        if self._create_session_errors:
+            raise self._create_session_errors.pop(0)
+
+    async def close(self) -> None:
+        self.close_calls += 1
+
+
+async def test_sqlite_admission_retries_with_stable_progression_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A partial setup retry replays the same idempotent admission writes.
+
+    The first progression write represents a transaction that committed before
+    the session write lost SQLite's writer.  Retrying with a fresh ID would
+    strand that row and could reorder later message events.
+    """
+    from lionagi.cli.orchestrate import _orchestration
+
+    db = _ScriptedAdmissionDB(
+        dialect="sqlite",
+        create_session_errors=[sqlite3.OperationalError("database is locked")],
+    )
+    monkeypatch.setattr(_orchestration, "_open_shared_db", lambda: _async_value(db))
+    monkeypatch.setattr(
+        _orchestration,
+        "_SQLITE_ADMISSION_RETRY_DELAYS",
+        (0.0, 0.0),
+    )
+    monkeypatch.setattr(
+        _orchestration,
+        "_sleep_before_sqlite_admission_retry",
+        _no_sleep,
+    )
+
+    run_manifest: dict = {}
+    ctx = await setup_orchestration_persist(Session(), run_manifest=run_manifest)
+
+    assert ctx is not None
+    assert db.calls == [
+        ("progression", ctx["session_prog_id"]),
+        ("session", ctx["session_prog_id"]),
+        ("progression", ctx["session_prog_id"]),
+        ("session", ctx["session_prog_id"]),
+    ]
+    assert "persistence_degraded_reason" not in run_manifest
+
+
+async def _async_value(value):
+    return value
+
+
+async def _no_sleep(_delay: float) -> None:
+    return None
+
+
+@pytest.mark.parametrize(
+    ("dialect", "error"),
+    [
+        ("postgresql", sqlite3.OperationalError("database is locked")),
+        ("sqlite", sqlite3.OperationalError("disk I/O error")),
+    ],
+)
+async def test_admission_does_not_retry_other_dialects_or_non_contention(
+    monkeypatch: pytest.MonkeyPatch,
+    dialect: str,
+    error: BaseException,
+):
+    from lionagi.cli.orchestrate import _orchestration
+
+    db = _ScriptedAdmissionDB(dialect=dialect, create_session_errors=[error])
+    degraded: list[BaseException] = []
+    unregistered: list[object] = []
+    monkeypatch.setattr(_orchestration, "_open_shared_db", lambda: _async_value(db))
+    monkeypatch.setattr(
+        _orchestration,
+        "_record_persistence_degraded",
+        lambda exc, **_kwargs: degraded.append(exc),
+    )
+    monkeypatch.setattr("lionagi.state.db.unregister_shared_db", unregistered.append)
+    monkeypatch.setattr(
+        _orchestration,
+        "_SQLITE_ADMISSION_RETRY_DELAYS",
+        (0.0, 0.0),
+    )
+
+    ctx = await setup_orchestration_persist(Session(), run_manifest={})
+
+    assert ctx is None
+    assert [kind for kind, _id in db.calls].count("session") == 1
+    assert degraded == [error]
+    assert db.close_calls == 1
+    assert unregistered == [db]
+
+
+async def test_exhausted_sqlite_admission_records_one_reason_and_cleans_handle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from lionagi.cli._runs import RunDir, _record_persistence_degraded
+    from lionagi.cli.orchestrate import _orchestration
+
+    errors = [sqlite3.OperationalError("database is locked") for _ in range(3)]
+    db = _ScriptedAdmissionDB(dialect="sqlite", create_session_errors=errors)
+    run = RunDir(
+        run_id="sqlite-admission-exhausted",
+        state_root=tmp_path / "state",
+        artifact_root=tmp_path / "artifacts",
+    )
+    run.ensure_state_dirs()
+    manifest = {"status": "running"}
+    run.write_manifest(manifest)
+    recorded: list[BaseException] = []
+    unregistered: list[object] = []
+
+    def record_once(exc: BaseException, **kwargs) -> str:
+        recorded.append(exc)
+        return _record_persistence_degraded(exc, **kwargs)
+
+    monkeypatch.setattr(_orchestration, "_open_shared_db", lambda: _async_value(db))
+    monkeypatch.setattr(_orchestration, "_record_persistence_degraded", record_once)
+    monkeypatch.setattr("lionagi.state.db.unregister_shared_db", unregistered.append)
+    monkeypatch.setattr(
+        _orchestration,
+        "_SQLITE_ADMISSION_RETRY_DELAYS",
+        (0.0, 0.0),
+    )
+    monkeypatch.setattr(
+        _orchestration,
+        "_sleep_before_sqlite_admission_retry",
+        _no_sleep,
+    )
+
+    ctx = await setup_orchestration_persist(Session(), run=run, run_manifest=manifest)
+
+    assert ctx is None
+    assert [kind for kind, _id in db.calls].count("session") == 3
+    assert len({item_id for _kind, item_id in db.calls}) == 1
+    assert recorded == [errors[-1]]
+    assert manifest["persistence_degraded_reason"] == repr(errors[-1])
+    assert run.read_manifest()["persistence_degraded_reason"] == repr(errors[-1])
+    assert db.close_calls == 1
+    assert unregistered == [db]
+
+
+async def test_real_sqlite_partial_admission_retry_has_no_duplicate_rows_or_events(
+    temp_db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Exercise a real cross-connection BEGIN IMMEDIATE writer conflict."""
+    from lionagi.cli.orchestrate import _orchestration
+    from lionagi.state import engine as state_engine
+
+    monkeypatch.setattr(state_engine, "SQLITE_BUSY_TIMEOUT_MS", 10)
+    db = StateDB(temp_db_path)
+    await db.open()
+    monkeypatch.setattr(_orchestration, "_open_shared_db", lambda: _async_value(db))
+    monkeypatch.setattr(
+        _orchestration,
+        "_SQLITE_ADMISSION_RETRY_DELAYS",
+        (0.0, 0.0),
+    )
+
+    blocker = sqlite3.connect(temp_db_path, timeout=0.01, isolation_level=None)
+    real_create_session = db.create_session
+    first = True
+
+    async def contend_once(session: dict) -> None:
+        nonlocal first
+        if first:
+            first = False
+            blocker.execute("BEGIN IMMEDIATE")
+        await real_create_session(session)
+
+    async def release_writer(_delay: float) -> None:
+        blocker.commit()
+
+    monkeypatch.setattr(db, "create_session", contend_once)
+    monkeypatch.setattr(
+        _orchestration,
+        "_sleep_before_sqlite_admission_retry",
+        release_writer,
+    )
+
+    try:
+        session = Session()
+        ctx = await setup_orchestration_persist(session, run_manifest={})
+        assert ctx is not None
+
+        progression_count = await db.fetch_one(
+            "SELECT COUNT(*) AS n FROM progressions WHERE id = ?",
+            (ctx["session_prog_id"],),
+        )
+        session_count = await db.fetch_one(
+            "SELECT COUNT(*) AS n FROM sessions WHERE id = ?", (ctx["session_id"],)
+        )
+        initial_event_count = await db.fetch_one(
+            "SELECT COUNT(*) AS n FROM status_transitions "
+            "WHERE entity_type = 'session' AND entity_id = ? "
+            "AND previous_status IS NULL",
+            (ctx["session_id"],),
+        )
+
+        assert progression_count["n"] == 1
+        assert session_count["n"] == 1
+        assert initial_event_count["n"] == 1
+    finally:
+        if blocker.in_transaction:
+            blocker.rollback()
+        blocker.close()
+        await db.close()
 
 
 # _register_branch_hook: lazy branch row + multi-message paths

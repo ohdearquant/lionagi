@@ -1423,3 +1423,112 @@ async def test_get_session_message_count_is_db_aggregate_not_progression_length(
     assert branch["message_total"] == 2  # progression length, kept as a separate field
     assert result["message_stats"]["message_count"] == 1  # DB aggregate, not progression length
     assert branch["message_stats"]["message_count"] == 1
+
+
+# An approximate end must not be turned back into a measured duration
+
+
+async def test_get_session_does_not_reconstruct_a_duration_from_an_approximate_end(
+    patched_sessions_db,
+):
+    """Nulling the stored duration is not enough on its own.
+
+    The flag makes the read discard duration_ms, and the very next branch
+    recomputes one from ended_at minus started_at. The row then reports a
+    measured length derived from a timestamp explicitly marked as a guess,
+    which is what the flag exists to prevent.
+    """
+    import sqlite3
+
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-approx",
+        status="completed",
+        started_at=10.0,
+        ended_at=13.5,
+    )
+    await seed_session(
+        db_path,
+        session_id="sess-measured",
+        status="completed",
+        started_at=10.0,
+        ended_at=13.5,
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE sessions SET ended_at_is_approximate = 1, duration_ms = NULL WHERE id = ?",
+            ("sess-approx",),
+        )
+        conn.execute(
+            "UPDATE sessions SET ended_at_is_approximate = 0, duration_ms = NULL WHERE id = ?",
+            ("sess-measured",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    approximate = await svc.get_session("sess-approx")
+    measured = await svc.get_session("sess-measured")
+
+    assert approximate is not None
+    assert approximate["duration_ms"] is None
+    # Control: the same shape with a measured end still reconstructs, so the
+    # assertion above is about the flag and not about a reconstruction that
+    # stopped working.
+    assert measured is not None
+    assert measured["duration_ms"] == 3500.0
+
+
+async def _drop_column(db_path: Path, table: str, column: str) -> None:
+    """Reshape a store to the schema version that predates a column."""
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+        conn.commit()
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        assert column not in present, "the column survived the drop"
+    finally:
+        conn.close()
+
+
+async def test_session_reads_work_against_a_store_from_the_previous_schema_version(
+    patched_sessions_db,
+):
+    """Reads must not require a column that this schema version introduced.
+
+    The daemon reads stores through its own connection and never migrates
+    them, so a store last written by the previous version keeps that version's
+    columns for as long as nothing opens it for writing. That is the state of
+    every store immediately after an upgrade, and of any store the daemon can
+    only read. Selecting the new column by name makes those reads fail with a
+    missing-column error rather than degrade.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-prev-schema",
+        status="completed",
+        started_at=10.0,
+        ended_at=13.5,
+    )
+
+    # Control: both reads work while the column is present, so a failure after
+    # the drop is about the column and not about the fixture.
+    assert await svc.get_session("sess-prev-schema") is not None
+    assert [row["id"] for row in await svc.list_sessions(limit=10)] == ["sess-prev-schema"]
+
+    await _drop_column(db_path, "sessions", "ended_at_is_approximate")
+
+    detail = await svc.get_session("sess-prev-schema")
+    assert detail is not None
+    # A store that never had the column recorded no approximate ends, which is
+    # what the previous version reported for every row.
+    assert detail["ended_at_is_approximate"] is False
+
+    listed = await svc.list_sessions(limit=10)
+    assert [row["id"] for row in listed] == ["sess-prev-schema"]
+    assert listed[0]["ended_at_is_approximate"] is False

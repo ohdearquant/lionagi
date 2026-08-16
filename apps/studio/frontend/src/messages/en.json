@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "Default",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · recommended",
+      "legacyGroup": "Legacy selection",
+      "efforts": "Effort: {efforts}",
+      "effortInModel": "Effort is encoded in the model ID",
+      "effortAsSetting": "Effort is sent as a provider setting"
     },
     "effort": {
       "label": "Effort",
@@ -516,6 +521,7 @@
       "graphNodeStatusDone": "done",
       "graphNodeStatusFailed": "failed",
       "graphNodeStatusSkipped": "skipped",
+      "graphNodeStatusCancelled": "cancelled",
       "graphNodeStatusEscalated": "escalated",
       "progressTotal": "Total",
       "progressCompleted": "Completed",

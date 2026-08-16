@@ -35,8 +35,10 @@ from ._orchestration import (
     available_roles,
     build_worker_branch,
     finalize_orchestration,
+    mode_roster,
     parse_orchestrator_provider,
     register_branch_hook,
+    resolve_modes,
     role_roster,
     setup_orchestration,
     start_live_persist,
@@ -319,7 +321,7 @@ async def _run_fanout_inner(
             prompt,
             roles=roster,
             dag=False,
-            guidance=role_roster(env.default_model_spec),
+            guidance=f"{role_roster(env.default_model_spec)}\n\n{mode_roster(env.pack)}",
             max_tasks=num_workers,
         )
     except EmptyOutgoingContentError:
@@ -333,6 +335,27 @@ async def _run_fanout_inner(
     t_decompose = time.monotonic() - t0
     if not assignments:
         return "Orchestrator produced no assignments."
+
+    # Validate the complete plan before creating any worker. The permissive
+    # resolver remains available to flow and legacy callers, but fanout must
+    # not claim success after silently stripping planner intent.
+    planned_modes: list[list[str] | None] = []
+    for index, assignment in enumerate(assignments, start=1):
+        if not assignment.modes:
+            planned_modes.append(None)
+            continue
+        try:
+            planned_modes.append(
+                resolve_modes(
+                    assignment.assignee,
+                    assignment.modes,
+                    env.pack,
+                    reject_invalid=True,
+                )
+            )
+        except ValueError as exc:
+            raise FanoutPlanError(f"assignment {index} has invalid modes: {exc}") from exc
+
     progress(f"Phase 1 done ({t_decompose:.1f}s): {len(assignments)} assignments generated.")
 
     worker_names: list[str] = [env.assign_name(ta.assignee) for ta in assignments]
@@ -374,7 +397,7 @@ async def _run_fanout_inner(
                 role=ta.assignee,
                 model_override=model_override,
                 explicit_name=wname,
-                modes=ta.modes or None,
+                modes=planned_modes[i],
             )
         except BaseException as exc:
             attribute_worker_build_failure(exc, agent_id=wname, role=ta.assignee)
@@ -552,9 +575,18 @@ async def _run_fanout_inner(
             # bridge, so a failed synthesis reaches the observer above. Calling
             # session.flow directly emits no node signals at all, which leaves
             # the observer silent and renders the failure as an empty response.
+            # The graph still carries the workers, since synthesis depends on
+            # them, but they ran in the worker phase above and already have
+            # their terminal events; signalling them here would record the
+            # same work a second time.
+            synth_graph = env.builder.get_graph()
+            already_ran = {str(n.id) for n in synth_graph.internal_nodes.values()} - {
+                str(synth_node)
+            }
             result3 = await eng_run.run_dag(
-                env.builder.get_graph(),
+                synth_graph,
                 verbose=env.verbose,
+                skip_signal_ops=already_ran,
             )
         finally:
             env.session.observer.unobserve(_record_failed_op)

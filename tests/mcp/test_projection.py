@@ -117,6 +117,25 @@ def test_available_paths_lists_canonical_spellings_only() -> None:
     )
 
 
+def test_resume_on_timeout_is_still_offered_where_it_is_inert_but_says_so() -> None:
+    """A flag no command reads is still part of the surface until it is retired.
+
+    ``agent`` owns the bounded resume behavior. Flow and fanout inherit the
+    flag from their shared parser arguments and never consume it. Dropping it
+    outright would break callers whose invocations parse today, so it keeps
+    being accepted and the description carries the notice instead. An MCP
+    caller reading the schema is the one consumer that cannot see the
+    parse-time warning, which is why the text has to say it here.
+    """
+    for surface in ("orchestrate flow", "orchestrate fanout"):
+        described = project(surface).schema["properties"]["resume_on_timeout"]["description"]
+        assert described.lower().startswith("deprecated"), surface
+        assert "ignored" in described.lower(), surface
+
+    agent_described = project("agent").schema["properties"]["resume_on_timeout"]["description"]
+    assert "deprecated" not in agent_described.lower()
+
+
 # ── the seam ─────────────────────────────────────────────────────────────────
 
 
@@ -435,3 +454,166 @@ def test_playbook_fingerprint_reports_the_resolved_path(playbook_dir) -> None:
     fingerprint, resolved = playbook_fingerprint("probe")
     assert Path(resolved) == book
     assert len(fingerprint.removeprefix("sha256:")) == 32
+
+
+# ── flag spellings become parameter names ────────────────────────────────────
+#
+# Help text is written for someone typing a command. A caller of this schema
+# sends an object, so a sentence pointing at `--resume` names something they
+# cannot send, and the parameter it means is `resume`.
+
+
+def _named_parser(help_text: str, *, extra_flags: tuple[str, ...] = ()) -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="probe", description="probe")
+    parser.add_argument("--subject", help=help_text)
+    parser.add_argument("-r", "--resume", help="resume something")
+    parser.add_argument("--context-from", dest="context_from", help="context")
+    for flag in extra_flags:
+        parser.add_argument(flag, help="other")
+    return parser
+
+
+def _subject_description(help_text: str, **kwargs) -> str:
+    schema = project_parser(_named_parser(help_text, **kwargs), path="probe")
+    return schema["properties"]["subject"]["description"]
+
+
+def test_a_flag_the_parser_accepts_is_named_as_its_parameter() -> None:
+    assert _subject_description("Rejected together with --resume.") == (
+        "Rejected together with `resume`."
+    )
+
+
+def test_a_dest_that_differs_from_the_flag_uses_the_dest() -> None:
+    """The caller sends the property name, which argparse spells with underscores."""
+    assert _subject_description("Shares a budget with --context-from.") == (
+        "Shares a budget with `context_from`."
+    )
+
+
+def test_alternative_spellings_of_one_flag_collapse_to_one_name() -> None:
+    """`-r / --resume` is one parameter, so repeating the name would misdescribe it."""
+    assert _subject_description("Set by -r / --resume.") == "Set by `resume`."
+
+
+def test_a_flag_this_parser_does_not_accept_is_left_exactly_as_written() -> None:
+    """Help text quotes argv for other programs, and that argv is meant literally.
+
+    A scheduled command's own arguments are the live case: `--pr` in an example
+    of what to run belongs to that command, not to this one, so guessing a
+    parameter name for it would invent one that does not exist.
+    """
+    text = 'Rendered argv, such as ["review-pr", "--pr", "{{pr_number}}"].'
+    assert _subject_description(text) == text
+
+
+def test_a_worked_example_keeps_its_flags() -> None:
+    """An example is read as typed; a renamed flag makes it a command that fails."""
+    text = "Filter by status; repeatable (e.g. --resume a --resume b)."
+    assert _subject_description(text) == text
+
+
+def test_a_literal_invocation_keeps_its_flags() -> None:
+    text = "Stop a run:\n  li kill abc123 --resume\n"
+    assert _subject_description(text) == text
+
+
+def test_a_flag_inside_a_quoted_command_is_left_alone() -> None:
+    """Renaming inside backticks both breaks the command and nests the quoting."""
+    text = "Resolved the same way `li agent --resume` resolves it."
+    assert _subject_description(text) == text
+
+
+def test_renaming_still_happens_outside_a_quoted_command() -> None:
+    """Control: quoting protects its own span, not the whole sentence.
+
+    Without this, the span rule could be silently disabling the feature for any
+    description that quotes anything at all.
+    """
+    assert _subject_description("See `li agent --help`, then set --resume.") == (
+        "See `li agent --help`, then set `resume`."
+    )
+
+
+def test_the_command_description_is_named_too() -> None:
+    parser = _named_parser("plain")
+    parser.description = "Use --resume to continue."
+    schema = project_parser(parser, path="probe")
+    assert schema["description"] == "Use `resume` to continue."
+
+
+def test_the_real_agent_schema_no_longer_points_at_flags_it_cannot_take() -> None:
+    """The projection over the real CLI, not a probe parser."""
+    schema = project_parser(build_parser_for("agent"), path="agent")
+    query = schema["properties"]["query"]["description"]
+    assert "--resume" not in query and "--prompt-file" not in query
+    assert "`resume`" in query and "`prompt_file`" in query
+
+
+def test_a_reference_after_an_example_is_still_named() -> None:
+    """Protection is per span. A description often carries both.
+
+    `schedule create.cron` reads `e.g. "0 * * * *". Required when
+    --trigger-type is cron`: the example is a cron string and the flag is in
+    the sentence after it. Skipping the whole description on the strength of
+    one `e.g.` leaves exactly the reference this exists to fix.
+    """
+    text = 'Cron expression, e.g. "0 * * * *". Required when --resume is set.'
+    assert _subject_description(text) == (
+        'Cron expression, e.g. "0 * * * *". Required when `resume` is set.'
+    )
+
+
+def test_an_example_protects_only_its_own_clause() -> None:
+    text = "Attach (repeatable, e.g. --resume a --resume b). Then set --context-from."
+    assert _subject_description(text) == (
+        "Attach (repeatable, e.g. --resume a --resume b). Then set `context_from`."
+    )
+
+
+def test_prose_quoting_a_command_keeps_naming_its_own_references() -> None:
+    """A line that *mentions* a command is not a usage line.
+
+    Anchoring the usage rule at the line start is what separates them; without
+    it, any sentence containing `li ...` loses every rewrite on that line.
+    """
+    assert _subject_description("Resolved like `li agent --resume`, then set --resume.") == (
+        "Resolved like `li agent --resume`, then set `resume`."
+    )
+
+
+def test_the_real_schedule_create_schema_names_its_trigger_type() -> None:
+    schema = project_parser(build_parser_for("schedule create"), path="schedule create")
+    cron = schema["properties"]["cron"]["description"]
+    assert "--trigger-type" not in cron
+    assert "`trigger_type`" in cron
+    assert '"0 * * * *"' in cron, "the example value was rewritten or lost"
+
+
+def test_projecting_does_not_mutate_a_shared_json_schema() -> None:
+    """A JSON-valued argument's schema is only shallow-copied from its declarer.
+
+    Rewriting nested descriptions in place would write projection-only text
+    back into a schema other callers read, and it would accumulate across
+    calls. Projecting the same parser twice must produce the same thing.
+    """
+    from lionagi.cli._argtypes import JsonArgument
+
+    declared = {
+        "type": "object",
+        "properties": {"inner": {"type": "string", "description": "Set with --resume."}},
+    }
+    kind = JsonArgument(declared)
+    parser = argparse.ArgumentParser(prog="probe", description="probe")
+    parser.add_argument("-r", "--resume", help="resume")
+    parser.add_argument("--payload", type=kind, help="payload")
+
+    projected = project_parser(parser, path="probe")
+
+    assert (
+        projected["properties"]["payload"]["properties"]["inner"]["description"]
+        == "Set with `resume`."
+    )
+    assert declared["properties"]["inner"]["description"] == "Set with --resume.", (
+        "the rewrite was written back into the schema the argument declares"
+    )

@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "デフォルト",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · 推奨",
+      "legacyGroup": "以前の選択",
+      "efforts": "労力: {efforts}",
+      "effortInModel": "労力はモデル ID に組み込まれます",
+      "effortAsSetting": "労力はプロバイダー設定として送信されます"
     },
     "effort": {
       "label": "労力",
@@ -516,6 +521,7 @@
       "graphNodeStatusDone": "完了",
       "graphNodeStatusFailed": "失敗",
       "graphNodeStatusSkipped": "スキップ",
+      "graphNodeStatusCancelled": "キャンセル",
       "graphNodeStatusEscalated": "エスカレーション",
       "progressTotal": "合計",
       "progressCompleted": "完了",

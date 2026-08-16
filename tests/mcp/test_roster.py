@@ -290,7 +290,8 @@ def test_a_cwd_that_is_not_a_directory_is_refused_by_name(roots, tmp_path: Path)
 
 def test_the_roster_verbs_are_in_the_catalog_with_their_signature():
     entries = {e["verb"]: e for e in call(help=True)["verbs"]}
-    assert entries["profile.list"]["available"] is True
+    # available is omitted at its default; the key appears only to say False
+    assert "available" not in entries["profile.list"]
     assert entries["profile.show"]["required"] == ["name"]
 
 

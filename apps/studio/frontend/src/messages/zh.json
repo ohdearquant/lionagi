@@ -170,7 +170,12 @@
     "model": {
       "label": "模型",
       "default": "默认",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · 推荐",
+      "legacyGroup": "旧版选择",
+      "efforts": "强度：{efforts}",
+      "effortInModel": "强度编码在模型 ID 中",
+      "effortAsSetting": "强度作为提供商设置发送"
     },
     "effort": {
       "label": "强度",
@@ -516,6 +521,7 @@
       "graphNodeStatusDone": "完成",
       "graphNodeStatusFailed": "失败",
       "graphNodeStatusSkipped": "已跳过",
+      "graphNodeStatusCancelled": "已取消",
       "graphNodeStatusEscalated": "已升级",
       "progressTotal": "总计",
       "progressCompleted": "已完成",

@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "Padrão",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · recomendado",
+      "legacyGroup": "Seleção legada",
+      "efforts": "Esforço: {efforts}",
+      "effortInModel": "O esforço é codificado no ID do modelo",
+      "effortAsSetting": "O esforço é enviado como configuração do provedor"
     },
     "effort": {
       "label": "Esforço",
@@ -516,6 +521,7 @@
       "graphNodeStatusDone": "concluído",
       "graphNodeStatusFailed": "falhou",
       "graphNodeStatusSkipped": "ignorado",
+      "graphNodeStatusCancelled": "cancelado",
       "graphNodeStatusEscalated": "escalado",
       "progressTotal": "Total",
       "progressCompleted": "Concluído",
