@@ -521,6 +521,7 @@
       "graphNodeStatusDone": "완료",
       "graphNodeStatusFailed": "실패",
       "graphNodeStatusSkipped": "건너뜀",
+      "graphNodeStatusCancelled": "취소됨",
       "graphNodeStatusEscalated": "에스컬레이션",
       "progressTotal": "전체",
       "progressCompleted": "완료",
@@ -557,10 +558,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "이 작업을 수행할 명령이 아직 없습니다."
+          "no-executable-path": "이 작업을 수행할 명령이 아직 없습니다.",
+          "no-project-scope": "이 실행에는 프로젝트가 없어 제어를 승인할 수 없습니다."
         }
       }
     },

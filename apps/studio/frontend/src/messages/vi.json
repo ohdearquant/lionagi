@@ -521,6 +521,7 @@
       "graphNodeStatusDone": "xong",
       "graphNodeStatusFailed": "thất bại",
       "graphNodeStatusSkipped": "đã bỏ qua",
+      "graphNodeStatusCancelled": "đã hủy",
       "graphNodeStatusEscalated": "đã leo thang",
       "progressTotal": "Tổng",
       "progressCompleted": "Hoàn tất",
@@ -557,10 +558,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "Chưa có lệnh nào để thực hiện thao tác này."
+          "no-executable-path": "Chưa có lệnh nào để thực hiện thao tác này.",
+          "no-project-scope": "Lần chạy này không có dự án, nên không thể ủy quyền điều khiển."
         }
       }
     },

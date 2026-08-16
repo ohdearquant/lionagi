@@ -126,6 +126,7 @@ describe("StepNode — the bottom-right corner always says something", () => {
       ["queued", "queued"],
       ["running", "running"],
       ["failed", "failed"],
+      ["cancelled", "cancelled"],
       ["awaiting_approval", "approval"],
     ] as [NodeExecStatus, string][]) {
       renderNode({ execStatus: status });

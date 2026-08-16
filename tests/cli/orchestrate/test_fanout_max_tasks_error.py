@@ -20,9 +20,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from lionagi._errors import EmptyOutgoingContentError
+from lionagi.casts.emission import TaskAssignment
 from lionagi.cli._util import EXIT_CODE_BY_STATUS
 from lionagi.cli.orchestrate import add_orchestrate_subparser, run_orchestrate
 from lionagi.cli.orchestrate import fanout as fanout_module
+from lionagi.cli.orchestrate._orchestration import WorkerBuildError, resolve_modes
 from lionagi.cli.orchestrate.fanout import FanoutPlanError
 from lionagi.engines import PlanningEngine
 
@@ -34,6 +36,77 @@ def _parse_fanout_args(argv: list[str]) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
     add_orchestrate_subparser(subparsers)
     return parser.parse_args(["o", "fanout", *argv])
+
+
+class _WorkerBoundaryReached(Exception):
+    """Stop the integration test after fanout hands the plan to a worker."""
+
+
+async def test_fanout_planner_gets_mode_roster_and_preserves_valid_modes(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    env, _, _ = _fanout_env(tmp_path)
+    planned = TaskAssignment(task="challenge the proposal", assignee="critic", modes=["premortem"])
+    seen_guidance: list[str] = []
+    effective_modes: list[set[str]] = []
+
+    async def plan_with_mode_contract(*args, guidance: str, **kwargs):
+        seen_guidance.append(guidance)
+        return [planned]
+
+    async def build_worker(env, *, role, modes, **kwargs):
+        effective_modes.append(set(resolve_modes(role, modes, env.pack)))
+        raise _WorkerBoundaryReached
+
+    monkeypatch.setattr(fanout_module, "plan", plan_with_mode_contract)
+    monkeypatch.setattr(fanout_module, "available_roles", lambda: ["critic"])
+    monkeypatch.setattr(fanout_module, "role_roster", lambda model: "ROLE ROSTER")
+    monkeypatch.setattr(
+        fanout_module,
+        "mode_roster",
+        lambda pack: "MODE ROSTER: critic accepts only premortem",
+        raising=False,
+    )
+    monkeypatch.setattr(fanout_module, "build_worker_branch", build_worker)
+
+    with caplog.at_level("WARNING", logger="lionagi.cli"):
+        with pytest.raises(WorkerBuildError) as exc_info:
+            await fanout_module._run_fanout_inner("codex/model", "work", env=env)
+
+    assert isinstance(exc_info.value.__cause__, _WorkerBoundaryReached)
+    assert seen_guidance == ["ROLE ROSTER\n\nMODE ROSTER: critic accepts only premortem"]
+    assert effective_modes == [set(planned.modes)]
+    assert not [record for record in caplog.records if "dropping" in record.message]
+
+
+@pytest.mark.parametrize(
+    ("role", "mode", "message"),
+    [
+        ("critic", "fast", "not permitted"),
+        ("writer", "not-a-real-mode", "unknown mode"),
+    ],
+)
+async def test_fanout_rejects_invalid_planned_mode_before_building_any_worker(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    mode: str,
+    message: str,
+):
+    env, _, _ = _fanout_env(tmp_path)
+    assignments = [TaskAssignment(task="work", assignee=role, modes=[mode])]
+    build_worker = AsyncMock()
+
+    monkeypatch.setattr(fanout_module, "plan", AsyncMock(return_value=assignments))
+    monkeypatch.setattr(fanout_module, "available_roles", lambda: [role])
+    monkeypatch.setattr(fanout_module, "role_roster", lambda model: "ROLE ROSTER")
+    monkeypatch.setattr(fanout_module, "mode_roster", lambda pack: "MODE ROSTER", raising=False)
+    monkeypatch.setattr(fanout_module, "build_worker_branch", build_worker)
+
+    with pytest.raises(FanoutPlanError, match=message):
+        await fanout_module._run_fanout_inner("codex/model", "work", env=env)
+
+    build_worker.assert_not_awaited()
 
 
 async def test_run_fanout_translates_over_max_tasks_value_error(

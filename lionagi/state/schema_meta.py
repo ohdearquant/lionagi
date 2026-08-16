@@ -190,6 +190,9 @@ sessions = Table(
     Column("status", Text),
     Column("started_at", Float),
     Column("ended_at", Float),
+    # True only when migration/import evidence supplied an approximate end;
+    # never interpret such a row as a measured wall-clock duration.
+    Column("ended_at_is_approximate", Integer, nullable=False, server_default="0"),
     # Activity.
     Column("last_message_at", Float),
     # Phase.
@@ -250,6 +253,18 @@ Index(
     sessions.c.cc_session_id,
     sqlite_where=text("cc_session_id IS NOT NULL"),
     postgresql_where=text("cc_session_id IS NOT NULL"),
+)
+Index(
+    "idx_sessions_terminal_missing_end",
+    sessions.c.id,
+    sqlite_where=text(
+        "ended_at IS NULL AND status IN "
+        "('completed','completed_empty','failed','timed_out','aborted','cancelled')"
+    ),
+    postgresql_where=text(
+        "ended_at IS NULL AND status IN "
+        "('completed','completed_empty','failed','timed_out','aborted','cancelled')"
+    ),
 )
 
 # branches

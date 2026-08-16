@@ -781,7 +781,9 @@ shell), so shell metacharacters are inert.
   each row's `transition()` call are separate transactions, so a concurrent
   `purge_dispatch(es)` can delete a snapshotted row; `transition()` raises `LookupError` in
   that case, caught per-row so one purged row is skipped without aborting the rest of the
-  batch.
+  batch. Every transition the scan writes carries the caller's `actor`, defaulting to the
+  scheduler tick's own identity; a driver other than the scheduler passes its own so the
+  history does not attribute its writes to the scheduler.
 - `purge_dispatch()` / `purge_dispatches()` — `purge_dispatch` accepts any status (naming an
   exact id is already deliberate non-bulk intent) and writes one `admin_events` audit row on
   success. `purge_dispatches` requires `status` and/or `before` (bare call raises

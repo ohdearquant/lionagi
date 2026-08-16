@@ -521,6 +521,7 @@
       "graphNodeStatusDone": "पूर्ण",
       "graphNodeStatusFailed": "विफल",
       "graphNodeStatusSkipped": "छोड़ा गया",
+      "graphNodeStatusCancelled": "रद्द",
       "graphNodeStatusEscalated": "एस्केलेटेड",
       "progressTotal": "कुल",
       "progressCompleted": "पूर्ण",
@@ -557,10 +558,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "इसे पूरा करने के लिए अभी कोई कमांड मौजूद नहीं है।"
+          "no-executable-path": "इसे पूरा करने के लिए अभी कोई कमांड मौजूद नहीं है।",
+          "no-project-scope": "इस रन का कोई प्रोजेक्ट नहीं है, इसलिए नियंत्रण अधिकृत नहीं किया जा सकता।"
         }
       }
     },
