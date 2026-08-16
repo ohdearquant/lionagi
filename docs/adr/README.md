@@ -112,6 +112,8 @@ its area block.
 - 0014-0015 — unused (intentional gaps)
 - [ADR-0112](ADR-0112-mcp-tool-registration-naming-and-collisions.md) — MCP tool registration
   naming and collision behavior (sequential number; see Numbering)
+- [ADR-0121](ADR-0121-authoritative-action-execution-and-native-agent-harness.md) — Authoritative
+  action execution and native agent harness (sequential number; see Numbering)
 
 ### session-branch (0016-0020)
 
@@ -158,6 +160,8 @@ its area block.
   legs from briefs, no planner (sequential number; see Numbering)
 - [ADR-0111](ADR-0111-run-base-ref-provenance-and-preconditions.md) — A run records the code
   it was reasoning about, and can refuse to start (sequential number; see Numbering)
+- [ADR-0123](ADR-0123-canonical-run-identity-and-execution-projections.md) — Canonical Run identity
+  and execution projections (sequential number; see Numbering)
 
 ### agent-roles (0041-0046)
 
@@ -177,6 +181,8 @@ its area block.
 - [ADR-0048](ADR-0048-interoperable-external-hooks.md) — Interoperable external hooks
   (Claude Code / Codex hook contract)
 - 0049 — unused (intentional gap)
+- [ADR-0120](ADR-0120-interception-observation-and-durable-delivery-planes.md) — Interception,
+  observation, and durable delivery planes (sequential number; see Numbering)
 
 ### utilities (0050-0054)
 
@@ -187,6 +193,8 @@ its area block.
 - [ADR-0052](ADR-0052-supported-validation-and-testing-surfaces.md) — Supported validation and
   testing surfaces
 - 0053-0054 — unused (intentional gaps)
+- [ADR-0119](ADR-0119-deterministic-declaration-and-configuration-substrate.md) — Deterministic
+  declaration and configuration substrate (sequential number; see Numbering)
 
 ### persistence-state (0055-0061)
 
@@ -272,6 +280,8 @@ its area block.
   session authorization observation
 - [ADR-0087](ADR-0087-evidence-backed-governed-execution.md) — Evidence-backed governed execution
 - 0088-0089 — unused (0088 allocated to a substrates record from this gap; see below)
+- [ADR-0122](ADR-0122-feature-boundaries-and-optional-runtime-profiles.md) — Feature boundaries and
+  optional runtime profiles (sequential number; see Numbering)
 
 ### substrates (0090-0095)
 

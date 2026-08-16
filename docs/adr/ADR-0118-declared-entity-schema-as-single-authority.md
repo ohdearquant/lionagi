@@ -5,9 +5,11 @@
 - **Implementation-status**: not-started
 - **Area**: persistence-state
 - **Date**: 2026-08-15
-- **Relations**: extends ADR-0117 (normalized progression membership); revisits ADR-0056
-  (StateDB SQLAlchemy Core backend) and ADR-0077 (studio/state filesystem boundary); touches
-  every ADR that added a StateDB column or table
+- **Relations**: extends ADR-0117 (normalized progression membership); amends ADR-0056
+  (StateDB SQLAlchemy Core backend) and ADR-0077 (studio/state filesystem boundary); depends on
+  ADR-0119 (deterministic declaration substrate); delegates dispatch mechanics to ADR-0120 and
+  provider placement to ADR-0122; requires ADR-0123's Run/entity decision before target-registry freeze;
+  touches every ADR that added a StateDB column or table
 
 ## Context
 
@@ -211,11 +213,38 @@ raw-default handling.
 ## Decision
 
 **D1 — one schema authority: a declared entity spec.** Each persisted entity is described once,
-by a frozen class-level declaration (fields with types, nullability and defaults; foreign keys
-at the type annotation; primary keys with composite ordering; indexes with explicit key
-direction; per-entity toggles for audit columns), registered in one central registry.
+by a frozen class-level declaration composed from the hardened `Spec`, `Operable`, and `Params`
+substrate in ADR-0119 (fields with types, nullability and defaults; foreign keys at the type
+annotation; primary keys with composite ordering; indexes with explicit key direction;
+per-entity toggles for audit columns, lifecycle-policy ownership, and legacy-facade exposure),
+registered through one explicit composition root.
 Everything else — table objects, insert/update builders, update allow-lists, the DDL snapshot,
-migration plans — derives from the registry. No other module may declare a table.
+migration plans — derives from the registry. No other module may independently author or issue DDL
+for a managed table. An optional feature/extension may export an immutable registry/manifest
+fragment, but only explicit store composition gives it ownership and only the state migration
+service materializes it.
+
+Importing an entity module never mutates a process-global registry. A caller composes a registry
+from ordered declarations, and duplicate names or incompatible declarations fail at composition.
+The registry's canonical form is deterministic across fresh processes.
+
+Migration uses two named declaration snapshots, but only one can become runtime authority:
+
+- `LegacyBaselineRegistry` is a fixture-only transcription of production `schema_meta.py` at a
+  pinned source revision. It proves that the new compiler can reproduce the selected legacy
+  SQLAlchemy objects exactly. Runtime vocabulary, CRUD, lifecycle projections, and migration
+  targets may not import or derive from it.
+- `TargetRegistry` is the prospective runtime authority. It freezes only after ADR-0123 and every
+  other accepted logical-schema decision are incorporated; current aliases and table absence do
+  not decide whether canonical Run is managed.
+- the compiler produces `LegacyBaselineManifest` and `TargetSchemaManifest`. Every declaration
+  difference between those complete manifests appears in an `AuthoredTargetChangeSet`, with its
+  decision source, per-dialect risk, data transform or explicit `none`, and landing phase. An
+  undeclared difference fails the gate.
+- historical `schema.sql` and populated deployed shapes are `LegacyPhysicalVariant` fixtures, not
+  more registries. Each recognized variant maps to a distinct preapproved
+  `AuthoredMigrationPlan`. No gate requires
+  `TargetRegistry` to equal a legacy authority.
 
 **D2 — structural emission targets SQLAlchemy `MetaData`; everything else is an explicit
 operation spec.** The specs generate the `Table` objects that `schema_meta.py` hand-writes today,
@@ -236,6 +265,15 @@ operation specs with per-dialect implementations, not things inferred from a des
   and then derives real values from history, and a desired-minus-live structural diff cannot
   produce that;
 - trigger bodies.
+
+The whole-store authority is a composed `SchemaManifest`, not `MetaData` alone. It contains the
+managed entity tables and table-owned constraints/indexes from `TargetRegistry`; managed operation
+objects such as triggers and views that `MetaData` cannot express completely; explicitly declared
+extension bundles; and an exact transitional ownership manifest that Phase 5 empties. Every
+user-visible catalog object—table, index, trigger, view or materialized view, and PostgreSQL
+trigger-function dependency—classifies exactly once as managed, declared extension, transitional,
+dialect internal, or unknown. Dialect-internal objects are identified by catalog-adapter evidence,
+never a caller-supplied wildcard or naming convention.
 
 Two corrections to the reasoning that first motivated this choice, both from running it:
 
@@ -282,21 +320,29 @@ would therefore report equality across exactly the changes it exists to catch. P
 and named check text do survive the same reflection, so the defect is field-specific rather than
 a reason to distrust reflection wholesale.
 
-So the gate is defined as a frozen `PhysicalSchema` populated by per-dialect catalog adapters,
-and three separate comparisons:
+So the gate is defined as a frozen `PhysicalSchema` populated by per-dialect catalog adapters.
+It includes normalized identity, definition digest, ownership, and dependency edges for tables,
+indexes, constraints, triggers, views, extension objects, and PostgreSQL trigger functions. Five
+separate comparisons have distinct purposes:
 
-1. declared specs against the generated SQLAlchemy objects;
-2. generated objects against create-and-introspect results, through the dialect adapter;
-3. the canonical `PhysicalSchema` serialization across fresh processes.
+1. `LegacyBaselineRegistry` compiled to SQLAlchemy objects equals the frozen production
+   `MetaData` at the pinned revision;
+2. `TargetRegistry` compiled to `TargetSchemaManifest`/generated objects equals its target
+   declarations;
+3. `declaration_diff(TargetSchemaManifest, LegacyBaselineManifest)` equals exactly the
+   `AuthoredTargetChangeSet`;
+4. target-generated objects equal create-and-introspect results through each dialect adapter;
+5. the canonical declaration and `PhysicalSchema` serializations are deterministic across fresh
+   processes.
 
 The SQLite adapter must read declared type text and effective affinity, index direction from
 `PRAGMA index_xinfo`, partial predicates, constraint names and expressions, foreign key actions,
 and normalized server defaults. It may use generic `Inspector` fields only where those are shown
 sufficient for that field. PostgreSQL supplies the same inventory from its live catalog. The
-cross-process comparison (3) is over the canonical serialization, not compiled DDL bytes:
+cross-process comparison (5) is over the canonical serialization, not compiled DDL bytes:
 formatting is not a physical semantic.
 
-*The gate ships with a per-field must-fail fixture arm.* This is a landing condition on Phase 1,
+*The gate ships with a per-field must-fail fixture arm.* This is a landing condition on Phase 2,
 not a later refinement. P2 is the whole problem: a parity guard that has never been shown a
 divergence is indistinguishable from a broken one, and it gets cited as the reason the
 duplication is safe. The same objection is what disqualified the reference implementation's
@@ -305,7 +351,8 @@ semantic:
 
 column type · nullability · default · primary key, including composite key *order* · foreign
 key, including its actions · unique constraint · check constraint · index membership · index
-key *direction*.
+key *direction* · unknown table · unknown trigger · unknown view · trigger target/event/body ·
+view definition/dependency · zero or multiple owners for one catalog object.
 
 Each arm must go red on its own. The acceptance test is a mutation, not a passing run: reverting
 an adapter's read of one field must redden exactly that field's arm and no other, which proves
@@ -329,9 +376,15 @@ one*; everything else becomes
 a generated rebuild — the pattern `state/db.py` already implements by hand as seven rebuild
 paths over five tables (`sessions`, `schedules` three times, `invocations`, `schedule_runs`,
 `definitions`), each keyed to a different legacy shape it has to recognise and replace.
-The generated rebuild derives the target table, its indexes and its triggers from the specs. The
-current rebuilds do the opposite: they read the live catalog and replay it, assembling the copy
-statement's column list from catalog-read names and re-executing index DDL strings taken from
+The generated rebuild derives the target table and every recreated dependent object from the
+authored `SchemaManifest`. Catalog-returned DDL is never executed. Before mutation the planner
+computes the reverse dependency closure of every rebuilt object. An unknown or opaque dependent
+object blocks the plan before DDL or version writes; a declared extension affected by the rebuild
+is recreated from its authored extension spec and re-introspected afterward. `CASCADE` is never
+used to bypass ownership.
+
+The current rebuilds do the opposite: they read the live catalog and replay it, assembling the
+copy statement's column list from catalog-read names and re-executing index DDL strings taken from
 `sqlite_master` (`state/db.py:1418-1422`, and the same shape in the six other rebuild paths).
 That faithfully preserves whatever the database happens to contain, including objects nothing
 declares, so a rebuild carries drift forward instead of resolving it — a database built from the
@@ -350,6 +403,17 @@ a migration that silently backfills a column the declaration says must be meanin
 decision the schema layer is not entitled to make. The classifier is proven on a populated
 fixture table, because on an empty one the distinction does not appear.
 
+For each supported deployed variant, the separate physical gate is:
+
+```text
+physical_diff(TargetPhysicalSchema, LegacyPhysicalVariant[v])
+    == AuthoredMigrationPlan[v]
+```
+
+A runtime live diff is only a candidate. Writable migration is authorized only when the complete
+live snapshot equals one recognized variant and the candidate plan digest equals that variant's
+preapproved plan. An unknown live shape remains quarantined; observing a diff never approves it.
+
 Risk is classified per dialect, not once: the same logical change has different mechanics on
 each backend, so a type widening that is a cheap `ALTER` on PostgreSQL is a full table rebuild
 on SQLite, and a plan that reports one risk for both is lying to whoever approves it. The
@@ -361,14 +425,21 @@ as the axis that actually carries risk here.
 confirms the resulting shape. The engine lands in observe-only mode first (classify and report,
 apply nothing) so that unknown deployed shapes surface before any of them is migrated.
 
-Failing closed is a three-state contract, not a refusal. "Blocks writable open" on its own turns
-a transient catalog failure into an application lockout, and the read-only recovery path that
-exists today is SQLite-only by construction, so a dual-dialect design cannot inherit it:
+Failing closed has four explicit dispositions. A dropped connection cannot honestly promise a
+readable quarantine handle:
 
-- **verified shape** — writable open;
-- **inspection failure or unknown shape** — quarantined: read-only inspection and export, on
-  both dialects;
-- **explicit offline repair** — back up, apply an identified plan, re-introspect.
+- **`ReadyReadWrite`** — one complete, verified snapshot and a writable handle;
+- **`RepairRequired`** — one complete recognized legacy snapshot, an authored migration plan, and
+  an enforced read-only handle until that plan is explicitly applied;
+- **`Quarantined`** — one complete unknown snapshot, findings, and an enforced read-only handle for
+  inspection/export;
+- **`Unavailable`** — no store handle because connectivity, complete inspection, or read-only
+  enforcement failed. It promises neither inspection nor export.
+
+Offline repair may apply the preapproved plan only from `RepairRequired`. `Quarantined` permits
+inspection/export until an operator authors and approves a new `LegacyPhysicalVariant` plus
+`AuthoredMigrationPlan`; exact reclassification then moves it to `RepairRequired`. No plan executes
+directly from an unknown shape. Repair is an operation, not a fifth open disposition.
 
 Quarantine has to be *enforced by the connection*, not by callers agreeing to behave, and that
 needs a named mechanism per dialect or the state is read-only in name only:
@@ -385,8 +456,8 @@ needs a named mechanism per dialect or the state is read-only in name only:
   was written to remove, reintroduced one paragraph after removing it. Setting it as well is
   harmless defence in depth; it never satisfies the requirement.
 
-If no server-enforced form is available on a PostgreSQL store, quarantine **denies the open** rather than
-handing back a writable connection. This is the specific hole the current code names in its own
+If no server-enforced form is available on a PostgreSQL store, the result is `Unavailable` rather
+than a quarantine handle or a writable connection. This is the specific hole the current code names in its own
 docstring: `read_only_open_supported()` returns False for server-backed stores, and it warns
 that callers needing read-only *for safety* must not use it, because it hands them a writable
 connection precisely there. A dual-dialect fail-closed contract cannot be built on a helper with
@@ -394,19 +465,24 @@ that shape, so the enforcement above replaces it rather than wrapping it. The fa
 suite runs on both dialects and asserts a write is refused *by the connection* under quarantine,
 not merely that no write was attempted.
 
-Those two failure causes are not the same event and must not be treated alike. The discriminator
-is whether inspection *returned*:
+Unknown is a classification of a complete, internally consistent catalog snapshot;
+`Quarantined` is a connection disposition. A partial snapshot is discarded and is never
+structural evidence. The discriminator is whether inspection *returned*:
 
 - **Transient** — the catalog read itself raised (I/O error, lock timeout, dropped connection).
   Nothing was learned about the shape. Retry, bounded: **3 attempts total, backing off 250ms then
-  500ms**, and quarantine only if all three raise. A one-off I/O error must not lock a healthy
-  production store out of writable open.
+  500ms**. Each attempt must return one complete snapshot; no partial result is merged into the
+  next. If all three fail, dispose every connection and return `Unavailable`. A one-off I/O error
+  must not lock a healthy production store out of writable open.
 - **Structural** — inspection succeeded and returned a shape the registry does not recognize.
   Quarantine immediately, with no retry. Retrying here is pure delay: the answer is known and
   will not change, and a retry loop would only make an unknown-shape store look like a slow one.
 
-Both still fail closed to read-only. The retry applies to the *transient* class only, and the
-distinction has to be enforced at the catch site, because the defect this replaces is exactly a
+The retry applies to the *transient* class only. A complete structural finding yields
+`Quarantined` only after a new server-enforced read-only handle is established; otherwise it also
+yields `Unavailable`. No failed or formerly writable handle is returned. `Unavailable` is not
+cached across later opens, so restored connectivity or credentials can reach `ReadyReadWrite`.
+The distinction is enforced at the catch site because the defect this replaces is exactly a
 blanket `except Exception: continue` that could not tell the two apart and then stamped the
 version anyway.
 
@@ -418,33 +494,46 @@ and a literal reading quarantines every deployment that has ever opened the oper
 studio-service tables are not part of this: they re-declare tables the registry already owns, so
 the diff recognises their shapes and only their ownership is unresolved until Phase 5.
 
-The registry therefore distinguishes *unregistered* from *unknown*. Tables named in an explicit
-transitional allow-list are out of scope for the diff: not inspected, not migrated, not grounds
-for quarantine. The allow-list is authored, enumerated table by table rather than pattern
-matched, and Phase 5 empties it by moving each entry into the registry proper. An empty
-allow-list is the end state, and the gate that proves Phase 5 is done is that it is empty while
-every table is still accounted for. A table that is in neither the registry nor the allow-list
-is genuinely unknown and still quarantines, which is the case the contract is for.
+The `TransitionalCatalogManifest` therefore distinguishes transitional from unknown objects. It
+enumerates exact object identities and owners—not table-name patterns—and Phase 5 empties it by
+moving each entry into the managed registry or a declared extension bundle. Transitional objects
+remain dependency-inspected even while their internal shape is excluded temporarily from managed
+diffing. Fixture presence never grants ownership. The end-state gate requires an empty
+transitional manifest while every non-internal table, index, trigger, view, and trigger-function
+dependency is still classified exactly once. An object in neither the manifest nor an authored
+owner is genuinely unknown and quarantines the store.
+
+The existing `trigger_log`/`schedule_runs_audit` rebuild fixture remains a Phase 0 statement of
+legacy behavior, not permission to replay arbitrary live DDL. Phase 4 replaces it with four arms:
+an unregistered bundle quarantines before rebuild with data and version unchanged; a registered
+extension bundle rebuilds from its authored spec and still fires; a registered dependent view
+remains valid; and mutation of live trigger/view SQL without a declaration change fails parity and
+is never replayed.
 
 No flag turns an unverified store writable; a `force` escape hatch would rebuild the fail-open
-path this decision exists to close. Because observe-only runs over *successful* inspections
-cannot exercise the failure branch, the guard is proven by fault injection at the table, column,
-constraint and index inspection boundaries, asserting that writable open fails before any DDL or
-version write, that read and export still succeed on both dialects, and that removing the
-injected fault reaches the same plan.
+path this decision exists to close. Fault injection covers tables, columns, constraints, indexes,
+triggers, views, dependency reads, connection loss, and read-only enforcement. Failure after
+tables but before triggers discards the partial snapshot; failures on attempts one and two followed
+by a complete third attempt classify only the third; three failures return typed `Unavailable`
+with no handle, DDL, or version write. A complete unknown shape takes zero retries and returns a
+connection whose write fails at the backend, while the same PostgreSQL shape without safe
+read-only credentials returns `Unavailable`. A later open after restoration is evaluated anew.
 
 **D6 — DDL issuance and store access become the state layer's exclusive right.** The six
 operator-store tables and the 7 studio-service re-declarations register in the registry (the
 latter as the state-owned tables they already duplicate). Studio loses its
 per-request `CREATE TABLE` re-assertions and its own connection path; the 38 direct contexts move
-to one executor over the state engine, which removes the "equally wrong" fallback and the three
-services that never call `require_file_store` along with it.
+to one `StateStore`/`TransactionRunner` port over the state engine, which removes the "equally
+wrong" fallback and the three services that never call `require_file_store` along with it.
+`StateStore` is persistence vocabulary; it is not the generic Event driver, ActionExecutor, flow
+scheduler, or native-agent harness defined elsewhere.
 
-**D7 — provider mirrors move to the provider packages.** `state/claude_mirror.py` →
-`providers/anthropic/claude_code_mirror.py`; `state/codex_mirror.py` →
-`providers/openai/codex_mirror.py`; `state/_mirror_common.py` → a shared module under
-`providers/`. `cli/mirror.py` stays as the CLI adapter. Pure moves with import updates across
-roughly 17 files; no compatibility shims (own-use policy).
+**D7 — provider mirror placement is delegated to the feature-boundary decision.**
+`state/claude_mirror.py`, `state/codex_mirror.py`, and `state/_mirror_common.py` create a real
+state→provider dependency inversion, but moving them to a guessed provider folder is not a
+persistence-schema decision or a proven pure move. ADR-0122 decides the provider transcript,
+projection, and persistence port boundaries and their compatibility path. ADR-0118 removes the
+state import inversion only through that accepted boundary; Phase 0 does not move these files.
 
 **D8 — `reasons.py` is keyed two different ways at once; separate them.** The module holds two
 vocabularies that look like one. The seven code classes are keyed on *producer domain*, and each
@@ -490,52 +579,50 @@ The `run.` prefix likewise stays grouped despite there being no `runs` table. Pr
 code groups and table-backed entity types are different axes, and the class owns persisted
 strings spelled `run.` whatever the Python name is.
 
-*Move the entity vocabulary to the registry.* `VALID_ENTITY_TYPES` and `ENTITY_TYPE_TO_TABLE`
+*Move the entity vocabularies to the registry only after the registry exists.*
+`VALID_ENTITY_TYPES` and `ENTITY_TYPE_TO_TABLE`
 are the fourth and fifth hand-maintained restatements of "which entities exist and what table
 each lives in"; under D1 both are derived from the registry rather than typed. The aliases stay
-as an explicit compatibility map. Whether `dispatch` is an entity type gets decided at that
-point rather than inherited.
+as an explicit compatibility map. This is Phase 1 work, not a pre-registry Phase 0 move. The
+domain reason classes remain separate from both registry-derived projections throughout.
 
 "Derived from the registry" has to mean derived from a *projection* of it, and the projection
 needs declaring, because the two sets are not the same size and never were. The registry holds
 32 persisted entities. `VALID_ENTITY_TYPES` holds six — `session`, `show`, `play`, `invocation`,
-`team`, `schedule_run` — and it is not an inventory of what is stored; it is the set of things
-whose status transitions the lifecycle service validates. Deriving it from the full registry
-would silently authorise `update_status()` against every table in the schema, which is a
-widening of a write-time validator and not a de-duplication.
+`team`, `schedule_run` — and is the compatibility exposure of generic
+`StateDB.update_status()`. It is **not** the complete set whose transitions LifecycleService
+validates: the live policy registry also owns `dispatch`, and dispatch/outbox production code
+actively invokes that policy through the service. Deriving either set from the full registry, or
+pretending the two sets are equal, would widen or break a write-time contract.
 
-So D1 grows a per-entity `lifecycle_managed` toggle alongside the audit-column toggles, and the
-entity vocabulary is the registry filtered by it. The parity gate for this move is set equality
-against today's hand-typed six, asserted before the old constant is deleted, so the projection
-is proven to reproduce the current set rather than assumed to.
+So D1 grows two independent per-entity declarations alongside the audit-column toggles:
 
-`dispatch` is the one case that does not fall out of the toggle, and this ADR **deliberately
-defers it** rather than leaving it unnoticed. It has a domain class and a lifecycle policy but is
-absent from `VALID_ENTITY_TYPES` today, so marking `dispatch_outbox` lifecycle-managed would
-change behaviour by admitting a type the validator currently rejects, and leaving it unmarked
-perpetuates a policy that exists but is unreachable through the validator. Either is defensible
-and both are behaviour changes, which is why neither should be inherited as a side effect of a
-schema refactor by whoever happens to write the toggle.
+- `lifecycle_policy_managed` means one ADR-0058 `LifecyclePolicy` exists and the typed owner may
+  invoke LifecycleService;
+- `legacy_status_facade_exposed` means the generic compatibility `StateDB.update_status()` accepts
+  the entity kind and can derive `ENTITY_TYPE_TO_TABLE` for it.
 
-Deferring is not the same as leaving it under-specified, and the difference is the forcing
-mechanism. The parity gate makes the choice unavoidable at toggle-introduction: the derived set
-either equals today's hand-typed six, or the only permitted difference is `dispatch` and the
-gate fails until someone states which. Until that decision is made the schema behaviour is
-**exactly today's** — the six-entity vocabulary, `dispatch` rejected by `update_status` — because
-the gate's default arm is set equality against the current constant. So the contract is
-determinate at every moment: it is six now, it is six after Phase 1 unless someone deliberately
-makes it seven, and this ADR is amended with the reason at that point. What is deferred is the
-decision, not the behaviour.
+`LegacyBaselineRegistry` must reproduce today's **seven** lifecycle-policy-managed entities—the
+six facade values plus `dispatch`—and today's **six** facade-exposed values exactly.
+`TargetRegistry` adds canonical `Run` to the policy projection, producing eight, while leaving the
+legacy facade projection at six. RunRepository calls the typed LifecycleService port; it is not
+silently added to a generic string facade. Exposing either `dispatch` or `run` through that facade
+requires a later explicit compatibility decision and tests. The old constants are not deleted
+until both projections, including their intentional difference, pass.
 
 **D9 — what carries over, what is reworked, what is left behind.** The target design splits
-cleanly along a dialect seam, and that seam is what makes adopting it tractable:
+cleanly along a dialect seam, and that seam is what makes adopting it tractable. The reference is
+evidence and a source of patterns, not a code donor: its defaults handling is useful, while its
+post-init validation path and mutable content-hash model have their own defects. LionAGI ports
+semantics through ADR-0119 and proves them locally.
 
-- *Port as-is* — the frozen spec dataclasses (column, foreign key, index, trigger, check,
-  unique, table, schema), the entity→spec and registry→schema constructors, the migration
-  operation/plan data model, the operation-type and risk enums, the spec-comparison logic
-  including type-change classification, and identifier validation plus order-by sanitization.
-  These model schema state and compare it. Their data carries no dialect syntax; the `to_ddl`
-  methods hanging off the same classes do, and those belong to the rework bucket below.
+- *Reimplement the semantics on LionAGI primitives* — immutable column, foreign-key, index,
+  trigger, check, unique, entity, and physical-schema declarations; entity→spec and
+  registry→schema composition; migration operation/plan values; operation/risk enums;
+  spec-comparison and type-change classification; identifier validation and order-by
+  sanitization. These use hardened `Params`, `Spec`, `Operable`, Sentinel semantics, and canonical
+  serialization rather than adding a parallel frozen-dataclass/schema hierarchy. Their data
+  carries no dialect syntax; `to_ddl` methods belong to the rework bucket below.
 - *Port with rework* — everything that emits SQL text: the Python→SQL type mapping (`UUID`,
   `JSONB` and `TIMESTAMP WITH TIME ZONE` have no SQLite equivalents), the spec adapter, and the
   DDL strings attached to each diff operation. In this design that rework is largely a deletion:
@@ -571,6 +658,23 @@ break ADR-0117's backfill, which must faithfully preserve legacy collections tha
 the same identifier more than once. An absent constraint is a declared decision here, not an
 omission to be corrected, and the gate has to be able to tell those apart.
 
+### Amendment boundary with ADR-0056
+
+On acceptance, this ADR supersedes these specific ADR-0056 clauses and no others:
+
+- D2's statement that hand-authored `schema_meta.py` `MetaData` is the runtime schema authority;
+  generated `MetaData` becomes a projection of the EntitySpec registry;
+- D2's authored `schema_migrations.py` additive ledger, `schema.sql` compatibility authority,
+  fixed open-sequence reconciliation list, and bespoke SQLite rebuild ownership; these become
+  generated or authored operation-spec projections under D3–D5;
+- D6's PostgreSQL read-only guidance where safety/quarantine is required: an application request
+  for a read-only role is not itself enforcement, and an unavailable server-enforced role or hot
+  standby denies quarantine open.
+
+ADR-0056 D1's normalized asynchronous `StateDB` compatibility façade, D3/D4 transaction and
+locking semantics, D5's explicit dialect seams, and D6's shared-instance lifecycle remain in
+force unless a later accepted ADR names a replacement.
+
 ## Phasing
 
 Each phase lands behavior-preserving, gated by equality proofs, and independently valuable.
@@ -583,27 +687,39 @@ that — so a schema change made in the writer phase would still have to be appl
 the old migration ledger together, and a missed edit points a generated writer at a shape the
 upgraded store does not have.
 
-- **Phase 0 (immediately, independent of the engine):** D7 mirror moves; the D8 entity-vocabulary
-  move. Small mechanical PRs. No class rename.
-- **Phase 1:** entity specs + registry + generated `MetaData`, plus explicit storage codecs and
-  the canonical serialization, in shadow mode. The D3 gate pins the generated schema against
-  today's, on physical semantics, for both dialects, through the catalog adapters, before any
-  hand-written body is deleted. **Landing condition: the per-field must-fail fixture arm ships
-  with the gate** (D3), mutation-proven — reverting one adapter field read reddens exactly that
-  field's arm. A gate that has never been shown a divergence does not count as landed. The
-  `DESC`/index-count divergences are decided here. The gate also pins determinism: generating
-  twice in separate processes must produce an identical canonical serialization, since the whole
-  design rests on a schema hash and generated migrations.
-- **Phase 2:** dialect introspection, the observe-only structural diff, and an explicit authored
-  data-migration catalog — exercised against legacy fixtures *while every old authority still
-  exists*. This is the phase that discovers what is actually deployed, and it applies nothing.
-  The data-migration catalog is authored rather than derived, because desired-minus-live cannot
-  produce a placeholder-then-backfill or a one-time semantic correction.
+- **Foundation gate:** accept and implement the relevant ADR-0119 contracts for dataclass
+  defaults/default factories, Sentinel states, ordered field identity, structural equality/hash,
+  and canonical serialization. Pin current legacy behavior with fixtures before changing it.
+  ADR-0118 may not introduce a second declaration substrate to bypass this gate.
+- **Phase 0:** freeze `LegacyBaselineRegistry`, all six legacy schema authorities, populated
+  `LegacyPhysicalVariant` databases, and every table/column/index/default/constraint/trigger/view
+  as a fixture corpus; record an explicit decision for each current divergence. The
+  `trigger_log`/`schedule_runs_audit` case is labeled discovered-but-unowned. No production
+  behavior, provider mirror, target-registry, or registry-derived vocabulary moves in this phase.
+- **Phase 1:** land the shared compiler, `LegacyBaselineRegistry`, `TargetRegistry`,
+  their compiled manifests, `AuthoredTargetChangeSet`, storage codecs, and canonical declaration
+  serialization in shadow mode. Prove legacy-baseline-to-current-`MetaData` equality separately
+  from target-to-declaration equality, and prove the declaration-manifest diff equals the authored
+  change set. Generate D8's two target projections in shadow: `lifecycle_policy_managed` contains
+  today's seven policies including dispatch plus accepted canonical Run (eight), while
+  `legacy_status_facade_exposed` remains today's six. No target-to-legacy equality, live catalog
+  parity, generated writer, or accidental generic-facade expansion is claimed here.
+- **Phase 2:** implement the SQLite and PostgreSQL physical-catalog adapters, all per-field
+  and object-ownership/dependency adapters, all per-field/object must-fail mutation fixtures,
+  create-and-introspect parity, cross-process `PhysicalSchema` determinism, the full
+  ready/repair/quarantine/unavailable fault matrix, observe-only deployed diff, and an explicit
+  per-`LegacyPhysicalVariant` `AuthoredMigrationPlan` catalog while every old authority still
+  exists. **Landing condition:
+  reverting one adapter field read reddens exactly that semantic's fixture arm.** The
+  `DESC`/index-count divergences are decided here. The phase applies nothing. The data-migration
+  catalog is authored rather than derived because desired-minus-live cannot produce
+  placeholder-then-backfill or a semantic correction.
 - **Phase 3:** generated statement builders for insert/update, in shadow/equality mode, with a
   generated dict-compatibility adapter; retire the interpolation sites and `_*_COLUMNS`;
   validated identifier types in `LifecyclePolicy`. Equality proofs pin generated SQL against
   current SQL on fixtures.
-- **Phase 4:** migration application under the three-state contract; retire `MIGRATION_COLUMNS`;
+- **Phase 4:** migration application under the four-disposition contract; forbid replay of raw
+  catalog DDL; run the registered/unregistered extension and dependent-view matrix; retire `MIGRATION_COLUMNS`;
   delete the old authorities; the seven bespoke rebuild paths become instances of the generated
   rebuild, ported in risk order (the three generated schedules rebuilds first, literal
   sessions/invocations next, then definitions, and schedule-runs last because it carries backups,
@@ -612,12 +728,38 @@ upgraded store does not have.
   `kind` CHECK that has to be gone before a `kind='skill'` row can be saved, so it carries a
   behavioural precondition and not only a shape change.
 - **Phase 5:** fold operator-store and studio-service tables into the registry and route the 38
-  direct connections through the shared executor (largest blast radius; last). Operator's atomic
-  CAS SQL is preserved verbatim and moved, never rewritten in the same change as its schema.
+  direct connections through `StateStore`/`TransactionRunner` (largest blast radius; last).
+  Operator's atomic CAS SQL is preserved verbatim and moved, never rewritten in the same change
+  as its schema. The transitional manifest must be empty across tables, triggers, and views.
+  ADR-0122 owns any provider mirror relocation after its dependency boundary is accepted.
 
-**D10 — lifecycle reuses the general primitives where the semantics actually match, and not
-otherwise.** "This layer re-implements primitives" is true of the package as a whole and false
-in the specific places it is most tempting to change, so this decision names both sides.
+### Implementation issue rescope
+
+- #3213 is Phase 0 fixtures/inventory only. Remove D7 mirror moves and the registry-derived D8
+  projection from its acceptance criteria.
+- #3214 owns the shared compiler, the fixture-only legacy baseline, the target registry and authored
+  change set, their separate shadow gates, and D8's policy-managed/facade-exposed projections. It
+  depends on the ADR-0119 foundation issue and absorbs #3205/#3227 as exact parity fixtures. It
+  does not claim target-to-legacy or live physical-catalog parity.
+- #3215 owns dialect catalog and object-ownership/dependency adapters, per-field/object
+  mutation-proof gates, the unavailable/quarantine matrix, observe-only deployed inventory/diff,
+  and preapproved per-variant migration/transformation catalog. #3206 remains an independently
+  actionable fail-open defect linked to this phase rather than delayed by it.
+- #3216 remains generated CRUD/codecs in shadow equality mode.
+- #3217 must require a server-enforced PostgreSQL read-only role or hot standby for quarantine; it
+  may mention `default_transaction_read_only` only as defense in depth and must return
+  `Unavailable` when no safe handle exists.
+- #3218 is split after approval into registry/table ownership and Studio/operator routing through
+  `StateStore`/`TransactionRunner`. #3207 remains a standalone wrong-store safety fix linked to
+  the latter.
+- #3201–#3204 remain lifecycle truth, durable delivery, and audit-ordering work. They are not
+  absorbed into a schema-declaration epic.
+
+**D10 — lifecycle reuses foundation mechanics while dispatch taxonomy stays in ADR-0120.**
+"This layer re-implements primitives" is true of the package as a whole and false in the specific
+places it is most tempting to change. This persistence ADR owns only the invariant that required
+lifecycle evidence is committed before post-commit delivery. ADR-0120 owns interception,
+observation, fan-out, callback policy, and compatibility façades.
 
 Already correct, leave alone: the terminal-callback path uses `ln.concurrency` for task groups,
 cancellation and shared deadlines. That is the canonical primitive and it is not duplicated.
@@ -630,8 +772,9 @@ Worth converging:
 - Retry. There is no retry in the delivery path today; when durable delivery lands (see the
   unreconciled ledger, P-adjacent), it uses `ln.concurrency.retry` through
   `service/resilience.py` rather than a fourth backoff loop.
-- Registration and dispatch. `service/broadcaster.py` and `TerminalCallbackRegistry` are the same
-  shape at the registry level — subscribe, unsubscribe, count, fan out.
+- Registration and dispatch mechanics may use ADR-0120's policy-declared fan-out kernel.
+  `TerminalCallbackRegistry` remains state-owned because its envelope, filtering, shared deadline,
+  override precedence, and post-commit ordering are persistence semantics.
 
 Explicitly rejected, because the vocabulary matches and the semantics do not:
 
@@ -643,8 +786,8 @@ Explicitly rejected, because the vocabulary matches and the semantics do not:
   per-registration filtering by entity kind and id, override precedence, a shared handler
   deadline, and post-commit ordering; the broadcaster has none of those, and adding them to a
   generic singleton pub/sub to avoid a duplicate registry would push lifecycle semantics into a
-  shared primitive. Share the registration/dispatch mechanics only if that can be done without
-  moving those four properties.
+  shared primitive. ADR-0120 shares registration/dispatch mechanics without moving those four
+  properties.
 
 The genuine consolidation for this layer is the one this ADR is about: the registry owns storage
 shape, one lifecycle service owns transition semantics, and the general primitives supply
@@ -735,7 +878,8 @@ project exists, where `StateDB` returns `False`, which is the difference between
 at the route. Each swap is an API contract decision with a caller behind it, so the
 caller-by-caller pass Phase 5 opens with is what sizes this work.
 
-Add to it the 38 direct store connections across 9 modules that collapse to one executor, the
+Add to it the 38 direct store connections across 9 modules that collapse to one
+`StateStore`/`TransactionRunner`, the
 repeated session-by-id lookups in the operator package, and the admin-event insert duplicated
 between `studio/operator/store.py` and `StateDB.insert_admin_event`. Sizing the rest is Phase 5's
 opening pass, not something to estimate from here.
@@ -764,7 +908,7 @@ summed: a declaration, a statement string, and an execution call are different t
 
 | Where | Declares schema | Issues DDL | Builds SQL | Notes |
 |---|---|---|---|---|
-| `state/schema_meta.py` | 32 tables, 380 columns, 83 indexes | via `create_all` | — | what production builds from; also 34 PK columns, 27 FKs, 20 CHECKs, 8 uniques, 29 partial indexes, 37 server defaults — the surface the Phase 1 gate must compare |
+| `state/schema_meta.py` | 32 tables, 380 columns, 83 indexes | via `create_all` | — | what production builds from; also 34 PK columns, 27 FKs, 20 CHECKs, 8 uniques, 29 partial indexes, 37 server defaults — Phase 1 compares generated objects and Phase 2 compares physical catalogs |
 | `state/schema.sql` | 32 tables, 87 indexes, 5 pragmas, 3 seeds | tests only | — | `_SCHEMA_PATH` at `db.py:122`; not executed by writable open |
 | `state/schema_migrations.py` | 127 additive column declarations over 14 tables | 10 indexes per dialect | — | the two dialect tuples are textually identical |
 | `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 6,683 lines; 5 `_*_COLUMNS` allow-lists; 45 `S608` |

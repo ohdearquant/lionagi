@@ -4,7 +4,14 @@
 - **Kind**: Retrospective
 - **Area**: cli-surface
 - **Date**: 2026-07-09
-- **Relations**: supersedes v0-0029
+- **Relations**: supersedes v0-0029; prospectively amended by ADR-0123 (canonical Run)
+
+## Proposed ADR-0123 boundary
+
+The shipped CLI bytes, success classification, and StateDB-over-process-exit rule remain during
+migration. ADR-0123 renames the filesystem resource to `RunWorkspace`, makes a new durable Run the
+attempt authority, and supplies a complete legacy kind/status mapping. A manifest remains an
+export/evidence source and cannot independently terminalize the canonical Run.
 
 ## Context
 

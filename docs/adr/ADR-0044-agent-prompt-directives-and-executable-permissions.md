@@ -2,9 +2,33 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
+- **Implementation-status**: not-started
 - **Area**: agent-roles
 - **Date**: 2026-07-09
-- **Relations**: supersedes v0-0074
+- **Relations**: supersedes v0-0074; proposed invocation design is superseded by ADR-0121 if that
+  record is accepted
+
+## Review correction (2026-08-16)
+
+This proposed target contains stale current-state premises and must not be implemented unchanged.
+Agent factory now attaches spec hooks to MCP-discovered Tools, manager-owned external rewrites are
+normalized/revalidated, and an unavailable escalation handler raises the more specific
+`ControlUnavailableError` rather than an ordinary deny. P2 and conflicting escalation text below
+are historical.
+
+Coverage is still construction- and route-dependent: fresh plugin Tools, public direct manager or
+callable paths, stored `on_error` handlers, and the separate Session gate prevent the proposed
+“attach one plan after registration” from being an authoritative boundary. ADR-0121 replaces that
+target with an immutable request/decision model and sole ActionExecutor invocation path. D1's
+prompt-guidance distinction and D5's transport-trust separation remain valid inputs.
+
+Clause disposition if ADR-0121 is accepted: D1 is retained; D2 becomes ADR-0121's immutable policy
+declaration compiled to ADR-0087's exact activated snapshot; D3 is superseded by universal
+ActionExecutor and runtime plan compilation; D4's transform-normalize-security-recheck invariant is
+retained under that executor while post/error mechanics coordinate with ADR-0120; D5 is retained;
+D6 retains the prompt-versus-enforcement distinction but its separate Session-gate scheduling is
+superseded by the compiled executor plan. At that point this ADR's status changes to Superseded; it
+must not remain a second Proposed implementation target.
 
 ## Context
 
@@ -241,7 +265,9 @@ Because deny is checked before escalate, a destructive pattern does not reach es
 
 **Escalation semantics.**
 
-- If `on_escalate is None`, escalation raises `PermissionError` before invocation.
+- If `on_escalate is None`, current code raises `ControlUnavailableError` (a compatibility
+  subclass of `PermissionError`) before invocation, distinguishing missing control-plane capacity
+  from a deny verdict.
 - Callback result `True` allows unchanged arguments.
 - Callback result `dict` replaces arguments and is then subject to the final security check in D4.
 - Any other result denies with `PermissionError`.
