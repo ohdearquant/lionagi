@@ -421,7 +421,7 @@ def test_active_snapshot_caps_children_per_invocation_and_stops_claiming_health(
 
     seen: dict[int, int] = {}
 
-    def _fake_health(sessions, *, now, ps_snapshot):
+    async def _fake_health(sessions, *, now):
         seen[len(sessions)] = seen.get(len(sessions), 0) + 1
         return "healthy", now
 
@@ -478,7 +478,7 @@ def test_a_non_healthy_verdict_survives_truncation_and_is_marked_as_a_floor(tmp_
     monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
     _run(_seed_fanout_children(db_path, wide=5, narrow=1))
 
-    def _fake_health(sessions, *, now, ps_snapshot):
+    async def _fake_health(sessions, *, now):
         # The capped sample of the wide invocation already contains a bad child.
         return ("orphaned" if len(sessions) > 1 else "healthy"), now
 

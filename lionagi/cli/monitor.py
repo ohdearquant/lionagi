@@ -97,21 +97,44 @@ def _colour_status(status: str) -> str:
 # ── Elapsed formatting ────────────────────────────────────────────────────────
 
 
-def _elapsed(started_at: float | None, ended_at: float | None = None) -> str:
-    """Human-readable elapsed time.  Uses ended_at if present, else now."""
+def _elapsed(
+    started_at: float | None,
+    ended_at: float | None = None,
+    *,
+    approximate: bool = False,
+    terminal: bool = False,
+) -> str:
+    """Human-readable elapsed time.  Uses ended_at if present, else now.
+
+    A leading ``~`` marks a span whose end was reconstructed rather than
+    observed. Rows that ended before the store recorded end times get an end
+    inferred from whatever evidence was left behind, and the difference
+    between that and a measured run is the whole reason the store keeps the
+    provenance: printed bare, a guess reads as a measurement.
+    """
     if started_at is None:
         return "-"
+    # A row that has finished and recorded no end has no span to report, and
+    # saying so is the whole answer. Measuring it up to now is what the branch
+    # below does for a running row, and doing that here prints a duration that
+    # grows every redraw for a session that stopped long ago -- the reading the
+    # provenance flag exists to prevent, arrived at by a different route.
+    if ended_at is None and terminal:
+        return "-"
+    # Only a closed span can be approximate. A row that is still running is
+    # measured up to now whatever the flag says about the end it does not have.
+    marker = "~" if (approximate and ended_at is not None) else ""
     end = ended_at if ended_at is not None else time.time()
     secs = int(end - started_at)
     if secs < 0:
-        return "0s"
+        return f"{marker}0s"
     if secs < 60:
-        return f"{secs}s"
+        return f"{marker}{secs}s"
     mins, secs = divmod(secs, 60)
     if mins < 60:
-        return f"{mins}m{secs:02d}s"
+        return f"{marker}{mins}m{secs:02d}s"
     hrs, mins = divmod(mins, 60)
-    return f"{hrs}h{mins:02d}m"
+    return f"{marker}{hrs}h{mins:02d}m"
 
 
 def _since_timestamp(window: str) -> float:
@@ -406,6 +429,8 @@ def _format_table(rows: list[dict[str, Any]]) -> str:
 
 
 def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
     return {
         "id": sess["id"][:16],
         "type": sess.get("invocation_kind") or "session",
@@ -416,19 +441,30 @@ def _session_to_row(sess: dict[str, Any]) -> dict[str, Any]:
         "phase": (
             sess.get("current_phase") or sess.get("agent_name") or sess.get("playbook_name") or "-"
         ),
-        "elapsed": _elapsed(sess.get("started_at"), sess.get("ended_at")),
+        "elapsed": _elapsed(
+            sess.get("started_at"),
+            sess.get("ended_at"),
+            approximate=bool(sess.get("ended_at_is_approximate")),
+            terminal=sess.get("status") in SESSION_TERMINAL_STATUSES,
+        ),
         "agents": str(sess.get("branch_count") or 0),
     }
 
 
 def _invocation_to_row(inv: dict[str, Any]) -> dict[str, Any]:
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
     return {
         "id": inv["id"][:16],
         "type": "invocation",
         "project": "-",
         "status": inv.get("status") or "?",
         "phase": inv.get("skill") or "-",
-        "elapsed": _elapsed(inv.get("started_at"), inv.get("ended_at")),
+        "elapsed": _elapsed(
+            inv.get("started_at"),
+            inv.get("ended_at"),
+            terminal=inv.get("status") in SESSION_TERMINAL_STATUSES,
+        ),
         "agents": str(inv.get("session_count") or 0),
     }
 
@@ -446,13 +482,19 @@ def _show_to_row(show: dict[str, Any]) -> dict[str, Any]:
 
 
 def _play_to_row(play: dict[str, Any]) -> dict[str, Any]:
+    from lionagi.state.db import PLAY_TERMINAL_STATUSES
+
     return {
         "id": play["id"][:16],
         "type": "play",
         "project": play.get("session_project") or "-",
         "status": play.get("status") or "?",
         "phase": _trunc(play.get("name") or "-", 18),
-        "elapsed": _elapsed(play.get("started_at"), play.get("ended_at")),
+        "elapsed": _elapsed(
+            play.get("started_at"),
+            play.get("ended_at"),
+            terminal=play.get("status") in PLAY_TERMINAL_STATUSES,
+        ),
         "agents": str(play.get("branch_count") or 0),
     }
 
@@ -483,6 +525,8 @@ def _render_branch_lines(rows: list[dict[str, Any]], *, indent: str = "  ") -> l
 
 
 async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
     lines: list[str] = []
     lines.append(_bold(f"SESSION  {sess['id']}"))
     lines.append(f"  status:    {_colour_status(sess.get('status') or '?')}")
@@ -493,7 +537,15 @@ async def _detail_session(db: Any, sess: dict[str, Any]) -> str:
     lines.append(f"  model:     {sess.get('model') or '-'}")
     lines.append(f"  provider:  {sess.get('provider') or '-'}")
     lines.append(f"  effort:    {sess.get('effort') or '-'}")
-    lines.append(f"  elapsed:   {_elapsed(sess.get('started_at'), sess.get('ended_at'))}")
+    lines.append(
+        "  elapsed:   "
+        + _elapsed(
+            sess.get("started_at"),
+            sess.get("ended_at"),
+            approximate=bool(sess.get("ended_at_is_approximate")),
+            terminal=sess.get("status") in SESSION_TERMINAL_STATUSES,
+        )
+    )
     started = sess.get("started_at")
     if started:
         lines.append(f"  started:   {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started))}")
@@ -630,13 +682,22 @@ def _format_coordination_line(telemetry: dict[str, Any]) -> str | None:
 
 
 async def _detail_invocation(db: Any, inv: dict[str, Any]) -> str:
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
     lines: list[str] = []
     lines.append(_bold(f"INVOCATION  {inv['id']}"))
     lines.append(f"  status:        {_colour_status(inv.get('status') or '?')}")
     lines.append(f"  skill:         {inv.get('skill') or '-'}")
     lines.append(f"  plugin:        {inv.get('plugin') or '-'}")
     lines.append(f"  session_count: {inv.get('session_count') or 0}")
-    lines.append(f"  elapsed:       {_elapsed(inv.get('started_at'), inv.get('ended_at'))}")
+    lines.append(
+        "  elapsed:       "
+        + _elapsed(
+            inv.get("started_at"),
+            inv.get("ended_at"),
+            terminal=inv.get("status") in SESSION_TERMINAL_STATUSES,
+        )
+    )
     started = inv.get("started_at")
     if started:
         lines.append(
@@ -711,7 +772,11 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
                 # continue) and not [done] (would sweep live work as finished).
                 # Its own marker flags a data problem instead of guessing.
                 marker = _red("  [????]  ")
-            pelapsed = _elapsed(play.get("started_at"), play.get("ended_at"))
+            pelapsed = _elapsed(
+                play.get("started_at"),
+                play.get("ended_at"),
+                terminal=pstatus in PLAY_TERMINAL_STATUSES,
+            )
             pname = _trunc(play.get("name") or play["id"][:12], 24)
             pstatus_col = _colour_status(pstatus)
             lines.append(f"{marker}{pname:<24}  {pstatus_col}  {pelapsed}")
@@ -720,6 +785,8 @@ async def _detail_show(db: Any, show: dict[str, Any]) -> str:
 
 
 async def _detail_play(db: Any, play: dict[str, Any]) -> str:
+    from lionagi.state.db import PLAY_TERMINAL_STATUSES
+
     lines: list[str] = []
     lines.append(_bold(f"PLAY  {play['id']}"))
     lines.append(f"  name:     {play.get('name') or '-'}")
@@ -727,7 +794,14 @@ async def _detail_play(db: Any, play: dict[str, Any]) -> str:
     lines.append(f"  playbook: {play.get('playbook') or '-'}")
     lines.append(f"  effort:   {play.get('effort') or '-'}")
     lines.append(f"  attempt:  {play.get('attempt') or 1}")
-    lines.append(f"  elapsed:  {_elapsed(play.get('started_at'), play.get('ended_at'))}")
+    lines.append(
+        "  elapsed:  "
+        + _elapsed(
+            play.get("started_at"),
+            play.get("ended_at"),
+            terminal=play.get("status") in PLAY_TERMINAL_STATUSES,
+        )
+    )
     started = play.get("started_at")
     if started:
         lines.append(f"  started:  {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(started))}")
@@ -1793,6 +1867,11 @@ _ENTITY_EXTRA: dict[str, tuple[str, ...]] = {
     "session": (
         "project",
         "invocation_kind",
+        # Describes the `ended_at` in the core block above. Withheld, the
+        # caller receives a reconstructed end that is indistinguishable from a
+        # measured one, which is the confusion the column was added to remove.
+        # Session-only: no other entity kind has a reconstructed end.
+        "ended_at_is_approximate",
         "agent_name",
         "playbook_name",
         "current_phase",
@@ -1804,10 +1883,18 @@ _ENTITY_EXTRA: dict[str, tuple[str, ...]] = {
 }
 
 
+# Normalized through the same helper the other machine-readable reader uses, so
+# a caller reading both does not have to know which endpoint produced a payload.
+_ENTITY_BOOL_FIELDS = frozenset({"ended_at_is_approximate"})
+
+
 def _machine_entity(kind: str, row: dict[str, Any]) -> dict[str, Any]:
+    from .machine import optional_flag
+
     entity: dict[str, Any] = {"kind": kind}
     for field in (*_ENTITY_CORE, *_ENTITY_EXTRA[kind]):
-        entity[field] = row.get(field)
+        value = row.get(field)
+        entity[field] = optional_flag(value) if field in _ENTITY_BOOL_FIELDS else value
     return entity
 
 

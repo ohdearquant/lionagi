@@ -36,6 +36,7 @@ from lionagi.session.signal import (
     GateDenied,
     MessageAdded,
     NodeAwaitingApproval,
+    NodeCancelled,
     NodeCompleted,
     NodeEscalated,
     NodeFailed,
@@ -68,6 +69,7 @@ EXPECTED_SIGNAL_EXPORTS = (
     "NodeCompleted",
     "NodeFailed",
     "NodeSkipped",
+    "NodeCancelled",
     "NodeQueued",
     "NodeAwaitingApproval",
     "NodeEscalated",
@@ -193,6 +195,19 @@ EXPECTED_SIGNAL_FIELDS: dict[str, tuple[str, ...]] = {
         "parent_id",
         "schema_version",
     ),
+    "NodeCancelled": (
+        "created_at",
+        "data",
+        "depends_on",
+        "elapsed",
+        "emitter_role",
+        "id",
+        "metadata",
+        "name",
+        "op_id",
+        "parent_id",
+        "schema_version",
+    ),
     "NodeQueued": (
         "created_at",
         "data",
@@ -269,6 +284,7 @@ _SIGNAL_CLASSES: dict[str, type[Signal]] = {
     "NodeCompleted": NodeCompleted,
     "NodeFailed": NodeFailed,
     "NodeSkipped": NodeSkipped,
+    "NodeCancelled": NodeCancelled,
     "NodeQueued": NodeQueued,
     "NodeAwaitingApproval": NodeAwaitingApproval,
     "NodeEscalated": NodeEscalated,
@@ -455,10 +471,13 @@ EXPECTED_NODE_LIFECYCLE_STATES = (
     "succeeded",
     "failed",
     "skipped",
+    "cancelled",
     "escalated",
 )
 
-EXPECTED_NODE_LIFECYCLE_TERMINAL = frozenset({"succeeded", "failed", "skipped", "escalated"})
+EXPECTED_NODE_LIFECYCLE_TERMINAL = frozenset(
+    {"succeeded", "failed", "skipped", "cancelled", "escalated"}
+)
 
 
 def test_node_lifecycle_state_vocabulary_golden():
@@ -467,7 +486,7 @@ def test_node_lifecycle_state_vocabulary_golden():
 
 def test_node_lifecycle_terminal_lane_set_golden():
     """The sticky-terminal lane set backing lane_for()'s transition rule
-    (queued -> running -> {awaiting_approval, paused} -> one of these three,
+    (queued -> running -> {awaiting_approval, paused} -> one of these five,
     then sticky unless explicitly reset to queued/running)."""
     assert signal_mod._TERMINAL == EXPECTED_NODE_LIFECYCLE_TERMINAL
 
@@ -475,7 +494,7 @@ def test_node_lifecycle_terminal_lane_set_golden():
 # 6. FlowEvent shape (lionagi/operations/flow.py)
 
 EXPECTED_FLOW_EVENT_FIELDS = ("operation_id", "name", "status", "result", "spawned")
-EXPECTED_FLOW_EVENT_STATUS_VALUES = frozenset({"completed", "failed", "skipped"})
+EXPECTED_FLOW_EVENT_STATUS_VALUES = frozenset({"completed", "failed", "skipped", "cancelled"})
 
 
 def test_flow_event_field_set_golden():

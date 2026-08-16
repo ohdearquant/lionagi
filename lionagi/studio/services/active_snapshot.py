@@ -463,18 +463,21 @@ async def read_active_snapshot(
     recent_invocation_has_more = len(recent_invocations_raw) > recent_limit
     active_session_rows = [_prepare_session(row) for row in active_runs_raw]
     recent_session_rows = [_prepare_session(row) for row in recent_runs_raw[:recent_limit]]
-    all_running_children = [child for children in child_rows.values() for child in children]
-    process_snapshot: str | None = None
-    if active_session_rows or all_running_children:
-        from .admin import _ps_snapshot
 
-        process_snapshot = _ps_snapshot()
+    # Liveness resolves targeted PID identity first and falls back to a host
+    # scan only for rows that carry no usable identity, sharing one capture
+    # across everything that needs it. Capturing up front instead enumerated
+    # every process on the machine whenever a page held a single running row,
+    # whether or not any row actually needed the fallback.
+    from .admin import resolve_process_liveness_probe
 
     active_runs = [
         _runs_svc._run_row(
             row,
             observed_at,
-            process_alive=_runs_svc._session_liveness(row, process_snapshot),
+            process_alive=await resolve_process_liveness_probe(
+                lambda snapshot, session_row=row: _runs_svc._session_liveness(session_row, snapshot)
+            ),
         )
         for row in active_session_rows
     ]
@@ -488,9 +491,7 @@ async def read_active_snapshot(
         running_children = child_rows.get(invocation_id, [])
         partial = invocation_id in children_truncated
         if running_children:
-            health, _ = _invocations_svc._invocation_health(
-                running_children, now=observed_at, ps_snapshot=process_snapshot
-            )
+            health, _ = await _invocations_svc._invocation_health(running_children, now=observed_at)
             if partial and health == SessionHealth.HEALTHY.value:
                 # Health is worst-of over children, so a capped sample yields a
                 # LOWER BOUND on severity, and the two kinds of verdict survive

@@ -524,6 +524,7 @@
       "graphNodeStatusDone": "पूर्ण",
       "graphNodeStatusFailed": "विफल",
       "graphNodeStatusSkipped": "छोड़ा गया",
+      "graphNodeStatusCancelled": "रद्द",
       "graphNodeStatusEscalated": "एस्केलेटेड",
       "progressTotal": "कुल",
       "progressCompleted": "पूर्ण",

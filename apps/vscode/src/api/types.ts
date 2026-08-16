@@ -99,6 +99,7 @@ export type NodeLifecycleState =
   | "succeeded"
   | "failed"
   | "skipped"
+  | "cancelled"
   | "escalated";
 
 /**

@@ -524,6 +524,7 @@
       "graphNodeStatusDone": "done",
       "graphNodeStatusFailed": "failed",
       "graphNodeStatusSkipped": "skipped",
+      "graphNodeStatusCancelled": "cancelled",
       "graphNodeStatusEscalated": "escalated",
       "progressTotal": "Total",
       "progressCompleted": "Completed",

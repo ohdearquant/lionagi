@@ -524,6 +524,7 @@
       "graphNodeStatusDone": "تم",
       "graphNodeStatusFailed": "فشل",
       "graphNodeStatusSkipped": "تم التخطي",
+      "graphNodeStatusCancelled": "تم الإلغاء",
       "graphNodeStatusEscalated": "تم التصعيد",
       "progressTotal": "الإجمالي",
       "progressCompleted": "مكتمل",
