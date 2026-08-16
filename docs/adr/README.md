@@ -162,6 +162,8 @@ its area block.
   it was reasoning about, and can refuse to start (sequential number; see Numbering)
 - [ADR-0123](ADR-0123-canonical-run-identity-and-execution-projections.md) — Canonical Run identity
   and execution projections (sequential number; see Numbering)
+- [ADR-0124](ADR-0124-invocation-terminal-callback-cutover.md) — Invocation terminal callback
+  cutover (sequential number; see Numbering)
 
 ### agent-roles (0041-0046)
 

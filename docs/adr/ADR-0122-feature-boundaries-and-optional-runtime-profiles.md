@@ -394,6 +394,16 @@ while it establishes the dependency graph, profile manifest, extras, and tests. 
 may therefore remain in the wheel during the first phases, but it is neither imported nor backed
 by unselected third-party dependencies.
 
+The decisive fact is that the most obvious split line is not merely inverted, it is circular.
+Measured on this record's baseline, 14 files under `lionagi/studio/` import from `lionagi.cli`,
+and 3 files under `lionagi/cli/` import from `lionagi.studio`
+(`lionagi/cli/mirror.py`, `lionagi/cli/machine_schedule.py`, `lionagi/cli/main.py`). A one-way
+inversion could be repaid by moving a contract to a lower layer. A cycle cannot: no ordering of
+two distributions satisfies it, so cutting there first converts a Python import error, which
+fails at the first import and names the module, into an unsatisfiable version constraint between
+two published packages, which fails at resolution time and names neither. Breaking the cycle is
+therefore a precondition of gate 1 above rather than a task the split can carry.
+
 This distinction is deliberate:
 
 - optional dependencies reduce resolver surface, installation failures, vulnerability exposure,
@@ -588,8 +598,9 @@ This ADR is implemented only when:
 
 ## Issue relationships
 
-The consolidation snapshot initially grouped #2152, #2367, #2727, #2966, #3044-#3049, and
-#3085-#3087 under a broad modularity/release/quality heading. Review narrows that relationship:
+The consolidation snapshot initially grouped #2152, #2367, #2727, #2966, #3044-#3049,
+and #3085-#3087 under a broad modularity/release/quality heading. Review narrows that
+relationship:
 
 - #2152 is a Python 3.14/xdist worker-crash report and merges into the #1679 CI reliability
   umbrella. It is not a module-boundary task.

@@ -16,7 +16,7 @@
 ## Proposed ADR-0123 boundary
 
 The callback remains a post-commit lifecycle projection and never becomes terminal authority.
-ADR-0123 D13 freezes callback mode per Invocation before its first Run: legacy-v1 mode permits one
+ADR-0124 freezes callback mode per Invocation before its first Run: legacy-v1 mode permits one
 Run and selects the Invocation event, while canonical-v2 mode permits many Runs, suppresses the
 aggregate Invocation event, and emits each Run fact. Both never emit publicly for the same Run.
 Orphan recovery finalizes Run only through
@@ -241,7 +241,7 @@ the Run binding's separately minted version-independent `terminal_fact_id`, and 
 v2-to-v1 adapter exists because v1 cannot represent a canonical Run without inventing a unique
 legacy entity. Required consumers must advertise v2 support before a Run enters the canonical
 callback cohort. Source selection, rollout, reconciliation identity, and duplicate prevention are
-normative in ADR-0123 D13.
+normative in ADR-0124.
 
 ### D3 — Direct in-process delivery; two bootstrap points; `--notify` becomes scoped sugar
 

@@ -9,8 +9,9 @@
   ADR-0122 (feature boundaries and optional loading), and ADR-0058's generic atomic
   creation/transition mechanics; coordinates with ADR-0121 (authoritative
   action execution and native-agent harness); extends ADR-0113 (execution graph as the primary Run canvas)
-  and ADR-0114 (executable flow definitions); prospectively amends ADR-0095 D1/D2 (terminal
-  callback source and v2 envelope cutover); revisits ADR-0077 (Studio state boundary),
+  and ADR-0114 (executable flow definitions); supplies the vocabulary for ADR-0124 (invocation
+  terminal callback cutover), which was split out of this record's D13 and carries the
+  prospective amendment to ADR-0095 D1/D2; revisits ADR-0077 (Studio state boundary),
   ADR-0035 (persisted completion), ADR-0064 (CLI
   completion), and ADR-0090 (execution-target seams); must be
   decided before ADR-0118 freezes the target entity registry
@@ -98,7 +99,7 @@ dialect mapping, migration plan, and CRUD generation.
 | API projections | D10: one backend Run repository emits versioned summary/detail projections and generated frontend types. |
 | Historical compatibility | D11: old IDs remain resolvable through explicit aliases or legacy projections; migration never invents a Run boundary absent from evidence. |
 | Compiler boundary and sequencing | D12: the canonical workflow compiler lives outside Studio, and ADR-0118 target-registry freeze waits for this logical model. |
-| Terminal callback cutover | D13: each Invocation freezes one-run legacy-v1 or multi-capable canonical-v2 mode before its first Run; selected facts deduplicate by terminal-fact identity. |
+| Terminal callback cutover | D13: the cutover protocol is decided separately in ADR-0124, which this record supplies vocabulary to and does not depend on. |
 
 This record deliberately does **not** decide:
 
@@ -169,7 +170,7 @@ child Run linked to the prior Run. A Run belongs to exactly one Invocation. A ch
 additionally record another Run as its lineage parent; invocation ownership and lineage answer
 different questions and neither is inferred from the other.
 
-During ADR-0095 callback migration, D13 requires any Invocation capable of producing several Runs
+During ADR-0095 callback migration, ADR-0124 requires any Invocation capable of producing several Runs
 to select canonical-v2 callback mode before its first Run. The legacy-v1 compatibility mode is
 deliberately one Invocation to at most one Run because one immutable Invocation terminal event
 cannot represent several distinct Run facts.
@@ -265,6 +266,16 @@ The first legacy mapping is complete and evidence-sensitive:
 | Schedule occurrence `skipped` | no Run; control-plane terminal only | no |
 | Schedule occurrence `completed`, `failed`, `timed_out`, `cancelled` | never sufficient alone; a corroborated linked attempt maps by its own evidence | only the legacy schedule projection |
 | Team `archived` | no Run | not a v1 wait target |
+
+One row shape is not in the table above and exists in production data today: a Session carrying
+`status="running"` together with a non-null `ended_at`. The read path already meets it and names
+it. `_status_ended_at_mismatch` (`lionagi/studio/services/runs.py:619-627`) detects exactly that
+combination and the page summary reports a `status_ended_at_mismatches` count at `:652`, so the
+importer must classify it rather than encounter it. That row is self-contradictory evidence, not a
+running attempt, and it imports through the `legacy_evidence_conflict` outcome below rather than
+being read as either live or cleanly terminal. Its reverse, a terminal status with a null
+`ended_at`, is explicitly outside the existing detector's scope, so the importer decides it
+independently instead of inheriting a rule that was never written for it.
 
 An engine row, manifest, process exit, or filesystem mtime alone is likewise insufficient. When
 several sources disagree but a real attempt boundary is proven, migration preserves each
@@ -637,89 +648,26 @@ as proof that Run is not an entity. Implementation is coordinated as follows:
 No implementation issue may freeze physical names or delete a compatibility path until these
 records agree on that sequence.
 
-### D13 — Invocation callback mode selects one public source per Run during cutover
+### D13 — The terminal callback cutover is decided separately, in ADR-0124
 
-ADR-0095's current v1 callback remains a projection of legacy lifecycle entities; canonical Run
-introduces a v2 envelope whose `entity.kind` is `run`. The **first Run creation transaction**
-atomically freezes the Invocation's callback mode, creates its
-`InvocationTerminalCallbackBinding`, creates the Run, mints its fact ID, and creates its
-`RunTerminalCallbackBinding`:
+Canonical Run changes who is allowed to tell the outside world that an attempt finished.
+ADR-0095's current v1 callback is a projection of legacy lifecycle entities, while canonical Run
+introduces a v2 envelope whose `entity.kind` is `run`, so during migration one completion can be
+described by an Invocation transition, by a Run transition, or by both.
 
-- `legacy_invocation_v1_single_run` permits at most one Run. When that Run is created, the
-  Invocation binding atomically records its Run/fact ID; the Invocation terminal transition emits
-  the selected v1 fact, while the Run and other correlated legacy transitions suppress public
-  callback emission.
-- `canonical_run_v2` permits one or many Runs. The Invocation terminal transition is an
-  aggregate control fact and is suppressed; every winning Run terminal transition emits its own
-  v2 fact. This mode requires all required consumers to advertise v2 support before the first Run.
+That protocol is **ADR-0124**, not a clause of this record. The split is deliberate. Run identity
+is a modelling decision that a reviewer evaluates by reading it. The cutover is a distributed
+protocol whose two failure modes, silent double delivery and silent non-delivery, raise nothing
+anywhere in this system and are observable only from the consumer's side. Bundling them would
+make acceptance of the Run identity model wait on the hardest protocol in the program, and would
+let that protocol inherit the confidence a reviewer formed while reading the model.
 
-If any of those first-Run writes fails, all four logical records/updates roll back, leaving the
-Invocation with no mode/binding and standalone-v1 semantics. Every subsequent canonical Run mints
-one opaque `terminal_fact_id` and atomically creates its `RunTerminalCallbackBinding` with the Run
-before any compile/provision work that can fail. Its source is derived from, and must agree with,
-the immutable Invocation mode. A second Run under a
-legacy-single-run Invocation is rejected before creation with
-`LegacyCallbackProfileMultiplicityError`; it cannot reuse an already-terminal Invocation event.
-An Invocation configured for automatic retry or concurrent Run expansion must therefore choose
-canonical-v2 readiness before its first Run. If readiness is unavailable, automatic retry is
-reported unavailable; an operator may submit a new Invocation rather than silently changing
-identity or callback semantics.
-
-An Invocation that never reaches `ALLOW`, or whose first-Run transaction rolls back, never freezes
-this mode or creates a binding; its terminal projection remains standalone legacy-v1
-compatibility. Mode selection is part of admitted Run creation, not ingress denial/deferral
-semantics.
-
-Additional per-Run legacy refs may be attached by guarded binding-version CAS, but each ref must
-commit before that entity enters a terminal-capable dual-write path; it cannot be discovered after
-terminal observation. The Run binding freezes against further attachment when finalization starts.
-A unique active-binding constraint applies to those per-Run legacy refs, not to the shared
-Invocation binding. Read-only or historical RunSession links remain many-to-many but have no
-callback authority. Runs created before these bindings exist remain standalone legacy behavior and
-do not enter canonical dual-write. Historical imports emit neither source.
-
-Closing a binding retains its immutable ledger marker; absence of an active row is never treated as
-proof that the entity was never canonical-bound. A later standalone reclassification requires an
-audited `StandaloneLegacyRelease` tied to the entity generation and every prior binding. Without
-that release, a late or recovery transition stages attention/no emit. Binding/decision retention
-is coupled to the source transition and terminal-delivery retention gates in ADR-0095.
-
-This creation order covers failures before Session creation: legacy-single-run mode emits through
-its selected Invocation, while canonical-v2 mode emits through its Run transition and suppresses
-the one aggregate Invocation transition regardless of Run cardinality. Compile failure,
-provisioning failure, and cancellation while `preparing` are acceptance fixtures for both modes.
-
-Every bound terminal command carries the exact Run- or Invocation-binding ID **and expected
-binding version** into ADR-0058's
-`TerminalProjectionParticipant`. Inside the owner transaction, that participant validates the
-binding kind/version, entity membership, Invocation mode, optional canonical Run ID, fact ID,
-selected source, and transition role, then stages an immutable emit/suppress decision beside `status_transitions`. LifecycleService
-always stages lifecycle audit; after commit it offers the registry only a decision selecting the
-current transition. It never infers binding from the lossy `sessions.run_id`, RunSession search
-order, timestamps, or route aliases. Missing, stale, multiply-active, or ambiguous binding in a
-canonical cohort stages typed attention and emits nothing; it cannot fall back to standalone v1.
-
-The v2 envelope uses the canonical Run `status_transitions.id` as `event_id`, carries the Run's
-separately minted durable `terminal_fact_id`,
-`schema="lionagi.run-terminal"`, `schema_version=2`, `entity={kind:"run", id:run_id}`, and retains
-typed nullable legacy correlation. Reconciliation and delivery acknowledgement use
-`(terminal_fact_id, consumer)`, independent of wire serialization or retry. There is no generic
-v2-to-v1 downgrade: v1 cannot represent `entity.kind="run"`, and a Run need not have one unique
-legacy entity. A rollout may select `canonical_run_v2` only after every required consumer for that
-Invocation cohort advertises v2 support; otherwise it may use
-`legacy_invocation_v1_single_run` only when admission guarantees one Run. Optional consumers
-that are not v2-ready receive no fabricated legacy event. A source retry therefore redelivers the
-same fact instead of creating a second logical callback.
-
-The cutover gate injects terminal races for every legacy entity correlation and proves: one winning
-Run CAS; audit rows on both sides where dual-write requires them; one and only one selected public
-source; stable terminal-fact identity across retries; required-consumer v2 readiness; and no
-callback when an imported record is merely materialized. It includes one legacy entity linked to
-multiple historical/read-only Runs and proves only the exact active callback binding participates.
-It also covers a one-Run legacy Invocation, attempted second legacy Run, sequential automatic
-retry, and concurrent multi-Run expansion; the latter two succeed only in canonical-v2 mode.
-Only after that matrix passes may the default for new Runs become
-`canonical_run_v2`.
+What this record fixes, and ADR-0124 depends on, is only the vocabulary: an Invocation is ingress
+and may expand into several Runs (D1), a Run is one durable attempt whose terminal state is
+immutable (D2), and `sessions.run_id` is a lossy compatibility projection (D4). ADR-0124
+decides the mode freeze, the binding lifecycle, the validation seam into ADR-0058's
+`TerminalProjectionParticipant`, the v2 envelope, and the race matrix that must pass before the
+default flips.
 
 ## Consequences
 
@@ -791,7 +739,7 @@ apply the entire preapproved per-variant migration plan, re-introspect the store
 `ReadyReadWrite`, then register the accepted Run policy and wire RunRepository creation through
 ADR-0058 `initialize_in_transaction` against that materialized table. The exact callback-binding
 store/unique active-owner constraint and projection participant also land here. Atomic initial row/audit,
-companion-field terminal CAS, and D13 callback-source fixtures must pass; only then is the target
+companion-field terminal CAS, and ADR-0124 callback-source fixtures must pass; only then is the target
 eight-policy projection activated (while the legacy facade remains six) before any
 composition root dual-writes canonical Runs. An arbitrary Run-table subset of one target is not a
 writable schema epoch. Contract objects, in-memory repository tests, API schema generation, and
@@ -837,7 +785,7 @@ stuffing the new model into legacy Session columns.
 - Import only historical attempts that pass D11's evidence matrix.
 - Mark approximate/unknown fields and retain reversible source mappings.
 - Switch the Run API and new-Run callback-source default to the canonical repository only after
-  D13's suppression/deduplication matrix passes; existing Runs retain their frozen source.
+  ADR-0124's suppression/deduplication matrix passes; existing Runs retain their frozen source.
 - Remove lifecycle inference from files, Session-as-Run projection code, engine-owned IDs,
   hand-authored frontend Run contracts, duplicate workflow persistence setup, and obsolete schema
   fields after parity and rollback gates pass.

@@ -414,6 +414,14 @@ A runtime live diff is only a candidate. Writable migration is authorized only w
 live snapshot equals one recognized variant and the candidate plan digest equals that variant's
 preapproved plan. An unknown live shape remains quarantined; observing a diff never approves it.
 
+The mirror of that sentence has to be stated too, because it is the arm that fails toward looking
+safe. A live diff never *clears* a store either. An empty or non-matching diff is not evidence
+that the deployed shape is current; it is evidence only about what the comparison could resolve.
+An unrecognized variant is `Quarantined` when the snapshot is complete and `Unavailable` when it
+is not, and neither is "no migration needed". A diff engine that reports nothing when it cannot
+classify produces exactly the reading an operator most wants to see, which is why the disposition
+is decided by whether a variant matched and never by whether the diff came back empty.
+
 Risk is classified per dialect, not once: the same logical change has different mechanics on
 each backend, so a type widening that is a cheap `ALTER` on PostgreSQL is a full table rebuild
 on SQLite, and a plan that reports one risk for both is lying to whoever approves it. The

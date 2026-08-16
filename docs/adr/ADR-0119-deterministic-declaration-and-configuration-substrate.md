@@ -35,15 +35,29 @@ declaration.
 
 **P2 — ordered declarations become unordered at selection boundaries.** `Operable` stores a
 tuple, but `get_specs(include=...)` iterates the caller's set. `OperableModel.new_model` converts
-an ordered field collection to a set again. Different `PYTHONHASHSEED` values can therefore emit
-different field orders. That is cosmetic for some Pydantic models and invalidates a schema hash,
-migration plan, signed policy snapshot, or generated API contract.
+an ordered field collection to a set again. The loss reproduces: on a four-field `Operable`
+declared `alpha, beta, gamma, delta`, `get_specs(include={"delta", "alpha", "gamma"})` returns
+`('delta', 'gamma', 'alpha')`, which is not a subsequence of declaration order, and different
+`PYTHONHASHSEED` values reorder it again.
+
+Today that reaches generated field order, and it does not yet reach the hash. `Params.__hash__`
+routes through `hash_dict`, whose `_generate_hashable_representation` sorts mapping items, so a
+set-ordered `to_dict()` produces the same digest as a declaration-ordered one. The masking is
+accidental: it depends on one helper sorting on the way past, and it disappears the moment any
+consumer hashes the emitted order rather than the mapping. That is an argument for D7's separate
+canonical-bytes surface, not a reason to leave the loss in place, and it is the reason the defect
+is currently invisible to tests. Where the order does escape unmasked, it invalidates a schema
+hash, migration plan, signed policy snapshot, or generated API contract.
 
 **P3 — equality and hashing do not share one projection.** `Meta` can compare two dictionaries
 as equal while hashing their different string renderings. Equal `Meta` and `Spec` objects can
-therefore occupy separate set entries. `Params` and `DataClass` compare only their hashes, so a
-collision can make unequal values equal. `HashableModel` is mutable while its hash depends on its
-content; mutation after insertion breaks set and dictionary membership.
+therefore occupy separate set entries. `Params.__eq__` and `DataClass.__eq__` compare only their
+hashes, so a collision can make unequal values equal, and a subclass reaches that behavior only
+when it declares `eq=False`; the default `@dataclass(frozen=True)` decoration shadows it with a
+generated `__eq__` instead. Which of the two semantics a declaration gets is decided by a
+decorator argument rather than by the base class, which D4 closes. `HashableModel` is mutable
+while its hash depends on its content; mutation after insertion breaks set and dictionary
+membership.
 
 **P4 — the unnamed-field contract is accidental.** `Operable` intends to enforce uniqueness
 only among declared names. It filters `None` but not `Undefined`, so two unnamed `Spec` objects
@@ -77,7 +91,7 @@ digest contract rather than assuming `__hash__` or ordinary wire JSON is one.
 | Absence | D1: `Undefined`, `Unset`, and `None` remain three distinct states with one shared serialization rule. |
 | State shape | D2: `Params` is immutable configuration; `DataClass` is mutable runtime context; declared defaults are honored. |
 | Order | D3: declaration order is canonical and survives selection, composition, serialization, hashing, and adapter emission. |
-| Equality and hashing | D4: equality compares structural values, hashing uses the same canonical projection, and mutable values are unhashable. |
+| Equality and hashing | D4: equality compares structural values, hashing uses the same canonical projection, mutable values are unhashable, and the subclass decoration that decides which implementation is in force is fixed rather than left to each declaration. |
 | Field/schema composition | D5: `Spec` describes one field and `Operable` one ordered shape; domain adapters add Pydantic, SQLAlchemy, wire, or policy semantics. |
 | Registries | D6: registries are explicitly composed immutable snapshots; imports never mutate the active contract. |
 | Durable identity | D7: resolved snapshots have one versioned canonical-byte envelope and digest; runtime `__hash__` is never persisted. |
@@ -109,8 +123,15 @@ None       # the caller explicitly supplied null / no value
 
 Identity, not truthiness, distinguishes sentinels. `False`, `0`, `""`, and empty containers are
 ordinary values unless a domain-specific adapter explicitly declares otherwise. New core
-configuration must not enable `none_as_sentinel` or `empty_as_sentinel`; those flags remain only
-for compatibility adapters whose old contracts already collapse those values.
+configuration must not enable `none_as_sentinel` or `empty_as_sentinel`.
+
+Those two flags survive for compatibility adapters whose old contracts already collapse those
+values, and the set of adapters allowed to set them is a closed enumerated list, not a capability
+any adapter may claim. The list lives beside the flags as a module-level constant of call-site
+identifiers; a call site absent from it raises rather than collapsing, and the D8 gate fails a
+diff that sets either flag from a site the list does not name. Adding a site is an edit to that
+constant, reviewed as a contract change. Otherwise the carve-out grows by usage and the
+three-state rule becomes advisory in exactly the places that already had the loosest contracts.
 
 The wire rule is explicit:
 
@@ -258,8 +279,35 @@ The projection rules are:
 - an unsupported opaque mutable value raises `UnhashableStructuralValue` when a hash is requested
   rather than manufacturing a string-based hash inconsistent with equality.
 
+The last rule replaces a fallback that exists today. `lionagi/ln/_hash.py:120-124` renders an
+unrecognized value through `str(item)`, and through `repr(item)` if that fails, so two distinct
+objects with the same string form hash identically. That is the string-based hash this decision
+forbids, and it is the concrete target of the change.
+
 Hash equality is never used as object equality. Equal objects must hash equal; unequal objects
 may still collide without becoming equal.
+
+**The decoration contract is part of this decision.** The base implementations above are reachable
+only when a subclass does not shadow them, and today's subclasses decide that by accident. A
+`@dataclass(frozen=True)` subclass of `Params` generates its own `__eq__` and `__hash__` and those
+win over the base ones. Two equality semantics are therefore live in the package at once, selected
+by a decorator argument:
+
+| Subclass decoration | `__eq__` in force | Observable behavior |
+|---|---|---|
+| `@dataclass(frozen=True)` (default `eq=True`) | dataclass-generated | field-tuple equality requiring the same class; `hash()` raises `TypeError` when any field value is unhashable, including values the base `__hash__` handles |
+| `@dataclass(frozen=True, eq=False)` | inherited `Params.__eq__` | hash equality; two *different* `Params` subclasses holding equal fields compare equal |
+
+Neither column is what D4 specifies. The decision is therefore:
+
+- `Params`, `Spec`, and `Meta` subclasses declare `eq=False` so the structural implementations are
+  the ones in force, and the structural `__eq__` compares concrete type first, which closes the
+  cross-subclass equality shown in the second row;
+- the house-rule gate in D8 fails a subclass of these bases that is decorated with `eq=True` or
+  that defines its own `__eq__` or `__hash__` without declaring an override reason;
+- the audit that precedes the `HashableModel` split covers `Params` subclasses too, because a
+  subclass that relies on the first row's same-class requirement changes behavior when the
+  structural implementation takes over.
 
 `HashableModel` is split by semantics during migration: immutable concrete models retain a
 structural hash, while mutable models become unhashable. Existing uses are audited before the
@@ -350,7 +398,8 @@ Exact semantics:
   versioned override rule;
 - an override is recorded in the registry snapshot and its canonical hash;
 - optional modules contribute a fragment only when the composition root enables them;
-- querying an uncomposed optional fragment cannot import that feature implicitly;
+- querying an uncomposed optional fragment cannot import that feature implicitly; it raises the
+  missing-feature error ADR-0122 D4 defines, so neither record assumes the other supplies it;
 - a registry snapshot is immutable and safe to attach to a Run or schema plan;
 - dynamic plugin enablement produces a new snapshot/version; it does not mutate a snapshot being
   used by an in-flight operation;
@@ -359,6 +408,13 @@ Exact semantics:
 This rejects decorator-driven global self-registration for schema, hooks, providers, and tools.
 Decorators may tag declarations; the composition root must still collect an explicit declared
 set.
+
+The shape already exists in the package and is the reference implementation for this decision.
+`lionagi/state/lifecycle/policy.py` builds `DEFAULT_REGISTRY` through an explicit
+`build_default_registry()` that names each policy it composes rather than collecting whatever
+imported itself. Migration of the remaining registries is an alignment with that module, not an
+invention, and a reviewer comparing a proposed registry against it has a concrete standard to
+compare to.
 
 ### D7 — durable snapshots are distinct from wire serialization and runtime hash
 
@@ -423,7 +479,14 @@ The foundation suite adds the following required matrices.
 - unequal values remain unequal even under an injected hash collision;
 - mutable `DataClass` and mutable Pydantic models are unhashable;
 - callable metadata retains identity semantics;
-- unsupported opaque mutable metadata fails explicitly.
+- unsupported opaque mutable metadata fails explicitly;
+- two different subclasses of one base holding equal field values are unequal, which is the
+  cross-subclass equality the pre-migration `eq=False` decoration admits;
+- a subclass of `Params`, `Spec`, or `Meta` decorated `eq=True`, or defining `__eq__` or
+  `__hash__` without a declared override reason, fails a static check rather than silently
+  selecting the generated implementations;
+- `none_as_sentinel` and `empty_as_sentinel` are set only from call sites named in D1's
+  enumerated list, and a diff that sets either elsewhere fails.
 
 **Adapter separation**
 

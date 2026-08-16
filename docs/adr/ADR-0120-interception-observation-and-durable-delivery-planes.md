@@ -282,8 +282,17 @@ the current loops are observably different: some route by coroutine-function dec
 SessionObserver and SchedulerSignalBus use `inspect.isawaitable()` after invocation and Broadcaster
 uses the narrower `asyncio.iscoroutine()`. For
 `GATHER_AFTER_INVOCATIONS`, invocation is sequential in registration order and only the returned
-awaitables are gathered concurrently. `DISCARD_UNAWAITED` is an explicitly deprecated
-compatibility behavior, not a recommended default.
+awaitables are gathered concurrently.
+
+`DISCARD_UNAWAITED` is an explicitly deprecated compatibility behavior, not a recommended default,
+and its removal is a behavior change rather than cleanup. Today a handler that returns an
+awaitable under this setting never runs that awaitable; after the flip it does, so work that has
+never executed in production starts executing, and the first symptom is whatever that work does.
+It therefore gets its own gate rather than riding the migration: the set of registrations
+currently resolving to `DISCARD_UNAWAITED` is enumerated and each is either converted deliberately
+or recorded as intentionally discarding, the flip lands as its own change with its own revert,
+and the record names an owner accountable for that enumeration. A deprecation with no named owner
+is removed eventually by whoever is least aware of what it was protecting.
 
 A synchronous owner calls `preflight_sync()` before its domain mutation and later supplies that
 immutable registration snapshot to `emit_sync()`. The message-manager profile rejects a declared
@@ -625,11 +634,34 @@ TerminalCallbackRegistry, and service HookRegistry while selecting policies that
 current behavior. A compatibility test must fail if an adapter accidentally adopts another bus's
 defaults.
 
+Phase 0's per-profile matrix is a merge gate on this phase, not only a Phase 0 deliverable.
+Nothing in Phase 0 forces a consumer to read its own output, so a profile row that is merely
+asserted survives it intact, and Phase 1 would then faithfully preserve this record's *belief*
+about current behavior instead of the behavior. The gate is therefore stated as a condition on
+Phase 1 merges: each named profile row has a characterization test written against pre-migration
+code that goes red when the row is wrong, and a row without one blocks the adapter that claims it.
+The rows most worth the trouble are the ones this record already distinguishes by mechanism,
+where declaration-based classification, `inspect.isawaitable()` after invocation, and the narrower
+`asyncio.iscoroutine()` disagree on the same handler.
+
 ### Phase 2 — split Session authorization from observation
 
 Compile the old gate into operation interceptors. Make SessionObservation signal-only. Prove that
 denials and interceptor failures still reach required audit sinks and that UI subscriber failures
 cannot block persistence.
+
+The gate for this phase has three arms, and the third is the one current code fails silently:
+
+1. a gate that returns a denial still persists the audit record;
+2. a gate that is absent changes nothing;
+3. **a gate that raises still persists the audit record.**
+
+Arm 3 is separate because `SessionObserver.emit` wraps the gate call in
+`except Exception: allowed = False` (`lionagi/session/observer.py:235-236`) and then returns at
+`:240`, before routes and before subscribers. `bind_db_persistence()` registers the durable write
+as a subscriber, so a gate that merely throws suppresses the audit trail with no signal at all.
+Fail-closed is correct for authorization and wrong for audit, and a test that only exercises
+explicit denial passes while a buggy gate silently empties the record.
 
 ### Phase 3 — authoritative operation plans
 

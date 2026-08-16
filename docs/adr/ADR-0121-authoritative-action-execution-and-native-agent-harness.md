@@ -20,11 +20,16 @@ contract.
 
 `protocols.generic.Processor` owns queue workers, capacity, event lifecycle, and a boolean
 `request_permission(**event.request)` seam. `RateLimitedAPIExecutor` uses that boolean for quota
-admission. `FunctionCalling` invokes a Python callable directly. `ActionManager.invoke()` creates a
-`FunctionCalling` and calls it directly. Session authorization is applied only by the `_act`
-operation, while Agent factory paths attach tool preprocessors one registration at a time. A caller
-that holds an `ActionManager`, a fresh plugin Tool, or a callable can therefore select a path that
-does not pass every intended control.
+admission. `FunctionCalling` invokes a Python callable directly, with no hook layer, which its
+owning manager's docstring already documents. `ActionManager.invoke()`
+(`lionagi/protocols/action/manager.py:246`) does run the tool-pre and tool-post hooks; what it
+never calls is `authorize`. So the three routes carry three different control sets rather than
+one route carrying controls and the others carrying none, and the missing control on the manager
+route is Session authorization specifically. Session authorization is reached only through the
+`_act` operation, whose sole operational caller in the package is
+`lionagi/operations/act/act.py:55`, while Agent factory paths attach tool preprocessors one
+registration at a time. A caller that holds an `ActionManager`, a fresh plugin Tool, or a callable
+can therefore select a path that does not pass every intended control.
 
 Native coding-agent providers introduce a different boundary. Claude Code, Codex, Gemini, and
 similar subprocesses execute many tools inside the provider process. LionAGI sees streamed tool
@@ -54,10 +59,20 @@ used for worker capacity and rate limiting. A temporary quota condition is neith
 denial nor user approval. Boolean results cannot express defer, escalation, provenance, or an
 expiry.
 
-**P3 — policy is mutable and incompletely serialized.** `PermissionPolicy` is a mutable dataclass.
-AgentSpec YAML omits permissions, while public examples show a mapping even though Agent factory
-silently ignores values that are not already `PermissionPolicy`. A reconstructed agent can
-therefore have a different effective policy from the declared agent.
+**P3 — policy is mutable and serializes in one direction only.** `PermissionPolicy` is a plain
+mutable dataclass, and `mode` can be reassigned after construction on an instance a caller already
+holds.
+
+The reconstruction gap is on the write side, not the read side. `_resolve_permissions`
+(`lionagi/agent/spec.py:259-281`) accepts a `PermissionPolicy`, accepts a mapping through
+`PermissionPolicy.from_dict`, accepts the four preset names, and raises `TypeError` or `ValueError`
+on anything else, so a declared mapping is read and applied. What is missing is the inverse:
+`PermissionPolicy` defines `from_dict` and no `to_dict`, and `AgentSpec.to_yaml`
+(`spec.py:197-217`) emits no `permissions` key at all. Measured: a spec composed with
+`{"mode": "rules", "deny": {"bash": ["rm"]}}` round-trips through `to_yaml` then `from_yaml` to
+`permissions=None`, while `model` survives the identical round trip. A reconstructed agent
+therefore has a different effective policy from the declared agent, and the direction of the
+difference is always toward fewer restrictions.
 
 **P4 — transformation can invalidate an earlier decision.** Existing preprocessors may rewrite
 arguments. A path may authorize the original request but invoke the transformed request without
@@ -78,8 +93,12 @@ persist that fact.
 
 **P8 — the shipped subagent permission vocabulary is false.** `SubagentRequest.permissions`
 advertises `"inherit"`, then forwards it into `AgentSpec.compose()`, whose resolver accepts only
-`safe`, `read_only`, `allow_all`, and `deny_all`. True inheritance needs an unresolved sentinel and
-an explicit resolution boundary, not a string that currently raises.
+`safe`, `read_only`, `allow_all`, and `deny_all`. The advertised value raises rather than
+inheriting anything. The narrow fix that deletes the option is scoped separately in the
+implementation sequence below and does not wait on this record; what survives it is the design
+statement, which is that true inheritance needs an unresolved sentinel and an explicit resolution
+boundary, never a string preset. A vocabulary that names a behavior the resolver cannot produce is
+the failure mode, and removing one such name does not by itself prevent the next.
 
 | Concern | Decision |
 |---|---|
@@ -124,6 +143,15 @@ Four profiles prevent an optional persistence feature from becoming a false secu
   required pre-call append is part of control flow;
 - **certifiable:** governed execution plus an explicit closed task boundary and verified expected
   evidence-chain head.
+
+The profile is selected by the composition root, which means a caller cannot see it from where it
+stands. That gap is the failure this list exists to prevent: code written against the governed
+profile, deployed under minimal, behaves like ordinary execution and reports nothing unusual, and
+a caller that believes it holds durable evidence is wrong in the direction that matters. The
+active profile is therefore a required field on `ExecutionOutcome`, not only a deployment fact and
+not only a log line, so that a caller asserting on evidence asserts against the profile that
+actually produced it. Assertions of the form "this ran governed" have a value to read; without it
+they can only be assumptions.
 
 ## Decision
 
@@ -532,7 +560,9 @@ inheritance does not imply shared policy semantics.
 
 `ExecutionOutcome` is a closed tagged union for success, denial, deferral, escalation, captured
 failure, cancellation, timeout, and ambiguous external result. It distinguishes a successful
-`None` return from a failure and includes no raw exception or secret by default.
+`None` return from a failure and includes no raw exception or secret by default. Every variant
+carries the active runtime profile, so the strength of the guarantees behind an outcome is
+readable from the outcome rather than inferred from where the code was deployed.
 
 Every attempt can be audited as:
 

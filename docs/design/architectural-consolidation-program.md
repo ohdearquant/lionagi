@@ -190,7 +190,7 @@ review may still change their boundaries.
 
 ## ADR program
 
-The design PR contains six coordinated records:
+The design PR contains seven coordinated records:
 
 1. **ADR-0118 amendment — declared entity schema.** Narrow it to persistence declaration,
    compilation, physical parity, migration, and store ownership. Remove provider moves and
@@ -207,6 +207,16 @@ The design PR contains six coordinated records:
 6. **Canonical Run identity and projections.** Make Run one durable execution attempt, Session
    reusable conversation state, Invocation the submitted/admitted request, and workspace a
    linked resource rather than an identity.
+7. **Invocation terminal callback cutover.** Decide which source may publicly announce that an
+   attempt finished while both the legacy and canonical answers exist, and what has to be proved
+   before the default flips.
+
+Record 7 was a clause of record 6 in an earlier revision and was separated on review. The two
+have different shapes: Run identity is a modelling decision a reviewer evaluates by reading it,
+while the cutover is a distributed protocol whose failure modes, silent double delivery and
+silent non-delivery, raise nothing at the source and are visible only from the consumer's side.
+Kept together, the identity model could not be accepted until the protocol was settled, and the
+protocol would be read at the confidence a reviewer had already formed about the model.
 
 The records are reviewed together because their type boundaries cross-reference one another;
 they are accepted and implemented independently.
@@ -340,30 +350,61 @@ Not eligible without ADR approval:
 - inventing the entity registry or canonical Run tables;
 - renaming public hook, event, capability, permission, Session, or Run surfaces.
 
-## Review questions
+## Settled questions
 
-Claude/maintainer review should answer these explicit questions rather than issuing a general
-“looks good”:
+Each open question this packet raised is answered here, with the conditions that came back with
+it. A condition is part of the answer: where one is stated, implementation of that area starts
+after the condition is met, not before.
 
-1. Are `Undefined` (absent), `Unset` (present but unresolved/inherit), and `None` (explicit null)
-   the correct three-state contract for every new configuration surface?
-2. Is explicit registry composition preferred over import-time self-registration?
-3. Is the four-plane hook taxonomy accepted, including the rule that observation can never veto
-   and authorization can never suppress committed audit delivery?
-4. Is `ActionExecutor` the sole LionAGI-owned callable/MCP boundary, while provider-native tool
-   enforcement and local effect containment are reported separately through adapter capabilities?
-5. Is `Run` one durable attempt and `Session` reusable conversation state, with every resume
-   creating a new Run, one Session writer lease, and reactive changes represented only by an
-   append-only PlanDelta chain?
-6. Is the one-distribution import-boundary phase required before deciding whether to split wheels?
-7. Does ADR-0118 use separate legacy-baseline/target snapshots, full catalog-object ownership,
-   the corrected phase ordering, `Unavailable` versus server-enforced quarantine, and distinct
-   seven-policy/six-facade lifecycle projections with target Run as the eighth policy?
-8. Is ADR-0087's append-only EvidenceStore/hash-chain/certificate contract retained, with governed
-   pre-call append failure blocking ActionExecutor and StateStore holding projections only?
-9. Is ADR-0058 LifecycleService the sole Run transition/finalization authority behind
-   RunRepository, and is the legacy terminal/CLI-success mapping complete?
-10. Are the named dispatcher compatibility profiles and CommitParticipant-versus-DeliverySink
-    split sufficient to migrate hooks without normalizing away their error/cancellation behavior?
+1. **Three-state `Undefined` / `Unset` / `None` for every new configuration surface.** Yes, after
+   ADR-0119 D2 lands. Until declared defaults are applied, `Unset` means both "present but
+   unresolved" and "the declared default was never applied", so the distinction the contract rests
+   on is not yet observable. The `none_as_sentinel` and `empty_as_sentinel` carve-out is a closed
+   enumerated list of call sites, not a capability an adapter can claim.
+2. **Explicit registry composition over import-time self-registration.** Yes, without
+   reservation. `build_default_registry()` in `lionagi/state/lifecycle/policy.py` is the reference
+   implementation, so the remaining registries are an alignment rather than an invention. The
+   error raised when an uncomposed optional fragment is queried is ADR-0122 D4's missing-feature
+   error; neither record defines its own.
+3. **Four-plane taxonomy; observation never vetoes, authorization never suppresses committed
+   audit.** Yes. The gate for the phase that splits them has three arms, and the third is the one
+   current code fails silently: a gate that *raises* must still persist the audit record. Today it
+   does not, and nothing signals that.
+4. **`ActionExecutor` as the sole LionAGI-owned callable and MCP boundary.** Yes. Three routes
+   with three different control sets exist today, and the gap on the manager route is Session
+   authorization specifically rather than controls in general. The policy round-trip is the other
+   half: a declared policy is read correctly and then dropped on write, always toward fewer
+   restrictions.
+5. **Run as one durable attempt, Session reusable state, resume always a new Run, one writer
+   lease, PlanDelta only.** Yes on all four. The database already models the one-Run-to-many-
+   Sessions relation through a distinct `sessions.run_id` column, while the API overwrites that
+   field with the session id, so the two values disagree in one system today. That is a live
+   defect with its own issue, independent of this program.
+6. **One-distribution import-boundary phase before deciding a wheel split.** Yes, and the evidence
+   is stronger than an inversion. `cli` and `studio` import each other, which is a cycle: no
+   ordering of two distributions satisfies it, so breaking it is a precondition of the split
+   rather than part of it.
+7. **ADR-0118 rescope.** Yes on the lifecycle projection, which matches the six-key status map and
+   seven registered policies that exist. Two hardenings are folded in: quarantine is enforced by
+   the connection rather than by a session setting anything can turn off, and a live diff neither
+   approves nor clears a store, so an unrecognized variant is quarantined or unavailable and never
+   "no migration needed".
+8. **ADR-0087 retained: EvidenceStore, hash chain, certificate; pre-call append blocks; StateStore
+   projections only.** Yes. Its `not-started` implementation status is accurate against the code.
+   One gap is closed here: the active runtime profile is a required field on `ExecutionOutcome`,
+   because a caller that believes it is governed and is silently minimal is the exact
+   false-security failure the profiles exist to prevent.
+9. **ADR-0058 as the sole Run transition authority; legacy terminal mapping.** Yes on the
+   authority, which matches what already shipped. No on "complete": the mapping table gains the
+   contradictory row that production data already contains and the read path already detects, a
+   Session reporting `running` with a non-null `ended_at`. ADR-0058's own implementation-status
+   line was re-derived at HEAD and corrected in this packet.
+10. **Named dispatcher profiles and the CommitParticipant / DeliverySink split.** Yes,
+    conditionally. The eight profiles pin real differences that would otherwise be normalized
+    away, but they are asserted rather than measured. Each row needs a characterization test
+    written against current code that goes red when the row is wrong, and that is a merge gate on
+    the phase that adapts the buses, not only a deliverable of the phase before it. Removing
+    `DISCARD_UNAWAITED` is a behavior change rather than cleanup and gets its own gate and a named
+    owner.
 
-Implementation begins only after those questions have explicit answers.
+Implementation of an area begins once its answer above carries no unmet condition.

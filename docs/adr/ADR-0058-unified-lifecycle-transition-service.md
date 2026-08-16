@@ -15,7 +15,7 @@
 ADR-0123 adds canonical Run as an intentional managed entity but retains this ADR's one-policy,
 one-service mutation authority. `RunRepository.transition()`/`finalize()` are façades that delegate
 one typed command to `LifecycleService` in the owner transaction; they may not evaluate a second
-policy or write status directly. ADR-0123 D13 also amends the post-commit projection seam: a typed
+policy or write status directly. ADR-0124 also amends the post-commit projection seam: a typed
 participant stages the exact callback decision beside terminal audit, without making callback
 delivery part of lifecycle authority. Current behavior remains until both records are
 accepted/migrated.
@@ -723,8 +723,14 @@ This is a target-state ADR, partially implemented. The first two phases shipped 
 module layout (`lionagi/state/lifecycle/{models,policy,service,adapters}.py`): the contract types,
 the policy registry covering all seven entity types, the guarded algorithm, and the
 facade-preserving wrappers — both `StateDB.update_status()` and the guarded transition adapter now
-route through the service. Still open: creation-path initialization (`initialize_in_transaction`
-has no call sites outside the package) and the remaining migration phases. Implementation is
-complete only when the phase gates pass. `Status: Accepted` records that the one-policy/one-service
+route through the service. Creation-path initialization is further along than an earlier revision
+of this note recorded. `initialize_in_transaction` is reached through
+`StateDB._initialize_managed_entity_in_tx` (`lionagi/state/db.py:695`), and that helper has seven
+call sites in `lionagi/state/db.py` covering `session`, `schedule_run`, `invocation`, `show`, and
+`play`. Two policies are outside it: `team`, which has no creation path in `lionagi/state/db.py`
+at all, and `dispatch`, whose rows are inserted by a raw statement in
+`lionagi/dispatch/outbox.py:221` that never reaches the lifecycle service. Those two, plus the
+remaining migration phases, are what is still open. Implementation is complete only when the
+phase gates pass. `Status: Accepted` records that the one-policy/one-service
 decision already has dependent implementation on main; `Implementation-status: partial` records
 the remaining work without violating the corpus status lifecycle.
