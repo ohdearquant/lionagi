@@ -18,10 +18,10 @@ its own test fixture, and the guard that checks agreement between them compares 
 written down in these hand-maintained forms:
 
 1. `lionagi/state/schema_meta.py` (1,224 lines): a SQLAlchemy `MetaData` declaring 32 tables,
-   380 columns and 82 `Index(...)` objects. Its own docstring calls it the "single source of
+   380 columns and 83 `Index(...)` objects. Its own docstring calls it the "single source of
    truth for schema DDL". It is what production actually creates from: `metadata.create_all`
    at `state/db.py:966`.
-2. `lionagi/state/schema.sql` (1,021 lines): 32 `CREATE TABLE` and 86 `CREATE INDEX`
+2. `lionagi/state/schema.sql` (1,021 lines): 32 `CREATE TABLE` and 87 `CREATE INDEX`
    statements declaring the same schema in DDL text. Its header line reads
    `-- lionagi state schema v1` while line 22 seeds `version` `'3'`. It is bound to
    `_SCHEMA_PATH` (`state/db.py:122`) and read only by tests; production open never executes
@@ -59,7 +59,10 @@ enum value-sets (`test_metadata_check_constraint_parity_vs_schema_sql:344`). Col
 nullability, defaults, primary and foreign keys, the other 85 indexes, and index direction are
 outside what it pins. Two divergences are live in the tree right now and green:
 
-- `schema.sql` declares 86 indexes; `schema_meta.py` declares 82.
+- `schema.sql` declares four indexes that `schema_meta.py` does not, and `schema_meta.py`
+  declares none that `schema.sql` does not: the metadata is a strict subset. The four are
+  `idx_def_unique_version`, `idx_plays_show_name`, `idx_session_signals_seq` and
+  `idx_sessions_run_id`. Absolute counts on 2026-08-15: 87 and 83.
 - `schema.sql` declares 15 indexes with `DESC` key direction (`:93,198,204,283,311,378,…`);
   `schema_meta.py` declares zero. Production databases, built by `create_all`, therefore have
   none of those descending indexes. (SQLite and PostgreSQL can both scan an ascending index
@@ -267,8 +270,8 @@ table list, so the test population can no longer drift from the package.
 **D3 — parity is proven on physical semantics, through dialect catalog adapters.** The gate
 compares column types, nullability, defaults, primary and foreign keys, unique and check
 constraints, and the full index set including key direction — not the name sets the current test
-compares. The 15 descending indexes, the 86-vs-82 index gap and the one default divergence are
-resolved by an explicit recorded decision each, before either authority is deleted.
+compares. The 15 descending indexes, the four-index membership gap and the one default divergence
+are resolved by an explicit recorded decision each, before either authority is deleted.
 
 Stating the comparison is not enough, because the obvious way to implement it silently cannot
 make two of those distinctions. Against the installed SQLAlchemy, generic SQLite reflection
@@ -307,8 +310,8 @@ key *direction*.
 Each arm must go red on its own. The acceptance test is a mutation, not a passing run: reverting
 an adapter's read of one field must redden exactly that field's arm and no other, which proves
 both that the arm is live and that the arms are independent. The two divergences already in the
-tree — 15 `DESC` indexes against zero, and 86 indexes against 82 — supply the direction and
-membership fixtures for free; the rest are constructed.
+tree — 15 `DESC` indexes against zero, and four indexes declared in one authority and not the
+other — supply the direction and membership fixtures for free; the rest are constructed.
 
 **D4 — generated statement builders replace hand-built SQL for row CRUD.** Insert column lists,
 update SET clauses, and update allow-lists derive from the spec's field set. The 22 identifier
@@ -761,19 +764,30 @@ summed: a declaration, a statement string, and an execution call are different t
 
 | Where | Declares schema | Issues DDL | Builds SQL | Notes |
 |---|---|---|---|---|
-| `state/schema_meta.py` | 32 tables, 380 columns, 82 indexes | via `create_all` | — | what production builds from; also 34 PK columns, 27 FKs, 20 CHECKs, 8 uniques, 29 partial indexes, 37 server defaults — the surface the Phase 1 gate must compare |
-| `state/schema.sql` | 32 tables, 86 indexes, 5 pragmas, 3 seeds | tests only | — | `_SCHEMA_PATH` at `db.py:122`; not executed by writable open |
+| `state/schema_meta.py` | 32 tables, 380 columns, 83 indexes | via `create_all` | — | what production builds from; also 34 PK columns, 27 FKs, 20 CHECKs, 8 uniques, 29 partial indexes, 37 server defaults — the surface the Phase 1 gate must compare |
+| `state/schema.sql` | 32 tables, 87 indexes, 5 pragmas, 3 seeds | tests only | — | `_SCHEMA_PATH` at `db.py:122`; not executed by writable open |
 | `state/schema_migrations.py` | 127 additive column declarations over 14 tables | 10 indexes per dialect | — | the two dialect tuples are textually identical |
 | `state/db.py` | 3 inline `CREATE TABLE` (rebuild targets) | yes | 256 execution calls | 6,683 lines; 5 `_*_COLUMNS` allow-lists; 45 `S608` |
 | `state/lifecycle/` | — | — | 8 execution calls | policy table/patch identifiers unvalidated |
 | `studio/operator/store.py` | 6 tables (+2 indexes) + own migration | yes | 119 sites | 2,349 lines; a second persistence layer |
 | `studio/services/*` | 7 re-declarations of state tables, 4 modules | on the request path, in 20 request-handling functions | 93 execution calls | 38 direct store connections in 9 files |
 
-Divergences found between the two full-schema authorities, all currently green:
+Divergences found between the two full-schema authorities, all currently green.
+
+The index rows are stated as *membership* rather than as a pair of totals, because the totals
+move under ordinary schema traffic and the divergence does not. Both totals rose by one within a
+day of this document being written, together, leaving the gap and its four member names
+unchanged. Anything downstream that needs a stable figure — an acceptance threshold, a fixture
+count — takes it from the membership row and the direction row, never from the totals. The
+totals are dated for that reason. Method, so it can be repeated rather than trusted: index names
+from `schema.sql` by matching `CREATE [UNIQUE] INDEX` with line comments stripped, index names
+from `schema_meta.py` by walking its syntax tree for `Index(...)` calls, both parsers asserted
+non-empty, then compared as name sets in both directions rather than by subtracting counts.
 
 | Divergence | `schema.sql` | `schema_meta.py` |
 |---|---|---|
-| Index count | 86 | 82 |
+| Index membership | 4 declared here and absent there | 0 declared here and absent there |
+| Index count (2026-08-15) | 87 | 83 |
 | Descending index direction | 15 indexes | 0 |
 | `idx_sessions_run_id` | present | absent (also in the migration registry) |
 | `artifacts.updated_at` default | `DEFAULT (strftime('%s','now'))` | no `server_default` |
