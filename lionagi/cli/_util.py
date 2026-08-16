@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import threading
 from collections.abc import Sequence
 from pathlib import Path
@@ -142,6 +143,27 @@ def pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def recorded_pid_is_foreign(metadata: dict[str, Any] | None) -> bool:
+    """Whether a run's recorded pid belongs to a different machine.
+
+    A pid is only a name inside one host's pid space. When several hosts share
+    a state store, every local check applied to a remote row answers about
+    whichever unrelated local process happens to hold that number: it reads as
+    a real answer, and it is about the wrong process. So this is asked before
+    any pid on such a row is signalled or believed.
+
+    Absence of ``pid_host`` is not foreignness. Rows written before the marker
+    existed cannot be placed either way, and treating "unknown origin" as
+    "another machine" would stop every one of them from being cancelled or
+    swept. The callers that go on to act still have their own identity checks;
+    this only removes the rows where those checks could not mean anything.
+    """
+    if not isinstance(metadata, dict):
+        return False
+    host = metadata.get("pid_host")
+    return isinstance(host, str) and bool(host) and host != socket.gethostname()
 
 
 _SEARCH_ORDER = ("sessions", "invocations", "plays", "shows")

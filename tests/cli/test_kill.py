@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -21,6 +22,8 @@ import pytest
 import yaml
 
 from lionagi.cli.kill import (
+    _BOOT_TIME_TOLERANCE,
+    _NOT_STOPPED_SIGNALS,
     _check_pid_identity,
     _do_kill,
     _do_kill_all_stale,
@@ -51,11 +54,14 @@ async def _seed_session(
     status: str = "running",
     pid: int | None = None,
     started_at: float | None = None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> str:
     sid = str(uuid.uuid4())
     pid_val = str(uuid.uuid4())
     await db.create_progression(pid_val)
     node_meta = {"pid": pid} if pid is not None else {}
+    if extra_meta:
+        node_meta.update(extra_meta)
     await db.create_session(
         {
             "id": sid,
@@ -710,6 +716,9 @@ def test_current_pid_markers_records_own_pid():
     import psutil
 
     assert markers["pid_create_time"] == pytest.approx(psutil.Process(os.getpid()).create_time())
+    assert markers["pid_host"]
+    assert markers["pid_boot_time"] == pytest.approx(psutil.boot_time())
+    assert markers["process_identity_mode"] == "local"
 
 
 async def test_kill_one_skips_recycled_pid_via_create_time(
@@ -918,6 +927,69 @@ async def test_kill_one_no_pid(temp_db_path: Path):
         assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,)))[
             "status"
         ] == "cancelled"
+
+
+async def test_kill_one_refuses_an_in_process_run(temp_db_path: Path):
+    """A run hosted inside a long-lived server has no process of its own.
+
+    There is nothing for this path to signal, and the host's own pid belongs to
+    every other run it carries. Recording a cancellation here would report a
+    stop that did not happen, so the row must be left exactly as it was.
+    """
+    async with StateDB() as db:
+        sid = await _seed_session(
+            db,
+            status="running",
+            extra_meta={
+                "process_identity_mode": "in_process",
+                "host_pid": os.getpid(),
+            },
+        )
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="test")
+
+        # Checked before the signal, deliberately: this is the consequence the
+        # guard exists for. Without it the row reads "cancelled" while the
+        # workflow carries on executing, and asserting the signal first would
+        # let this one go unexercised whenever the guard regresses.
+        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+        assert after["status"] == "running"
+
+        # Nothing written to history either, so no reader downstream can
+        # conclude a cancellation happened.
+        tr = await db.fetch_one(
+            "SELECT COUNT(*) AS n FROM status_transitions "
+            "WHERE entity_id = ? AND status = 'cancelled'",
+            (sid,),
+        )
+        assert tr["n"] == 0
+
+        assert result["signal"] == "in_process"
+        assert result["pid"] is None
+
+
+async def test_kill_one_still_cancels_a_local_run_without_a_pid(temp_db_path: Path):
+    """The in-process guard keys on identity mode, not on a missing pid.
+
+    A local run whose pid was never recorded must keep its existing behavior;
+    otherwise the guard above would silently widen to every pid-less row.
+    """
+    async with StateDB() as db:
+        sid = await _seed_session(
+            db, status="running", extra_meta={"process_identity_mode": "local"}
+        )
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="test")
+        assert result["signal"] == "no_pid"
+
+        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+        assert after["status"] == "cancelled"
 
 
 async def test_kill_one_with_dead_pid(temp_db_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -2315,3 +2387,260 @@ async def test_do_kill_ambiguous_prefix_signals_nothing_and_fails(
     kill_one.assert_not_called()
     assert "ambiguous" in caplog.text
     assert first in caplog.text and second in caplog.text
+
+
+# host / boot identity: a pid only names a process on the machine that recorded it
+
+
+async def test_kill_refuses_a_pid_recorded_on_another_host(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A row from another machine must not have its pid signalled here.
+
+    With a shared state store the recorded number exists in this host's pid
+    space too, belonging to something unrelated. Signalling it stops a
+    stranger's process and then records the run as cancelled, so the check
+    has to happen before `_terminate_pid` is reached at all.
+    """
+    signalled: list[int] = []
+
+    def _fake_terminate(pid, **kw):
+        signalled.append(pid)
+        return "sigterm"
+
+    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", _fake_terminate)
+    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+
+    async with StateDB() as db:
+        sid = await _seed_session(
+            db,
+            status="running",
+            pid=os.getpid(),
+            extra_meta={"pid_host": "some-other-host"},
+        )
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="")
+
+    assert signalled == [], "no signal may be sent to a pid recorded on another host"
+    assert result["signal"] == "host_mismatch"
+    assert result["signal"] in _NOT_STOPPED_SIGNALS
+
+    async with StateDB() as db:
+        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+    assert after["status"] == "running", (
+        "refusing to signal must also refuse to write a cancellation: the row "
+        "would otherwise claim a stop that never happened"
+    )
+
+
+async def test_kill_refuses_a_pid_recorded_before_this_machine_rebooted(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Same host, earlier boot: the pid numbers were reissued from scratch."""
+    signalled: list[int] = []
+
+    def _fake_terminate(pid, **kw):
+        signalled.append(pid)
+        return "sigterm"
+
+    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", _fake_terminate)
+
+    async with StateDB() as db:
+        sid = await _seed_session(
+            db,
+            status="running",
+            pid=os.getpid(),
+            extra_meta={
+                "pid_host": socket.gethostname(),
+                "pid_boot_time": psutil.boot_time() - 86400.0,
+            },
+        )
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="")
+
+    assert signalled == []
+    assert result["signal"] == "boot_mismatch"
+
+    async with StateDB() as db:
+        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+    assert after["status"] == "running"
+
+
+async def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Clock jitter must not read as a reboot.
+
+    Both sides of the comparison read the boot time from the OS, and a clock
+    adjustment moves it by a fraction of a second. Without the tolerance a
+    machine that never rebooted would start refusing to kill its own
+    processes, which fails in the direction that looks safe: the guard reports
+    that it is protecting something while `li kill` quietly stops working.
+    """
+    signalled: list[int] = []
+
+    def _fake_terminate(pid, **kw):
+        signalled.append(pid)
+        return "sigterm"
+
+    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", _fake_terminate)
+
+    drift = _BOOT_TIME_TOLERANCE / 2
+    assert drift > 0, "a zero tolerance would make this test assert nothing"
+
+    async with StateDB() as db:
+        sid = await _seed_session(
+            db,
+            status="running",
+            pid=os.getpid(),
+            extra_meta={
+                "pid_host": socket.gethostname(),
+                "pid_boot_time": psutil.boot_time() - drift,
+            },
+        )
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="")
+
+    assert signalled == [os.getpid()]
+    assert result["signal"] == "sigterm"
+
+
+async def test_kill_still_signals_when_host_and_boot_agree(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The control for the two refusals above.
+
+    Without it, a check that refused unconditionally would pass both of them
+    and the suite would report a working guard while `li kill` had stopped
+    killing anything.
+    """
+    signalled: list[int] = []
+
+    def _fake_terminate(pid, **kw):
+        signalled.append(pid)
+        return "sigterm"
+
+    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", _fake_terminate)
+
+    async with StateDB() as db:
+        sid = await _seed_session(
+            db,
+            status="running",
+            pid=os.getpid(),
+            extra_meta={
+                "pid_host": socket.gethostname(),
+                "pid_boot_time": psutil.boot_time(),
+            },
+        )
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="")
+
+    assert signalled == [os.getpid()]
+    assert result["signal"] == "sigterm"
+
+    async with StateDB() as db:
+        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+    assert after["status"] == "cancelled"
+
+
+async def test_kill_still_signals_a_row_that_recorded_no_host_at_all(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Rows written before these markers existed stay killable.
+
+    Not knowing where a pid came from is not evidence that it came from
+    somewhere else. Failing closed on absence would make every pre-existing
+    running row permanently uncancellable, which is a worse outcome than the
+    one being guarded against and would go unnoticed for exactly as long.
+    """
+    signalled: list[int] = []
+
+    def _fake_terminate(pid, **kw):
+        signalled.append(pid)
+        return "sigterm"
+
+    monkeypatch.setattr("lionagi.cli.kill._terminate_pid", _fake_terminate)
+    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+
+    async with StateDB() as db:
+        sid = await _seed_session(db, status="running", pid=4242)
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="")
+
+    assert signalled == [4242]
+    assert result["signal"] == "sigterm"
+
+
+def test_recorded_pid_is_foreign_reads_only_the_host_marker(monkeypatch: pytest.MonkeyPatch):
+    """Foreignness is a property of the host field alone.
+
+    Keyed on a readable pid as well, a row from another machine whose pid did
+    not parse would read as local and fall through to the checks that assume
+    it is.
+    """
+    from lionagi.cli._util import recorded_pid_is_foreign
+
+    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+
+    assert recorded_pid_is_foreign({"pid_host": "other-host"}) is True
+    assert recorded_pid_is_foreign({"pid_host": "other-host", "pid": "not-an-int"}) is True
+    assert recorded_pid_is_foreign({"pid_host": "this-host"}) is False
+    assert recorded_pid_is_foreign({"pid": 1234}) is False
+    assert recorded_pid_is_foreign({"pid_host": ""}) is False
+    assert recorded_pid_is_foreign({"pid_host": 12}) is False
+    assert recorded_pid_is_foreign(None) is False
+
+
+async def test_stale_sweep_leaves_another_hosts_rows_alone(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`--all-stale` reads this host's process table, so foreign rows are not its business.
+
+    The local row beside it is the discriminator: without it, a sweep that had
+    stopped working entirely would pass this test.
+    """
+    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+    monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
+
+    old = time.time() - 86400
+    async with StateDB() as db:
+        remote = await _seed_session(
+            db,
+            status="running",
+            pid=4242,
+            started_at=old,
+            extra_meta={"pid_host": "some-other-host"},
+        )
+        local = await _seed_session(
+            db,
+            status="running",
+            pid=4243,
+            started_at=old,
+            extra_meta={"pid_host": "this-host"},
+        )
+
+    await _do_kill_all_stale(threshold_seconds=60, dry_run=False)
+
+    async with StateDB() as db:
+        remote_after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (remote,))
+        local_after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (local,))
+
+    assert remote_after["status"] == "running", "another host's stale row must not be swept here"
+    assert local_after["status"] == "cancelled", (
+        "a local stale row must still be swept — otherwise this test passes on a dead sweep"
+    )

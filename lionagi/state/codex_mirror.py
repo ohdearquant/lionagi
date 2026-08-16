@@ -498,6 +498,7 @@ async def mirror_session(
     await db.create_progression(bprog)
     if existing is None:
         meta = dict(node_metadata or {})
+        meta.setdefault("process_identity_mode", "external")
         meta[_IMPORT_KEY] = _import_block(source_path, tally)
         if terminal_provider_error is not None:
             meta[MIRROR_PROVIDER_ERROR_KEY] = terminal_provider_error

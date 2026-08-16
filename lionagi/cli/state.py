@@ -1116,7 +1116,7 @@ async def _doctor(
 
     from sqlalchemy import text
 
-    from lionagi.cli._util import pid_alive
+    from lionagi.cli._util import pid_alive, recorded_pid_is_foreign
     from lionagi.cli.kill import _check_pid_identity, _read_pid_from_entity
 
     async with StateDB() as db:
@@ -1152,6 +1152,14 @@ async def _doctor(
                 except ValueError:
                     meta = None
             entity["node_metadata"] = meta if isinstance(meta, dict) else None
+            if recorded_pid_is_foreign(entity["node_metadata"]):
+                # Recorded on another machine. Every check below asks this
+                # host's process table about that host's pid, so a dead answer
+                # here says nothing about the run: it would sweep a working
+                # session on the strength of a number that means something
+                # else locally.
+                skipped += 1
+                continue
             pid = _read_pid_from_entity(entity)
             if pid is not None and pid_alive(pid):
                 # A live PID alone isn't proof: the OS can hand a dead session's

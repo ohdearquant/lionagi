@@ -290,6 +290,7 @@ async def mirror_session(
                 "project": project,
                 "project_source": project_source,
                 "artifacts_path": cwd,
+                "node_metadata": {"process_identity_mode": "external"},
                 "started_at": first_ts,
                 "updated_at": last_ts,
             }

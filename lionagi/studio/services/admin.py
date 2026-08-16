@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import sqlite3
 import subprocess
 import threading
@@ -394,6 +395,46 @@ _PID_CREATE_TIME_TOLERANCE = 1.0
 HEALTH_SCAN_LIMIT = 500
 
 
+def process_identity_is_foreign(session: dict[str, Any]) -> bool:
+    """Whether this machine could not observe the run's process even in principle.
+
+    True when the row records a host that is not this one, or an identity mode
+    this code does not know how to check. Both mean the same thing: nothing
+    measurable here bears on whether that run is alive.
+
+    ``process_liveness`` already answers ``None`` for these, which is correct
+    as an answer to "is it alive". The reapers need the distinction because
+    they read a non-``True`` liveness as evidence of death once the row has
+    gone stale, and lean on the staleness grace to keep a merely quiet run
+    safe. That grace is protection against a *momentary* blind spot. Being on
+    another machine is a permanent one, so waiting adds no information and the
+    row is reaped precisely because it is healthy enough to keep running
+    somewhere this daemon cannot see. With a shared state store that turns
+    into one host marking another host's working runs failed.
+    """
+    from lionagi.cli._util import recorded_pid_is_foreign
+
+    meta = session.get("node_metadata")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            return False
+    if not isinstance(meta, dict):
+        return False
+
+    mode = meta.get("process_identity_mode")
+    if isinstance(mode, str) and mode not in ("local", "in_process"):
+        return True
+
+    # Asked of the host alone, not of "host and a readable pid": a row from
+    # another machine is that machine's business whether or not its pid
+    # parses, and the pid-less fallback in process_liveness matches on session
+    # id against *this* host's process table, which reads the wrong machine's
+    # answer just as confidently.
+    return recorded_pid_is_foreign(meta)
+
+
 def process_liveness(
     session: dict[str, Any],
     artifacts_path: Path | None,
@@ -403,6 +444,9 @@ def process_liveness(
     dead, None = unknown (no recorded pid/no process match)."""
     pid: int | None = None
     create_time: float | None = None
+    pid_host: str | None = None
+    pid_boot_time: float | None = None
+    identity_mode: str | None = None
 
     meta = session.get("node_metadata")
     if isinstance(meta, str):
@@ -411,15 +455,42 @@ def process_liveness(
         except ValueError:
             meta = None
     if isinstance(meta, dict):
-        raw_pid = meta.get("pid")
+        raw_mode = meta.get("process_identity_mode")
+        if isinstance(raw_mode, str):
+            identity_mode = raw_mode
+        # An in-process run has no process of its own; it records the process
+        # hosting it under separate keys, deliberately not "pid", so that the
+        # kill path cannot mistake the host for the run's own process. The
+        # host still bounds the run's liveness: if it is gone, the run is.
+        in_process = identity_mode == "in_process"
+        raw_pid = meta.get("host_pid" if in_process else "pid")
         if raw_pid is not None:
             try:
                 pid = int(raw_pid)
             except (TypeError, ValueError):
                 pid = None
-        raw_ct = meta.get("pid_create_time")
+        raw_ct = meta.get("host_pid_create_time" if in_process else "pid_create_time")
         if isinstance(raw_ct, int | float):
             create_time = float(raw_ct)
+        raw_host = meta.get("pid_host")
+        if isinstance(raw_host, str):
+            pid_host = raw_host
+        raw_boot = meta.get("pid_boot_time")
+        if isinstance(raw_boot, int | float):
+            pid_boot_time = float(raw_boot)
+
+    if identity_mode not in (None, "local", "in_process"):
+        return None
+    if pid is not None and pid_host is not None and pid_host != socket.gethostname():
+        return None
+    if pid is not None and pid_boot_time is not None:
+        try:
+            import psutil
+
+            if abs(psutil.boot_time() - pid_boot_time) > _PID_CREATE_TIME_TOLERANCE:
+                return False
+        except Exception:
+            return None
 
     if pid is None and artifacts_path is not None and artifacts_path.exists():
         pid = _find_pid_file(artifacts_path)
@@ -692,6 +763,11 @@ def _classify_phantom(
     session = {"id": row["id"], "node_metadata": node_metadata}
     # A running session is never a phantom while its process is observably alive.
     if process_liveness(session, ap, ps_snapshot) is True:
+        return None
+    # Nor when the process is not this machine's to observe: the staleness
+    # grace below cannot rescue a row whose liveness is permanently invisible
+    # here, so without this a healthy run on another host reaps as dead.
+    if process_identity_is_foreign(session):
         return None
     # Not yet stale: it may simply not have written artifacts yet, so give it
     # the benefit of the doubt rather than reap a fresh/quiet session.
