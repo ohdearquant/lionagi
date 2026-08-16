@@ -1405,7 +1405,14 @@ class StateDB:
 
     async def _rebuild_legacy_sessions_table(self) -> None:
         """Rebuild sessions if it carries either legacy CHECK: the 4-value status
-        vocabulary, or a source_kind that predates the codex-import provenance value."""
+        vocabulary, or a source_kind that predates the codex-import provenance value.
+
+        The rebuild pattern the other legacy-CHECK rebuilds refer back to, in the
+        order it executes: CREATE new → INSERT SELECT → DROP old → RENAME. The
+        table being replaced keeps its own name until the DROP; it is the new
+        table that is built alongside under a temporary name and renamed into
+        place last.
+        """
         if self.dialect != "sqlite":
             return
         async with self._engine.connect() as conn:
@@ -1565,8 +1572,8 @@ class StateDB:
         """Rebuild ``schedules`` if it still carries the legacy action_kind CHECK.
 
         The old CHECK omits ``'flow_yaml'``; SQLite cannot drop a constraint via
-        ALTER TABLE, so we use the rename → CREATE new → INSERT SELECT → DROP
-        old pattern (same as ``_rebuild_legacy_sessions_table``).
+        ALTER TABLE, so we use the CREATE new → INSERT SELECT → DROP old →
+        RENAME pattern (same as ``_rebuild_legacy_sessions_table``).
         """
         if self.dialect != "sqlite":
             return
@@ -1669,7 +1676,7 @@ class StateDB:
         """Rebuild ``schedules`` if its action_kind CHECK still omits 'command'.
 
         SQLite cannot widen a CHECK constraint via ALTER TABLE, so this uses
-        the same rename -> CREATE new -> INSERT SELECT -> DROP old pattern as
+        the same CREATE new -> INSERT SELECT -> DROP old -> RENAME pattern as
         ``_drop_legacy_action_kind_check``. Runs after ``_reconcile_columns``
         (via ``_apply_schema``), so the ADD COLUMN for action_command /
         action_command_args has already landed on the pre-rebuild table.
@@ -1772,7 +1779,7 @@ class StateDB:
     async def _drop_legacy_schedules_trigger_type_check(self) -> None:
         """Rebuild ``schedules`` if its trigger_type CHECK still omits 'at'.
 
-        Same rename -> CREATE new -> INSERT SELECT -> DROP old pattern as
+        Same CREATE new -> INSERT SELECT -> DROP old -> RENAME pattern as
         ``_drop_legacy_schedules_command_check``.
         """
         if self.dialect != "sqlite":
@@ -1861,7 +1868,7 @@ class StateDB:
         """Rebuild ``invocations`` if its status CHECK still omits 'completed_empty'.
 
         SQLite cannot drop a constraint via ALTER TABLE, so we use the same
-        rename → CREATE new → INSERT SELECT → DROP old pattern as
+        CREATE new → INSERT SELECT → DROP old → RENAME pattern as
         ``_rebuild_legacy_sessions_table`` / ``_drop_legacy_action_kind_check``.
         """
         if self.dialect != "sqlite":
@@ -2009,8 +2016,8 @@ class StateDB:
         """Rebuild ``schedule_runs`` if it still carries the legacy status CHECK.
 
         SQLite cannot widen a CHECK constraint nor drop a NOT NULL via ALTER
-        TABLE, so this uses the same rename → CREATE new → INSERT SELECT →
-        DROP old pattern as ``_drop_legacy_action_kind_check`` /
+        TABLE, so this uses the same CREATE new → INSERT SELECT → DROP old →
+        RENAME pattern as ``_drop_legacy_action_kind_check`` /
         ``_drop_legacy_invocations_status_check``. Takes a pre-rebuild backup
         of the database file first (``_backup_before_rebuild``); see its
         docstring for the rollback path.
@@ -2199,7 +2206,7 @@ class StateDB:
         """Rebuild ``definitions`` if it still carries the pre-skill-editor kind CHECK.
 
         SQLite cannot widen a CHECK constraint via ALTER TABLE, so this uses
-        the same rename → CREATE new → INSERT SELECT → DROP old pattern as
+        the same CREATE new → INSERT SELECT → DROP old → RENAME pattern as
         ``_drop_legacy_action_kind_check``. ``definitions`` is not itself an
         FK target, but the foreign_keys-off dance is applied anyway to match
         every other rebuild in this file rather than special-casing this one
