@@ -2,9 +2,12 @@
 
 - **Status**: Proposed
 - **Kind**: Aspirational
+- **Implementation-status**: not-started — current permission/gate controls predate this ADR; the
+  authoritative EvidenceStore, activated snapshot authority, certificate path, and ADR-0121
+  integration have not shipped
 - **Area**: governance
 - **Date**: 2026-07-09
-- **Relations**: supersedes v0-0039, v0-0041, v0-0042, v0-0043, v0-0044, v0-0045, v0-0046, v0-0047, v0-0048, v0-0049, v0-0050, v0-0051, v0-0052; extends ADR-0086
+- **Relations**: supersedes v0-0039, v0-0041, v0-0042, v0-0043, v0-0044, v0-0045, v0-0046, v0-0047, v0-0048, v0-0049, v0-0050, v0-0051, v0-0052; extends ADR-0086; D1 is prospectively superseded by ADR-0121 while D2-D7 remain authoritative as mapped there
 
 ## Context
 
@@ -60,7 +63,7 @@ a projection of all three. This ADR consolidates that chain and sequences it.
 
 | Concern | Decision |
 |---|---|
-| Package and interception boundary | D1: Add one optional governance package and a no-bypass controller for policy-bound tools. |
+| Package and interception boundary | D1: ADR-0121's universal ActionExecutor owns invocation and consumes this ADR's governance ports. |
 | Immutable records and hashing | D2: Use frozen Python models, canonical JSON, and a versioned SHA-256 chain contract. |
 | Evidence persistence | D3: Inject an append-only `EvidenceStore` with per-chain atomic append and verification. |
 | Gate evaluation | D4: Adapt current controls once into `GateResult` and apply hard, soft, and advisory semantics fail-closed. |
@@ -82,7 +85,12 @@ This ADR does **not** decide:
 
 ## Decision
 
-### D1 — One optional package owns governed invocation
+### D1 — ActionExecutor consumes the optional governance capability
+
+ADR-0121 supersedes this clause's original optional `InvocationController` authority. There is
+one universal `ActionExecutor` for LionAGI-owned calls; governed execution is a profile inside it,
+not an alternate manager-installed path. The governance package owns evidence, policy-history,
+certificate, and projection components only:
 
 The target module tree is:
 
@@ -94,7 +102,7 @@ lionagi/governance/
 ├── protocols.py         GateAdapter, EvidenceStore, PolicySnapshotStore
 ├── evidence.py          verifier and InMemoryEvidenceStore reference backend
 ├── policy.py            activation, binding resolution, historical lookup
-├── controller.py        InvocationController and no-bypass invocation token
+├── integration.py       ActionExecutor evidence/policy coordinator; no invocation entry point
 ├── certificate.py       CertificateIssuer and mint validation
 ├── projection.py        committed-evidence → observer signal projection
 └── deferred.py          type reservations for D8; no executable gate registration
@@ -108,6 +116,7 @@ class GovernanceBinding:
     policy_id: UUID
     policy_version: str
     task_boundary_id: UUID
+    chain_id: UUID
     evidence_store: EvidenceStore
     policy_store: PolicySnapshotStore
     gate_adapters: tuple[GateAdapter, ...]
@@ -119,10 +128,11 @@ class AgentSpec(HooksMixin):
     governance: GovernanceBinding | None = None
 ```
 
-`create_agent()` resolves the exact snapshot before returning a branch. When `governance is
-None`, tool registration and invocation remain byte-for-byte on the current path. When it is
-present, the factory installs one `InvocationController` on the branch's `ActionManager` and
-marks every tool registered on that manager with an excluded runtime descriptor:
+`create_agent()` resolves the exact snapshot before returning a branch. The binding is passed to
+ActionExecutor through ADR-0121's trusted `ExecutionContext`; it is not installed as a manager or
+Tool-local executor. When no binding is present, the universal executor uses its minimal or durable
+ungoverned profile and makes no evidence/certificate claim. Descriptors retain only the immutable
+identity needed to verify a governed binding:
 
 ```python
 class GovernedToolBinding(BaseModel):
@@ -137,52 +147,35 @@ class Tool(Element):
     governance_binding: GovernedToolBinding | None = Field(default=None, exclude=True)
 ```
 
-The controller surface is:
-
-```python
-class InvocationController:
-    async def invoke(
-        self,
-        call: FunctionCalling,
-        *,
-        context: OperationContext,
-    ) -> Any: ...
-
-
-class ActionManager(Manager):
-    async def invoke(
-        self,
-        func_call: ActionRequest | BaseModel | dict,
-        *,
-        operation_context: OperationContext | None = None,
-    ) -> FunctionCalling: ...
-```
-
 Exact boundary semantics:
 
-- An unbound `Tool` follows the existing preprocessor → callable → postprocessor path and
-  produces no governance records.
-- A bound `Tool` always enters `InvocationController.invoke()` immediately before its callable.
-  `ActionManager.invoke()`, `_act()`, and direct `FunctionCalling.invoke()` all converge there.
-- A bound tool presented without its manager's controller, without an `OperationContext`, or
-  with a context pinned to a different tool or policy fails with `GovernanceBypassError` before
-  the callable.
-- The controller alone creates a private one-use invocation token accepted by the internal
-  callable helper. The token is consumed before the call and cannot be reused. This prevents a
-  second LionAGI route from calling the helper after governance evaluation.
+- Every Tool, bound or unbound, enters ADR-0121 ActionExecutor exactly once. `ActionManager`,
+  `_act()`, and `FunctionCalling` expose compatibility façades but no callable route.
+- A request selecting the governed profile without its `OperationContext`, exact policy/evidence
+  stores, or matching tool/policy pin fails with `GovernanceBypassError` before the callable.
+- ActionExecutor alone creates a private one-use invocation token accepted by its internal
+  callable helper. It releases the token only after every required ADR-0087 pre-call append has a
+  receipt; the token is consumed before the call and cannot be reused.
 - Directly calling `tool.func_callable(...)` outside LionAGI remains possible and outside the
   guarantee. The descriptor is a library boundary, not a Python sandbox.
-- Tools registered after branch construction inherit the manager's active binding. Registration
-  rejects a supplied conflicting `GovernedToolBinding`.
+- Tools registered after construction are resolved into immutable ActionDescriptors before the
+  executor compiles the policy plan; registration timing cannot omit governance.
 - Process restart requires reconstructing the binding and injected stores. A durable evidence or
   policy backend may preserve records; the in-memory reference backends do not.
 
-Why this way: the controller is a new responsibility but not a parallel dispatcher. Existing
-schema matching, `FunctionCalling`, and action response handling remain the invocation path.
-The descriptor makes accidental internal bypass detectable while preserving plain-tool
-compatibility.
+Why this way: evidence coordination is a distinct responsibility but not a parallel dispatcher.
+ADR-0121 closes the ungoverned manager path universally while this ADR retains the stronger,
+optional evidence claim.
 
 ### D2 — Records are frozen and hashes have one canonical algorithm
+
+The class snippets in this older record describe validated public/wire DTO fields. Under
+ADR-0119/ADR-0121, one frozen `Spec`/`Operable` + `Params` declaration authors each record and the
+Pydantic `GovernanceModel` is a generated materialization, not a second schema or serializer.
+ADR-0087's evidence payload/chain field set and `sha256-v1` bytes remain the compatibility contract;
+LionAGI's internal serializer implements them. Any envelope change that would alter historical
+chain bytes requires a new evidence hash-algorithm version and dual verifier, never a silent switch
+to Python `hash()` or a different JSON recursion.
 
 All public governance models use:
 
@@ -206,6 +199,9 @@ class EvidenceType(str, Enum):
     OPERATION_DENIED = "operation_denied"
     CALLABLE_COMPLETED = "callable_completed"
     CALLABLE_FAILED = "callable_failed"
+    OPERATION_CANCELLED = "operation_cancelled"
+    OPERATION_TIMED_OUT = "operation_timed_out"
+    EXTERNAL_RESULT_AMBIGUOUS = "external_result_ambiguous"
     TASK_CLOSED = "task_closed"
     RECORD_SUPERSEDED = "record_superseded"
 ```
@@ -308,6 +304,37 @@ class EvidenceStore(Protocol):
 
 There is intentionally no update or delete operation.
 
+Cross-store projections use a separate extension rather than weakening append semantics:
+
+```python
+class EvidenceProjectionReceipt(GovernanceModel):
+    cursor: str
+    chain_id: UUID
+    record_id: UUID
+    sequence: int
+    head_hash: Digest
+
+class EvidenceProjectionPage(GovernanceModel):
+    receipts: tuple[EvidenceProjectionReceipt, ...]
+    next_cursor: str
+
+@runtime_checkable
+class EvidenceProjectionSource(Protocol):
+    async def scan(
+        self,
+        *,
+        after_cursor: str | None,
+        limit: int,
+    ) -> EvidenceProjectionPage: ...
+```
+
+Every durable append becomes visible exactly once in the source's logical cursor order and may be
+delivered at least once to consumers. A page cursor is opaque, stable across restart, and advances
+past every receipt in that page; the consumer still reads the authoritative record by chain and
+sequence and verifies IDs/hash before projection. This is required only when a separate StateStore
+claims durable governed projections. It is not an update/delete surface and it does not make
+projection order part of evidence-chain hashing.
+
 Exact store semantics:
 
 - Append is atomic for one chain. A missing chain accepts only `sequence=0` and
@@ -318,7 +345,7 @@ Exact store semantics:
   duplicate chain hash raises `EvidenceConflictError`. Duplicate append is not treated as
   idempotent success because replay would obscure whether the producing control ran twice.
 - Chains are independent. No cross-chain transaction is promised.
-- The controller owns one async append lock per active task chain. Head lookup, record
+- ActionExecutor's governance coordinator owns one async append lock per active task chain. Head lookup, record
   construction, and `append()` run under that lock; callable execution does not. Concurrent
   operations may therefore interleave records but cannot manufacture the same next sequence in
   one process. A conflict from an independent writer is not retried silently and fails closed.
@@ -339,14 +366,14 @@ Exact store semantics:
   and preserve records across restart. Durability beyond that transaction depends on the
   injected backend.
 
-Controller failure behavior is also fixed:
+Governed ActionExecutor failure behavior is also fixed:
 
 - A failure appending policy, context, gate, exception, or denial records before invocation
   raises `GovernanceEvidenceError(call_executed=False)` and the callable is not reached.
 - After a callable succeeds, failure to append `CALLABLE_COMPLETED` raises
   `GovernanceEvidenceError(call_executed=True)`; the callable is never retried automatically.
 - If the callable raises and `CALLABLE_FAILED` appends successfully, its original exception is
-  re-raised. If that append also fails, the controller raises `OutcomeEvidenceError` containing
+  re-raised. If that append also fails, ActionExecutor raises `OutcomeEvidenceError` containing
   both the callable and store exceptions and marks the operation uncertifiable.
 - Any missing terminal record prevents D6 minting. A process restart does not infer a terminal
   state from absence.
@@ -402,7 +429,7 @@ class GateAdapter(Protocol):
     ) -> AdaptedControlResult: ...
 ```
 
-`arguments` is transient, not evidence. The controller makes a private dictionary copy after
+`arguments` is transient, not evidence. ActionExecutor makes a private dictionary copy after
 each adapter and never stores the mapping by reference. It can therefore preserve the current
 tool argument surface, including values that are intentionally outside D2's approved evidence
 payload types.
@@ -411,7 +438,7 @@ Exact evaluation semantics:
 
 - Policy activation rejects a gate binding whose `gate_id` has no registered adapter. A
   governed tool with no applicable gate binding denies with `policy.no_gate_binding`.
-- The controller invokes each applicable adapter once in snapshot order. It does not also run
+- ActionExecutor invokes each applicable adapter once in snapshot order. It does not also run
   the old session authorization or preprocessor path for the same control.
 - The built-in composite adapter preserves current hook phases: each security hook evaluates
   original arguments, each user transform runs once, and—when a user transform exists—each
@@ -436,8 +463,12 @@ Exact evaluation semantics:
   explicitly opts into that display.
 
 Why this way: binary decision and separate enforcement level avoid a third ambiguous decision
-state. The adapter preserves shipped controls while the controller becomes the only owner of
+state. The adapter preserves shipped controls while ActionExecutor becomes the only owner of
 when they run and when evidence commits.
+
+ADR-0121's `ActionAdmissionDecision` is control flow, not a replacement stored verdict. Its normative
+reducer maps these `GateResult` values once; capacity `DEFER` never manufactures a GateResult, and
+approval `ESCALATE` begins a new attempt rather than mutating the recorded operation.
 
 ### D5 — Context and policy are immutable operation inputs
 
@@ -453,22 +484,38 @@ class OperationContext(GovernanceModel):
     operation_id: UUID
     chain_id: UUID
     task_boundary_id: UUID
+    execution_scope_id: str
+    run_id: str | None
     session_id: UUID | None
     branch_id: UUID | None
     actor: ActorRef | None
     parent_operation_id: UUID | None
     tool_id: str
+    effect_backend_id: str
+    effect_capability_digest: Digest
     policy_id: UUID
     policy_version: str
     policy_digest: Digest
     started_at: AwareDatetime
 
-    def child(self, *, operation_id: UUID, chain_id: UUID, tool_id: str) -> OperationContext: ...
+    def child(self, *, operation_id: UUID, tool_id: str) -> OperationContext: ...
 ```
 
-`child()` returns a new model, retains the task and policy pin, and sets
-`parent_operation_id=self.operation_id`. Any other update uses `model_copy(update=...)` and
+Callers do not supply this record. ADR-0121 ActionExecutor's private `OperationContextFactory`
+derives it from exactly six explicit inputs: trusted `ExecutionContext`, immutable request,
+resolved descriptor, exact PolicySnapshot, verified action-preflight report, and active
+`GovernanceBinding`. The preflight report is
+the source of the effect-backend capability digest. The active boundary is the sole source of its
+stable chain ID; the factory mints only an operation ID and derives `actor` only
+from `authenticated_principal`. A caller-supplied actor, chain, scope, Run, backend, or policy pin
+is rejected rather than merged. `child()` returns a new model, retains the task and policy pin, and sets
+`parent_operation_id=self.operation_id`; it cannot switch chains. One task boundary mints one
+chain ID at open, and every operation under it appends to that chain. Any other update uses `model_copy(update=...)` and
 revalidates; in-place assignment is forbidden.
+
+This factory is governed-only. Minimal and durable-ungoverned ADR-0121 profiles retain their
+trusted `ExecutionContext` but never construct this record, append this evidence vocabulary, or
+claim task certification.
 
 The policy shapes are:
 
@@ -483,6 +530,114 @@ class PolicyScope(str, Enum):
     ROLE = "role"
     RESOURCE = "resource"
 
+class PolicyEffect(str, Enum):
+    ALLOW = "allow"
+    DENY = "deny"
+    REQUIRE_APPROVAL = "require_approval"
+    LIMIT = "limit"
+
+# Ordinary resource/action rules make only allow/deny decisions. Approval and
+# quantitative limits use their dedicated variants with complete payloads.
+DecisionEffect = Literal[PolicyEffect.ALLOW, PolicyEffect.DENY]
+
+class ActionRule(GovernanceModel):
+    kind: Literal["action"]
+    rule_id: str
+    order: int
+    action_patterns: tuple[str, ...]
+    operations: tuple[str, ...]
+    effect: DecisionEffect
+    provenance: tuple[EvidenceRef, ...]
+
+class FilesystemRule(GovernanceModel):
+    kind: Literal["filesystem"]
+    rule_id: str
+    order: int
+    roots: tuple[str, ...]
+    modes: tuple[Literal["read", "write", "execute"], ...]
+    effect: DecisionEffect
+    provenance: tuple[EvidenceRef, ...]
+
+class NetworkRule(GovernanceModel):
+    kind: Literal["network"]
+    rule_id: str
+    order: int
+    destinations: tuple[str, ...]
+    modes: tuple[Literal["connect", "listen", "resolve"], ...]
+    effect: DecisionEffect
+    provenance: tuple[EvidenceRef, ...]
+
+class SubprocessRule(GovernanceModel):
+    kind: Literal["subprocess"]
+    rule_id: str
+    order: int
+    executable_patterns: tuple[str, ...]
+    shell: Literal["forbid", "allow"]
+    effect: DecisionEffect
+    provenance: tuple[EvidenceRef, ...]
+
+class MCPRule(GovernanceModel):
+    kind: Literal["mcp"]
+    rule_id: str
+    order: int
+    server_patterns: tuple[str, ...]
+    tool_patterns: tuple[str, ...]
+    resource_patterns: tuple[str, ...]
+    effect: DecisionEffect
+    provenance: tuple[EvidenceRef, ...]
+
+class SecretExposureRule(GovernanceModel):
+    kind: Literal["secret_exposure"]
+    rule_id: str
+    order: int
+    secret_namespaces: tuple[str, ...]
+    exposure: Literal["forbid", "reference_only", "inject"]
+    effect: DecisionEffect
+    provenance: tuple[EvidenceRef, ...]
+
+class EnvironmentRule(GovernanceModel):
+    kind: Literal["environment"]
+    rule_id: str
+    order: int
+    variable_patterns: tuple[str, ...]
+    exposure: Literal["forbid", "read", "inject"]
+    effect: DecisionEffect
+    provenance: tuple[EvidenceRef, ...]
+
+class ApprovalRule(GovernanceModel):
+    kind: Literal["approval"]
+    rule_id: str
+    order: int
+    action_patterns: tuple[str, ...]
+    approver_class: str
+    expires_after_microseconds: int
+    effect: Literal[PolicyEffect.REQUIRE_APPROVAL]
+    provenance: tuple[EvidenceRef, ...]
+
+class BudgetRule(GovernanceModel):
+    kind: Literal["budget"]
+    rule_id: str
+    order: int
+    budget_kind: Literal["calls", "tokens", "cost_microunits", "wall_microseconds"]
+    limit: int
+    window_microseconds: int | None
+    effect: Literal[PolicyEffect.LIMIT]
+    provenance: tuple[EvidenceRef, ...]
+
+class ExpiryRule(GovernanceModel):
+    kind: Literal["expiry"]
+    rule_id: str
+    order: int
+    not_before: AwareDatetime | None
+    expires_at: AwareDatetime
+    effect: DecisionEffect
+    provenance: tuple[EvidenceRef, ...]
+
+CompiledPolicyRule = (
+    ActionRule | FilesystemRule | NetworkRule | SubprocessRule | MCPRule
+    | SecretExposureRule | EnvironmentRule | ApprovalRule | BudgetRule | ExpiryRule
+)
+
 
 class ExecutableGateBinding(GovernanceModel):
     gate_id: str
@@ -490,13 +645,18 @@ class ExecutableGateBinding(GovernanceModel):
     level: GateLevel
     order: int = Field(ge=0)
     tool_ids: tuple[str, ...]
+    rule_ids: tuple[str, ...]
 
 
 class PolicySnapshot(GovernanceModel):
     policy_id: UUID
     version: str
     digest: Digest
+    principal_scope: tuple[str, ...]
+    tenant_scope: tuple[str, ...]
+    compiled_rules: tuple[CompiledPolicyRule, ...]
     gate_bindings: tuple[ExecutableGateBinding, ...]
+    provenance: tuple[EvidenceRef, ...]
     release_state: PolicyReleaseState
     activated_at: AwareDatetime | None = None
     activated_by: ActorRef | None = None
@@ -538,12 +698,28 @@ class PolicySnapshotStore(Protocol):
 
 Exact policy semantics:
 
-- `digest` covers policy ID, version, ordered executable gate bindings, levels, tool IDs, and
-  adapter IDs. It excludes release state and activation metadata. `put()` recomputes it.
+ADR-0121 `PermissionPolicy` is declaration/compiler input for this snapshot. The closed tagged
+`CompiledPolicyRule` is a discriminated union on the required literal `kind` field and losslessly
+covers action, filesystem, network, subprocess, MCP, secret
+and environment exposure, approval, budget, expiry, principal/tenant scope, and provenance. Each gate binding names
+the exact rule IDs it evaluates. A second resolved-policy store, digest, or out-of-band executable
+rule is forbidden.
+
+`ActionRule`, `FilesystemRule`, `NetworkRule`, `SubprocessRule`, `MCPRule`,
+`SecretExposureRule`, `EnvironmentRule`, and `ExpiryRule` accept only `ALLOW` or `DENY`.
+`ApprovalRule` alone accepts `REQUIRE_APPROVAL` and carries approver/expiry payload; `BudgetRule`
+alone accepts `LIMIT` and carries kind/limit/window payload. Unknown `kind`, a duplicate field
+under the wrong variant, or an effect without its executable payload fails parsing and activation.
+
+- `digest` covers policy ID/version, principal and tenant scopes, every ordered typed rule and all
+  of its fields/provenance, and ordered executable gate bindings including level, tool IDs, rule
+  IDs, and adapter IDs. It excludes release state and activation metadata. `put()` recomputes it
+  from ADR-0119 strict canonical bytes.
 - Re-putting the exact `(policy_id, version, digest)` is idempotent. The same ID/version with a
   different digest raises `PolicyConflictError`.
-- Activation is the only staged-to-active transition. It validates unique gate IDs, unique
-  order values, nonempty tool sets, and adapter availability; it returns a new frozen active
+- Activation is the only staged-to-active transition. It validates unique gate/rule IDs, unique
+  order values within their domains, nonempty scopes/target sets where required, referentially
+  complete rule IDs, variant-specific bounds, and adapter availability; it returns a new frozen active
   projection. Executable content never changes after activation.
 - Activation atomically replaces the staged release-state projection for that exact version;
   `get()` returns the active projection afterward while executable content and its digest remain
@@ -557,10 +733,10 @@ Exact policy semantics:
   `PolicyNotFoundError` and denies.
 - `GLOBAL` requires `selector=None`; `ROLE` and `RESOURCE` require a nonempty selector. These
   values are routing labels only and do not imply authenticated identity or isolation.
-- At invocation, the controller retrieves the exact version and compares its digest to the
+- At invocation, ActionExecutor retrieves the exact version and compares its digest to the
   context. Missing history or mismatch denies before any gate or callable.
-- Explicit context parameters are authoritative. A task-local `ContextVar` may bridge callbacks
-  that cannot accept a parameter, but the controller verifies its operation ID and resets it in
+- The derived OperationContext is authoritative. A task-local `ContextVar` may bridge callbacks
+  that cannot accept a parameter, but ActionExecutor verifies its operation ID and resets it in
   `finally`; it is never the record of truth.
 
 Why this way: pinning turns policy selection into an operation input instead of ambient mutable
@@ -625,8 +801,11 @@ Exact mint semantics:
 - It retrieves the exact historical policy, recomputes its digest, and refuses absence or
   mismatch with `VerificationFailureCode.MISSING_POLICY`.
 - Every `OPERATION_STARTED` under the task must have exactly one terminal
-  `OPERATION_DENIED`, `CALLABLE_COMPLETED`, or `CALLABLE_FAILED` record. Missing or duplicate
-  terminals prevent minting.
+  `OPERATION_DENIED`, `CALLABLE_COMPLETED`, `CALLABLE_FAILED`, `OPERATION_CANCELLED`,
+  `OPERATION_TIMED_OUT`, or `EXTERNAL_RESULT_AMBIGUOUS` record. Missing or duplicate terminals
+  prevent minting. Capacity deferral and preflight containment denial before
+  `OPERATION_STARTED` are outside the certifiable operation. Gate-derived escalation closes the
+  current operation with `OPERATION_DENIED`; approval creates a new attempt.
 - `GateSummary` is derived from committed `GATE_EVALUATED` records, never supplied by the
   caller.
 - Any `EXCEPTION_GRANTED` record makes the grade permanently `DEGRADED`. A later correction may
@@ -645,7 +824,7 @@ operation are not interchangeable proofs. The retained candidates are:
 
 - `async with governed_task(...) as task:` — explicit and exception-safe, but adds a new context
   manager to ordinary library code.
-- `controller.open_task()` / `controller.close_task()` — explicit and framework-neutral, but
+- `governed_task_service.open_task()` / `close_task()` — explicit and framework-neutral, but
   callers can forget closure and need cleanup rules.
 - A required boundary argument on `Session.flow()` — natural for DAG work, but excludes direct
   branch and manager use.
@@ -729,10 +908,9 @@ Deferred semantics:
 - **Break-glass:** requires an attributable `ExceptionGrant` with an explicit expiry and reason.
   The exception record must append before execution. It cannot override evidence or policy-store
   failure and always forces `DEGRADED` for the task.
-- **Integration wrappers:** a wrapper for another agent framework calls
-  `InvocationController.invoke()` from a separate integration package and must pass the same
-  operation context. It does not modify `Adapter` or claim coverage over calls that bypass the
-  wrapper.
+- **Integration wrappers:** a wrapper for another agent framework calls its own authoritative
+  action boundary with the same evidence/policy protocols and operation context. It does not call
+  a hidden LionAGI dispatcher or claim coverage over calls that bypass the wrapper.
 
 The lack of a default permit or break-glass duration is intentional: no deployment evidence in
 the current library justifies a universal number. Encoding an inherited guess would make a
@@ -744,7 +922,7 @@ The six target components and six directed dependencies are:
 
 ```mermaid
 flowchart LR
-    IC[InvocationController] --> GA[GateAdapter]
+    IC[ActionExecutor] --> GA[GateAdapter]
     IC --> ES[EvidenceStore]
     IC --> PS[PolicySnapshotStore]
     CI[CertificateIssuer] --> ES
@@ -762,17 +940,18 @@ target is `τ = 1.0` before integration tests.
 sequenceDiagram
     participant Caller
     participant AM as ActionManager / FunctionCalling
-    participant GC as InvocationController
+    participant GC as ActionExecutor
     participant PS as PolicySnapshotStore
     participant GA as GateAdapters
     participant ES as EvidenceStore
     participant Tool as Tool callable
     participant Obs as ObservationProjector
 
-    Caller->>AM: invoke policy-bound Tool + OperationContext
-    AM->>GC: invoke(call, context)
+    Caller->>AM: invoke Tool + trusted ExecutionContext
+    AM->>GC: delegate ExecutionRequest + ExecutionContext
     GC->>PS: get exact policy version
     PS-->>GC: frozen snapshot or error
+    GC->>GC: derive OperationContext; caller cannot supply it
     GC->>ES: append policy_bound + operation_started
     GC->>GA: evaluate applicable controls once
     GA-->>GC: transformed arguments + GateResult tuple
@@ -803,7 +982,7 @@ sequenceDiagram
 1. Ship D2-D3 immutable records, canonicalization, `InMemoryEvidenceStore`, and chain verifier
    tests. Mutation, broken-link, stale-head, empty-chain, unsupported-algorithm, and concurrent
    append tests must pass. No certificate type is exposed as usable before this gate.
-2. Ship D1 and D4 controller integration, adapters, `AgentSpec` binding, and no-bypass tests
+2. Ship ADR-0121 ActionExecutor integration, D4 adapters, `AgentSpec` binding, and no-bypass tests
    across action, manager, and direct `FunctionCalling` entry points. Plain-tool compatibility
    tests remain green, and each configured control runs only in its declared phases.
 3. Ship D5 immutable policy snapshots, historical lookup, deterministic activation and
@@ -831,7 +1010,7 @@ Positive consequences:
 
 Negative and maintenance consequences:
 
-- The controller adds policy lookup, gate evaluation, hashing, and evidence writes to every
+- Governed ActionExecutor adds policy lookup, gate evaluation, hashing, and evidence writes to every
   governed invocation. No latency budget is asserted until an implementation is measured.
 - Evidence storage becomes an intentional availability dependency. Before-call failure denies;
   after-call failure can report that a side effect occurred without authoritative completion
@@ -848,7 +1027,7 @@ Reversal cost:
 
 | Decision | Reversal cost |
 |---|---|
-| D1 | High: every governed invocation route and tool descriptor depends on the controller boundary. |
+| D1 | High: every LionAGI invocation route depends on ADR-0121 ActionExecutor; governed routes additionally depend on this evidence profile. |
 | D2 | High: changing canonicalization or hash input requires multi-algorithm verification for historical records. |
 | D3 | High: append and conflict semantics are backend compatibility contracts. |
 | D4 | Medium: adapters isolate current controls, but gate level and reason code are stored evidence. |
@@ -870,8 +1049,8 @@ rather than an authoritative operation outcome.
 
 This would keep current `ActionManager` untouched and make governed execution visibly separate.
 It lost because it duplicates schema matching, tool lookup, message projection, and error
-handling, while any caller selecting the old dispatcher keeps a bypass. The controller belongs
-inside the existing callable path.
+handling, while any caller selecting the old dispatcher keeps a bypass. ADR-0121 therefore puts
+the universal ActionExecutor inside the existing callable path.
 
 ### Use session signals, `DataLogger`, or `MemoryStore` for evidence
 
@@ -944,11 +1123,11 @@ Adapters keep the current behavior visible while centralizing scheduling and evi
 
 This would reuse an existing registry name and extension mechanism. It lost because the adapter
 protocol converts representations and has no execution lifecycle. A separate integration package
-can call the controller without changing that stable meaning.
+can consume the governance protocols without changing that stable meaning.
 
 ## Notes
 
-The six target components are `InvocationController`, `GateAdapter`, `EvidenceStore`,
+The six target components are ADR-0121 `ActionExecutor`, `GateAdapter`, `EvidenceStore`,
 `PolicySnapshotStore`, `CertificateIssuer`, and `ObservationProjector`. The graph above contains
 six directed dependencies, so `κ = 0.20`; protocol injection and pure functions provide the
 `τ = 1.0` isolated-test target.
