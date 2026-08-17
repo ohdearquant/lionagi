@@ -1042,8 +1042,14 @@ class StateDB:
                     existing = await conn.run_sync(
                         lambda c, t=table: [col["name"] for col in inspect(c).get_columns(t)]
                     )
-            except Exception:  # noqa: BLE001, S112
-                continue
+            except Exception as exc:  # noqa: BLE001
+                _log.error(
+                    "failed to inspect migration columns for table %r: %r",
+                    table,
+                    exc,
+                    exc_info=True,
+                )
+                raise
             for name, defn in columns:
                 if name not in existing:
                     add_column = f"ALTER TABLE {table} ADD COLUMN {name} {defn}"
