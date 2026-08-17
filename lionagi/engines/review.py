@@ -362,6 +362,22 @@ def _withheld_note(unevidenced: tuple[str, ...]) -> str:
     )
 
 
+def _unverified_note(unverified: tuple[IssueFound, ...]) -> str:
+    """Say which findings never got their verification outcome, in the verdict.
+
+    Named individually rather than counted. A reader deciding what to do next
+    needs to know which claim is unresolved, and a count sends them back to the
+    logs to find out -- the same reason the coverage note names its dimensions.
+    """
+    named = "; ".join(f"{i.dimension}: {i.description}" for i in unverified)
+    return (
+        "Approval withheld: these findings were never verified and were not "
+        f"withdrawn — {named}. A pass cannot rest on a finding whose "
+        "verification did not come back, whether the verifier failed or never "
+        "returned a result."
+    )
+
+
 def _verify_key(issue: IssueFound) -> str:
     """Dedup key for adversarial verification. Two dimensions often surface the
     same defect with different wording, so keying on the raw description spawns
@@ -692,9 +708,7 @@ class ReviewEngine(Engine):
             await run.operate_with_repair(
                 verifier,
                 _verify_instruction(issue, ref),
-                arrived=lambda: any(
-                    v.ref == ref or v.issue == issue.description for v in run.by_type(VerifyResult)
-                ),
+                arrived=lambda: self._verification_arrived(run, issue),
                 emits=emits,
                 retries=self.repair_retries,
             )
@@ -741,14 +755,20 @@ class ReviewEngine(Engine):
         text = str(res) if res is not None else ""
 
         unevidenced = self._unevidenced_dimensions(run, dimensions)
+        unverified = self._unverified_findings(run)
         proposals = run.by_type(ProposedVerdict)
         proposed = proposals[-1] if proposals else None
-        final = self._rule(proposed, unevidenced, text)
+        final = self._rule(proposed, unevidenced, unverified, text)
         await run.emit(final)
+
+        notes = []
         if unevidenced:
-            return (
-                f"{text}\n\n{_withheld_note(unevidenced)}" if text else _withheld_note(unevidenced)
-            )
+            notes.append(_withheld_note(unevidenced))
+        if unverified:
+            notes.append(_unverified_note(unverified))
+        if notes:
+            joined = " ".join(notes)
+            return f"{text}\n\n{joined}" if text else joined
         return text
 
     def _unevidenced_dimensions(
@@ -775,6 +795,44 @@ class ReviewEngine(Engine):
         reported = self._reported_dimensions(run)
         return tuple(d for d in dimensions if d not in reported)
 
+    def _verification_arrived(self, run: EngineRun, issue: IssueFound) -> bool:
+        """Whether *issue* has its verification outcome on this run.
+
+        Arrival keys on the echoed ref token; the verbatim-description match
+        stays only as a fallback for a verifier that filled issue exactly but
+        dropped the ref. Two issues that share a verify key share one verifier
+        and therefore one ref, so the second is answered by the first's result
+        rather than being owed one of its own.
+
+        Read by repair, to decide whether to re-prompt, and by the gate, to
+        decide whether an approval has an open question under it. One
+        definition for the same reason the dimension predicate has one.
+        """
+        ref = _verify_ref(issue)
+        return any(v.ref == ref or v.issue == issue.description for v in run.by_type(VerifyResult))
+
+    def _unverified_findings(self, run: EngineRun) -> tuple[IssueFound, ...]:
+        """Findings owed a verification outcome that do not have one.
+
+        Coverage asks whether a dimension produced anything and cannot see
+        this: a dimension that reported and then lost its verifier is covered
+        and still has an open question underneath it. That is the shape the
+        gate exists for -- an issue serious enough to be worth refuting, no
+        refutation, and an approval resting on the gap.
+
+        Which findings are owed an outcome is the severity policy's call, read
+        from the same set that decides whether to spawn a verifier at all. A
+        minor is not owed one, so a minor-only review stays approvable; taking
+        the obligation from anywhere else would either invent work the engine
+        never scheduled or forgive work it did.
+        """
+        return tuple(
+            issue
+            for issue in run.by_type(IssueFound)
+            if issue.severity in self.verify_severities
+            and not self._verification_arrived(run, issue)
+        )
+
     def _reported_dimensions(self, run: EngineRun) -> set[str]:
         """Dimensions that have produced something this run can point at.
 
@@ -792,14 +850,25 @@ class ReviewEngine(Engine):
         return reported
 
     def _rule(
-        self, proposed: ProposedVerdict | None, unevidenced: tuple[str, ...], text: str
+        self,
+        proposed: ProposedVerdict | None,
+        unevidenced: tuple[str, ...],
+        unverified: tuple[IssueFound, ...],
+        text: str,
     ) -> ReviewVerdict:
         """Turn the proposal into the one verdict this run publishes.
 
-        Approving is the only direction the gate refuses. A refusal that rests
-        on partial coverage still stands, because the dimensions that did not
-        report could only have added findings; withholding it would discard a
-        real objection over evidence that would not have changed it.
+        Two conditions withhold an approval and they are not the same question.
+        Coverage asks whether every declared dimension produced something.
+        Verification asks whether the findings that were produced got the
+        outcome they were owed. A dimension can satisfy the first and fail the
+        second, which is exactly the run this gate was built for: findings
+        reported, verifier dead, approval resting on the gap.
+
+        Approving is the only direction either condition refuses. A refusal
+        that rests on partial coverage or an unverified finding still stands,
+        because neither could have removed an objection; withholding it would
+        discard a real one over evidence that would not have changed it.
         """
         verdict = (proposed.verdict if proposed else "").strip()
         rationale = (proposed.rationale if proposed else "") or text
@@ -814,10 +883,15 @@ class ReviewEngine(Engine):
                 ),
                 blocking=blocking,
             )
-        if unevidenced and verdict.upper().startswith("APPROVE"):
+        if verdict.upper().startswith("APPROVE") and (unevidenced or unverified):
+            notes = []
+            if unevidenced:
+                notes.append(_withheld_note(unevidenced))
+            if unverified:
+                notes.append(_unverified_note(unverified))
             return ReviewVerdict(
                 verdict="REQUEST-CHANGES",
-                rationale=_withheld_note(unevidenced) + (f" {rationale}" if rationale else ""),
-                blocking=blocking,
+                rationale=" ".join(notes) + (f" {rationale}" if rationale else ""),
+                blocking=blocking + [i.description for i in unverified],
             )
         return ReviewVerdict(verdict=verdict, rationale=rationale, blocking=blocking)

@@ -122,7 +122,11 @@ async def test_verdict_reads_issues_from_store():
 
     run.make_agent = fake_make
     out = await eng._verdict(run, "ART", ("security",))
-    assert out == "REQUEST-CHANGES"
+    # The subject here is that the issue reached the synthesis instruction. The
+    # returned text also carries the withheld note now, since this major
+    # finding has no verification outcome, so the decision is asserted as
+    # carried rather than as the whole of the string.
+    assert out.startswith("REQUEST-CHANGES")
     assert "X-issue" in captured["instruction"]
 
 
@@ -233,6 +237,63 @@ async def test_a_dimension_that_never_started_withholds_it_too():
     assert len(final) == 1
     assert final[0].verdict == "REQUEST-CHANGES"
     assert "performance" in out
+
+
+@pytest.mark.asyncio
+async def test_an_issue_whose_verifier_died_withholds_the_approval():
+    """Reporting is coverage. It is not a finding's verification outcome.
+
+    A dimension that reported and then lost its verifier is covered under the
+    coverage rule and has an open question underneath it, and this is the shape
+    the guard was built for: an issue serious enough to be worth refuting, no
+    refutation, and an approval resting on the gap. Coverage alone cannot see
+    it, because the dimension did report.
+
+    Which issues are owed a verification outcome is the severity policy's call,
+    so this asserts on one the engine would itself have sent to a verifier.
+    """
+    eng = ReviewEngine()
+    run = eng.new_run()
+    await run.emit(DimensionClean(dimension="correctness", rationale="read it, fine"))
+    await run.emit(
+        IssueFound(dimension="security", severity="critical", description="sqli", location="a.py:1")
+    )
+    # The verifier for that issue died: no VerifyResult was ever emitted.
+
+    out = await _verdict_with(eng, run, ("correctness", "security"))
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict != "APPROVE", (
+        f"approved over a critical finding that was never verified: {final[0].rationale}"
+    )
+    assert "sqli" in out or "sqli" in final[0].rationale
+
+
+@pytest.mark.asyncio
+async def test_a_verified_issue_does_not_withhold_it():
+    """The other side of the same rule, so it cannot pass by refusing always.
+
+    A finding that got its verification outcome leaves nothing open. Without
+    this arm the assertion above is satisfied by a gate that never approves,
+    which would be a different defect wearing the same green.
+    """
+    eng = ReviewEngine()
+    run = eng.new_run()
+    issue = IssueFound(
+        dimension="security", severity="critical", description="sqli", location="a.py:1"
+    )
+    await run.emit(DimensionClean(dimension="correctness", rationale="read it, fine"))
+    await run.emit(issue)
+    await run.emit(
+        VerifyResult(issue="sqli", ref=_verify_ref(issue), holds=False, rationale="refuted")
+    )
+
+    await _verdict_with(eng, run, ("correctness", "security"))
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "APPROVE", final[0].rationale
 
 
 @pytest.mark.asyncio
