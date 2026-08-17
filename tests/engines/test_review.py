@@ -11,6 +11,7 @@ from lionagi.engines.review import (
     DimensionClean,
     IssueFound,
     ReviewEngine,
+    ReviewVerdict,
     VerifyResult,
     _clean_ref,
     _verdict_instruction,
@@ -432,3 +433,75 @@ def test_verdict_instruction_inverts_polarity_for_refuted_clean_audit():
     without_audit = _verdict_instruction("ART", dims, [issue], [ordinary], [])
     assert "Clean-verdict audit" not in without_audit
     assert "weigh that AGAINST approval" not in without_audit
+
+
+# -- withholding a pass that rests on nothing executed ------------------------
+
+
+class _ApprovingSynth:
+    """Synthesis that emits an APPROVE, the way a real one does on a clean run."""
+
+    name = "verdict"
+
+    def __init__(self, run):
+        self._run = run
+
+    async def operate(self, *, instruction):
+        await self._run.emit(ReviewVerdict(verdict="APPROVE", rationale="nothing found"))
+        return "APPROVE: nothing found"
+
+
+def _synth_factory(run):
+    async def fake_make(role, **kw):
+        return _ApprovingSynth(run)
+
+    return fake_make
+
+
+@pytest.mark.asyncio
+async def test_an_approval_with_no_executed_evidence_is_withheld():
+    """Isolating a dead verifier records it and carries on, so a run whose
+    verifiers all died reaches synthesis with no VerifyResult. Synthesis is
+    handed counts and has no branch that can refuse, so the absence of evidence
+    arrives looking like an absence of problems."""
+    eng = ReviewEngine(verify_clean=True)
+    run = eng.new_run()
+    run.make_agent = _synth_factory(run)
+
+    out = await eng._verdict(run, "ART", ("security",))
+
+    assert out.startswith("INCONCLUSIVE"), out
+    emitted = run.by_type(ReviewVerdict)[0]
+    assert emitted.verdict == "INCONCLUSIVE"
+    # The withheld decision is kept rather than erased: a reader has to be able
+    # to see what was refused, or the refusal is unauditable.
+    assert "APPROVE" in emitted.rationale
+
+
+@pytest.mark.asyncio
+async def test_an_approval_backed_by_a_verification_is_left_alone():
+    """The control that keeps the guard from reading as 'never approve'."""
+    eng = ReviewEngine(verify_clean=True)
+    run = eng.new_run()
+    await run.emit(VerifyResult(issue="sqli", holds=False, rationale="boundary test refutes"))
+    run.make_agent = _synth_factory(run)
+
+    out = await eng._verdict(run, "ART", ("security",))
+
+    assert out == "APPROVE: nothing found"
+    assert run.by_type(ReviewVerdict)[0].verdict == "APPROVE"
+
+
+@pytest.mark.asyncio
+async def test_a_review_that_was_never_asked_for_evidence_still_approves():
+    """With verify_clean off no verifier is spawned at all, so having no
+    VerifyResult is the ordinary case rather than the failed one. Withholding
+    here would refuse every clean review the engine was configured to do."""
+    eng = ReviewEngine(verify_clean=False)
+    run = eng.new_run()
+    run.make_agent = _synth_factory(run)
+
+    out = await eng._verdict(run, "ART", ("security",))
+
+    assert out == "APPROVE: nothing found"
+    assert run.by_type(ReviewVerdict)[0].verdict == "APPROVE"

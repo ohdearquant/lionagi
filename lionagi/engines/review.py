@@ -70,6 +70,15 @@ _ISOLATED_ERRORS: tuple[type[BaseException], ...] = (ProviderError, *_TRANSPORT_
 # prompt that overflowed rather than of the run -- one verifier's oversized
 # prompt says nothing about the next one's, which is why the engine repairs it
 # instead of failing.
+# What a review resolves to when it was asked for executed evidence and has
+# none. Not an approval and not a rejection: nothing was examined, so there is
+# no finding either way, and the honest report says which.
+_EVIDENCE_EMPTY_DECISION = "INCONCLUSIVE"
+_EVIDENCE_EMPTY_REASON = (
+    "every verifier this run spawned failed, so nothing was executed against "
+    "the artifact; withheld as a pass rather than reported as one."
+)
+
 _RUN_WIDE_REFUSALS: tuple[type[BaseException], ...] = (
     ProviderAuthError,
     ProviderQuotaError,
@@ -651,4 +660,55 @@ class ReviewEngine(Engine):
         res = await synth.operate(
             instruction=_verdict_instruction(artifact, dimensions, issues, verifications, clean)
         )
-        return str(res) if res is not None else ""
+        return self._refuse_unevidenced_approval(run, str(res) if res is not None else "")
+
+    def _refuse_unevidenced_approval(self, run: EngineRun, text: str) -> str:
+        """Withhold a pass that rests on nothing executed.
+
+        Reaching synthesis with no VerifyResult at all means every verifier
+        this run spawned died, because isolating a verifier failure records it
+        and carries on. Synthesis is handed counts, has no branch that can
+        refuse, and is not asked for one, so an absence of evidence arrives
+        looking like an absence of problems. That was survivable while a dead
+        verifier ended the run. Once it degrades instead, a quiet pass over an
+        unexamined artifact is what this engine hands its caller, and the
+        degraded flag beside it does not help a reader who keys on the
+        decision.
+
+        Only when the engine was configured to produce evidence. With
+        ``verify_clean`` off a review spawns no verifiers of its own, so having
+        none to show is the ordinary case and a clean verdict is the honest
+        answer rather than an unbacked one.
+
+        Both channels, because they have different readers: the emitted
+        ``ReviewVerdict`` carries the decision as a field, and the returned
+        string is what the run resolves to. Refusing in one leaves the other
+        still reading as a pass.
+
+        Decided here rather than left to whoever consumes this. A guard on the
+        far side of a boundary is an assumption this package cannot check, and
+        two callers do not have to share one.
+        """
+        if not self.verify_clean or run.by_type(VerifyResult):
+            return text
+        emitted = run.by_type(ReviewVerdict)
+        approving = [v for v in emitted if v.verdict.strip().upper().startswith("APPROVE")]
+        if emitted and not approving:
+            return text
+        if not emitted and not text.strip().upper().startswith("APPROVE"):
+            # Nothing structured to read and the prose does not open with a
+            # pass. Refusing here would relabel a non-approval as a refusal,
+            # which loses a real decision to guard against one that is not
+            # being made.
+            return text
+        for verdict in approving:
+            verdict.rationale = (
+                f"{_EVIDENCE_EMPTY_REASON} Withheld decision was {verdict.verdict!r}. "
+                f"{verdict.rationale}"
+            )
+            verdict.verdict = _EVIDENCE_EMPTY_DECISION
+        run.notify("verdict_refused", reason="evidence-empty")
+        marker = "verdict (evidence-empty)"
+        if marker not in run._emission_failures:
+            run._emission_failures.append(marker)
+        return f"{_EVIDENCE_EMPTY_DECISION}: {_EVIDENCE_EMPTY_REASON}\n\n{text}"
