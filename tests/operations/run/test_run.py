@@ -1227,6 +1227,40 @@ def test_the_stall_context_survives_objects_that_answer_nothing():
     assert _stalled_worker_context(partial, object()) == "model=gpt-4.1-mini"
 
 
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "sk-proj-abc123DEF456ghi789",
+        "Bearer_abc123DEF456",
+        "ghp_abc123DEF456ghi789jkl",
+        "xoxb-1234-5678-abcdefg",
+    ],
+)
+def test_a_credential_in_the_provider_or_model_field_does_not_reach_the_stall_line(
+    secret: str,
+):
+    """These two fields are caller-configured, so a pasted key can land in them.
+
+    Nothing validates that a model name is a model name. A key pasted into the
+    wrong config field travels as the value of that field, and this line is
+    written on the failure path, where it is most likely to be captured, copied
+    into an issue, and shipped to whoever is helping. The value is redacted to
+    the same token the API hooks use, and the field itself stays present so the
+    line still says which of the two could not be shown.
+    """
+    from lionagi.operations.run.run import _stalled_worker_context
+
+    model = types.SimpleNamespace(
+        endpoint=types.SimpleNamespace(config=types.SimpleNamespace(provider=secret)),
+        model_name=secret,
+    )
+    context = _stalled_worker_context(model, types.SimpleNamespace(id="call-1"))
+
+    assert secret not in context, f"credential reached the stall line: {context}"
+    assert "provider=unknown" in context
+    assert "model=unknown" in context
+
+
 async def test_the_liveness_error_names_the_worker_that_stalled(monkeypatch):
     """The identity has to reach the raised message, not merely be computable.
 
