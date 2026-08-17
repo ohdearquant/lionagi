@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
@@ -294,6 +295,37 @@ def _no_stderr_reason(
     return f"{exited} and wrote nothing to stderr"
 
 
+# Enough to carry a CLI's error banner without pasting a whole session into the
+# log line; the cap is on what is logged, not on what was captured.
+_ABANDONED_STDERR_LOG_CAP = 4096
+
+
+def _abandoned_without_output_note(
+    captured: str,
+    unavailable: str | None,
+    drain_error: str | None,
+) -> str:
+    """What to say about a child abandoned before it produced any output.
+
+    The exit-code path quotes stderr because a nonzero rc gives it something to
+    attach the quote to. A child abandoned mid-flight never reaches that path,
+    and it is the case where stderr matters most: the child said nothing on
+    stdout, so whatever it has to say about why is on the other pipe. Keeps the
+    same three-way split as ``_no_stderr_reason`` -- said nothing, pipe never
+    opened, capture itself failed -- because collapsing them makes a broken
+    capture read like a quiet subprocess.
+    """
+    if captured:
+        clipped = captured[:_ABANDONED_STDERR_LOG_CAP]
+        suffix = " [truncated]" if len(captured) > _ABANDONED_STDERR_LOG_CAP else ""
+        return f"its stderr said: {clipped}{suffix}"
+    if drain_error is not None:
+        return f"reading its stderr failed with {drain_error}, so no output was captured"
+    if unavailable is not None:
+        return unavailable
+    return "it wrote nothing to stderr either"
+
+
 async def ndjson_from_cli(
     cmd: list[str],
     *,
@@ -466,6 +498,15 @@ async def ndjson_from_cli(
                 return b""
         return await read_task
 
+    # Set immediately *before* each yield, never after: a consumer that
+    # abandons the generator gets GeneratorExit raised at the yield itself, so
+    # an assignment after it would never run and a child that did produce
+    # output would be reported as one that never spoke.
+    produced_output = False
+    # Whether the exit-code path below already quoted stderr to the caller, so
+    # the teardown does not repeat it into the log.
+    stderr_already_surfaced = False
+
     try:
         while True:
             chunk = await _read_next()
@@ -480,6 +521,7 @@ async def ndjson_from_cli(
                     break
                 try:
                     obj, idx = json_decoder.raw_decode(buffer)
+                    produced_output = True
                     yield obj
                     buffer = buffer[idx:]
                 except json.JSONDecodeError:
@@ -490,12 +532,14 @@ async def ndjson_from_cli(
         if buffer:
             try:
                 obj, idx = json_decoder.raw_decode(buffer)
+                produced_output = True
                 yield obj
             except json.JSONDecodeError:
                 if tail_repair is not None:
                     try:
                         repaired = tail_repair(buffer)
                         if repaired is not None:
+                            produced_output = True
                             yield repaired
                             log.warning("Repaired malformed JSON fragment at stream end")
                         else:
@@ -524,9 +568,28 @@ async def ndjson_from_cli(
                 err = _no_stderr_reason(rc, stderr_unavailable, stderr_drain_error)
             if drain_truncated:
                 err += " [stderr drain timed out]"
+            stderr_already_surfaced = True
             raise RuntimeError(err)
 
     finally:
+        # A child abandoned before it produced anything takes neither path that
+        # quotes stderr: it never reaches the exit-code check above, and the
+        # reaping below cancels the drain task and drops the buffer. That is
+        # the case the capture is worth the most in -- a liveness watchdog
+        # closing this generator because no first chunk arrived leaves the
+        # child's own account of why sitting unread in stderr_chunks. Logged
+        # rather than raised because the exception belongs to whoever closed
+        # us, and this is evidence about it rather than a different failure.
+        if sys.exc_info()[1] is not None and not produced_output and not stderr_already_surfaced:
+            log.warning(
+                "CLI subprocess produced no output before it was abandoned; %s",
+                _abandoned_without_output_note(
+                    b"".join(stderr_chunks).decode(errors="replace").strip(),
+                    stderr_unavailable,
+                    stderr_drain_error,
+                ),
+            )
+
         await end_child_group(proc)
 
         # Reap the helper tasks — contextlib.suppress(Exception) does NOT
