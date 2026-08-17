@@ -24,6 +24,18 @@ from .filters import (
     resolve_path,
 )
 from .operable import Operable
+from .registry import (
+    AmbiguousRegistryOverrideError,
+    DuplicateRegistryKeyError,
+    DuplicateRegistryOwnerError,
+    Registry,
+    RegistryCompositionError,
+    RegistryEntry,
+    RegistryFragment,
+    RegistryOverride,
+    RegistryOverrideRule,
+    RegistryRecord,
+)
 from .spec import CommonMeta, Spec
 
 __all__ = (
@@ -52,6 +64,17 @@ __all__ = (
     "Spec",
     "CommonMeta",
     "Operable",
+    # Immutable registries
+    "Registry",
+    "RegistryEntry",
+    "RegistryFragment",
+    "RegistryRecord",
+    "RegistryOverrideRule",
+    "RegistryOverride",
+    "RegistryCompositionError",
+    "DuplicateRegistryOwnerError",
+    "DuplicateRegistryKeyError",
+    "AmbiguousRegistryOverrideError",
     # Filter DSL
     "Filter",
     "TypeFilter",

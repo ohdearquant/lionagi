@@ -8,6 +8,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- `Registry`, `RegistryFragment`, and explicitly keyed `RegistryEntry` values now provide a
+  dependency-light immutable composition substrate. Composition preserves fragment and item
+  order, records source owner/version/optional-feature provenance, rejects duplicate owners and
+  keys deterministically, and permits a replacement only through an exact registry-subclass
+  override rule that names both fragment versions and the registry contract version. Snapshots
+  expose read-only lookup methods, reject structurally mutable or cache-unstable values and direct
+  construction/update, and do not import, discover, or mutate optional features. Existing domain
+  registries remain on their compatibility surfaces until their separate composition-root
+  migrations land. Callable/class values retain process-local identity and are not durable
+  snapshot data until versioned references and canonical serialization land.
 - `Spec` and ordered `Operable` are now the only production schema-declaration authority.
   `PydanticSpecAdapter.materialize()` converts declarations directly to Pydantic fields and model
   classes without routing through `FieldModel` or the legacy model builder. ReAct, operation
@@ -83,6 +93,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Frozen `Params` values now reject a second call to their base initializer, preventing callers
+  from rewriting visible fields after a structural equality/hash key has been cached.
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
   and `DataClass` now discover inherited instance fields through one ordered dataclass path,
