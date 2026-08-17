@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Public-surface differential capture now crosses one shared clock boundary for
+  the full CLI case batch, and terminal-callback offload tests release their
+  worker explicitly instead of leaving a 30-second sleeper behind.
 - ADR-0120 Phase 0 now freezes the distinct HookBus, Broadcaster,
   SessionObserver, message-callback, scheduler-signal, and terminal-callback
   dispatch profiles before any shared-kernel migration. Service-hook invocation
