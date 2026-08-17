@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial — Phase 0 compatibility profiles characterized
 - **Area**: hooks
 - **Date**: 2026-08-16
 - **Relations**: extends ADR-0047 (hook mechanism scopes), ADR-0048 (external hooks),

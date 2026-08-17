@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- ADR-0120 Phase 0 now freezes the distinct HookBus, Broadcaster,
+  SessionObserver, message-callback, scheduler-signal, terminal-callback, and
+  service-hook dispatch profiles before any shared-kernel migration.
 - Resuming a flow whose checkpoint recorded any operation as failed now refuses
   and names those operations, instead of replaying them as terminal state.
   Replaying a failed operation as terminal marks it failed without running it,
