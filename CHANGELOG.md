@@ -11,6 +11,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - ADR-0070 now records the shipped one-shot `at` schedule trigger alongside
   `cron`, `interval`, and `github_poll`; a schema-parity guard keeps that
   persisted vocabulary and the documented trigger set aligned.
+- ADR-0120 Phase 0 now freezes the distinct HookBus, Broadcaster,
+  SessionObserver, message-callback, scheduler-signal, and terminal-callback
+  dispatch profiles before any shared-kernel migration. Service-hook invocation
+  and streaming are characterized alongside them, but that profile's matrix is
+  frozen in Phase 1, not here.
 - Resuming a flow whose checkpoint recorded any operation as failed now refuses
   and names those operations, instead of replaying them as terminal state.
   Replaying a failed operation as terminal marks it failed without running it,
@@ -30,6 +35,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Delivery descendants are terminated through the shared process-group helper
   on POSIX. Cross-platform descendant containment remains out of scope and is
   tracked in #2576.
+
+### Fixed
+
+- Writable StateDB migration now fails closed when a table's columns cannot be
+  inspected, preserving the prior schema-version stamp instead of recording an
+  upgrade whose additive column reconciliation did not complete.
 
 ### Deprecated
 

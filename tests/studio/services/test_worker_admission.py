@@ -269,7 +269,7 @@ async def test_notify_carrying_submission_produces_outbox_row_on_claim_time_reje
         db,
         args={
             "admission": {
-                "notify": {"deliver_to": "lambda:leo", "dedup_key": "convoy-test-dedup"},
+                "notify": {"deliver_to": "notify-target", "dedup_key": "convoy-test-dedup"},
             }
         },
     )
@@ -288,7 +288,7 @@ async def test_notify_carrying_submission_produces_outbox_row_on_claim_time_reje
     matching = [d for d in dispatches if d["schedule_run_id"] == rejected_id]
     assert len(matching) == 1
     dispatch = matching[0]
-    assert dispatch["deliver_to"] == "lambda:leo"
+    assert dispatch["deliver_to"] == "notify-target"
     assert dispatch["kind"] == "terminal_notify"
     assert dispatch["dedup_key"] == "convoy-test-dedup"
     payload = dispatch["payload"]
@@ -350,7 +350,7 @@ async def test_notify_carrying_submission_produces_outbox_row_on_duration_guard_
         action_args={
             "admission": {
                 "max_duration_seconds": 99999,
-                "notify": {"deliver_to": "lambda:leo", "dedup_key": "duration-guard-dedup"},
+                "notify": {"deliver_to": "notify-target", "dedup_key": "duration-guard-dedup"},
             }
         },
     )
@@ -365,7 +365,7 @@ async def test_notify_carrying_submission_produces_outbox_row_on_duration_guard_
     matching = [d for d in dispatches if d["schedule_run_id"] == run_id]
     assert len(matching) == 1
     dispatch = matching[0]
-    assert dispatch["deliver_to"] == "lambda:leo"
+    assert dispatch["deliver_to"] == "notify-target"
     assert dispatch["kind"] == "terminal_notify"
     assert dispatch["dedup_key"] == "duration-guard-dedup"
     payload = dispatch["payload"]
@@ -427,7 +427,7 @@ async def test_enqueue_dispatch_failure_does_not_abort_claim_pass(
         action_args={
             "admission": {
                 "max_duration_seconds": 99999,
-                "notify": {"deliver_to": "lambda:leo"},
+                "notify": {"deliver_to": "notify-target"},
             }
         },
     )
