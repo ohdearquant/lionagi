@@ -10,7 +10,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - ADR-0070 now records the shipped one-shot `at` schedule trigger alongside
   `cron`, `interval`, and `github_poll`; a schema-parity guard keeps that
-  persisted vocabulary and the documented trigger set aligned.
+  persisted vocabulary and the documented trigger set aligned. It also records
+  a gap it previously claimed was closed: `max_runs = 1` only guards a re-apply
+  once the single fire has run, so an `at` schedule whose fire was skipped as
+  missed can be resurrected by a later edit or re-enable.
 - ADR-0120 Phase 0 now freezes the distinct HookBus, Broadcaster,
   SessionObserver, message-callback, scheduler-signal, and terminal-callback
   dispatch profiles before any shared-kernel migration. Service-hook invocation

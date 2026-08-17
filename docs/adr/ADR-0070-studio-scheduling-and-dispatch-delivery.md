@@ -243,8 +243,20 @@ interpreted in `SCHEDULER_TZ`, while `next_fire_at` remains a UTC epoch.
 The declarative ScheduleSet path resolves an `at` trigger's RFC 3339 timestamp before persistence.
 It stores its resolved due instant in `next_fire_at` and forces `max_runs = 1`. After the due fire,
 the scheduler persists `next_fire_at = NULL`: an `at` trigger has no subsequent occurrence after
-firing. The ordinary max-run reservation remains the guard against a later re-apply resurrecting
-another execution of the same one-shot declaration.
+firing.
+
+The max-run reservation counts only runs that reached `running` or a terminal status, so it guards a
+later re-apply only when the single fire actually executed. A missed fire recorded under
+`missed_fire_policy=skip` writes a `skipped` row, and `skipped` is not a counted status, so the
+budget stays unspent. A later re-apply that resets `next_fire_at` — an edited member, or one
+re-enabled after being disabled by omission — is therefore admitted, and the one-shot executes after
+its declared instant has passed. This is current behavior, not an intended contract.
+
+Closing it is not a matter of counting `skipped` rows: capacity-deferred and overlap skips are
+written through the same path and are meant to be retried, so counting them would consume the budget
+of schedules that never ran. It needs a rule specific to `at`, whose declared instant cannot recur —
+either durable suppression of a skipped one-shot, or a re-apply that declines to resurrect an
+instant already in the past.
 
 The management CLI currently exposes creation choices `agent`, `playbook`, and `flow_yaml`, while
 the table admits `agent`, `flow`, `fanout`, `play`, and `flow_yaml`. Creation stores the literal CLI

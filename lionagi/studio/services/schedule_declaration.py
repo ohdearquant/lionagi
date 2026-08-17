@@ -601,10 +601,17 @@ def _to_db_fields(
         fields["cron_expr"] = None
         # The fire-time engine has no notion of "at" beyond a single due
         # instant: persist the resolved epoch so the row is due exactly
-        # once, and force max_runs=1 so the existing claim-before-fire gate
-        # (SchedulerEngine._reserve_max_runs_budget) refuses any further
-        # fire -- including one a later re-apply of an unchanged/edited
-        # member would otherwise resurrect by resetting next_fire_at again.
+        # once, and force max_runs=1 so the claim-before-fire gate
+        # (SchedulerEngine._reserve_max_runs_budget) refuses a second fire
+        # after the first one runs.
+        #
+        # That gate does not cover the case where the single fire never ran.
+        # It counts only runs that reached "running" or a terminal status,
+        # and a missed fire under missed_fire_policy=skip is recorded as
+        # "skipped", which is neither -- so the budget stays unspent and the
+        # re-apply below resurrects the instant by resetting next_fire_at.
+        # See ADR-0070 D2; counting "skipped" is not the fix, because
+        # capacity and overlap skips share the status and are meant to retry.
         fields["next_fire_at"] = resolved_trigger["epoch"]
         fields["max_runs"] = 1
     elif trigger_kind == "github":
