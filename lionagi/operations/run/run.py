@@ -25,12 +25,7 @@ from lionagi.protocols.messages import (
 )
 from lionagi.providers._provider_errors import WorkerLivenessError, classify_provider_error
 
-from .._api_hooks import (
-    _safe_identifier,
-    emit_api_post_call,
-    emit_api_pre_call,
-    emit_api_stream_chunk,
-)
+from .._api_hooks import emit_api_post_call, emit_api_pre_call, emit_api_stream_chunk
 from .._turn_origin import consume_turn_origin
 from ..chat._prepare import _apply_context_providers, _build_instruction, _prepare_run_kwargs
 from ..types import ChatParam, ParseParam, RunParam
@@ -120,41 +115,32 @@ async def _stream_with_deadline(model, api_call, deadline: float | None):
             )
 
 
-def _stalled_worker_context(model, api_call) -> str:
+def _stalled_worker_context(api_call) -> str:
     """Name the worker that stalled, for a log where many are in flight.
 
-    A bare "no first stream output" line identifies nothing: not the call, not
-    the model, not the provider. With dozens of concurrent spawns that makes a
-    burst of stalls indistinguishable from one worker retrying, and it leaves
-    no way to ask whether one provider or one model accounts for them. The
-    fields here are the ones that let a reader join this line to the run that
-    produced it.
+    A bare "no first stream output" line identifies nothing. With dozens of
+    concurrent spawns a burst of stalls is indistinguishable from one worker
+    retrying, and there is no way to join the line to the call that produced
+    it. The call id answers both, and the line already carries the attempt
+    counter beside it.
 
-    Every field is read defensively because this runs only on the failure
-    path. An attribute error raised while describing a stall would replace the
-    stall report with an unrelated traceback, which is strictly worse than the
+    Only values lionagi generated itself appear here. The model name and the
+    provider would also be informative, but both are whatever the caller put
+    in the config, so a key pasted into the wrong field would be copied into a
+    log line and an exception message. Deciding by inspection whether a given
+    string is a credential is not a solvable problem: a real model name
+    reaches the same length and the same character set as a key. These two
+    values are properties of the iModel rather than of one call, and the API
+    hooks already report them per branch, so the reader can recover them
+    without this failure path widening where they are written.
+
+    The id is read defensively because this runs only on the failure path. An
+    attribute error raised while describing a stall would replace the stall
+    report with an unrelated traceback, which is strictly worse than the
     missing attribution it was added to fix.
     """
-    fields = []
     call_id = getattr(api_call, "id", None)
-    if call_id:
-        fields.append(f"call={call_id}")
-    # Provider and model arrive as whatever the caller put in the config, and a
-    # key pasted into the wrong field is a real way for a credential to end up
-    # in one of them. The API hooks already redact these two values for exactly
-    # that reason, so this reads through the same helper instead of growing a
-    # second one beside it. Presence is still decided by the raw value, so a
-    # field that was never configured stays absent rather than becoming
-    # "unknown", which would read as a value we failed to recognize.
-    endpoint = getattr(model, "endpoint", None)
-    config = getattr(endpoint, "config", None)
-    provider = getattr(config, "provider", None) or ""
-    if provider:
-        fields.append(f"provider={_safe_identifier(provider)}")
-    model_name = getattr(model, "model_name", None) or ""
-    if model_name:
-        fields.append(f"model={_safe_identifier(model_name)}")
-    return " ".join(fields) or "worker unidentified"
+    return f"call={call_id}" if call_id else "worker unidentified"
 
 
 async def _stream_with_liveness(
@@ -252,7 +238,7 @@ async def _stream_with_liveness(
                 )
             if liveness_timeout is None or not is_liveness_boundary:
                 raise
-            stalled = _stalled_worker_context(model, api_call)
+            stalled = _stalled_worker_context(api_call)
             if attempt == attempts - 1:
                 raise WorkerLivenessError(
                     f"worker produced no first stream output within "

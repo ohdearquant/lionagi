@@ -1190,86 +1190,28 @@ async def test_run_liveness_watchdog_raises_after_exhausting_retries():
     )
 
 
-def test_the_stall_context_names_the_call_provider_and_model():
+def test_the_stall_context_names_the_call():
     """A stall line has to say which worker stalled.
 
     With many concurrent spawns an unattributed "no first stream output"
-    cannot be joined back to the run that produced it, so a burst of stalls
-    reads the same as one worker retrying, and nobody can ask whether one
-    provider or one model accounts for them.
+    cannot be joined back to the call that produced it, so a burst of stalls
+    reads the same as one worker retrying.
     """
     from lionagi.operations.run.run import _stalled_worker_context
 
-    model = types.SimpleNamespace(
-        endpoint=types.SimpleNamespace(config=types.SimpleNamespace(provider="openrouter")),
-        model_name="z-ai/glm-5.2",
-    )
-    context = _stalled_worker_context(model, types.SimpleNamespace(id="call-123"))
-
-    assert "call=call-123" in context
-    assert "provider=openrouter" in context
-    assert "model=z-ai/glm-5.2" in context
+    assert _stalled_worker_context(types.SimpleNamespace(id="call-123")) == "call=call-123"
 
 
-def test_the_stall_context_survives_objects_that_answer_nothing():
+def test_the_stall_context_survives_an_object_that_answers_nothing():
     """It is built on the failure path, so it must not raise there.
 
     An attribute error thrown while describing a stall would replace the stall
     report with an unrelated traceback, which is worse than the missing
-    attribution it exists to fix. Partial identity degrades to what is known
-    rather than to an exception.
+    attribution it exists to fix.
     """
     from lionagi.operations.run.run import _stalled_worker_context
 
-    assert _stalled_worker_context(object(), object()) == "worker unidentified"
-
-    partial = types.SimpleNamespace(model_name="gpt-4.1-mini")
-    assert _stalled_worker_context(partial, object()) == "model=gpt-4.1-mini"
-
-
-@pytest.mark.parametrize(
-    "secret",
-    [
-        "sk-proj-abc123DEF456ghi789",
-        "Bearer_abc123DEF456",
-        "ghp_abc123DEF456ghi789jkl",
-        "xoxb-1234-5678-abcdefg",
-        # Issuers the prefix rule was never told about. The stall line has to
-        # hold for a key it cannot name, not only for the formats listed above.
-        "AKIAIOSFODNN7EXAMPLE",
-        "AIzaSyDUMMYSECRET1234567890",
-        "glpat-ABCDEFGHIJKLMNOPQRST",
-        # Written in short groups, so no run in them is long. These reach the
-        # line through the same two fields and have to be redacted there, not
-        # only in the helper that decides it.
-        "01234567-89ab-cdef-0123-456789abcdef",
-        "550e8400-e29b-41d4-a716-446655440000",
-        "abcd-1234-5678-9012-3456",
-    ],
-)
-def test_a_credential_in_the_provider_or_model_field_does_not_reach_the_stall_line(
-    secret: str,
-):
-    """These two fields are caller-configured, so a pasted key can land in them.
-
-    Nothing validates that a model name is a model name. A key pasted into the
-    wrong config field travels as the value of that field, and this line is
-    written on the failure path, where it is most likely to be captured, copied
-    into an issue, and shipped to whoever is helping. The value is redacted to
-    the same token the API hooks use, and the field itself stays present so the
-    line still says which of the two could not be shown.
-    """
-    from lionagi.operations.run.run import _stalled_worker_context
-
-    model = types.SimpleNamespace(
-        endpoint=types.SimpleNamespace(config=types.SimpleNamespace(provider=secret)),
-        model_name=secret,
-    )
-    context = _stalled_worker_context(model, types.SimpleNamespace(id="call-1"))
-
-    assert secret not in context, f"credential reached the stall line: {context}"
-    assert "provider=unknown" in context
-    assert "model=unknown" in context
+    assert _stalled_worker_context(object()) == "worker unidentified"
 
 
 async def test_the_liveness_error_names_the_worker_that_stalled(monkeypatch):
@@ -1297,9 +1239,15 @@ async def test_the_liveness_error_names_the_worker_that_stalled(monkeypatch):
         lambda model, api_call, deadline: NeverYields(),
     )
 
+    # The caller-configured fields carry a key here, which is the whole reason
+    # they are not written to this line. Nothing validates that a model name is
+    # a model name, so a key pasted into the wrong config field travels as that
+    # field's value, and the failure path is where it is most likely to be
+    # captured, copied into an issue and sent to whoever is helping.
+    secret = "01234567-89ab-cdef-0123-456789abcdef"
     model = types.SimpleNamespace(
-        endpoint=types.SimpleNamespace(config=types.SimpleNamespace(provider="openrouter")),
-        model_name="z-ai/glm-5.2",
+        endpoint=types.SimpleNamespace(config=types.SimpleNamespace(provider=secret)),
+        model_name=secret,
         create_event=AsyncMock(return_value=types.SimpleNamespace(id="call-abc")),
         executor=types.SimpleNamespace(append=AsyncMock()),
     )
@@ -1318,10 +1266,13 @@ async def test_the_liveness_error_names_the_worker_that_stalled(monkeypatch):
 
     message = str(excinfo.value)
     assert "call=call-abc" in message, message
-    assert "provider=openrouter" in message, message
-    assert "model=z-ai/glm-5.2" in message, message
     # The prefix external log greps key on must survive the addition.
     assert "no first stream output within" in message, message
+    # Absence of the key alone would still pass if the fields came back
+    # redacted, so this pins the bracketed context to the generated id. Adding
+    # any config-derived field back reddens here whether or not it is masked.
+    assert "[call=call-abc]" in message, message
+    assert secret not in message, message
 
 
 async def test_liveness_cancel_during_first_chunk_wait_closes_inner_stream(monkeypatch):

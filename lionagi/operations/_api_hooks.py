@@ -19,17 +19,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
-__all__ = (
-    "emit_api_pre_call",
-    "emit_api_post_call",
-    "emit_api_stream_chunk",
-    # Sanitizing a caller-supplied model/provider string is not specific to
-    # telemetry, and the liveness path in operations/run reports the same two
-    # values. Naming it here makes that a stated contract of this module rather
-    # than a reach into its internals, so a change to the rule has one place to
-    # look for who depends on it.
-    "_safe_identifier",
-)
+__all__ = ("emit_api_pre_call", "emit_api_post_call", "emit_api_stream_chunk")
 
 # Every EventStatus value plus "error" (this adapter's own label for a raised
 # exception). Anything else is redacted to "unknown" rather than forwarded.
@@ -57,59 +47,15 @@ _CREDENTIAL_RE = re.compile(
     r"token[_-]|secret[_-]|ghp_|gho_|ghs_|ghr_|github_pat_|xox[baprs]-)"
 )
 
-# The prefix list above only recognizes the secret formats it was told about,
-# so a key from an unlisted issuer passes straight through it. Two shape rules
-# catch the common unlisted forms without needing to know the issuer, and they
-# split on how the key is written rather than on how long it is.
-#
-# The first is a long unbroken run, which is what a key looks like when it is
-# not split up. The longest run in a real name is twelve ("transformers",
-# "multilingual", both from HuggingFace-style model ids), and the shortest key
-# formats checked against this rule run to eighteen, so the boundary sits
-# between them with room on both sides. A test derives that twelve from the
-# fixture, so this sentence cannot quietly go stale as names are added.
-_MAX_UNBROKEN_RUN = 16
-_UNBROKEN_RUN_RE = re.compile(rf"[A-Za-z0-9]{{{_MAX_UNBROKEN_RUN},}}")
-
-# The second is hexadecimal content, which is what a key looks like when it IS
-# split up. A UUID or a dash-grouped token defeats the run rule completely,
-# because no single group is long. Length cannot separate those from a real
-# name either: "meta-llama/Llama-3.3-70B-Instruct-Turbo" carries exactly as
-# many alphanumeric characters as a UUID does. The alphabet can. A name has
-# letters outside [a-f] and a hex token does not, so the rule asks whether the
-# value's alphanumeric content is entirely hexadecimal. The floor keeps short
-# all-hex names, of which "ada" is a real one, out of it.
-_MIN_HEX_IDENTIFIER = 16
-_HEX_ONLY_RE = re.compile(r"^[0-9a-fA-F]+$")
-_NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
-
-# Neither rule is a general credential detector and nothing here can be, since
-# a caller may configure any string at all as a model name. They are defense in
-# depth against a key pasted into the wrong field, and a value that survives
-# both is emitted as it was configured.
-
 
 def _safe_status(value: Any) -> str:
     return value if isinstance(value, str) and value in _STATUS_VOCAB else "unknown"
 
 
 def _safe_identifier(value: Any) -> str:
-    """Reduce a caller-supplied model/provider string to something safe to log.
-
-    Returns the value unchanged when it has the shape of an identifier, and
-    ``"unknown"`` for anything else, including a value that looks like a
-    credential. Callers that distinguish "not configured" from "not recognized"
-    must test the raw value before calling this, since both arrive here as
-    strings and only one of them leaves as ``"unknown"``.
-    """
     if not (isinstance(value, str) and _IDENTIFIER_RE.match(value)):
         return "unknown"
     if _CREDENTIAL_RE.search(value):
-        return "unknown"
-    if _UNBROKEN_RUN_RE.search(value):
-        return "unknown"
-    alphanumeric = _NON_ALNUM_RE.sub("", value)
-    if len(alphanumeric) >= _MIN_HEX_IDENTIFIER and _HEX_ONLY_RE.match(alphanumeric):
         return "unknown"
     return value
 
@@ -127,16 +73,6 @@ def _safe_chunk_type(value: Any) -> str:
 
 
 def _model_and_provider(imodel: Any) -> tuple[str, str]:
-    """Read the two caller-configured identifiers and redact them for logging.
-
-    This re-judges both values on every call rather than caching the pair per
-    stream. Caching was considered and declined: the work is 3 microseconds a
-    call, so a thousand-chunk stream spends three milliseconds on it against
-    network-bound streaming, and the obvious cache is a module-level dict keyed
-    by the raw value. That would hold credential-shaped strings alive for the
-    life of the process, inside the module whose whole purpose is keeping them
-    out of the log. The cost is not worth what it retains.
-    """
     model = getattr(imodel, "model_name", None) or ""
     provider = ""
     endpoint = getattr(imodel, "endpoint", None)
