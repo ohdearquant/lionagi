@@ -345,14 +345,7 @@ async def _seed_session_with_metadata(db: StateDB, meta: dict) -> str:
 async def test_do_kill_all_stale_does_not_sweep_a_row_recorded_on_another_host(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A row from another machine must survive a sweep that cannot see its pid.
-
-    `_pid_alive` is False for both rows, which is not a contrivance: it is the
-    ordinary state of affairs for a row whose process runs on a different
-    machine. That absence is what the sweep reads as dead, so the control here
-    is genuinely cancelled and the only difference between the two rows is the
-    recorded host.
-    """
+    """A row from another machine must survive a sweep, even though `_pid_alive` reads False for it just as it does for the genuinely dead control row."""
     import socket
 
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)

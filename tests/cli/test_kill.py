@@ -715,15 +715,7 @@ def test_current_pid_markers_records_own_pid():
 def test_recorded_markers_read_as_foreign_from_another_machine(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A row this code writes must be placeable by the machine that reads it.
-
-    The assertion is made from the position of a second machine sharing the
-    state store, because that is the only position from which the marker does
-    any work. Asking on the machine that wrote the row proves nothing either
-    way: a row carrying no host reads as "origin unknown", which is the same
-    permissive branch as "origin is you", so a same-machine check passes
-    whether or not the host was ever recorded.
-    """
+    """Asserted from a second machine sharing the state store, since a same-machine check would pass whether or not the host was ever recorded."""
     import socket
 
     from lionagi.cli._util import recorded_pid_is_foreign
@@ -741,15 +733,7 @@ def test_recorded_markers_read_as_foreign_from_another_machine(
 
 
 def test_the_composed_guard_refuses_a_mode_the_host_question_would_pass():
-    """What the host question alone does not answer, and why order matters.
-
-    Reading an unreadable host marker as "no host recorded" is only safe
-    because a row written by something this code does not understand is turned
-    away first, by its identity mode. A caller that asks the host question
-    alone inherits the permissive reading without the refusal that pays for
-    it. The row below is exactly that gap: its host is this machine, so the
-    host question says local, and its mode names a protocol living elsewhere.
-    """
+    """Mode must be checked before host: a row whose host is local but whose mode names a foreign protocol is the gap the host question alone would miss."""
     import socket
 
     from lionagi.cli._util import recorded_pid_is_foreign, recorded_row_is_foreign

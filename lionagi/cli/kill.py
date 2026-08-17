@@ -47,18 +47,7 @@ def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:
 
 
 def current_pid_markers() -> dict[str, Any]:
-    """PID + create_time + host for the current process, for kill verification (CWE-362).
-
-    The host travels with the pid because a pid is only a name inside one
-    machine's pid space. Readers that decide whether a recorded pid may be
-    signalled, or whether its silence means death, ask whether the row came
-    from somewhere else; they can only answer that for rows that say where
-    they came from. Recording it here, beside the pid it qualifies, is what
-    makes those readers able to answer at all.
-
-    A row that predates this marker records no host and stays on the path for
-    rows whose origin cannot be placed, which is the existing behaviour.
-    """
+    """PID + create_time + host for the current process, for kill verification (CWE-362); the host travels with the pid since a pid is only a name inside one machine's pid space."""
     return {
         "pid": os.getpid(),
         "pid_create_time": psutil.Process(os.getpid()).create_time(),

@@ -468,14 +468,7 @@ def test_1173_prune_preserves_recent_terminal_sessions(tmp_path, monkeypatch):
 
 
 def test_a_stale_session_hosted_on_another_machine_is_not_reaped(tmp_path, monkeypatch):
-    """A reaper reads this host's process table, so a remote row is unmeasurable here.
-
-    The reapers keep a session alive only on a positive liveness reading and
-    otherwise lean on a staleness grace to protect a merely quiet run. That
-    grace answers a momentary blind spot. Being on another machine is a
-    permanent one, so waiting supplies nothing and the row is reaped precisely
-    because it is still running somewhere this daemon cannot see.
-    """
+    """A reaper reads this host's process table, so a remote row is unmeasurable here and must not be reaped on a staleness grace meant for a momentary blind spot."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
@@ -504,9 +497,7 @@ def test_a_stale_session_hosted_on_another_machine_is_not_reaped(tmp_path, monke
         )
     )
 
-    # Not patched to a constant: the real function has to be the thing that
-    # answers, or this test would pass against a liveness check that had
-    # stopped consulting the row at all.
+    # Not patched to a constant: the real function must be the thing answering.
     assert lc_mod.process_liveness is admin_mod.process_liveness
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
@@ -524,11 +515,7 @@ def test_a_stale_session_hosted_on_another_machine_is_not_reaped(tmp_path, monke
 
 
 def test_phantom_classifier_returns_no_reason_for_another_machines_row(tmp_path, monkeypatch):
-    """The classifier that feeds the phantom reaper, checked directly.
-
-    Its verdict is what the reaper writes `failed` from, so the local row
-    beside it fixes what the answer would otherwise have been.
-    """
+    """The classifier that feeds the phantom reaper, checked directly against a local-row control."""
     import lionagi.studio.services.admin as admin_mod
 
     monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
@@ -582,18 +569,11 @@ def test_process_identity_is_foreign_reads_host_and_unknown_modes(monkeypatch):
     assert foreign({"node_metadata": '{"pid_host": "other-host"}'}) is True
     assert foreign({"node_metadata": "not json at all"}) is False
 
-    # A marker recorded with the wrong type is still a marker, and it still
-    # names a mode this code cannot check. Read as an absent one it would put
-    # the row back in reach of the reapers, which treat a non-True liveness as
-    # death once the row goes stale.
+    # A wrong-typed marker is still a marker naming an unchecked mode, not an absent one.
     assert foreign({"node_metadata": {"process_identity_mode": 123}}) is True
     assert foreign({"node_metadata": {"process_identity_mode": {"kind": "remote"}}}) is True
-    # Absence keeps its own meaning, and absence is the key not being there.
-    # An old row predates the marker entirely, so that is the shape a legacy
-    # row actually has, and it is still judged by the host check.
+    # Absence is the key not being there; a legacy row predating the marker is still host-checked.
     assert foreign({"node_metadata": {}}) is False
-    # A key present and set to null is not that row. No writer here emits it:
-    # every site that records this key writes a string literal, so a null can
-    # only have come from somewhere this code does not control, which is the
-    # same "marker I cannot read" case as the wrong-typed values above.
+    # An explicit null is not that row: every writer here emits a string literal, so
+    # null names an unreadable marker, same as the wrong-typed values above.
     assert foreign({"node_metadata": {"process_identity_mode": None}}) is True

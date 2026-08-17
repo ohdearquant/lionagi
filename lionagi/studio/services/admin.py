@@ -395,22 +395,7 @@ HEALTH_SCAN_LIMIT = 500
 
 
 def process_identity_is_foreign(session: dict[str, Any]) -> bool:
-    """Whether this machine could not observe the run's process even in principle.
-
-    True when the row records a host that is not this one, or an identity mode
-    this code does not know how to check. Both mean the same thing: nothing
-    measurable here bears on whether that run is alive.
-
-    ``process_liveness`` already answers ``None`` for these, which is correct
-    as an answer to "is it alive". The reapers need the distinction because
-    they read a non-``True`` liveness as evidence of death once the row has
-    gone stale, and lean on the staleness grace to keep a merely quiet run
-    safe. That grace is protection against a *momentary* blind spot. Being on
-    another machine is a permanent one, so waiting adds no information and the
-    row is reaped precisely because it is healthy enough to keep running
-    somewhere this daemon cannot see. With a shared state store that turns
-    into one host marking another host's working runs failed.
-    """
+    """Whether this machine could not observe the run's process even in principle, so a reaper must not read its silence as death."""
     from lionagi.cli._util import recorded_row_is_foreign
 
     meta = session.get("node_metadata")
@@ -422,13 +407,8 @@ def process_identity_is_foreign(session: dict[str, Any]) -> bool:
     if not isinstance(meta, dict):
         return False
 
-    # Mode first, then host, both in `recorded_row_is_foreign` so the CLI
-    # reapers ask the same composed question rather than a weaker half of it.
-    # Asked of the host alone, not of "host and a readable pid": a row from
-    # another machine is that machine's business whether or not its pid
-    # parses, and the pid-less fallback in process_liveness matches on session
-    # id against *this* host's process table, which reads the wrong machine's
-    # answer just as confidently.
+    # Host is asked alone, never "host and a readable pid": the pid-less
+    # fallback below matches on session id against this host's own process table.
     return recorded_row_is_foreign(meta)
 
 
@@ -454,10 +434,8 @@ def process_liveness(
         from lionagi.cli._util import recorded_identity_mode
 
         identity_mode = recorded_identity_mode(meta)
-        # An in-process run has no process of its own; it records the process
-        # hosting it under separate keys, deliberately not "pid", so that the
-        # kill path cannot mistake the host for the run's own process. The
-        # host still bounds the run's liveness: if it is gone, the run is.
+        # An in-process run has no process of its own; it records the host
+        # process under separate keys so the kill path can't mistake the two.
         in_process = identity_mode == "in_process"
         raw_pid = meta.get("host_pid" if in_process else "pid")
         if raw_pid is not None:
@@ -475,20 +453,8 @@ def process_liveness(
     if identity_mode not in (None, "local", "in_process"):
         return None
 
-    # Asked of the host alone, never of "host and a readable pid". Gating it on
-    # a parsed pid left two ways for a remote row to be answered locally.
-    #
-    # A row whose pid does not parse skipped the question entirely and then
-    # reached the artifacts fallback below, which resolves a pid against *this*
-    # machine's process table. Another host's row could pick up a local pid
-    # that way and be reported alive by a machine that cannot see it.
-    #
-    # And an empty pid_host read here as "a host that is not mine" while the
-    # reapers' foreign-row guard read the same value as "no host recorded". A
-    # live row sat in the gap: not foreign enough to be protected, foreign
-    # enough to be answered unknown, and a non-True answer becomes death once
-    # the row goes stale. Both readings now come from one predicate, so they
-    # cannot disagree about a value neither of them was written for.
+    # Asked of the host alone, never "host and a readable pid" -- a pid that
+    # fails to parse must not fall through to the local-machine pid fallback below.
     from lionagi.cli._util import recorded_pid_is_foreign
 
     if recorded_pid_is_foreign(meta if isinstance(meta, dict) else None):
@@ -500,23 +466,12 @@ def process_liveness(
 
             from lionagi.cli._util import BOOT_TIME_TOLERANCE
 
-            # Boot-time drift needs its own tolerance, not the process
-            # create-time one. Create times are compared against a value the
-            # kernel fixed when the process started, so a second is generous
-            # there. Boot time is re-derived from the current clock on every
-            # read, so an NTP step or a suspend/resume moves it by more than a
-            # second on a machine that never rebooted — and reading that as a
-            # reboot reports a healthy local session as dead, which is what
-            # the lifecycle reapers act on.
+            # Boot time is re-derived from the clock each read, so it needs its
+            # own (looser) tolerance than the process create-time comparison.
             rebooted_since = abs(psutil.boot_time() - pid_boot_time) > BOOT_TIME_TOLERANCE
         except Exception:
-            # Failing to read the boot time leaves this one check unevaluated;
-            # it does not make the run unknowable. Answering "unknown" here
-            # would be worse than not having the check at all: the lifecycle
-            # reapers read any non-True liveness as death once the row goes
-            # stale, so a machine where this read keeps failing would reap
-            # every live session it has. The pid checks below still run, which
-            # is the same best-effort stance the status/start-time read takes.
+            # A failed boot-time read leaves this check unevaluated, not the run
+            # unknowable -- the pid checks below still run.
             _log.debug("boot-time comparison for pid %s failed", pid, exc_info=True)
         if rebooted_since:
             return False
@@ -794,8 +749,7 @@ def _classify_phantom(
     if process_liveness(session, ap, ps_snapshot) is True:
         return None
     # Nor when the process is not this machine's to observe: the staleness
-    # grace below cannot rescue a row whose liveness is permanently invisible
-    # here, so without this a healthy run on another host reaps as dead.
+    # grace can't rescue a run whose liveness is permanently invisible here.
     if process_identity_is_foreign(session):
         return None
     # Not yet stale: it may simply not have written artifacts yet, so give it

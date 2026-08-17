@@ -149,9 +149,8 @@ async def test_explicit_nonlocal_run_is_unverifiable_without_legacy_snapshot(mon
 
 
 def test_process_identity_from_another_host_is_unknown(monkeypatch):
-    # Patched on the socket module itself rather than through the admin module:
-    # the host question is answered by recorded_pid_is_foreign in cli._util, and
-    # both modules read the same module object.
+    # Patched on socket itself: the host question is answered by cli._util's
+    # recorded_pid_is_foreign, which reads the same module object.
     monkeypatch.setattr(socket, "gethostname", lambda: "current-host")
     session = {
         "id": "remote-session",
@@ -167,14 +166,7 @@ def test_process_identity_from_another_host_is_unknown(monkeypatch):
 
 
 def test_an_unreadable_identity_mode_is_unknown_not_local():
-    """A mode marker of the wrong type must not be read as no marker at all.
-
-    Everything else on this row is a genuine live local process, so the two
-    readings give opposite answers: absent-marker takes the local path and
-    reports the run alive, while present-but-unreadable reports unknown. The
-    first is a positive liveness claim about a run whose stop-and-liveness
-    protocol this code does not implement.
-    """
+    """A mode marker of the wrong type must read as unknown, not as no marker at all."""
     markers = {
         "pid": os.getpid(),
         "pid_create_time": psutil.Process(os.getpid()).create_time(),
@@ -194,15 +186,7 @@ def test_an_unreadable_identity_mode_is_unknown_not_local():
 
 
 def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(monkeypatch):
-    """Clock jitter must not read as a reboot on the liveness path either.
-
-    Boot time is re-derived from the current clock on every read, so an NTP
-    step or a suspend/resume moves it on a machine that never rebooted. Process
-    create time is not like that: the kernel fixed it once, so the tighter
-    create-time tolerance is generous there and far too tight here. Reading
-    drift as a reboot reports a healthy local session as dead, and the
-    lifecycle reapers act on that answer.
-    """
+    """Clock jitter (NTP step, suspend/resume) must not read as a reboot on the liveness path."""
     import lionagi.studio.services.admin as admin_mod
     from lionagi.cli._util import BOOT_TIME_TOLERANCE
 
@@ -224,11 +208,7 @@ def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(monkeypatch):
 
 
 def test_a_boot_time_from_before_the_last_reboot_is_dead(monkeypatch):
-    """The control for the tolerance: a real reboot still reads as dead.
-
-    Without it, widening the tolerance to something absurd would pass the test
-    above and the check would have stopped detecting reissued pids.
-    """
+    """Control for the tolerance test: a real reboot still reads as dead."""
     import lionagi.studio.services.admin as admin_mod
 
     monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
@@ -246,14 +226,7 @@ def test_a_boot_time_from_before_the_last_reboot_is_dead(monkeypatch):
 
 
 def test_a_boot_time_that_cannot_be_read_does_not_make_a_live_process_unknown(monkeypatch):
-    """A failed boot-time read leaves one check unevaluated; it is not an answer.
-
-    Reporting unknown here is worse than never having had the check: the
-    lifecycle reapers read any non-True liveness as death once the row goes
-    stale, so on a machine where this read keeps failing every live session
-    would eventually be reaped. The pid checks still run, which is the same
-    best-effort stance the status and create-time reads already take.
-    """
+    """A failed boot-time read leaves that check unevaluated, not the whole run unknown."""
     monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
 
     recorded_boot = psutil.boot_time()
@@ -277,11 +250,7 @@ def test_a_boot_time_that_cannot_be_read_does_not_make_a_live_process_unknown(mo
 
 
 def test_a_failed_boot_time_read_still_reports_a_dead_pid_as_dead(monkeypatch):
-    """The control: falling through to the pid checks means they still decide.
-
-    Without this, returning True unconditionally on a read failure would pass
-    the test above while reporting every dead session as alive.
-    """
+    """Control: falling through to the pid checks means they still decide, not an unconditional True."""
     monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
 
     recorded_boot = psutil.boot_time()
@@ -304,15 +273,7 @@ def test_a_failed_boot_time_read_still_reports_a_dead_pid_as_dead(monkeypatch):
     assert process_liveness(session, None, ps_snapshot="") is False
 
 
-# ---------------------------------------------------------------------------
-# The host question, asked once
-#
-# The oracle used to answer it with its own inline comparison while the
-# reapers' foreign-row guard answered it with recorded_pid_is_foreign. Two
-# implementations of one predicate disagreed about the values neither was
-# written for, and the disagreement was only visible from a caller that
-# consulted both.
-# ---------------------------------------------------------------------------
+# The host question, asked once via recorded_pid_is_foreign (not two implementations).
 
 
 @pytest.mark.parametrize(
@@ -326,15 +287,7 @@ def test_a_failed_boot_time_read_still_reports_a_dead_pid_as_dead(monkeypatch):
     ],
 )
 def test_the_guard_and_the_oracle_read_every_shape_of_pid_host_the_same_way(host_value, is_foreign):
-    """The property is agreement, not either answer taken alone.
-
-    Asserting only the oracle would let the guard drift back, and asserting
-    only the guard would miss the case that actually bit: an empty pid_host
-    read as "no host recorded" by the guard and as "a host that is not mine"
-    by the oracle. A row sat in that gap with a live process, unprotected by
-    the guard and answered unknown by the oracle, and the reapers turn a
-    non-True answer into death once the row goes stale.
-    """
+    """Asserts agreement between the guard and the oracle, not either alone -- an empty pid_host once read differently by each, leaving a live row unprotected."""
     from lionagi.cli._util import recorded_pid_is_foreign
 
     meta = {
@@ -353,18 +306,7 @@ def test_the_guard_and_the_oracle_read_every_shape_of_pid_host_the_same_way(host
 
 
 def test_an_unknown_identity_mode_is_refused_before_the_host_is_consulted():
-    """The order these two checks run in is what makes a malformed host safe.
-
-    The host guard reads an unreadable ``pid_host`` as no host recorded, which
-    is only defensible because a row written by something this code does not
-    understand is already refused a step earlier, by its identity mode. That is
-    an ordering dependency and nothing else asserts it: swap the two and a row
-    announcing a foreign protocol would be judged on a local pid, with the host
-    field the only thing left to catch it and unable to.
-
-    Asserted through the caller, and against a host guard that says *not*
-    foreign for the same row, so it cannot pass by the host answer changing.
-    """
+    """Mode must be checked before host: an unreadable pid_host is only safe to treat as absent once an alien mode has already been refused."""
     from lionagi.cli._util import recorded_pid_is_foreign
     from lionagi.studio.services.admin import process_identity_is_foreign
 
@@ -383,15 +325,7 @@ def test_an_unknown_identity_mode_is_refused_before_the_host_is_consulted():
 
 
 def test_a_pid_that_collides_with_a_live_local_one_is_rejected_by_its_creation_time():
-    """The check the host marker is a fast path in front of, not a substitute for.
-
-    A row from elsewhere whose pid happens to name a live process here is the
-    failure the host marker exists to make cheap to spot. It is not the only
-    thing standing in the way: the recorded creation time rejects the
-    coincidence on its own, and it keeps doing so when the host field says
-    nothing usable. If this stops holding, an unreadable host stops being safe
-    to treat as absent.
-    """
+    """The host marker is a fast path, not a substitute: create-time still rejects the coincidence when the host field is unusable."""
     live_pid = os.getpid()
     real_create_time = psutil.Process(live_pid).create_time()
 
@@ -402,13 +336,7 @@ def test_a_pid_that_collides_with_a_live_local_one_is_rejected_by_its_creation_t
 
 
 def test_an_unparseable_pid_on_a_foreign_row_cannot_pick_up_a_local_one(tmp_path):
-    """The artifact fallback resolves a pid against *this* machine.
-
-    The host check used to be gated on having parsed a pid, so a row whose pid
-    was unreadable skipped it entirely and then reached the fallback below,
-    which reads the local process table. Another machine's row could acquire a
-    local pid that way and be reported alive by a host that cannot see it.
-    """
+    """A foreign row with an unparseable pid must not fall through to the local-machine artifact fallback."""
     (tmp_path / "session.pid").write_text(str(os.getpid()))  # a live LOCAL pid
 
     session = {
@@ -420,11 +348,7 @@ def test_an_unparseable_pid_on_a_foreign_row_cannot_pick_up_a_local_one(tmp_path
 
 
 def test_the_same_unparseable_pid_on_a_local_row_still_uses_the_artifact_fallback(tmp_path):
-    """The control, and the reason the fix is a reorder rather than a removal.
-
-    Without this, deleting the fallback outright would satisfy the test above
-    while breaking every local row that relies on the pid file.
-    """
+    """Control: a local row still uses the artifact fallback, so the fix above is a reorder, not a removal."""
     (tmp_path / "session.pid").write_text(str(os.getpid()))
 
     session = {
