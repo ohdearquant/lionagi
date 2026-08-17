@@ -587,5 +587,12 @@ def test_process_identity_is_foreign_reads_host_and_unknown_modes(monkeypatch):
     # death once the row goes stale.
     assert foreign({"node_metadata": {"process_identity_mode": 123}}) is True
     assert foreign({"node_metadata": {"process_identity_mode": {"kind": "remote"}}}) is True
-    # Absence keeps its own meaning: an old row is judged by the host check.
-    assert foreign({"node_metadata": {"process_identity_mode": None}}) is False
+    # Absence keeps its own meaning, and absence is the key not being there.
+    # An old row predates the marker entirely, so that is the shape a legacy
+    # row actually has, and it is still judged by the host check.
+    assert foreign({"node_metadata": {}}) is False
+    # A key present and set to null is not that row. No writer here emits it:
+    # every site that records this key writes a string literal, so a null can
+    # only have come from somewhere this code does not control, which is the
+    # same "marker I cannot read" case as the wrong-typed values above.
+    assert foreign({"node_metadata": {"process_identity_mode": None}}) is True

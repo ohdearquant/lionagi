@@ -187,12 +187,18 @@ def recorded_identity_mode(metadata: dict[str, Any] | None) -> str | None:
     ordinary local one whose pid can be signalled and whose silence can be
     read as death. So the type check happens here, once, and a present
     non-string comes back as `UNRECOGNIZED_IDENTITY_MODE` rather than as None.
+
+    Absence is decided by whether the key is there, not by whether its value
+    is None. A row carrying an explicit null is a row that recorded something
+    this code cannot read, which is the second case and not the first, and
+    reading the value alone puts exactly that row back on the permissive
+    branch the paragraph above exists to close.
     """
     if not isinstance(metadata, dict):
         return None
-    mode = metadata.get("process_identity_mode")
-    if mode is None:
+    if "process_identity_mode" not in metadata:
         return None
+    mode = metadata["process_identity_mode"]
     return mode if isinstance(mode, str) else UNRECOGNIZED_IDENTITY_MODE
 
 

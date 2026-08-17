@@ -2841,3 +2841,61 @@ async def test_stale_sweep_leaves_runtimes_it_does_not_manage_alone(
     assert local_after["status"] == "cancelled", (
         "a local stale row must still be swept — otherwise this test passes on a dead sweep"
     )
+
+
+async def test_kill_refuses_a_row_whose_identity_mode_is_an_explicit_null(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """An explicit null is a marker that was written, not one that is missing.
+
+    `recorded_identity_mode` exists to keep "never recorded" apart from
+    "recorded as something unreadable", because only the first may fall
+    through to the ordinary local treatment. Deciding absence by reading the
+    value collapses them again for exactly one value: a key present and set
+    to null answers None to `.get`, so the row rejoins the permissive branch,
+    and with no pid to check it reaches "no pid found" and has a cancellation
+    written for work that was never signalled.
+    """
+    monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
+
+    async with StateDB() as db:
+        sid = await _seed_session(
+            db,
+            status="running",
+            extra_meta={"process_identity_mode": None},
+        )
+        resolved = await _resolve_entity(db, sid)
+        assert resolved is not None
+        _, _, row = resolved
+
+        result = await _kill_one(db, "session", sid, row, user_reason="")
+
+    async with StateDB() as db:
+        after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
+        tr = await db.fetch_one(
+            "SELECT COUNT(*) AS n FROM status_transitions "
+            "WHERE entity_id = ? AND status = 'cancelled'",
+            (sid,),
+        )
+
+    assert result["signal"] == "foreign_mode"
+    assert after["status"] == "running"
+    assert tr["n"] == 0, "no cancellation may reach history either"
+
+
+def test_an_absent_marker_and_a_null_marker_are_not_the_same_row():
+    """The two cases the guard turns on, asserted side by side.
+
+    A row with no key never recorded anything and stays judgeable by the
+    other checks. A row whose key holds null recorded something this code
+    cannot read, and must come back unrecognized so every caller's
+    "is this a mode I know" comparison refuses it.
+    """
+    from lionagi.cli._util import UNRECOGNIZED_IDENTITY_MODE, recorded_identity_mode
+
+    assert recorded_identity_mode({}) is None
+    assert recorded_identity_mode({"pid": 123}) is None
+    assert recorded_identity_mode({"process_identity_mode": None}) == UNRECOGNIZED_IDENTITY_MODE
+    assert recorded_identity_mode({"process_identity_mode": 7}) == UNRECOGNIZED_IDENTITY_MODE
+    assert recorded_identity_mode({"process_identity_mode": "local"}) == "local"
+    assert recorded_identity_mode(None) is None
