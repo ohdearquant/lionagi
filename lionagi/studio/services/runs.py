@@ -223,11 +223,18 @@ async def list_runs(
     for s in sessions:
         alive: bool | None = None
         if s.get("status") == "running":
-            from .admin import resolve_process_liveness_probe
+            from .admin import process_identity_is_foreign, resolve_process_liveness_probe
 
-            alive = await resolve_process_liveness_probe(
-                lambda snapshot, row=s: _session_liveness(row, snapshot)
-            )
+            # A row recording another machine's process is left unknown without
+            # paying for the host scan to say so. The scan reads this machine's
+            # process table, so the answer is None whether or not it is taken:
+            # skipping it changes the cost and not the verdict. A page of
+            # imported rows would otherwise trigger the very scan the
+            # targeted-first path exists to ration.
+            if not process_identity_is_foreign(s):
+                alive = await resolve_process_liveness_probe(
+                    lambda snapshot, row=s: _session_liveness(row, snapshot)
+                )
         out.append(_run_row(s, now, process_alive=alive))
 
     tagmap = await run_tags.tags_for_sessions([r["id"] for r in out])

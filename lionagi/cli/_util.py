@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import threading
 from collections.abc import Sequence
 from pathlib import Path
@@ -142,6 +143,75 @@ def pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def recorded_pid_is_foreign(metadata: dict[str, Any] | None) -> bool:
+    """Whether a run's recorded pid belongs to a different machine.
+
+    A pid is only a name inside one host's pid space. When several hosts share
+    a state store, every local check applied to a remote row answers about
+    whichever unrelated local process happens to hold that number: it reads as
+    a real answer, and it is about the wrong process. So this is asked before
+    any pid on such a row is signalled or believed.
+
+    Absence of ``pid_host`` is not foreignness. Rows written before the marker
+    existed cannot be placed either way, and treating "unknown origin" as
+    "another machine" would stop every one of them from being cancelled or
+    swept. The callers that go on to act still have their own identity checks;
+    this only removes the rows where those checks could not mean anything.
+    """
+    if not isinstance(metadata, dict):
+        return False
+    host = metadata.get("pid_host")
+    return isinstance(host, str) and bool(host) and host != socket.gethostname()
+
+
+# Stands in for a recorded identity mode that is present but not a string.
+# Deliberately a string, so every caller's "is this a mode I know" comparison
+# keeps working unchanged, and deliberately one no writer produces.
+UNRECOGNIZED_IDENTITY_MODE = "<unrecognized>"
+
+
+def recorded_identity_mode(metadata: dict[str, Any] | None) -> str | None:
+    """The run's recorded process identity mode, or None if none was recorded.
+
+    The distinction this preserves is between a row that never carried the
+    marker and a row that carries one this code cannot read. Only the first is
+    a legacy row that has to be judged by the other checks; the second names a
+    stop-and-liveness protocol living somewhere else, and is exactly the case
+    every caller here refuses.
+
+    An ``isinstance(mode, str)`` test at the call site collapses the two, and
+    it collapses them in the permissive direction: a mode recorded as a number
+    or a nested object reads as absent, and the row is then treated as an
+    ordinary local one whose pid can be signalled and whose silence can be
+    read as death. So the type check happens here, once, and a present
+    non-string comes back as `UNRECOGNIZED_IDENTITY_MODE` rather than as None.
+
+    Absence is decided by whether the key is there, not by whether its value
+    is None. A row carrying an explicit null is a row that recorded something
+    this code cannot read, which is the second case and not the first, and
+    reading the value alone puts exactly that row back on the permissive
+    branch the paragraph above exists to close.
+    """
+    if not isinstance(metadata, dict):
+        return None
+    if "process_identity_mode" not in metadata:
+        return None
+    mode = metadata["process_identity_mode"]
+    return mode if isinstance(mode, str) else UNRECOGNIZED_IDENTITY_MODE
+
+
+# Boot time is read from the OS on each side of the comparison and can drift by
+# a little across clock adjustments and suspend/resume cycles. A real reboot
+# moves it by far more than this, so the tolerance costs nothing and avoids
+# reading jitter as a reboot.
+#
+# It lives here, beside the host check, rather than next to either caller,
+# because both the kill path and the liveness probe answer the same question
+# about the same recorded value. Two copies of a number that has to agree is
+# how one of them ends up being a process create-time tolerance instead.
+BOOT_TIME_TOLERANCE = 5.0
 
 
 _SEARCH_ORDER = ("sessions", "invocations", "plays", "shows")

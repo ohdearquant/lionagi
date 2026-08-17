@@ -13,7 +13,12 @@ from lionagi.state.db import StateDB, state_db_known_absent
 from lionagi.state.reasons import RunReasons, SessionReasons, ShowReasons
 
 from . import admin as admin_svc
-from .admin import _artifacts_path, process_liveness, resolve_process_liveness_probe
+from .admin import (
+    _artifacts_path,
+    process_identity_is_foreign,
+    process_liveness,
+    resolve_process_liveness_probe,
+)
 from .shows import _SHOW_TERMINAL_STATUSES, _play_dirs
 from .shows import _read_json as _read_show_json
 
@@ -232,6 +237,11 @@ async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
             if await _resolve_liveness(session, artifacts) is True:
                 # Process still alive — skip, it may write its own status.
                 continue
+            if process_identity_is_foreign(session):
+                # Hosted on another machine: nothing observable here says
+                # whether it is alive, and the staleness grace below cannot
+                # supply that, so reaping it would guess.
+                continue
 
             updated_at = row.get("updated_at") or row.get("started_at") or 0.0
             if now - updated_at < stale_seconds:
@@ -442,6 +452,12 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
                         if srow is not None:
                             session = {"id": srow["id"], "node_metadata": srow.get("node_metadata")}
                             if await _resolve_liveness(session, _artifacts_path(srow)) is True:
+                                continue
+                            # Child session hosted elsewhere: this machine
+                            # cannot tell a dead runner from a working one, so
+                            # the play stays in flight rather than be blocked
+                            # on a blind guess.
+                            if process_identity_is_foreign(session):
                                 continue
 
                     updated_at_raw = row.get("updated_at")
@@ -689,6 +705,13 @@ async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
                             continue
                         session = {"id": srow["id"], "node_metadata": srow.get("node_metadata")}
                         if await _resolve_liveness(session, _artifacts_path(srow)) is True:
+                            live = True
+                            break
+                        # A child hosted on another machine is unmeasurable from
+                        # here, which is not the same as dead. Treated like a
+                        # live child so the show is left alone: the only honest
+                        # move when this daemon cannot see the process.
+                        if process_identity_is_foreign(session):
                             live = True
                             break
                     if live:
