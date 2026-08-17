@@ -28,6 +28,7 @@ import type { RunSummary } from "@/lib/types";
 import type { InvocationSummary } from "@/lib/api";
 import { deriveDisplayStatus, isEffectivelyActive, type RunStatusInput } from "@/lib/runStatus";
 import { resolveRunLabel } from "@/lib/runLabel";
+import { runSessionId } from "@/lib/runIdentity";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -194,7 +195,7 @@ function buildOrgUnits(
 
     const elapsed = elapsedSec(run.started_at ?? null, nowSec);
     const row: AgentRow = {
-      id: run.run_id,
+      id: runSessionId(run),
       name: resolveRunLabel(run),
       status: run.status,
       effectiveHealth: run.effective_health ?? null,
@@ -265,7 +266,7 @@ function mapRunsToRecentRows(runs: RunSummary[]): RecentRow[] {
   return runs
     .filter((r) => !isActive(r))
     .map((r) => ({
-      id: r.run_id,
+      id: runSessionId(r),
       name: resolveRunLabel(r),
       status: r.status,
       invocation_id: r.invocation_id ?? null,
@@ -363,7 +364,9 @@ function deriveCounts(units: OrgUnit[], runs: RunSummary[]): FleetCounts {
   const grouped = new Set(groups.flatMap((u) => u.agents.map((a) => a.id)));
   const ungroupedOrchestrations = runs.filter(
     (r) =>
-      isActive(r) && ORCHESTRATION_KINDS.has(r.invocation_kind ?? "") && !grouped.has(r.run_id),
+      isActive(r) &&
+      ORCHESTRATION_KINDS.has(r.invocation_kind ?? "") &&
+      !grouped.has(runSessionId(r)),
   ).length;
 
   const orchestrations = groups.length + ungroupedOrchestrations;

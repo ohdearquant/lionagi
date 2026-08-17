@@ -11,6 +11,7 @@ import type { RunSummary, ScheduleSummary } from "@/lib/types";
 import type { AttentionDisposition, GatedPlaySummary, InvocationSummary } from "@/lib/api";
 import { deriveDisplayStatus, isOrphanedReason } from "@/lib/runStatus";
 import { resolveRunLabel } from "@/lib/runLabel";
+import { runSessionId } from "@/lib/runIdentity";
 
 // ─── State shape ─────────────────────────────────────────────────────────────
 
@@ -234,12 +235,12 @@ function buildAttentionItems(
     }
     if (reason == null) continue;
     items.push({
-      id: `run:${run.run_id}`,
+      id: `run:${runSessionId(run)}`,
       kind: "run",
       name: resolveRunLabel(run),
       reason,
       startedAt: run.started_at ?? null,
-      href: `/runs/${run.run_id}`,
+      href: `/runs/${runSessionId(run)}`,
       status: run.status,
       ...(reason === "failed" && run.status_reason_summary
         ? { reasonSummary: run.status_reason_summary }
@@ -354,7 +355,10 @@ export function invocationCreationKey(inv: InvocationSummary): number {
 function deriveActiveRuns(runs: RunSummary[]): RunSummary[] {
   return runs
     .filter((r) => deriveDisplayStatus(r) === "running")
-    .sort((a, b) => runCreationKey(a) - runCreationKey(b) || a.run_id.localeCompare(b.run_id));
+    .sort(
+      (a, b) =>
+        runCreationKey(a) - runCreationKey(b) || runSessionId(a).localeCompare(runSessionId(b)),
+    );
 }
 
 function deriveRecentRuns(runs: RunSummary[]): RunSummary[] {

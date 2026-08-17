@@ -210,6 +210,25 @@ describe("boardReducer — attention queue derivation", () => {
     expect(s.attentionItems[0].kind).toBe("run");
   });
 
+  it("keys attention rows by session identity instead of a shared compatibility scalar", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({
+        id: "session-1",
+        run_id: "shared-run",
+        status: "failed",
+        started_at: 1_000_000 - 600,
+      }),
+      makeRun({
+        id: "session-2",
+        run_id: "shared-run",
+        status: "failed",
+        started_at: 1_000_000 - 600,
+      }),
+    ]);
+
+    expect(s.attentionItems.map((item) => item.id)).toEqual(["run:session-1", "run:session-2"]);
+  });
+
   it("failures older than 24h are excluded — they belong to History", () => {
     const nowSec = 1_000_000;
     const s = dispatchOk(

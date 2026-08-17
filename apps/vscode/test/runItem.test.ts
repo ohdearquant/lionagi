@@ -8,6 +8,7 @@ import {
   hasRunTree,
   isTerminal,
   mergeRunDetail,
+  runId,
   RunItem,
   statusIcon,
 } from "../src/runs/runItem.js";
@@ -39,6 +40,16 @@ function run(overrides: Partial<Run>): Run {
     ...overrides,
   };
 }
+
+describe("runId", () => {
+  it("uses the session identity when the compatibility scalar differs", () => {
+    expect(runId(run({ id: "session-1", run_id: "legacy-run" }))).toBe("session-1");
+  });
+
+  it("falls back to run_id for legacy rows without id", () => {
+    expect(runId(run({ id: undefined, run_id: "legacy-run" }))).toBe("legacy-run");
+  });
+});
 
 describe("hasRunTree", () => {
   it("is true for multi-agent invocation kinds even with a single branch", () => {
