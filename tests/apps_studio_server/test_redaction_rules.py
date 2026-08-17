@@ -68,6 +68,52 @@ def test_an_unrecognized_scheme_takes_the_credential_with_it():
     assert SECRET not in _scrub("Authorization: Weirdscheme " + SECRET)
 
 
+# A base64 credential is the realistic Basic-auth value and it carries "=" or
+# "/", which the shape-based value rule excludes by construction. Using it
+# here keeps these tests answerable only by the auth-pair rule: SECRET above
+# is caught by shape alone, so it would pass them with that rule broken.
+OPAQUE = "QWxhZGRpbjpvcGVuIHNlc2FtZQ=="
+
+
+def test_the_opaque_credential_is_invisible_to_the_shape_rule():
+    """Guards the tests below: if the shape rule ever starts catching this
+    value they still pass, but stop being about the auth-pair rule."""
+    assert not redact._looks_like_secret_value(OPAQUE)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Authorization: Basic\n" + OPAQUE,
+        "Authorization=Token\n" + OPAQUE,
+        "Proxy-Authorization: Bearer\n" + OPAQUE,
+        "GET /v1 HTTP/1.1\r\nAuthorization: Basic\r\n " + OPAQUE + "\r\nAccept: */*",
+    ],
+)
+def test_a_credential_folded_onto_the_next_line_still_goes(text):
+    """A header folded across lines, or pasted into free text with the break
+    kept, puts the credential on the line after its scheme. Matching only
+    horizontal whitespace consumed the scheme and published the credential,
+    which is worse than not matching at all."""
+    assert OPAQUE not in _scrub(text)
+
+
+def test_the_value_ends_at_a_blank_line():
+    """One break is a folded header; a blank line starts new text, and the
+    word after it must not be eaten as though it were a credential."""
+    assert _scrub("Authorization: Basic\n\nRetry the request") == (
+        "Authorization: [redacted]\n\nRetry the request"
+    )
+
+
+def test_an_unrecognized_scheme_does_not_reach_onto_the_next_line():
+    """The unknown-scheme branch takes two bare tokens on trust. Across a
+    break the second one belongs to whatever follows, not to the header."""
+    assert _scrub("Authorization: Weirdscheme\nGET /next") == (
+        "Authorization: [redacted]\nGET /next"
+    )
+
+
 @pytest.mark.parametrize(
     "text",
     [

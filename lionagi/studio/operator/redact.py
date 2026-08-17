@@ -102,13 +102,22 @@ _AUTH_SCHEME = (
     r"(?:Bearer|Basic|Digest|Token|ApiKey|Negotiate|Mutual|HOBA|OAuth|vapid"
     r"|SCRAM-SHA-1|SCRAM-SHA-256)"
 )
+# The gap between a recognized scheme and its credential. A header folded
+# across lines, or one pasted into free text, puts a line break here; matching
+# horizontal whitespace alone consumed the scheme and left the credential
+# behind on the next line, which is worse than not matching at all. Bounded to
+# a single break so a blank line ends the value rather than reaching further
+# down the text. The unrecognized-scheme branch below stays on one line: it
+# takes two bare tokens on trust, and across a break that is a token of
+# whatever follows.
+_AUTH_PAIR_GAP = r"(?:[ \t]+|[ \t]*\r?\n[ \t]*)"
 # An auth header in free text. An unrecognized scheme falls to the second
 # branch, which takes both tokens rather than leaving the credential behind
 # the word in front of it.
 _AUTH_PAIR_RE = re.compile(
     r"(?i)(?<![\w.\-])((?:proxy[_\-]?)?authorization|(?:www|proxy)[_\-]?authenticate)"
     r"(\s*[:=]\s*)"
-    r"(?:(" + _AUTH_SCHEME + r")([ \t]+)\S+|\S+(?:[ \t]+\S+)?)"
+    r"(?:(" + _AUTH_SCHEME + r")(" + _AUTH_PAIR_GAP + r")\S+|\S+(?:[ \t]+\S+)?)"
 )
 # Shell/env-style assignments ("API_KEY=...", "token: ...") embedded in free
 # text such as a command argument. The name is matched generically and then
