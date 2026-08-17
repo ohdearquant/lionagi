@@ -13,6 +13,7 @@ as the bare ``lambda:`` keyword itself.
 from __future__ import annotations
 
 import ast
+import io
 import re
 import sys
 import tokenize
@@ -91,9 +92,15 @@ def _pre312_fstring_literal_segments(token_text: str) -> list[str] | None:
 
 
 def _leaked_identifiers(source: str) -> list[str]:
-    lines = iter(source.splitlines(keepends=True))
+    # Feed the tokenizer the way a file reader would, breaking on ``\n`` only.
+    # ``str.splitlines`` also breaks on the Unicode line separators U+2028 and
+    # U+2029 and on a handful of other control characters, none of which Python
+    # treats as ending a line. A string literal containing one of those would be
+    # handed to the tokenizer already cut in half, and the tokenizer would
+    # correctly report an unterminated string literal in a file that is
+    # perfectly valid Python.
     found: list[str] = []
-    for tok in tokenize.generate_tokens(lambda: next(lines, "")):
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
         if tok.type in _TEXT_TOKEN_TYPES:
             literal_segments = _pre312_fstring_literal_segments(tok.string)
             if literal_segments is None:
@@ -129,7 +136,7 @@ def scan(paths: list[Path]) -> int:
         except (
             OSError,
             UnicodeError,
-            tokenize.TokenizeError,
+            tokenize.TokenError,
             SyntaxError,
             IndentationError,
         ) as exc:

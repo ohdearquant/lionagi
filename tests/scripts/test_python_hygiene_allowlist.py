@@ -23,6 +23,9 @@ SCANNER = REPO_ROOT / "scripts" / "lint_python_hygiene.py"
 # Written apart so this file is not itself a fixture the scanner must exempt.
 RESERVED = "lambda:" + "sample-unit"
 
+# U+2028 LINE SEPARATOR, written as an escape so this file carries none itself.
+LINE_SEPARATOR = "\u2028"
+
 
 def _fake_repo(tmp_path: Path) -> Path:
     """A tree the scanner resolves repo-relative paths against."""
@@ -105,6 +108,47 @@ def test_a_fixture_path_is_exempt_only_at_its_exact_location(tmp_path: Path) -> 
     result = _scan(repo / "lionagi")
 
     assert result.returncode == 1, result.stdout + result.stderr
+
+
+def test_a_unicode_line_separator_inside_a_literal_does_not_blind_the_scan(
+    tmp_path: Path,
+) -> None:
+    # U+2028 is a line boundary to ``str.splitlines`` and is not one to Python.
+    # Splitting the source that way hands the tokenizer a string literal already
+    # cut in half, and everything after the cut stops being inspected. The
+    # failure is silent: the scan returns clean on a file that leaks. Written as
+    # an escape so this test file carries no separator of its own.
+    repo = _fake_repo(tmp_path)
+    target = repo / "lionagi" / "separator.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        f'DOC = "first half{LINE_SEPARATOR}then {RESERVED} here"\n',
+        encoding="utf-8",
+    )
+
+    result = _scan(repo / "lionagi")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "internal namespace identifier found" in result.stdout
+
+
+def test_an_untokenizable_file_is_reported_rather_than_crashing_the_scan(
+    tmp_path: Path,
+) -> None:
+    # Forces the except clause to be evaluated. An except tuple naming an
+    # attribute that does not exist is a valid module until something raises, so
+    # only a test that actually raises can tell the name is wrong. Reaching the
+    # handler is the point here; the exit code and message are what it does once
+    # it gets there.
+    repo = _fake_repo(tmp_path)
+    target = repo / "lionagi" / "broken.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("values = [1, 2,\n")
+
+    result = _scan(repo / "lionagi")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "could not scan python source" in result.stderr
 
 
 def test_the_shipped_source_trees_are_clean_under_the_widened_scope() -> None:
