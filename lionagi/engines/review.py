@@ -70,6 +70,13 @@ _ISOLATED_ERRORS: tuple[type[BaseException], ...] = (ProviderError, *_TRANSPORT_
 # prompt that overflowed rather than of the run -- one verifier's oversized
 # prompt says nothing about the next one's, which is why the engine repairs it
 # instead of failing.
+_RUN_WIDE_REFUSALS: tuple[type[BaseException], ...] = (
+    ProviderAuthError,
+    ProviderQuotaError,
+    ProviderSafetyError,
+    ProviderUnsupportedModelError,
+)
+
 # What a review resolves to when it was asked for executed evidence and has
 # none. Not an approval and not a rejection: nothing was examined, so there is
 # no finding either way, and the honest report says which.
@@ -79,12 +86,10 @@ _EVIDENCE_EMPTY_REASON = (
     "the artifact; withheld as a pass rather than reported as one."
 )
 
-_RUN_WIDE_REFUSALS: tuple[type[BaseException], ...] = (
-    ProviderAuthError,
-    ProviderQuotaError,
-    ProviderSafetyError,
-    ProviderUnsupportedModelError,
-)
+
+def _is_approving(verdict: str) -> bool:
+    """Whether a decision reads as a pass, by the one spelling used throughout."""
+    return verdict.strip().upper().startswith("APPROVE")
 
 
 @lru_cache(maxsize=1)
@@ -439,6 +444,20 @@ class ReviewEngine(Engine):
         verdicts = run.by_type(ReviewVerdict)
         if not verdicts:
             return ""
+        # Exhaustion is not a way around the evidence check. The verdict this
+        # exports was emitted before the run was cut short, so it can be the
+        # same unbacked pass the ordinary path withholds, reached by a route
+        # that never runs the guard: the run ends inside synthesis, after the
+        # record exists and before anything has looked at it. Withheld here
+        # too, and before the text below is composed, so the record and the
+        # string it produces say the same thing.
+        unbacked = (
+            [v for v in verdicts if _is_approving(v.verdict)]
+            if self._evidence_is_empty(run)
+            else []
+        )
+        if unbacked:
+            self._withhold_emitted_approvals(run, unbacked)
         verdict = verdicts[-1]
         run.notify("verdict_emitted_on_exhaustion", verdict=verdict.verdict)
         status_header = (
@@ -689,18 +708,36 @@ class ReviewEngine(Engine):
         far side of a boundary is an assumption this package cannot check, and
         two callers do not have to share one.
         """
-        if not self.verify_clean or run.by_type(VerifyResult):
+        if not self._evidence_is_empty(run):
             return text
         emitted = run.by_type(ReviewVerdict)
-        approving = [v for v in emitted if v.verdict.strip().upper().startswith("APPROVE")]
+        approving = [v for v in emitted if _is_approving(v.verdict)]
         if emitted and not approving:
             return text
-        if not emitted and not text.strip().upper().startswith("APPROVE"):
+        if not emitted and not _is_approving(text):
             # Nothing structured to read and the prose does not open with a
             # pass. Refusing here would relabel a non-approval as a refusal,
             # which loses a real decision to guard against one that is not
             # being made.
             return text
+        self._withhold_emitted_approvals(run, approving)
+        return f"{_EVIDENCE_EMPTY_DECISION}: {_EVIDENCE_EMPTY_REASON}\n\n{text}"
+
+    def _evidence_is_empty(self, run: EngineRun) -> bool:
+        """True when this engine was asked for evidence and has none to show.
+
+        Split out because the exhaustion path has to ask the same question and
+        a second copy of the condition is a second thing to keep in step.
+        """
+        return bool(self.verify_clean) and not run.by_type(VerifyResult)
+
+    def _withhold_emitted_approvals(self, run: EngineRun, approving: list[ReviewVerdict]) -> None:
+        """Relabel emitted passes as inconclusive and record that it happened.
+
+        Callers decide whether to withhold; this performs it. Kept in one place
+        so the ordinary path and the exhaustion path cannot drift into
+        withholding different things or recording it differently.
+        """
         for verdict in approving:
             verdict.rationale = (
                 f"{_EVIDENCE_EMPTY_REASON} Withheld decision was {verdict.verdict!r}. "
@@ -711,4 +748,3 @@ class ReviewEngine(Engine):
         marker = "verdict (evidence-empty)"
         if marker not in run._emission_failures:
             run._emission_failures.append(marker)
-        return f"{_EVIDENCE_EMPTY_DECISION}: {_EVIDENCE_EMPTY_REASON}\n\n{text}"

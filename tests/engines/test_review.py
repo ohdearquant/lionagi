@@ -493,6 +493,59 @@ async def test_an_approval_backed_by_a_verification_is_left_alone():
 
 
 @pytest.mark.asyncio
+async def test_exhaustion_cannot_export_an_approval_with_no_executed_evidence():
+    """The deadline path reads the emitted verdict and returns it directly.
+
+    A run can end inside synthesis, after the verdict record exists and before
+    anything has looked at it, and the export then hands back exactly the
+    unbacked pass the ordinary path withholds. Reached by a different route,
+    so a guard sitting on the ordinary return does not cover it.
+    """
+    eng = ReviewEngine(verify_clean=True)
+    run = eng.new_run()
+    await run.emit(ReviewVerdict(verdict="APPROVE", rationale="nothing found"))
+
+    out = await eng._partial_export(run, "ART")
+
+    assert "INCONCLUSIVE:" in out, out
+    assert run.by_type(ReviewVerdict)[0].verdict == "INCONCLUSIVE"
+    assert "APPROVE" in run.by_type(ReviewVerdict)[0].rationale
+
+
+@pytest.mark.asyncio
+async def test_exhaustion_exports_an_approval_that_evidence_backs():
+    """Control: the export withholds because evidence is missing, not always."""
+    eng = ReviewEngine(verify_clean=True)
+    run = eng.new_run()
+    await run.emit(VerifyResult(issue="sqli", holds=False, rationale="boundary test refutes"))
+    await run.emit(ReviewVerdict(verdict="APPROVE", rationale="nothing found"))
+
+    out = await eng._partial_export(run, "ART")
+
+    assert "APPROVE: nothing found" in out
+    assert run.by_type(ReviewVerdict)[0].verdict == "APPROVE"
+
+
+@pytest.mark.asyncio
+async def test_exhaustion_does_not_record_a_refusal_it_did_not_make():
+    """A verdict that was never a pass has nothing to withhold.
+
+    Marking one anyway would put an evidence-empty refusal in the run's record
+    for a run that refused nothing, and the marker is what a reader consults to
+    find out whether a decision was withheld.
+    """
+    eng = ReviewEngine(verify_clean=True)
+    run = eng.new_run()
+    await run.emit(ReviewVerdict(verdict="REQUEST-CHANGES", rationale="sqli in the handler"))
+
+    out = await eng._partial_export(run, "ART")
+
+    assert "REQUEST-CHANGES: sqli in the handler" in out
+    assert run.by_type(ReviewVerdict)[0].verdict == "REQUEST-CHANGES"
+    assert not [m for m in run._emission_failures if "evidence-empty" in m]
+
+
+@pytest.mark.asyncio
 async def test_a_review_that_was_never_asked_for_evidence_still_approves():
     """With verify_clean off no verifier is spawned at all, so having no
     VerifyResult is the ordinary case rather than the failed one. Withholding
