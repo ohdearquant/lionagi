@@ -464,9 +464,19 @@ export function branchToRunStep(
   const runMessages: RunMessage[] = [];
 
   const responseById = new Map<string, SessionMessage>();
+  // The same pairing read from the response's end. A request whose payload was
+  // withheld carries no action_response_id, so the forward link is exactly what
+  // goes missing in the case that most needs pairing; the response names its
+  // request in its own payload, which the request's withholding cannot reach.
+  const responseByRequestId = new Map<string, SessionMessage>();
   for (const m of msgs) {
     if (classifyLC(m.lion_class) === "action_response") {
       responseById.set(m.id, m);
+      // The payload carries the link on an ordinary row; on a withheld one the
+      // server lifts it out to the row itself, since that is the only copy left.
+      const requestId =
+        (m.content as Record<string, unknown> | null)?.action_request_id ?? m.action_request_id;
+      if (requestId) responseByRequestId.set(String(requestId), m);
     }
   }
   const pairedResponseIds = new Set<string>();
@@ -474,6 +484,23 @@ export function branchToRunStep(
   for (const m of msgs) {
     const kind = classifyLC(m.lion_class);
     const content = (m.content ?? {}) as Record<string, unknown>;
+
+    // A withheld payload leaves nothing for the readers below to find, and each
+    // fails differently and silently: a system message vanishes on its
+    // empty-text check, an assistant one renders blank, a user one renders the
+    // literal "{}". The turn happened, so the row stays and says what is
+    // missing. Action rows are excluded: they carry their own withheld state
+    // through the pairing below, which also needs both halves to reach it.
+    if (m.content_withheld && kind !== "action_request" && kind !== "action_response") {
+      runMessages.push({
+        role: kind === "user" || kind === "assistant" ? kind : "system",
+        content: "",
+        withheld: true,
+        sender: m.sender ?? "",
+        timestamp: m.timestamp,
+      });
+      continue;
+    }
 
     if (kind === "system") {
       const text = String(content.system_message ?? content.system ?? content.guidance ?? "");
@@ -510,12 +537,25 @@ export function branchToRunStep(
     if (kind === "action_request") {
       const fn = String(content.function ?? "");
       const args = (content.arguments ?? {}) as Record<string, unknown>;
-      const respId = content.action_response_id ? String(content.action_response_id) : null;
-      const respMsg = respId ? responseById.get(respId) : null;
+      const forwardLink = content.action_response_id ?? m.action_response_id;
+      const respId = forwardLink ? String(forwardLink) : null;
+      const respMsg = (respId ? responseById.get(respId) : null) ?? responseByRequestId.get(m.id);
       if (respMsg) pairedResponseIds.add(respMsg.id);
 
       const respContent = respMsg ? ((respMsg.content ?? {}) as Record<string, unknown>) : {};
       const output = respMsg ? String(respContent.output ?? "") : "";
+      // The server withholds a payload past its per-row ceiling and says so on
+      // the row. An empty output then means "not read", not "the tool returned
+      // nothing" -- and the success/error split below is decided by reading
+      // the output, so without this a call whose result nobody has seen
+      // renders with a green check.
+      //
+      // Withholding applies to requests too, and a withheld request is the
+      // worse case: it has no function name, no arguments and no forward link,
+      // so before the fallback pairing above it also stranded its own response
+      // as a second row. Both halves then rendered as ordinary successful
+      // calls, because neither of them had an output that said otherwise.
+      const resultWithheld = Boolean(m.content_withheld) || Boolean(respMsg?.content_withheld);
 
       const summary = Object.entries(args)
         .slice(0, 2)
@@ -531,7 +571,11 @@ export function branchToRunStep(
         summary,
         arguments: args,
         output,
-        status: output.toLowerCase().includes("error") ? "error" : "ok",
+        status: resultWithheld
+          ? "withheld"
+          : output.toLowerCase().includes("error")
+            ? "error"
+            : "ok",
         sender: m.sender ?? "",
         timestamp: m.timestamp,
       });
@@ -545,7 +589,7 @@ export function branchToRunStep(
         role: "tool_call",
         function: fn,
         output,
-        status: "ok",
+        status: m.content_withheld ? "withheld" : "ok",
         sender: m.sender ?? "",
         timestamp: m.timestamp,
       });
@@ -765,6 +809,10 @@ interface OverviewData {
   messageCount: number;
   toolCallCount: number;
   errorCount: number;
+  /** The two counts above are lower bounds: the server's action-message pass
+   * stopped at its bound, so they describe this run's most recent activity
+   * rather than all of it. Changes what the tiles are labelled. */
+  countsAreFloors?: boolean;
   showTopic?: string | null;
   showPlayName?: string | null;
   playbookName?: string | null;
@@ -788,13 +836,21 @@ function OverviewSection({ data }: { data: OverviewData }) {
     { label: t("statBranches"), value: String(data.branchCount) },
     { label: t("statMessages"), value: String(data.messageCount) },
     {
-      label: t("statToolCalls"),
+      label: data.countsAreFloors ? t("statToolCallsRecent") : t("statToolCalls"),
       value: String(data.toolCallCount),
     },
     {
-      label: t("statErrors"),
+      label: data.countsAreFloors ? t("statErrorsRecent") : t("statErrors"),
       value: String(data.errorCount),
-      tone: data.errorCount > 0 ? ("error" as const) : ("ok" as const),
+      // A zero that only covers recent activity is not a clean run, and the
+      // green tone is what says it is. Keep the number, drop the judgement.
+      tone: data.countsAreFloors
+        ? data.errorCount > 0
+          ? ("error" as const)
+          : undefined
+        : data.errorCount > 0
+          ? ("error" as const)
+          : ("ok" as const),
     },
   ];
 
@@ -856,10 +912,14 @@ function OverviewSection({ data }: { data: OverviewData }) {
 export function resolveOverviewCounts(
   messageStats: SessionDetail["message_stats"],
   loaded: { toolCallCount: number; errorCount: number },
-): { toolCallCount: number; errorCount: number } {
+): { toolCallCount: number; errorCount: number; countsAreFloors: boolean } {
   return {
     toolCallCount: messageStats?.tool_call_count ?? loaded.toolCallCount,
     errorCount: messageStats?.error_count ?? loaded.errorCount,
+    // Both counts come from the server's action-message pass, which stops at a
+    // bound on a long session and reports that it did. A floor rendered under
+    // the same label as a total is read as a total, so the label changes.
+    countsAreFloors: Boolean(messageStats?.bounded),
   };
 }
 
@@ -1155,8 +1215,25 @@ function ErrorsSection({
 
 // ── Files section ─────────────────────────────────────────────────────────────
 
-function FilesSection({ files, partial }: { files: string[]; partial?: boolean }) {
+function FilesSection({
+  files,
+  partial,
+  unionBounded,
+}: {
+  files: string[];
+  partial?: boolean;
+  unionBounded?: boolean;
+}) {
   const t = useTranslations("history.detail");
+  // Said on both branches. An empty list and a populated one are the two
+  // ways a cut union reaches a reader, and disclosing only one of them
+  // leaves the other presenting an incomplete answer as a complete one,
+  // which is the whole reason the server reports the flag.
+  const cutNote = unionBounded ? (
+    <div className="mt-1 text-[length:var(--t-xs)] text-content-muted">
+      {t("filesUnionBounded")}
+    </div>
+  ) : null;
   return (
     <div id="run-files" className="scroll-mt-4">
       <SectionHeader label={t("sectionFiles")} count={files.length} />
@@ -1175,6 +1252,7 @@ function FilesSection({ files, partial }: { files: string[]; partial?: boolean }
           </ul>
         </div>
       )}
+      {cutNote}
     </div>
   );
 }
@@ -2502,10 +2580,13 @@ export default function RunDetail({ id }: RunDetailProps) {
   const loadedToolCallCount = steps.reduce((n, s) => {
     return n + (s.messages ?? []).filter((m) => m.role === "tool_call").length;
   }, 0);
-  const { toolCallCount, errorCount } = resolveOverviewCounts(session.message_stats, {
-    toolCallCount: loadedToolCallCount,
-    errorCount: errors.length,
-  });
+  const { toolCallCount, errorCount, countsAreFloors } = resolveOverviewCounts(
+    session.message_stats,
+    {
+      toolCallCount: loadedToolCallCount,
+      errorCount: errors.length,
+    },
+  );
 
   // DESIGN-BRIEF §0: derive from the real status_reason fields, not the
   // done/live booleans — those conflate every terminal status (including
@@ -2568,6 +2649,7 @@ export default function RunDetail({ id }: RunDetailProps) {
     messageCount: totalMessages,
     toolCallCount,
     errorCount,
+    countsAreFloors,
     showTopic: (session as unknown as Record<string, unknown>).show_topic as
       | string
       | null
@@ -2868,7 +2950,11 @@ export default function RunDetail({ id }: RunDetailProps) {
         </>
       )}
       <ErrorsSection errors={errors} partial={partialWindow} gateOutcome={gateOutcome} />
-      <FilesSection files={runFiles} partial={partialWindow} />
+      <FilesSection
+        files={runFiles}
+        partial={partialWindow}
+        unionBounded={session.message_stats?.files_bounded}
+      />
       <EventsSection
         events={signalSnapshot.events}
         totalCount={signalSnapshot.totalCount}

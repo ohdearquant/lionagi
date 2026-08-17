@@ -1188,7 +1188,26 @@ export interface SessionSummary {
 export interface SessionMessage {
   id: string;
   role: string;
-  content: Record<string, unknown>;
+  /**
+   * Null when the server refused to decode this payload, which it does above a
+   * size ceiling. Nullable rather than optional on purpose: the withholding is
+   * a state a renderer has to handle, and an optional field reads as one a
+   * caller may ignore.
+   */
+  content: Record<string, unknown> | null;
+  /**
+   * True when `content` is null because it was refused, as opposed to a message
+   * that carried none. This endpoint returns no per-session bounds beside the
+   * rows, so this flag is the only place that distinction is available.
+   */
+  content_withheld?: boolean;
+  /**
+   * Present only on a withheld row, where the payload that normally carries the
+   * pairing is gone. An action request and its response are one call, and
+   * without these a withheld pair renders as two unrelated rows.
+   */
+  action_request_id?: string;
+  action_response_id?: string;
   sender: string | null;
   timestamp: number;
   lion_class: string;
@@ -1283,6 +1302,17 @@ export interface SessionDetail {
     tool_call_count: number;
     error_count: number;
     files: string[];
+    // The server hydrates the newest slice of a long session's action rows and
+    // stops at a bound. When it stopped, every field above derived from those
+    // rows is a floor rather than a total, and the reader has to say so —
+    // a lower bound presented as a count is read as a count.
+    bounded?: boolean;
+    // `files` has its own ceilings (distinct names, total bytes, rows
+    // scanned), separate from `bounded` above: the union is computed over the
+    // whole run rather than the hydrated slice, so it can be cut when nothing
+    // else was. A file union that was cut answers "is this name a file?" with
+    // a no it has not earned, so it is never presented as complete.
+    files_bounded?: boolean;
   };
 }
 
