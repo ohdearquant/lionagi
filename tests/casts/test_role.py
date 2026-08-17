@@ -59,6 +59,15 @@ def test_role_emits_serialized_as_names():
     assert d["emits"] == ["Verdict", "Finding"]
 
 
+def test_role_json_projection_keeps_emission_names():
+    role = Role.load("critic")
+
+    projected = role.to_dict({"body"}, mode="json")
+
+    assert projected["emits"] == ["Verdict", "Finding"]
+    assert "body" not in projected
+
+
 def test_role_emission_contract():
     critic = Role.load("critic")
     assert critic.emits == (Verdict, Finding)

@@ -6,23 +6,23 @@ import contextlib
 import os
 import threading
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from enum import Enum
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from ._sentinel import (
+    MaybeSentinel,
     MaybeUndefined,
     Undefined,
-    _compat_is_sentinel,
-    _compat_not_sentinel,
+    is_sentinel,
     not_sentinel,
 )
-from .base import Meta
+from .base import Meta, _apply_serialization_mode
 
 # Global cache for annotated types with bounded size
 _MAX_CACHE_SIZE = int(os.environ.get("LIONAGI_FIELD_CACHE_SIZE", "10000"))
-_annotated_cache: OrderedDict[tuple[type, tuple[Meta, ...]], type] = OrderedDict()
+_annotated_cache: OrderedDict[tuple[Any, tuple[Meta, ...]], type[Any]] = OrderedDict()
 _cache_lock = threading.RLock()
 
 
@@ -97,23 +97,19 @@ class CommonMeta(Enum):
 class Spec:
     """Framework-agnostic field type + metadata specification."""
 
-    base_type: type
+    base_type: MaybeSentinel[type[Any]]
     metadata: tuple[Meta, ...]
 
     def __init__(
         self,
-        base_type: type | None = None,
+        base_type: MaybeSentinel[type[Any]] = Undefined,
         *args,
         metadata: tuple[Meta, ...] | None = None,
         **kw,
     ) -> None:
         metas = CommonMeta.prepare(*args, metadata=metadata, **kw)
 
-        if _compat_not_sentinel(
-            base_type,
-            site="lionagi.ln.types.spec.Spec.__init__",
-            none_as_sentinel=True,
-        ):
+        if not_sentinel(base_type):
             import types
             import typing
 
@@ -214,6 +210,21 @@ class Spec:
         _metas = tuple(_filtered)
         return type(self)(self.base_type, metadata=_metas)
 
+    def to_dict(
+        self,
+        exclude: Collection[str] | None = None,
+        *,
+        mode: Literal["python", "json"] = "python",
+    ) -> dict[str, Any]:
+        """Project this neutral declaration without inventing a sentinel wire value."""
+        excluded = frozenset(exclude or ())
+        data: dict[str, Any] = {}
+        if "base_type" not in excluded and not_sentinel(self.base_type):
+            data["base_type"] = self.base_type
+        if "metadata" not in excluded:
+            data["metadata"] = self.metadata
+        return _apply_serialization_mode(data, mode)
+
     def as_nullable(self) -> Spec:
         return self.with_updates(nullable=True)
 
@@ -230,13 +241,9 @@ class Spec:
 
     @property
     def annotation(self) -> type[Any]:
-        if _compat_is_sentinel(
-            self.base_type,
-            site="lionagi.ln.types.spec.Spec.annotation",
-            none_as_sentinel=True,
-        ):
+        if is_sentinel(self.base_type):
             return Any
-        t_ = self.base_type
+        t_: Any = self.base_type
         if self.is_listable:
             t_ = list[t_]
         if self.is_nullable:
@@ -252,15 +259,7 @@ class Spec:
                 _annotated_cache.move_to_end(cache_key)
                 return _annotated_cache[cache_key]
 
-            actual_type = (
-                Any
-                if _compat_is_sentinel(
-                    self.base_type,
-                    site="lionagi.ln.types.spec.Spec.annotated",
-                    none_as_sentinel=True,
-                )
-                else self.base_type
-            )
+            actual_type: Any = Any if is_sentinel(self.base_type) else self.base_type
             current_metadata = self.metadata
 
             if any(m.key == "nullable" and m.value for m in current_metadata):

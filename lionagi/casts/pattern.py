@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from lionagi.ln.types import Enum, ModelConfig, Params
 from lionagi.ln.types._sentinel import _compat_is_sentinel
@@ -116,12 +116,19 @@ class Role(Pattern):
     def kind(self) -> PatternKind:
         return PatternKind.ROLE
 
-    def to_dict(self, exclude: set[str] | None = None) -> dict[str, Any]:
+    def to_dict(
+        self,
+        exclude: set[str] | None = None,
+        *,
+        mode: Literal["python", "json"] = "python",
+    ) -> dict[str, Any]:
         # Params.to_dict (not super()) — zero-arg super is unreliable under @dataclass(slots=True).
         d = Params.to_dict(self, exclude=exclude)
         if "emits" in d:
             d["emits"] = [m.__name__ for m in d["emits"]]
-        return d
+        from lionagi.ln.types.base import _apply_serialization_mode
+
+        return _apply_serialization_mode(d, mode)
 
     def emission_operable(self) -> Operable | None:
         """Build the Operable for this role's emission contract; None if no emits; always includes EscalationRequest."""

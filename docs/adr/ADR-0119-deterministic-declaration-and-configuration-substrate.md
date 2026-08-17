@@ -7,9 +7,10 @@
   discovery, exclude `ClassVar` declarations, serialize in declaration order, and preserve full
   declared public-field state across updates; `Operable` selection and legacy `OperableModel`
   materialization retain declaration order, and multiple unnamed specs are accepted; legacy
-  sentinel collapse is isolated behind a closed compatibility inventory; nested JSON adaptation,
-  `Spec` absence migration, structural equality/hash, production adapter migration, registry
-  snapshots, and canonical durable serialization remain open
+  sentinel collapse is isolated behind a closed compatibility inventory; lightweight JSON
+  projection delegates nested values to LionAGI's internal serializer, and omitted `Spec` base
+  types are `Undefined`; structural equality/hash, production adapter migration, registry snapshots,
+  and canonical durable serialization remain open
 - **Area**: utilities
 - **Date**: 2026-08-16
 - **Relations**: extends ADR-0050 (foundational utility and typed adaptation strata); required
@@ -155,8 +156,8 @@ The wire rule is explicit:
 ```python
 def to_dict(
     self,
+    exclude: Collection[str] | None = None,
     *,
-    exclude: Collection[str] = (),
     mode: Literal["python", "json"] = "python",
 ) -> dict[str, Any]: ...
 ```
@@ -164,10 +165,25 @@ def to_dict(
 - `Undefined` and `Unset` are omitted from this application/wire projection only; omission does not
   make the object eligible for a durable identity.
 - `None` is emitted as `None`/JSON `null`.
-- Enum conversion, paths, timestamps, bytes, and nested models use the selected internal
-  serialization adapter; individual models do not hand-write a second recursion.
+- Enum conversion, paths, timestamps, UUIDs, and nested models use the selected internal
+  serialization adapter; individual models do not hand-write a second recursion. Pydantic values
+  use their JSON-mode serializers. Raw bytes remain rejected until D7 defines their versioned
+  durable representation.
+- JSON projection rejects non-finite numbers instead of allowing a serializer to turn them into a
+  `null` indistinguishable from explicit `None`.
 - Deserialization never guesses `Unset` from `null`. A missing key and a present null key remain
   distinguishable.
+- Omitting `Spec.base_type` stores `Undefined`; explicit `Spec(None)` is invalid. Legacy
+  `FieldModel(annotation=None)` is normalized to `Unset` only at that adapter boundary.
+- Omission belongs to the declaring model's projection. Code must call `to_dict(mode="json")`
+  before handing an unresolved lightweight declaration to the raw JSON encoder; a raw dataclass
+  traversal has no field-owner contract and fails on a nested sentinel rather than inventing one.
+- `Spec.metadata` entries are nested values, not independently declared `Spec` fields. A sentinel
+  stored inside `Meta.value` therefore fails closed until the caller resolves or excludes that
+  metadata entry; core projection does not silently drop a default, validator, or other contract.
+- Core JSON projection does not invent a wire identity for a resolved Python `type`, validator, or
+  default factory. Those values fail closed until a D5 target adapter materializes them or D7
+  encodes a versioned `CallableRef`.
 - Patch/update APIs may use `Unset` to mean “leave unchanged”; create APIs resolve every required
   `Unset` before crossing their owner boundary.
 - A persisted or signed snapshot uses D7's distinct strict `to_snapshot(require_resolved=True)`
