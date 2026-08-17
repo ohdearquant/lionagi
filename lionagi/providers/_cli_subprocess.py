@@ -299,6 +299,14 @@ def _no_stderr_reason(
 # log line; the cap is on what is logged, not on what was captured.
 _ABANDONED_STDERR_LOG_CAP = 4096
 
+# Bound on waiting for the stderr drain to finish on the abandonment path.
+# Shorter than the exit-code path's wait because it is taken after the child
+# group has been ended: the reader is draining a closed pipe to EOF rather than
+# waiting on a live one, so this is a backstop against a wedged reader, not a
+# budget for the child to keep talking. Teardown latency is paid by whoever
+# abandoned us, which is usually a liveness watchdog already past its deadline.
+_ABANDONED_STDERR_DRAIN_TIMEOUT = 0.5
+
 
 def _abandoned_without_output_note(
     captured: str,
@@ -580,7 +588,39 @@ async def ndjson_from_cli(
         # child's own account of why sitting unread in stderr_chunks. Logged
         # rather than raised because the exception belongs to whoever closed
         # us, and this is evidence about it rather than a different failure.
-        if sys.exc_info()[1] is not None and not produced_output and not stderr_already_surfaced:
+        # Decided before anything below is awaited: awaiting inside a finally
+        # can change what sys.exc_info() reports, and this asks about the
+        # exception we were entered with.
+        abandoned_silently = (
+            sys.exc_info()[1] is not None and not produced_output and not stderr_already_surfaced
+        )
+
+        await end_child_group(proc)
+
+        if abandoned_silently:
+            # Read the buffer only after giving the drain its turn, the same
+            # way the exit-code path above does before quoting stderr. Without
+            # this the warning is formatted from whatever the drain happened to
+            # have appended by then, which on the abandonment path is usually
+            # nothing: the watchdog closes this generator precisely because the
+            # child has been unresponsive, so the loop has had no reason to
+            # resume the reader. That reports "said nothing" about a child that
+            # spoke, which is the silence this warning exists to end.
+            #
+            # After end_child_group, not before: the child's stderr is closed by
+            # then, so the reader hits EOF and finishes rather than blocking on
+            # a live pipe. Shielded so a timeout cannot cancel the drain out
+            # from under the buffer we are about to read.
+            if stderr_task is not None:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(stderr_task), timeout=_ABANDONED_STDERR_DRAIN_TIMEOUT
+                    )
+                except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
+                    # A drain that timed out or failed still leaves whatever it
+                    # captured in the buffer, and the note below reports the
+                    # failure itself. Nothing here is worth losing the warning.
+                    pass
             log.warning(
                 "CLI subprocess produced no output before it was abandoned; %s",
                 _abandoned_without_output_note(
@@ -589,8 +629,6 @@ async def ndjson_from_cli(
                     stderr_drain_error,
                 ),
             )
-
-        await end_child_group(proc)
 
         # Reap the helper tasks — contextlib.suppress(Exception) does NOT
         # catch CancelledError (BaseException), so we suppress it explicitly.
