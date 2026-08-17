@@ -35,6 +35,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- `Params` subclasses now receive their declared dataclass defaults, including a fresh value
+  from each `default_factory`, instead of replacing every omitted field with `Unset`.
 - Writable StateDB migration now fails closed when a table's columns cannot be
   inspected, preserving the prior schema-version stamp instead of recording an
   upgrade whose additive column reconciliation did not complete.
