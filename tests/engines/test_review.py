@@ -266,12 +266,48 @@ async def test_a_dimension_that_reported_only_minor_issues_still_approves():
     eng = ReviewEngine(dimensions=("correctness",))
     run = eng.new_run()
     await run.emit(IssueFound(dimension="correctness", description="nit", severity="minor"))
+    # No issue draws a verifier here, so the clean audit is what this run executed.
+    await run.emit(
+        VerifyResult(issue="clean", ref=_clean_ref(eng.dimensions), holds=True, rationale="read it")
+    )
 
     await _verdict_with(eng, run, eng.dimensions)
 
     final = run.by_type(ReviewVerdict)
     assert len(final) == 1
     assert final[0].verdict == "APPROVE"
+
+
+@pytest.mark.asyncio
+async def test_a_clean_review_whose_audit_never_came_back_withholds_the_approval():
+    """Every dimension reported and nothing is owed, so only the missing audit distinguishes this."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+    await run.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await run.emit(DimensionClean(dimension="security", rationale="fine"))
+    # The clean audit was required and spawned; its verifier died before emitting.
+
+    out = await _verdict_with(eng, run, ("correctness", "security"))
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES", final[0].rationale
+    assert "nothing executed" in out
+
+
+@pytest.mark.asyncio
+async def test_an_engine_asked_for_no_clean_audit_still_approves():
+    """The gate keys on the requirement, not on the count, or opting out would be unapprovable."""
+    eng = ReviewEngine(verify_clean=False)
+    run = eng.new_run()
+    await run.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await run.emit(DimensionClean(dimension="security", rationale="fine"))
+
+    await _verdict_with(eng, run, ("correctness", "security"))
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "APPROVE", final[0].rationale
 
 
 @pytest.mark.asyncio
@@ -689,6 +725,14 @@ async def test_sequential_reuse_of_one_session_still_approves():
 
     await second.emit(DimensionClean(dimension="correctness", rationale="fine"))
     await second.emit(DimensionClean(dimension="security", rationale="fine"))
+    await second.emit(
+        VerifyResult(
+            issue="clean",
+            ref=_clean_ref(("correctness", "security")),
+            holds=True,
+            rationale="read it",
+        )
+    )
 
     await _verdict_with(eng, second, ("correctness", "security"))
     final = second.by_type(ReviewVerdict)

@@ -341,6 +341,15 @@ def _unverified_note(unverified: tuple[IssueFound, ...]) -> str:
     )
 
 
+def _unaudited_note() -> str:
+    """The audit was required and attempted; only its result is missing."""
+    return (
+        "Approval withheld: this run requires one adversarial audit of what it "
+        "read and no verification came back, so the pass rests on nothing "
+        "executed."
+    )
+
+
 def _shared_session_note() -> str:
     """Unlike the coverage note, nothing on the stream is known to belong to this run."""
     return (
@@ -712,11 +721,15 @@ class ReviewEngine(Engine):
 
         unevidenced = self._unevidenced_dimensions(run, dimensions)
         unverified = self._unverified_findings(run)
+        # The condition that spawned the audit, re-asked now: still true = it produced nothing.
+        unaudited = bool(self.verify_clean) and not verifications
         # Base runs carry no attribution, so they cannot report the condition.
         shared = bool(getattr(run, "shares_session", False))
         proposals = run.by_type(ProposedVerdict)
         proposed = proposals[-1] if proposals else None
-        final = self._rule(proposed, unevidenced, unverified, text, shared=shared)
+        final = self._rule(
+            proposed, unevidenced, unverified, text, shared=shared, unaudited=unaudited
+        )
         await run.emit(final)
 
         notes = []
@@ -726,6 +739,8 @@ class ReviewEngine(Engine):
             notes.append(_withheld_note(unevidenced))
         if unverified:
             notes.append(_unverified_note(unverified))
+        if unaudited:
+            notes.append(_unaudited_note())
         if notes:
             joined = " ".join(notes)
             return f"{text}\n\n{joined}" if text else joined
@@ -770,6 +785,7 @@ class ReviewEngine(Engine):
         text: str,
         *,
         shared: bool = False,
+        unaudited: bool = False,
     ) -> ReviewVerdict:
         """The one verdict this run publishes; coverage, verification and attribution refuse approval only."""
         verdict = (proposed.verdict if proposed else "").strip()
@@ -785,7 +801,9 @@ class ReviewEngine(Engine):
                 ),
                 blocking=blocking,
             )
-        if verdict.upper().startswith("APPROVE") and (shared or unevidenced or unverified):
+        if verdict.upper().startswith("APPROVE") and (
+            shared or unevidenced or unverified or unaudited
+        ):
             notes = []
             if shared:
                 notes.append(_shared_session_note())
@@ -793,6 +811,8 @@ class ReviewEngine(Engine):
                 notes.append(_withheld_note(unevidenced))
             if unverified:
                 notes.append(_unverified_note(unverified))
+            if unaudited:
+                notes.append(_unaudited_note())
             return ReviewVerdict(
                 verdict="REQUEST-CHANGES",
                 rationale=" ".join(notes) + (f" {rationale}" if rationale else ""),
