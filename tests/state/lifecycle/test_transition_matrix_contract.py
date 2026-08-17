@@ -12,9 +12,15 @@ from dataclasses import dataclass
 import pytest
 from sqlalchemy import text
 
-from lionagi.dispatch import enqueue_dispatch
+from lionagi.dispatch import enqueue_dispatch, get_dispatch
 from lionagi.state.db import StateDB
-from lionagi.state.lifecycle import ActorRecord, ReasonRecord, TransitionCommand
+from lionagi.state.lifecycle import (
+    ActorRecord,
+    JsonValue,
+    LifecycleValidationError,
+    ReasonRecord,
+    TransitionCommand,
+)
 from lionagi.state.lifecycle.models import ActorType
 from lionagi.state.lifecycle.policy import DEFAULT_REGISTRY
 from lionagi.state.lifecycle.service import SQLAlchemyLifecycleService
@@ -385,27 +391,19 @@ async def test_every_allowed_edge_applies(
     assert outcome.transition_id is not None
 
 
-_TERMINAL_EXIT_TARGET = {
-    "session": "running",
-    "invocation": "running",
-    "show": "active",
-    "play": "pending",
-    "team": "active",
-    "schedule_run": "queued",
-    "dispatch": "pending",
-}
 _TERMINAL_EXIT_CASES = tuple(
     (
         entity_type,
         terminal_status,
-        (
-            "acked"
-            if entity_type == "dispatch" and terminal_status in {"dead_letter", "expired"}
-            else _TERMINAL_EXIT_TARGET[entity_type]
-        ),
+        target,
     )
     for entity_type, statuses in _EXPECTED_TERMINAL.items()
     for terminal_status in sorted(statuses)
+    for target in sorted(_EXPECTED_STATUSES[entity_type] - {terminal_status})
+    if not any(
+        edge.source == terminal_status and edge.target == target
+        for edge in _EXPECTED_EDGES[entity_type]
+    )
 )
 
 
@@ -415,13 +413,12 @@ _TERMINAL_EXIT_CASES = tuple(
     _TERMINAL_EXIT_CASES,
     ids=lambda value: value,
 )
-async def test_every_terminal_status_has_a_fail_closed_exit(
+async def test_every_undeclared_terminal_exit_fails_closed(
     db: StateDB,
     entity_type: str,
     terminal_status: str,
     target: str,
 ) -> None:
-    assert _ExpectedEdge(terminal_status, target) not in _EXPECTED_EDGES[entity_type]
     entity_id = await _make_entity(db, entity_type, terminal_status)
     edge = _ExpectedEdge(terminal_status, target)
 
@@ -433,6 +430,71 @@ async def test_every_terminal_status_has_a_fail_closed_exit(
     assert outcome.previous_status == terminal_status
     assert outcome.current_status == terminal_status
     assert outcome.transition_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "actor_type,patch,error",
+    (
+        (
+            "system",
+            {"attempt": 0, "next_attempt_at": 0.0, "last_error": "operator recovery"},
+            "actor type",
+        ),
+        (
+            "operator",
+            {"next_attempt_at": 0.0, "last_error": "operator recovery"},
+            "requires patch field",
+        ),
+        (
+            "operator",
+            {"attempt": 0, "last_error": "operator recovery"},
+            "requires patch field",
+        ),
+        (
+            "operator",
+            {"attempt": 0, "next_attempt_at": 0.0},
+            "requires patch field",
+        ),
+    ),
+)
+async def test_dispatch_recovery_constraints_fail_before_row_mutation(
+    db: StateDB,
+    actor_type: ActorType,
+    patch: dict[str, JsonValue],
+    error: str,
+) -> None:
+    dispatch_id = await _make_entity(db, "dispatch", "dead_letter")
+    dispatch_before = await get_dispatch(db, dispatch_id)
+    assert dispatch_before is not None
+    history_before = await db.fetch_all(
+        "SELECT id FROM status_transitions WHERE entity_type = 'dispatch' AND entity_id = ?",
+        (dispatch_id,),
+    )
+
+    with pytest.raises(LifecycleValidationError, match=error):
+        await SQLAlchemyLifecycleService(db).transition(
+            TransitionCommand(
+                entity_type="dispatch",
+                entity_id=dispatch_id,
+                to_status="pending",
+                reason=ReasonRecord(code=DispatchReasons.PENDING_ENQUEUED),
+                actor=ActorRecord(type=actor_type, id="transition-matrix"),
+                patch=patch,
+            )
+        )
+
+    dispatch_after = await get_dispatch(db, dispatch_id)
+    assert dispatch_after is not None
+    fields = ("status", "attempt", "next_attempt_at", "last_error")
+    assert {field: dispatch_after[field] for field in fields} == {
+        field: dispatch_before[field] for field in fields
+    }
+    history_after = await db.fetch_all(
+        "SELECT id FROM status_transitions WHERE entity_type = 'dispatch' AND entity_id = ?",
+        (dispatch_id,),
+    )
+    assert history_after == history_before
 
 
 @pytest.mark.asyncio
