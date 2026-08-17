@@ -93,7 +93,12 @@ def test_an_allowlisted_fixture_that_stopped_carrying_it_fails_the_scan(
     result = _scan(repo / "tests")
 
     assert result.returncode == 2, result.stdout + result.stderr
-    assert "remove it from EXPECTED_FIXTURES" in result.stderr
+    assert "EXPECTED_FIXTURES" in result.stderr
+    # Reported per identifier rather than per file: this fixture is allowlisted
+    # for three, and a message naming only the file would leave which exemption
+    # to delete as a guess.
+    for name in ("item", "sample-unit", "x"):
+        assert name in result.stderr, result.stderr
 
 
 def test_a_fixture_path_is_exempt_only_at_its_exact_location(tmp_path: Path) -> None:
@@ -151,11 +156,117 @@ def test_an_untokenizable_file_is_reported_rather_than_crashing_the_scan(
     assert "could not scan python source" in result.stderr
 
 
-def test_the_shipped_source_trees_are_clean_under_the_widened_scope() -> None:
-    # Guards the widening itself: if this fails, either a real identifier
-    # landed in the source trees or an allowlisted fixture went stale.
-    result = _scan(
-        *(REPO_ROOT / name for name in ("lionagi", "tests", "scripts", "benchmarks", "marketplace"))
+def test_every_tracked_python_tree_is_in_the_ci_scan_list() -> None:
+    """The scan list is hand-written, so the thing to guard is its completeness.
+
+    A tree that is simply absent from the list is scanned by nothing and
+    reports nothing, which is indistinguishable from a tree that is clean. That
+    is how examples/ sat outside the gate: eleven tracked files, no finding, no
+    signal that they were never read.
+
+    Derived from what git actually tracks rather than from a second hand-written
+    list, because two hand-written lists drift into agreeing with each other and
+    not with the repo.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", "HEAD"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    if tracked.returncode != 0:
+        import pytest
+
+        pytest.skip("not a git checkout")
+
+    trees = {
+        line.split("/", 1)[0]
+        for line in tracked.stdout.splitlines()
+        if line.endswith(".py") and "/" in line
+    }
+    assert trees, "no tracked python trees found -- the enumeration is broken, not the repo"
+
+    ci_sh = (REPO_ROOT / "scripts" / "ci.sh").read_text()
+    scan_line = next(
+        (line for line in ci_sh.splitlines() if "docs/" in line and "lionagi/" in line),
+        None,
+    )
+    assert scan_line is not None, "could not locate the hygiene scan list in ci.sh"
+
+    missing = sorted(tree for tree in trees if f"{tree}/" not in scan_line)
+    assert not missing, (
+        f"tracked python trees absent from the ci.sh hygiene scan list: {missing}. "
+        "They are scanned by nothing, which reads exactly like being clean."
     )
 
+
+def test_an_allowlisted_fixture_does_not_excuse_an_identifier_it_is_not_listed_for(
+    tmp_path: Path,
+) -> None:
+    """The exemption is per identifier, and this is why.
+
+    A file-level pass excused every reserved identifier in an allowlisted file,
+    so a genuine leak written into one was suppressed. That is the least
+    visible place for a leak to land: the file is already full of the
+    vocabulary, so nothing about it looks out of place on a read.
+    """
+    repo = _fake_repo(tmp_path)
+    target = repo / "tests" / "scripts" / "test_ci_hygiene.py"
+    target.parent.mkdir(parents=True)
+    # The identifier it IS allowlisted for, beside one it is not. Both are
+    # concatenated at runtime the way RESERVED is, so the written fixture
+    # carries each as a single literal while this file carries neither.
+    unlisted = "lambda:" + "not-a-listed-fixture-name"
+    target.write_text(f'SAMPLE = "{RESERVED}"\nLEAK = "{unlisted}"\n')
+
+    result = _scan(repo / "tests")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "not allowed to carry" in result.stdout
+    assert "not-a-listed-fixture-name" in result.stdout
+    # The permitted one must not be named as an offender.
+    assert "sample-unit" not in result.stdout.split("carry:", 1)[-1]
+
+
+def test_a_reserved_identifier_nested_in_an_fstring_format_spec_is_reported(
+    tmp_path: Path,
+) -> None:
+    """Format specs are a nested JoinedStr, not part of the top-level values.
+
+    On interpreters below 3.12 the tokenizer hands the whole f-string over as
+    one token and the literal segments are recovered by parsing it. Reading
+    only the top-level values left anything inside a format spec unscanned, and
+    3.10 is the floor this project supports and runs in CI.
+    """
+    repo = _fake_repo(tmp_path)
+    target = repo / "lionagi" / "render.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(f'value = 1\nrendered = f"{{value:{RESERVED}}}"\n')
+
+    result = _scan(repo / "lionagi")
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "internal namespace identifier found" in result.stdout
+
+
+def test_an_ordinary_fstring_still_reports_and_closure_syntax_still_does_not(
+    tmp_path: Path,
+) -> None:
+    """The control for the walk: widening what is inspected must not start
+    inspecting code, and must not stop inspecting the ordinary case."""
+    repo = _fake_repo(tmp_path)
+
+    ordinary = repo / "lionagi" / "ordinary.py"
+    ordinary.parent.mkdir(parents=True)
+    ordinary.write_text(f'name = "x"\nmsg = f"routing {{name}} to {RESERVED}"\n')
+    assert _scan(repo / "lionagi").returncode == 1
+
+    # Concatenated at runtime, the same way RESERVED and the closure fixture
+    # above are. Written as one literal, the keyword and the name that follows
+    # it would sit in a single string token here, and the scan reports that --
+    # comments included, which is why this note spells neither. The only other
+    # cure is an allowlist entry, and a hole is worth more than this costs.
+    closure = "rows = []\nkey = lambda:" + "rows\nsorted(rows, key=lambda:" + "rows)\n"
+    ordinary.write_text(closure)
+    result = _scan(repo / "lionagi")
     assert result.returncode == 0, result.stdout + result.stderr
