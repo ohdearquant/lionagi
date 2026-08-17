@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Hashable
 from dataclasses import MISSING, dataclass, fields
 from enum import Enum as _Enum
 from functools import lru_cache
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 from typing_extensions import Self, TypedDict, override
 
+from .._structural import _IdentityKey, _structural_hash, _structural_key
 from ._sentinel import Undefined, Unset, _compat_policy, _SentinelPolicy
 
 __all__ = (
@@ -60,13 +61,18 @@ class _FieldLayout:
 
 
 @lru_cache(maxsize=256)
-def _field_layout(model_type: type[Any]) -> _FieldLayout:
+def _cached_field_layout(model_key: _IdentityKey) -> _FieldLayout:
     """Discover and cache one immutable public-field layout per model type."""
+    model_type = cast(type[Any], model_key.target)
     declared = tuple(
         field_info for field_info in fields(model_type) if not field_info.name.startswith("_")
     )
     names = tuple(field_info.name for field_info in declared)
     return _FieldLayout(declared=declared, names=names, allowed=frozenset(names))
+
+
+def _field_layout(model_type: type[Any]) -> _FieldLayout:
+    return _cached_field_layout(_IdentityKey(model_type))
 
 
 def _validate_declared_fields(
@@ -134,11 +140,12 @@ def _apply_serialization_mode(
 
 @lru_cache(maxsize=256)
 def _config_sentinel_policy(
-    owner: type[Any],
+    owner_key: _IdentityKey,
     _config_identity: int,
     config: ModelConfig,
 ) -> _SentinelPolicy:
     """Compile one lexically-owned class policy outside the field hot path."""
+    owner = cast(type[Any], owner_key.target)
     return _compat_policy(
         site=f"{owner.__module__}.{owner.__qualname__}._config",
         none_as_sentinel=config.none_as_sentinel,
@@ -150,7 +157,7 @@ def _effective_config_sentinel_policy(model_type: type[Any]) -> _SentinelPolicy:
     """Resolve the live lexical owner before consulting the compiled-policy cache."""
     config = model_type._config
     owner = next(base for base in model_type.__mro__ if base.__dict__.get("_config") is config)
-    return _config_sentinel_policy(owner, id(config), config)
+    return _config_sentinel_policy(_IdentityKey(owner), id(config), config)
 
 
 def _is_config_sentinel(model_type: type[Any], value: Any) -> bool:
@@ -170,7 +177,7 @@ def _sentinel_predicate(instance: Any) -> Callable[[Any], bool]:
     return predicate
 
 
-@dataclass(slots=True, frozen=True, init=False)
+@dataclass(slots=True, frozen=True, init=False, eq=False)
 class Params:
     """Immutable keyword-argument parameter bag; configure via _config = ModelConfig(...)."""
 
@@ -240,15 +247,16 @@ class Params:
             mode,
         )
 
+    def _key(self) -> Hashable:
+        return _structural_key(self)
+
     def __hash__(self) -> int:
-        from .._hash import hash_dict
+        return _structural_hash(self)
 
-        return hash_dict(self.to_dict())
-
-    def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, Params):
-            return False
-        return hash(self) == hash(other)
+    def __eq__(self, other: object) -> bool:
+        if self is other:
+            return True
+        return type(self) is type(other) and self._key() == cast(Params, other)._key()
 
     def with_updates(self, **kwargs: Any) -> Self:
         """Return a new instance with updated fields."""
@@ -352,33 +360,22 @@ class DataClass:
 KeysLike = list[str] | tuple[str, ...] | set[str] | frozenset[str] | KeysDict
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True, frozen=True, eq=False)
 class Meta:
     """Immutable metadata container for field templates and other configurations."""
 
     key: str
     value: Any
 
+    def _key(self) -> Hashable:
+        return _structural_key(self)
+
     @override
     def __hash__(self) -> int:
-        # callables hash by id
-        if callable(self.value):
-            return hash((self.key, id(self.value)))
-        try:
-            return hash((self.key, self.value))
-        except TypeError:
-            return hash((self.key, str(self.value)))
+        return _structural_hash(self)
 
     @override
     def __eq__(self, other: object) -> bool:
-        # callables compare by identity to maximize cache hits
-        if not isinstance(other, Meta):
-            return NotImplemented
-
-        if self.key != other.key:
-            return False
-
-        if callable(self.value) and callable(other.value):
-            return id(self.value) == id(other.value)
-
-        return bool(self.value == other.value)
+        if self is other:
+            return True
+        return type(self) is type(other) and self._key() == cast(Meta, other)._key()

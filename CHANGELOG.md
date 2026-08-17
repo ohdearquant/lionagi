@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- `Params`, `Meta`, and `Spec` now compare through one exact-type structural projection instead of
+  generated dataclass equality, string fallback hashes, or hash-as-equality. Mutable nested
+  dict/list/set values remain structurally comparable but now raise
+  `UnhashableStructuralValueError` when hashed, preventing shallow-frozen objects from corrupting
+  set/dict membership after nested mutation. All production `Params` declarations explicitly use
+  the base `eq=False` authority. Field-layout, sentinel-policy/singleton, shared `Spec`/`FieldModel`
+  annotation, and Pydantic model caches now key classes by identity, distinguish typed values such
+  as `True` and `1`, preserve immutable `pathlib`/UUID value semantics, and bypass mutable or
+  receiver-bound metadata. Unsupported objects use identity semantics instead of trusting
+  arbitrary user equality/hash implementations. The two former 10,000-entry
+  annotation caches are one shared 10,000-entry cache under the same environment setting; a
+  separate stable-declaration projection cache is bounded by
+  `LIONAGI_STRUCTURAL_CACHE_SIZE` (10,000 by default).
 - Lightweight `Params`, `DataClass`, `Role`, and `InstructionContent` projections now accept a
   keyword-only `mode="json"` while preserving positional `exclude` and the existing shallow
   Python-mode output. JSON mode delegates nested LionAGI/Pydantic/dataclass values to the internal

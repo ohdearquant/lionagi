@@ -1,3 +1,4 @@
+from .._structural import UnhashableStructuralValueError
 from ._sentinel import (
     MaybeSentinel,
     MaybeUndefined,
@@ -37,6 +38,7 @@ __all__ = (
     "UnsetType",
     "is_sentinel",
     "not_sentinel",
+    "UnhashableStructuralValueError",
     # Base classes
     "ModelConfig",
     "Enum",

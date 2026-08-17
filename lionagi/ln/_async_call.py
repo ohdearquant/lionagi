@@ -268,7 +268,7 @@ async def bcall(
         yield await alcall(batch, func, **kwargs)
 
 
-@dataclass(slots=True, init=False, frozen=True)
+@dataclass(slots=True, init=False, frozen=True, eq=False)
 class AlcallParams(Params):
     # ClassVar attributes
     _config: ClassVar[ModelConfig] = ModelConfig(none_as_sentinel=True)
@@ -306,7 +306,7 @@ class AlcallParams(Params):
         return await alcall(input_, func, **kwargs)
 
 
-@dataclass(slots=True, init=False, frozen=True)
+@dataclass(slots=True, init=False, frozen=True, eq=False)
 class BcallParams(AlcallParams):
     _func: ClassVar[Any] = bcall
 

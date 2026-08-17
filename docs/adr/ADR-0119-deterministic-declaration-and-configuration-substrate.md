@@ -9,8 +9,11 @@
   materialization retain declaration order, and multiple unnamed specs are accepted; legacy
   sentinel collapse is isolated behind a closed compatibility inventory; lightweight JSON
   projection delegates nested values to LionAGI's internal serializer, and omitted `Spec` base
-  types are `Undefined`; structural equality/hash, production adapter migration, registry snapshots,
-  and canonical durable serialization remain open
+  types are `Undefined`; `Params`, `Meta`, and `Spec` use one typed structural equality/hash
+  projection, production declarations use the explicit `eq=False` authority, and declaration,
+  field-layout, sentinel, singleton, annotation, and Pydantic model caches use identity-safe keys;
+  mutable `DataClass`/`HashableModel` migration, registry snapshots, and canonical durable
+  serialization remain open
 - **Area**: utilities
 - **Date**: 2026-08-16
 - **Relations**: extends ADR-0050 (foundational utility and typed adaptation strata); required
@@ -203,7 +206,7 @@ hashability.
 Target constructor behavior is equivalent to dataclass construction:
 
 ```python
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class Params:
     def __init__(self, **kwargs: Any) -> None: ...
 
@@ -287,38 +290,87 @@ order carries meaning.
 
 ### D4 — Equality and hash use one structural projection
 
-`Params`, `Spec`, `Meta`, and immutable registry values expose a private structural key. Equality
-and hash both use it:
+`Params`, `Spec`, `Meta`, and immutable registry values expose one private recursive projection.
+It separates three questions that raw Python tuples conflate: whether two values are structurally
+equal, whether the live graph is safe to hash, and whether retaining a key can safely share a
+materialized cache entry:
 
 ```python
-def _structural_key(value: Any) -> Hashable: ...
+@dataclass(frozen=True, slots=True)
+class _StructuralKey:
+    value: Hashable
+    hash_safe: bool
+    cache_stable: bool
+
+def _structural_key(value: Any) -> _StructuralKey: ...
+def _try_stable_cache_key(value: Any) -> _StructuralKey | None: ...
 
 def __eq__(self, other: object) -> bool:
     return type(self) is type(other) and self._key() == other._key()
 
 def __hash__(self) -> int:
-    return hash((type(self), self._key()))
+    return hash(self._key().require_hashable())
 ```
 
 The projection rules are:
 
-- mappings become tuples of canonicalized key/value pairs sorted by canonical key bytes;
-- lists and tuples preserve order and become tuples;
-- sets and frozensets become tuples sorted by canonical bytes;
+- every scalar carries an exact type tag, so `True`, `1`, and `1.0` are distinct; floats use their
+  IEEE-754 bits, including signed zero and NaN payload; `Ellipsis` remains an immutable singleton;
+- mappings become key/value projections sorted by framed structural order tokens; lists and tuples
+  preserve order and retain their different collection kinds; sets and frozensets are sorted by
+  those same tokens and retain their different kinds;
+- a live `dict`, `list`, or `set` remains structurally comparable but makes its owner unhashable
+  and cache-ineligible. A tuple or frozenset is safe only when every descendant is safe. This
+  prevents a shallow-frozen `Params` from changing hash after a nested mutation. User collection
+  subclasses remain opaque because they can attach or expose additional mutable state;
 - enums include their concrete enum type and canonicalized value;
-- paths use their normalized string representation only in adapters that declare path semantics;
-- callables compare and hash by identity, preserving the current cache contract;
-- nested `Params`, `Spec`, `Meta`, and supported Pydantic values contribute their structural key;
-- an unsupported opaque mutable value raises `UnhashableStructuralValue` when a hash is requested
-  rather than manufacturing a string-based hash inconsistent with equality.
+- typing forms recurse through their arguments; the interpreter-owned parameter list exposed by
+  `Callable[[...], result]` is normalized as immutable syntax rather than mistaken for user state,
+  and the available public `Any`/`NoReturn`/`Never`/`Self`/`LiteralString` singletons have explicit
+  tags across their different Python 3.10–3.14 runtime representations;
+- the closed stdlib `pathlib` concrete types and exact `UUID` are recognized immutable value
+  atoms: their concrete type is part of the key, POSIX path parts retain case, and Windows path
+  parts use the case-lowering of path equality. User subclasses remain opaque/cache-ineligible
+  because they may add mutable state;
+- dataclass owners include exact concrete type identity and their declared fields; mutable
+  dataclasses and Pydantic models are structurally comparable but not hash/cache-safe;
+- callables compare and hash by strong identity. Plain functions and types may be cache-stable;
+  bound methods, partials, and callable instances are not, because sharing would retain mutable
+  receiver state. Their unordered runtime ordering token uses that same identity, never mutable
+  presentation attributes such as `__module__` or `__qualname__`;
+- unsupported unhashable opaque values compare by identity and raise
+  `UnhashableStructuralValueError` with their path when a hash is requested; cycles fail with the
+  same typed path error. Cache admission converts that error into an uncached materialization,
+  never a user-visible construction failure.
+- the two Lion sentinels are recognized by exact singleton identity, never by spoofable module or
+  class names;
+- unsupported hashable opaque values also compare by identity and are cache-ineligible: arbitrary
+  user hash/equality implementations are not treated as proof of recursive immutability.
 
-The last rule replaces a fallback that exists today. `lionagi/ln/_hash.py:120-124` renders an
-unrecognized value through `str(item)`, and through `repr(item)` if that fails, so two distinct
-objects with the same string form hash identically. That is the string-based hash this decision
-forbids, and it is the concrete target of the change.
+The substrate no longer calls the public compatibility hashes in `lionagi/ln/_hash.py`, whose
+unrecognized-value path renders through `str(item)` and then `repr(item)`. Those public helpers
+remain available for audited compatibility consumers until their own migration; D4 deletes the
+substrate dependency, not the public API.
 
 Hash equality is never used as object equality. Equal objects must hash equal; unequal objects
-may still collide without becoming equal.
+may still collide without becoming equal. Structurally equal values containing mutable containers
+are both unhashable; the Python equal-hash invariant therefore does not license a mutable content
+hash.
+
+The same projection owns declaration-cache admission. `Spec` and `FieldModel` share one bounded
+annotation cache keyed by the exact whole declaration; effective sentinel/nullable policy is
+applied atomically only on a miss. Stable Pydantic model declarations use the same atomic
+get-or-create contract, so concurrent callers receive one class identity. The materializer uses
+the runtime's uncached `typing._AnnotatedAlias` constructor behind one private compatibility
+function because public
+`typing.Annotated[...]` has its own equality-based global cache and can return the wrong origin for
+custom metaclasses. Python 3.10–3.14 contract tests pin that isolated private dependency. Pydantic
+model keys include adapter-class identity, base-model identity, model name, the final ordered
+declaration projection, and documentation; the already-projected spec order makes raw
+`include`/`exclude` selectors redundant. A separate bounded stable-declaration projection cache
+keeps those recursive checks off hot cache-hit paths. Field-layout, sentinel-policy, and
+sentinel-singleton caches likewise wrap class objects in strong identity keys so permissive
+metaclass equality cannot cross-wire their values.
 
 **The decoration contract is part of this decision.** The base implementations above are reachable
 only when a subclass does not shadow them, and today's subclasses decide that by accident. A
@@ -329,7 +381,7 @@ by a decorator argument:
 | Subclass decoration | `__eq__` in force | Observable behavior |
 |---|---|---|
 | `@dataclass(frozen=True)` (default `eq=True`) | dataclass-generated | field-tuple equality requiring the same class; `hash()` raises `TypeError` when any field value is unhashable, including values the base `__hash__` handles |
-| `@dataclass(frozen=True, eq=False)` | inherited `Params.__eq__` | hash equality; two *different* `Params` subclasses holding equal fields compare equal |
+| `@dataclass(frozen=True, eq=False)` before D4 | inherited `Params.__eq__` | hash equality; two *different* `Params` subclasses holding equal fields can compare equal |
 
 Neither column is what D4 specifies. The decision is therefore:
 
@@ -510,16 +562,23 @@ The foundation suite adds the following required matrices.
 
 **Equality/hash**
 
-- equal dictionaries with different insertion order produce equal `Meta` and equal hashes;
+- equal dictionaries with different insertion order produce equal `Meta` values, while both
+  remain explicitly unhashable because the live dictionaries are mutable;
 - unequal values remain unequal even under an injected hash collision;
-- mutable `DataClass` and mutable Pydantic models are unhashable;
+- immutable sequences and frozensets produce equal runtime hashes for equal projections within a
+  process; mutable dict/list/set descendants make `Params`/`Meta`/`Spec` unhashable;
+- mutable `DataClass` and mutable Pydantic models are unhashable after their consumer migration;
 - callable metadata retains identity semantics;
 - unsupported opaque mutable metadata fails explicitly;
+- `True`, `1`, `1.0`, signed zero, sentinel states, enum types, and custom-metaclass type identities
+  remain distinct where their typed runtime meaning differs;
+- annotation/model caches reuse repeated stable declarations, bypass mutable/bound-method values,
+  and never cross-wire adapter, `Spec`, or base-type subclasses;
 - two different subclasses of one base holding equal field values are unequal, which is the
   cross-subclass equality the pre-migration `eq=False` decoration admits;
 - a subclass of `Params`, `Spec`, or `Meta` decorated `eq=True`, or defining `__eq__` or
-  `__hash__` without a declared override reason, fails a static check rather than silently
-  selecting the generated implementations;
+  `__hash__` outside the three base authorities, fails a closed static check rather than silently
+  selecting generated implementations;
 - `none_as_sentinel` and `empty_as_sentinel` are set only from call sites named in D1's
   enumerated list, and a diff that sets either elsewhere fails.
 

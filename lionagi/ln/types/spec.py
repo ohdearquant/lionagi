@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import contextlib
-import os
-import threading
-from collections import OrderedDict
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Hashable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Annotated, Any, Literal
+from typing import Any, Literal, cast
 
+from .._structural import _structural_hash, _structural_key
+from ._annotation import _materialize_annotation
 from ._sentinel import (
     MaybeSentinel,
     MaybeUndefined,
@@ -19,12 +18,6 @@ from ._sentinel import (
     not_sentinel,
 )
 from .base import Meta, _apply_serialization_mode
-
-# Global cache for annotated types with bounded size
-_MAX_CACHE_SIZE = int(os.environ.get("LIONAGI_FIELD_CACHE_SIZE", "10000"))
-_annotated_cache: OrderedDict[tuple[Any, tuple[Meta, ...]], type[Any]] = OrderedDict()
-_cache_lock = threading.RLock()
-
 
 __all__ = ("Spec", "CommonMeta")
 
@@ -93,7 +86,7 @@ class CommonMeta(Enum):
         return tuple(metas)
 
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, eq=False)
 class Spec:
     """Framework-agnostic field type + metadata specification."""
 
@@ -142,6 +135,17 @@ class Spec:
             if meta.key == key:
                 return meta.value
         raise KeyError(f"Metadata key '{key}' undefined in Spec.")
+
+    def _key(self) -> Hashable:
+        return _structural_key(self)
+
+    def __hash__(self) -> int:
+        return _structural_hash(self)
+
+    def __eq__(self, other: object) -> bool:
+        if self is other:
+            return True
+        return type(self) is type(other) and self._key() == cast(Spec, other)._key()
 
     def get(self, key: str, default: Any = Undefined) -> Any:
         with contextlib.suppress(KeyError):
@@ -251,37 +255,13 @@ class Spec:
         return t_
 
     def annotated(self) -> type[Any]:
-        """Materialize into an Annotated type (LRU-cached, thread-safe)."""
-        cache_key = (self.base_type, self.metadata)
-
-        with _cache_lock:
-            if cache_key in _annotated_cache:
-                _annotated_cache.move_to_end(cache_key)
-                return _annotated_cache[cache_key]
-
-            actual_type: Any = Any if is_sentinel(self.base_type) else self.base_type
-            current_metadata = self.metadata
-
-            if any(m.key == "nullable" and m.value for m in current_metadata):
-                actual_type = actual_type | None  # type: ignore
-
-            if current_metadata:
-                args = [actual_type] + list(current_metadata)
-                # Subscription (not the __class_getitem__ attribute, which 3.14
-                # removed from special forms). Annotated[(a, b)] == Annotated[a, b].
-                result = Annotated[tuple(args)]  # type: ignore
-            else:
-                result = actual_type  # type: ignore[misc]
-
-            _annotated_cache[cache_key] = result  # type: ignore[assignment]
-
-            while len(_annotated_cache) > _MAX_CACHE_SIZE:
-                try:
-                    _annotated_cache.popitem(last=False)
-                except KeyError:
-                    break
-
-        return result  # type: ignore[return-value]
+        """Materialize through the shared identity-safe annotation cache."""
+        return _materialize_annotation(
+            owner=self,
+            base_type=self.base_type,
+            metadata=self.metadata,
+            sentinel_predicate=_spec_is_sentinel,
+        )
 
     def metadict(
         self, exclude: set[str] | None = None, exclude_common: bool = False
@@ -298,6 +278,11 @@ def _is_coro_func(obj: Any) -> bool:
     from lionagi.ln.concurrency.utils import is_coro_func
 
     return is_coro_func(obj)
+
+
+def _spec_is_sentinel(value: Any) -> bool:
+    """Keep the public sentinel helper on its direct-invocation contract."""
+    return is_sentinel(value)
 
 
 def _is_factory(obj: Any) -> tuple[bool, bool]:
