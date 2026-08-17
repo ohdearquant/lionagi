@@ -51,6 +51,20 @@ class PluginProviderEndpoint(Endpoint):
     pass
 """
 
+PROVIDER_ALIAS_MODULE = """\
+from lionagi.service.connections.registry import register_endpoint
+from lionagi.service.connections.endpoint import Endpoint
+
+
+@register_endpoint(
+    provider="{provider}",
+    endpoint="chat",
+    provider_aliases=["{provider_alias}"],
+)
+class PluginProviderEndpoint(Endpoint):
+    pass
+"""
+
 
 def _clear_plugin_modules() -> None:
     """Drop every ``sys.modules`` entry left by ``PluginRegistry.activate_target``.
@@ -82,10 +96,12 @@ def _isolate_endpoint_registry():
     EndpointRegistry._ensure_loaded()
     saved_entries = list(EndpointRegistry._entries)
     saved_loaded = EndpointRegistry._loaded
+    saved_alias_owners = dict(EndpointRegistry._alias_owners)
     _clear_plugin_modules()
     yield
     EndpointRegistry._entries = saved_entries
     EndpointRegistry._loaded = saved_loaded
+    EndpointRegistry._alias_owners = saved_alias_owners
     _clear_plugin_modules()
 
 
@@ -821,6 +837,10 @@ class TestPluginProviderBuiltinCollision:
 
         result = match_endpoint(provider="openai", endpoint="chat")
         assert isinstance(result, OpenaiChatEndpoint)
+        assert not any(
+            entry.plugin_name == "web-research" and entry.meta.provider == "openai"
+            for entry in EndpointRegistry._entries
+        )
 
     def test_sibling_noncolliding_provider_in_the_same_manifest_still_resolves(self, write_plugin):
         """A collision on one declared provider must not take down a sibling,
@@ -847,3 +867,80 @@ class TestPluginProviderBuiltinCollision:
 
         assert type(result).__name__ == "PluginProviderEndpoint"
         assert result.config.provider == "acme-llm"
+
+
+class TestPluginProviderPeerCollision:
+    def test_same_canonical_provider_coexists_and_first_activation_wins(self, write_plugin):
+        _write_provider_plugin(
+            write_plugin,
+            "a-first",
+            name="provider-first",
+            provider="shared-provider",
+        )
+        _write_provider_plugin(
+            write_plugin,
+            "z-second",
+            name="provider-second",
+            provider="shared-provider",
+        )
+
+        assert PluginRegistry.active_provider_targets() == [
+            ("provider-first", "providers/endpoint.py"),
+            ("provider-second", "providers/endpoint.py"),
+        ]
+
+        result = match_endpoint(provider="shared-provider", endpoint="chat")
+        peer_entries = [
+            entry for entry in EndpointRegistry._entries if entry.meta.provider == "shared-provider"
+        ]
+
+        assert [entry.plugin_name for entry in peer_entries] == [
+            "provider-first",
+            "provider-second",
+        ]
+        assert type(result).__module__ == _module_key("provider-first")
+        assert _module_key("provider-first") in sys.modules
+        assert _module_key("provider-second") in sys.modules
+
+    def test_shared_alias_rejects_later_canonical_provider_fail_soft(self, write_plugin, caplog):
+        import logging
+
+        for dir_name, plugin_name, provider in (
+            ("a-incumbent", "alias-incumbent", "canonical-incumbent"),
+            ("z-contender", "alias-contender", "canonical-contender"),
+        ):
+            write_plugin(
+                dir_name,
+                MANIFEST.format(name=plugin_name),
+                files={
+                    "providers/endpoint.py": PROVIDER_ALIAS_MODULE.format(
+                        provider=provider,
+                        provider_alias="shared-provider-alias",
+                    )
+                },
+            )
+            _trust(dir_name)
+
+        assert PluginRegistry.active_provider_targets() == [
+            ("alias-incumbent", "providers/endpoint.py"),
+            ("alias-contender", "providers/endpoint.py"),
+        ]
+
+        with caplog.at_level(logging.WARNING, logger="lionagi.service.connections.registry"):
+            result = match_endpoint(provider="shared-provider-alias", endpoint="chat")
+
+        assert result.config.provider == "canonical-incumbent"
+        assert type(result).__module__ == _module_key("alias-incumbent")
+        assert [
+            entry.plugin_name
+            for entry in EndpointRegistry._entries
+            if entry.meta.provider in {"canonical-incumbent", "canonical-contender"}
+        ] == ["alias-incumbent"]
+        # PluginRegistry wraps the decorator collision as PluginActivationError,
+        # so the registry's ProviderAliasCollisionError warning handler is not
+        # reached in the current compatibility path.
+        assert "alias-contender" not in caplog.text
+        assert _module_key("alias-incumbent") in sys.modules
+        assert _module_key("alias-contender") not in sys.modules
+        with pytest.raises(ProviderNotFoundError, match="canonical-contender"):
+            match_endpoint(provider="canonical-contender", endpoint="chat")
