@@ -8,6 +8,7 @@ reconciliation ledger."""
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 import uuid
 
@@ -261,10 +262,15 @@ async def test_blocking_sync_handler_does_not_stall_the_fan_out():
     # thread so the deadline still cuts the fan-out short.
     registry = TerminalCallbackRegistry(budget_seconds=0.2)
     ran: list[str] = []
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
 
     def _blocking_sync(env):
-        time.sleep(30)  # far longer than the budget
-        ran.append("blocking-completed")  # should never observably append
+        started.set()
+        release.wait(timeout=2.0)
+        ran.append("blocking-completed")
+        finished.set()
 
     async def _fast_async(env):
         ran.append("fast-async")
@@ -287,9 +293,15 @@ async def test_blocking_sync_handler_does_not_stall_the_fan_out():
 
     assert "fast-async" in ran
     assert "blocking-completed" not in ran
-    # Bounded well under the blocking handler's 30s sleep -- the offloaded
-    # thread is abandoned at the deadline, not awaited to completion.
-    assert elapsed < 5.0
+    assert started.is_set()
+    assert not finished.is_set()
+    # If the sync callback ran inline, emit would wait for the 2s fallback.
+    assert elapsed < 1.0
+
+    # Release and join the abandoned worker so this test leaves no sleeping
+    # thread behind for the rest of the worker process.
+    release.set()
+    assert await asyncio.to_thread(finished.wait, 1.0)
 
 
 @pytest.mark.asyncio

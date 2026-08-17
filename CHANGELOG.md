@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Public-surface differential capture now crosses one shared clock boundary for
+  the full CLI case batch, and terminal-callback offload tests release their
+  worker explicitly instead of leaving a 30-second sleeper behind.
 - Resuming a flow whose checkpoint recorded any operation as failed now refuses
   and names those operations, instead of replaying them as terminal state.
   Replaying a failed operation as terminal marks it failed without running it,

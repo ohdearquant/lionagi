@@ -67,15 +67,15 @@ entry to the allowlist.
 
 Two mechanisms in `_capture.py` back the redaction:
 
-- `differential_capture()` runs a given argv three times — once under the ambient
-  environment, once under a deliberately different `HOME`/`TMPDIR`/`USER` and
-  working directory, and once more after a wall-clock gap crossing a one-second
-  boundary. Output that reads anything from the environment, the current
-  directory, or the clock necessarily differs across the three runs; genuinely
-  static argparse text does not. This checks the property that actually matters
-  (does the output depend on the machine at all) instead of guessing at what a
-  leaked value looks like.
-- `known_machine_identity()` closes the gap `differential_capture` can't: a value
+- `differential_capture_many()` runs each declared argv under the ambient
+  environment, then under a deliberately different `HOME`/`TMPDIR`/`USER` and
+  working directory. After all cases finish those two captures, it crosses one
+  shared wall-clock second boundary and captures every ambient case again.
+  Output that reads anything from the environment, current directory, or clock
+  necessarily differs across the three runs; genuinely static argparse text
+  does not. Sharing one boundary preserves the property without sleeping once
+  per case on the same pytest worker.
+- `known_machine_identity()` closes the gap `differential_capture_many` can't: a value
   that's constant on one machine but still identifying (a hostname baked into a
   banner line, for instance) won't vary between two runs on the same box. It
   redacts a small set of literal identifying values — hostname, real username,
