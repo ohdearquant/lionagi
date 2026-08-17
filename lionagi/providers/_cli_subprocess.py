@@ -309,12 +309,7 @@ def _abandoned_without_output_note(
     unavailable: str | None,
     drain_error: str | None,
 ) -> str:
-    """What to say about a child abandoned before it produced any output.
-
-    Keeps ``_no_stderr_reason``'s three-way split — said nothing, pipe never
-    opened, capture failed — since collapsing them makes a broken capture read
-    like a quiet subprocess.
-    """
+    """What to say about a child abandoned before it produced output; keeps ``_no_stderr_reason``'s three-way split so a broken capture cannot read as a quiet subprocess."""
     if captured:
         clipped = captured[:_ABANDONED_STDERR_LOG_CAP]
         suffix = " [truncated]" if len(captured) > _ABANDONED_STDERR_LOG_CAP else ""
@@ -570,10 +565,8 @@ async def ndjson_from_cli(
             raise RuntimeError(err)
 
     finally:
-        # A child abandoned before producing anything takes neither path that
-        # quotes stderr, which is where the capture is worth the most. Logged,
-        # not raised: the exception belongs to whoever closed us. Decided before
-        # any await, since awaiting in a finally can change sys.exc_info().
+        # Neither stderr-quoting path covers this, and it is decided before any
+        # await, since awaiting in a finally can change sys.exc_info().
         abandoned_silently = (
             sys.exc_info()[1] is not None and not produced_output and not stderr_already_surfaced
         )
@@ -581,19 +574,16 @@ async def ndjson_from_cli(
         await end_child_group(proc)
 
         if abandoned_silently:
-            # Give the drain its turn first, or the warning reports "said
-            # nothing" about a child that spoke. After end_child_group, so the
-            # reader hits EOF instead of blocking, and shielded so a timeout
-            # cannot cancel the drain out from under the buffer.
+            # Drain first, or the warning reports "said nothing" about a child
+            # that spoke; shielded so a timeout cannot cancel it mid-buffer.
             if stderr_task is not None:
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(stderr_task), timeout=_ABANDONED_STDERR_DRAIN_TIMEOUT
                     )
                 except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
-                    # A drain that timed out or failed still leaves whatever it
-                    # captured in the buffer, and the note below reports the
-                    # failure itself. Nothing here is worth losing the warning.
+                    # Whatever it captured stays in the buffer, and the note
+                    # below reports the failure itself.
                     pass
             log.warning(
                 "CLI subprocess produced no output before it was abandoned; %s",

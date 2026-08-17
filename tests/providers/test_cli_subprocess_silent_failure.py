@@ -105,9 +105,8 @@ class TestAgainstARealChild:
         assert "wrote nothing to stderr" not in message, message
 
 
-# Writes a diagnostic to stderr and then hangs without ever producing stdout.
-# This is the shape a worker takes when a liveness watchdog gives up on it: the
-# reason it is stuck is on the pipe nobody was going to read.
+# The shape a worker takes when a liveness watchdog gives up on it: it explains
+# itself on stderr and never produces stdout.
 _SPEAKS_ON_STDERR_THEN_HANGS = (
     "import sys, time; "
     "sys.stderr.write('quota exhausted for this model'); "
