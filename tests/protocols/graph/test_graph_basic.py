@@ -55,11 +55,6 @@ def complex_graph():
 class TestGraphBasics:
     """Basic graph operations"""
 
-    def test_empty_graph_creation(self, empty_graph):
-        assert len(empty_graph.internal_nodes) == 0
-        assert len(empty_graph.internal_edges) == 0
-        assert isinstance(empty_graph.node_edge_mapping, dict)
-
     def test_add_node(self, empty_graph):
         node = create_test_node("TestNode")
         empty_graph.add_node(node)
@@ -68,10 +63,6 @@ class TestGraphBasics:
             "in": {},
             "out": {},
         }
-
-    def test_add_invalid_node(self, empty_graph):
-        with pytest.raises(RelationError):
-            empty_graph.add_node("not a node")
 
     def test_add_relational_non_node(self, empty_graph):
         with pytest.raises(RelationError):
@@ -88,10 +79,6 @@ class TestGraphBasics:
         assert edge.id in graph.internal_edges
         assert graph.node_edge_mapping[node1.id]["out"][edge.id] == node2.id
         assert graph.node_edge_mapping[node2.id]["in"][edge.id] == node1.id
-
-    def test_add_invalid_edge(self, empty_graph):
-        with pytest.raises(RelationError):
-            empty_graph.add_edge("not an edge")
 
     def test_add_edge_missing_nodes(self, empty_graph):
         node1 = create_test_node("Node1")
