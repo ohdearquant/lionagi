@@ -122,10 +122,7 @@ async def test_verdict_reads_issues_from_store():
 
     run.make_agent = fake_make
     out = await eng._verdict(run, "ART", ("security",))
-    # The subject here is that the issue reached the synthesis instruction. The
-    # returned text also carries the withheld note now, since this major
-    # finding has no verification outcome, so the decision is asserted as
-    # carried rather than as the whole of the string.
+    # The text also carries the withheld note, so assert the decision is carried.
     assert out.startswith("REQUEST-CHANGES")
     assert "X-issue" in captured["instruction"]
 

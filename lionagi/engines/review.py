@@ -59,11 +59,8 @@ _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
 
 _ISOLATED_ERRORS: tuple[type[BaseException], ...] = (ProviderError, *_TRANSPORT_ERRORS)
 
-# Refusals that describe the run, not one attempt: they recur identically on
-# every dimension, so isolating one would publish a verdict over an artifact
-# nothing read. Quota counts despite being retryable — retry is about time,
-# this is about scope, and a run in flight has no later. Context overflow is a
-# property of the one prompt that overflowed, so it is repaired, not here.
+# Refusals that describe the run, not one attempt, so isolating one would
+# publish a decision over an artifact nothing read.
 _RUN_WIDE_REFUSALS: tuple[type[BaseException], ...] = (
     ProviderAuthError,
     ProviderQuotaError,
@@ -241,12 +238,7 @@ class VerifyResult(EngineEvent):
 
 
 class ProposedVerdict(EngineEvent):
-    """What synthesis concluded, before the evidence gate has ruled on it.
-
-    An emitted decision cannot be recalled, so nothing may emit one before the
-    thing that can refuse it has run. Deliberately not a ``Verdict``: that is
-    the type consumers find the run's decision by.
-    """
+    """What synthesis concluded, before the evidence gate has ruled on it; not a ``Verdict``, which is how consumers find the decision."""
 
     verdict: str = Field(
         description="The proposed decision, e.g. APPROVE | APPROVE-WITH-FIXES | REQUEST-CHANGES | REJECT."
@@ -270,11 +262,7 @@ _SESSION_RUNS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 class ReviewRun(EngineRun):
-    """Evidence scoped to this run: a gate that admits another run's evidence is not a gate.
-
-    Exact for sequential session reuse, blind to two runs started before either
-    emitted — which ``shares_session`` flags so the gate can refuse.
-    """
+    """Evidence scoped to this run; ``shares_session`` flags the overlap this scoping cannot resolve."""
 
     def __init__(self, engine: Engine, **kwargs: Any) -> None:
         super().__init__(engine, **kwargs)
@@ -552,10 +540,8 @@ class ReviewEngine(Engine):
         # the drain stays clean; anything the wrapper does not claim still
         # reaches here and ends the run.
         await run.wait_quiescence()
-        # A clean or minor-only review spawns no verifiers and would approve on
-        # nothing executed. Gating on zero VerifyResult rather than zero issues
-        # makes both shapes carry one adversarial audit: positive evidence, not
-        # absence, and decided here rather than left to a consumer we cannot see.
+        # A clean or minor-only review spawns no verifiers, so gate on zero
+        # VerifyResult to make both shapes carry one adversarial audit.
         if self.verify_clean and not run.by_type(VerifyResult):
             await self._verify_clean_isolated(run, artifact, dims)
         return await self._verdict(run, artifact, dims)
@@ -600,11 +586,7 @@ class ReviewEngine(Engine):
     def _isolate_verification_failure(
         self, run: EngineRun, exc: BaseException, *, stage: str
     ) -> bool:
-        """Record an isolated verification failure; False means the caller must re-raise.
-
-        A dead verifier degrades the audit of one finding, not the run that
-        already produced it. Stays visible via ``_emission_failures``.
-        """
+        """Record an isolated verification failure; False means the caller must re-raise."""
         if not _is_all_isolated_failure(exc):
             return False
         error_type = _failure_label(exc)
@@ -768,11 +750,7 @@ class ReviewEngine(Engine):
         )
 
     def _reported_dimensions(self, run: EngineRun) -> set[str]:
-        """Dimensions that have produced something this run can point at.
-
-        Repair and the coverage gate both read it; two spellings would drift,
-        and either direction of that drift is wrong.
-        """
+        """Dimensions that produced something this run can point at; repair and the coverage gate share it."""
         reported = {i.dimension for i in run.by_type(IssueFound)}
         reported |= {c.dimension for c in run.by_type(DimensionClean)}
         return reported
