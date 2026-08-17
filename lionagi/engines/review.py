@@ -132,6 +132,22 @@ def _is_transport_mcp_error(exc: BaseException) -> bool:
         # without reading the message.
         return isinstance(exc.__context__, TimeoutError)
     if code == _MCP_CONNECTION_CLOSED:
+        # Known residual, stated here because this is where the call is made.
+        # A server that answers with exactly this code, exactly this message
+        # and no other field is indistinguishable from a real drop, and no
+        # further check closes it: the SDK builds its closed-connection reply
+        # with those two fields and pushes it onto the same response stream a
+        # server's reply arrives on, so both surface from one raise with an
+        # empty context. Code and message are the whole of the difference and
+        # both travel in the server's payload.
+        #
+        # What bounds it is where the answer is used rather than how good the
+        # answer is. A dimension classified either way is recorded as skipped
+        # and forces a degraded result, so getting this wrong mislabels the
+        # cause of a failure that is reported either way. It cannot turn a
+        # failure into a pass. Closing the residual needs something outside
+        # the exception -- whether the session survived, or whether the other
+        # dimensions died with it -- which this signature cannot see.
         return getattr(
             error, "message", None
         ) == _MCP_CONNECTION_CLOSED_MESSAGE and _carries_only_the_sdks_own_fields(error)
