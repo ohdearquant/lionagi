@@ -1116,7 +1116,7 @@ async def _doctor(
 
     from sqlalchemy import text
 
-    from lionagi.cli._util import pid_alive
+    from lionagi.cli._util import pid_alive, recorded_row_is_foreign
     from lionagi.cli.kill import _check_pid_identity, _read_pid_from_entity
 
     async with StateDB() as db:
@@ -1152,6 +1152,14 @@ async def _doctor(
                 except ValueError:
                     meta = None
             entity["node_metadata"] = meta if isinstance(meta, dict) else None
+            if recorded_row_is_foreign(entity["node_metadata"]):
+                # Asked before liveness for the same reason the stale sweep
+                # asks before it: a row recorded on another machine has no pid
+                # here, and this loop reads a pid it cannot find as reapable.
+                # Inside the liveness branch the check would never run for the
+                # rows it exists to protect.
+                skipped += 1
+                continue
             pid = _read_pid_from_entity(entity)
             if pid is not None and pid_alive(pid):
                 # A live PID alone isn't proof: the OS can hand a dead session's

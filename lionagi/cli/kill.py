@@ -19,6 +19,7 @@ from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 from ._logging import log_error, warn
 from ._util import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
 from ._util import pid_alive as _pid_alive
+from ._util import recorded_row_is_foreign as _recorded_row_is_foreign
 from ._util import resolve_entity as _resolve_entity
 
 
@@ -436,6 +437,22 @@ async def _kill_one(
 
     if pid is not None:
         meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
+        if _recorded_row_is_foreign(meta):
+            # This pid names a process in another host's pid space. Signalling
+            # it would aim at whatever unrelated local process holds that
+            # number, and recording a cancellation would report a kill that
+            # never happened to a run still going on the machine that owns it.
+            # Refused for the same reason an identity mismatch is.
+            warn(
+                f"  {entity_type} {entity_id[:12]}: pid {pid} was recorded on "
+                f"{meta.get('pid_host')!r}, not this host — kill skipped"
+            )
+            return {
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "signal": "foreign_host",
+                "pid": pid,
+            }
         expected_session_id = entity_id if entity_type == "session" else None
         raw_ct = meta.get("pid_create_time")
         try:
@@ -654,6 +671,7 @@ async def _do_kill_all_stale(
     skipped_live = 0
     skipped_recent = 0
     skipped_unverifiable = 0
+    skipped_foreign = 0
     skipped_unlinked_plays = 0
     unverifiable_tracked = 0
 
@@ -690,6 +708,24 @@ async def _do_kill_all_stale(
                     continue
 
                 pid = _read_pid_from_entity(row_dict)
+                # Asked before liveness, not inside it, because a remote row's
+                # pid is normally absent from this host and absence is what the
+                # sweep reads as dead. Judged on the liveness branch this check
+                # would never run for exactly the rows it exists to protect,
+                # and every row from another machine would be cancelled here
+                # while its process kept running there.
+                if _recorded_row_is_foreign(
+                    row_dict.get("node_metadata")
+                    if isinstance(row_dict.get("node_metadata"), dict)
+                    else {}
+                ):
+                    skipped_foreign += 1
+                    if verbose:
+                        print(
+                            f"  skip {entity_type} {entity_id[:12]}: pid recorded on another host"
+                        )
+                    continue
+
                 # A live pid alone isn't enough — the OS may have reused it.
                 # Correlate against the row's own session id/create_time (same
                 # fields the direct-kill path uses) so a recycled pid occupied
@@ -913,6 +949,7 @@ async def _do_kill_all_stale(
         f"\n{prefix} {killed} stale entities "
         f"[skipped_recent={skipped_recent}, skipped_live_pid={skipped_live}, "
         f"skipped_unverifiable_pid={skipped_unverifiable}, "
+        f"skipped_foreign_host={skipped_foreign}, "
         f"skipped_unlinked_plays={skipped_unlinked_plays}]"
     )
     if unverifiable_tracked:

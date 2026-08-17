@@ -225,6 +225,31 @@ def recorded_identity_mode(metadata: dict[str, Any] | None) -> str | None:
     return mode if isinstance(mode, str) else UNRECOGNIZED_IDENTITY_MODE
 
 
+# Modes whose stop-and-liveness protocol is this one: a pid in this host's pid
+# space, signalled directly. Anything else names a protocol living elsewhere.
+_LOCALLY_JUDGEABLE_MODES = ("local", "in_process")
+
+
+def recorded_row_is_foreign(metadata: dict[str, Any] | None) -> bool:
+    """Whether a row's recorded process is one this host has no standing to judge.
+
+    Both questions, in this order, because the order is what makes each answer
+    safe. A row announcing an identity mode this code does not recognize names
+    a stop-and-liveness protocol living somewhere else, and is refused outright.
+    Only then is the host asked, and ``recorded_pid_is_foreign`` is allowed to
+    read an unreadable host marker as "no host recorded" precisely because a
+    row written by something alien has already been turned away by the mode.
+
+    This is the form every caller wants. Asking the host question alone inherits
+    that permissive reading without the refusal that pays for it, which is a
+    quiet way to get a row judged on a local pid that was never local.
+    """
+    mode = recorded_identity_mode(metadata)
+    if mode is not None and mode not in _LOCALLY_JUDGEABLE_MODES:
+        return True
+    return recorded_pid_is_foreign(metadata)
+
+
 # Boot time is read from the OS on each side of the comparison and can drift by
 # a little across clock adjustments and suspend/resume cycles. A real reboot
 # moves it by far more than this, so the tolerance costs nothing and avoids

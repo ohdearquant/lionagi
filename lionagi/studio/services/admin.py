@@ -411,7 +411,7 @@ def process_identity_is_foreign(session: dict[str, Any]) -> bool:
     somewhere this daemon cannot see. With a shared state store that turns
     into one host marking another host's working runs failed.
     """
-    from lionagi.cli._util import recorded_identity_mode, recorded_pid_is_foreign
+    from lionagi.cli._util import recorded_row_is_foreign
 
     meta = session.get("node_metadata")
     if isinstance(meta, str):
@@ -422,16 +422,14 @@ def process_identity_is_foreign(session: dict[str, Any]) -> bool:
     if not isinstance(meta, dict):
         return False
 
-    mode = recorded_identity_mode(meta)
-    if mode is not None and mode not in ("local", "in_process"):
-        return True
-
+    # Mode first, then host, both in `recorded_row_is_foreign` so the CLI
+    # reapers ask the same composed question rather than a weaker half of it.
     # Asked of the host alone, not of "host and a readable pid": a row from
     # another machine is that machine's business whether or not its pid
     # parses, and the pid-less fallback in process_liveness matches on session
     # id against *this* host's process table, which reads the wrong machine's
     # answer just as confidently.
-    return recorded_pid_is_foreign(meta)
+    return recorded_row_is_foreign(meta)
 
 
 def process_liveness(

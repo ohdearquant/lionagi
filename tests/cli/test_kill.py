@@ -740,6 +740,120 @@ def test_recorded_markers_read_as_foreign_from_another_machine(
     )
 
 
+def test_the_composed_guard_refuses_a_mode_the_host_question_would_pass():
+    """What the host question alone does not answer, and why order matters.
+
+    Reading an unreadable host marker as "no host recorded" is only safe
+    because a row written by something this code does not understand is turned
+    away first, by its identity mode. A caller that asks the host question
+    alone inherits the permissive reading without the refusal that pays for
+    it. The row below is exactly that gap: its host is this machine, so the
+    host question says local, and its mode names a protocol living elsewhere.
+    """
+    import socket
+
+    from lionagi.cli._util import recorded_pid_is_foreign, recorded_row_is_foreign
+
+    alien = {
+        "pid": 4242,
+        "pid_host": socket.gethostname(),
+        "process_identity_mode": "container-supervisor",
+    }
+    assert recorded_pid_is_foreign(alien) is False, (
+        "premise: the host half passes this row, so the refusal below is the mode's"
+    )
+    assert recorded_row_is_foreign(alien) is True
+
+    # A mode recorded as a non-string is unreadable, not absent, and is
+    # refused for the same reason.
+    assert recorded_row_is_foreign({"pid": 1, "process_identity_mode": 7}) is True
+
+    # The modes whose protocol is this one, and a row that predates the marker.
+    for local in ("local", "in_process"):
+        assert recorded_row_is_foreign({"pid": 1, "process_identity_mode": local}) is False
+    assert recorded_row_is_foreign({"pid": 1}) is False
+    assert recorded_row_is_foreign(None) is False
+
+
+async def test_kill_one_refuses_a_row_recorded_on_another_host(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A pid from another machine is not this machine's pid to signal.
+
+    Both rows here are identical except for the host marker, and the fake
+    process is built to be positively identified as the run: matching
+    create_time and a matching session marker. So the control is genuinely
+    killed, which is what makes the refusal below attributable to the marker
+    and not to some other check happening to refuse.
+    """
+    import socket
+
+    async with StateDB() as db:
+        local_sid = str(uuid.uuid4())
+        foreign_sid = str(uuid.uuid4())
+        for sid, meta in (
+            (local_sid, {"pid": 4242, "pid_create_time": 100.0}),
+            (
+                foreign_sid,
+                {"pid": 4242, "pid_create_time": 100.0, "pid_host": "some-other-machine"},
+            ),
+        ):
+            prog = str(uuid.uuid4())
+            await db.create_progression(prog)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": prog,
+                    "status": "running",
+                    "started_at": time.time(),
+                    "node_metadata": meta,
+                }
+            )
+
+        assert socket.gethostname() != "some-other-machine"
+
+        # CONTROL: same row without the marker. It must actually be killed,
+        # or the refusal below is evidence of nothing.
+        kill_calls = _mock_psutil(
+            monkeypatch,
+            cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+            environ={"LIONAGI_SESSION_ID": local_sid},
+            create_time=100.0,
+        )
+        row = db._row_to_dict(
+            await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (local_sid,))
+        )
+        control = await _kill_one(db, "session", local_sid, row, user_reason="")
+        assert control["signal"] in ("sigterm", "sigkill"), (
+            f"control row was not killed ({control['signal']}), so this test cannot "
+            "attribute the refusal below to the host marker"
+        )
+        assert kill_calls, "control sent no signal"
+
+        # SUBJECT: identical row, recorded elsewhere. The local process is
+        # re-mocked to match THIS row's session id, so the pid here is one the
+        # identity check would positively confirm. That is the case the marker
+        # exists for: a collision the other checks cannot see, where without
+        # the host question this row is killed rather than merely mismatched.
+        kill_calls = _mock_psutil(
+            monkeypatch,
+            cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
+            environ={"LIONAGI_SESSION_ID": foreign_sid},
+            create_time=100.0,
+        )
+        signals_after_control = len(kill_calls)
+        row = db._row_to_dict(
+            await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (foreign_sid,))
+        )
+        result = await _kill_one(db, "session", foreign_sid, row, user_reason="")
+
+        assert result["signal"] == "foreign_host"
+        assert len(kill_calls) == signals_after_control, "signalled a pid on another host"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (foreign_sid,)))[
+            "status"
+        ] == "running", "cancelled a row whose process is alive on another machine"
+
+
 async def test_kill_one_skips_recycled_pid_via_create_time(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
