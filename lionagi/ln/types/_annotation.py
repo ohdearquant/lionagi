@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import typing
 from collections.abc import Callable
-from typing import Any
+from typing import Any, get_origin
 
 from .._cache import BoundedLRUCache
 from .._structural import _try_stable_cache_key
@@ -43,6 +43,11 @@ def _materialize_annotation(
     def build() -> Any:
         actual_type = Any if sentinel_predicate(base_type) else base_type
         current_metadata: tuple[Meta, ...] = () if sentinel_predicate(metadata) else metadata
+        if (
+            any(meta.key == "listable" and meta.value for meta in current_metadata)
+            and get_origin(actual_type) is not list
+        ):
+            actual_type = list[actual_type]
         if any(meta.key == "nullable" and meta.value for meta in current_metadata):
             actual_type = actual_type | None
         return (

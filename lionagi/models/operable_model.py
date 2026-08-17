@@ -46,6 +46,17 @@ class OperableModel(HashableModel):
         exclude=True,
     )
 
+    def __init__(self, /, **data: Any) -> None:
+        import warnings
+
+        warnings.warn(
+            "OperableModel is deprecated as a schema authority; use Spec, Operable, "
+            "and a target SpecAdapter instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__init__(**data)
+
     def _serialize_extra_fields(
         self,
         value: dict[str, FieldInfo],

@@ -11,7 +11,6 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from lionagi import FieldModel
 from lionagi.agent import AgentSpec, create_agent
 from lionagi.casts.emission import (
     SPAWN_ALLOWED_OPERATIONS,
@@ -19,6 +18,7 @@ from lionagi.casts.emission import (
     TaskAssignment,
     build_emission_operable,
 )
+from lionagi.ln.types import Spec
 from lionagi.operations.node import Operation, create_operation
 from lionagi.protocols.graph.edge import Edge
 from lionagi.protocols.graph.graph import Graph
@@ -50,7 +50,7 @@ __all__ = (
 
 # The orchestrator's plan IS a list[TaskAssignment] — no bespoke plan model.
 # Named "assignments" so a parsed operate() result exposes ``res.assignments``.
-_ASSIGNMENTS_FIELD = FieldModel(list[TaskAssignment], name="assignments")
+_ASSIGNMENTS_FIELD = Spec(list[TaskAssignment], name="assignments")
 
 # Appended to the planning guidance when a worker cap is in effect, so the
 # orchestrator packs coverage into the cap instead of a downstream truncation

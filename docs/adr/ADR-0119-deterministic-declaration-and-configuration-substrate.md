@@ -13,7 +13,10 @@
   projection, production declarations use the explicit `eq=False` authority, and declaration,
   field-layout, sentinel, singleton, annotation, and Pydantic model caches use identity-safe keys;
   `DataClass` and every current `HashableModel` descendant are unhashable behind a closed consumer
-  inventory; registry snapshots and canonical durable serialization remain open
+  inventory; Pydantic materialization is owned by `PydanticSpecAdapter.materialize()` without a
+  `lionagi.models` dependency, and production callers no longer construct `OperableModel` or use
+  the `Operable.create_model()` compatibility edge; registry snapshots and canonical durable
+  serialization remain open
 - **Area**: utilities
 - **Date**: 2026-08-16
 - **Relations**: extends ADR-0050 (foundational utility and typed adaptation strata); required
@@ -76,8 +79,9 @@ are rejected as duplicate `Undefined` names. A low-level field description shoul
 remain unnamed until an adapter that requires a name materializes it.
 
 **P5 — framework and storage concerns leak back into the neutral layer.** The current
-`Spec -> FieldModel -> FieldInfo -> model builder` path is duplicated by mutable
-`OperableModel`. Production ReAct code still constructs the latter. ADR-0118 needs SQLAlchemy,
+`Spec -> FieldModel -> FieldInfo -> model builder` path was duplicated by mutable
+`OperableModel`, and production ReAct code constructed the latter before the D5 cutover.
+ADR-0118 needs SQLAlchemy,
 codec, foreign-key, index, and migration information, but placing SQLAlchemy objects or a second
 storage-only field class in `ln.types` would reverse the dependency direction ADR-0050 protects.
 
@@ -440,12 +444,18 @@ Those keys do not make `Spec` itself a SQL column. A policy adapter may interpre
 namespace, and an external-hook adapter another. Unknown namespaced metadata is preserved by the
 neutral layer and either rejected or ignored according to the chosen adapter's closed contract.
 
-The materialization seam is:
+The materialization seam is additive to the compatibility ABC:
 
 ```python
-class SpecAdapter(Protocol[OutputT]):
-    def materialize(self, declaration: Operable, /, **options: Any) -> OutputT: ...
+class SpecAdapter(ABC):
+    @classmethod
+    def materialize(cls, declaration: Operable, /, **options: Any) -> Any: ...
 ```
+
+The base implementation delegates to an existing subclass's `create_model()`, so third-party
+compatibility subclasses do not become abstract or unusable. `PydanticSpecAdapter` reverses that
+authority locally: `materialize()` owns construction and deprecated `create_model()` delegates to
+it.
 
 Concrete adapters own validation needed by their target:
 
@@ -455,10 +465,9 @@ Concrete adapters own validation needed by their target:
 - wire adapter emits a versioned JSON-compatible DTO/schema;
 - policy adapter compiles a neutral policy declaration for a concrete harness/provider.
 
-`FieldModel` and `OperableModel` remain compatibility materializations during migration. New
-architecture does not extend them as a parallel declaration stack. Production users such as
-ReAct migrate to the neutral declaration plus adapter before the compatibility models are
-deprecated.
+`FieldModel` and `OperableModel` remain deprecated compatibility materializations for the
+published window. New architecture does not extend them as a parallel declaration stack. ReAct
+and the other production callers use neutral declarations plus the explicit target adapter.
 
 ### D6 — Registries are explicit immutable snapshots
 
@@ -596,8 +605,12 @@ The foundation suite adds the following required matrices.
 **Adapter separation**
 
 - importing `lionagi.ln.types` does not import Pydantic, SQLAlchemy, StateDB, Studio, provider
-  SDKs, or CLI modules;
-- neutral declarations round-trip through internal serialization only;
+  SDKs, CLI, adapters, models, operations, or session modules;
+- Python-mode declaration projection preserves order and live Python values for in-process
+  adaptation; it is not a reconstructable transport encoding. JSON projection uses LionAGI's
+  internal serializer and fails closed when a Python type, callable, or unresolved identity has no
+  wire representation. Durable reconstructable JSON, canonical bytes/digests, and `CallableRef`
+  resolution remain D7's separate snapshot contract;
 - target-specific validation occurs only when the corresponding adapter is invoked;
 - no new raw `asyncio`, `json`, schema-library, or serialization helper is introduced outside the
   approved `lionagi.ln` seams.
@@ -621,7 +634,8 @@ The foundation suite adds the following required matrices.
    materialization.
 5. Correct `Meta`/`Spec` equality and hash; close the mutable-model consumer inventory and make
    the current `DataClass`/`HashableModel` families unhashable.
-6. Move production callers from `OperableModel` to neutral declarations and adapters.
+6. Move production callers from `OperableModel` and the lazy `Operable.create_model()` edge to
+   neutral declarations and explicit adapters. (Delivered for current production callers.)
 7. Introduce explicit registry fragments at composition roots.
 8. Land strict snapshot envelopes, canonical bytes/digest, and versioned CallableRef resolution.
 9. Only then allow ADR-0118 schema hashes, harness policy snapshots, dispatch policies, and Run

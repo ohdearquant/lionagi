@@ -8,21 +8,16 @@ from typing import TYPE_CHECKING, Literal
 
 from lionagi.ln.types import Operable, Spec
 
-from ..fields import get_default_field
+from ..fields import get_default_spec
 from .operative import Operative
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
 
-_DEFAULT_SPECS = {}
-
-
 def _get_default_spec(kind: str):
     """Return the immutable Spec used by a standard Operative field."""
-    if kind not in _DEFAULT_SPECS:
-        _DEFAULT_SPECS[kind] = get_default_field(kind).to_spec()
-    return _DEFAULT_SPECS[kind]
+    return get_default_spec(kind)
 
 
 class Step:

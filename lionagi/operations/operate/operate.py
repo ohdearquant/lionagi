@@ -1,13 +1,15 @@
 # Copyright (c) 2023-2025, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import TYPE_CHECKING, Literal, Union
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, JsonValue
 
 from lionagi.ln import AlcallParams
 from lionagi.ln.types import Spec
-from lionagi.models import FieldModel
 from lionagi.protocols.generic import Progression
 from lionagi.protocols.messages import Instruction, SenderRecipient
 
@@ -25,30 +27,35 @@ from ..types import (
 )
 
 if TYPE_CHECKING:
+    from lionagi.models import FieldModel
     from lionagi.service.imodel import iModel
     from lionagi.session.branch import Branch, ToolRef
 
     from .operative import Operative
 
 
-def _specs_from_fields(field_models: list) -> dict | None:
+def _specs_from_fields(
+    field_models: Sequence[FieldModel | Spec] | None,
+) -> dict[str, Spec] | None:
     if not field_models:
         return None
-    fields_dict = {}
+    fields_dict: dict[str, Spec] = {}
     for fm in field_models:
-        if isinstance(fm, FieldModel):
-            spec = fm.to_spec()
-        elif isinstance(fm, Spec):
+        if isinstance(fm, Spec):
             spec = fm
         else:
-            raise TypeError(f"Expected FieldModel or Spec, got {type(fm)}")
+            from lionagi.models import FieldModel
+
+            if not isinstance(fm, FieldModel):
+                raise TypeError(f"Expected FieldModel or Spec, got {type(fm)}")
+            spec = fm.to_spec()
         if spec.name:
             fields_dict[spec.name] = spec
     return fields_dict or None
 
 
 def prepare_operate_kw(
-    branch: "Branch",
+    branch: Branch,
     *,
     instruct: Instruct | None = None,
     instruction: Instruction | JsonValue = None,
@@ -57,16 +64,16 @@ def prepare_operate_kw(
     sender: SenderRecipient = None,
     recipient: SenderRecipient = None,
     progression: Progression | None = None,
-    chat_model: "iModel | None" = None,
+    chat_model: iModel | None = None,
     invoke_actions: bool = True,
     tool_schemas: list[dict] | None = None,
     images: list | None = None,
     image_detail: Literal["low", "high", "auto"] | None = None,
-    parse_model: "iModel | None" = None,
+    parse_model: iModel | None = None,
     skip_validation: bool = False,
     handle_validation: HandleValidation = "return_value",
-    tools: "ToolRef | None" = None,
-    operative: "Operative | None" = None,
+    tools: ToolRef | None = None,
+    operative: Operative | None = None,
     response_format: type[BaseModel] | None = None,
     actions: bool = False,
     reason: bool = False,
@@ -169,7 +176,7 @@ def prepare_operate_kw(
 
 
 async def operate(
-    branch: "Branch",
+    branch: Branch,
     instruction: JsonValue | Instruction,
     chat_param: ChatParam,
     action_param: ActionParam | None = None,
@@ -180,7 +187,7 @@ async def operate(
     clear_messages: bool = False,
     reason: bool = False,
     field_models: list[FieldModel | Spec] | None = None,
-    operative: Union["Operative", None] = None,
+    operative: Operative | None = None,
     middle: Middle | None = None,
 ) -> BaseModel | dict | str | None:
     """Execute one branch turn via Middle, optionally parse structured output and invoke tool actions."""

@@ -214,6 +214,11 @@ def test_override_builtin_attribute():
         model.add_field(builtin_name, value="should_fail")
 
 
+def test_construction_warns_with_neutral_replacement():
+    with pytest.warns(DeprecationWarning, match="Spec, Operable"):
+        OperableModel()
+
+
 def test_update_field_multiple_times():
     """Multiple sequential updates to the same field must all take effect."""
     model = OperableModel()
@@ -271,6 +276,22 @@ def test_add_field_with_field_model():
     # Check that the validator works
     with pytest.raises(ValueError, match="non-negative"):
         model.update_field("score", value=-5)
+
+
+def test_new_model_preserves_legacy_last_validator_wins_projection():
+    def add_one(value: int) -> int:
+        return value + 1
+
+    def double(value: int) -> int:
+        return value * 2
+
+    field_model = FieldModel(int, name="value", validator=add_one).with_validator(double)
+    model = OperableModel()
+    model.add_field("value", field_model=field_model, value=3)
+
+    model_type = model.new_model(name="LegacyOperableValidatorModel")
+
+    assert model_type(value=3).value == 6
 
 
 def test_update_field_with_new_default_factory():

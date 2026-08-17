@@ -36,6 +36,12 @@ class TestImports:
         assert get_default_field is not None
         assert callable(get_default_field)
 
+    def test_get_default_spec_import(self):
+        from lionagi.operations.fields import get_default_spec
+
+        assert get_default_spec is not None
+        assert callable(get_default_spec)
+
     def test_action_requests_field_import(self):
         from lionagi.operations.fields import ACTION_REQUESTS_FIELD
 
@@ -99,6 +105,7 @@ class TestExports:
             "Instruct",
             "Reason",
             "get_default_field",
+            "get_default_spec",
         }
         assert set(__all__) == expected
 

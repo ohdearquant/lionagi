@@ -264,6 +264,8 @@ Exact schema semantics:
   passed to adapters but does not become `model_class` for outer instance checking.
 - An internal `Operative` is constructed when at least one of these is present: a base model class,
   action enablement, named field specs, or reasoning.
+- `Spec` is the canonical declaration input. `FieldModel` remains accepted only at the public
+  compatibility boundary and is converted immediately to `Spec`.
 - `reason=True` adds the nullable `Reason` field. `actions=True` at construction adds
   `action_required`, `action_requests`, and `action_responses`. Named field specs are added by name.
 - `Step.request_operative()` sets `request_exclude={"action_responses"}` when actions are present.
@@ -271,6 +273,11 @@ Exact schema semantics:
   provider request cannot fabricate runtime action results, while the returned model can hold them.
 - Generated model names are based on the explicit name, the base type name, or `"Operative"`, with
   `Request` and `Response` suffixes. The only shipped adapter is `"pydantic"`.
+- `Operative` materializes both classes through the selected adapter's `materialize()` entry
+  point; production operation code does not call `Operable.create_model()`.
+- When a generated declaration collides with the caller's Pydantic base field, the copied base
+  `FieldInfo` wins for annotation, default, and schema metadata. Declaration-derived validators
+  remain separately attached to that named field.
 - The generated response type replaces `_cctx.response_format` and `_pctx.response_format`, so both
   provider rendering and parsing target the same superset model.
 - When an `ActionParam` exists, the coordinator calls `branch.acts.get_tool_schema()` for the

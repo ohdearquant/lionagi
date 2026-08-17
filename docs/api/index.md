@@ -88,8 +88,11 @@ importability. Common application imports are:
 ```python
 from lionagi import Branch, Session, Builder, Operation, iModel
 from lionagi import Graph, Node, Edge, Element, Pile, Progression
-from lionagi import FieldModel, OperableModel, load_mcp_tools
+from lionagi import Operable, Spec, load_mcp_tools
 ```
+
+`FieldModel` and `OperableModel` remain importable during their published deprecation window, but
+new declarations should use `Spec` and ordered `Operable`.
 
 Feature-specific APIs intentionally live in their subpackages:
 

@@ -39,10 +39,11 @@ serialization paths that treat them as missing (`lionagi/ln/types/_sentinel.py`,
 describe a field and an ordered output shape without importing Pydantic merely to
 construct the description. The same description must later become real Pydantic
 fields, validators, and model classes. `Spec` and `Operable` hold the
-framework-neutral description; `FieldModel`, model builders, and
-`PydanticSpecAdapter` materialize it (`lionagi/ln/types/spec.py`,
-`lionagi/ln/types/operable.py`, `lionagi/models/field_model.py`,
-`lionagi/adapters/spec_adapters/pydantic_field.py`).
+framework-neutral description; `PydanticSpecAdapter.materialize()` directly emits
+Pydantic fields and model classes (`lionagi/ln/types/spec.py`,
+`lionagi/ln/types/operable.py`,
+`lionagi/adapters/spec_adapters/pydantic_field.py`). `FieldModel` and
+`OperableModel` are compatibility facades, not production declaration authorities.
 
 **P4 — Format support must extend subject classes without hard-coding every
 format.** `Node` and `Pile` need different supported formats, and the PostgreSQL
@@ -66,8 +67,9 @@ are cached; regex validation can backtrack; error context can accidentally becom
 large. The implementation therefore contains limits that are part of observable
 behavior and must be recorded rather than left as unexplained constants.
 
-The stack also contains acknowledged dependency exceptions. `Operable.create_model()`
-lazily imports the Pydantic spec adapter, which imports model code. `Note` imports
+The stack also contains acknowledged dependency exceptions. Deprecated
+`Operable.create_model()` lazily imports the Pydantic spec adapter, while production callers invoke
+the adapter explicitly. The adapter no longer imports model compatibility code. `Note` imports
 generic nested-data helpers from `libs`, while schema utilities in `libs` import
 `models`. These are current facts, not the intended permanent direction.
 
@@ -100,9 +102,9 @@ This ADR deliberately does **not** decide:
 
 `lionagi.ln` is the compact common import surface. `lionagi.libs` owns workspace,
 file, schema, content-ingestion, and Pydantic-oriented validation policy, plus some
-generic helpers that remain placement exceptions. `lionagi.models` owns Pydantic
-model construction and serialization. `lionagi.adapters` owns external-format
-conversion seams.
+generic helpers that remain placement exceptions. `lionagi.models` owns Pydantic-backed
+runtime data models and their serialization compatibility. `lionagi.adapters` owns
+external-format conversion seams and target-specific declaration materialization.
 
 **The contract** is the shipped module and dependency shape:
 
@@ -128,14 +130,16 @@ lionagi/
 │   ├── schema/               schema reflection and generation
 │   └── validate/             LionAGI validation/coercion policy
 ├── models/
-│   ├── field_model.py        Spec-compatible Pydantic field materialization
+│   ├── field_model.py        deprecated Spec-to-Pydantic compatibility facade
 │   ├── hashable_model.py     deterministic model serialization; mutable models are unhashable
 │   └── note.py               nested mapping model
 └── adapters/
     ├── _base.py              sync/async registry and typed errors
     ├── json_.py, csv_.py, toml_.py
     ├── async_postgres_adapter.py
-    └── spec_adapters/pydantic_field.py
+    └── spec_adapters/
+        ├── pydantic_field.py direct Spec-to-FieldInfo/model materialization
+        └── _pydantic_builder.py target-owned Pydantic model construction
 ```
 
 `lionagi/ln/__init__.py` explicitly re-exports the public primitive names. It does
@@ -149,10 +153,10 @@ flowchart BT
     models --> ln
     models --> libs
     models -. lazy serialization default .-> protocols
+    models -. legacy schema facades .-> adapters
     adapters --> ln
-    adapters --> models
     protocols --> adapters
-    ln -. lazy create_model .-> adapters
+    ln -. deprecated create_model .-> adapters
 ```
 
 **Exact semantics**:
@@ -166,6 +170,8 @@ flowchart BT
   acquire.
 - `models` currently imports `libs.nested` through `Note`; `libs.schema` imports
   models. Contributors must account for that knot before moving either side.
+- Target adapters do not import `lionagi.models`. The reverse `models`-to-adapter edge exists only
+  for the versioned `FieldModel`/legacy-builder facades and expires with their published window.
 - `HashableModel` installs its default serializer lazily. Its first serialization
   requiring the default imports `Element`; subsequent calls reuse the cached
   serializer (`lionagi/models/hashable_model.py`).
@@ -274,8 +280,8 @@ ordinary user values from accidentally comparing equal to a sentinel.
 ### D3 — Specs describe fields; Pydantic materializes them
 
 `Spec` and `Operable` are dataclasses under `ln.types`; their module imports do not
-require Pydantic. The current `Operable.create_model()` convenience method crosses
-to the Pydantic adapter lazily.
+require Pydantic. Production callers invoke `PydanticSpecAdapter.materialize()` explicitly.
+Deprecated `Operable.create_model()` retains the lazy crossing only for its published window.
 
 **The framework-neutral contract** (`lionagi/ln/types/spec.py`,
 `lionagi/ln/types/operable.py`) is:
@@ -335,9 +341,11 @@ class PydanticSpecAdapter(SpecAdapter):
     def create_validator(cls, spec: Spec) -> dict | None: ...
 
     @classmethod
-    def create_model(
+    def materialize(
         cls,
-        op: Operable,
+        declaration: Operable,
+        /,
+        *,
         model_name: str,
         include: Collection[str] | None = None,
         exclude: Collection[str] | None = None,
@@ -346,7 +354,11 @@ class PydanticSpecAdapter(SpecAdapter):
     ) -> type[BaseModel]: ...
 ```
 
-`FieldModel` is the intermediate Pydantic-oriented field shape:
+`SpecAdapter.materialize() -> Any` was added non-abstract and delegates to legacy `create_model()` for
+existing adapter subclasses. Pydantic owns the inverse compatibility direction:
+`materialize()` is authoritative and its deprecated `create_model()` wrapper delegates to it.
+
+`FieldModel` is the deprecated Pydantic-oriented compatibility field shape:
 
 ```python
 @dataclass(slots=True, frozen=True, init=False, eq=False)
@@ -381,15 +393,28 @@ class FieldModel(Params):
   `ValueError`. Import failure is re-raised with the explicit Pydantic installation
   message. The default generated class name is `model_name`, then `Operable.name`,
   then `"DynamicModel"`.
-- `PydanticSpecAdapter` converts each named spec to a `FieldInfo`, collects one
-  Pydantic field validator per spec carrying `validator` metadata, calls
-  `build_model_type(..., inherit_base=True)`, then calls `model_rebuild()`.
+- `PydanticSpecAdapter` converts each named spec directly to a `FieldInfo`, without importing or
+  constructing `FieldModel`, and then calls the target-owned Pydantic builder and
+  `model_rebuild()`.
   Materialization rejects an unnamed or non-string spec before emitting any model;
   neutral `Operable` storage continues to allow multiple unnamed declarations.
+- `name`, `nullable`, `listable`, and `validator` are consumed control metadata and do not enter
+  `json_schema_extra`. The removed `"name"` schema extension was accidental presentation data,
+  not validation semantics. A validator list materializes under stable indexed names and runs
+  once each in declaration order; a single validator retains its legacy name.
+- A `list[T]` annotation marked listable remains `list[T]`. It is not wrapped as
+  `list[list[T]]`.
+- Direct adapter field precedence is declaration fields followed by copied base fields, so a
+  collision uses the base field's annotation, default, and schema metadata. Declaration-derived
+  validators remain separately attached. The legacy builder additionally applies its
+  `FieldModel` override fields last, preserving `OperableModel` behavior during the window.
 - `FieldModel` accepts the legacy aliases `annotation -> base_type` and
   `field -> name`. A callable `default` becomes a Pydantic `default_factory`.
   Unknown Pydantic field metadata is placed in `json_schema_extra`, except type
   objects, which are skipped because they are not JSON-schema serializable.
+- The `FieldModel` compatibility projection collapses repeated legacy metadata before constructing
+  a strict `Spec`: the owning field name keeps its first declaration, while repeated ordinary keys
+  and validators retain the last effective value. `Spec` itself continues to reject duplicates.
 - Nullable fields without an explicit default/default factory receive
   `default=None`; listable fields wrap a non-list base annotation in `list[...]`.
 
@@ -844,7 +869,7 @@ caller need to opt in to what they already asked for.
 - Runtime string keys are not statically closed. A typo and an unavailable optional
   integration both surface as `AdapterNotFoundError`; callers must not treat a
   registry miss as a successful empty conversion.
-- The lazy `ln`-to-adapter edge, the `libs`/`models` knot, and compatibility aliases
+- The deprecated `ln`/models-to-adapter edges, the `libs`/`models` knot, and compatibility aliases
   constrain file moves. Reversing D1 or D3 requires an import migration and cycle
   tests, not only relocation.
 - The synchronous and asynchronous path creators do not offer interchangeable safety
@@ -869,7 +894,7 @@ caller need to opt in to what they already asked for.
 
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
-| 1 | Relocate Pydantic model emission behind a Pydantic-side factory, preserve `Operable.create_model()` through a documented compatibility shim for one minor release, and add a test that fails if any `lionagi.ln` module imports adapters, models, protocols, operations, or session code. | M | (filled at issue-open time) |
+| 1 | Internal Pydantic authority now lives behind `PydanticSpecAdapter.materialize()` and current production callers use it explicitly. `Operable.create_model()`, `FieldModel`, `OperableModel`, and legacy model-building inputs remain deprecated compatibility facades until the minor after their warning first ships. | M | #3292 / #3323 |
 | 2 | Move generic nested-data and scalar-coercion helpers into `lionagi.ln`, retain their `lionagi.libs` import paths as deprecated re-exports for one minor release, replace internal `UNDEFINED` spellings with `Undefined`, and verify that `Note` and LNDL behavior is unchanged. | M | (filled at issue-open time) |
 | 3 | Give `create_path()` and `acreate_path()` equivalent traversal and symlink-containment semantics, or rename and document the synchronous helper as unconstrained path construction; add symmetric tests for nested filenames, `..` components, and symlink escapes. | S | (filled at issue-open time) |
 

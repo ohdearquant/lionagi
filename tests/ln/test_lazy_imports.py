@@ -151,6 +151,8 @@ def test_lightweight_types_do_not_pull_in_target_or_composition_layers():
         "prefixes = (\n"
         "    'pydantic', 'sqlalchemy', 'lionagi.state', 'lionagi.studio',\n"
         "    'lionagi.cli', 'lionagi.providers', 'openai', 'anthropic',\n"
+        "    'lionagi.adapters', 'lionagi.models', 'lionagi.operations',\n"
+        "    'lionagi.session',\n"
         ")\n"
         "loaded = sorted(\n"
         "    name for name in sys.modules\n"

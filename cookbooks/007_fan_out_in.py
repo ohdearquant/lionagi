@@ -1,5 +1,5 @@
 from lionagi import Branch, Builder, Operation, Session, iModel
-from lionagi.operations.fields import LIST_INSTRUCT_FIELD_MODEL, Instruct
+from lionagi.operations.fields import Instruct, get_default_spec
 from lionagi.protocols.types import AssistantResponse
 
 CC_WORKSPACE = ".khive/workspace"
@@ -29,12 +29,12 @@ prompt = """
 Task: Quickly Investigate the codebase in the specified directory and provide a concise overview.
 
 ---START
-read into the specified dir, glance over the key components and pay attention to architecture, 
+read into the specified dir, glance over the key components and pay attention to architecture,
 design patterns, and any notable features. Think deeply about the codebase and give three parallel
 instructions, as part of the structured output (`instruct_model`) in the final response message.
 
 ---Then
-The instruct models will be run in parallel by each researcher branch, and I will provide you with 
+The instruct models will be run in parallel by each researcher branch, and I will provide you with
 the researchers' findings for you to continue your investigation.
 
 ---Finally
@@ -67,7 +67,7 @@ async def main():
                 context="lionagi",
             ),
             reason=True,
-            field_models=[LIST_INSTRUCT_FIELD_MODEL],
+            field_models=[get_default_spec("instruct", listable=True)],
         )
 
         result = await session.flow(builder.get_graph())
@@ -105,7 +105,7 @@ async def main():
         await session.flow(builder.get_graph())
         ctx = [get_context(i) for i in research_nodes]
 
-        synthesis = builder.add_operation(
+        builder.add_operation(
             "communicate",
             depends_on=research_nodes,
             branch=orc_branch,
@@ -113,8 +113,7 @@ async def main():
             context=[i for i in ctx if i is not None],
         )
 
-        result3 = await session.flow(builder.get_graph())
-        result_synthesis = result3["operation_results"][synthesis]
+        await session.flow(builder.get_graph())
 
         builder.visualize("LionAGI codebase investigation: fan-out fan-in pattern with Claude Code")
 

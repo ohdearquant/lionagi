@@ -44,7 +44,12 @@ CAP_END = "<!-- /lionagi:capabilities -->"
 
 def render_capabilities_prompt(operable: Operable) -> str:
     """Render the capability grant into a system-prompt section with its JSON schema."""
-    model = operable.create_model(model_name=operable.name or "Capabilities")
+    from lionagi.adapters.spec_adapters import PydanticSpecAdapter
+
+    model = PydanticSpecAdapter.materialize(
+        operable,
+        model_name=operable.name or "Capabilities",
+    )
     schema = model.model_json_schema()
     contract: dict = {"properties": schema.get("properties", {})}
     if "$defs" in schema:

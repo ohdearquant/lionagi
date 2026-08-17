@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 from collections.abc import Collection
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, get_origin
 
 from lionagi.ln._cache import BoundedLRUCache
+from lionagi.ln._lazy_init import LazyInit
 from lionagi.ln._structural import _IdentityKey, _structural_key, _try_stable_cache_key
-from lionagi.ln.types import is_sentinel
+from lionagi.ln.types import CommonMeta, is_sentinel
 
+from . import _pydantic_builder
 from ._protocol import SpecAdapter
 
 __all__ = ("PydanticSpecAdapter",)
@@ -28,6 +30,35 @@ if TYPE_CHECKING:
 _model_type_cache: BoundedLRUCache[Any, type[BaseModel]] = BoundedLRUCache(
     "LIONAGI_OPERATIVE_MODEL_CACHE_SIZE", 512
 )
+
+_lazy_field_params = LazyInit()
+_PYDANTIC_FIELD_PARAMS: frozenset[str] = frozenset()
+
+
+def _init_pydantic_field_params() -> None:
+    global _PYDANTIC_FIELD_PARAMS
+    import inspect
+
+    from pydantic import Field as PydanticField
+
+    parameters = set(inspect.signature(PydanticField).parameters)
+    parameters.discard("kwargs")
+    _PYDANTIC_FIELD_PARAMS = frozenset(parameters)
+
+
+def _pydantic_field_params() -> frozenset[str]:
+    _lazy_field_params.ensure(_init_pydantic_field_params)
+    return _PYDANTIC_FIELD_PARAMS
+
+
+def _pydantic_annotation(spec: Spec) -> Any:
+    """Resolve target annotation without double-wrapping an existing list."""
+    annotation: Any = Any if is_sentinel(spec.base_type) else spec.base_type
+    if spec.is_listable and get_origin(annotation) is not list:
+        annotation = list[annotation]
+    if spec.is_nullable:
+        annotation = annotation | None
+    return annotation
 
 
 def _model_type_cache_key(
@@ -61,10 +92,42 @@ class PydanticSpecAdapter(SpecAdapter):
     @classmethod
     def create_field(cls, spec: Spec) -> FieldInfo:
         """Create a Pydantic FieldInfo object from Spec."""
-        from lionagi.models.field_model import FieldModel
+        from pydantic import Field as PydanticField
 
-        fm = FieldModel(spec.base_type, metadata=spec.metadata)
-        return fm.create_field()
+        field_kwargs: dict[str, Any] = {}
+        pydantic_params = _pydantic_field_params()
+        consumed = {
+            CommonMeta.NAME.value,
+            CommonMeta.NULLABLE.value,
+            CommonMeta.LISTABLE.value,
+            CommonMeta.VALIDATOR.value,
+        }
+
+        for meta in spec.metadata:
+            if meta.key == CommonMeta.DEFAULT.value:
+                if callable(meta.value):
+                    field_kwargs[CommonMeta.DEFAULT_FACTORY.value] = meta.value
+                else:
+                    field_kwargs[CommonMeta.DEFAULT.value] = meta.value
+            elif meta.key in consumed:
+                continue
+            elif meta.key in pydantic_params:
+                field_kwargs[meta.key] = meta.value
+            elif not isinstance(meta.value, type):
+                extra = field_kwargs.setdefault("json_schema_extra", {})
+                if isinstance(extra, dict):
+                    extra[meta.key] = meta.value
+
+        if (
+            spec.is_nullable
+            and CommonMeta.DEFAULT.value not in field_kwargs
+            and CommonMeta.DEFAULT_FACTORY.value not in field_kwargs
+        ):
+            field_kwargs[CommonMeta.DEFAULT.value] = None
+
+        field_info = PydanticField(**field_kwargs)
+        field_info.annotation = _pydantic_annotation(spec)
+        return field_info
 
     @classmethod
     def create_validator(cls, spec: Spec) -> dict | None:
@@ -76,22 +139,30 @@ class PydanticSpecAdapter(SpecAdapter):
         from pydantic import field_validator
 
         field_name = spec.name if isinstance(spec.name, str) else "field"
-        return {f"{field_name}_validator": field_validator(field_name)(v)}
+        validators = v if isinstance(v, list) else [v]
+        suffixes = range(len(validators)) if len(validators) > 1 else (None,)
+        output = {}
+        for suffix, validator in zip(suffixes, validators, strict=True):
+            key = (
+                f"{field_name}_validator" if suffix is None else f"{field_name}_validator_{suffix}"
+            )
+            output[key] = field_validator(field_name)(validator)
+        return output
 
     @classmethod
-    def create_model(
+    def materialize(
         cls,
-        op: Operable,
+        declaration: Operable,
+        /,
+        *,
         model_name: str,
         include: Collection[str] | None = None,
         exclude: Collection[str] | None = None,
         base_type: type[BaseModel] | None = None,
         doc: str | None = None,
     ) -> type[BaseModel]:
-        """Generate Pydantic BaseModel from Operable."""
-        from lionagi.models._build_model import build_model_type
-
-        use_specs = op.get_specs(include=include, exclude=exclude)
+        """Materialize an ordered neutral declaration as a Pydantic model class."""
+        use_specs = declaration.get_specs(include=include, exclude=exclude)
         for index, spec in enumerate(use_specs):
             if not isinstance(spec.name, str):
                 raise ValueError(
@@ -102,20 +173,19 @@ class PydanticSpecAdapter(SpecAdapter):
             adapter_type=cls,
             base_type=base_type,
             model_name=model_name,
-            declaration=op if use_specs is op.__op_fields__ else use_specs,
+            declaration=(declaration if use_specs is declaration.__op_fields__ else use_specs),
             doc=doc,
         )
 
         def build() -> type[BaseModel]:
-            use_fields = {cast(str, i.name): cls.create_field(i) for i in use_specs}
-
+            use_fields = {cast(str, spec.name): cls.create_field(spec) for spec in use_specs}
             validators = {}
             for spec in use_specs:
                 validator = cls.create_validator(spec)
                 if validator:
                     validators.update(validator)
 
-            result = build_model_type(
+            result = _pydantic_builder._build_pydantic_model(
                 name=model_name,
                 parameter_fields=use_fields,
                 base_type=base_type,
@@ -132,6 +202,33 @@ class PydanticSpecAdapter(SpecAdapter):
         if not model_cls.__pydantic_complete__:
             model_cls.model_rebuild()
         return model_cls
+
+    @classmethod
+    def create_model(
+        cls,
+        op: Operable,
+        model_name: str,
+        include: Collection[str] | None = None,
+        exclude: Collection[str] | None = None,
+        base_type: type[BaseModel] | None = None,
+        doc: str | None = None,
+    ) -> type[BaseModel]:
+        """Compatibility alias for :meth:`materialize`."""
+        import warnings
+
+        warnings.warn(
+            "PydanticSpecAdapter.create_model() is deprecated; use materialize() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return cls.materialize(
+            op,
+            model_name=model_name,
+            include=include,
+            exclude=exclude,
+            base_type=base_type,
+            doc=doc,
+        )
 
     @classmethod
     def fuzzy_match_fields(

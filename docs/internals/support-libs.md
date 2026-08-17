@@ -101,14 +101,18 @@ override this setting by name.
 
 ## models/field_model: `FieldModel.to_spec`
 
-`to_spec()` forwards every metadata entry as-is so unknown keys survive, an
-explicit `default=None` is preserved (not gated on `is not None`), and
-`json_schema_extra` stays a nested value rather than being flattened into
-field-level kwargs (a `"default"` key inside it must never become the
-runtime default).
+`FieldModel` is a compatibility facade. New declarations should construct `Spec` directly;
+`to_spec()` exists to move legacy inputs immediately onto the neutral authority.
+
+`to_spec()` preserves unknown keys and values, an explicit `default=None`
+(rather than gating on `is not None`), and a nested `json_schema_extra` value
+(a `"default"` key inside it must never become the runtime default). Repeated
+legacy keys are compatibility-normalized before entering strict `Spec`: the
+first owning `name` survives, while ordinary keys and validators use their last
+effective value, as defined by ADR-0050.
 
 Metadata is passed as a `Meta` tuple, not `**kwargs`, so a key that collides
 with a `Spec.__init__` parameter (`self` / `base_type` / `metadata`) survives
-instead of raising. `nullable`/`listable` are derived flags: supply them
-explicitly and drop any stored duplicates so `CommonMeta.prepare()` sees each
-key exactly once.
+instead of raising. `nullable`/`listable` are derived flags and are emitted once
+from their effective legacy values, so `CommonMeta.prepare()` sees every key
+exactly once.
