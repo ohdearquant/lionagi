@@ -2,12 +2,12 @@
  * Data-source hook for Mission Control.
  *
  * Polls runs + invocations APIs every 3s. Drives a client-side watchdog:
- * if the fetch loop is silent for longer than STALE_THRESHOLD_MS, state
- * transitions to "stale". The reducer is the single integration point —
- * swapping the poll for an SSE subscription only requires changing this file.
+ * if the fetch loop is silent for >5s, state transitions to "stale".
+ * The reducer is the single integration point — swapping the poll for an
+ * SSE subscription only requires changing this file.
  *
- * Hysteresis: the stale badge appears after that much silence. It clears only
- * after stable resumption (≥2 successful fetches), never on a single frame.
+ * Hysteresis: stale badge appears after >5s silence. It clears only after
+ * stable resumption (≥2 successful fetches), never on a single frame.
  */
 
 import { useEffect, useReducer, useRef } from "react";
@@ -22,14 +22,7 @@ import { boardReducer, initialBoardState } from "./boardReducer";
 import type { BoardState } from "./boardReducer";
 
 const POLL_INTERVAL_MS = 3_000;
-// Four poll intervals, because the threshold has to clear one slow RESPONSE
-// rather than one interval. A poll slower than POLL_INTERVAL_MS gets the next
-// tick dropped as in-flight, so the gap between two successes jumps to two
-// intervals with nothing actually wrong. At 5s that meant any response slower
-// than about three seconds flipped the view to "stale" -- and this hook awaits
-// five endpoints at once, so it reaches that sooner than the fleet poll does.
-// A backend that is genuinely gone still surfaces within twelve seconds.
-export const STALE_THRESHOLD_MS = POLL_INTERVAL_MS * 4;
+const STALE_THRESHOLD_MS = 5_000;
 const STABLE_RESUMPTION_COUNT = 2;
 
 export function useLiveBoard(): BoardState {

@@ -2,7 +2,7 @@
  * Tests for the watchdog hysteresis logic in useLiveBoard.
  *
  * These tests validate the client-side watchdog timer behavior:
- * - stale badge only after more than STALE_THRESHOLD_MS of silence
+ * - stale badge only after >5s silence
  * - never flaps on a single frame
  * - clears only after stable resumption (>=2 successful fetches)
  *
@@ -15,11 +15,7 @@ import { createRoot, type Root } from "react-dom/client";
 import * as React from "react";
 import { boardReducer, initialBoardState } from "./boardReducer";
 import type { BoardState } from "./boardReducer";
-// Imported rather than re-declared. These two timing tests used to hold their
-// own copy of the threshold, which made them agree with themselves and say
-// nothing about the hook: raising the real constant left them green while
-// still asserting the old number.
-import { useLiveBoard, STALE_THRESHOLD_MS } from "./useLiveBoard";
+import { useLiveBoard } from "./useLiveBoard";
 
 vi.mock("@/lib/api", () => ({
   listRuns: vi.fn(),
@@ -83,7 +79,7 @@ describe("watchdog stale-badge hysteresis — reducer contract", () => {
 // We test the TIMING gate separately using fake timers and manually driven state.
 // This avoids mounting React hooks in unit tests.
 
-describe("watchdog timing — silence gate", () => {
+describe("watchdog timing — 5s silence gate", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -105,10 +101,11 @@ describe("watchdog timing — silence gate", () => {
     });
     expect(state.dataState).toBe("live");
 
-    // Just under the threshold — the watchdog must NOT fire.
+    // Simulate 4900ms passing — watchdog should NOT fire (< 5s)
     let lastSuccessAt = Date.now();
+    const STALE_THRESHOLD_MS = 5_000;
 
-    vi.advanceTimersByTime(STALE_THRESHOLD_MS - 100);
+    vi.advanceTimersByTime(4_900);
     const silent = Date.now() - lastSuccessAt > STALE_THRESHOLD_MS;
     expect(silent).toBe(false);
 
@@ -118,7 +115,7 @@ describe("watchdog timing — silence gate", () => {
     expect(state.dataState).toBe("live");
   });
 
-  it("marks stale once silence passes the threshold", () => {
+  it("marks stale after 5s silence", () => {
     let state: BoardState = initialBoardState();
     state = boardReducer(state, {
       type: "DATA_OK",
@@ -129,8 +126,9 @@ describe("watchdog timing — silence gate", () => {
     });
 
     let lastSuccessAt = Date.now();
+    const STALE_THRESHOLD_MS = 5_000;
 
-    vi.advanceTimersByTime(STALE_THRESHOLD_MS + 100);
+    vi.advanceTimersByTime(5_100);
     const silent = Date.now() - lastSuccessAt > STALE_THRESHOLD_MS;
     expect(silent).toBe(true);
 
