@@ -3026,3 +3026,55 @@ async def test_one_row_of_unparseable_content_does_not_take_the_whole_read_down(
     assert by_id["bad-1"]["action_request_id"] == "req-bad", (
         "the healthy row must still get its link lifted"
     )
+
+
+async def test_an_oversized_response_alone_does_not_report_the_file_union_as_cut(
+    patched_sessions_db, monkeypatch
+):
+    """A response withholds nothing the union wanted.
+
+    Paths are read from `$.function` and `$.arguments`, which only a request
+    carries, so an oversized response cannot have contributed one. Counting it
+    as a cut reports a complete union as incomplete, and the reader resolving a
+    name against it is told to distrust a correct answer.
+    """
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    await seed_session(db_path, session_id="sess-union")
+    await seed_branch(
+        db_path, branch_id="br-union", session_id="sess-union", msg_ids=["req-s", "resp-big"]
+    )
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "req-s",
+                "created_at": 110.0,
+                "content": {"function": "Read", "arguments": {"file_path": "/run/a"}},
+                "sender": "worker",
+                "recipient": "tool",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                },
+            }
+        )
+        await db.insert_message(
+            {
+                "id": "resp-big",
+                "created_at": 120.0,
+                "content": {"output": "y" * 5000, "action_request_id": "req-s"},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+
+    detail = await svc.get_session("sess-union")
+
+    assert detail is not None
+    stats = detail["message_stats"]
+    assert stats["files"] == ["/run/a"], stats["files"]
+    assert stats["files_bounded"] is False, "an oversized response marked a complete union as cut"

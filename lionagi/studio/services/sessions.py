@@ -1022,14 +1022,24 @@ async def _fetch_action_file_paths(
     """
     class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
     cur = await db.execute(
-        f"SELECT type_id FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
+        f"SELECT type_id, lion_class FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
         _ACTION_LION_CLASSES,
     )
-    type_ids = [row["type_id"] for row in await cur.fetchall()]
+    type_rows = await cur.fetchall()
+    type_ids = [row["type_id"] for row in type_rows]
     if not type_ids:
         # No action rows to union, and nothing was cut reaching that answer.
         return [], False
     type_placeholders = ",".join("?" for _ in type_ids)
+    # Only a request carries the fields a path is read from. Both kinds are
+    # scanned, because both are action rows and the scan is defined over those,
+    # but an oversized response withheld nothing the union wanted -- counting it
+    # as a cut reports a complete answer as incomplete.
+    request_type_ids = {
+        row["type_id"]
+        for row in type_rows
+        if _short_lion_class(row["lion_class"]) == "ActionRequest"
+    }
 
     paths: set[str] = set()
     path_bytes = 0
@@ -1070,7 +1080,8 @@ async def _fetch_action_file_paths(
                             THEN json_extract(m.content, '$.arguments.file_path') END AS file_path,
                        CASE WHEN length(m.content) <= ?
                             THEN json_extract(m.content, '$.arguments.path') END AS path,
-                       length(m.content) > ? AS oversized
+                       length(m.content) > ? AS oversized,
+                       m.lion_class AS type_ref
                 FROM messages m
                 WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
                 """,  # noqa: S608
@@ -1089,7 +1100,8 @@ async def _fetch_action_file_paths(
                 # guards keep the extraction off oversized content, and only the
                 # short fields cross.
                 if row["oversized"]:
-                    omitted_oversized = True
+                    if row["type_ref"] in request_type_ids:
+                        omitted_oversized = True
                     continue
                 found = _action_file_path(
                     row["fn"], {"file_path": row["file_path"], "path": row["path"]}
