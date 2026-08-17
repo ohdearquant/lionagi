@@ -4698,7 +4698,7 @@ class StateDB:
         # construction. Grouping by (invocation, reason) makes the observed
         # value the number of distinct things that went wrong.
         #
-        # Both columns are COALESCEd to the session id rather than grouped on
+        # Both columns fall back to the session id rather than grouping on
         # NULL, and that is the whole correctness of this query. NULL is not a
         # shared value: rows without an invocation are rows whose grouping is
         # unknown, and letting SQL treat them as equal merges unrelated
@@ -4707,10 +4707,23 @@ class StateDB:
         # reason and the alarm stops being able to fire. Falling back to a
         # unique per-row value keeps unknown groupings apart, which errs
         # toward alerting.
+        #
+        # The fallback is tagged rather than bare, because a bare one puts two
+        # different namespaces in one column and lets a value from either side
+        # answer for the other: a session with no invocation whose id happens
+        # to equal some other session's invocation_id would share a grouping
+        # key with it, and two distinct causes carrying the same reason would
+        # then count once. That is the direction that suppresses an alert, so
+        # it is the one worth spending a prefix on. Every value now says which
+        # namespace it came from, and no value in one can equal a value in the
+        # other, since the two prefixes differ at their first character.
         "failed_sessions": (
             "SELECT COUNT(*) AS n FROM ("
-            "SELECT DISTINCT COALESCE(invocation_id, id) AS cause_group, "
-            "COALESCE(status_reason_code, id) AS cause_class FROM sessions "
+            "SELECT DISTINCT CASE WHEN invocation_id IS NULL "
+            "THEN 'session:' || id ELSE 'invocation:' || invocation_id END AS cause_group, "
+            "CASE WHEN status_reason_code IS NULL "
+            "THEN 'session:' || id ELSE 'reason:' || status_reason_code END AS cause_class "
+            "FROM sessions "
             "WHERE status IN ('failed', 'timed_out') "
             "AND COALESCE(ended_at, started_at, created_at) >= :window_start"
             # PostgreSQL requires a name for a subquery in FROM; SQLite does

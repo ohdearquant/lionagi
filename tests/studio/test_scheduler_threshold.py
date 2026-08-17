@@ -1321,8 +1321,6 @@ async def _make_failed(
     are created running and then transitioned, which is what puts a real
     reason code on them.
     """
-    import contextlib
-
     prog_id = f"prog-{sess_id}"
     await state.create_progression(prog_id)
     await state.create_session(
@@ -1335,11 +1333,14 @@ async def _make_failed(
     )
     if invocation_id is not None:
         # invocation_id is a foreign key, so the invocation has to exist. The
-        # same id is shared deliberately across a fan-out's sessions.
-        with contextlib.suppress(Exception):
-            await state.create_invocation(
-                {"id": invocation_id, "skill": "test", "started_at": ended_at - 2}
-            )
+        # same id is shared deliberately across a fan-out's sessions, and
+        # create_invocation is ON CONFLICT DO NOTHING, so the repeated calls
+        # that come with it are already no-ops. Nothing is caught here on
+        # purpose: a fixture that swallows its own database errors reports
+        # them later as a wrong count somewhere else.
+        await state.create_invocation(
+            {"id": invocation_id, "skill": "test", "started_at": ended_at - 2}
+        )
         await state.update_session(sess_id, invocation_id=invocation_id)
     await state.update_status(
         "session",
@@ -1414,6 +1415,40 @@ async def test_one_invocation_meeting_two_different_walls_is_two_causes():
     )
     await _make_failed(
         state, "c", ended_at=102.0, invocation_id="shared", reason="run.failed.exception"
+    )
+
+    assert await state.metric_value("failed_sessions", window_start=50.0) == 2.0
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_a_session_id_cannot_answer_for_another_sessions_invocation_id():
+    """The fallback and the real column are different namespaces.
+
+    A session with no invocation falls back to its own id for grouping. If
+    that value is compared against invocation ids as though they were the same
+    namespace, a session whose id happens to equal another session's
+    invocation_id shares a grouping key with it, and when the two also share a
+    reason they count once instead of twice. The error runs toward reporting
+    fewer causes than there are, which is the direction that holds an alert
+    below its threshold, so it fails quietly rather than loudly.
+
+    Nothing stops the two id spaces from overlapping: they are separate tables
+    with separately assigned ids, and equality between them carries no meaning
+    at all.
+    """
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    # No invocation, so this row groups under its own id.
+    await _make_failed(state, "shared", ended_at=100.0, reason="run.failed.exception")
+    # A different failure that really does belong to an invocation, whose id
+    # collides with the session id above. Same reason, so the grouping key is
+    # the only thing keeping these two apart.
+    await _make_failed(
+        state, "other", ended_at=101.0, invocation_id="shared", reason="run.failed.exception"
     )
 
     assert await state.metric_value("failed_sessions", window_start=50.0) == 2.0
