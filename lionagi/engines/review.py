@@ -33,8 +33,10 @@ __all__ = (
     "IssueFound",
     "DimensionClean",
     "VerifyResult",
+    "ProposedVerdict",
     "ReviewVerdict",
     "ReviewEngine",
+    "ReviewRun",
     "DEFAULT_DIMENSIONS",
 )
 
@@ -246,12 +248,64 @@ class VerifyResult(EngineEvent):
     rationale: str = Field(default="", description="Why it holds, or how it was refuted.")
 
 
+class ProposedVerdict(EngineEvent):
+    """What synthesis concluded, before the evidence gate has ruled on it.
+
+    Synthesis proposes; the engine decides and publishes. The two were one step
+    before, and the ordering that produced was wrong in a way no later
+    correction can undo: the terminal event went onto the bus while synthesis
+    ran, and the gate relabelled it afterwards. A consumer watching the stream
+    had already seen the approval. An emitted decision cannot be recalled, so
+    nothing may emit one before the thing that can refuse it has run.
+
+    This is an ``EngineEvent`` and deliberately not a ``Verdict``. A consumer
+    watching for the run's decision must not be able to mistake a proposal for
+    one, and inheriting from ``Verdict`` would put it in exactly the type the
+    verdict is found by.
+    """
+
+    verdict: str = Field(
+        description="The proposed decision, e.g. APPROVE | APPROVE-WITH-FIXES | REQUEST-CHANGES | REJECT."
+    )
+    rationale: str = Field(default="", description="Why this decision, grounded in the findings.")
+    blocking: list[str] = Field(
+        default_factory=list, description="Issues that must be fixed before approval."
+    )
+
+
 class ReviewVerdict(Verdict):
     """Terminal review decision; extends Verdict with the list of blocking issues."""
 
     blocking: list[str] = Field(
         default_factory=list, description="Issues that must be fixed before approval."
     )
+
+
+class ReviewRun(EngineRun):
+    """A review run whose evidence queries see only this run's own events.
+
+    ``EngineRun.by_type`` reads the session's event flow, and a ``Session`` can
+    be injected and reused across runs. Every question this engine asks about
+    what was executed -- was anything verified, did this dimension report --
+    would then be answered partly by a previous run, and the answer is
+    indistinguishable from a true one. A gate that admits another run's
+    evidence is not a gate.
+
+    Scoping is by identity of the events that existed before this run started,
+    which is what makes it correct for the reuse case without needing to
+    intercept anything on the way in. It does not separate two runs executing
+    concurrently against one shared session; that is a stronger property, it is
+    not what the reuse defect was, and claiming it here would be claiming more
+    than this does.
+    """
+
+    def __init__(self, engine: Engine, **kwargs: Any) -> None:
+        super().__init__(engine, **kwargs)
+        self._inherited: set[Any] = {e.id for e in self.session.observer.flow.items}
+
+    @property
+    def events(self) -> list[Any]:
+        return [e for e in self.session.observer.flow.items if e.id not in self._inherited]
 
 
 DEFAULT_DIMENSIONS: tuple[str, ...] = (
@@ -272,6 +326,21 @@ _DIM_MODE: dict[str, str] = {
 
 
 _LOC_PAT = re.compile(r"^(?P<file>[\w./\\-]+?)[:@](?P<line>\d+)")
+
+
+def _withheld_note(unevidenced: tuple[str, ...]) -> str:
+    """Say which dimensions were not covered, in the verdict itself.
+
+    An approval withheld for missing coverage is only useful if the reader can
+    tell what is missing; "review incomplete" sends them back to the logs to
+    find out which reviewer died.
+    """
+    names = ", ".join(unevidenced)
+    return (
+        "Approval withheld: no reviewer output was recorded for "
+        f"{names}. A pass cannot rest on dimensions that produced nothing, "
+        "whether their reviewer failed or never started."
+    )
 
 
 def _verify_key(issue: IssueFound) -> str:
@@ -355,7 +424,7 @@ def _verdict_instruction(
     clean: list[str] | None = None,
 ) -> str:
     parts = [
-        "Issue a single ReviewVerdict over the artifact from the issues below.\n",
+        "Issue a single ProposedVerdict over the artifact from the issues below.\n",
         f"Dimensions reviewed: {', '.join(dimensions)}\n",
     ]
     if clean:
@@ -396,6 +465,8 @@ def _verdict_instruction(
 
 class ReviewEngine(Engine):
     """Dimensional review engine (stateless config). See docs/reference/engines.md for parameter details."""
+
+    run_context_cls: type[EngineRun] = ReviewRun
 
     def __init__(
         self,
@@ -645,10 +716,77 @@ class ReviewEngine(Engine):
             self.synthesis_role,
             name="verdict",
             model=self.model_for("verdict"),
-            emits=(ReviewVerdict,),
+            emits=(ProposedVerdict,),
             exempt=True,
         )
         res = await synth.operate(
             instruction=_verdict_instruction(artifact, dimensions, issues, verifications, clean)
         )
-        return str(res) if res is not None else ""
+        text = str(res) if res is not None else ""
+
+        unevidenced = self._unevidenced_dimensions(run, dimensions)
+        proposals = run.by_type(ProposedVerdict)
+        proposed = proposals[-1] if proposals else None
+        final = self._rule(proposed, unevidenced, text)
+        await run.emit(final)
+        if unevidenced:
+            return (
+                f"{text}\n\n{_withheld_note(unevidenced)}" if text else _withheld_note(unevidenced)
+            )
+        return text
+
+    def _unevidenced_dimensions(
+        self, run: EngineRun, dimensions: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        """Declared dimensions that produced nothing this run can point at.
+
+        The set is enumerated from the dimensions the run was CONFIGURED with,
+        never from the reviewers that happened to report. Deriving it from who
+        reported would shrink the obligation by exactly the dimensions that
+        failed, so a dimension whose worker died -- or never launched at all --
+        would quietly leave the denominator and the gate would read clean on
+        the smaller one. Died and never-born are different mechanisms and they
+        need the same answer, and both of them look like this: nothing.
+
+        A dimension counts as evidenced when it produced at least one issue or
+        an affirmative all-clear. Reporting issues is execution evidence even
+        when none of them drew a verifier -- whether an issue is verified is a
+        severity policy, and a dimension that returned three minor findings
+        demonstrably ran. Requiring verification instead would make a
+        minor-only review unapprovable, since minors spawn no verifier and a
+        dimension that reported issues has no all-clear to audit.
+        """
+        reported = {i.dimension for i in run.by_type(IssueFound)}
+        reported |= {c.dimension for c in run.by_type(DimensionClean)}
+        return tuple(d for d in dimensions if d not in reported)
+
+    def _rule(
+        self, proposed: ProposedVerdict | None, unevidenced: tuple[str, ...], text: str
+    ) -> ReviewVerdict:
+        """Turn the proposal into the one verdict this run publishes.
+
+        Approving is the only direction the gate refuses. A refusal that rests
+        on partial coverage still stands, because the dimensions that did not
+        report could only have added findings; withholding it would discard a
+        real objection over evidence that would not have changed it.
+        """
+        verdict = (proposed.verdict if proposed else "").strip()
+        rationale = (proposed.rationale if proposed else "") or text
+        blocking = list(proposed.blocking) if proposed else []
+
+        if proposed is None:
+            return ReviewVerdict(
+                verdict="REQUEST-CHANGES",
+                rationale=(
+                    "Synthesis produced no decision, so there is nothing to approve on. "
+                    f"{text}".strip()
+                ),
+                blocking=blocking,
+            )
+        if unevidenced and verdict.upper().startswith("APPROVE"):
+            return ReviewVerdict(
+                verdict="REQUEST-CHANGES",
+                rationale=_withheld_note(unevidenced) + (f" {rationale}" if rationale else ""),
+                blocking=blocking,
+            )
+        return ReviewVerdict(verdict=verdict, rationale=rationale, blocking=blocking)

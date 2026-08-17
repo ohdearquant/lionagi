@@ -320,11 +320,16 @@ class EngineRun:
         return self.session.observer.flow.items
 
     def by_type(self, event_type: type) -> list[Any]:
-        """Return stored payloads matching *event_type*, unwrapping Signal envelopes and capability bundles."""
+        """Return stored payloads matching *event_type*, unwrapping Signal envelopes and capability bundles.
+
+        Reads ``self.events`` rather than the session's flow directly, so a run
+        class that scopes which events are its own has one place to say so and
+        every query built on this follows.
+        """
         obs = self.session.observer
         flt = TypeFilter(event_type)
         out: list[Any] = []
-        for e in obs.flow.items:
+        for e in self.events:
             payload = e.data if isinstance(e, Signal) else e
             out.extend(obs._match(flt, e, payload))
         return out

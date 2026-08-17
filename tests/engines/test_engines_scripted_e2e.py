@@ -309,7 +309,7 @@ async def test_review_engine_e2e_with_adversarial_verify(tmp_path, monkeypatch):
                 },
             ),
             _when(
-                "Issue a single ReviewVerdict",
+                "Issue a single ProposedVerdict",
                 text="REQUEST-CHANGES: fix cursor advance.",
             ),
         ],
@@ -356,7 +356,7 @@ async def test_review_repair_recovers_prose_reviewer_e2e(tmp_path, monkeypatch):
                     }
                 },
             ),
-            _when("Issue a single ReviewVerdict", text="REQUEST-CHANGES: fix cursor advance."),
+            _when("Issue a single ProposedVerdict", text="REQUEST-CHANGES: fix cursor advance."),
         ],
     )
 

@@ -10,7 +10,9 @@ import pytest
 from lionagi.engines.review import (
     DimensionClean,
     IssueFound,
+    ProposedVerdict,
     ReviewEngine,
+    ReviewVerdict,
     VerifyResult,
     _clean_ref,
     _verdict_instruction,
@@ -122,6 +124,181 @@ async def test_verdict_reads_issues_from_store():
     out = await eng._verdict(run, "ART", ("security",))
     assert out == "REQUEST-CHANGES"
     assert "X-issue" in captured["instruction"]
+
+
+# -- the evidence gate --------------------------------------------------------
+
+
+def _synth_proposing(verdict: str):
+    """A synthesis stand-in that proposes *verdict* the way the real one does."""
+
+    class _Synth:
+        name = "verdict"
+
+        def __init__(self, run):
+            self._run = run
+
+        async def operate(self, *, instruction):
+            await self._run.emit(ProposedVerdict(verdict=verdict, rationale="looked fine to me"))
+            return verdict
+
+    return _Synth
+
+
+async def _verdict_with(eng, run, dimensions, verdict="APPROVE"):
+    synth_cls = _synth_proposing(verdict)
+
+    async def fake_make(role, **kw):
+        return synth_cls(run)
+
+    run.make_agent = fake_make
+    return await eng._verdict(run, "ART", dimensions)
+
+
+@pytest.mark.asyncio
+async def test_a_dimension_whose_reviewer_died_withholds_the_approval():
+    """One dimension reported, one produced nothing. An approve cannot stand.
+
+    This is the run that reads healthiest and is least safe: the surviving
+    dimension supplies real findings, real verifications, and a synthesis with
+    something to reason over, so every signal except the missing one looks
+    like a completed review.
+    """
+    eng = ReviewEngine()
+    run = eng.new_run()
+    await run.emit(DimensionClean(dimension="correctness", rationale="read it, fine"))
+    # security's reviewer died: nothing from it at all.
+
+    out = await _verdict_with(eng, run, ("correctness", "security"))
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES"
+    assert "security" in final[0].rationale
+    assert "security" in out
+
+
+@pytest.mark.asyncio
+async def test_a_dimension_that_never_started_withholds_it_too():
+    """Died and never-born are different mechanisms with one required answer.
+
+    The obligation is enumerated from the dimensions the run was configured
+    with. Were it taken from the reviewers that actually reported, a dimension
+    whose worker never launched would leave the denominator on its way out and
+    the gate would pass on the remainder, which is the failure it exists to
+    catch, wearing the shape of a smaller review.
+    """
+    eng = ReviewEngine(dimensions=("correctness", "security", "performance"))
+    run = eng.new_run()
+    await run.emit(IssueFound(dimension="correctness", description="c", severity="minor"))
+    await run.emit(DimensionClean(dimension="security", rationale="fine"))
+    # performance never spawned.
+
+    out = await _verdict_with(eng, run, eng.dimensions)
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES"
+    assert "performance" in out
+
+
+@pytest.mark.asyncio
+async def test_a_dimension_that_reported_only_minor_issues_still_approves():
+    """Reporting is the evidence; verification is a severity policy.
+
+    Minor findings draw no verifier and a dimension that reported issues has
+    no all-clear to audit, so requiring verification here would make every
+    minor-only review unapprovable. What the gate is asking is whether the
+    dimension ran, and three findings answer that.
+    """
+    eng = ReviewEngine(dimensions=("correctness",))
+    run = eng.new_run()
+    await run.emit(IssueFound(dimension="correctness", description="nit", severity="minor"))
+
+    await _verdict_with(eng, run, eng.dimensions)
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "APPROVE"
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_stands_even_when_coverage_was_partial():
+    """The gate only ever refuses in one direction.
+
+    A dimension that produced nothing could only have added findings, so it
+    cannot be the reason a refusal is wrong. Withholding it as unevidenced
+    would discard a real objection over evidence that would not have changed
+    it.
+    """
+    eng = ReviewEngine()
+    run = eng.new_run()
+    await run.emit(IssueFound(dimension="correctness", description="real bug", severity="major"))
+
+    await _verdict_with(eng, run, ("correctness", "security"), verdict="REQUEST-CHANGES")
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES"
+
+
+@pytest.mark.asyncio
+async def test_a_previous_runs_evidence_does_not_cover_this_runs_dimension():
+    """Evidence is this run's, even when the Session is handed in reused.
+
+    A Session can be injected, and the answer to "did this dimension report"
+    was being read off the session's whole event flow. A second run over the
+    same Session inherited the first one's coverage, and the inherited answer
+    is indistinguishable from a true one.
+    """
+    from lionagi.session.session import Session
+
+    session = Session()
+    eng = ReviewEngine()
+
+    first = eng.new_run(session=session)
+    await first.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await first.emit(DimensionClean(dimension="security", rationale="fine"))
+
+    second = eng.new_run(session=session)
+    await second.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    # security did not report in THIS run; the first run's clean must not count.
+
+    assert eng._unevidenced_dimensions(second, ("correctness", "security")) == ("security",)
+
+    await _verdict_with(eng, second, ("correctness", "security"))
+    final = second.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES"
+
+
+@pytest.mark.asyncio
+async def test_no_approval_is_observable_on_the_stream_before_the_gate_rules():
+    """The ordering property, asserted over the sequence rather than the end state.
+
+    An emitted decision cannot be recalled. Reading only the final state
+    cannot see an APPROVE that went out and was corrected afterwards, which is
+    exactly the shape being ruled out, so the assertion has to be made against
+    what a consumer watching would have seen in order.
+    """
+    seen: list[dict] = []
+    eng = ReviewEngine()
+    run = eng.new_run(on_event=seen.append)
+    await run.emit(DimensionClean(dimension="correctness", rationale="fine"))
+
+    await _verdict_with(eng, run, ("correctness", "security"))
+
+    terminal = [e for e in seen if e.get("type") == "ReviewVerdict"]
+    assert len(terminal) == 1, f"exactly one terminal decision, saw {len(terminal)}"
+    assert not terminal[0].get("verdict", "").upper().startswith("APPROVE")
+
+    decisions = [
+        e.get("type") for e in seen if e.get("type") in ("ProposedVerdict", "ReviewVerdict")
+    ]
+    assert decisions.index("ReviewVerdict") > decisions.index("ProposedVerdict"), (
+        "the proposal must precede the ruling; a ruling emitted first is the "
+        "un-recallable publication this exists to prevent"
+    )
 
 
 # -- emission repair (ADR-0034 §3) -------------------------------------------
