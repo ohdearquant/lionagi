@@ -6,7 +6,7 @@ executable-code shape of Python's own zero-argument ``lambda:`` syntax (e.g.
 docstrings, and other string literals are inspected -- never bare code. A
 leaked internal actor reference (``lambda:<name>``) in a cookbook/notebook
 Python file shows up in exactly those spots: narration in a comment, a
-docstring, or an example string argument such as ``to="lambda:leo"`` -- never
+docstring, or an example string argument such as ``to="lambda:sample-unit"`` -- never
 as the bare ``lambda:`` keyword itself.
 """
 
@@ -19,6 +19,47 @@ import tokenize
 from pathlib import Path
 
 RESERVED_IDENTIFIER = re.compile(r"\blambda:[a-z][a-z0-9_-]*\b")
+
+# Files whose subject IS the reserved vocabulary: this scanner and the tests
+# that exercise it, which have to contain the very strings the scan looks for.
+# Repo-relative, exact paths -- never a prefix or a directory, because a
+# directory entry would exempt files added to it later without anyone deciding
+# that.
+#
+# Every entry is required to still match. An allowlisted file that no longer
+# contains a reserved identifier is reported and fails the scan, so the list
+# cannot quietly outlive its reason and start hiding a real leak behind a path
+# that stopped needing the exemption.
+EXPECTED_FIXTURES = frozenset(
+    {
+        "scripts/lint_python_hygiene.py",
+        "tests/scripts/test_ci_hygiene.py",
+        "tests/mcp/test_notify_failure_classification.py",
+        "benchmarks/orchestration/suites/lionbench/test_data_hygiene.py",
+    }
+)
+
+
+def _repo_relative(path: Path) -> str:
+    """Path as written in EXPECTED_FIXTURES, whatever root the scan was given.
+
+    Anchored on the working directory first, because that is what the caller
+    controls: the lint entry point runs from the repo root and passes relative
+    paths. Falling back to a ``.git`` search alone would silently stop matching
+    in any checkout-shaped tree that has no ``.git`` -- a copied fixture tree,
+    an exported archive -- and an allowlist that stops matching does not fail
+    loudly, it just starts reporting its own fixtures as leaks.
+    """
+    resolved = path.resolve()
+    for anchor in (Path.cwd().resolve(), *resolved.parents):
+        if anchor != Path.cwd().resolve() and not (anchor / ".git").exists():
+            continue
+        try:
+            return resolved.relative_to(anchor).as_posix()
+        except ValueError:
+            continue
+    return resolved.as_posix()
+
 
 # Token types whose text can carry publishable prose: comments, ordinary
 # string literals/docstrings, and (Python 3.12+) f-string literal segments.
@@ -69,10 +110,20 @@ def scan(paths: list[Path]) -> int:
         path for root in paths for path in ([root] if root.is_file() else root.rglob("*.py"))
     )
 
+    scanned_fixtures: set[str] = set()
+    stale_fixtures: set[str] = set()
+
     for path in files:
         try:
             source = path.read_text()
-            if _leaked_identifiers(source):
+            leaked = bool(_leaked_identifiers(source))
+            relative = _repo_relative(path)
+            if relative in EXPECTED_FIXTURES:
+                scanned_fixtures.add(relative)
+                if not leaked:
+                    stale_fixtures.add(relative)
+                continue
+            if leaked:
                 print(f"{path}: internal namespace identifier found")
                 matches = True
         except (
@@ -84,6 +135,17 @@ def scan(paths: list[Path]) -> int:
         ) as exc:
             print(f"{path}: could not scan python source: {exc}", file=sys.stderr)
             errors = True
+
+    # Only fixtures this run actually reached can be judged. A scan of one
+    # subtree says nothing about entries living in another, so absence here is
+    # "not looked at", not "gone".
+    for relative in sorted(stale_fixtures):
+        print(
+            f"{relative}: allowlisted as a fixture but contains no reserved "
+            "identifier; remove it from EXPECTED_FIXTURES",
+            file=sys.stderr,
+        )
+        errors = True
 
     if errors:
         return 2
