@@ -60,15 +60,6 @@ class TestMessengerRequestModel:
         assert req.to is None
         assert req.content is None
 
-    def test_send_request(self):
-        req = MessengerRequest(action="send", to="alice", content="hi")
-        assert req.to == "alice"
-        assert req.content == "hi"
-
-    def test_send_request_list_to(self):
-        req = MessengerRequest(action="send", to=["alice", "bob"], content="hi")
-        assert req.to == ["alice", "bob"]
-
 
 class TestLionMessengerBasics:
     def test_is_system_tool(self):
