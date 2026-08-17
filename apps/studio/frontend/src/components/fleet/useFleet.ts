@@ -13,7 +13,15 @@ import { fleetReducer, initialFleetState } from "./fleetReducer";
 import type { FleetState } from "./fleetReducer";
 
 const POLL_INTERVAL_MS = 3_000;
-const STALE_THRESHOLD_MS = 5_000;
+// Four poll intervals, because the threshold has to clear one slow RESPONSE
+// rather than one interval. A poll slower than POLL_INTERVAL_MS gets the next
+// tick dropped as in-flight, so the gap between two successes jumps to two
+// intervals with nothing actually wrong. At 5s that meant any response slower
+// than about three seconds flipped the view to "stale" -- which the paired
+// 200-row fetches below reach routinely -- and the badge then flapped
+// continuously against a healthy backend. A backend that is genuinely gone
+// still surfaces within twelve seconds.
+export const STALE_THRESHOLD_MS = POLL_INTERVAL_MS * 4;
 const STABLE_RESUMPTION_COUNT = 2;
 
 export interface FleetFilters {

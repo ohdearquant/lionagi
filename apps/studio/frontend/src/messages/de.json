@@ -911,7 +911,7 @@
     "stale": {
       "error": "Fehler · {message}",
       "unreachable": "API nicht erreichbar",
-      "lastUpdated": "veraltet · zuletzt vor {age}s aktualisiert"
+      "lastUpdated": "zuletzt vor {age}s aktualisiert"
     },
     "detail": {
       "hint": "Wähle eine Session aus, um sie zu untersuchen",
@@ -927,8 +927,7 @@
       "updated": "Aktualisiert",
       "branchesTitle": "{count, plural, one {Zweig (#)} other {Zweige (#)}}",
       "noBranches": "Keine Branches.",
-      "msgs": " Nachrichten",
-      "engineRuns": "Engine-Läufe"
+      "msgs": " Nachrichten"
     },
     "split": {
       "master": "Sessionliste",
@@ -1074,7 +1073,7 @@
     "stale": {
       "error": "Fehler · {message}",
       "unreachable": "API nicht erreichbar",
-      "lastUpdated": "veraltet · zuletzt vor {age}s aktualisiert"
+      "lastUpdated": "zuletzt vor {age}s aktualisiert"
     },
     "zeroState": {
       "heading": "Loslegen",

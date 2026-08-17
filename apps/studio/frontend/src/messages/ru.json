@@ -911,7 +911,7 @@
     "stale": {
       "error": "ошибка · {message}",
       "unreachable": "API недоступен",
-      "lastUpdated": "устарело · последнее обновление {age} с назад"
+      "lastUpdated": "последнее обновление {age} с назад"
     },
     "detail": {
       "hint": "Выберите сессию для проверки",
@@ -927,8 +927,7 @@
       "updated": "Обновлено",
       "branchesTitle": "Ветки ({count})",
       "noBranches": "Веток нет.",
-      "msgs": " сообщ.",
-      "engineRuns": "Запуски движка"
+      "msgs": " сообщ."
     },
     "split": {
       "master": "Список сессий",
@@ -1074,7 +1073,7 @@
     "stale": {
       "error": "ошибка · {message}",
       "unreachable": "API недоступен",
-      "lastUpdated": "устарело · последнее обновление {age} с назад"
+      "lastUpdated": "последнее обновление {age} с назад"
     },
     "zeroState": {
       "heading": "Начните работу",

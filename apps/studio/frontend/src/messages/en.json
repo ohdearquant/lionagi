@@ -911,7 +911,7 @@
     "stale": {
       "error": "error · {message}",
       "unreachable": "API unreachable",
-      "lastUpdated": "stale · last updated {age}s ago"
+      "lastUpdated": "last updated {age}s ago"
     },
     "detail": {
       "hint": "Select a session to inspect it",
@@ -927,8 +927,7 @@
       "updated": "Updated",
       "branchesTitle": "{count, plural, one {Branch (#)} other {Branches (#)}}",
       "noBranches": "No branches.",
-      "msgs": " msgs",
-      "engineRuns": "Engine runs"
+      "msgs": " msgs"
     },
     "split": {
       "master": "Session list",
@@ -1074,7 +1073,7 @@
     "stale": {
       "error": "error · {message}",
       "unreachable": "API unreachable",
-      "lastUpdated": "stale · last updated {age}s ago"
+      "lastUpdated": "last updated {age}s ago"
     },
     "zeroState": {
       "heading": "Get started",

@@ -225,8 +225,12 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // shown when a run carries no project for a control to be authorized
   // against. Natively translated in all 16, so unlike its two siblings it adds
   // nothing to the identity-leak baseline below.
-  it("en.json has 1100 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1100);
+  //
+  // 1099 = 1100 - fleet.detail.engineRuns, removed with the session-detail link
+  // bar that was its only caller. The route it pointed at stays reachable from
+  // the System page's Data section, so nothing is stranded by the removal.
+  it("en.json has 1099 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1099);
   });
 
   it.each(LOCALES.map((l) => l.code))(

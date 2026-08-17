@@ -911,7 +911,7 @@
     "stale": {
       "error": "hata · {message}",
       "unreachable": "API erişilemiyor",
-      "lastUpdated": "güncel değil · son güncelleme {age} sn önce"
+      "lastUpdated": "son güncelleme {age} sn önce"
     },
     "detail": {
       "hint": "incelemek için bir oturum seç",
@@ -927,8 +927,7 @@
       "updated": "güncellendi",
       "branchesTitle": "dallar ({count})",
       "noBranches": "dal yok.",
-      "msgs": " mesaj",
-      "engineRuns": "Motor çalıştırmaları"
+      "msgs": " mesaj"
     },
     "split": {
       "master": "oturum listesi",
@@ -1074,7 +1073,7 @@
     "stale": {
       "error": "hata · {message}",
       "unreachable": "API erişilemiyor",
-      "lastUpdated": "güncel değil · son güncelleme {age} sn önce"
+      "lastUpdated": "son güncelleme {age} sn önce"
     },
     "zeroState": {
       "heading": "başla",

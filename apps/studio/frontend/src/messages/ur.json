@@ -911,7 +911,7 @@
     "stale": {
       "error": "خرابی · ⁨{message}⁩",
       "unreachable": "API تک رسائی نہیں",
-      "lastUpdated": "سٹیل · آخری اپ ڈیٹ {age} سیکنڈ پہلے"
+      "lastUpdated": "آخری اپ ڈیٹ {age} سیکنڈ پہلے"
     },
     "detail": {
       "hint": "تفصیل دیکھنے کے لیے سیشن منتخب کریں",
@@ -927,8 +927,7 @@
       "updated": "اپ ڈیٹ شدہ",
       "branchesTitle": "برانچز (⁨{count}⁩)",
       "noBranches": "کوئی برانچ نہیں۔",
-      "msgs": " پیغامات",
-      "engineRuns": "انجن رنز"
+      "msgs": " پیغامات"
     },
     "split": {
       "master": "سیشن فہرست",
@@ -1074,7 +1073,7 @@
     "stale": {
       "error": "خرابی · ⁨{message}⁩",
       "unreachable": "API تک رسائی نہیں",
-      "lastUpdated": "سٹیل · آخری اپ ڈیٹ {age} سیکنڈ پہلے"
+      "lastUpdated": "آخری اپ ڈیٹ {age} سیکنڈ پہلے"
     },
     "zeroState": {
       "heading": "شروع کریں",

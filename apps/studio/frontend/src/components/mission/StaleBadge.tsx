@@ -10,6 +10,7 @@
 import { useEffect, useState } from "react";
 import { useTranslations } from "use-intl";
 import { IconClose } from "@/components/ui/icons";
+import StatusDot from "@/components/ui/StatusDot";
 import type { DataState } from "./boardReducer";
 
 interface Props {
@@ -55,19 +56,16 @@ export default function StaleBadge({ dataState, lastUpdatedMs, errorMessage }: P
     );
   }
 
-  // stale
+  // stale — ambient status, not an alert: a quiet timestamp in muted type, with
+  // the shared dot carrying the state. The warning treatment is reserved for
+  // the error branch above, where something is actually wrong.
   return (
     <div
       role="status"
       aria-live="polite"
-      className="flex items-center gap-2 rounded border px-3 py-1.5 font-data text-[length:var(--t-xs)] font-medium"
-      style={{
-        borderColor: "var(--status-pending)",
-        background: "color-mix(in srgb, var(--status-pending) 8%, transparent)",
-        color: "var(--status-pending)",
-      }}
+      className="flex items-center gap-1.5 font-data text-[length:var(--t-xs)] text-content-muted"
     >
-      <span aria-hidden="true">◴</span>
+      <StatusDot status="stale" />
       <span>{t("stale.lastUpdated", { age })}</span>
     </div>
   );

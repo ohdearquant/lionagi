@@ -911,7 +911,7 @@
     "stale": {
       "error": "错误 · {message}",
       "unreachable": "API 不可达",
-      "lastUpdated": "数据过期 · {age} 秒前更新"
+      "lastUpdated": "{age} 秒前更新"
     },
     "detail": {
       "hint": "选择一个会话查看详情",
@@ -927,8 +927,7 @@
       "updated": "更新时间",
       "branchesTitle": "分支（{count}）",
       "noBranches": "暂无分支。",
-      "msgs": " 条消息",
-      "engineRuns": "引擎运行"
+      "msgs": " 条消息"
     },
     "split": {
       "master": "会话列表",
@@ -1074,7 +1073,7 @@
     "stale": {
       "error": "错误 · {message}",
       "unreachable": "API 不可达",
-      "lastUpdated": "数据过期 · {age} 秒前更新"
+      "lastUpdated": "{age} 秒前更新"
     },
     "zeroState": {
       "heading": "开始使用",

@@ -911,7 +911,7 @@
     "stale": {
       "error": "kesalahan · {message}",
       "unreachable": "API tidak terjangkau",
-      "lastUpdated": "usang · terakhir diperbarui {age}s lalu"
+      "lastUpdated": "terakhir diperbarui {age}s lalu"
     },
     "detail": {
       "hint": "Pilih sesi untuk diperiksa",
@@ -927,8 +927,7 @@
       "updated": "Diperbarui",
       "branchesTitle": "{count, plural, other {Cabang (#)}}",
       "noBranches": "Tidak ada branch.",
-      "msgs": " pesan",
-      "engineRuns": "Proses engine"
+      "msgs": " pesan"
     },
     "split": {
       "master": "Daftar sesi",
@@ -1074,7 +1073,7 @@
     "stale": {
       "error": "kesalahan · {message}",
       "unreachable": "API tidak terjangkau",
-      "lastUpdated": "usang · terakhir diperbarui {age}s lalu"
+      "lastUpdated": "terakhir diperbarui {age}s lalu"
     },
     "zeroState": {
       "heading": "Mulai",

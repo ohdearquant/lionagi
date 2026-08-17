@@ -911,7 +911,7 @@
     "stale": {
       "error": "エラー · {message}",
       "unreachable": "APIに接続できません",
-      "lastUpdated": "古い状態 · 最終更新は{age}秒前"
+      "lastUpdated": "最終更新は{age}秒前"
     },
     "detail": {
       "hint": "調査するセッションを選択",
@@ -927,8 +927,7 @@
       "updated": "更新",
       "branchesTitle": "ブランチ ({count})",
       "noBranches": "ブランチはありません。",
-      "msgs": " 件のメッセージ",
-      "engineRuns": "エンジン実行"
+      "msgs": " 件のメッセージ"
     },
     "split": {
       "master": "セッション一覧",
@@ -1074,7 +1073,7 @@
     "stale": {
       "error": "エラー · {message}",
       "unreachable": "APIに接続できません",
-      "lastUpdated": "古い状態 · 最終更新は{age}秒前"
+      "lastUpdated": "最終更新は{age}秒前"
     },
     "zeroState": {
       "heading": "はじめる",

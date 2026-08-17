@@ -911,7 +911,7 @@
     "stale": {
       "error": "error · {message}",
       "unreachable": "API inaccesible",
-      "lastUpdated": "inactivo · última actualización hace {age} s"
+      "lastUpdated": "última actualización hace {age} s"
     },
     "detail": {
       "hint": "Selecciona una sesión para inspeccionarla",
@@ -927,8 +927,7 @@
       "updated": "Actualizado",
       "branchesTitle": "Ramas ({count})",
       "noBranches": "Sin ramas.",
-      "msgs": " mensajes",
-      "engineRuns": "Ejecuciones de motor"
+      "msgs": " mensajes"
     },
     "split": {
       "master": "Lista de sesiones",
@@ -1074,7 +1073,7 @@
     "stale": {
       "error": "error · {message}",
       "unreachable": "API inaccesible",
-      "lastUpdated": "obsoleto · última actualización hace {age} s"
+      "lastUpdated": "última actualización hace {age} s"
     },
     "zeroState": {
       "heading": "Comenzar",
