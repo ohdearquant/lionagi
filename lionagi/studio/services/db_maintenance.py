@@ -282,11 +282,20 @@ async def _candidate_chunks(
     forward seek, and asking for one that does not exist is a prepare-time
     error, so a schema change that removes it fails loudly rather than
     silently restoring the quadratic plan.
+
+    The hint is SQLite's syntax and SQLite's problem, so it is only emitted for
+    that dialect. PostgreSQL keeps its own table statistics and plans this as a
+    forward seek without being told, and it has no `INDEXED BY` clause at all --
+    emitting one unconditionally would turn every prune pass on a Postgres-backed
+    store into a syntax error at prepare time.
     """
+    # Built once rather than per page: `table` and the dialect are both fixed
+    # for the life of the scan.
+    indexed_by = f" INDEXED BY sqlite_autoindex_{table}_1" if db.dialect == "sqlite" else ""
     after = ""
     while True:
         sql = (
-            f"SELECT id FROM {table} INDEXED BY sqlite_autoindex_{table}_1 "  # noqa: S608
+            f"SELECT id FROM {table}{indexed_by} "  # noqa: S608
             f"WHERE ({where_sql}) AND id > ? ORDER BY id LIMIT ?"
         )
         async with db.transaction() as conn:
