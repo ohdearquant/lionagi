@@ -2,34 +2,51 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import ItemsView, Iterator, KeysView, ValuesView
-from functools import partial
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 from typing_extensions import override
 
 from lionagi.libs.nested import deep_update, flatten, nget, npop, nset, unflatten
-from lionagi.ln import copy, is_sentinel, to_dict
+from lionagi.ln import copy, to_dict
+from lionagi.ln.types._sentinel import _compat_is_sentinel
 from lionagi.utils import UNDEFINED
 
 IndicesType = str | int | tuple[str | int, ...]
 
 
 def _strip_sentinels(obj: Any, none_as_sentinel=False, empty_as_sentinel=False) -> Any:
-    _is_sential = partial(
-        is_sentinel,
-        none_as_sentinel=none_as_sentinel,
-        empty_as_sentinel=empty_as_sentinel,
-    )
-
-    def _inner(obj: Any) -> Any:
-        if isinstance(obj, dict):
-            return {k: _inner(v) for k, v in obj.items() if not _is_sential(v)}
-        if isinstance(obj, list):
-            return [_inner(v) for v in obj if not _is_sential(v)]
-        return obj
-
-    return _inner(obj)
+    if isinstance(obj, dict):
+        return {
+            key: _strip_sentinels(
+                value,
+                none_as_sentinel=none_as_sentinel,
+                empty_as_sentinel=empty_as_sentinel,
+            )
+            for key, value in obj.items()
+            if not _compat_is_sentinel(
+                value,
+                site="lionagi.models.note._strip_sentinels",
+                none_as_sentinel=none_as_sentinel,
+                empty_as_sentinel=empty_as_sentinel,
+            )
+        }
+    if isinstance(obj, list):
+        return [
+            _strip_sentinels(
+                value,
+                none_as_sentinel=none_as_sentinel,
+                empty_as_sentinel=empty_as_sentinel,
+            )
+            for value in obj
+            if not _compat_is_sentinel(
+                value,
+                site="lionagi.models.note._strip_sentinels",
+                none_as_sentinel=none_as_sentinel,
+                empty_as_sentinel=empty_as_sentinel,
+            )
+        ]
+    return obj
 
 
 def _to_indices(key: IndicesType) -> list[str | int]:

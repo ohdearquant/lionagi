@@ -46,6 +46,16 @@ class TestInstructHandle:
         # None is a sentinel → excluded; original instruction is preserved
         assert result.instruction == "keep"
 
+    def test_handle_empty_overrides_are_omitted_but_false_is_explicit(self):
+        result = Instruct.handle(
+            instruct={"instruction": "keep", "reason": True},
+            instruction="",
+            reason=False,
+        )
+
+        assert result.instruction == "keep"
+        assert result.reason is False
+
     def test_handle_all_overrides_applied(self):
         """All non-sentinel overrides populate the returned Instruct."""
         result = Instruct.handle(

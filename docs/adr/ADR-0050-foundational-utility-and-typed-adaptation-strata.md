@@ -4,7 +4,8 @@
 - **Kind**: Retrospective
 - **Area**: utilities
 - **Date**: 2026-07-09
-- **Relations**: none
+- **Relations**: extended by ADR-0119 (deterministic declarations, three-state absence, and
+  schema materialization)
 
 ## Context
 
@@ -232,9 +233,10 @@ class Note(BaseModel):
 - `UndefinedType()` and `UnsetType()` return one cached instance per sentinel
   subclass. `copy` and `deepcopy` return that same instance; both objects are falsy
   and render as `Undefined` or `Unset`.
-- `is_sentinel()` always recognizes the two objects by identity. It recognizes
-  `None` only when `none_as_sentinel=True`, and the shipped empty tuple, set,
-  frozenset, dict, list, and empty string only when `empty_as_sentinel=True`.
+- Public `is_sentinel()` / `not_sentinel()` recognize only the two objects by
+  identity and reject truthy legacy collapse flags. ADR-0119's private named
+  compatibility gateway may additionally recognize `None`, or the shipped empty
+  tuple, set, frozenset, dict, list, and empty string, only for an allowlisted axis.
 - `Params` rejects unknown constructor keys with `ValueError`. With
   `prefill_unset=True`, an allowed field that remains `Undefined` becomes `Unset`.
   With `strict=True`, any value considered a sentinel by the configured policy

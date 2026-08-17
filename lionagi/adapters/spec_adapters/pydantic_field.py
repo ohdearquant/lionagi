@@ -95,7 +95,7 @@ class PydanticSpecAdapter(SpecAdapter):
     def create_validator(cls, spec: Spec) -> dict | None:
         """Create Pydantic field_validator from Spec metadata."""
         v = spec.get("validator")
-        if is_sentinel(v) or v is None:
+        if is_sentinel(v):
             return None
 
         from pydantic import field_validator
@@ -118,7 +118,7 @@ class PydanticSpecAdapter(SpecAdapter):
 
         use_specs = op.get_specs(include=include, exclude=exclude)
         for index, spec in enumerate(use_specs):
-            if is_sentinel(spec.name, none_as_sentinel=True) or not isinstance(spec.name, str):
+            if not isinstance(spec.name, str):
                 raise ValueError(
                     "Pydantic model fields require a string name; "
                     f"unnamed or non-string Spec found at index {index}"

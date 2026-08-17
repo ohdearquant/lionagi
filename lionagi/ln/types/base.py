@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 
 from typing_extensions import Self, TypedDict, override
 
-from ._sentinel import Undefined, Unset, is_sentinel
+from ._sentinel import Undefined, Unset, _compat_policy, _SentinelPolicy
 
 __all__ = (
     "Enum",
@@ -73,17 +73,26 @@ def _validate_declared_fields(
     instance: Any,
     set_field: Callable[[Any, str, Any], None],
 ) -> None:
+    sentinel_predicate = _sentinel_predicate(instance)
     for name in type(instance).field_names():
-        _validate_declared_field(instance, name, set_field)
+        _validate_declared_field(
+            instance,
+            name,
+            set_field,
+            sentinel_predicate=sentinel_predicate,
+        )
 
 
 def _validate_declared_field(
     instance: Any,
     name: str,
     set_field: Callable[[Any, str, Any], None],
+    *,
+    sentinel_predicate: Callable[[Any], bool] | None = None,
 ) -> None:
     value = getattr(instance, name, Undefined)
-    if instance._config.strict and instance._is_sentinel(value):
+    sentinel_predicate = sentinel_predicate or _sentinel_predicate(instance)
+    if instance._config.strict and sentinel_predicate(value):
         raise ValueError(f"Missing required parameter: {name}")
     if instance._config.prefill_unset and value is Undefined:
         set_field(instance, name, Unset)
@@ -94,12 +103,13 @@ def _declared_fields_to_dict(
     exclude: Collection[str] | None,
 ) -> dict[str, Any]:
     excluded = frozenset(exclude or ())
+    sentinel_predicate = _sentinel_predicate(instance)
     data: dict[str, Any] = {}
     for name in type(instance).field_names():
         if name in excluded:
             continue
         value = getattr(instance, name, Undefined)
-        if not instance._is_sentinel(value):
+        if not sentinel_predicate(value):
             data[name] = instance._normalize_value(value)
     return data
 
@@ -107,6 +117,44 @@ def _declared_fields_to_dict(
 def _declared_field_state(instance: Any) -> dict[str, Any]:
     """Copy the complete in-memory field state without wire omission."""
     return {name: getattr(instance, name, Undefined) for name in type(instance).field_names()}
+
+
+@lru_cache(maxsize=256)
+def _config_sentinel_policy(
+    owner: type[Any],
+    _config_identity: int,
+    config: ModelConfig,
+) -> _SentinelPolicy:
+    """Compile one lexically-owned class policy outside the field hot path."""
+    return _compat_policy(
+        site=f"{owner.__module__}.{owner.__qualname__}._config",
+        none_as_sentinel=config.none_as_sentinel,
+        empty_as_sentinel=config.empty_as_sentinel,
+    )
+
+
+def _effective_config_sentinel_policy(model_type: type[Any]) -> _SentinelPolicy:
+    """Resolve the live lexical owner before consulting the compiled-policy cache."""
+    config = model_type._config
+    owner = next(base for base in model_type.__mro__ if base.__dict__.get("_config") is config)
+    return _config_sentinel_policy(owner, id(config), config)
+
+
+def _is_config_sentinel(model_type: type[Any], value: Any) -> bool:
+    """Apply the effective immutable ModelConfig through its compiled policy."""
+    return _effective_config_sentinel_policy(model_type).is_sentinel(value)
+
+
+def _sentinel_predicate(instance: Any) -> Callable[[Any], bool]:
+    """Batch the stock policy while preserving the public override seam."""
+    predicate = instance._is_sentinel
+    implementation = getattr(predicate, "__func__", predicate)
+    if (
+        implementation is Params._is_sentinel.__func__
+        or implementation is DataClass._is_sentinel.__func__
+    ):
+        return _effective_config_sentinel_policy(type(instance)).is_sentinel
+    return predicate
 
 
 @dataclass(slots=True, frozen=True, init=False)
@@ -135,11 +183,7 @@ class Params:
 
     @classmethod
     def _is_sentinel(cls, value: Any) -> bool:
-        return is_sentinel(
-            value,
-            none_as_sentinel=cls._config.none_as_sentinel,
-            empty_as_sentinel=cls._config.empty_as_sentinel,
-        )
+        return _is_config_sentinel(cls, value)
 
     @classmethod
     def _normalize_value(cls, value: Any) -> Any:
@@ -224,11 +268,7 @@ class DataClass:
 
     @classmethod
     def _is_sentinel(cls, value: Any) -> bool:
-        return is_sentinel(
-            value,
-            none_as_sentinel=cls._config.none_as_sentinel,
-            empty_as_sentinel=cls._config.empty_as_sentinel,
-        )
+        return _is_config_sentinel(cls, value)
 
     @classmethod
     def _normalize_value(cls, value: Any) -> Any:

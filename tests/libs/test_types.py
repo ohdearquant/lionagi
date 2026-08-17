@@ -150,20 +150,16 @@ def test_params_allowed():
 
 
 @dataclass(slots=True, frozen=True, init=False)
-class MyParamsNoneSentinel(Params):
-    """Test params class with None as sentinel"""
+class UnauthorizedParamsNoneSentinel(Params):
+    """A new core config that is not a named compatibility adapter."""
 
     _config: ClassVar[ModelConfig] = ModelConfig(none_as_sentinel=True)
     field1: str = Unset
 
 
-def test_params_is_sentinel_none_as_sentinel():
-    """Test Params._is_sentinel with _none_as_sentinel=True - Line 197"""
-    # When _none_as_sentinel is True, None should be treated as sentinel
-    assert MyParamsNoneSentinel._is_sentinel(None) is True
-    assert MyParamsNoneSentinel._is_sentinel(Undefined) is True
-    assert MyParamsNoneSentinel._is_sentinel(Unset) is True
-    assert MyParamsNoneSentinel._is_sentinel("value") is False
+def test_unlisted_params_cannot_enable_none_collapse():
+    with pytest.raises(ValueError, match="not allowlisted"):
+        UnauthorizedParamsNoneSentinel._is_sentinel(None)
 
 
 def test_params_is_sentinel_default():
@@ -243,18 +239,16 @@ def test_dataclass_prefill_unset():
 
 
 @dataclass(slots=True)
-class MyDataClassNoneSentinel(DataClass):
-    """Test data class with None as sentinel"""
+class UnauthorizedDataClassNoneSentinel(DataClass):
+    """A new mutable config that is not a named compatibility adapter."""
 
     _config: ClassVar[ModelConfig] = ModelConfig(none_as_sentinel=True)
     field1: str = None
 
 
-def test_dataclass_is_sentinel_none():
-    """Test DataClass._is_sentinel with _none_as_sentinel=True"""
-    assert MyDataClassNoneSentinel._is_sentinel(None) is True
-    assert MyDataClassNoneSentinel._is_sentinel(Undefined) is True
-    assert MyDataClassNoneSentinel._is_sentinel(Unset) is True
+def test_unlisted_dataclass_cannot_enable_none_collapse():
+    with pytest.raises(ValueError, match="not allowlisted"):
+        UnauthorizedDataClassNoneSentinel._is_sentinel(None)
 
 
 def test_dataclass_to_dict():

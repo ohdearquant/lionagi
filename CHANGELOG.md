@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Sentinel identity is now three-state by default: the public `is_sentinel` and
+  `not_sentinel` helpers reject legacy `None`/empty collapse flags, and
+  `Params`/`DataClass` subclasses may enable those flags only through the
+  closed ADR-0119 compatibility inventory. Existing built-in compatibility
+  adapters keep their prior omission behavior. Third-party callers that set
+  either flag must replace it with an explicit domain adapter.
 - Resuming a flow whose checkpoint recorded any operation as failed now refuses
   and names those operations, instead of replaying them as terminal state.
   Replaying a failed operation as terminal marks it failed without running it,
