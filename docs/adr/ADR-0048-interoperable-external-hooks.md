@@ -2,12 +2,21 @@
 
 - **Status**: Accepted
 - **Kind**: Aspirational
+- **Implementation-status**: partial
 - **Area**: hooks
 - **Date**: 2026-07-12
 - **Relations**: extends ADR-0047 (hook mechanism scopes — this ADR adds an external,
   cross-harness contract on top of the mechanisms ADR-0047 ratified; it does not move
   their ownership boundaries); builds on ADR-0095 (its D3 no-shell executable-adapter
-  posture is adopted verbatim for hook commands)
+  posture is adopted verbatim for hook commands); revisited by ADR-0120 (interception,
+  observation, and durable-delivery planes) and ADR-0121 (authoritative action execution)
+
+## Amendment note (2026-08-16)
+
+The Context and problem statements below describe the 2026-07-12 baseline. They are historical
+motivation, not current-state claims: `lionagi/hooks/external.py`, configuration import/trust, and
+conformance tests now exist as recorded in the implementation-status section. Residual design is
+governed by ADR-0120/ADR-0121; no reader should implement the old “only external path” premise.
 
 ## Context
 
@@ -648,77 +657,52 @@ imported entry. The tiers:
   import command reference the profile version they implement. No revision happens
   silently.
 
-## Implementation status (2026-07-13)
+## Implementation status (amended 2026-08-16)
 
-As of 2026-07-13, this ADR's internal-plumbing decisions are implemented and
-tested; its namesake capability — running an actual external hook binary — does
-not exist yet.
+The 2026-07-13 status previously recorded here was wholly stale. The namesake
+external-hook capability now exists and is tested.
 
 **Implemented and tested:**
 
-- **D2, turn-origin verification.** The `USER_PROMPT_SUBMIT` `HookPoint` and its
-  turn-origin token mechanism are fully wired: minted at the public ingresses,
-  forwarded (never re-originated) through nested calls such as
-  `chat_and_record()` → `chat()`, and consumed exactly once at the
-  model-submission boundary. Internal turns (parse-repair, `ReAct` extension and
-  final-answer steps) correctly carry the no-origin disposition and emit
-  nothing. The acceptance matrix's exact-once emission counts are covered by
-  dedicated integration tests, and this is the most rigorously tested area of
-  the ADR.
-- **D3, the `ActionManager` chokepoint.** `ActionManager.invoke()` carries a
-  tool pre/post hook layer that runs for every tool routed through it — plain
-  function tools, `Tool` objects, and MCP-discovered tools alike — closing the
-  MCP coverage gap named in the Context. Ordering (external pre before the
-  spec-level chain, tool call, spec-level post, external post),
-  argument-rewrite revalidation against the tool's declared request model, and
-  the invariant that `security_pre` always sees post-rewrite arguments are all
-  implemented and covered by dedicated tests. The direct-`FunctionCalling`-
-  construction bypass is deliberately preserved and is itself covered by a test
-  asserting hooks do not fire on that path, matching this ADR's documented,
-  tested-limit framing.
+- **D1/D4/D5, wire execution.** `lionagi/hooks/external.py` constructs the
+  external envelope, executes a non-empty argv command without a shell, applies
+  the per-hook timeout, parses stdout decisions, distinguishes exit-code
+  behavior, validates rewrites, and preserves blocking versus advisory seams.
+- **D2, event mapping and turn origin.** `USER_PROMPT_SUBMIT` is wired exactly
+  once for a user-originated turn and is blocking, as is `PreToolUse`; internal
+  turns do not mint a user origin. The mapped session/tool events have
+  conformance coverage.
+- **D3, manager path.** `ActionManager.invoke()` runs the external pre/post
+  sequence for ordinary and MCP-discovered Tools, revalidates rewritten input,
+  and re-runs security processing against that input. Direct
+  `FunctionCalling` construction remains a tested bypass and is no longer an
+  acceptable end-state under ADR-0121.
+- **D6/D7, configuration and trust.** `agent/settings.py` parses
+  `hooks_external:`. `li hooks import claude|codex` translates foreign configs,
+  and `li hooks trust` records content-pinned approval. Execution binds a
+  private copy to the resolved executable/trust record to avoid re-resolution
+  after approval.
+- **Conformance.** Fixture tests exercise external execution, decision mapping,
+  imports, trust, timeout, rewrite, and both blocking/advisory behavior.
 
-**Partially present (in-process analog only, no external wire mechanism):**
+**Residual work and corrected boundaries:**
 
-- The `allow`/`deny`/`ask`/unrecognized-decision semantics of D5 exist as a
-  typed in-process decision object consumed by the tool-hook chain, and are
-  tested there. Nothing yet parses a `hookSpecificOutput` JSON payload off a
-  subprocess's stdout, so this semantics layer has no external hook to serve.
-- The event-vocabulary mapping of D2 for `SessionStart`/`SessionEnd`/
-  `PostToolUseFailure` targets `HookBus` points that pre-date this ADR and
-  remain wired; no code parses an external event-name string out of a
-  configuration file to route to them.
-- The fail-closed-on-timeout principle of Dv1-4/D1 is implemented and tested
-  for the in-process `ask` → deny path; no subprocess timeout code exists to
-  apply the same principle to an external hook process.
-- Argv-only, non-empty-list enforcement (D4) exists, but only as a plugin
-  manifest validator (`HookCommand`) for ADR-0088 bundles, not as a check on
-  any `.lionagi/settings.yaml` `hooks_external:` entry, because that settings
-  surface does not exist (see below).
-- A content-hash trust mechanism exists (`lionagi/plugins/trust.py`), but it
-  pins whole declared files for plugin bundles under ADR-0088, not a
-  per-hook-command argv hash gating a `hooks_external:` settings entry as D7
-  specifies. The two mechanisms overlap in shape (hash-pin, revert-on-change)
-  but differ in what they pin, what triggers them, and which configuration
-  surface they gate.
-
-**Not yet started:**
-
-The capability of executing an external hook binary against LionAGI does not
-exist yet. Concretely absent: the stdin wire envelope (D1) and any code that
-constructs or serializes it; the dedicated exec adapter (D4) that would parse
-stdout, distinguish exit 2 from other nonzero exits, and apply a configurable
-per-hook timeout — the pre-existing `_make_shell_hook` executor is unmodified
-and still collapses every nonzero exit to a single `PermissionError` with no
-stdout read-back; the `hooks_external:` block in `.lionagi/settings.yaml` and
-its loader (D6) — the settings loader reads only the legacy `hooks:` key; the
-`li hooks import claude|codex` and `li hooks trust` CLI commands (D6, D7) —
-neither verb exists in the CLI registry; and the cross-harness conformance
-matrix (D1's own acceptance gate) — the closest existing test asserts internal
-emission counts, not fixture hooks run against current Claude Code/Codex
-schemas. Until this layer lands, no foreign hook suite can run under LionAGI
-and no config can declare one.
-
-On D5's note surfacing: post-hook reason notes are collected by the hook
-runner and attached to the returned tool-call event's metadata. The stronger
-D5 shape, surfacing them into the branch as a system-visible message, belongs
-to the external-hook adapter layer above and remains unbuilt with it.
+- The legacy `_make_shell_hook` path still exists beside the external executor
+  and uses a different no-stdout contract. It must become a compatibility
+  adapter or be retired; it is not a second external-hook authority.
+- Some external execution and legacy paths use direct low-level concurrency or
+  JSON handling rather than LionAGI's internal concurrency/serialization
+  primitives. ADR-0119/ADR-0120 govern that consolidation.
+- Studio/frontend configuration still drifts from the runtime profile: event
+  vocabulary and command representation are duplicated and partly
+  Claude-specific. The versioned runtime declaration must generate or
+  contract-test those projections.
+- `StopHook` (stop sibling handlers) remains unrelated to a provider `Stop`
+  event (turn-stop arbitration). No adapter may conflate them.
+- External hooks attached to the manager path do not close direct `FunctionCalling` or other
+  callable routes. Fresh plugin Tools are resolved before manager-owned external pre/post hooks and
+  therefore do receive those hooks; their separate spec-level PermissionPolicy attachment gap is
+  tracked by ADR-0044/ADR-0121. ADR-0121 makes ActionExecutor the authoritative boundary.
+- Post-hook reason notes remain metadata unless an owning operation explicitly
+  projects them into a message. Observation delivery is governed by ADR-0120;
+  it is not silently upgraded into operation control.

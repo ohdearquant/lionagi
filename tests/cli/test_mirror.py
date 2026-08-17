@@ -1105,6 +1105,116 @@ async def test_live_transcript_reconciles_until_one_final_idle_check(
 
 
 @pytest.mark.asyncio
+async def test_an_unwindowed_pass_does_not_stat_for_a_window_it_will_not_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`li mirror` defaults to no window, and mtime has no consumer but the
+    window check. Reading it anyway costs one syscall per transcript per pass,
+    on the loop whose whole purpose is not to touch settled files."""
+    import lionagi.cli.mirror as mirror_mod
+
+    root = tmp_path / "projects"
+    uid = "unwindowed"
+    path = root / "-work-acme" / f"{uid}.jsonl"
+    _write_session_file(path, uid, age_secs=10)
+    now = 1_800_000_000.0
+    os.utime(path, (now - 600, now - 600))
+
+    real_stat = Path.stat
+    stats: list[Path] = []
+
+    def _counting_stat(self: Path, *args, **kwargs):
+        if self == path:
+            stats.append(self)
+        return real_stat(self, *args, **kwargs)
+
+    async def _settled_reconcile(_db, _uid, **_kwargs):
+        return True
+
+    monkeypatch.setattr(mirror_mod.time, "time", lambda: now)
+    monkeypatch.setattr(
+        "lionagi.state.claude_mirror.reconcile_session_status",
+        _settled_reconcile,
+    )
+
+    async def _count(since: float | None) -> int:
+        states = {
+            str(path): _FileState(
+                session_uid=uid,
+                offset=path.stat().st_size,
+                project="acme",
+                attr_peeked=True,
+            )
+        }
+        stats.clear()
+        monkeypatch.setattr(Path, "stat", _counting_stat)
+        try:
+            await _one_pass(None, root, states, {}, since=since, live_window=300)
+        finally:
+            monkeypatch.setattr(Path, "stat", real_stat)
+        return len(stats)
+
+    # One stat either way for the cursor's size check, plus the window's own
+    # when there is a window to enforce.
+    assert await _count(None) == 1
+    assert await _count(3600.0) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_unwindowed_codex_pass_does_not_stat_for_the_window_either(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same rule on the Codex sweep, which carries its own copy of the check."""
+    import lionagi.cli.mirror as mirror_mod
+
+    now = 1_800_000_000.0
+    uid = "0199cccc-0000-0000-0000-0000000000cc"
+    path = tmp_path / "2026" / "08" / "16" / "rollout-unwindowed.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text("{}\n")
+    os.utime(path, (now - 600, now - 600))
+
+    real_stat = Path.stat
+    stats: list[Path] = []
+
+    def _counting_stat(self: Path, *args, **kwargs):
+        if self == path:
+            stats.append(self)
+        return real_stat(self, *args, **kwargs)
+
+    async def _settled_reconcile(_db, _uid, **_kwargs):
+        return True
+
+    monkeypatch.setattr(mirror_mod.time, "time", lambda: now)
+    monkeypatch.setattr(
+        "lionagi.state.codex_mirror.reconcile_session_status",
+        _settled_reconcile,
+    )
+
+    async def _count(since: float | None) -> int:
+        states = {
+            str(path): _FileState(
+                session_uid=uid,
+                offset=path.stat().st_size,
+                head_checked=True,
+                codex_provenance_peeked=True,
+            )
+        }
+        stats.clear()
+        monkeypatch.setattr(Path, "stat", _counting_stat)
+        try:
+            await mirror_mod._codex_pass(
+                None, tmp_path, states, {}, since=since, live_window=300, threads={}
+            )
+        finally:
+            monkeypatch.setattr(Path, "stat", real_stat)
+        return len(stats)
+
+    windowed = await _count(3600.0)
+    assert await _count(None) == windowed - 1
+
+
+@pytest.mark.asyncio
 async def test_idle_codex_rollout_status_reconciliation_also_quiesces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

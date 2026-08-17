@@ -4,11 +4,42 @@
 - **Kind**: Retrospective
 - **Area**: hooks
 - **Date**: 2026-07-09
-- **Relations**: supersedes v0-0023, v0-0072, v0-0076
+- **Relations**: supersedes v0-0023, v0-0072, v0-0076; revisited by ADR-0120
+  (interception, observation, and durable-delivery planes) and ADR-0121 (authoritative action
+  execution)
+
+## Amendment (2026-08-16)
+
+This accepted retrospective remains the compatibility record for its three public in-process
+hook families, but its mechanism census and implementation-status claims are no longer current.
+The following statements supersede conflicting historical text below:
+
+- “three live mechanisms” means three public families, not an exhaustive inventory. Session
+  signals, governance gates, message callback chains, scheduler buses, Broadcaster,
+  TerminalCallbackRegistry, engine callbacks, and durable delivery add distinct contracts. They
+  share mechanics only where ADR-0120 declares an interceptor or fan-out policy; they do not form
+  one semantic ABI.
+- Both `TOOL_PRE` and `USER_PROMPT_SUBMIT` are blocking HookBus points. Text that describes
+  `TOOL_PRE` as the only blocking point is stale.
+- Lazy Session bus attachment is delivered: existing and subsequently included Branches receive
+  the same bus, and pending Branch hook entries synchronize on attachment. Delta row 1/#1964 and
+  the corresponding negative consequence below are closed implementation history.
+- Service pre-create replacement and tool post-rewrite normalization/revalidation are consumed by
+  current production paths. They are no longer open gaps.
+- Agent factory now attaches spec hooks to MCP-discovered Tools as well as static Tools. The
+  current residuals are direct manager/callable and fresh-plugin routes, construction-dependent
+  ordering, and stored `on_error` handlers that are not invoked. Statements that all MCP Tools are
+  outside factory coverage are stale.
+- `SessionObserver` currently applies one gate before routed subscribers, including persistence.
+  A governance decision can therefore suppress observation/audit delivery. ADR-0120 separates
+  authorization from observation; this is a defect, not a reusable property of the accepted
+  compatibility shape.
+- ADR-0121, not this retrospective ADR or the proposed ADR-0044 alone, owns the future
+  non-bypassable ActionExecutor and transform/revalidation sequence.
 
 ## Context
 
-LionAGI has three live mechanisms called hooks. They intercept different operations, have different
+LionAGI has three public in-process families called hooks. They intercept different operations, have different
 lifetimes, and deliberately provide different failure semantics. Treating them as alternative
 implementations of one handler interface would remove behavior required by at least one caller.
 
@@ -74,7 +105,7 @@ iModel (standalone or Branch-owned)
 | Concern | Decision |
 |---|---|
 | Scope ownership | D1: Session, service-event, and Tool-invocation hooks remain three canonical mechanisms with explicit boundaries. |
-| Ordered Session dispatch | D2: `HookBus` owns the closed point vocabulary, sequential chains, `StopHook`, and blocking `TOOL_PRE`. |
+| Ordered Session dispatch | D2: `HookBus` owns the closed point vocabulary, sequential chains, `StopHook`, and the blocking `TOOL_PRE` / `USER_PROMPT_SUBMIT` points. |
 | Session recording and lifetime | D3: `SessionObserver` is the recording/reactive transport; Session owns bus attachment and persistence routing. |
 | Service event lifecycle | D4: `HookRegistry` and `HookedEvent` remain per-`iModel` control with their shipped status, timeout, exit, and stream semantics. |
 | Tool interception | D5: `Tool.preprocessor` and `Tool.postprocessor` remain the mutable per-invocation interception surface. |
@@ -671,8 +702,9 @@ async def post_hook(
 - Each factory pre-hook receives the canonical tool name, `args.get("action", "")`, and the
   current argument mapping. A dictionary return replaces that mapping; other returns are ignored.
   A raised exception prevents the callable.
-- The current `FunctionCalling` path does not re-run request-model validation after a preprocessor
-  replaces arguments.
+- `ActionManager.invoke()` normalizes and re-runs request-model validation after an external
+  preprocessor replaces arguments, and security preprocessors see the rewritten form. Direct
+  `FunctionCalling` construction remains outside that manager-owned sequence.
 - The factory post chain runs only when the Tool result is a dictionary. It calls each handler with
   the canonical tool name, empty action, empty argument mapping, and current result. Each dictionary
   return replaces the result; non-dictionary returns are ignored. A non-dictionary Tool result
@@ -680,7 +712,8 @@ async def post_hook(
 - `error:<name>` handlers are copied into CodingToolkit maps, but `Tool` has no error-processor
   field and `FunctionCalling` never invokes them. Registration is not execution.
 - Ordinary built-ins receive their chained preprocessors/postprocessors before registration.
-  MCP-discovered Tools are registered later and currently receive none of these agent hooks.
+  MCP-discovered Tools now reuse the same factory attachment helper after discovery. Fresh plugin
+  and public direct-manager/callable routes still require characterization under ADR-0121.
 - Tool-level preprocessing is inside `ActionManager.invoke()`. Session `TOOL_PRE` fires earlier with
   a summary payload; Session `TOOL_POST` or `TOOL_ERROR` fires after the manager returns or raises.
 - The built-in `auto_format_python` post-hook runs `ruff format` as an argv subprocess with shell
@@ -754,8 +787,9 @@ unlike callables.
   production emit site; every other catalog value now has one.
 - A `TOOL_PRE` denial records a denial `HookSignal` before the original exception propagates. Audit
   consumers can identify the denied attempt without changing the blocking result.
-- Session bus attachment currently depends on access order. A Branch can have an observer and no
-  HookBus even while its Session later has a bus.
+- Session bus attachment now synchronizes existing, later, and pending Branch registrations.
+  SessionObserver still combines authorization with observation routing, so a gate can suppress a
+  subscriber or durable audit sink; ADR-0120 separates those planes.
 - Declarative Session hook override utilities exist, but the default Session construction path does
   not consume agent/profile declarations.
 - Service hook authors can rely on the three-positional-argument `StreamHandlers` alias and the
@@ -764,21 +798,21 @@ unlike callables.
   cancellation semantics require propagation; an `ABORTED` post hook with `exit=False` leaves the
   core result intact. No post hook can retract delivered stream chunks, and a core error remains
   primary when both core and post fail.
-- Tool hook authors must know that error handlers are stored but unwired, post handlers are
-  dictionary-only, and MCP tools are outside current factory coverage.
+- Tool hook authors must know that error handlers are stored but unwired and post handlers are
+  dictionary-only. MCP factory coverage is delivered; non-factory/direct routes remain.
 - Reversing D1 would be high cost: it requires changing standalone `iModel`, Session dispatch,
   FunctionCalling mutation, settings loaders, tests, and all handler signatures together.
 - Reversing D2 or D3 independently would either lose ordered guards/persistence or duplicate the
   Session event record.
 - Reversing D4 requires a compatibility wrapper around every provider event and stream path.
-- Reversing D5 requires the universal interceptor design in ADR-0044, including revalidation and
-  complete Tool-registration coverage.
+- Reversing D5 requires ADR-0121's authoritative ActionExecutor, including revalidation and
+  complete invocation-route coverage.
 
 ## Current-vs-ideal delta
 
 | # | Delta | Size | Issue |
 |---|---|---|---|
-| 1 | Make Session hook attachment independent of lazy access order; accept when branches included before or after `Session.hooks` creation receive the same bus and emit the same tool signals. | S | #1964 |
+| 1 | Make Session hook attachment independent of lazy access order; branches included before or after `Session.hooks` creation receive the same bus and pending registrations synchronize. | S | delivered |
 | 2 | Give the three dormant API `HookPoint` values production semantics through a typed, optional service-to-session observation adapter; accept when a session-bound iModel records API observations without changing service pre-invocation control or standalone iModel behavior. | M | delivered |
 | 3 | `ARTIFACT_CREATED` is deprecated compatibility vocabulary with no production emit site; contract coverage pins both the no-emitter scan and the public warning until an artifact owner supplies a typed payload. | S | — |
 | 4 | Blocked `TOOL_PRE` attempts record a denial signal before the original exception propagates; tests pin both the audit record and the blocked invocation. | S | — |

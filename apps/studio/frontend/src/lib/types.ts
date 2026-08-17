@@ -140,6 +140,12 @@ export interface RunMessage {
   output?: string;
   status?: string;
   exit_code?: number | null;
+  /**
+   * The server refused this row's payload for being past its size ceiling. The
+   * turn still happened, so the row is kept and rendered as unread rather than
+   * dropped, blank, or serialized from the empty object left behind.
+   */
+  withheld?: boolean;
 }
 
 export interface RunStep {
@@ -148,34 +154,6 @@ export interface RunStep {
   result?: Record<string, unknown>;
   messages?: RunMessage[];
   timestamp: number | null;
-}
-
-// RunDetail comes from the filesystem run.json path (GET /api/runs/{id} →
-// services/runs.py get_run → _adapt_summary). Unlike RunSummary which maps
-// SQLite session rows, RunDetail reads the on-disk run manifest. The manifest
-// uses "worker_name" and "finished_at" as canonical field names (see
-// _adapt_summary in services/runs.py). ADR-0004 open design question:
-// long-term these should unify with the SQLite session fields.
-export interface RunDetail {
-  run_id: string;
-  state_root: string;
-  artifact_root: string;
-  // Filesystem run.json fields — distinct from SQLite session schema
-  worker_name?: string;
-  task?: string;
-  status: string;
-  error: string | null;
-  cwd: string | null;
-  started_at: number | null;
-  finished_at?: number | null;
-  ended_at?: number | null;
-  steps?: RunStep[];
-  graph: { nodes: WorkerStepNode[]; edges: WorkerLinkEdge[] };
-  manifest: Record<string, unknown>;
-  branches: unknown[];
-  // ADR-0029: artifact contract and verification result.
-  artifact_contract_json?: ArtifactContract | null;
-  artifact_verification_json?: ArtifactVerification | null;
 }
 
 // The checkpoint-replay kinds (play/flow/show-play) send neither

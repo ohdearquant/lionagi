@@ -202,7 +202,7 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  // 1098 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
+  // 1099 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
   // (library.filterHooks + 29 library.hooks.* leaves) when the shared hook
   // library and per-agent assembly landed, + history.detail token-usage stats
   // (statTokensIn/statTokensOut, natively translated in all 16 locales), + 5
@@ -226,11 +226,14 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // against. Natively translated in all 16, so unlike its two siblings it adds
   // nothing to the identity-leak baseline below.
   //
-  // 1103 = 1100 + the three schedules.detail leaves for the discard-changes
-  // confirmation (discardWarning, keepEditing, discardChanges). Natively
-  // translated in all 16, so they add nothing to the identity-leak baseline.
-  it("en.json has 1103 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1103);
+  // 1104, measured from en.json rather than carried from either side: main
+  // dropped fleet.detail.engineRuns with the link bar that was its only caller
+  // and added runCard.outputWithheld and history.detail.filesUnionBounded,
+  // while this branch added three schedules.detail leaves for the
+  // discard-changes confirmation. All five additions are natively translated in
+  // all 16 locales, so they add nothing to the identity-leak baseline.
+  it("en.json has 1104 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1104);
   });
 
   it.each(LOCALES.map((l) => l.code))(

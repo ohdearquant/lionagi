@@ -508,6 +508,7 @@
       "statErrorsRecent": "Erreurs (récentes)",
       "noBranchErrorsPartial": "Aucune erreur dans les messages chargés.",
       "noFilesPartial": "Aucune opération de fichier détectée dans les messages chargés.",
+      "filesUnionBounded": "Certaines opérations sur les fichiers ne sont pas listées : cette exécution a touché plus de fichiers qu'une vue n'en collecte.",
       "olderUnavailable": "Impossible de charger l'historique antérieur — cette conversation a avancé avant la fin de la requête.",
       "reloadConversation": "Recharger la conversation",
       "graphEdgeCount": "{count} arêtes",
@@ -914,7 +915,7 @@
     "stale": {
       "error": "erreur · {message}",
       "unreachable": "API inaccessible",
-      "lastUpdated": "obsolète · dernière mise à jour il y a {age} s"
+      "lastUpdated": "dernière mise à jour il y a {age} s"
     },
     "detail": {
       "hint": "Sélectionnez une session à inspecter",
@@ -930,8 +931,7 @@
       "updated": "Mis à jour",
       "branchesTitle": "{count, plural, one {Branche (#)} other {Branches (#)}}",
       "noBranches": "Aucune branche.",
-      "msgs": " messages",
-      "engineRuns": "Exécutions moteur"
+      "msgs": " messages"
     },
     "split": {
       "master": "Liste des sessions",
@@ -1077,7 +1077,7 @@
     "stale": {
       "error": "erreur · {message}",
       "unreachable": "API inaccessible",
-      "lastUpdated": "obsolète · dernière mise à jour il y a {age} s"
+      "lastUpdated": "dernière mise à jour il y a {age} s"
     },
     "zeroState": {
       "heading": "Démarrer",
@@ -1166,6 +1166,7 @@
     "showEarlier": "Afficher {count, plural, one {# message antérieur} other {# messages antérieurs}}",
     "noArgs": "(aucun argument)",
     "noOutput": "(aucune sortie)",
+    "outputWithheld": "non lu",
     "roleUser": "utilisateur",
     "roleThinking": "réflexion",
     "roleResponse": "réponse",
