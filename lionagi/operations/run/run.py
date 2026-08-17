@@ -115,6 +115,36 @@ async def _stream_with_deadline(model, api_call, deadline: float | None):
             )
 
 
+def _stalled_worker_context(model, api_call) -> str:
+    """Name the worker that stalled, for a log where many are in flight.
+
+    A bare "no first stream output" line identifies nothing: not the call, not
+    the model, not the provider. With dozens of concurrent spawns that makes a
+    burst of stalls indistinguishable from one worker retrying, and it leaves
+    no way to ask whether one provider or one model accounts for them. The
+    fields here are the ones that let a reader join this line to the run that
+    produced it.
+
+    Every field is read defensively because this runs only on the failure
+    path. An attribute error raised while describing a stall would replace the
+    stall report with an unrelated traceback, which is strictly worse than the
+    missing attribution it was added to fix.
+    """
+    fields = []
+    call_id = getattr(api_call, "id", None)
+    if call_id:
+        fields.append(f"call={call_id}")
+    endpoint = getattr(model, "endpoint", None)
+    config = getattr(endpoint, "config", None)
+    provider = getattr(config, "provider", None) or ""
+    if provider:
+        fields.append(f"provider={provider}")
+    model_name = getattr(model, "model_name", None) or ""
+    if model_name:
+        fields.append(f"model={model_name}")
+    return " ".join(fields) or "worker unidentified"
+
+
 async def _stream_with_liveness(
     model,
     kw: dict,
@@ -210,18 +240,21 @@ async def _stream_with_liveness(
                 )
             if liveness_timeout is None or not is_liveness_boundary:
                 raise
+            stalled = _stalled_worker_context(model, api_call)
             if attempt == attempts - 1:
                 raise WorkerLivenessError(
                     f"worker produced no first stream output within "
-                    f"{liveness_timeout:.0f}s across {attempts} attempt(s)",
+                    f"{liveness_timeout:.0f}s across {attempts} attempt(s) "
+                    f"[{stalled}]",
                     reason="worker.no_first_output",
                 ) from exc
             logger.warning(
-                "run: no first stream output within %.0fs (attempt %d/%d); "
+                "run: no first stream output within %.0fs (attempt %d/%d) [%s]; "
                 "retrying worker subprocess",
                 liveness_timeout,
                 attempt + 1,
                 attempts,
+                stalled,
             )
             continue
         except BaseException:

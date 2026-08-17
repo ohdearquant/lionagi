@@ -1190,6 +1190,95 @@ async def test_run_liveness_watchdog_raises_after_exhausting_retries():
     )
 
 
+def test_the_stall_context_names_the_call_provider_and_model():
+    """A stall line has to say which worker stalled.
+
+    With many concurrent spawns an unattributed "no first stream output"
+    cannot be joined back to the run that produced it, so a burst of stalls
+    reads the same as one worker retrying, and nobody can ask whether one
+    provider or one model accounts for them.
+    """
+    from lionagi.operations.run.run import _stalled_worker_context
+
+    model = types.SimpleNamespace(
+        endpoint=types.SimpleNamespace(config=types.SimpleNamespace(provider="openrouter")),
+        model_name="z-ai/glm-5.2",
+    )
+    context = _stalled_worker_context(model, types.SimpleNamespace(id="call-123"))
+
+    assert "call=call-123" in context
+    assert "provider=openrouter" in context
+    assert "model=z-ai/glm-5.2" in context
+
+
+def test_the_stall_context_survives_objects_that_answer_nothing():
+    """It is built on the failure path, so it must not raise there.
+
+    An attribute error thrown while describing a stall would replace the stall
+    report with an unrelated traceback, which is worse than the missing
+    attribution it exists to fix. Partial identity degrades to what is known
+    rather than to an exception.
+    """
+    from lionagi.operations.run.run import _stalled_worker_context
+
+    assert _stalled_worker_context(object(), object()) == "worker unidentified"
+
+    partial = types.SimpleNamespace(model_name="gpt-4.1-mini")
+    assert _stalled_worker_context(partial, object()) == "model=gpt-4.1-mini"
+
+
+async def test_the_liveness_error_names_the_worker_that_stalled(monkeypatch):
+    """The identity has to reach the raised message, not merely be computable.
+
+    Diagnosis reads the error text. A helper that is correct but never wired
+    in leaves every log line exactly as unattributed as before, and that
+    failure looks identical to a working one from the helper's own tests.
+    """
+    from lionagi.providers._provider_errors import WorkerLivenessError
+
+    class NeverYields:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.Event().wait()
+            raise StopAsyncIteration  # pragma: no cover
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "lionagi.operations.run.run._stream_with_deadline",
+        lambda model, api_call, deadline: NeverYields(),
+    )
+
+    model = types.SimpleNamespace(
+        endpoint=types.SimpleNamespace(config=types.SimpleNamespace(provider="openrouter")),
+        model_name="z-ai/glm-5.2",
+        create_event=AsyncMock(return_value=types.SimpleNamespace(id="call-abc")),
+        executor=types.SimpleNamespace(append=AsyncMock()),
+    )
+
+    stream = _stream_with_liveness(
+        model,
+        {},
+        stream_deadline=None,
+        liveness_timeout=0.05,
+        api_call_holder=[],
+        max_attempts=1,
+    )
+    with pytest.raises(WorkerLivenessError) as excinfo:
+        async for _ in stream:
+            pass
+
+    message = str(excinfo.value)
+    assert "call=call-abc" in message, message
+    assert "provider=openrouter" in message, message
+    assert "model=z-ai/glm-5.2" in message, message
+    # The prefix external log greps key on must survive the addition.
+    assert "no first stream output within" in message, message
+
+
 async def test_liveness_cancel_during_first_chunk_wait_closes_inner_stream(monkeypatch):
     """Cancelling and closing before chunk one must close the owned inner stream."""
 
