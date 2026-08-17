@@ -1234,6 +1234,11 @@ def test_the_stall_context_survives_objects_that_answer_nothing():
         "Bearer_abc123DEF456",
         "ghp_abc123DEF456ghi789jkl",
         "xoxb-1234-5678-abcdefg",
+        # Issuers the prefix rule was never told about. The stall line has to
+        # hold for a key it cannot name, not only for the formats listed above.
+        "AKIAIOSFODNN7EXAMPLE",
+        "AIzaSyDUMMYSECRET1234567890",
+        "glpat-ABCDEFGHIJKLMNOPQRST",
     ],
 )
 def test_a_credential_in_the_provider_or_model_field_does_not_reach_the_stall_line(

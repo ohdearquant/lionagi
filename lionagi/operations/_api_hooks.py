@@ -19,7 +19,17 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from lionagi.session.branch import Branch
 
-__all__ = ("emit_api_pre_call", "emit_api_post_call", "emit_api_stream_chunk")
+__all__ = (
+    "emit_api_pre_call",
+    "emit_api_post_call",
+    "emit_api_stream_chunk",
+    # Sanitizing a caller-supplied model/provider string is not specific to
+    # telemetry, and the liveness path in operations/run reports the same two
+    # values. Naming it here makes that a stated contract of this module rather
+    # than a reach into its internals, so a change to the rule has one place to
+    # look for who depends on it.
+    "_safe_identifier",
+)
 
 # Every EventStatus value plus "error" (this adapter's own label for a raised
 # exception). Anything else is redacted to "unknown" rather than forwarded.
@@ -47,15 +57,37 @@ _CREDENTIAL_RE = re.compile(
     r"token[_-]|secret[_-]|ghp_|gho_|ghs_|ghr_|github_pat_|xox[baprs]-)"
 )
 
+# The prefix list above only recognizes the secret formats it was told about,
+# so a key from any issuer outside it passes straight through. The shape of the
+# value catches those without needing to know the issuer: a model or provider
+# name is built from short words joined by separators, while a key is a long
+# unbroken run of characters. Across the identifiers this package ships the
+# longest such run is ten ("moderation", "transcribe"), and the shortest key
+# formats checked against this rule run to eighteen, so the boundary sits in
+# between with room on both sides. Redacting an unusually long name costs a
+# diagnostic label; passing an unrecognized key costs a credential.
+_MAX_UNBROKEN_RUN = 16
+_UNBROKEN_RUN_RE = re.compile(rf"[A-Za-z0-9]{{{_MAX_UNBROKEN_RUN},}}")
+
 
 def _safe_status(value: Any) -> str:
     return value if isinstance(value, str) and value in _STATUS_VOCAB else "unknown"
 
 
 def _safe_identifier(value: Any) -> str:
+    """Reduce a caller-supplied model/provider string to something safe to log.
+
+    Returns the value unchanged when it has the shape of an identifier, and
+    ``"unknown"`` for anything else, including a value that looks like a
+    credential. Callers that distinguish "not configured" from "not recognized"
+    must test the raw value before calling this, since both arrive here as
+    strings and only one of them leaves as ``"unknown"``.
+    """
     if not (isinstance(value, str) and _IDENTIFIER_RE.match(value)):
         return "unknown"
     if _CREDENTIAL_RE.search(value):
+        return "unknown"
+    if _UNBROKEN_RUN_RE.search(value):
         return "unknown"
     return value
 

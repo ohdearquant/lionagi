@@ -748,6 +748,54 @@ def test_safe_identifier_redacts_allowlist_passing_credential():
     assert _safe_identifier("anthropic") == "anthropic"
 
 
+# Keys from issuers the prefix list was never told about. Each one satisfies
+# _IDENTIFIER_RE and matches no known prefix, so the prefix rule alone passes
+# every one of them through verbatim.
+UNLISTED_ISSUER_KEYS = [
+    "AKIAIOSFODNN7EXAMPLE",  # AWS access key id
+    "ASIAY34FZKBOKMSHU5NW",  # AWS temporary key id
+    "AIzaSyDUMMYSECRET1234567890",  # Google API key
+    "glpat-ABCDEFGHIJKLMNOPQRST",  # GitLab personal access token
+    "npm_abcdefghijklmnopqrstuvwxyz012345",  # npm token
+    "dop_v1_abcdef0123456789abcdef0123456789",  # DigitalOcean token
+    "SG.abcdefghijklmnopqrstuv.wxyz0123456789",  # SendGrid key
+]
+
+# The longest unbroken runs among the model and provider names this package
+# ships. If the shape rule ever grows strict enough to redact one of these, the
+# redaction arm below stops being evidence of anything.
+LONGEST_REAL_IDENTIFIERS = [
+    "text-moderation-stable",
+    "gpt-4o-mini-transcribe",
+    "text-embedding-ada-002",
+    "llama-3.3-70b-versatile",
+    "sonar-reasoning-pro",
+    "sentence-transformers/all-MiniLM-L6-v2",
+    "intfloat/multilingual-e5-large",
+    "nvidia_nim",
+    "perplexity",
+]
+
+
+@pytest.mark.parametrize("key", UNLISTED_ISSUER_KEYS)
+def test_a_key_from_an_unlisted_issuer_is_still_redacted(key):
+    """Redaction cannot depend on having enumerated every issuer in advance."""
+    from lionagi.operations._api_hooks import _CREDENTIAL_RE, _safe_identifier
+
+    # The premise: this key is invisible to the prefix rule. Without it, a
+    # passing assertion below could just mean the prefix list happened to grow.
+    assert not _CREDENTIAL_RE.search(key)
+    assert _safe_identifier(key) == "unknown"
+
+
+@pytest.mark.parametrize("name", LONGEST_REAL_IDENTIFIERS)
+def test_the_longest_real_identifiers_still_pass_through(name):
+    """The must-keep side of the shape rule, at the values closest to the line."""
+    from lionagi.operations._api_hooks import _safe_identifier
+
+    assert _safe_identifier(name) == name
+
+
 async def test_api_post_call_redacts_credential_shaped_model_name():
     """A credential-shaped model name never reaches the post-call payload."""
     import types as _types
