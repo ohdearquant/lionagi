@@ -761,9 +761,20 @@ UNLISTED_ISSUER_KEYS = [
     "SG.abcdefghijklmnopqrstuv.wxyz0123456789",  # SendGrid key
 ]
 
-# The longest unbroken runs among the model and provider names this package
-# ships. If the shape rule ever grows strict enough to redact one of these, the
-# redaction arm below stops being evidence of anything.
+# Keys written in separator-delimited groups. No group is long, so the unbroken
+# run rule cannot see any of these; the hexadecimal rule is what catches them.
+SEPARATOR_DELIMITED_KEYS = [
+    "01234567-89ab-cdef-0123-456789abcdef",  # UUID-shaped
+    "550e8400-e29b-41d4-a716-446655440000",  # UUID v4
+    "DEADBEEF-CAFE-BABE-0000-123456789ABC",  # uppercase
+    "abcd-1234-5678-9012-3456",  # dash-grouped token
+]
+
+# The names closest to the line, drawn from what a caller may configure rather
+# than from what this package ships: model_name is caller-supplied, so the
+# must-keep population includes HuggingFace and OpenRouter style ids. If the
+# shape rules ever grow strict enough to redact one of these, the redaction
+# arms above stop being evidence of anything.
 LONGEST_REAL_IDENTIFIERS = [
     "text-moderation-stable",
     "gpt-4o-mini-transcribe",
@@ -772,6 +783,11 @@ LONGEST_REAL_IDENTIFIERS = [
     "sonar-reasoning-pro",
     "sentence-transformers/all-MiniLM-L6-v2",
     "intfloat/multilingual-e5-large",
+    # Carries exactly as many alphanumeric characters as a UUID, which is why
+    # the hexadecimal rule keys on alphabet and not on length.
+    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "claude-3-5-sonnet-20241022",
+    "ada",  # entirely hexadecimal, and kept by the length floor
     "nvidia_nim",
     "perplexity",
 ]
@@ -788,12 +804,72 @@ def test_a_key_from_an_unlisted_issuer_is_still_redacted(key):
     assert _safe_identifier(key) == "unknown"
 
 
+@pytest.mark.parametrize("key", SEPARATOR_DELIMITED_KEYS)
+def test_a_key_split_into_short_groups_is_still_redacted(key):
+    """A key written in groups is invisible to a rule that looks for long runs."""
+    from lionagi.operations._api_hooks import (
+        _CREDENTIAL_RE,
+        _UNBROKEN_RUN_RE,
+        _safe_identifier,
+    )
+
+    # Both premises, so a pass here can only be the hexadecimal rule: the key
+    # matches no known prefix, and no group in it is long enough to be a run.
+    assert not _CREDENTIAL_RE.search(key)
+    assert not _UNBROKEN_RUN_RE.search(key)
+    assert _safe_identifier(key) == "unknown"
+
+
 @pytest.mark.parametrize("name", LONGEST_REAL_IDENTIFIERS)
 def test_the_longest_real_identifiers_still_pass_through(name):
-    """The must-keep side of the shape rule, at the values closest to the line."""
+    """The must-keep side of the shape rules, at the values closest to the line."""
     from lionagi.operations._api_hooks import _safe_identifier
 
     assert _safe_identifier(name) == name
+
+
+def test_the_run_threshold_still_clears_the_longest_real_name():
+    """The threshold's stated headroom, derived rather than taken on trust.
+
+    The comment beside `_MAX_UNBROKEN_RUN` names the longest run a real name
+    carries. Recomputing it here means adding a longer name to the fixture
+    fails this test instead of quietly making that sentence wrong.
+    """
+    import re
+
+    from lionagi.operations._api_hooks import _MAX_UNBROKEN_RUN
+
+    runs = [
+        len(token)
+        for name in LONGEST_REAL_IDENTIFIERS
+        for token in re.findall(r"[A-Za-z0-9]+", name)
+    ]
+    assert runs, "fixture produced no runs to measure"
+    assert max(runs) == 12, (
+        f"longest real run is now {max(runs)}, not the twelve the comment beside "
+        "_MAX_UNBROKEN_RUN claims; update that comment with this number"
+    )
+    assert max(runs) < _MAX_UNBROKEN_RUN
+
+
+def test_length_alone_cannot_separate_a_real_name_from_a_key():
+    """Why the second rule keys on alphabet: the two populations overlap in size.
+
+    A real model id carries as many alphanumeric characters as a UUID, so any
+    threshold on length redacts one or passes the other.
+    """
+    import re
+
+    from lionagi.operations._api_hooks import _safe_identifier
+
+    def alphanumeric(value: str) -> int:
+        return len(re.sub(r"[^A-Za-z0-9]", "", value))
+
+    name = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+    key = "01234567-89ab-cdef-0123-456789abcdef"
+    assert alphanumeric(name) == alphanumeric(key)
+    assert _safe_identifier(name) == name
+    assert _safe_identifier(key) == "unknown"
 
 
 async def test_api_post_call_redacts_credential_shaped_model_name():

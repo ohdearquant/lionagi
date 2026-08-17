@@ -1239,6 +1239,12 @@ def test_the_stall_context_survives_objects_that_answer_nothing():
         "AKIAIOSFODNN7EXAMPLE",
         "AIzaSyDUMMYSECRET1234567890",
         "glpat-ABCDEFGHIJKLMNOPQRST",
+        # Written in short groups, so no run in them is long. These reach the
+        # line through the same two fields and have to be redacted there, not
+        # only in the helper that decides it.
+        "01234567-89ab-cdef-0123-456789abcdef",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "abcd-1234-5678-9012-3456",
     ],
 )
 def test_a_credential_in_the_provider_or_model_field_does_not_reach_the_stall_line(

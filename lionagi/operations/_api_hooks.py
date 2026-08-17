@@ -58,16 +58,35 @@ _CREDENTIAL_RE = re.compile(
 )
 
 # The prefix list above only recognizes the secret formats it was told about,
-# so a key from any issuer outside it passes straight through. The shape of the
-# value catches those without needing to know the issuer: a model or provider
-# name is built from short words joined by separators, while a key is a long
-# unbroken run of characters. Across the identifiers this package ships the
-# longest such run is ten ("moderation", "transcribe"), and the shortest key
-# formats checked against this rule run to eighteen, so the boundary sits in
-# between with room on both sides. Redacting an unusually long name costs a
-# diagnostic label; passing an unrecognized key costs a credential.
+# so a key from an unlisted issuer passes straight through it. Two shape rules
+# catch the common unlisted forms without needing to know the issuer, and they
+# split on how the key is written rather than on how long it is.
+#
+# The first is a long unbroken run, which is what a key looks like when it is
+# not split up. The longest run in a real name is twelve ("transformers",
+# "multilingual", both from HuggingFace-style model ids), and the shortest key
+# formats checked against this rule run to eighteen, so the boundary sits
+# between them with room on both sides. A test derives that twelve from the
+# fixture, so this sentence cannot quietly go stale as names are added.
 _MAX_UNBROKEN_RUN = 16
 _UNBROKEN_RUN_RE = re.compile(rf"[A-Za-z0-9]{{{_MAX_UNBROKEN_RUN},}}")
+
+# The second is hexadecimal content, which is what a key looks like when it IS
+# split up. A UUID or a dash-grouped token defeats the run rule completely,
+# because no single group is long. Length cannot separate those from a real
+# name either: "meta-llama/Llama-3.3-70B-Instruct-Turbo" carries exactly as
+# many alphanumeric characters as a UUID does. The alphabet can. A name has
+# letters outside [a-f] and a hex token does not, so the rule asks whether the
+# value's alphanumeric content is entirely hexadecimal. The floor keeps short
+# all-hex names, of which "ada" is a real one, out of it.
+_MIN_HEX_IDENTIFIER = 16
+_HEX_ONLY_RE = re.compile(r"^[0-9a-fA-F]+$")
+_NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
+
+# Neither rule is a general credential detector and nothing here can be, since
+# a caller may configure any string at all as a model name. They are defense in
+# depth against a key pasted into the wrong field, and a value that survives
+# both is emitted as it was configured.
 
 
 def _safe_status(value: Any) -> str:
@@ -89,6 +108,9 @@ def _safe_identifier(value: Any) -> str:
         return "unknown"
     if _UNBROKEN_RUN_RE.search(value):
         return "unknown"
+    alphanumeric = _NON_ALNUM_RE.sub("", value)
+    if len(alphanumeric) >= _MIN_HEX_IDENTIFIER and _HEX_ONLY_RE.match(alphanumeric):
+        return "unknown"
     return value
 
 
@@ -105,6 +127,16 @@ def _safe_chunk_type(value: Any) -> str:
 
 
 def _model_and_provider(imodel: Any) -> tuple[str, str]:
+    """Read the two caller-configured identifiers and redact them for logging.
+
+    This re-judges both values on every call rather than caching the pair per
+    stream. Caching was considered and declined: the work is 3 microseconds a
+    call, so a thousand-chunk stream spends three milliseconds on it against
+    network-bound streaming, and the obvious cache is a module-level dict keyed
+    by the raw value. That would hold credential-shaped strings alive for the
+    life of the process, inside the module whose whole purpose is keeping them
+    out of the log. The cost is not worth what it retains.
+    """
     model = getattr(imodel, "model_name", None) or ""
     provider = ""
     endpoint = getattr(imodel, "endpoint", None)
