@@ -236,6 +236,77 @@ def test_size_alert_at_threshold(monkeypatch):
     assert threshold == 100 * 1024 * 1024
 
 
+def test_the_size_threshold_tracks_the_retention_window():
+    """Doubling the retention window doubles the size the store may reach.
+
+    This is the property that keeps the alert and the retention policy from
+    disagreeing. A fixed threshold cannot express "larger than this policy
+    explains" -- it can only express "large", which stops being information as
+    soon as the configured policy's own steady state passes it.
+    """
+    import lionagi.studio.config as cfg
+
+    thirty = cfg._derive_db_size_alert_bytes(30)
+    sixty = cfg._derive_db_size_alert_bytes(60)
+
+    assert sixty == 2 * thirty
+    assert thirty > cfg._DB_SIZE_ALERT_FLOOR_BYTES
+
+
+def test_the_configured_threshold_is_the_one_derived_from_the_configured_window(
+    monkeypatch,
+):
+    """The module constant is the derivation, not a value that merely resembles it."""
+    import os
+
+    import lionagi.studio.config as cfg
+
+    if os.environ.get("LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES"):
+        pytest.skip("explicit threshold override in env; derivation deliberately bypassed")
+
+    assert cfg.DB_SIZE_ALERT_BYTES == cfg._derive_db_size_alert_bytes(cfg.PRUNE_KEEP_DAYS)
+
+
+def test_a_store_within_its_retention_steady_state_does_not_alert(monkeypatch):
+    """A store the size its own policy produces is not an anomaly.
+
+    The steady state is what the retention window is expected to hold, so a
+    store sitting at it must stay quiet; only the headroom multiple above it
+    means the store is larger than the policy accounts for.
+    """
+    import lionagi.studio.config as cfg
+    from lionagi.studio.services import db_maintenance as maint
+
+    keep_days = 30
+    steady_state = keep_days * cfg._DB_BYTES_PER_RETAINED_DAY
+    monkeypatch.setattr(cfg, "DB_SIZE_ALERT_BYTES", cfg._derive_db_size_alert_bytes(keep_days))
+
+    at_steady_state, _ = maint.get_db_size_alert(steady_state)
+    assert at_steady_state is False
+
+    # Just inside the headroom is still explained by the policy.
+    inside_headroom, _ = maint.get_db_size_alert(int(steady_state * 1.4))
+    assert inside_headroom is False
+
+    # Past it, the store is bigger than the policy accounts for.
+    beyond_headroom, _ = maint.get_db_size_alert(int(steady_state * 1.6))
+    assert beyond_headroom is True
+
+
+def test_a_zero_retention_window_cannot_derive_a_threshold_that_alerts_always():
+    """A degenerate keep window must not collapse the threshold toward zero.
+
+    Without the floor a keep window of 0 derives a threshold of 0, and every
+    store on earth is >= 0, so the alert fires unconditionally -- the same
+    no-information state a too-low fixed constant produces, reached from the
+    other direction.
+    """
+    import lionagi.studio.config as cfg
+
+    assert cfg._derive_db_size_alert_bytes(0) == cfg._DB_SIZE_ALERT_FLOOR_BYTES
+    assert cfg._derive_db_size_alert_bytes(0) > 0
+
+
 def test_stats_endpoint_exposes_checkpoint_and_size_fields(tmp_path, monkeypatch):
     """/api/stats includes last_checkpoint_at, size_alert, size_threshold_bytes."""
     pytest.importorskip("fastapi", reason="studio extra not installed")

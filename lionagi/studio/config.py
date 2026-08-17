@@ -368,16 +368,59 @@ def scheduler_timezone_report() -> dict[str, Any]:
 
 
 # DB maintenance config
-# Size threshold in bytes above which /api/stats raises a size_alert (500 MB).
-DB_SIZE_ALERT_BYTES: int = int(
-    os.environ.get("LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES", str(500 * 1024 * 1024))
-)
 # Minimum seconds between automatic WAL checkpoints from the scheduler tick.
 CHECKPOINT_INTERVAL_SECONDS: int = int(
     os.environ.get("LIONAGI_STUDIO_CHECKPOINT_INTERVAL_SECONDS", "3600")
 )
 # Sessions/runs older than this many days (with terminal status) will be pruned.
 PRUNE_KEEP_DAYS: int = int(os.environ.get("LIONAGI_STUDIO_PRUNE_KEEP_DAYS", "30"))
+
+# Whole-file bytes the store accrues per day of retained history, measured on a
+# reference deployment 2026-08-17: 10,349,076,480 bytes across the 38 days its
+# surviving message history spanned, so ~272 MB/day. Measured across the whole
+# file rather than from message content alone, because the indexes and the
+# session_signals and progressions rows that grow alongside messages are part of
+# what a size alert observes -- messages were 7.83 GB of that file and their own
+# indexes another 394 MB. Re-measure when the workload changes shape; a figure
+# like this decays quietly, so it carries the date it was taken.
+_DB_BYTES_PER_RETAINED_DAY: int = 272 * 1024 * 1024
+# Multiple of the steady state at which the store is larger than its retention
+# policy explains. Below this the size is the policy working as configured.
+_DB_SIZE_ALERT_HEADROOM: float = 1.5
+# Absolute floor, so a very short (or zero) keep window cannot derive a
+# threshold at or near zero and alert unconditionally.
+_DB_SIZE_ALERT_FLOOR_BYTES: int = 512 * 1024 * 1024
+
+
+def _derive_db_size_alert_bytes(keep_days: int) -> int:
+    """Size at which a store is larger than *keep_days* of retention explains."""
+    return max(
+        _DB_SIZE_ALERT_FLOOR_BYTES,
+        int(keep_days * _DB_BYTES_PER_RETAINED_DAY * _DB_SIZE_ALERT_HEADROOM),
+    )
+
+
+# Size threshold in bytes above which /api/stats raises a size_alert. Derived
+# from the retention policy rather than fixed, so the two cannot disagree: a
+# store held to PRUNE_KEEP_DAYS of history has a steady state this is a multiple
+# of, and moving the retention window moves the alert with it.
+#
+# A fixed constant becomes permanent wallpaper as soon as a deployment's
+# legitimate steady state passes it, and then it reports nothing while appearing
+# to work. The previous fixed 500 MB was roughly sixteen times below what a
+# 30-day policy actually produces on the reference deployment, so it fired
+# continuously and carried no information.
+#
+# When the automatic pass is disabled (RETENTION_INTERVAL_SECONDS <= 0) the
+# store has no steady state and will eventually cross this regardless. That
+# firing is correct and says exactly that: the store is larger than a bounded
+# policy would have produced.
+DB_SIZE_ALERT_BYTES: int = int(
+    os.environ.get(
+        "LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES",
+        str(_derive_db_size_alert_bytes(PRUNE_KEEP_DAYS)),
+    )
+)
 # Directory to archive pruned rows to before deletion. Unset (default) preserves
 # the pre-archive prune behaviour exactly. When set, prune refuses to delete any
 # row unless the archive for that pass was written and verified first.
