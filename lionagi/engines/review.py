@@ -19,7 +19,13 @@ from lionagi.ln.concurrency._compat import (
     get_exception_group_exceptions,
     is_exception_group,
 )
-from lionagi.providers._provider_errors import ProviderError
+from lionagi.providers._provider_errors import (
+    ProviderAuthError,
+    ProviderError,
+    ProviderQuotaError,
+    ProviderSafetyError,
+    ProviderUnsupportedModelError,
+)
 
 from .engine import Engine, EngineEvent, EngineRun
 
@@ -49,6 +55,27 @@ _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 _ISOLATED_ERRORS: tuple[type[BaseException], ...] = (ProviderError, *_TRANSPORT_ERRORS)
+
+# Refusals that describe the run rather than one attempt. The credentials, the
+# quota, the model and the safety policy are the same for every dimension, so a
+# refusal on any of those grounds recurs identically on the next dimension and
+# on any retry. They are ProviderError subclasses, so the isolated set above
+# already covers them, and covering them is wrong: isolating one records a
+# skipped dimension and lets the run reach a verdict, which turns a run-wide
+# misconfiguration into a quietly degraded pass over an artifact whose
+# dimensions were never actually read. A safety refusal is the sharpest case,
+# because the reason the content was not reviewed is the finding.
+#
+# Context overflow is deliberately not here. That is a property of the single
+# prompt that overflowed rather than of the run -- one verifier's oversized
+# prompt says nothing about the next one's, which is why the engine repairs it
+# instead of failing.
+_RUN_WIDE_REFUSALS: tuple[type[BaseException], ...] = (
+    ProviderAuthError,
+    ProviderQuotaError,
+    ProviderSafetyError,
+    ProviderUnsupportedModelError,
+)
 
 
 @lru_cache(maxsize=1)
@@ -156,6 +183,11 @@ def _is_transport_mcp_error(exc: BaseException) -> bool:
 
 def _is_all_isolated_failure(exc: BaseException) -> bool:
     """True iff every leaf is a per-dimension provider/transport failure, recursing into nested groups."""
+    if isinstance(exc, _RUN_WIDE_REFUSALS):
+        # Asked before the isolated set, not after. These derive from
+        # ProviderError, so the wider test answers True for all of them and
+        # this branch would never be reached from below it.
+        return False
     if isinstance(exc, _ISOLATED_ERRORS):
         return True
     if _is_transport_mcp_error(exc):
@@ -434,11 +466,14 @@ class ReviewEngine(Engine):
         # reaches here and ends the run.
         await run.wait_quiescence()
         # A clean or minor-only review spawns no issue verifiers, so it would
-        # reach the verdict with zero VerifyResult — and a downstream evidence
-        # floor then refuses the APPROVE as evidence-empty, structurally.
-        # Gate on zero VerifyResult (not zero issues) so both shapes instead
-        # carry one adversarial audit of the clean verdict itself: positive
-        # executed evidence rather than absence.
+        # reach the verdict with zero VerifyResult and ship an APPROVE backed
+        # by nothing executed. A consumer may well refuse that as
+        # evidence-empty, but whether any given one does is a property of that
+        # consumer's code and is not observable from this package, so it is not
+        # a guard this engine gets to count on. Gate on zero VerifyResult (not
+        # zero issues) so both shapes instead carry one adversarial audit of
+        # the clean verdict itself: positive executed evidence rather than
+        # absence, decided here where it can be seen.
         if self.verify_clean and not run.by_type(VerifyResult):
             await self._verify_clean_isolated(run, artifact, dims)
         return await self._verdict(run, artifact, dims)
