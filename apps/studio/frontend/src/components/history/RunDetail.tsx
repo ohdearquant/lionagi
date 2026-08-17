@@ -558,10 +558,21 @@ export function branchToRunStep(
       const resultWithheld = Boolean(m.content_withheld) || Boolean(respMsg?.content_withheld);
       // What a withheld request costs is the call's identity, though, not its
       // outcome: the reply can still have come back, been decoded, and said it
-      // failed. So an error the reader can see outranks the badge below, which
-      // would otherwise answer "nobody looked" about a failure somebody did
-      // look at. The reverse case cannot collide, since a withheld reply
-      // carries no output to read an error out of.
+      // failed. Such a reply outranks the badge below, which would otherwise
+      // answer "nobody looked" about a failure somebody did look at.
+      //
+      // Only the structured field gets that authority. It is the tool stating
+      // its own outcome, and it is absent rather than null when the call
+      // succeeded. Reading the prose instead cannot tell a failure from a
+      // success that mentions one -- "No errors found" contains the word --
+      // and promoting a guess over the badge would replace an honest "not
+      // read" with a wrong answer, which is worse than the vagueness it set
+      // out to fix.
+      const decodedError = Boolean(respContent.error);
+      // Kept underneath the badge, exactly where it already sat, for replies
+      // that record a failure only in their text. Dropping it would turn those
+      // green, and a missed failure is the costlier direction of the same
+      // imprecision.
       const outputSaysError = output.toLowerCase().includes("error");
 
       const summary = Object.entries(args)
@@ -578,7 +589,13 @@ export function branchToRunStep(
         summary,
         arguments: args,
         output,
-        status: outputSaysError ? "error" : resultWithheld ? "withheld" : "ok",
+        status: decodedError
+          ? "error"
+          : resultWithheld
+            ? "withheld"
+            : outputSaysError
+              ? "error"
+              : "ok",
         sender: m.sender ?? "",
         timestamp: m.timestamp,
       });
