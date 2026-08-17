@@ -375,11 +375,8 @@ CHECKPOINT_INTERVAL_SECONDS: int = int(
 # Sessions/runs older than this many days (with terminal status) will be pruned.
 PRUNE_KEEP_DAYS: int = int(os.environ.get("LIONAGI_STUDIO_PRUNE_KEEP_DAYS", "30"))
 
-# Whole-file bytes accrued per retained day: 10,349,076,480 bytes over 38 days
-# on a reference deployment, 2026-08-17, so ~272 MB/day. Whole file, not message
-# content, since indexes and the rows growing beside messages are what a size
-# alert sees. Overridable: it is a measurement of one deployment, not a policy,
-# and it decays — re-measure when the workload changes shape.
+# Whole-file bytes per retained day, measured on one deployment (~272 MB/day
+# over 38 days); a measurement rather than a policy, so re-measure as it decays.
 _DB_BYTES_PER_RETAINED_DAY: int = int(
     os.environ.get("LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY", str(272 * 1024 * 1024))
 )
@@ -398,10 +395,7 @@ def _derive_db_size_alert_bytes(keep_days: int) -> int:
 
 
 # Bytes above which /api/stats raises a size_alert, derived from the retention
-# policy so the two cannot disagree. A fixed constant becomes wallpaper once a
-# legitimate steady state passes it: the previous 500 MB sat ~16x below what a
-# 30-day policy produces here and fired continuously. With the automatic pass
-# disabled there is no steady state and this eventually fires, correctly.
+# policy so the two cannot disagree and a legitimate steady state cannot fire it.
 DB_SIZE_ALERT_BYTES: int = int(
     os.environ.get(
         "LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES",
