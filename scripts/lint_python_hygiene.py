@@ -39,10 +39,10 @@ RESERVED_IDENTIFIER = re.compile(r"\blambda:[a-z][a-z0-9_-]*\b")
 # excuses, so listing a name for one fixture would silently permit it in this
 # file too.
 #
-# Every entry is required to still match. An allowlisted identifier that no
-# longer appears is reported and fails the scan, so the list cannot quietly
-# outlive its reason and start hiding a real leak behind a path that stopped
-# needing the exemption.
+# Every name here is required to still match, and each is judged on its own.
+# One that no longer appears is reported and fails the scan, so an exemption
+# cannot quietly outlive its reason and start hiding a real leak behind a name
+# the file stopped using.
 EXPECTED_FIXTURES: dict[str, frozenset[str]] = {
     "scripts/lint_python_hygiene.py": frozenset({"sample-unit", "x"}),
     "tests/scripts/test_ci_hygiene.py": frozenset({"item", "sample-unit", "x"}),
@@ -133,7 +133,7 @@ def scan(paths: list[Path]) -> int:
         path for root in paths for path in ([root] if root.is_file() else root.rglob("*.py"))
     )
 
-    stale_fixtures: set[str] = set()
+    stale_fixtures: dict[str, frozenset[str]] = {}
 
     for path in files:
         try:
@@ -145,14 +145,16 @@ def scan(paths: list[Path]) -> int:
                 # Local parts only, so the excused set can be compared without
                 # this file having to spell the identifiers it excuses.
                 seen = {identifier.partition(":")[2] for identifier in leaked}
-                # Liveness stays a question about the PATH entry, not about each
-                # name. Requiring every permitted identifier to still appear
-                # would fail the scan every time a fixture stopped using one of
-                # its own sample names, which is ordinary test editing and not a
-                # hole. What the exemption has to justify is its own existence,
-                # so it is stale only when the file carries none of them.
-                if not (permitted & seen):
-                    stale_fixtures.add(relative)
+                # Liveness is asked of each name, not of the path. Judging the
+                # entry as a whole lets one surviving name hold the pass open
+                # for every dead one beside it, so a name the file stopped
+                # using stays excused, and the next real occurrence of it is
+                # suppressed by an exemption nothing is asking for any more.
+                # An entry that stopped matching is a one-line deletion here,
+                # which is the cheaper half of the trade against a silent hole.
+                missing = permitted - seen
+                if missing:
+                    stale_fixtures[relative] = frozenset(missing)
                 unexpected = sorted(
                     identifier
                     for identifier in set(leaked)
@@ -184,11 +186,11 @@ def scan(paths: list[Path]) -> int:
     # subtree says nothing about entries living in another, so absence here is
     # "not looked at", not "gone". That is why liveness is reported from the
     # files that were opened, never from what is missing from the table.
-    for relative in sorted(stale_fixtures):
-        allowed = ", ".join(sorted(EXPECTED_FIXTURES[relative]))
+    for relative, missing in sorted(stale_fixtures.items()):
+        gone = ", ".join(sorted(missing))
         print(
-            f"{relative}: allowlisted to carry {allowed} but contains none of "
-            "them; remove it from EXPECTED_FIXTURES",
+            f"{relative}: allowlisted to carry {gone} but no longer does; "
+            "drop from its EXPECTED_FIXTURES entry",
             file=sys.stderr,
         )
         errors = True

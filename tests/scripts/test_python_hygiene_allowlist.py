@@ -23,6 +23,23 @@ SCANNER = REPO_ROOT / "scripts" / "lint_python_hygiene.py"
 # Written apart so this file is not itself a fixture the scanner must exempt.
 RESERVED = "lambda:" + "sample-unit"
 
+# Every identifier tests/scripts/test_ci_hygiene.py is allowlisted for.
+PERMITTED_NAMES = ("item", "sample-unit", "x")
+
+
+def _fixture_carrying(*names: str) -> str:
+    """Source for a synthetic fixture at the allowlisted path.
+
+    Kept as a helper because liveness is per identifier: a fixture written
+    with only one of the permitted names is reported for the two it dropped,
+    and the scan exits 2 for a reason unrelated to what the test measures.
+    The prefix is joined in at runtime so this file spells no identifier of
+    its own and needs no exemption.
+    """
+    prefix = "lambda:"
+    return "".join(f'SAMPLE_{index} = "{prefix}{name}"\n' for index, name in enumerate(names))
+
+
 # U+2028 LINE SEPARATOR, written as an escape so this file carries none itself.
 LINE_SEPARATOR = "\u2028"
 
@@ -71,7 +88,7 @@ def test_an_allowlisted_fixture_carrying_the_vocabulary_is_exempt(tmp_path: Path
     repo = _fake_repo(tmp_path)
     target = repo / "tests" / "scripts" / "test_ci_hygiene.py"
     target.parent.mkdir(parents=True)
-    target.write_text(f'SAMPLE = "{RESERVED}"\n')
+    target.write_text(_fixture_carrying(*PERMITTED_NAMES))
 
     result = _scan(repo / "tests")
 
@@ -99,6 +116,28 @@ def test_an_allowlisted_fixture_that_stopped_carrying_it_fails_the_scan(
     # to delete as a guess.
     for name in ("item", "sample-unit", "x"):
         assert name in result.stderr, result.stderr
+
+
+def test_one_surviving_name_does_not_keep_the_others_authorized(tmp_path: Path) -> None:
+    # Liveness judged per file rather than per identifier passes this case:
+    # two of the three names are still here, so the entry as a whole looks
+    # live, and the one that left stays excused. Nothing then reports it, and
+    # the next genuine occurrence of that identifier in this file is suppressed
+    # by an exemption no longer covering anything.
+    repo = _fake_repo(tmp_path)
+    target = repo / "tests" / "scripts" / "test_ci_hygiene.py"
+    target.parent.mkdir(parents=True)
+    surviving = tuple(name for name in PERMITTED_NAMES if name != "item")
+    target.write_text(_fixture_carrying(*surviving))
+
+    result = _scan(repo / "tests")
+
+    assert result.returncode == 2, result.stdout + result.stderr
+    # Compared as the exact reported list rather than by substring: one of the
+    # names is a single character, so asking whether it appears anywhere in the
+    # message answers about the wording and not about the finding.
+    reported = result.stderr.split("carry ", 1)[-1].split(" but", 1)[0]
+    assert reported == "item", result.stderr
 
 
 def test_a_fixture_path_is_exempt_only_at_its_exact_location(tmp_path: Path) -> None:
@@ -213,11 +252,13 @@ def test_an_allowlisted_fixture_does_not_excuse_an_identifier_it_is_not_listed_f
     repo = _fake_repo(tmp_path)
     target = repo / "tests" / "scripts" / "test_ci_hygiene.py"
     target.parent.mkdir(parents=True)
-    # The identifier it IS allowlisted for, beside one it is not. Both are
-    # concatenated at runtime the way RESERVED is, so the written fixture
-    # carries each as a single literal while this file carries neither.
+    # The identifiers it IS allowlisted for, beside one it is not. Both are
+    # joined at runtime the way RESERVED is, so the written fixture carries
+    # each as a single literal while this file carries neither. All three
+    # permitted names are present so the liveness check has nothing to say and
+    # the exit code reports only the unlisted identifier.
     unlisted = "lambda:" + "not-a-listed-fixture-name"
-    target.write_text(f'SAMPLE = "{RESERVED}"\nLEAK = "{unlisted}"\n')
+    target.write_text(f'{_fixture_carrying(*PERMITTED_NAMES)}LEAK = "{unlisted}"\n')
 
     result = _scan(repo / "tests")
 
