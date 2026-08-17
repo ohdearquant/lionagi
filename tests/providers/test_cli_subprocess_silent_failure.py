@@ -37,12 +37,7 @@ _SPEAKS_THEN_FAILS = "import sys; sys.stderr.write('the child explained itself')
 
 
 class TestTheReasonsAreDistinguishable:
-    """The property under test is mutual distinctness, not any one wording.
-
-    Asserting the sentences individually would let a change that reverted two
-    of them to a shared string keep passing, which is the exact regression
-    this file exists to catch.
-    """
+    """Mutual distinctness, not any one wording: per-sentence asserts miss two collapsing into one."""
 
     def test_every_no_stderr_reason_differs_from_every_other(self):
         reasons = [
@@ -62,8 +57,7 @@ class TestTheReasonsAreDistinguishable:
         assert "OSError" in broken
 
     def test_the_drain_exceptions_message_is_never_carried_only_its_type(self):
-        """The drain's exception can embed the bytes it was reading when it
-        raised, and this string is what a caller stores or forwards."""
+        """The drain exception can embed the bytes it was reading, and callers store this string."""
         reason = _no_stderr_reason(3, None, "OSError")
         assert "OSError" in reason
         # A type name is what the caller records; anything the exception said
@@ -72,8 +66,7 @@ class TestTheReasonsAreDistinguishable:
         assert reason.count("OSError") == 1
 
     def test_the_exit_code_survives_in_every_arm(self):
-        """It is the one fact present in all three, and dropping it while
-        adding detail would be a silent loss of the original message."""
+        """The one fact present in all three arms; adding detail must not drop it."""
         for reason in (
             _no_stderr_reason(7, None, None),
             _no_stderr_reason(7, "its stderr was never opened", None),
@@ -98,9 +91,7 @@ class TestAgainstARealChild:
 
     @pytest.mark.asyncio
     async def test_a_child_that_does_speak_is_still_quoted_verbatim(self):
-        """The added arms must not displace the case that already worked: when
-        there is stderr, it is the message, and none of the constructed
-        reasons appear."""
+        """When there is stderr it is the message, and no constructed reason appears."""
 
         async def run():
             async for _ in ndjson_from_cli(_cmd(_SPEAKS_THEN_FAILS)):
@@ -147,14 +138,7 @@ async def _abandon(agen) -> None:
 
 
 class TestAChildAbandonedBeforeProducingAnything:
-    """Neither existing path quotes stderr for a child that is merely stuck.
-
-    The exit-code path needs an exit code, and a child abandoned mid-flight
-    never produces one; the teardown then cancels the drain task and drops the
-    buffer. So the one case where stderr is the only evidence there is — the
-    child said nothing on stdout, and why is on the other pipe — was the case
-    that discarded it.
-    """
+    """Neither existing path quotes stderr for a stuck child, the case where it is the only evidence."""
 
     @pytest.mark.asyncio
     async def test_the_abandoned_childs_stderr_is_not_discarded(self, caplog):
@@ -167,12 +151,7 @@ class TestAChildAbandonedBeforeProducingAnything:
 
     @pytest.mark.asyncio
     async def test_a_child_that_did_produce_output_is_not_reported_as_silent(self, caplog):
-        """The control, and the reason the gate is not simply "we unwound".
-
-        CLI workers write progress to stderr routinely, so reporting on every
-        abandoned child would file a warning for each ordinary cancellation
-        and the real signal would be buried in the ones that mean nothing.
-        """
+        """The control: workers write progress to stderr routinely, so warning on every unwind buries the signal."""
         with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
             await _abandon(ndjson_from_cli(_cmd(_EMITS_THEN_HANGS)))
 

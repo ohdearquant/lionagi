@@ -299,12 +299,8 @@ def _no_stderr_reason(
 # log line; the cap is on what is logged, not on what was captured.
 _ABANDONED_STDERR_LOG_CAP = 4096
 
-# Bound on waiting for the stderr drain to finish on the abandonment path.
-# Shorter than the exit-code path's wait because it is taken after the child
-# group has been ended: the reader is draining a closed pipe to EOF rather than
-# waiting on a live one, so this is a backstop against a wedged reader, not a
-# budget for the child to keep talking. Teardown latency is paid by whoever
-# abandoned us, which is usually a liveness watchdog already past its deadline.
+# Backstop against a wedged reader draining a closed pipe to EOF, not a budget
+# for the child to keep talking, so it is shorter than the exit-code path's wait.
 _ABANDONED_STDERR_DRAIN_TIMEOUT = 0.5
 
 
@@ -315,13 +311,9 @@ def _abandoned_without_output_note(
 ) -> str:
     """What to say about a child abandoned before it produced any output.
 
-    The exit-code path quotes stderr because a nonzero rc gives it something to
-    attach the quote to. A child abandoned mid-flight never reaches that path,
-    and it is the case where stderr matters most: the child said nothing on
-    stdout, so whatever it has to say about why is on the other pipe. Keeps the
-    same three-way split as ``_no_stderr_reason`` -- said nothing, pipe never
-    opened, capture itself failed -- because collapsing them makes a broken
-    capture read like a quiet subprocess.
+    Keeps ``_no_stderr_reason``'s three-way split — said nothing, pipe never
+    opened, capture failed — since collapsing them makes a broken capture read
+    like a quiet subprocess.
     """
     if captured:
         clipped = captured[:_ABANDONED_STDERR_LOG_CAP]
@@ -506,10 +498,8 @@ async def ndjson_from_cli(
                 return b""
         return await read_task
 
-    # Set immediately *before* each yield, never after: a consumer that
-    # abandons the generator gets GeneratorExit raised at the yield itself, so
-    # an assignment after it would never run and a child that did produce
-    # output would be reported as one that never spoke.
+    # Set before each yield, never after: GeneratorExit lands at the yield, so a
+    # later assignment never runs and a child that spoke reads as one that did not.
     produced_output = False
     # Whether the exit-code path below already quoted stderr to the caller, so
     # the teardown does not repeat it into the log.
@@ -580,17 +570,10 @@ async def ndjson_from_cli(
             raise RuntimeError(err)
 
     finally:
-        # A child abandoned before it produced anything takes neither path that
-        # quotes stderr: it never reaches the exit-code check above, and the
-        # reaping below cancels the drain task and drops the buffer. That is
-        # the case the capture is worth the most in -- a liveness watchdog
-        # closing this generator because no first chunk arrived leaves the
-        # child's own account of why sitting unread in stderr_chunks. Logged
-        # rather than raised because the exception belongs to whoever closed
-        # us, and this is evidence about it rather than a different failure.
-        # Decided before anything below is awaited: awaiting inside a finally
-        # can change what sys.exc_info() reports, and this asks about the
-        # exception we were entered with.
+        # A child abandoned before producing anything takes neither path that
+        # quotes stderr, which is where the capture is worth the most. Logged,
+        # not raised: the exception belongs to whoever closed us. Decided before
+        # any await, since awaiting in a finally can change sys.exc_info().
         abandoned_silently = (
             sys.exc_info()[1] is not None and not produced_output and not stderr_already_surfaced
         )
@@ -598,19 +581,10 @@ async def ndjson_from_cli(
         await end_child_group(proc)
 
         if abandoned_silently:
-            # Read the buffer only after giving the drain its turn, the same
-            # way the exit-code path above does before quoting stderr. Without
-            # this the warning is formatted from whatever the drain happened to
-            # have appended by then, which on the abandonment path is usually
-            # nothing: the watchdog closes this generator precisely because the
-            # child has been unresponsive, so the loop has had no reason to
-            # resume the reader. That reports "said nothing" about a child that
-            # spoke, which is the silence this warning exists to end.
-            #
-            # After end_child_group, not before: the child's stderr is closed by
-            # then, so the reader hits EOF and finishes rather than blocking on
-            # a live pipe. Shielded so a timeout cannot cancel the drain out
-            # from under the buffer we are about to read.
+            # Give the drain its turn first, or the warning reports "said
+            # nothing" about a child that spoke. After end_child_group, so the
+            # reader hits EOF instead of blocking, and shielded so a timeout
+            # cannot cancel the drain out from under the buffer.
             if stderr_task is not None:
                 try:
                     await asyncio.wait_for(
