@@ -168,13 +168,33 @@ MAX_ACTION_FILE_ROWS_SCANNED = 200_000
 # The ceiling is one property of the data, so it belongs to the column rather
 # than to whichever reader was being looked at when the cost was noticed: there
 # are several readers, they were added at different times, and bounding them one
-# at a time is how the next one gets added unbounded. Takes the ceiling three
-# times, as the first three bind parameters of the statement it appears in.
+# at a time is how the next one gets added unbounded. Takes seven bind
+# parameters, the first seven of the statement it appears in: this ceiling five
+# times and the scan ceiling below twice, in the order the placeholders appear.
 # An id is a link between two rows, not a payload, and nothing constrains what
 # a writer puts under those keys. Cut to a length no real id approaches, so the
 # pairing survives and a row cannot route its payload out through them.
 MAX_ACTION_ID_CHARS = 256
 
+# How much text SQLite may read to recover one link id from a row whose payload
+# is already being withheld. This is a separate question from how much may be
+# decoded, and it needs its own answer: capping the extracted id bounds what
+# comes back, and bounds nothing about the work of finding it, because the parse
+# that locates the key reads the whole document whatever the key turns out to
+# hold. Higher than the decode ceiling because a scan that yields at most
+# MAX_ACTION_ID_CHARS is far cheaper per byte than building Python objects and
+# serializing them to a client, and stated as a multiple of that ceiling so the
+# two move together. Past it the row is still listed and still says its content
+# was withheld; it just arrives with no link to pair it by, which is the same
+# answer the file union gives for a row it will not read.
+MAX_ACTION_ID_SCAN_CHARS = 16 * MAX_ACTION_CONTENT_CHARS
+
+# Only a withheld row is asked for its ids, because only a withheld row uses
+# them: a row that kept its payload carries them inside it, so extracting them
+# there parses every hydrated row in the session to produce a value the shaping
+# step discards. The upper bound is what keeps that parse from being unbounded
+# on the rows that do reach it.
+#
 # `json_extract` raises on text that is not JSON, and it raises for the whole
 # statement rather than for the row that carries it, so one such row would take
 # the entire read down with it. Everything written through this application
@@ -182,8 +202,9 @@ MAX_ACTION_ID_CHARS = 256
 # from a legacy row, or from another writer against a shared store, which is
 # exactly the case the store is allowed to be in. Guarding costs one call.
 _ACTION_ID = (
+    "CASE WHEN length(m.content) > ? AND length(m.content) <= ? THEN "
     "substr(json_extract(CASE WHEN json_valid(m.content) THEN m.content END, '$.{key}'), "
-    f"1, {MAX_ACTION_ID_CHARS})"
+    f"1, {MAX_ACTION_ID_CHARS}) END"
 )
 
 _BOUNDED_CONTENT_COLUMNS = (
@@ -804,6 +825,10 @@ async def _fetch_messages_by_ids(
                 MAX_ACTION_CONTENT_CHARS,
                 MAX_ACTION_CONTENT_CHARS,
                 MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_ID_SCAN_CHARS,
+                MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_ID_SCAN_CHARS,
                 *chunk,
             ],
         )
@@ -1579,6 +1604,10 @@ async def get_session_messages_after(
                 MAX_ACTION_CONTENT_CHARS,
                 MAX_ACTION_CONTENT_CHARS,
                 MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_ID_SCAN_CHARS,
+                MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_ID_SCAN_CHARS,
                 session_id,
                 *cursor_params,
                 # The loop below stops at the row budget, so this returns exactly

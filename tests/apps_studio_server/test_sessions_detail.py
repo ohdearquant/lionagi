@@ -2965,6 +2965,73 @@ async def test_a_lifted_link_id_cannot_carry_the_payload_that_was_just_withheld(
     )
 
 
+async def test_lifting_a_link_id_does_not_read_a_payload_of_unbounded_size(
+    patched_sessions_db, monkeypatch
+):
+    """Capping the id that comes back does not cap the work of finding it.
+
+    The parse that locates the key reads the whole document however short the
+    value under it turns out to be, and a row past the withholding ceiling is
+    charged nothing for its length, so without a second ceiling a row costs a
+    full scan of any size while counting as one row against every budget that
+    could otherwise stop it.
+    """
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    monkeypatch.setattr(svc, "MAX_ACTION_ID_SCAN_CHARS", 2_000)
+    await seed_session(db_path, session_id="sess-idscan")
+    await seed_branch(
+        db_path,
+        branch_id="br-idscan",
+        session_id="sess-idscan",
+        msg_ids=["within-scan", "past-scan"],
+    )
+    async with StateDB(db_path) as db:
+        # Withheld, and short enough that finding the link is bounded work. The
+        # control for the row below: without it a lifted id going missing reads
+        # the same as the extraction never having worked at all.
+        await db.insert_message(
+            {
+                "id": "within-scan",
+                "created_at": 110.0,
+                "content": {"output": "y" * 500, "action_request_id": "req-within"},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+        await db.insert_message(
+            {
+                "id": "past-scan",
+                "created_at": 120.0,
+                "content": {"output": "z" * 4_000, "action_request_id": "req-past"},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+
+    result = await svc.get_session_messages_after("sess-idscan", 100.0)
+
+    by_id = {r["id"]: r for r in result}
+    assert set(by_id) == {"within-scan", "past-scan"}, (
+        "a row past the scan ceiling has to stay listed -- it is withheld, not dropped"
+    )
+    assert by_id["within-scan"]["action_request_id"] == "req-within", (
+        "the extraction stopped working, so this says nothing about the ceiling"
+    )
+    assert by_id["past-scan"]["content_withheld"] is True
+    assert by_id["past-scan"].get("action_request_id") is None, (
+        "a payload past the scan ceiling was parsed to lift a link out of it"
+    )
+
+
 async def test_one_row_of_unparseable_content_does_not_take_the_whole_read_down(
     patched_sessions_db, monkeypatch
 ):
