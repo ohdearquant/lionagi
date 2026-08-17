@@ -413,9 +413,16 @@ async def test_extra_rounds_do_not_rescue_a_shape_with_two_real_orderings(monkey
       other op admitted first  -> the first ends at 1/2, waiter runs 1/4 -> 3/4
 
     Both orderings cost more than the bound below, so the minimum across rounds
-    cannot buy a pass whichever one the executor picks. If it could pick the
-    cheaper of two real schedules and pass on that, this is the shape that would
-    show it.
+    cannot buy a pass whichever one the executor picks.
+
+    What that establishes is narrower than it first reads, and the difference
+    matters. Since 1/2 and 3/4 both clear the bound, the assertion passes under
+    either ordering: it holds that eleven rounds of the minimum never reach
+    under the cheaper of the two real schedules, and it cannot tell the two
+    apart. So this is not the guard that rules out the minimum choosing between
+    schedules. `test_the_executor_admits_ready_ops_in_one_order` is, and it does
+    so on this exact shape by asserting the order the ops were admitted in
+    rather than by pricing the result.
     """
     rounds = 0
     real = _run_real_flow
