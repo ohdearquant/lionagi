@@ -107,17 +107,25 @@ _AUTH_SCHEME = (
 # horizontal whitespace alone consumed the scheme and left the credential
 # behind on the next line, which is worse than not matching at all. Bounded to
 # a single break so a blank line ends the value rather than reaching further
-# down the text. The unrecognized-scheme branch below stays on one line: it
-# takes two bare tokens on trust, and across a break that is a token of
-# whatever follows.
+# down the text.
 _AUTH_PAIR_GAP = r"(?:[ \t]+|[ \t]*\r?\n[ \t]*)"
+# The same gap for a scheme this list does not recognize, where the break has
+# to look like an actual fold. A recognized scheme is its own evidence that
+# what follows it is a credential, so that branch accepts any break. Here there
+# is no such evidence and the second token is taken on trust, so requiring the
+# continuation to begin with a space or tab -- which is what a folded header
+# is, per RFC 7230 obs-fold -- separates one from an ordinary next line of
+# prose, whose first word would otherwise be taken. Leaving it on one line
+# instead left the credential of every unrecognized scheme sitting in the text
+# one line below the marker that announced it.
+_AUTH_PAIR_FOLD = r"(?:[ \t]+|[ \t]*\r?\n[ \t]+)"
 # An auth header in free text. An unrecognized scheme falls to the second
 # branch, which takes both tokens rather than leaving the credential behind
 # the word in front of it.
 _AUTH_PAIR_RE = re.compile(
     r"(?i)(?<![\w.\-])((?:proxy[_\-]?)?authorization|(?:www|proxy)[_\-]?authenticate)"
     r"(\s*[:=]\s*)"
-    r"(?:(" + _AUTH_SCHEME + r")(" + _AUTH_PAIR_GAP + r")\S+|\S+(?:[ \t]+\S+)?)"
+    r"(?:(" + _AUTH_SCHEME + r")(" + _AUTH_PAIR_GAP + r")\S+|\S+(?:" + _AUTH_PAIR_FOLD + r"\S+)?)"
 )
 # Shell/env-style assignments ("API_KEY=...", "token: ...") embedded in free
 # text such as a command argument. The name is matched generically and then

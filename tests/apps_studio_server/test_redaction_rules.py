@@ -106,9 +106,33 @@ def test_the_value_ends_at_a_blank_line():
     )
 
 
-def test_an_unrecognized_scheme_does_not_reach_onto_the_next_line():
-    """The unknown-scheme branch takes two bare tokens on trust. Across a
-    break the second one belongs to whatever follows, not to the header."""
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Authorization: Weirdscheme\n " + OPAQUE,
+        "Authorization: Weirdscheme\n\t" + OPAQUE,
+        "Authorization=Weirdscheme\n    " + OPAQUE,
+        "Proxy-Authorization: Weirdscheme\r\n " + OPAQUE,
+    ],
+)
+def test_an_unrecognized_schemes_folded_credential_still_goes(text):
+    """A scheme this module does not know is exactly the case where the value
+    after it cannot be judged, and folding it onto the next line left it
+    standing one line below the marker announcing what it was. A recognized
+    scheme is its own evidence that a credential follows; without one, the
+    break itself has to look like a fold, and a fold begins with a space or a
+    tab."""
+    assert OPAQUE not in _scrub(text)
+
+
+def test_an_unrecognized_scheme_does_not_reach_onto_an_unindented_line():
+    """The boundary of the rule above, and the reason it asks for indentation.
+
+    The unknown-scheme branch takes its second token on trust. A next line
+    that starts hard against the margin is ordinary text rather than a folded
+    header, so taking its first word would redact prose on every occurrence
+    while catching a credential on almost none.
+    """
     assert _scrub("Authorization: Weirdscheme\nGET /next") == (
         "Authorization: [redacted]\nGET /next"
     )
