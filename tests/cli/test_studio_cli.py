@@ -17,9 +17,9 @@ from unittest.mock import patch
 
 import pytest
 
-# Real Vite fixture used by the binding/host-selection tests below — these
-# prove claims about actual Vite startup output rather than a hand-built
-# fixture, which round-1 review found could hide a real parsing defect.
+# Real Vite fixture for the binding/host-selection tests below: they prove
+# claims about actual Vite startup output rather than a hand-built fixture,
+# which could hide a real parsing defect.
 _FRONTEND_DIR = Path(__file__).resolve().parents[2] / "apps" / "studio" / "frontend"
 _VITE_BIN = _FRONTEND_DIR / "node_modules" / ".bin" / "vite"
 requires_real_vite = pytest.mark.skipif(

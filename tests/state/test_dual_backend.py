@@ -1723,7 +1723,7 @@ async def test_postgres_attach_session_invocation_decrements_off_the_value_a_con
     read old immediately (the holder hasn't committed yet), block later on
     the UPDATE's implicit row lock instead, and decrement old after its own
     WHERE clause re-evaluates against the post-commit row — leaving mid's
-    count stale at 1, exactly the round-2 finding.
+    count stale at 1.
     """
     import asyncio
 

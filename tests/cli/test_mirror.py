@@ -3184,10 +3184,9 @@ async def test_live_cli_mirror_run_once_relative_root_produces_resolvable_pointe
 
 
 def test_grep_evidence_live_mirror_paths_call_bound_mirror_content() -> None:
-    """Regression guard for the round-1 gate finding ("zero callers"): the two
-    writers must call the bounding codec directly, and the CLI tailer that
-    feeds them must thread the source-pointer data (byte offsets + the
-    preview-chars budget) into every live write."""
+    """The bounding codec must not end up with zero callers: both writers call
+    it directly, and the CLI tailer feeding them threads the source-pointer data
+    (byte offsets and the preview-chars budget) into every live write."""
     root = Path(__file__).resolve().parents[2] / "lionagi"
     codec_callers = {
         root / "state" / "claude_mirror.py": "claude_mirror.py",
