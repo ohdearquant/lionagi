@@ -169,8 +169,9 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
     assert kwargs.get("allow_dangerously_skip_permissions") is not True
     assert set(kwargs["mcp_servers"]) == {"studio_permission", "studio_operator"}
     assert kwargs["permission_prompt_tool_name"] == ("mcp__studio_permission__request_permission")
-    # Widening this set is a deliberate act. Everything added since the
-    # original four is read-only; the three gated tools are unchanged.
+    # Widening this set is a deliberate act. The live-control tools below are
+    # proposal-backed mutations: they cannot enqueue anything until the user
+    # confirms the exact command and target through the permission bridge.
     assert set(kwargs["allowed_tools"]) == {
         "mcp__studio_operator__list_recent_runs",
         "mcp__studio_operator__run_stats",
@@ -186,6 +187,9 @@ def test_real_operator_branch_exposes_only_strict_request_scoped_mcp_tools(tmp_p
         "mcp__studio_operator__run_detail",
         "mcp__studio_operator__cancel_run",
         "mcp__studio_operator__resume_run",
+        "mcp__studio_operator__pause_run",
+        "mcp__studio_operator__release_run_pause",
+        "mcp__studio_operator__steer_run",
         "mcp__studio_operator__rename_run",
         "mcp__studio_operator__list_sessions",
         "mcp__studio_operator__session_detail",
@@ -297,6 +301,9 @@ _REQUIRED_OPERATOR_TOOLS = frozenset(
         "run_detail",
         "cancel_run",
         "resume_run",
+        "pause_run",
+        "release_run_pause",
+        "steer_run",
         "rename_run",
         "list_sessions",
         "session_detail",
@@ -405,6 +412,7 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
                 "project": "private",
                 "startedAt": 1.0,
                 "endedAt": 2.0,
+                "endedAtApproximate": False,
                 "href": "/runs/run-1",
                 "kind": "play",
                 "playbookName": "daily-triage",
@@ -416,6 +424,7 @@ async def test_application_mcp_read_query_is_bounded_and_redacted(monkeypatch):
                 "project": "acme/research",
                 "startedAt": 3.0,
                 "endedAt": 4.0,
+                "endedAtApproximate": False,
                 "href": "/runs/run-2",
                 "kind": "agent",
                 "playbookName": None,
@@ -1183,6 +1192,7 @@ async def test_application_mcp_resume_run_delegates_flow_kind_to_checkpoint_repl
                     "invocation_kind": "flow",
                     "resume": True,
                     "allow_degraded_context": False,
+                    "retry_failed": False,
                     "checkpoint_run_id": cli_run_id,
                 },
             },

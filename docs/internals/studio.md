@@ -641,7 +641,6 @@ never half-emitted.
 - **Audit event ordering** — Runs after the prune transaction commits;
   `insert_admin_event` opens its own write transaction, and nesting it inside
   the prune transaction would self-deadlock on the sqlite write lock.
-
 - **`_session_retention_predicate`** — What makes a session prunable
   (terminal status AND no activity since a cutoff), built as one reusable
   SQL fragment + params rather than a full statement, because the prune
@@ -1046,6 +1045,52 @@ carrying the reason and — whenever `notify_request()` finds a notify
 payload — emits a `dispatch_outbox` row via
 `lionagi.dispatch.outbox.enqueue_dispatch`.
 
+## lionagi/studio/scheduler/engine.py (max_runs budget reservation)
+
+**`_reserve_max_runs_budget`** — reserves one top-level fire against a
+schedule's `max_runs` cap. A fire consumes budget the instant it fires, not
+when it resolves, so the count it checks is `fired + inflight`: `fired` is
+the persisted count of `running`-or-terminal `schedule_run` rows, and
+`inflight` is an in-process counter of fires that have claimed budget but
+whose occurrence row has not yet committed. The two are disjoint views of
+the same fire — a claim is released the moment the occurrence row lands —
+so summing them counts each fire exactly once, except for a brief instant
+during the handoff where a fire can appear in both; that only ever
+over-counts, which just causes a spurious refusal that self-corrects on the
+next tick. Only one scheduler process runs today, so this reservation is
+in-memory (an `asyncio.Lock`-guarded dict), not a database compare-and-set.
+
+The order of the two reads inside that lock is the load-bearing part.
+`inflight` is read *before* the `await` on `count_schedule_runs()`, not
+after. `release()` (called from `_fire()`'s `finally` block on every exit
+path, so a claim always gets freed even from a cancelled or failing fire)
+does not take the lock — it must work even while a fire is mid-cancellation,
+where acquiring a lock from a `finally` block risks a deadlock. That makes
+it possible for a concurrent fire to release its claim *while this call is
+suspended awaiting the database*. If `inflight` were read after that await,
+a fire that both writes its occurrence row and releases its claim entirely
+inside the suspended window would vanish from both counts at once: too late
+for the in-flight snapshot (already released) and too early for the
+persisted count (the read started before the write landed) — letting a
+bounded schedule fire one more time than `max_runs` allows. Reading
+`inflight` first means it still captures that other fire's claim before it
+can disappear, so the sum can only ever over-count, never under-count.
+
+`_tick()`'s ad-hoc task-worker pass runs single-flight: a second `_tick()`
+firing while the first pass is still in progress must not start a second
+pass, and must not await the first pass either — a slow or hung worker pass
+would otherwise stall every schedule's due-time evaluation for the whole
+tick. `_tick()` starts the pass as a background task and returns promptly
+regardless of whether it is still running.
+
+`resolve_terminal` (child-session outcome inference) does not trust a
+leader process's exit code as evidence that a still-running child session's
+own work has finished — the terminal stamp comes from the leader's stderr
+pipe closing, not from the child's work actually ending. A child session
+that has not reached any terminal status of its own is reported as
+`completed_empty` (no positive evidence) rather than being inferred as
+`completed`.
+
 ## lionagi/studio/scheduler/worker.py
 
 `claim_and_execute`'s D4 match rule: row R is claimable iff its capability
@@ -1347,10 +1392,9 @@ free-text field goes through `scrub_text` and `project` through
 `public_project`; `manifest` (an unbounded mapping) goes through the
 recursive redactor plus a byte cap. These fields are redacted even though
 today's StateDB-backed carrier already fills most of them with safe
-placeholders, because the projection has to be safe for what the field
-names promise across every backing carrier (a manifest-backed builder
-elsewhere fills the same names from raw, untrusted manifest text), not
-just for the values one code path happens to supply right now.
+placeholders, because the projection contract must remain safe for future
+backing carriers rather than depending on the values one current path happens
+to supply.
 
 `run_progress` reports operation counts two ways depending on what the run
 has: for an ordinary run it counts branches by status; for a DAG run (one
@@ -1368,9 +1412,9 @@ it was written to do) while still being counted separately in
 caller can tell "nothing happened" from "the field doesn't exist yet."
 
 `run_findings` derives tool-call outcomes (`success`/`error`/`pending`)
-from message content via the same `_detect_status` heuristic
-`lionagi.studio.services.runs` already uses for the run-detail step list,
-since plain session messages carry no structured `ok: bool`. Every section
+from message content via the shared `_detect_status` heuristic retained in
+`lionagi.studio.services.runs` for Session/operator projections, since plain
+session messages carry no structured `ok: bool`. Every section
 here is bounded by a message *window* (the carrier is called with a fixed
 `message_limit`) before any byte cap ever applies — the byte cap almost
 never fires in practice, so `truncated` reports both, and the response

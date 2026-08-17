@@ -85,3 +85,45 @@ describe("runTreeModel NodeEscalated route handling", () => {
     expect(state.nodes.get("op1")?.state).toBe("escalated");
   });
 });
+
+describe("runTreeModel NodeCancelled lane", () => {
+  it("moves a running node to cancelled", () => {
+    const state = createRunTreeState();
+    applySignalRow(state, row("NodeStarted", "op1", { name: "worker" }));
+    expect(state.nodes.get("op1")?.state).toBe("running");
+
+    applySignalRow(state, row("NodeCancelled", "op1"));
+    // Without a case for this kind the signal falls to `default` and is
+    // dropped, leaving the node reading "running" after the run was
+    // interrupted -- work presented as still in flight that has stopped.
+    expect(state.nodes.get("op1")?.state).toBe("cancelled");
+  });
+
+  it("upserts an unseen node on NodeCancelled", () => {
+    const state = createRunTreeState();
+    applySignalRow(state, row("NodeCancelled", "op9", { name: "never-ran" }));
+    expect(state.nodes.get("op9")?.state).toBe("cancelled");
+    expect(state.order).toContain("op9");
+  });
+
+  it("is terminal: a late NodePaused does not unpin it", () => {
+    const state = createRunTreeState();
+    applySignalRow(state, row("NodeStarted", "op1"));
+    applySignalRow(state, row("NodeCancelled", "op1"));
+
+    applySignalRow(state, row("NodePaused", "op1"));
+    expect(state.nodes.get("op1")?.state).toBe("cancelled");
+  });
+
+  // The intermediate assertion is what makes this one mean anything. Ending
+  // only on "running" is a result a dropped NodeCancelled produces just as
+  // well, so without the first check the test stays green with the case
+  // removed and documents retry semantics it never exercised.
+  it("a retry reopens it, matching the other terminal lanes", () => {
+    const state = createRunTreeState();
+    applySignalRow(state, row("NodeCancelled", "op1"));
+    expect(state.nodes.get("op1")?.state).toBe("cancelled");
+    applySignalRow(state, row("NodeStarted", "op1"));
+    expect(state.nodes.get("op1")?.state).toBe("running");
+  });
+});

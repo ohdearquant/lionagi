@@ -14111,6 +14111,11 @@
             "type": "boolean",
             "title": "Allow Degraded Context",
             "default": false
+          },
+          "retry_failed": {
+            "type": "boolean",
+            "title": "Retry Failed",
+            "default": false
           }
         },
         "type": "object",

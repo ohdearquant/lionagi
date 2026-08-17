@@ -224,6 +224,18 @@ Exact semantics:
   catch-up window, and polls every `5` seconds. These values are inherited operating
   defaults; the source records bounded catch-up and live tailing as the reasons, but
   no measurement selecting exactly 24 hours or 5 seconds.
+- The conventional `~/.lionagi` profile may mirror the ambient
+  `~/.claude/projects` and `~/.codex/sessions` trees by default. Any explicitly
+  selected, different `LIONAGI_HOME` is isolated: Studio starts no ambient mirror
+  unless `LIONAGI_STUDIO_MIRROR_CLAUDE_ROOT` and/or
+  `LIONAGI_STUDIO_MIRROR_CODEX_ROOT` names a source, or
+  `LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT=1` explicitly restores ambient imports.
+  A custom root wins over the corresponding ambient root, and a missing root
+  removes that provider from a `both` request rather than falling through to home.
+- Mirror startup logs describe the provider selection and window, never source
+  paths or transcript content. An unexpected task failure reports only its exception
+  class at this boundary; detailed transcript-bearing exceptions are not rendered
+  into the user-facing startup log.
 - Mirror shutdown signals its stop event and waits up to 10 seconds, then cancels the
   task. Ten seconds is a backstop inherited from the implementation; no recorded
   measurement justifies the exact value.

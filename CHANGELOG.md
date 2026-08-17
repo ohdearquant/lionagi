@@ -6,6 +6,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- Resuming a flow whose checkpoint recorded any operation as failed now refuses
+  and names those operations, instead of replaying them as terminal state.
+  Replaying a failed operation as terminal marks it failed without running it,
+  so the executor skipped it and everything downstream, and the resume finished
+  nothing. `--retry-failed` on `li o flow` (and `retry_failed` on the Studio
+  resume request and the Operator `resume_run` command) runs them again; it is
+  an opt-in because re-running re-executes whatever side effects the first
+  attempt already had. Reactive children recorded under a re-running operation
+  are dropped so the new attempt derives its own.
+- The notify hook's delivery timeout is derived from the handler budget, so a
+  delivery now fits inside the deadline that would otherwise terminate it.
+- A delivery stopped part way reports `notify_delivery_state` as `unknown`
+  rather than `failed`. Whether the notice already went out is exactly what
+  such a delivery cannot say, and `failed` tells a caller to send it again.
+  The value appears on every job listing row, so callers switching on
+  `failed` should handle `unknown` as well.
+- Delivery descendants are terminated through the shared process-group helper
+  on POSIX. Cross-platform descendant containment remains out of scope and is
+  tracked in #2576.
+
+### Deprecated
+
+- `--resume-on-timeout` on `li o fanout` and `li o flow`. The flag is accepted
+  and listed in the help output of both commands but neither ever read it, so
+  passing it changes nothing. Both commands now say so at parse time instead of
+  accepting it silently, and will keep accepting it until it is removed in a
+  later release. It remains available and functional on `li agent`, which is
+  the surface that implements it.
+
 ## [0.35.0] - 2026-08-12
 
 A broad correctness release across the orchestration engine, the MCP surface,

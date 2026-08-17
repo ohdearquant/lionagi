@@ -18,7 +18,6 @@ import type {
   OperatorTurnAccepted,
   OperatorTurnRequest,
   ResumeAvailability,
-  RunDetail,
   RunResumeRequest,
   RunResumeResponse,
   RunSummary,
@@ -849,10 +848,6 @@ export async function listRunProjects(): Promise<RunProjectsResponse> {
   return fetchJson<RunProjectsResponse>("/api/runs/projects");
 }
 
-export async function getRun(runId: string): Promise<RunDetail> {
-  return fetchJson<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`);
-}
-
 export async function resumeRun(
   runId: string,
   request: RunResumeRequest,
@@ -1290,6 +1285,21 @@ export interface SessionDetail {
   effort?: string | null;
   agent_hash?: string | null;
   invocation_id?: string | null;
+  /** Project scope used by Operator write tools to fail closed across runs. */
+  project?: string | null;
+  /** Whether a queued run control would ever reach a runner (services/
+   * sessions.py get_session, computed by the admission path's own predicate).
+   * False for a mirrored or imported agent session, which no lionagi run owns:
+   * the server admits no control for one, so no control is offered either.
+   * Absent is read as false by the control surface — a missing capability is
+   * not evidence of a capability. */
+  has_control_consumer?: boolean | null;
+  /** Whether this run's pause gate is held, or queued to be (services/
+   * sessions.py _pause_is_held). Server-derived, so it survives a reload: a
+   * pause remembered only in component state comes back as "not paused" and
+   * leaves Resume disabled on a run that is still stopped. Absent is read as
+   * false, which is the pre-pause state and the one that offers Pause. */
+  pause_is_held?: boolean | null;
   // ADR-0028: denormalized status reason (services/sessions.py get_session
   // already returns these; the type was just missing them).
   status_reason_code?: string | null;
@@ -2559,6 +2569,12 @@ export interface CreateWorkflowDefRequest {
   spec_json?: WorkflowSpec;
 }
 
+export interface CreatedWorkflowDef {
+  id: string;
+  name: string;
+  created_at: number;
+}
+
 export interface UpdateWorkflowDefRequest {
   name?: string;
   description?: string;
@@ -2575,7 +2591,7 @@ export async function getWorkflowDef(defId: string): Promise<WorkflowDef> {
 
 export async function createWorkflowDef(
   body: CreateWorkflowDefRequest,
-): Promise<{ id: string; name: string; created_at: number }> {
+): Promise<CreatedWorkflowDef> {
   return fetchJson(`/api/workflow-defs/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

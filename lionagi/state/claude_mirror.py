@@ -355,12 +355,12 @@ async def reconcile_session_status(
     *,
     now: float,
     live_window: float,
-) -> None:
+) -> bool:
     """Align a mirrored session's status with its live/idle state, both directions.
     Liveness keys off ``last_message_at``, never ``updated_at`` — see docs/internals/runtime.md."""
     from ._mirror_common import reconcile_status
 
-    await reconcile_status(
+    return await reconcile_status(
         db,
         session_db_id(session_uid),
         now=now,

@@ -4,7 +4,20 @@
 - **Kind**: Retrospective
 - **Area**: governance
 - **Date**: 2026-07-09
-- **Relations**: supersedes v0-0068, v0-0069, v0-0070
+- **Relations**: supersedes v0-0068, v0-0069, v0-0070; revisited by ADR-0120
+  (authorization/observation separation) and ADR-0121 (authoritative action execution)
+
+## Amendment (2026-08-16)
+
+Current-vs-ideal row 2 contains two stale claims. Agent factory now applies `_attach_hooks()` to
+MCP-discovered Tools, and direct `FunctionCalling` construction exists as an explicit tested
+bypass. Fresh plugin Tool resolution and public direct manager/callable access remain uncovered,
+so the non-bypassable controller delta is still open and is owned by ADR-0121.
+
+The observer is also weaker than D5's wording suggests: the same gate is applied before routed
+subscribers, so it can suppress StateDB/audit delivery as well as authorize an operation.
+ADR-0120 separates authorization from observation. Historical text below remains useful as the
+compatibility record but does not authorize reusing that coupling.
 
 ## Context
 
@@ -802,7 +815,7 @@ Cost of reversal by decision:
 | # | Delta | Size | Issue |
 |---|---|---|---|
 | 1 | Define one immutable `GateResult` contract and adapters for `PermissionPolicy`, built-in guards, and the session gate; accept when each configured control runs exactly once, an evaluator exception produces a recorded deny result, and every security-relevant control (built-in coding guards included) evaluates the final post-mutation arguments — closing the current asymmetry in which only an explicit `PermissionPolicy` is re-run after a mutating user pre-hook. Security-relevant. | M | Resolved on main (`lionagi/agent/factory.py::_chain_pre_hooks`) |
-| 2 | `ActionManager.invoke()` is already the de facto single controller for every route that reaches it: grep finds exactly one production call site (`operations/act/act.py:90`), and `FunctionCalling` is constructed only inside `ActionManager.match_tool()`/`_resolve_plugin_tool()`, never elsewhere in `lionagi/`. The remaining work is not building a new chokepoint but closing the registration/resolution paths that still reach a `Tool` without the controller's attached security controls: MCP-discovered tools skip `_attach_hooks()` on `main` (a fix is in flight, unmerged); the public `branch.acts` property lets a caller invoke a registered tool directly, skipping `_act()`'s session-gate check; and `_resolve_plugin_tool()` builds a fresh, preprocessor-less `Tool` per call by design, so it never receives the spec-level chain. Whether session-gate enforcement moves inside `ActionManager.invoke()` itself or stays an external pre-check at `_act()` is an open design fork, not decided here. | L | (filled at issue-open time) |
+| 2 | MCP-discovered Tools now receive `_attach_hooks()`. Direct `FunctionCalling`, public direct manager/callable access, `branch.acts`, and fresh plugin Tool resolution still demonstrate that construction-time attachment is not a non-bypassable controller. ADR-0121 decides one authoritative ActionExecutor and makes ActionManager registry/resolution-only; retain route-specific compatibility tests during migration. | L | ADR-0121 breakdown |
 | 3 | Add an append-only evidence store and verifier independent of `DataLogger` and session signals; accept when permit, denial, callable failure, and completion records verify as one chain, mutation is detected, and an append failure blocks governed execution. | L | (filled at issue-open time) |
 | 4 | Bind an immutable policy snapshot and operation provenance to governed execution; accept when concurrent calls cannot exchange gate results, every evidence record names the active policy version, and historical snapshots remain retrievable. | L | (filled at issue-open time) |
 | 5 | Mint a process certificate only at an explicit task boundary; accept when missing evidence, failed verification, or unavailable policy history prevents minting and an approved exception remains permanently marked degraded. | L | (filled at issue-open time) |

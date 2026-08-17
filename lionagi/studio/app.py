@@ -95,19 +95,39 @@ def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, N
     from .config import (
         MIRROR_CLAUDE_ENABLED,
         MIRROR_CLAUDE_INTERVAL,
+        MIRROR_CLAUDE_ROOT,
         MIRROR_CLAUDE_SINCE,
+        MIRROR_CODEX_ROOT,
+        MIRROR_IMPORT_AMBIENT,
         MIRROR_SOURCE,
     )
 
     if not MIRROR_CLAUDE_ENABLED:
         return None, None
-    from lionagi.cli.mirror import mirror_forever
+    from lionagi.cli.mirror import CLAUDE_PROJECTS_DIR, CODEX_SESSIONS_DIR, mirror_forever
+
+    claude_root = MIRROR_CLAUDE_ROOT
+    codex_root = MIRROR_CODEX_ROOT
+    if MIRROR_IMPORT_AMBIENT:
+        claude_root = claude_root or CLAUDE_PROJECTS_DIR
+        codex_root = codex_root or CODEX_SESSIONS_DIR
+
+    want_claude = MIRROR_SOURCE in ("both", "claude") and claude_root is not None
+    want_codex = MIRROR_SOURCE in ("both", "codex") and codex_root is not None
+    if not want_claude and not want_codex:
+        _log.info(
+            "Studio transcript mirror not started: the selected profile has no configured sources"
+        )
+        return None, None
+    source = "both" if want_claude and want_codex else "claude" if want_claude else "codex"
 
     stop = asyncio.Event()
     task = asyncio.create_task(
         mirror_forever(
             stop,
-            source=MIRROR_SOURCE,
+            root=claude_root,
+            codex_root=codex_root,
+            source=source,
             since=MIRROR_CLAUDE_SINCE,
             interval=MIRROR_CLAUDE_INTERVAL,
         ),
@@ -120,10 +140,15 @@ def _start_claude_mirror() -> tuple[asyncio.Event, asyncio.Task] | tuple[None, N
             return
         exc = t.exception()
         if exc is not None:
-            _log.error("Claude mirror tail exited unexpectedly", exc_info=exc)
+            _log.error(
+                "Studio transcript mirror exited unexpectedly (%s)",
+                type(exc).__name__,
+            )
 
     task.add_done_callback(_log_unexpected_exit)
-    _log.info("Claude Code mirror tail started (since=%s)", MIRROR_CLAUDE_SINCE)
+    _log.info(
+        "Studio transcript mirror tail started (source=%s, since=%s)", source, MIRROR_CLAUDE_SINCE
+    )
     return stop, task
 
 

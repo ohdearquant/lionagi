@@ -166,6 +166,10 @@ def build_default_registry() -> PolicyRegistry:
     session_patch_fields = frozenset(
         {
             "ended_at",
+            # Describes the ended_at beside it and is written by the same
+            # transitions, so it has to be declared here or those writes are
+            # only legal because they are applied after this list is checked.
+            "ended_at_is_approximate",
             "input_tokens",
             "output_tokens",
             "total_cost_usd",

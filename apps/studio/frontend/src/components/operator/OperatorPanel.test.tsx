@@ -932,6 +932,79 @@ describe("OperatorPanel", () => {
       expect(modelSelect().value).toBe("gpt-5.4");
     });
 
+    it("groups recommended models by provider and explains the selected effort contract", async () => {
+      pin(pinned);
+      api.fetchOperatorModelCatalog.mockResolvedValue({
+        // Deliberately interleaved: the picker, not backend ordering, owns the
+        // provider groups shown to the operator.
+        models: [
+          {
+            id: "gpt-5.4",
+            label: "Codex (gpt-5.4)",
+            provider: "codex",
+            efforts: ["low", "high", "ultra"],
+          },
+          {
+            id: "sonnet",
+            label: "Claude Sonnet",
+            provider: "claude_code",
+            efforts: ["low", "medium", "high"],
+          },
+          {
+            id: "gemini-3.6-flash",
+            label: "Gemini 3.6 Flash",
+            provider: "gemini_code",
+            efforts: ["low", "medium", "high"],
+          },
+          {
+            id: "gpt-5.5",
+            label: "Codex (gpt-5.5)",
+            provider: "codex",
+            efforts: ["medium", "high"],
+          },
+        ],
+      });
+
+      await mount();
+
+      const select = modelSelect();
+      const groups = [...select.querySelectorAll("optgroup")];
+      expect(groups.map((group) => group.label)).toEqual([
+        "Claude · recommended",
+        "Codex · recommended",
+        "Gemini · recommended",
+      ]);
+      expect([...groups[0].querySelectorAll("option")].map((option) => option.value)).toEqual([
+        "sonnet",
+      ]);
+      expect([...groups[1].querySelectorAll("option")].map((option) => option.value)).toEqual([
+        "gpt-5.4",
+        "gpt-5.5",
+      ]);
+      expect([...groups[2].querySelectorAll("option")].map((option) => option.value)).toEqual([
+        "gemini-3.6-flash",
+      ]);
+
+      // The menu exposes the ceiling before selection, rather than making the
+      // operator discover supported effort only after changing models.
+      expect(groups[2].textContent).toContain("low / medium / high");
+      expect(
+        container.querySelector('[data-testid="operator-model-consequence"]')?.textContent,
+      ).toContain("Effort is sent as a provider setting");
+
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+        setter?.call(select, "gemini-3.6-flash");
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+
+      const consequence = container.querySelector('[data-testid="operator-model-consequence"]');
+      expect(consequence?.textContent).toContain("Gemini");
+      expect(consequence?.textContent).toContain("Effort: low / medium / high");
+      expect(consequence?.textContent).toContain("Effort is encoded in the model ID");
+      expect(select.getAttribute("aria-describedby")).toBe(consequence?.id);
+    });
+
     it("names a pinned model the catalog no longer offers instead of hiding it", async () => {
       pin({ ...pinned, providerModel: "gpt-5.3-retired" });
       api.fetchOperatorModelCatalog.mockResolvedValue({
@@ -944,6 +1017,10 @@ describe("OperatorPanel", () => {
       expect(select.value).toBe("gpt-5.3-retired");
       const option = [...select.options].find((item) => item.value === "gpt-5.3-retired");
       expect(option?.textContent).toContain("unavailable");
+      const groups = [...select.querySelectorAll("optgroup")];
+      expect(groups.at(-1)?.label).toBe("Legacy selection");
+      expect(groups.at(-1)?.querySelector("option")?.value).toBe("gpt-5.3-retired");
+      expect(groups.slice(0, -1).every((group) => !group.contains(option!))).toBe(true);
     });
 
     it("asks for the pin to be dropped when the menu is moved back to Default", async () => {

@@ -122,14 +122,19 @@ async def _stream_with_liveness(
     liveness_timeout: float | None,
     api_call_holder: list,
     max_attempts: int = 2,
+    *,
+    idle_timeout: float | None = None,
 ) -> AsyncGenerator:
-    """Spawn the worker subprocess and enforce a first-output liveness window, retrying once on miss.
+    """Enforce first-output and between-chunk worker liveness windows.
 
     See docs/internals/providers.md#run-worker-liveness-watchdog for the retry
     and deadline-interaction contract. ``api_call_holder`` is a caller-owned
     list; the winning attempt's ``api_call`` is recorded at index 0.
     """
-    if not liveness_timeout or liveness_timeout <= 0:
+    liveness_timeout = liveness_timeout if liveness_timeout and liveness_timeout > 0 else None
+    idle_timeout = idle_timeout if idle_timeout and idle_timeout > 0 else None
+
+    if liveness_timeout is None and idle_timeout is None:
         api_call = await model.create_event(**kw)
         api_call_holder.append(api_call)
         await model.executor.append(api_call)
@@ -158,7 +163,10 @@ async def _stream_with_liveness(
                 )
         return
 
-    for attempt in range(max_attempts):
+    # A first-output miss is safe to retry because nothing escaped the stream.
+    # Once any chunk is yielded, the idle path below always fails immediately.
+    attempts = max_attempts if liveness_timeout is not None else 1
+    for attempt in range(attempts):
         api_call = await model.create_event(**kw)
         await model.executor.append(api_call)
         if api_call_holder:
@@ -169,23 +177,26 @@ async def _stream_with_liveness(
         agen = _stream_with_deadline(model, api_call, stream_deadline)
         stream_iter = agen.__aiter__()
 
-        remaining_to_deadline = (
-            stream_deadline - anyio.current_time() if stream_deadline is not None else None
-        )
-        # Liveness "owns" the timeout only when it's the tighter bound; otherwise
-        # a timeout here is the caller's own stream_deadline, not a liveness miss.
-        is_liveness_boundary = (
-            remaining_to_deadline is None or liveness_timeout < remaining_to_deadline
-        )
-        wait_for = (
-            liveness_timeout
-            if remaining_to_deadline is None
-            else max(0.0, min(liveness_timeout, remaining_to_deadline))
-        )
-
+        is_liveness_boundary = False
         try:
-            with anyio.fail_after(wait_for):
+            if liveness_timeout is None:
                 first_chunk = await stream_iter.__anext__()
+            else:
+                remaining_to_deadline = (
+                    stream_deadline - anyio.current_time() if stream_deadline is not None else None
+                )
+                # Liveness "owns" the timeout only when it's the tighter bound;
+                # otherwise this is the caller's total-stream deadline.
+                is_liveness_boundary = (
+                    remaining_to_deadline is None or liveness_timeout < remaining_to_deadline
+                )
+                wait_for = (
+                    liveness_timeout
+                    if remaining_to_deadline is None
+                    else max(0.0, min(liveness_timeout, remaining_to_deadline))
+                )
+                with anyio.fail_after(wait_for):
+                    first_chunk = await stream_iter.__anext__()
         except StopAsyncIteration:
             # Zero chunks is a legitimate empty completion, not a hang.
             return
@@ -197,12 +208,12 @@ async def _stream_with_liveness(
                     "run: liveness watchdog agen.aclose() raised during cleanup: %r",
                     close_exc,
                 )
-            if not is_liveness_boundary:
+            if liveness_timeout is None or not is_liveness_boundary:
                 raise
-            if attempt == max_attempts - 1:
+            if attempt == attempts - 1:
                 raise WorkerLivenessError(
                     f"worker produced no first stream output within "
-                    f"{liveness_timeout:.0f}s across {max_attempts} attempt(s)",
+                    f"{liveness_timeout:.0f}s across {attempts} attempt(s)",
                     reason="worker.no_first_output",
                 ) from exc
             logger.warning(
@@ -210,7 +221,7 @@ async def _stream_with_liveness(
                 "retrying worker subprocess",
                 liveness_timeout,
                 attempt + 1,
-                max_attempts,
+                attempts,
             )
             continue
         except BaseException:
@@ -237,8 +248,40 @@ async def _stream_with_liveness(
         else:
             try:
                 yield first_chunk
-                async for chunk in agen:
-                    yield chunk
+                if idle_timeout is None:
+                    async for chunk in agen:
+                        yield chunk
+                else:
+                    while True:
+                        remaining_to_deadline = (
+                            stream_deadline - anyio.current_time()
+                            if stream_deadline is not None
+                            else None
+                        )
+                        # As for first output, the tighter bound owns the
+                        # failure. Equality belongs to the overall deadline.
+                        is_idle_boundary = (
+                            remaining_to_deadline is None or idle_timeout < remaining_to_deadline
+                        )
+                        wait_for = (
+                            idle_timeout
+                            if remaining_to_deadline is None
+                            else max(0.0, min(idle_timeout, remaining_to_deadline))
+                        )
+                        try:
+                            with anyio.fail_after(wait_for):
+                                chunk = await stream_iter.__anext__()
+                        except StopAsyncIteration:
+                            break
+                        except TimeoutError as exc:
+                            if not is_idle_boundary:
+                                raise
+                            raise WorkerLivenessError(
+                                f"worker produced no stream output for "
+                                f"{idle_timeout:.0f}s after partial output",
+                                reason="worker.stream_idle",
+                            ) from exc
+                        yield chunk
             finally:
                 # Same explicit-close reasoning as the passthrough branch above.
                 _unwinding = sys.exc_info()[1] is not None
@@ -483,26 +526,40 @@ async def run(
                     default_cap = _app_settings.LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT
                     kw["print_timeout"] = format_print_timeout(default_cap)
 
-        # Explicit values always honored; absent falls back to the configured
-        # default only for endpoints declaring streams_first_output_early — a
-        # buffered transport (e.g. gemini_code) would misdiagnose a healthy long
-        # call as a dead worker under the default watchdog otherwise.
+        # Explicit values always honored; absent values fall back to configured
+        # defaults only for endpoints declaring streams_first_output_early. A
+        # buffered transport would otherwise misdiagnose a healthy long call.
         _liveness_timeout_explicit = "liveness_timeout" in kw
         _liveness_timeout = kw.pop("liveness_timeout", None)
-        if _liveness_timeout is None and not _liveness_timeout_explicit:
-            if getattr(endpoint, "streams_first_output_early", False):
-                from lionagi.config import settings as _app_settings  # noqa: PLC0415
+        _idle_timeout_explicit = "idle_timeout" in kw
+        _idle_timeout = kw.pop("idle_timeout", None)
+        _streams_output_early = getattr(endpoint, "streams_first_output_early", False)
+        if _streams_output_early and (
+            (_liveness_timeout is None and not _liveness_timeout_explicit)
+            or (_idle_timeout is None and not _idle_timeout_explicit)
+        ):
+            from lionagi.config import settings as _app_settings  # noqa: PLC0415
 
+            if _liveness_timeout is None and not _liveness_timeout_explicit:
                 _liveness_timeout = _app_settings.LIONAGI_WORKER_LIVENESS_TIMEOUT
+            if _idle_timeout is None and not _idle_timeout_explicit:
+                _idle_timeout = _app_settings.LIONAGI_WORKER_IDLE_TIMEOUT
         if not isinstance(_liveness_timeout, int | float) or _liveness_timeout <= 0:
             _liveness_timeout = None
+        if not isinstance(_idle_timeout, int | float) or _idle_timeout <= 0:
+            _idle_timeout = None
 
         kw["stream"] = True
         _api_call_holder: list = []
         await emit_api_pre_call(branch, model)
         _api_call_started = True
         stream_gen = _stream_with_liveness(
-            model, kw, _stream_deadline, _liveness_timeout, _api_call_holder
+            model,
+            kw,
+            _stream_deadline,
+            _liveness_timeout,
+            _api_call_holder,
+            idle_timeout=_idle_timeout,
         )
         try:
             try:

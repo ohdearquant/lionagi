@@ -1496,3 +1496,263 @@ async def test_get_session_message_count_is_db_aggregate_not_progression_length(
     assert branch["message_total"] == 2  # progression length, kept as a separate field
     assert result["message_stats"]["message_count"] == 1  # DB aggregate, not progression length
     assert branch["message_stats"]["message_count"] == 1
+
+
+# An approximate end must not be turned back into a measured duration
+
+
+async def test_get_session_does_not_reconstruct_a_duration_from_an_approximate_end(
+    patched_sessions_db,
+):
+    """Nulling the stored duration is not enough on its own.
+
+    The flag makes the read discard duration_ms, and the very next branch
+    recomputes one from ended_at minus started_at. The row then reports a
+    measured length derived from a timestamp explicitly marked as a guess,
+    which is what the flag exists to prevent.
+    """
+    import sqlite3
+
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-approx",
+        status="completed",
+        started_at=10.0,
+        ended_at=13.5,
+    )
+    await seed_session(
+        db_path,
+        session_id="sess-measured",
+        status="completed",
+        started_at=10.0,
+        ended_at=13.5,
+    )
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE sessions SET ended_at_is_approximate = 1, duration_ms = NULL WHERE id = ?",
+            ("sess-approx",),
+        )
+        conn.execute(
+            "UPDATE sessions SET ended_at_is_approximate = 0, duration_ms = NULL WHERE id = ?",
+            ("sess-measured",),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    approximate = await svc.get_session("sess-approx")
+    measured = await svc.get_session("sess-measured")
+
+    assert approximate is not None
+    assert approximate["duration_ms"] is None
+    # Control: the same shape with a measured end still reconstructs, so the
+    # assertion above is about the flag and not about a reconstruction that
+    # stopped working.
+    assert measured is not None
+    assert measured["duration_ms"] == 3500.0
+
+
+async def _drop_column(db_path: Path, table: str, column: str) -> None:
+    """Reshape a store to the schema version that predates a column."""
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+        conn.commit()
+        present = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        assert column not in present, "the column survived the drop"
+    finally:
+        conn.close()
+
+
+async def test_session_reads_work_against_a_store_from_the_previous_schema_version(
+    patched_sessions_db,
+):
+    """Reads must not require a column that this schema version introduced.
+
+    The daemon reads stores through its own connection and never migrates
+    them, so a store last written by the previous version keeps that version's
+    columns for as long as nothing opens it for writing. That is the state of
+    every store immediately after an upgrade, and of any store the daemon can
+    only read. Selecting the new column by name makes those reads fail with a
+    missing-column error rather than degrade.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(
+        db_path,
+        session_id="sess-prev-schema",
+        status="completed",
+        started_at=10.0,
+        ended_at=13.5,
+    )
+
+    # Control: both reads work while the column is present, so a failure after
+    # the drop is about the column and not about the fixture.
+    assert await svc.get_session("sess-prev-schema") is not None
+    assert [row["id"] for row in await svc.list_sessions(limit=10)] == ["sess-prev-schema"]
+
+    await _drop_column(db_path, "sessions", "ended_at_is_approximate")
+
+    detail = await svc.get_session("sess-prev-schema")
+    assert detail is not None
+    # A store that never had the column recorded no approximate ends, which is
+    # what the previous version reported for every row.
+    assert detail["ended_at_is_approximate"] is False
+
+    listed = await svc.list_sessions(limit=10)
+    assert [row["id"] for row in listed] == ["sess-prev-schema"]
+    assert listed[0]["ended_at_is_approximate"] is False
+
+
+# Durable pause state — get_session projects whether a pause gate is held
+
+
+async def _queue_control(db_path: Path, session_id: str, verb: str, *, created_at: float) -> str:
+    async with StateDB(db_path) as db:
+        control_id = await db.insert_session_control(
+            session_id=session_id, verb=verb, created_at=created_at
+        )
+    assert control_id is not None, f"{verb} control was not admitted"
+    return control_id
+
+
+async def _apply_control(db_path: Path, control_id: str, *, result: str = "applied") -> None:
+    async with StateDB(db_path) as db:
+        assert await db.finalize_session_control(control_id, result=result)
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_no_controls_reports_no_pause_held(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_queued_pause_is_already_held_before_the_poller_applies_it(patched_sessions_db):
+    """A pause counts from the moment it is queued, not from when it drains.
+
+    The window between the two is exactly when a reader is most likely to
+    reload, and reporting "not paused" there offers a second Pause for a gate
+    already on its way in.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+    await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_applied_pause_survives_into_the_next_read(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+    control_id = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
+    await _apply_control(db_path, control_id)
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_later_resume_releases_the_pause_before_it(patched_sessions_db):
+    """Ordering is by when each control was written, so the newer verb wins."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+    pause_id = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
+    await _apply_control(db_path, pause_id)
+    resume_id = await _queue_control(db_path, "sess-1", "resume", created_at=20.0)
+    await _apply_control(db_path, resume_id)
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_pause_after_a_resume_holds_the_gate_again(patched_sessions_db):
+    """The control arm for the ordering: newest-wins has to work both ways.
+
+    A rule that simply answered "has there ever been a resume" would pass the
+    release case above and fail here, leaving a re-paused run readable as
+    running.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+    first = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
+    await _apply_control(db_path, first)
+    released = await _queue_control(db_path, "sess-1", "resume", created_at=20.0)
+    await _apply_control(db_path, released)
+    again = await _queue_control(db_path, "sess-1", "pause", created_at=30.0)
+    await _apply_control(db_path, again)
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_pause_never_held_the_gate(patched_sessions_db):
+    """A control the runner refused is not a pause, and must not read as one.
+
+    Without this the refusal would present as a paused run: Pause disabled,
+    Resume offered, and neither describing what actually happened.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+    control_id = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
+    await _apply_control(db_path, control_id, result="rejected:not_running")
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_steering_message_is_not_a_pause(patched_sessions_db):
+    """Only pause and resume speak to the gate.
+
+    A steer queued after a resume is the newest control row on the session, so
+    a rule reading "the newest row" without filtering the verb would answer
+    from it.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path)
+    pause_id = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
+    await _apply_control(db_path, pause_id)
+    await _queue_control(db_path, "sess-1", "message", created_at=20.0)
+
+    detail = await svc.get_session("sess-1")
+
+    assert detail is not None
+    assert detail["pause_is_held"] is True
+
+
+@pytest.mark.asyncio
+async def test_one_runs_pause_does_not_leak_into_another(patched_sessions_db):
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-paused")
+    await seed_session(db_path, session_id="sess-other")
+    await _queue_control(db_path, "sess-paused", "pause", created_at=10.0)
+
+    paused = await svc.get_session("sess-paused")
+    other = await svc.get_session("sess-other")
+
+    assert paused is not None and other is not None
+    assert paused["pause_is_held"] is True
+    assert other["pause_is_held"] is False
