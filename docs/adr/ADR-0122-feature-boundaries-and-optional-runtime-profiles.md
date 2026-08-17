@@ -1,6 +1,6 @@
 # ADR-0122: Feature boundaries and optional runtime profiles
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: governance

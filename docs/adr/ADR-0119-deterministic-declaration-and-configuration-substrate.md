@@ -1,6 +1,6 @@
 # ADR-0119: Deterministic declaration and configuration substrate
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
 - **Implementation-status**: not-started
 - **Area**: utilities
