@@ -1,6 +1,16 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""Freeze ADR-0120's legacy dispatcher compatibility profiles."""
+"""Freeze ADR-0120's legacy dispatcher compatibility profiles.
+
+The table is duplicated here in full and matched against the document by exact
+prose. That is the mechanism, not an oversight: a comparison loose enough to
+survive rewording is also loose enough to let a profile's meaning drift while
+the test stays green, and the whole point of freezing these rows is that they
+are the record a later migration will be checked against. Editing a row is
+meant to require editing it in both places, so that changing what the system
+promises cannot happen quietly. Reflowing the table will fail this test; the
+answer is to reflow the copy here too, not to loosen the match.
+"""
 
 from __future__ import annotations
 
@@ -104,7 +114,16 @@ def test_normative_profile_table_is_exact_and_closed() -> None:
     assert dict(rows) == EXPECTED_PROFILES
 
 
-def test_profile_facade_import_paths_remain_available() -> None:
+def test_public_import_paths_resolve_to_their_pre_migration_modules() -> None:
+    """Pin both halves of the façade contract: the path and what is behind it.
+
+    The import is one assertion and the owning module is the other. Pinning the
+    owner is the point rather than a side effect: the migration moves mechanics
+    behind these façades while the public path stays stable, so the public path
+    alone cannot tell a completed move from a pending one. A failure here means
+    an implementation changed modules, which is a thing to do deliberately and
+    to record, not a thing to discover afterwards.
+    """
     for module_name, symbol, owner_module in PUBLIC_IMPORTS:
         value = getattr(importlib.import_module(module_name), symbol)
         assert value.__module__ == owner_module
