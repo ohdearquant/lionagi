@@ -4697,10 +4697,46 @@ class StateDB:
     # every VALID_METRICS member is answered somewhere in metric_value, not
     # that it is answered here.
     _THRESHOLD_METRIC_QUERIES: dict[str, str] = {
+        # Counts distinct CAUSES, not rows. A fan-out spawns one session per
+        # worker, so a single wall -- a provider refusing every worker of one
+        # invocation -- lands as many rows carrying one cause, and a fan-out
+        # wider than the threshold would breach it on that single cause by
+        # construction. Grouping by (invocation, reason) makes the observed
+        # value the number of distinct things that went wrong.
+        #
+        # Both columns fall back to the session id rather than grouping on
+        # NULL, and that is the whole correctness of this query. NULL is not a
+        # shared value: rows without an invocation are rows whose grouping is
+        # unknown, and letting SQL treat them as equal merges unrelated
+        # failures into one. Most failed sessions carry no invocation id, so
+        # the naive form collapses nearly the whole population to one row per
+        # reason and the alarm stops being able to fire. Falling back to a
+        # unique per-row value keeps unknown groupings apart, which errs
+        # toward alerting.
+        #
+        # The fallback is tagged rather than bare, because a bare one puts two
+        # different namespaces in one column and lets a value from either side
+        # answer for the other: a session with no invocation whose id happens
+        # to equal some other session's invocation_id would share a grouping
+        # key with it, and two distinct causes carrying the same reason would
+        # then count once. That is the direction that suppresses an alert, so
+        # it is the one worth spending a prefix on. Every value now says which
+        # namespace it came from, and no value in one can equal a value in the
+        # other, since the two prefixes differ at their first character.
         "failed_sessions": (
-            "SELECT COUNT(*) AS n FROM sessions "
+            "SELECT COUNT(*) AS n FROM ("
+            "SELECT DISTINCT CASE WHEN invocation_id IS NULL "
+            "THEN 'session:' || id ELSE 'invocation:' || invocation_id END AS cause_group, "
+            "CASE WHEN status_reason_code IS NULL "
+            "THEN 'session:' || id ELSE 'reason:' || status_reason_code END AS cause_class "
+            "FROM sessions "
             "WHERE status IN ('failed', 'timed_out') "
             "AND COALESCE(ended_at, started_at, created_at) >= :window_start"
+            # PostgreSQL requires a name for a subquery in FROM; SQLite does
+            # not, so an unaliased form runs here and fails only on the other
+            # dialect, where the dual-backend suite needs a live server to
+            # catch it.
+            ") AS causes"
         ),
         "total_cost_usd": (
             "SELECT COALESCE(SUM(total_cost_usd), 0) AS n FROM sessions "
