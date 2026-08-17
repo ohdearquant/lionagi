@@ -114,6 +114,38 @@ def test_normative_profile_table_is_exact_and_closed() -> None:
     assert dict(rows) == EXPECTED_PROFILES
 
 
+def test_phase_0_scope_admits_the_profile_it_defers() -> None:
+    """The scope sentence and the deferral it makes must not contradict.
+
+    Phase 0 introduces the matrix by naming what it covers, and D2 separately
+    hands the service HookRegistry profile to Phase 1. Read alone each is
+    correct, and together they said the matrix covers every dispatcher and also
+    does not cover that one. A reader with only the scope sentence concludes
+    the profile is characterized here and finds no row for it, which is exactly
+    the belief this record is supposed to prevent, since Phase 1's merge gate
+    is stated as a condition on rows that exist.
+
+    Matched on the two claims rather than on prose, so rewording either one is
+    free and dropping the exception is not.
+    """
+    text = ADR_PATH.read_text(encoding="utf-8")
+
+    defers_to_phase_1 = "Phase 1 freezes its invoke and stream-teardown matrix separately." in text
+    assert defers_to_phase_1, (
+        "the D2 deferral this test guards is gone; if that is deliberate, this "
+        "test and the Phase 0 exception below it both need revisiting"
+    )
+
+    start = text.index("### Phase 0 — truth and behavior matrix")
+    scope = text[start : text.index("### Phase 1", start)]
+    assert "covering every current dispatcher" in scope, "Phase 0's scope sentence moved or changed"
+    assert "except the service" in scope, (
+        "Phase 0 claims to cover every current dispatcher while D2 defers the "
+        "service HookRegistry profile to Phase 1; the scope sentence has to "
+        "name the exception it makes"
+    )
+
+
 def test_public_import_paths_resolve_to_their_pre_migration_modules() -> None:
     """Pin both halves of the façade contract: the path and what is behind it.
 
