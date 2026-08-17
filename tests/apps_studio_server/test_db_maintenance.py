@@ -307,6 +307,41 @@ def test_a_zero_retention_window_cannot_derive_a_threshold_that_alerts_always():
     assert cfg._derive_db_size_alert_bytes(0) > 0
 
 
+def test_the_per_day_measurement_can_be_recalibrated_without_a_release(monkeypatch):
+    """The one empirical input here must be settable by the deployment it describes.
+
+    Every other value in this derivation is a policy choice, but the per-day
+    figure is a measurement of one particular store, and the comment beside it
+    says outright that it decays. If recalibrating it needs a code release, a
+    deployment whose write volume differs has no remedy except overriding the
+    final threshold outright -- which works, and throws away the link to the
+    retention window that the derivation exists to maintain.
+    """
+    import importlib
+
+    import lionagi.studio.config as cfg
+
+    baseline = cfg._DB_BYTES_PER_RETAINED_DAY
+    assert baseline > 0, "no baseline measurement to recalibrate from"
+
+    monkeypatch.setenv("LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY", str(baseline * 2))
+    try:
+        importlib.reload(cfg)
+
+        assert cfg._DB_BYTES_PER_RETAINED_DAY == baseline * 2
+        # The recalibration has to reach the threshold, not just the constant.
+        assert cfg._derive_db_size_alert_bytes(30) == int(
+            30 * baseline * 2 * cfg._DB_SIZE_ALERT_HEADROOM
+        )
+    finally:
+        monkeypatch.delenv("LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY", raising=False)
+        importlib.reload(cfg)
+
+    # Restoring matters as much as the override: a module left reloaded with a
+    # doubled constant would quietly change what every later test measures.
+    assert cfg._DB_BYTES_PER_RETAINED_DAY == baseline
+
+
 def test_stats_endpoint_exposes_checkpoint_and_size_fields(tmp_path, monkeypatch):
     """/api/stats includes last_checkpoint_at, size_alert, size_threshold_bytes."""
     pytest.importorskip("fastapi", reason="studio extra not installed")

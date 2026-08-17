@@ -383,7 +383,14 @@ PRUNE_KEEP_DAYS: int = int(os.environ.get("LIONAGI_STUDIO_PRUNE_KEEP_DAYS", "30"
 # what a size alert observes -- messages were 7.83 GB of that file and their own
 # indexes another 394 MB. Re-measure when the workload changes shape; a figure
 # like this decays quietly, so it carries the date it was taken.
-_DB_BYTES_PER_RETAINED_DAY: int = 272 * 1024 * 1024
+#
+# Overridable, because it is the one input here that is a measurement of a
+# particular deployment rather than a policy choice. A store whose write volume
+# differs recalibrates by setting this, instead of waiting for the measurement
+# to be re-taken and released as code.
+_DB_BYTES_PER_RETAINED_DAY: int = int(
+    os.environ.get("LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY", str(272 * 1024 * 1024))
+)
 # Multiple of the steady state at which the store is larger than its retention
 # policy explains. Below this the size is the policy working as configured.
 _DB_SIZE_ALERT_HEADROOM: float = 1.5
