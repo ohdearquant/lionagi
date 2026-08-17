@@ -270,13 +270,10 @@ _SESSION_RUNS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 class ReviewRun(EngineRun):
-    """Evidence queries scoped to this run: a gate that admits another run's evidence is not a gate.
+    """Evidence scoped to this run: a gate that admits another run's evidence is not a gate.
 
-    Scoping is by identity of the events that predate the run, which is exact
-    for sequential reuse of a session and blind to two runs started before
-    either emitted. Separating those needs per-run attribution on the events,
-    a change to what the observer records; short of that this notices the
-    condition (``shares_session``) and the gate refuses to approve on it.
+    Exact for sequential session reuse, blind to two runs started before either
+    emitted — which ``shares_session`` flags so the gate can refuse.
     """
 
     def __init__(self, engine: Engine, **kwargs: Any) -> None:
@@ -324,12 +321,7 @@ _LOC_PAT = re.compile(r"^(?P<file>[\w./\\-]+?)[:@](?P<line>\d+)")
 
 
 def _withheld_note(unevidenced: tuple[str, ...]) -> str:
-    """Say which dimensions were not covered, in the verdict itself.
-
-    An approval withheld for missing coverage is only useful if the reader can
-    tell what is missing; "review incomplete" sends them back to the logs to
-    find out which reviewer died.
-    """
+    """Name the uncovered dimensions: "review incomplete" sends the reader back to the logs."""
     names = ", ".join(unevidenced)
     return (
         "Approval withheld: no reviewer output was recorded for "
@@ -339,12 +331,7 @@ def _withheld_note(unevidenced: tuple[str, ...]) -> str:
 
 
 def _unverified_note(unverified: tuple[IssueFound, ...]) -> str:
-    """Say which findings never got their verification outcome, in the verdict.
-
-    Named individually rather than counted. A reader deciding what to do next
-    needs to know which claim is unresolved, and a count sends them back to the
-    logs to find out -- the same reason the coverage note names its dimensions.
-    """
+    """Name the unresolved findings rather than counting them, as the coverage note does."""
     named = "; ".join(f"{i.dimension}: {i.description}" for i in unverified)
     return (
         "Approval withheld: these findings were never verified and were not "
@@ -556,15 +543,10 @@ class ReviewEngine(Engine):
         # the drain stays clean; anything the wrapper does not claim still
         # reaches here and ends the run.
         await run.wait_quiescence()
-        # A clean or minor-only review spawns no issue verifiers, so it would
-        # reach the verdict with zero VerifyResult and ship an APPROVE backed
-        # by nothing executed. A consumer may well refuse that as
-        # evidence-empty, but whether any given one does is a property of that
-        # consumer's code and is not observable from this package, so it is not
-        # a guard this engine gets to count on. Gate on zero VerifyResult (not
-        # zero issues) so both shapes instead carry one adversarial audit of
-        # the clean verdict itself: positive executed evidence rather than
-        # absence, decided here where it can be seen.
+        # A clean or minor-only review spawns no verifiers and would approve on
+        # nothing executed. Gating on zero VerifyResult rather than zero issues
+        # makes both shapes carry one adversarial audit: positive evidence, not
+        # absence, and decided here rather than left to a consumer we cannot see.
         if self.verify_clean and not run.by_type(VerifyResult):
             await self._verify_clean_isolated(run, artifact, dims)
         return await self._verdict(run, artifact, dims)
@@ -752,32 +734,17 @@ class ReviewEngine(Engine):
     def _unevidenced_dimensions(
         self, run: EngineRun, dimensions: tuple[str, ...]
     ) -> tuple[str, ...]:
-        """Declared dimensions that produced nothing this run can point at.
-
-        Enumerated from the configured dimensions, never from who reported:
-        deriving it from reporters drops the failed ones out of the denominator.
-        An issue or an all-clear both count as evidence a dimension ran.
-        """
+        """Configured dimensions with no issue and no all-clear; reporters would drop the failed ones."""
         reported = self._reported_dimensions(run)
         return tuple(d for d in dimensions if d not in reported)
 
     def _verification_arrived(self, run: EngineRun, issue: IssueFound) -> bool:
-        """Whether *issue* has its verification outcome on this run.
-
-        Keys on the echoed ref; the description match is a fallback for a
-        verifier that dropped it. Read by both repair and the gate, one
-        definition so they cannot drift.
-        """
+        """Keyed on the echoed ref, description as fallback; one definition so repair and the gate cannot drift."""
         ref = _verify_ref(issue)
         return any(v.ref == ref or v.issue == issue.description for v in run.by_type(VerifyResult))
 
     def _unverified_findings(self, run: EngineRun) -> tuple[IssueFound, ...]:
-        """Findings owed a verification outcome that do not have one.
-
-        Coverage cannot see this: a dimension that reported and lost its
-        verifier is covered with an open question under it. What is owed comes
-        from the same severity set that decides whether to spawn a verifier.
-        """
+        """Owed an outcome by the same severity set that spawns verifiers, and lacking one."""
         return tuple(
             issue
             for issue in run.by_type(IssueFound)
@@ -804,12 +771,7 @@ class ReviewEngine(Engine):
         *,
         shared: bool = False,
     ) -> ReviewVerdict:
-        """Turn the proposal into the one verdict this run publishes.
-
-        Coverage, verification and attribution are separate questions and each
-        refuses in one direction only: approval. A refusal already proposed
-        stands, since none of the three could have removed an objection.
-        """
+        """The one verdict this run publishes; coverage, verification and attribution refuse approval only."""
         verdict = (proposed.verdict if proposed else "").strip()
         rationale = (proposed.rationale if proposed else "") or text
         blocking = list(proposed.blocking) if proposed else []
