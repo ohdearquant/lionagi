@@ -556,6 +556,13 @@ export function branchToRunStep(
       // as a second row. Both halves then rendered as ordinary successful
       // calls, because neither of them had an output that said otherwise.
       const resultWithheld = Boolean(m.content_withheld) || Boolean(respMsg?.content_withheld);
+      // What a withheld request costs is the call's identity, though, not its
+      // outcome: the reply can still have come back, been decoded, and said it
+      // failed. So an error the reader can see outranks the badge below, which
+      // would otherwise answer "nobody looked" about a failure somebody did
+      // look at. The reverse case cannot collide, since a withheld reply
+      // carries no output to read an error out of.
+      const outputSaysError = output.toLowerCase().includes("error");
 
       const summary = Object.entries(args)
         .slice(0, 2)
@@ -571,11 +578,7 @@ export function branchToRunStep(
         summary,
         arguments: args,
         output,
-        status: resultWithheld
-          ? "withheld"
-          : output.toLowerCase().includes("error")
-            ? "error"
-            : "ok",
+        status: outputSaysError ? "error" : resultWithheld ? "withheld" : "ok",
         sender: m.sender ?? "",
         timestamp: m.timestamp,
       });

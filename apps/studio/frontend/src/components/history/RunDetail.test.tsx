@@ -3123,7 +3123,7 @@ describe("history/RunDetail.tsx — a tool result nobody read is not a tool call
   // consumer reading only the response's flag sees an ordinary call with a
   // blank name, and the response it could no longer point at renders as a
   // second one. Two green checks, for one call nobody could read.
-  const withheldRequestBranch = () => ({
+  const withheldRequestBranch = (output = "a.txt") => ({
     id: "branch-withheld-req",
     name: "worker",
     created_at: 10,
@@ -3141,7 +3141,7 @@ describe("history/RunDetail.tsx — a tool result nobody read is not a tool call
       {
         id: "resp-1",
         role: "action",
-        content: { function: "Bash", output: "a.txt", action_request_id: "req-1" },
+        content: { function: "Bash", output, action_request_id: "req-1" },
         sender: "tool",
         timestamp: 12,
         lion_class: "ActionResponse",
@@ -3152,6 +3152,32 @@ describe("history/RunDetail.tsx — a tool result nobody read is not a tool call
   it("marks a call whose own request payload was withheld", async () => {
     const { branchToRunStep } = await import("./RunDetail");
     const step = branchToRunStep(withheldRequestBranch() as never, "completed");
+    const calls = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(calls.map((c) => c.status)).toEqual(["withheld"]);
+  });
+
+  it("reports the failure when a withheld request's response came back and said error", async () => {
+    // The two halves are withheld independently, so the request can be past
+    // the ceiling while the reply is decoded and readable. "not read" is then
+    // the one thing the row is not: somebody did read this, and it failed.
+    // Answering with the badge would hide a visible failure behind a shrug,
+    // and the output that says so is rendered right beside it.
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(
+      withheldRequestBranch("Error: command not found") as never,
+      "completed",
+    );
+    const calls = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(calls.map((c) => c.status)).toEqual(["error"]);
+  });
+
+  it("keeps the withheld badge when that same response carries no failure", async () => {
+    // Control, and the reason the fixtures differ by one field: an errored
+    // reply must be what produces "error" above, not the withheld request.
+    // The request is still unread here, which is what the blank function name
+    // on the row needs explained, so the badge stays.
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldRequestBranch("a.txt") as never, "completed");
     const calls = (step.messages ?? []).filter((m) => m.role === "tool_call");
     expect(calls.map((c) => c.status)).toEqual(["withheld"]);
   });
