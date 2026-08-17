@@ -38,6 +38,7 @@ class MockStateDB:
     def __init__(self):
         self.insert_calls: list[dict] = []
         self.update_calls: list[dict] = []
+        self.outcome_calls: list[dict] = []
 
     async def open(self):
         pass
@@ -53,12 +54,15 @@ class MockStateDB:
     ):
         self.update_calls.append({"run_id": run_id, "status": status, "error": error})
 
+    async def record_engine_run_outcome(self, run_id, outcome):
+        self.outcome_calls.append({"run_id": run_id, "outcome": outcome})
+
 
 # Engine CLI: emission_missing events → error column on completed row
 
 
-async def test_emission_failures_written_to_db_error_on_completed(monkeypatch):
-    """Completed run with emission failures must have status='completed' and error containing 'emission_missing'."""
+async def test_emission_failures_written_to_degraded_outcome_on_completed(monkeypatch):
+    """Emission loss is a completed degradation, not a terminal error."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
@@ -88,13 +92,12 @@ async def test_emission_failures_written_to_db_error_on_completed(monkeypatch):
     completed = [c for c in mock_db.update_calls if c["status"] == "completed"]
     assert completed, f"no completed update; calls={mock_db.update_calls}"
     error_val = completed[0]["error"]
-    assert error_val is not None, "emission failures must be written to error column"
-    assert "emission_missing" in error_val, (
-        f"error column must contain 'emission_missing'; got: {error_val!r}"
-    )
-    assert "planner" in error_val or "summariser" in error_val, (
-        f"error column must name the failing agents; got: {error_val!r}"
-    )
+    assert error_val is None
+    assert len(mock_db.outcome_calls) == 1
+    outcome = mock_db.outcome_calls[0]["outcome"]
+    assert outcome["degraded"] is True
+    assert outcome["degrade_reason"] == "emission_failure"
+    assert outcome["skipped"] == ["planner x2", "summariser x1"]
 
 
 async def test_no_emission_failures_error_column_stays_null(monkeypatch):
@@ -354,7 +357,7 @@ async def _build_zero_emission_engine():
 
 
 async def test_real_engine_emission_failure_propagates_to_cli(monkeypatch):
-    """Integration: real Engine subclass with a never-emitting branch → _do_engine_run writes error='emission_missing: ...' with status='completed'."""
+    """A real missing emission survives in the typed degradation envelope."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
@@ -376,14 +379,11 @@ async def test_real_engine_emission_failure_propagates_to_cli(monkeypatch):
     completed = [c for c in mock_db.update_calls if c["status"] == "completed"]
     assert completed, f"no completed update; all calls: {mock_db.update_calls}"
     error_val = completed[0]["error"]
-    assert error_val is not None, (
-        "emission_missing fired but engine_runs.error stayed NULL — "
-        "Engine.run() → engine._emission_failures handoff is broken"
-    )
-    assert "emission_missing" in error_val, (
-        f"error column must contain 'emission_missing'; got: {error_val!r}"
-    )
-    assert "planner" in error_val, f"agent name must appear in error column; got: {error_val!r}"
+    assert error_val is None
+    assert len(mock_db.outcome_calls) == 1
+    outcome = mock_db.outcome_calls[0]["outcome"]
+    assert outcome["degraded"] is True
+    assert any("planner" in item for item in outcome["skipped"])
 
 
 async def test_real_engine_clean_run_leaves_error_null(monkeypatch):

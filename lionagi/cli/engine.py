@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import time
 import uuid
 from typing import Any
@@ -45,6 +47,10 @@ _KIND_META: dict[str, dict[str, Any]] = {
         "pos_help": "Goal or task description to plan and execute.",
     },
 }
+
+ENGINE_OUTCOME_BYTE_CAP = 16 * 1024
+_OUTCOME_TEXT_CAP = 512
+_OUTCOME_LIST_CAP = 64
 
 
 def _import_engine_class(module: str, name: str) -> type:
@@ -189,6 +195,16 @@ def add_engine_subparser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     run_parser.add_argument(
+        "--invocation",
+        dest="invocation_id",
+        default=os.getenv("LIONAGI_INVOCATION_ID") or None,
+        metavar="ID",
+        help=(
+            "Parent Studio invocation id. Defaults to LIONAGI_INVOCATION_ID; "
+            "an explicit value takes precedence."
+        ),
+    )
+    run_parser.add_argument(
         "--no-persist",
         action="store_true",
         help="Skip writing the engine run record to StateDB.",
@@ -256,6 +272,7 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
 
     run_id = uuid.uuid4().hex
     started_at = time.time()
+    invocation_id = getattr(args, "invocation_id", None)
 
     db = None
     # engine_runs.session_id carries the user's --session-id; signal_session_id
@@ -295,13 +312,25 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
                         "progression_id": prog_id,
                         "name": f"engine:{kind}",
                         "status": "running",
-                        "invocation_kind": None,
+                        "invocation_kind": "engine",
+                        "invocation_id": invocation_id,
                     }
                 )
                 signal_session_id = run_id
         except Exception as exc:  # noqa: BLE001
             warn(f"could not create signal session for engine run: {exc}")
             signal_session_id = None
+        lineage_writer = getattr(db, "set_engine_run_lineage", None)
+        if lineage_writer is not None:
+            try:
+                await lineage_writer(
+                    run_id,
+                    invocation_id=invocation_id,
+                    signal_session_id=signal_session_id,
+                    parent_session_id=args.session_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                warn(f"could not persist engine run lineage: {exc}")
 
     # Import engine class lazily (no circular import; heavy deps stay unloaded
     # until actually needed).
@@ -311,7 +340,18 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     except Exception as exc:
         log_error(f"failed to import engine class for kind {kind!r}: {exc}")
         await _maybe_update_db(
-            db, run_id, "failed", error=str(exc), signal_session_id=signal_session_id
+            db,
+            run_id,
+            "failed",
+            error=str(exc),
+            outcome=_engine_outcome(
+                status="failed",
+                kind=kind,
+                started_at=started_at,
+                ended_at=time.time(),
+                reason_code="import_failure",
+            ),
+            signal_session_id=signal_session_id,
         )
         if db is not None:
             await db.close()
@@ -359,6 +399,13 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             "failed",
             ended_at=ended_at,
             error=str(exc),
+            outcome=_engine_outcome(
+                status="failed",
+                kind=kind,
+                started_at=started_at,
+                ended_at=ended_at,
+                reason_code="exception",
+            ),
             signal_session_id=signal_session_id,
         )
         if db is not None:
@@ -374,6 +421,13 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             "cancelled",
             ended_at=ended_at,
             error=f"{type(exc).__name__}: {exc}",
+            outcome=_engine_outcome(
+                status="cancelled",
+                kind=kind,
+                started_at=started_at,
+                ended_at=ended_at,
+                reason_code="cancelled",
+            ),
             signal_session_id=signal_session_id,
         )
         if db is not None:
@@ -383,8 +437,8 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     ended_at = time.time()
     progress(f"engine[{kind}] completed  elapsed={ended_at - started_at:.1f}s")
 
-    # Collect emission-missing diagnostics from the engine run object so they
-    # can be written to engine_runs.error even when status stays "completed".
+    # Collect emission-missing diagnostics for the structured outcome. They
+    # are degradation, not a terminal failure, so completed rows keep error NULL.
     emission_error: str | None = None
     _emission_failures: list[str] = getattr(engine, "_emission_failures", [])
     if _emission_failures:
@@ -423,7 +477,18 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
         "failed" if _total_agent_failure else "completed",
         ended_at=ended_at,
         export_dir=export_dir_for_db,
-        error=emission_error,
+        error=emission_error if _total_agent_failure else None,
+        outcome=_engine_outcome(
+            status="failed" if _total_agent_failure else "completed",
+            kind=kind,
+            started_at=started_at,
+            ended_at=ended_at,
+            result=result,
+            engine=engine,
+            export_dir=export_dir_for_db,
+            emission_failures=_emission_failures,
+            agent_failure=_total_agent_failure,
+        ),
         signal_session_id=signal_session_id,
     )
     if db is not None:
@@ -441,6 +506,7 @@ async def _maybe_update_db(
     ended_at: float | None = None,
     export_dir: str | None = None,
     error: str | None = None,
+    outcome: dict[str, Any] | None = None,
     signal_session_id: str | None = None,
 ) -> None:
     """Update the engine run row if a DB handle is open; swallow errors."""
@@ -456,6 +522,13 @@ async def _maybe_update_db(
         )
     except Exception as exc:  # noqa: BLE001
         warn(f"could not update engine run record in StateDB: {exc}")
+    if outcome is not None:
+        outcome_writer = getattr(db, "record_engine_run_outcome", None)
+        if outcome_writer is not None:
+            try:
+                await outcome_writer(run_id, outcome)
+            except Exception as exc:  # noqa: BLE001
+                warn(f"could not persist engine run outcome: {exc}")
     # Mirror terminal status to the sessions row so Studio's SSE generator
     # knows the stream is done (same done-detection logic as agent/flow runs).
     if signal_session_id is not None and status in ("completed", "failed", "cancelled"):
@@ -479,3 +552,82 @@ async def _maybe_update_db(
             )
         except Exception as exc:  # noqa: BLE001
             warn(f"could not update engine session status in StateDB: {exc}")
+
+
+def _engine_outcome(
+    *,
+    status: str,
+    kind: str,
+    started_at: float,
+    ended_at: float,
+    result: Any = None,
+    engine: Any = None,
+    export_dir: str | None = None,
+    reason_code: str | None = None,
+    emission_failures: list[str] | None = None,
+    agent_failure: bool = False,
+) -> dict[str, Any]:
+    """Build a content-free, bounded terminal projection."""
+    raw_skipped = list(emission_failures or [])
+    for item in getattr(result, "skipped", []) or []:
+        if item not in raw_skipped:
+            raw_skipped.append(item)
+    skipped = [str(item)[:_OUTCOME_TEXT_CAP] for item in raw_skipped]
+    skipped = skipped[:_OUTCOME_LIST_CAP]
+    degraded = bool(getattr(result, "degraded", False) or skipped)
+    degrade_reason = str(getattr(result, "degrade_reason", "") or "")[:_OUTCOME_TEXT_CAP]
+    if not degrade_reason and skipped:
+        degrade_reason = "emission_failure"
+    if agent_failure:
+        reason_code = reason_code or "all_agents_failed"
+
+    if isinstance(result, str):
+        result_kind = "text"
+        result_size = len(result.encode(errors="replace"))
+    elif result is None:
+        result_kind = "none"
+        result_size = 0
+    else:
+        result_kind = type(result).__name__[:128]
+        result_size = None
+
+    effective_model = getattr(engine, "served_model", None) if engine is not None else None
+    config_shape = {
+        "kind": kind,
+        "model_known": bool(effective_model),
+        "max_depth": getattr(engine, "max_depth", None) if engine is not None else None,
+        "max_agents": getattr(engine, "max_agents", None) if engine is not None else None,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(config_shape, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
+    envelope: dict[str, Any] = {
+        "version": 1,
+        "status": status,
+        "degraded": degraded,
+        "degrade_reason": degrade_reason or None,
+        "reason_code": reason_code,
+        "skipped": skipped,
+        "skipped_count": len(raw_skipped),
+        "result": {"kind": result_kind, "size_bytes": result_size},
+        "output": {"present": bool(export_dir), "kind": "export_dir" if export_dir else None},
+        "engine": {
+            "kind": kind,
+            "config_fingerprint": fingerprint,
+            "effective_model": effective_model,
+            "effective_model_source": "reported" if effective_model else "unknown",
+        },
+        "timing": {
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_ms": max(0.0, (ended_at - started_at) * 1000),
+        },
+    }
+    encoded = json.dumps(envelope, separators=(",", ":"), default=str).encode()
+    if len(encoded) > ENGINE_OUTCOME_BYTE_CAP:
+        envelope["skipped"] = []
+        envelope["skipped_truncated"] = True
+        encoded = json.dumps(envelope, separators=(",", ":"), default=str).encode()
+    if len(encoded) > ENGINE_OUTCOME_BYTE_CAP:
+        raise ValueError("engine outcome envelope exceeds byte cap")
+    return envelope
