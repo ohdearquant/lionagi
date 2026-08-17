@@ -1709,22 +1709,7 @@ async def test_postgres_teardown_gives_up_rather_than_deadlocking_after_it_holds
 async def test_postgres_attach_session_invocation_decrements_off_the_value_a_concurrent_repoint_left(
     pg_url,
 ):
-    """A concurrent attach must decrement the invocation another attach's
-    still-open transaction actually left the session on, not the value it
-    read before that transaction committed.
-
-    A holder connection takes the session row's lock and repoints it
-    old -> mid — the same statements ``attach_session_invocation`` runs —
-    without committing, standing in for a first attach still in flight. A
-    concurrent ``attach_session_invocation(sid, new)`` call must block on
-    that lock (proving the fix takes it at all) rather than reading old's
-    invocation_id straight through; once the holder commits, it must resolve
-    against mid. Without the ``FOR UPDATE`` fix, the unlocked SELECT would
-    read old immediately (the holder hasn't committed yet), block later on
-    the UPDATE's implicit row lock instead, and decrement old after its own
-    WHERE clause re-evaluates against the post-commit row — leaving mid's
-    count stale at 1.
-    """
+    """A concurrent attach decrements the invocation another attach left the session on, not the value it read before that transaction committed."""
     import asyncio
 
     from sqlalchemy import text as _text
