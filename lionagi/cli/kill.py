@@ -67,11 +67,8 @@ _NOT_STOPPED_SIGNALS = frozenset(
     {"identity_mismatch", "in_process", "host_mismatch", "boot_mismatch", "foreign_mode"}
 )
 
-#: Refusals to signal, and how to say each one. A pid names a process only
-#: together with the host it was recorded on and the boot that host was in;
-#: where the record cannot be shown to name this machine's process, nothing is
-#: signalled and no cancellation is written, so the row keeps saying what is
-#: still true.
+#: Refusals to signal. A pid only names a process together with its host and boot; when the
+#: record cannot show that, nothing is signalled or written, so the row's claim stays true.
 _REFUSED_SIGNAL_REASONS: dict[str, str] = {
     "identity_mismatch": "did not match the expected lionagi process",
     "host_mismatch": "was recorded on a different host",
@@ -83,48 +80,22 @@ _REFUSED_SIGNAL_REASONS: dict[str, str] = {
     "foreign_mode": "records a process identity this CLI does not manage",
 }
 
-#: Re-exported so the module's own tests and readers find it where the check
-#: that uses it lives. The value is defined once in ``_util`` beside the host
-#: check, because the Studio liveness probe compares the same recorded value.
+#: Re-exported so readers find it beside the check that uses it; defined once in ``_util``
+#: because the Studio liveness probe compares the same recorded value.
 _BOOT_TIME_TOLERANCE = BOOT_TIME_TOLERANCE
 
 
-#: Reasons that also disqualify a row from being SWEPT, not just from being
-#: signalled. ``boot_mismatch`` is deliberately absent: a pid recorded before
-#: this machine last booted cannot be signalled, but the mismatch is itself
-#: proof the recorded process is gone, so a sweep has grounds to write the
-#: cancellation. The other three mean this host cannot tell whether the run is
-#: alive at all, and a sweep that writes cancelled on those is guessing.
+#: Reasons a row is also unfit to sweep. ``boot_mismatch`` is excluded — the mismatch itself
+#: proves the process is gone; the other three mean this host cannot tell if it's alive.
 _NOT_JUDGEABLE_HERE = frozenset({"host_mismatch", "in_process", "foreign_mode"})
 
-#: Process identity modes whose runs this CLI can signal. ``in_process`` is
-#: excluded on purpose even though it is locally observable: the run shares a
-#: host process with others, so there is no signal that reaches it alone.
+#: Identity modes this CLI can signal. ``in_process`` is excluded on purpose — the run shares
+#: a host process, so no signal reaches it alone.
 _LOCALLY_SIGNALLABLE_MODES = frozenset({"local"})
 
 
 def _unaddressable_pid_reason(meta: dict[str, Any]) -> str | None:
-    """Why the recorded pid cannot be signalled from here, or None if it can.
-
-    A pid is only meaningful inside one host's pid space during one boot.
-    Against a shared store, another host's row carries a pid that also exists
-    here and belongs to something unrelated, so signalling it would stop a
-    stranger's process and then record the run as cancelled. A pid recorded
-    before this machine rebooted has the same problem: the numbers were
-    reissued from scratch.
-
-    The recorded identity mode is asked first, because it decides whether the
-    pid names the run's own process at all. An ``in_process`` run executes
-    inside a shared host, and any mode this code does not know is by definition
-    one whose stop protocol lives somewhere else. Reading their pid markers as
-    though they named a signallable process is how a row gets marked cancelled
-    while the work carries on.
-
-    Absent markers return None rather than refusing. A row written before
-    these were recorded cannot be judged either way, and not knowing where a
-    pid came from is not evidence that it is foreign; the process identity
-    check downstream still has to pass for anything to be signalled.
-    """
+    """Why the recorded pid cannot be signalled from here, or None if it can — checked in order: identity mode, host, then boot time; absent markers return None, not a refusal."""
     mode = _recorded_identity_mode(meta)
     if mode is not None and mode not in _LOCALLY_SIGNALLABLE_MODES:
         return "in_process" if mode == "in_process" else "foreign_mode"
@@ -506,12 +477,8 @@ async def _kill_one(
     from lionagi.state.reasons import RunReasons
 
     meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
-    # Asked before the pid is even read, and not only when one is recorded. A
-    # row this host cannot judge stays untouched whether or not it carries a
-    # pid: with the check inside the pid branch, a pid-less row from another
-    # host or another runtime fell through to "no pid found" and had a
-    # cancellation written for it anyway, which reports a stop that did not
-    # happen and leaves the row lying about work that is still running.
+    # Asked before the pid is read, not only when one exists — a pid-less row from another
+    # host or runtime would otherwise fall through and get cancelled for work still running.
     unaddressable = _unaddressable_pid_reason(meta)
     if unaddressable in _NOT_JUDGEABLE_HERE:
         warn(f"  {entity_type} {entity_id[:12]}: {_REFUSED_SIGNAL_REASONS[unaddressable]}")
@@ -526,11 +493,8 @@ async def _kill_one(
     signal_used = "no_pid"
 
     if pid is not None:
-        # Only ``boot_mismatch`` can still be pending here; the others returned
-        # above. It is refused the same way further down, and is kept out of
-        # the early return only because the stale sweep treats it differently:
-        # the mismatch is evidence the recorded process is gone, which a sweep
-        # can act on and a targeted kill has no reason to.
+        # Only boot_mismatch can still be pending here; it stays out of the early return
+        # because the stale sweep treats it as evidence the process is gone, unlike a kill.
         if unaddressable is not None:
             signal_used = unaddressable
         else:
@@ -795,14 +759,8 @@ async def _do_kill_all_stale(
                 )
                 unjudgeable = _unaddressable_pid_reason(row_meta_for_host)
                 if unjudgeable in _NOT_JUDGEABLE_HERE:
-                    # Recorded on another machine, or against a runtime whose
-                    # process this CLI does not manage. Both branches below read
-                    # this host's process table, so both answer about whatever
-                    # local process holds that number, or about no process at
-                    # all: either way a dead reading would sweep a run that is
-                    # working fine where it actually lives. A row with no pid is
-                    # the dangerous case rather than the safe one, since it
-                    # reaches the sweep without any liveness reading to contest.
+                    # Recorded on another host or an unmanaged runtime — reading this host's
+                    # process table would misjudge it as dead.
                     skipped_unjudgeable += 1
                     if verbose:
                         print(
@@ -812,10 +770,8 @@ async def _do_kill_all_stale(
                     continue
 
                 pid = _read_pid_from_entity(row_dict)
-                # A live pid alone isn't enough — the OS may have reused it.
-                # Correlate against the row's own session id/create_time (same
-                # fields the direct-kill path uses) so a recycled pid occupied
-                # by a different lionagi process doesn't pass as "still alive".
+                # A live pid alone isn't enough — the OS may have reused it. Correlate against
+                # the row's own session id/create_time, same as the direct-kill path.
                 pid_alive_now = pid is not None and _pid_alive(pid)
                 verdict: str | None = None
                 if pid_alive_now:

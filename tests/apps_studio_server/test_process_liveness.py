@@ -166,14 +166,7 @@ def test_process_identity_from_another_host_is_unknown(monkeypatch):
 
 
 def test_an_unreadable_identity_mode_is_unknown_not_local():
-    """A mode marker of the wrong type must not be read as no marker at all.
-
-    Everything else on this row is a genuine live local process, so the two
-    readings give opposite answers: absent-marker takes the local path and
-    reports the run alive, while present-but-unreadable reports unknown. The
-    first is a positive liveness claim about a run whose stop-and-liveness
-    protocol this code does not implement.
-    """
+    """A mode marker of the wrong type must not be read as no marker at all — with a genuine live local process otherwise, the two readings give opposite liveness answers."""
     markers = {
         "pid": os.getpid(),
         "pid_create_time": psutil.Process(os.getpid()).create_time(),
@@ -193,15 +186,7 @@ def test_an_unreadable_identity_mode_is_unknown_not_local():
 
 
 def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(monkeypatch):
-    """Clock jitter must not read as a reboot on the liveness path either.
-
-    Boot time is re-derived from the current clock on every read, so an NTP
-    step or a suspend/resume moves it on a machine that never rebooted. Process
-    create time is not like that: the kernel fixed it once, so the tighter
-    create-time tolerance is generous there and far too tight here. Reading
-    drift as a reboot reports a healthy local session as dead, and the
-    lifecycle reapers act on that answer.
-    """
+    """Clock jitter must not read as a reboot on the liveness path either — boot time is re-derived from the clock each read, so it needs its own, looser tolerance than process create time."""
     import lionagi.studio.services.admin as admin_mod
     from lionagi.cli._util import BOOT_TIME_TOLERANCE
 
@@ -223,11 +208,7 @@ def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(monkeypatch):
 
 
 def test_a_boot_time_from_before_the_last_reboot_is_dead(monkeypatch):
-    """The control for the tolerance: a real reboot still reads as dead.
-
-    Without it, widening the tolerance to something absurd would pass the test
-    above and the check would have stopped detecting reissued pids.
-    """
+    """The control for the tolerance: a real reboot still reads as dead — without it, an absurdly wide tolerance would pass the test above unnoticed."""
     import lionagi.studio.services.admin as admin_mod
 
     monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
@@ -245,14 +226,7 @@ def test_a_boot_time_from_before_the_last_reboot_is_dead(monkeypatch):
 
 
 def test_a_boot_time_that_cannot_be_read_does_not_make_a_live_process_unknown(monkeypatch):
-    """A failed boot-time read leaves one check unevaluated; it is not an answer.
-
-    Reporting unknown here is worse than never having had the check: the
-    lifecycle reapers read any non-True liveness as death once the row goes
-    stale, so on a machine where this read keeps failing every live session
-    would eventually be reaped. The pid checks still run, which is the same
-    best-effort stance the status and create-time reads already take.
-    """
+    """A failed boot-time read leaves one check unevaluated, not an answer — reporting unknown here would let reapers eventually kill every live session on a machine where this read fails."""
     import lionagi.studio.services.admin as admin_mod
 
     monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
@@ -278,11 +252,7 @@ def test_a_boot_time_that_cannot_be_read_does_not_make_a_live_process_unknown(mo
 
 
 def test_a_failed_boot_time_read_still_reports_a_dead_pid_as_dead(monkeypatch):
-    """The control: falling through to the pid checks means they still decide.
-
-    Without this, returning True unconditionally on a read failure would pass
-    the test above while reporting every dead session as alive.
-    """
+    """The control: falling through to the pid checks means they still decide — without this, returning True unconditionally on a read failure would report every dead session as alive."""
     import lionagi.studio.services.admin as admin_mod
 
     monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")

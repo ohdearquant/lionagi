@@ -925,15 +925,7 @@ async def test_import_of_a_running_run_leaves_duration_ms_null(temp_db_path: Pat
 async def test_doctor_skips_runtimes_it_cannot_judge(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """`state doctor` asks this host's process table, so it may only judge rows about it.
-
-    It skipped on the recorded host alone, which left two shapes it still
-    swept: a run hosted inside a shared process, and one whose runtime this
-    CLI does not manage. Neither records a pid of its own, so both arrived
-    with no liveness reading to contest the sweep and were marked aborted
-    while still working. The local row is the discriminator: without it a
-    doctor that had stopped sweeping entirely would pass this test.
-    """
+    """`state doctor` asks this host's process table, so it may only judge rows about it — a shared-process or unmanaged-runtime row has no pid to contest the sweep and was wrongly marked aborted."""
     monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
 
     old = time.time() - (48 * 3600)

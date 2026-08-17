@@ -467,14 +467,7 @@ def test_1173_prune_preserves_recent_terminal_sessions(tmp_path, monkeypatch):
 
 
 def test_a_stale_session_hosted_on_another_machine_is_not_reaped(tmp_path, monkeypatch):
-    """A reaper reads this host's process table, so a remote row is unmeasurable here.
-
-    The reapers keep a session alive only on a positive liveness reading and
-    otherwise lean on a staleness grace to protect a merely quiet run. That
-    grace answers a momentary blind spot. Being on another machine is a
-    permanent one, so waiting supplies nothing and the row is reaped precisely
-    because it is still running somewhere this daemon cannot see.
-    """
+    """A reaper reads this host's process table, so a remote row is unmeasurable here — the staleness grace protects only momentary blind spots, not a permanent one like a foreign host."""
     db_path = tmp_path / "state.db"
     _monkey_db(monkeypatch, db_path)
 
@@ -503,9 +496,8 @@ def test_a_stale_session_hosted_on_another_machine_is_not_reaped(tmp_path, monke
         )
     )
 
-    # Not patched to a constant: the real function has to be the thing that
-    # answers, or this test would pass against a liveness check that had
-    # stopped consulting the row at all.
+    # Not patched to a constant: the real function has to answer, or this test would pass
+    # against a liveness check that had stopped consulting the row at all.
     assert lc_mod.process_liveness is admin_mod.process_liveness
 
     from lionagi.studio.services.lifecycle import reap_null_status_sessions
@@ -523,11 +515,7 @@ def test_a_stale_session_hosted_on_another_machine_is_not_reaped(tmp_path, monke
 
 
 def test_phantom_classifier_returns_no_reason_for_another_machines_row(tmp_path, monkeypatch):
-    """The classifier that feeds the phantom reaper, checked directly.
-
-    Its verdict is what the reaper writes `failed` from, so the local row
-    beside it fixes what the answer would otherwise have been.
-    """
+    """The classifier that feeds the phantom reaper, checked directly — the local row beside it fixes what the answer would otherwise have been."""
     import lionagi.studio.services.admin as admin_mod
 
     monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
@@ -581,18 +569,13 @@ def test_process_identity_is_foreign_reads_host_and_unknown_modes(monkeypatch):
     assert foreign({"node_metadata": '{"pid_host": "other-host"}'}) is True
     assert foreign({"node_metadata": "not json at all"}) is False
 
-    # A marker recorded with the wrong type is still a marker, and it still
-    # names a mode this code cannot check. Read as an absent one it would put
-    # the row back in reach of the reapers, which treat a non-True liveness as
-    # death once the row goes stale.
+    # A wrong-typed marker still names a mode this code cannot check; reading it as absent
+    # would put the row back in reach of reapers that treat non-True liveness as death.
     assert foreign({"node_metadata": {"process_identity_mode": 123}}) is True
     assert foreign({"node_metadata": {"process_identity_mode": {"kind": "remote"}}}) is True
-    # Absence keeps its own meaning, and absence is the key not being there.
-    # An old row predates the marker entirely, so that is the shape a legacy
-    # row actually has, and it is still judged by the host check.
+    # Absence is the key not being there — an old row predates the marker entirely and is
+    # still judged by the host check.
     assert foreign({"node_metadata": {}}) is False
-    # A key present and set to null is not that row. No writer here emits it:
-    # every site that records this key writes a string literal, so a null can
-    # only have come from somewhere this code does not control, which is the
-    # same "marker I cannot read" case as the wrong-typed values above.
+    # A key present and set to null is not that row: no writer here emits null, so it can
+    # only have come from outside this code's control, the same unreadable-marker case above.
     assert foreign({"node_metadata": {"process_identity_mode": None}}) is True

@@ -930,12 +930,7 @@ async def test_kill_one_no_pid(temp_db_path: Path):
 
 
 async def test_kill_one_refuses_an_in_process_run(temp_db_path: Path):
-    """A run hosted inside a long-lived server has no process of its own.
-
-    There is nothing for this path to signal, and the host's own pid belongs to
-    every other run it carries. Recording a cancellation here would report a
-    stop that did not happen, so the row must be left exactly as it was.
-    """
+    """A run hosted inside a long-lived server has no process of its own to signal, so recording a cancellation here would falsely report a stop that did not happen."""
     async with StateDB() as db:
         sid = await _seed_session(
             db,
@@ -951,10 +946,8 @@ async def test_kill_one_refuses_an_in_process_run(temp_db_path: Path):
 
         result = await _kill_one(db, "session", sid, row, user_reason="test")
 
-        # Checked before the signal, deliberately: this is the consequence the
-        # guard exists for. Without it the row reads "cancelled" while the
-        # workflow carries on executing, and asserting the signal first would
-        # let this one go unexercised whenever the guard regresses.
+        # Checked before the signal, deliberately: without it the row would read "cancelled"
+        # while the workflow keeps executing.
         after = await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (sid,))
         assert after["status"] == "running"
 
@@ -972,13 +965,7 @@ async def test_kill_one_refuses_an_in_process_run(temp_db_path: Path):
 
 
 async def test_kill_one_refuses_a_mode_marker_that_is_not_a_string(temp_db_path: Path):
-    """A marker written with the wrong type is an unknown mode, not a missing one.
-
-    Only one of those permits signalling. A row with no marker at all predates
-    the marker and is judged by the other checks; a row carrying something this
-    code cannot read names a stop protocol living elsewhere, and reading it as
-    the first case is how a foreign row gets a cancellation written for it.
-    """
+    """A marker of the wrong type is an unknown mode, not a missing one — reading it as missing would let a foreign row get a cancellation written for it."""
     async with StateDB() as db:
         sid = await _seed_session(db, status="running", extra_meta={"process_identity_mode": 123})
         resolved = await _resolve_entity(db, sid)
@@ -993,11 +980,7 @@ async def test_kill_one_refuses_a_mode_marker_that_is_not_a_string(temp_db_path:
 
 
 async def test_kill_one_still_cancels_a_local_run_without_a_pid(temp_db_path: Path):
-    """The in-process guard keys on identity mode, not on a missing pid.
-
-    A local run whose pid was never recorded must keep its existing behavior;
-    otherwise the guard above would silently widen to every pid-less row.
-    """
+    """The in-process guard keys on identity mode, not a missing pid — a pid-less local run must keep working, or the guard would silently widen to every pid-less row."""
     async with StateDB() as db:
         sid = await _seed_session(
             db, status="running", extra_meta={"process_identity_mode": "local"}
@@ -2416,13 +2399,7 @@ async def test_do_kill_ambiguous_prefix_signals_nothing_and_fails(
 async def test_kill_refuses_a_pid_recorded_on_another_host(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A row from another machine must not have its pid signalled here.
-
-    With a shared state store the recorded number exists in this host's pid
-    space too, belonging to something unrelated. Signalling it stops a
-    stranger's process and then records the run as cancelled, so the check
-    has to happen before `_terminate_pid` is reached at all.
-    """
+    """A row from another machine must not have its pid signalled here — the number exists in this host's pid space too and belongs to something unrelated."""
     signalled: list[int] = []
 
     def _fake_terminate(pid, **kw):
@@ -2496,14 +2473,7 @@ async def test_kill_refuses_a_pid_recorded_before_this_machine_rebooted(
 async def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Clock jitter must not read as a reboot.
-
-    Both sides of the comparison read the boot time from the OS, and a clock
-    adjustment moves it by a fraction of a second. Without the tolerance a
-    machine that never rebooted would start refusing to kill its own
-    processes, which fails in the direction that looks safe: the guard reports
-    that it is protecting something while `li kill` quietly stops working.
-    """
+    """Clock jitter must not read as a reboot — without tolerance, a machine that never rebooted would quietly stop killing its own processes."""
     signalled: list[int] = []
 
     def _fake_terminate(pid, **kw):
@@ -2538,12 +2508,7 @@ async def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(
 async def test_kill_still_signals_when_host_and_boot_agree(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The control for the two refusals above.
-
-    Without it, a check that refused unconditionally would pass both of them
-    and the suite would report a working guard while `li kill` had stopped
-    killing anything.
-    """
+    """The control for the two refusals above — without it, an unconditional refusal would pass both and hide that `li kill` had stopped killing anything."""
     signalled: list[int] = []
 
     def _fake_terminate(pid, **kw):
@@ -2579,13 +2544,7 @@ async def test_kill_still_signals_when_host_and_boot_agree(
 async def test_kill_still_signals_a_row_that_recorded_no_host_at_all(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """Rows written before these markers existed stay killable.
-
-    Not knowing where a pid came from is not evidence that it came from
-    somewhere else. Failing closed on absence would make every pre-existing
-    running row permanently uncancellable, which is a worse outcome than the
-    one being guarded against and would go unnoticed for exactly as long.
-    """
+    """Rows written before these markers existed stay killable — not knowing where a pid came from is not evidence it's foreign, and failing closed would make them permanently uncancellable."""
     signalled: list[int] = []
 
     def _fake_terminate(pid, **kw):
@@ -2608,12 +2567,7 @@ async def test_kill_still_signals_a_row_that_recorded_no_host_at_all(
 
 
 def test_recorded_pid_is_foreign_reads_only_the_host_marker(monkeypatch: pytest.MonkeyPatch):
-    """Foreignness is a property of the host field alone.
-
-    Keyed on a readable pid as well, a row from another machine whose pid did
-    not parse would read as local and fall through to the checks that assume
-    it is.
-    """
+    """Foreignness is a property of the host field alone — keyed on a readable pid too, a foreign row with an unparseable pid would read as local."""
     from lionagi.cli._util import recorded_pid_is_foreign
 
     monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
@@ -2630,11 +2584,7 @@ def test_recorded_pid_is_foreign_reads_only_the_host_marker(monkeypatch: pytest.
 async def test_stale_sweep_leaves_another_hosts_rows_alone(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """`--all-stale` reads this host's process table, so foreign rows are not its business.
-
-    The local row beside it is the discriminator: without it, a sweep that had
-    stopped working entirely would pass this test.
-    """
+    """`--all-stale` reads this host's process table, so foreign rows are not its business — the local row beside it is the discriminator that would fail if the sweep stopped working."""
     monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
 
@@ -2674,13 +2624,7 @@ async def test_stale_sweep_leaves_another_hosts_rows_alone(
 async def test_kill_refuses_a_runtime_this_cli_does_not_manage(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """An identity mode this code does not know has its stop protocol elsewhere.
-
-    The host and boot markers can both agree and the pid can be alive right
-    here, and the number still does not name a process this path may signal.
-    Reading it as one stops whatever holds it and writes a cancellation for
-    work that never stopped.
-    """
+    """An identity mode this code does not know has its stop protocol elsewhere — even with host, boot, and pid all agreeing, the pid still may not be signalled."""
     signalled: list[int] = []
 
     def _fake_terminate(pid, **kw):
@@ -2720,13 +2664,7 @@ async def test_kill_refuses_a_runtime_this_cli_does_not_manage(
 async def test_kill_refuses_an_unmanaged_runtime_that_recorded_no_pid(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The row with no pid is the dangerous one, not the safe one.
-
-    With the identity check inside the branch that runs when a pid exists, a
-    row carrying no pid skipped it entirely, fell through to "no pid found",
-    and had a cancellation written for it — the exact outcome the check was
-    added to prevent, reached by having less information rather than more.
-    """
+    """The row with no pid is the dangerous one, not the safe one — with the identity check inside the pid branch, a pid-less row fell through to a false cancellation."""
     monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
 
     async with StateDB() as db:
@@ -2782,14 +2720,7 @@ async def test_kill_refuses_a_foreign_host_row_that_recorded_no_pid(
 async def test_stale_sweep_leaves_runtimes_it_does_not_manage_alone(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """`--all-stale` skipped only on the host marker, so local-looking rows fell through.
-
-    An `in_process` run and an `external` one both reach the sweep with no pid
-    of their own. Neither has a liveness reading to contest the sweep, so both
-    were cancelled on the strength of nothing at all. The local row is the
-    discriminator: without it a sweep that had stopped working entirely would
-    pass this test.
-    """
+    """`--all-stale` skipped only on the host marker, so local-looking rows fell through — an in_process or external run has no pid to contest the sweep; the local row is the discriminator."""
     monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
     monkeypatch.setattr("lionagi.cli.kill._pid_alive", lambda pid: False)
 
@@ -2846,16 +2777,7 @@ async def test_stale_sweep_leaves_runtimes_it_does_not_manage_alone(
 async def test_kill_refuses_a_row_whose_identity_mode_is_an_explicit_null(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """An explicit null is a marker that was written, not one that is missing.
-
-    `recorded_identity_mode` exists to keep "never recorded" apart from
-    "recorded as something unreadable", because only the first may fall
-    through to the ordinary local treatment. Deciding absence by reading the
-    value collapses them again for exactly one value: a key present and set
-    to null answers None to `.get`, so the row rejoins the permissive branch,
-    and with no pid to check it reaches "no pid found" and has a cancellation
-    written for work that was never signalled.
-    """
+    """An explicit null is a marker that was written, not one that is missing — reading the value instead of the key's presence collapses the two and lets a null-marked row get a false cancellation."""
     monkeypatch.setattr("lionagi.cli._util.socket.gethostname", lambda: "this-host")
 
     async with StateDB() as db:
@@ -2884,13 +2806,7 @@ async def test_kill_refuses_a_row_whose_identity_mode_is_an_explicit_null(
 
 
 def test_an_absent_marker_and_a_null_marker_are_not_the_same_row():
-    """The two cases the guard turns on, asserted side by side.
-
-    A row with no key never recorded anything and stays judgeable by the
-    other checks. A row whose key holds null recorded something this code
-    cannot read, and must come back unrecognized so every caller's
-    "is this a mode I know" comparison refuses it.
-    """
+    """The two cases the guard turns on, asserted side by side — a missing key stays judgeable by other checks, a null value must come back unrecognized so every mode check refuses it."""
     from lionagi.cli._util import UNRECOGNIZED_IDENTITY_MODE, recorded_identity_mode
 
     assert recorded_identity_mode({}) is None

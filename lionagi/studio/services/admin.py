@@ -396,22 +396,7 @@ HEALTH_SCAN_LIMIT = 500
 
 
 def process_identity_is_foreign(session: dict[str, Any]) -> bool:
-    """Whether this machine could not observe the run's process even in principle.
-
-    True when the row records a host that is not this one, or an identity mode
-    this code does not know how to check. Both mean the same thing: nothing
-    measurable here bears on whether that run is alive.
-
-    ``process_liveness`` already answers ``None`` for these, which is correct
-    as an answer to "is it alive". The reapers need the distinction because
-    they read a non-``True`` liveness as evidence of death once the row has
-    gone stale, and lean on the staleness grace to keep a merely quiet run
-    safe. That grace is protection against a *momentary* blind spot. Being on
-    another machine is a permanent one, so waiting adds no information and the
-    row is reaped precisely because it is healthy enough to keep running
-    somewhere this daemon cannot see. With a shared state store that turns
-    into one host marking another host's working runs failed.
-    """
+    """True if this machine can't observe the run's process at all — foreign host or unknown identity mode — since the staleness grace only protects momentary, not permanent, blind spots."""
     from lionagi.cli._util import recorded_identity_mode, recorded_pid_is_foreign
 
     meta = session.get("node_metadata")
@@ -427,11 +412,8 @@ def process_identity_is_foreign(session: dict[str, Any]) -> bool:
     if mode is not None and mode not in ("local", "in_process"):
         return True
 
-    # Asked of the host alone, not of "host and a readable pid": a row from
-    # another machine is that machine's business whether or not its pid
-    # parses, and the pid-less fallback in process_liveness matches on session
-    # id against *this* host's process table, which reads the wrong machine's
-    # answer just as confidently.
+    # Checked on host alone, not "host + readable pid" — a row from another machine is that
+    # machine's business even with an unparseable pid, and the pid-less fallback would misread it.
     return recorded_pid_is_foreign(meta)
 
 
@@ -440,8 +422,7 @@ def process_liveness(
     artifacts_path: Path | None,
     ps_snapshot: str | None = None,
 ) -> bool | None:
-    """Tri-state process liveness: True = observed alive, False = confirmed
-    dead, None = unknown (no recorded pid/no process match)."""
+    """Tri-state process liveness: True = observed alive, False = confirmed dead, None = unknown (no recorded pid/no process match)."""
     pid: int | None = None
     create_time: float | None = None
     pid_host: str | None = None
@@ -458,10 +439,8 @@ def process_liveness(
         from lionagi.cli._util import recorded_identity_mode
 
         identity_mode = recorded_identity_mode(meta)
-        # An in-process run has no process of its own; it records the process
-        # hosting it under separate keys, deliberately not "pid", so that the
-        # kill path cannot mistake the host for the run's own process. The
-        # host still bounds the run's liveness: if it is gone, the run is.
+        # An in-process run stores its host's pid under separate keys, not "pid", so the kill
+        # path can't mistake the host for the run itself — but the host still bounds its liveness.
         in_process = identity_mode == "in_process"
         raw_pid = meta.get("host_pid" if in_process else "pid")
         if raw_pid is not None:
@@ -490,23 +469,12 @@ def process_liveness(
 
             from lionagi.cli._util import BOOT_TIME_TOLERANCE
 
-            # Boot-time drift needs its own tolerance, not the process
-            # create-time one. Create times are compared against a value the
-            # kernel fixed when the process started, so a second is generous
-            # there. Boot time is re-derived from the current clock on every
-            # read, so an NTP step or a suspend/resume moves it by more than a
-            # second on a machine that never rebooted — and reading that as a
-            # reboot reports a healthy local session as dead, which is what
-            # the lifecycle reapers act on.
+            # Boot time is re-derived from the clock each read, so NTP steps or suspend/resume
+            # can drift it more than the create-time tolerance allows; it needs its own tolerance.
             rebooted_since = abs(psutil.boot_time() - pid_boot_time) > BOOT_TIME_TOLERANCE
         except Exception:
-            # Failing to read the boot time leaves this one check unevaluated;
-            # it does not make the run unknowable. Answering "unknown" here
-            # would be worse than not having the check at all: the lifecycle
-            # reapers read any non-True liveness as death once the row goes
-            # stale, so a machine where this read keeps failing would reap
-            # every live session it has. The pid checks below still run, which
-            # is the same best-effort stance the status/start-time read takes.
+            # A failed boot-time read leaves this one check unevaluated, not the run unknowable
+            # — answering "unknown" would let reapers treat every live session here as stale.
             _log.debug("boot-time comparison for pid %s failed", pid, exc_info=True)
         if rebooted_since:
             return False
@@ -783,9 +751,8 @@ def _classify_phantom(
     # A running session is never a phantom while its process is observably alive.
     if process_liveness(session, ap, ps_snapshot) is True:
         return None
-    # Nor when the process is not this machine's to observe: the staleness
-    # grace below cannot rescue a row whose liveness is permanently invisible
-    # here, so without this a healthy run on another host reaps as dead.
+    # Nor when the process isn't this machine's to observe — the staleness grace can't
+    # rescue a row whose liveness is permanently invisible here.
     if process_identity_is_foreign(session):
         return None
     # Not yet stale: it may simply not have written artifacts yet, so give it
@@ -804,12 +771,8 @@ def _classify_phantom(
         is not None
     ):
         return "stale_lock"
-    # A truncated scan lands here too, and that is deliberate rather than an
-    # oversight: every path to this point has already established the session is
-    # a phantom, so the unfinished walk costs the *reason* its precision, not the
-    # verdict its safety. Where truncation would change a verdict -- the health
-    # classifier, where "no stale lock" is what keeps a session out of ZOMBIE --
-    # it is reported instead of absorbed.
+    # A truncated scan lands here too, deliberately: the session is already established as a
+    # phantom, so truncation costs the reason's precision, not the verdict's safety.
     return "process_dead"
 
 

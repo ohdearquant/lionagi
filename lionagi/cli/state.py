@@ -1158,19 +1158,14 @@ async def _doctor(
                     meta = None
             entity["node_metadata"] = meta if isinstance(meta, dict) else None
             if _unaddressable_pid_reason(entity["node_metadata"] or {}) in _NOT_JUDGEABLE_HERE:
-                # Recorded on another machine, or against a runtime this CLI
-                # does not manage. Every check below asks this host's process
-                # table about a pid that means something else here, or about no
-                # pid at all, so a dead answer says nothing about the run: it
-                # would sweep a working session on the strength of a number
-                # that belongs to something unrelated.
+                # Recorded on another machine or an unmanaged runtime — every check below
+                # asks this host's process table about a pid that means something else here.
                 skipped += 1
                 continue
             pid = _read_pid_from_entity(entity)
             if pid is not None and pid_alive(pid):
-                # A live PID alone isn't proof: the OS can hand a dead session's
-                # number to an unrelated process. Reuse the same identity check
-                # the stale-kill sweep uses rather than write a second, weaker rule.
+                # A live PID alone isn't proof — the OS can hand a dead session's number to an
+                # unrelated process, so reuse the same identity check as the stale-kill sweep.
                 raw_ct = (entity["node_metadata"] or {}).get("pid_create_time")
                 try:
                     expected_create_time = float(raw_ct) if raw_ct is not None else None

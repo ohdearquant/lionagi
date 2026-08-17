@@ -238,9 +238,8 @@ async def reap_null_status_sessions(*, stale_hours: float | None = None) -> int:
                 # Process still alive — skip, it may write its own status.
                 continue
             if process_identity_is_foreign(session):
-                # Hosted on another machine: nothing observable here says
-                # whether it is alive, and the staleness grace below cannot
-                # supply that, so reaping it would guess.
+                # Hosted on another machine: nothing observable here says if it's alive, and
+                # the staleness grace below cannot supply that, so reaping it would guess.
                 continue
 
             updated_at = row.get("updated_at") or row.get("started_at") or 0.0
@@ -453,10 +452,8 @@ async def reap_stale_plays(*, stale_hours: float | None = None) -> int:
                             session = {"id": srow["id"], "node_metadata": srow.get("node_metadata")}
                             if await _resolve_liveness(session, _artifacts_path(srow)) is True:
                                 continue
-                            # Child session hosted elsewhere: this machine
-                            # cannot tell a dead runner from a working one, so
-                            # the play stays in flight rather than be blocked
-                            # on a blind guess.
+                            # Child session hosted elsewhere: this machine can't tell a dead
+                            # runner from a working one, so the play stays in flight.
                             if process_identity_is_foreign(session):
                                 continue
 
@@ -707,10 +704,8 @@ async def reap_stale_shows(*, stale_hours: float | None = None) -> int:
                         if await _resolve_liveness(session, _artifacts_path(srow)) is True:
                             live = True
                             break
-                        # A child hosted on another machine is unmeasurable from
-                        # here, which is not the same as dead. Treated like a
-                        # live child so the show is left alone: the only honest
-                        # move when this daemon cannot see the process.
+                        # A child hosted on another machine is unmeasurable here, not dead —
+                        # treated like a live child, the only honest move when it's unseen.
                         if process_identity_is_foreign(session):
                             live = True
                             break

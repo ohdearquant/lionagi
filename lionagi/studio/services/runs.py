@@ -605,12 +605,8 @@ async def list_runs(
         if s.get("status") == "running":
             from .admin import process_identity_is_foreign, resolve_process_liveness_probe
 
-            # A row recording another machine's process is left unknown without
-            # paying for the host scan to say so. The scan reads this machine's
-            # process table, so the answer is None whether or not it is taken:
-            # skipping it changes the cost and not the verdict. A page of
-            # imported rows would otherwise trigger the very scan the
-            # targeted-first path exists to ration.
+            # A foreign-host row is left unknown without paying for the scan — the scan reads
+            # this machine's process table, so skipping it changes only the cost, not the verdict.
             if not process_identity_is_foreign(s):
                 alive = await resolve_process_liveness_probe(
                     lambda snapshot, row=s: _session_liveness(row, snapshot)
