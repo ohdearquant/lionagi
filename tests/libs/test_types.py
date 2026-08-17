@@ -1,6 +1,10 @@
 """Tests for lionagi/ln/types.py"""
 
+import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import ClassVar
 
 import pytest
@@ -138,7 +142,7 @@ def test_params_rejects_unknown_key_before_calling_default_factory():
 def test_params_allowed():
     """Test Params.allowed() method"""
     allowed = MyParams.allowed()
-    assert isinstance(allowed, set)
+    assert isinstance(allowed, frozenset)
     assert "field1" in allowed
     assert "field2" in allowed
     assert "field3" in allowed
@@ -204,7 +208,7 @@ def test_dataclass_valid():
 def test_dataclass_allowed():
     """Test DataClass.allowed() method - Line 214"""
     allowed = MyDataClass.allowed()
-    assert isinstance(allowed, set)
+    assert isinstance(allowed, frozenset)
     assert "field1" in allowed
     assert "field2" in allowed
 
@@ -362,6 +366,362 @@ def test_params_default_kw():
     assert isinstance(result, dict)
     assert result["field1"] == "test"
     assert result["field2"] == 42
+
+
+@dataclass(slots=True, frozen=True, init=False)
+class InheritedParamsBase(Params):
+    inherited: str = "base"
+    class_only: ClassVar[str] = "not-a-field"
+
+
+@dataclass(slots=True, frozen=True, init=False)
+class InheritedParams(InheritedParamsBase):
+    own: int = 1
+    items: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class InheritedDataClassBase(DataClass):
+    inherited: str = "base"
+    class_only: ClassVar[str] = "not-a-field"
+
+
+@dataclass(slots=True)
+class InheritedDataClass(InheritedDataClassBase):
+    own: int = 1
+    items: list[str] = field(default_factory=list)
+
+
+def test_params_and_dataclass_share_ordered_field_discovery():
+    expected = ("inherited", "own", "items")
+
+    assert InheritedParams.field_names() == expected
+    assert InheritedDataClass.field_names() == expected
+    assert tuple(InheritedParams().to_dict()) == expected
+    assert tuple(InheritedDataClass().to_dict()) == expected
+    assert "class_only" not in InheritedParams.allowed()
+    assert "class_only" not in InheritedDataClass.allowed()
+
+
+def test_params_rejects_public_classvar_as_constructor_input():
+    with pytest.raises(ValueError, match="Invalid parameter: class_only"):
+        InheritedParams(class_only="not-instance-state")
+
+
+def test_allowed_is_immutable_membership_view():
+    assert InheritedParams.allowed() == frozenset({"inherited", "own", "items"})
+    assert InheritedDataClass.allowed() == frozenset({"inherited", "own", "items"})
+
+    with pytest.raises(AttributeError):
+        InheritedParams.allowed().add("injected")  # type: ignore[attr-defined]
+
+
+def test_field_discovery_does_not_run_factories():
+    calls = 0
+
+    def make_value() -> list[str]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class FactoryParams(Params):
+        value: list[str] = field(default_factory=make_value)
+
+    assert FactoryParams.field_names() == ("value",)
+    assert FactoryParams.allowed() == frozenset({"value"})
+    assert calls == 0
+
+
+@dataclass(slots=True, frozen=True, init=False)
+class AbsenceParams(Params):
+    missing: object
+    unresolved: object = Unset
+    explicit_null: object = None
+    false_value: bool = False
+    zero_value: int = 0
+    empty_string: str = ""
+    empty_list: list[object] = field(default_factory=list)
+    empty_dict: dict[str, object] = field(default_factory=dict)
+
+
+def test_wire_projection_preserves_three_state_absence_and_falsy_values():
+    value = AbsenceParams()
+
+    assert value.missing is Unset
+    assert value.unresolved is Unset
+    assert value.to_dict() == {
+        "explicit_null": None,
+        "false_value": False,
+        "zero_value": 0,
+        "empty_string": "",
+        "empty_list": [],
+        "empty_dict": {},
+    }
+
+
+def test_constructor_preserves_explicit_null_instead_of_unset():
+    @dataclass(slots=True, frozen=True, init=False)
+    class NullableParams(Params):
+        value: object
+
+    missing = NullableParams()
+    explicit = NullableParams(value=None)
+
+    assert missing.value is Unset
+    assert explicit.value is None
+    assert "value" not in missing.to_dict()
+    assert explicit.to_dict()["value"] is None
+
+
+@dataclass(slots=True, frozen=True, init=False)
+class NoPrefillParams(Params):
+    _config: ClassVar[ModelConfig] = ModelConfig(prefill_unset=False)
+    missing: object
+
+
+def test_missing_field_can_remain_undefined_without_prefill():
+    value = NoPrefillParams()
+
+    assert value.missing is Undefined
+    assert "missing=Undefined" in repr(value)
+    assert value.to_dict() == {}
+
+    updated = value.with_updates()
+    assert updated.missing is Undefined
+
+
+def test_strict_validation_reports_first_missing_field_in_declaration_order():
+    @dataclass(slots=True, frozen=True, init=False)
+    class OrderedStrictParams(Params):
+        _config: ClassVar[ModelConfig] = ModelConfig(strict=True)
+        alpha: object
+        beta: object
+
+    with pytest.raises(ValueError, match="Missing required parameter: alpha"):
+        OrderedStrictParams()
+
+    @dataclass(slots=True)
+    class OrderedStrictDataClass(DataClass):
+        _config: ClassVar[ModelConfig] = ModelConfig(strict=True)
+        alpha: object = Undefined
+        beta: object = Undefined
+
+    with pytest.raises(ValueError, match="Missing required parameter: alpha"):
+        OrderedStrictDataClass()
+
+
+@dataclass(slots=True)
+class AbsenceDataClass(DataClass):
+    missing: object = Undefined
+    unresolved: object = Unset
+    explicit_null: object = None
+    false_value: bool = False
+    zero_value: int = 0
+    empty_string: str = ""
+    empty_list: list[object] = field(default_factory=list)
+    empty_dict: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class NoPrefillDataClass(DataClass):
+    _config: ClassVar[ModelConfig] = ModelConfig(prefill_unset=False)
+    missing: object = Undefined
+
+
+def test_dataclass_wire_projection_matches_params_absence_rules():
+    value = AbsenceDataClass()
+
+    assert value.missing is Unset
+    assert value.unresolved is Unset
+    assert value.to_dict() == {
+        "explicit_null": None,
+        "false_value": False,
+        "zero_value": 0,
+        "empty_string": "",
+        "empty_list": [],
+        "empty_dict": {},
+    }
+
+
+def test_dataclass_update_preserves_undefined_without_prefill():
+    value = NoPrefillDataClass()
+
+    updated = value.with_updates()
+
+    assert value.missing is Undefined
+    assert updated.missing is Undefined
+
+
+def test_dataclass_unknown_key_fails_before_default_factory():
+    calls = 0
+
+    def make_items() -> list[str]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    @dataclass(slots=True)
+    class CountingDataClass(DataClass):
+        items: list[str] = field(default_factory=make_items)
+
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        CountingDataClass(unknown=True)  # type: ignore[call-arg]
+
+    assert calls == 0
+
+
+def test_exclude_is_membership_only_and_preserves_declaration_order():
+    expected = ("inherited", "items")
+
+    assert tuple(InheritedParams().to_dict(exclude={"own"})) == expected
+    assert tuple(InheritedDataClass().to_dict(exclude={"own"})) == expected
+
+
+@dataclass(slots=True, frozen=True, init=False)
+class StatefulParams(Params):
+    value: object = "declared-default"
+    other: int = 1
+
+
+@dataclass(slots=True)
+class StatefulDataClass(DataClass):
+    value: object = "declared-default"
+    other: int = 1
+
+
+@dataclass(slots=True)
+class DerivedDataClass(DataClass):
+    value: int = 1
+    derived: int = field(default=2, init=False)
+
+
+@dataclass(slots=True)
+class ValidatedDerivedDataClass(DataClass):
+    value: int = 1
+    derived: int = field(default=1, init=False)
+
+    def __post_init__(self):
+        self.derived = self.value
+        DataClass.__post_init__(self)
+
+    def _validate(self):
+        DataClass._validate(self)
+        if self.value != self.derived:
+            raise ValueError("derived must match value")
+
+
+@pytest.mark.parametrize("model_type", [StatefulParams, StatefulDataClass])
+def test_with_updates_preserves_unset_in_memory_state(model_type):
+    original = model_type(value=Unset)
+
+    updated = original.with_updates(other=2)
+
+    assert updated.value is Unset
+    assert updated.other == 2
+
+
+@pytest.mark.parametrize("model_type", [StatefulParams, StatefulDataClass])
+def test_with_updates_preserves_explicit_null(model_type):
+    original = model_type(value=None)
+
+    updated = original.with_updates(other=2)
+
+    assert updated.value is None
+    assert updated.other == 2
+
+
+def test_dataclass_with_updates_preserves_and_can_change_public_init_false_state():
+    original = DerivedDataClass(value=1)
+    original.derived = 7
+
+    preserved = original.with_updates(value=2)
+    changed = original.with_updates(value=3, derived=11)
+
+    assert (preserved.value, preserved.derived) == (2, 7)
+    assert (changed.value, changed.derived) == (3, 11)
+
+
+def test_dataclass_with_updates_revalidates_restored_init_false_state():
+    original = ValidatedDerivedDataClass(value=1)
+
+    with pytest.raises(ValueError, match="derived must match value"):
+        original.with_updates(value=2)
+
+    valid = original.with_updates(value=2, derived=2)
+    assert (valid.value, valid.derived) == (2, 2)
+
+
+def test_with_updates_does_not_rerun_factory_for_unset_value():
+    calls = 0
+
+    def make_unset():
+        nonlocal calls
+        calls += 1
+        return Unset
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class FactoryParams(Params):
+        value: object = field(default_factory=make_unset)
+        other: int = 1
+
+    original = FactoryParams()
+    updated = original.with_updates(other=2)
+
+    assert calls == 1
+    assert updated.value is Unset
+
+
+def test_declared_field_serialization_is_stable_across_hash_seeds():
+    script = """
+from dataclasses import dataclass
+from typing import ClassVar
+from lionagi.ln.types import DataClass, Params
+
+@dataclass(slots=True, frozen=True, init=False)
+class PBase(Params):
+    alpha: str = "a"
+    public_class_var: ClassVar[str] = "not-a-field"
+
+@dataclass(slots=True, frozen=True, init=False)
+class P(PBase):
+    beta: str = "b"
+    gamma: str = "c"
+
+@dataclass(slots=True)
+class DBase(DataClass):
+    alpha: str = "a"
+    public_class_var: ClassVar[str] = "not-a-field"
+
+@dataclass(slots=True)
+class D(DBase):
+    beta: str = "b"
+    gamma: str = "c"
+
+print(",".join(P.field_names()))
+print(",".join(P().to_dict()))
+print(",".join(D.field_names()))
+print(",".join(D().to_dict()))
+"""
+    repo_root = Path(__file__).parents[2]
+
+    for seed in ("1", "7", "29", "101"):
+        env = dict(os.environ)
+        env["PYTHONHASHSEED"] = seed
+        result = subprocess.run(  # noqa: S603 - fixed interpreter and inline fixture
+            [sys.executable, "-c", script],
+            cwd=repo_root,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert result.stdout.splitlines() == [
+            "alpha,beta,gamma",
+            "alpha,beta,gamma",
+            "alpha,beta,gamma",
+            "alpha,beta,gamma",
+        ]
 
 
 def test_is_sentinel():

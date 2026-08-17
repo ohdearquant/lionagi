@@ -725,7 +725,7 @@ def test_instruction_model_fields_immutable_slots():
 
 
 def test_with_updates_preserves_response_schema():
-    """Regression: with_updates() must preserve response_format, _structure_instance, and tool_schemas through the to_dict→constructor cycle."""
+    """Full-state updates preserve response schema, rendered structure, and tools."""
     content = InstructionContent.from_dict(
         {
             "instruction": "do it",

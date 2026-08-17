@@ -31,7 +31,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
-  from each `default_factory`, instead of replacing every omitted field with `Unset`.
+  from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
+  and `DataClass` now discover inherited instance fields through one ordered dataclass path,
+  exclude `ClassVar` declarations, expose immutable `allowed()` membership views, and preserve
+  `Unset`/explicit-null in-memory state across `with_updates()` instead of round-tripping it
+  through the omission-oriented wire projection.
 - `Operable` selection and legacy `OperableModel` materialization now retain declaration order
   for every supported membership collection and across hash seeds. Multiple unnamed `Spec`
   values no longer collide; concrete duplicate names still fail, and name-required Pydantic
