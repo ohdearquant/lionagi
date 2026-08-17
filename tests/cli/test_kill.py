@@ -712,6 +712,34 @@ def test_current_pid_markers_records_own_pid():
     assert markers["pid_create_time"] == pytest.approx(psutil.Process(os.getpid()).create_time())
 
 
+def test_recorded_markers_read_as_foreign_from_another_machine(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A row this code writes must be placeable by the machine that reads it.
+
+    The assertion is made from the position of a second machine sharing the
+    state store, because that is the only position from which the marker does
+    any work. Asking on the machine that wrote the row proves nothing either
+    way: a row carrying no host reads as "origin unknown", which is the same
+    permissive branch as "origin is you", so a same-machine check passes
+    whether or not the host was ever recorded.
+    """
+    import socket
+
+    from lionagi.cli._util import recorded_pid_is_foreign
+    from lionagi.cli.kill import current_pid_markers
+
+    markers = current_pid_markers()
+    assert recorded_pid_is_foreign(markers) is False, "our own row is not foreign to us"
+
+    real_host = socket.gethostname()
+    monkeypatch.setattr(socket, "gethostname", lambda: f"not-{real_host}")
+    assert recorded_pid_is_foreign(markers) is True, (
+        "a row recorded here must read as foreign from another machine, or that "
+        "machine signals our pid and reads our silence as our death"
+    )
+
+
 async def test_kill_one_skips_recycled_pid_via_create_time(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
