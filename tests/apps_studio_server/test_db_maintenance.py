@@ -237,13 +237,7 @@ def test_size_alert_at_threshold(monkeypatch):
 
 
 def test_the_size_threshold_tracks_the_retention_window():
-    """Doubling the retention window doubles the size the store may reach.
-
-    This is the property that keeps the alert and the retention policy from
-    disagreeing. A fixed threshold cannot express "larger than this policy
-    explains" -- it can only express "large", which stops being information as
-    soon as the configured policy's own steady state passes it.
-    """
+    """Doubling the retention window doubles the size the store may reach, so the two cannot disagree."""
     import lionagi.studio.config as cfg
 
     thirty = cfg._derive_db_size_alert_bytes(30)
@@ -268,12 +262,7 @@ def test_the_configured_threshold_is_the_one_derived_from_the_configured_window(
 
 
 def test_a_store_within_its_retention_steady_state_does_not_alert(monkeypatch):
-    """A store the size its own policy produces is not an anomaly.
-
-    The steady state is what the retention window is expected to hold, so a
-    store sitting at it must stay quiet; only the headroom multiple above it
-    means the store is larger than the policy accounts for.
-    """
+    """A store sitting at the steady state its own policy produces must stay quiet."""
     import lionagi.studio.config as cfg
     from lionagi.studio.services import db_maintenance as maint
 
@@ -294,13 +283,7 @@ def test_a_store_within_its_retention_steady_state_does_not_alert(monkeypatch):
 
 
 def test_a_zero_retention_window_cannot_derive_a_threshold_that_alerts_always():
-    """A degenerate keep window must not collapse the threshold toward zero.
-
-    Without the floor a keep window of 0 derives a threshold of 0, and every
-    store on earth is >= 0, so the alert fires unconditionally -- the same
-    no-information state a too-low fixed constant produces, reached from the
-    other direction.
-    """
+    """Without the floor a keep window of 0 derives a threshold of 0 and alerts unconditionally."""
     import lionagi.studio.config as cfg
 
     assert cfg._derive_db_size_alert_bytes(0) == cfg._DB_SIZE_ALERT_FLOOR_BYTES
@@ -308,15 +291,7 @@ def test_a_zero_retention_window_cannot_derive_a_threshold_that_alerts_always():
 
 
 def test_the_per_day_measurement_can_be_recalibrated_without_a_release(monkeypatch):
-    """The one empirical input here must be settable by the deployment it describes.
-
-    Every other value in this derivation is a policy choice, but the per-day
-    figure is a measurement of one particular store, and the comment beside it
-    says outright that it decays. If recalibrating it needs a code release, a
-    deployment whose write volume differs has no remedy except overriding the
-    final threshold outright -- which works, and throws away the link to the
-    retention window that the derivation exists to maintain.
-    """
+    """The one empirical input must be settable, or a differing deployment can only override the threshold outright."""
     import importlib
 
     import lionagi.studio.config as cfg

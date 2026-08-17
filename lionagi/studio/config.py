@@ -375,27 +375,17 @@ CHECKPOINT_INTERVAL_SECONDS: int = int(
 # Sessions/runs older than this many days (with terminal status) will be pruned.
 PRUNE_KEEP_DAYS: int = int(os.environ.get("LIONAGI_STUDIO_PRUNE_KEEP_DAYS", "30"))
 
-# Whole-file bytes the store accrues per day of retained history, measured on a
-# reference deployment 2026-08-17: 10,349,076,480 bytes across the 38 days its
-# surviving message history spanned, so ~272 MB/day. Measured across the whole
-# file rather than from message content alone, because the indexes and the
-# session_signals and progressions rows that grow alongside messages are part of
-# what a size alert observes -- messages were 7.83 GB of that file and their own
-# indexes another 394 MB. Re-measure when the workload changes shape; a figure
-# like this decays quietly, so it carries the date it was taken.
-#
-# Overridable, because it is the one input here that is a measurement of a
-# particular deployment rather than a policy choice. A store whose write volume
-# differs recalibrates by setting this, instead of waiting for the measurement
-# to be re-taken and released as code.
+# Whole-file bytes accrued per retained day: 10,349,076,480 bytes over 38 days
+# on a reference deployment, 2026-08-17, so ~272 MB/day. Whole file, not message
+# content, since indexes and the rows growing beside messages are what a size
+# alert sees. Overridable: it is a measurement of one deployment, not a policy,
+# and it decays — re-measure when the workload changes shape.
 _DB_BYTES_PER_RETAINED_DAY: int = int(
     os.environ.get("LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY", str(272 * 1024 * 1024))
 )
-# Multiple of the steady state at which the store is larger than its retention
-# policy explains. Below this the size is the policy working as configured.
+# Multiple of steady state above which the size is more than retention explains.
 _DB_SIZE_ALERT_HEADROOM: float = 1.5
-# Absolute floor, so a very short (or zero) keep window cannot derive a
-# threshold at or near zero and alert unconditionally.
+# Floor, so a short or zero keep window cannot derive a threshold that always alerts.
 _DB_SIZE_ALERT_FLOOR_BYTES: int = 512 * 1024 * 1024
 
 
@@ -407,21 +397,11 @@ def _derive_db_size_alert_bytes(keep_days: int) -> int:
     )
 
 
-# Size threshold in bytes above which /api/stats raises a size_alert. Derived
-# from the retention policy rather than fixed, so the two cannot disagree: a
-# store held to PRUNE_KEEP_DAYS of history has a steady state this is a multiple
-# of, and moving the retention window moves the alert with it.
-#
-# A fixed constant becomes permanent wallpaper as soon as a deployment's
-# legitimate steady state passes it, and then it reports nothing while appearing
-# to work. The previous fixed 500 MB was roughly sixteen times below what a
-# 30-day policy actually produces on the reference deployment, so it fired
-# continuously and carried no information.
-#
-# When the automatic pass is disabled (RETENTION_INTERVAL_SECONDS <= 0) the
-# store has no steady state and will eventually cross this regardless. That
-# firing is correct and says exactly that: the store is larger than a bounded
-# policy would have produced.
+# Bytes above which /api/stats raises a size_alert, derived from the retention
+# policy so the two cannot disagree. A fixed constant becomes wallpaper once a
+# legitimate steady state passes it: the previous 500 MB sat ~16x below what a
+# 30-day policy produces here and fired continuously. With the automatic pass
+# disabled there is no steady state and this eventually fires, correctly.
 DB_SIZE_ALERT_BYTES: int = int(
     os.environ.get(
         "LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES",
