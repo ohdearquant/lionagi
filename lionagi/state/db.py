@@ -72,6 +72,7 @@ from lionagi.state.schema_meta import definitions as _definitions_table
 from lionagi.state.schema_meta import metadata
 from lionagi.state.schema_meta import schedules as _schedules_table
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS as _MIGRATION_COLUMNS
+from lionagi.state.schema_migrations import MIGRATION_CONSTRAINTS as _MIGRATION_CONSTRAINTS
 from lionagi.state.schema_migrations import MIGRATION_INDEXES as _MIGRATION_INDEXES
 
 _RUN_DEFAULTS: dict[str, str] = {
@@ -457,7 +458,7 @@ VALID_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 TransitionRejectedError = _lifecycle_adapters.TransitionRejectedError
 
 
-_INVOCATION_KINDS = frozenset({"agent", "play", "flow", "fanout", "show-play"})
+_INVOCATION_KINDS = frozenset({"agent", "play", "flow", "fanout", "show-play", "engine"})
 _SOURCE_KINDS = frozenset({"live", "imported_fs", "imported_codex"})
 
 _SHOW_STATUSES = frozenset({"active", "completed", "aborted", "imported"})
@@ -986,6 +987,17 @@ class StateDB:
             # real, distinct value.
             await self._backfill_attention_dispositions_once(conn)
             await self._reconcile_indexes(conn)
+            # After create_all, which is what guarantees sessions exists for a
+            # store that never had it, and before any write that carries a
+            # value the pre-existing CHECK does not name.
+            await self._reconcile_constraints(conn)
+            await conn.execute(
+                text(
+                    "UPDATE engine_runs SET parent_session_id = session_id "
+                    "WHERE parent_session_id IS NULL AND session_id IS NOT NULL "
+                    "AND EXISTS (SELECT 1 FROM sessions WHERE sessions.id = engine_runs.session_id)"
+                )
+            )
             await self._backfill_dispatched_at_once(conn)
             await self._backfill_imported_role_label_once(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
@@ -1031,6 +1043,7 @@ class StateDB:
 
     _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = _MIGRATION_COLUMNS
     _MIGRATION_INDEXES: dict[str, tuple[str, ...]] = _MIGRATION_INDEXES
+    _MIGRATION_CONSTRAINTS: dict[str, tuple[str, ...]] = _MIGRATION_CONSTRAINTS
 
     async def _reconcile_columns(self) -> None:
         for table, columns in self._MIGRATION_COLUMNS.items():
@@ -1042,8 +1055,14 @@ class StateDB:
                     existing = await conn.run_sync(
                         lambda c, t=table: [col["name"] for col in inspect(c).get_columns(t)]
                     )
-            except Exception:  # noqa: BLE001, S112
-                continue
+            except Exception as exc:  # noqa: BLE001
+                _log.error(
+                    "failed to inspect migration columns for table %r: %r",
+                    table,
+                    exc,
+                    exc_info=True,
+                )
+                raise
             for name, defn in columns:
                 if name not in existing:
                     add_column = f"ALTER TABLE {table} ADD COLUMN {name} {defn}"
@@ -1073,6 +1092,17 @@ class StateDB:
     async def _reconcile_indexes(self, conn) -> None:
         """Create indexes that ``metadata.create_all`` cannot add to existing tables."""
         for statement in self._MIGRATION_INDEXES.get(self.dialect, ()):
+            await conn.execute(text(statement))
+
+    async def _reconcile_constraints(self, conn) -> None:
+        """Widen CHECK constraints that ``metadata.create_all`` cannot alter.
+
+        SQLite is not in the table: it cannot alter a CHECK in place, so
+        ``_rebuild_legacy_sessions_table`` copies the whole table there
+        instead. Every statement is written to be a no-op once applied, so
+        this does not take a table lock on each open.
+        """
+        for statement in self._MIGRATION_CONSTRAINTS.get(self.dialect, ()):
             await conn.execute(text(statement))
 
     async def _backfill_dispatched_at_once(self, conn) -> None:
@@ -1400,6 +1430,7 @@ class StateDB:
     # their own provenance value; its absence beside a source_kind CHECK is what
     # marks a DB that would reject 'imported_codex'.
     _NARROW_SOURCE_KIND_MARKER = "'live', 'imported_fs')"
+    _NARROW_INVOCATION_KIND_MARKER = "'show-play')"
 
     @classmethod
     def _sessions_rebuild_needed(cls, create_sql: str) -> bool:
@@ -1411,7 +1442,10 @@ class StateDB:
         """
         if cls._LEGACY_SESSION_STATUS_CHECK_MARKER in create_sql:
             return True
-        return cls._NARROW_SOURCE_KIND_MARKER in create_sql
+        return (
+            cls._NARROW_SOURCE_KIND_MARKER in create_sql
+            or cls._NARROW_INVOCATION_KIND_MARKER in create_sql
+        )
 
     async def _rebuild_legacy_sessions_table(self) -> None:
         """Rebuild sessions if it carries either legacy CHECK: the 4-value status
@@ -1510,7 +1544,7 @@ class StateDB:
                               invocation_kind TEXT CHECK(
                                                 invocation_kind IS NULL
                                                 OR invocation_kind IN
-                                                  ('agent', 'play', 'flow', 'fanout', 'show-play')
+                                                  ('agent', 'play', 'flow', 'fanout', 'show-play', 'engine')
                                               ),
                               show_topic      TEXT,
                               show_play_name  TEXT,
@@ -4691,10 +4725,46 @@ class StateDB:
     # every VALID_METRICS member is answered somewhere in metric_value, not
     # that it is answered here.
     _THRESHOLD_METRIC_QUERIES: dict[str, str] = {
+        # Counts distinct CAUSES, not rows. A fan-out spawns one session per
+        # worker, so a single wall -- a provider refusing every worker of one
+        # invocation -- lands as many rows carrying one cause, and a fan-out
+        # wider than the threshold would breach it on that single cause by
+        # construction. Grouping by (invocation, reason) makes the observed
+        # value the number of distinct things that went wrong.
+        #
+        # Both columns fall back to the session id rather than grouping on
+        # NULL, and that is the whole correctness of this query. NULL is not a
+        # shared value: rows without an invocation are rows whose grouping is
+        # unknown, and letting SQL treat them as equal merges unrelated
+        # failures into one. Most failed sessions carry no invocation id, so
+        # the naive form collapses nearly the whole population to one row per
+        # reason and the alarm stops being able to fire. Falling back to a
+        # unique per-row value keeps unknown groupings apart, which errs
+        # toward alerting.
+        #
+        # The fallback is tagged rather than bare, because a bare one puts two
+        # different namespaces in one column and lets a value from either side
+        # answer for the other: a session with no invocation whose id happens
+        # to equal some other session's invocation_id would share a grouping
+        # key with it, and two distinct causes carrying the same reason would
+        # then count once. That is the direction that suppresses an alert, so
+        # it is the one worth spending a prefix on. Every value now says which
+        # namespace it came from, and no value in one can equal a value in the
+        # other, since the two prefixes differ at their first character.
         "failed_sessions": (
-            "SELECT COUNT(*) AS n FROM sessions "
+            "SELECT COUNT(*) AS n FROM ("
+            "SELECT DISTINCT CASE WHEN invocation_id IS NULL "
+            "THEN 'session:' || id ELSE 'invocation:' || invocation_id END AS cause_group, "
+            "CASE WHEN status_reason_code IS NULL "
+            "THEN 'session:' || id ELSE 'reason:' || status_reason_code END AS cause_class "
+            "FROM sessions "
             "WHERE status IN ('failed', 'timed_out') "
             "AND COALESCE(ended_at, started_at, created_at) >= :window_start"
+            # PostgreSQL requires a name for a subquery in FROM; SQLite does
+            # not, so an unaliased form runs here and fails only on the other
+            # dialect, where the dual-backend suite needs a live server to
+            # catch it.
+            ") AS causes"
         ),
         "total_cost_usd": (
             "SELECT COALESCE(SUM(total_cost_usd), 0) AS n FROM sessions "
@@ -6150,6 +6220,40 @@ class StateDB:
                 },
             )
 
+    async def set_engine_run_lineage(
+        self,
+        run_id: str,
+        *,
+        invocation_id: str | None,
+        signal_session_id: str | None,
+        parent_session_id: str | None,
+    ) -> None:
+        """Attach the three non-interchangeable identities for one engine execution."""
+        async with self._tx() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE engine_runs SET invocation_id = :invocation_id, "
+                    "signal_session_id = :signal_session_id, "
+                    "parent_session_id = :parent_session_id WHERE id = :id"
+                ),
+                {
+                    "id": run_id,
+                    "invocation_id": invocation_id,
+                    "signal_session_id": signal_session_id,
+                    "parent_session_id": parent_session_id,
+                },
+            )
+
+    async def record_engine_run_outcome(self, run_id: str, outcome_json: dict[str, Any]) -> None:
+        """Persist the bounded terminal envelope separately from failure text."""
+        async with self._tx() as conn:
+            await conn.execute(
+                text("UPDATE engine_runs SET outcome_json = :outcome WHERE id = :id").bindparams(
+                    bindparam("outcome", type_=JSON)
+                ),
+                {"id": run_id, "outcome": outcome_json},
+            )
+
     async def get_engine_run(self, run_id: str) -> dict[str, Any] | None:
         """Return a single engine run row as a dict, or None if not found."""
         async with self._read() as conn:
@@ -6158,7 +6262,8 @@ class StateDB:
                     await conn.execute(
                         text(
                             "SELECT id, kind, spec_json, status, started_at, ended_at, "
-                            "session_id, export_dir, error "
+                            "session_id, invocation_id, signal_session_id, parent_session_id, "
+                            "outcome_json, export_dir, error "
                             "FROM engine_runs WHERE id = :id"
                         ),
                         {"id": run_id},
@@ -6175,7 +6280,65 @@ class StateDB:
                 d["spec_json"] = json.loads(d["spec_json"])
             except (json.JSONDecodeError, TypeError):
                 pass
+        if isinstance(d.get("outcome_json"), str):
+            try:
+                d["outcome_json"] = json.loads(d["outcome_json"])
+            except (json.JSONDecodeError, TypeError):
+                pass
         return d
+
+    async def list_engine_run_summaries(
+        self,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        session_id: str | None = None,
+        before_started_at: float | None = None,
+        before_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return a deterministic keyset page without selecting stored input."""
+        conditions: list[str] = []
+        params: dict[str, Any] = {"limit": limit}
+        if kind is not None:
+            conditions.append("kind = :kind")
+            params["kind"] = kind
+        if status is not None:
+            conditions.append("status = :status")
+            params["status"] = status
+        if session_id is not None:
+            conditions.append(
+                "(signal_session_id = :session_id OR parent_session_id = :session_id "
+                "OR (signal_session_id IS NULL AND parent_session_id IS NULL "
+                "AND session_id = :session_id))"
+            )
+            params["session_id"] = session_id
+        if before_started_at is not None or before_id is not None:
+            if before_started_at is None or before_id is None:
+                raise ValueError("engine run cursor requires both started_at and id")
+            conditions.append("(started_at, id) < (:before_started_at, :before_id)")
+            params["before_started_at"] = before_started_at
+            params["before_id"] = before_id
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = (
+            "SELECT id, kind, status, started_at, ended_at, session_id, "  # noqa: S608
+            "invocation_id, signal_session_id, parent_session_id, outcome_json, "
+            "CASE WHEN export_dir IS NULL THEN 0 ELSE 1 END AS has_output, "
+            "CASE WHEN error IS NULL THEN 0 ELSE 1 END AS has_error FROM engine_runs "
+            f"{where} ORDER BY started_at DESC, id DESC LIMIT :limit"
+        )
+        async with self._read() as conn:
+            rows = (await conn.execute(text(sql), params)).mappings().all()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if isinstance(item.get("outcome_json"), str):
+                try:
+                    item["outcome_json"] = json.loads(item["outcome_json"])
+                except (json.JSONDecodeError, TypeError):
+                    item["outcome_json"] = None
+            result.append(item)
+        return result
 
     async def list_engine_runs(
         self,

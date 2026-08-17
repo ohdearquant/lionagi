@@ -622,3 +622,88 @@ async def test_a_clean_verifier_refused_for_credentials_ends_the_run() -> None:
 
     with pytest.raises(ProviderAuthError, match="invalid api key"):
         await engine.run("artifact")
+
+
+# ---------------------------------------------------------------------------
+# A spawned task's failure has to outlive the task
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("settle_before_drain", [True, False], ids=["fast", "slow"])
+async def test_a_spawned_failure_is_raised_whether_or_not_it_beat_the_drain(
+    settle_before_drain,
+) -> None:
+    """Timing must not decide whether a run-ending refusal is noticed.
+
+    Spawned tasks take themselves off the active set as they finish. When the
+    drain was the only thing reading failures, anything that finished first was
+    already gone by the time it looked, and the drain saw an empty set and
+    reported nothing wrong.
+
+    That is backwards from which failures matter. A refusal the provider issues
+    without doing any work -- a bad key here -- comes back almost at once, so
+    the failures that describe the whole run were the ones most reliably lost,
+    while a slow one was caught. Both timings are asserted together because
+    either alone reads as correct: the slow arm passed throughout.
+    """
+    run = ReviewEngine().new_run()
+
+    async def refused() -> None:
+        if not settle_before_drain:
+            await asyncio.sleep(0.05)
+        raise ProviderAuthError("invalid api key")
+
+    run.spawn(refused())
+    if settle_before_drain:
+        # Let it finish, and let its done callback run, before the drain starts.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    with pytest.raises(ProviderAuthError, match="invalid api key"):
+        await run.wait_quiescence()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_coro, label",
+    [
+        (lambda: asyncio.sleep(0), "a task that simply succeeded"),
+        (lambda: _raise(EngineBudgetError("exhausted")), "declined discretionary work"),
+    ],
+)
+async def test_the_drain_stays_quiet_for_outcomes_that_are_not_failures(make_coro, label) -> None:
+    """The must-not-fire side, so the arm above cannot pass by raising always.
+
+    Collecting failures as tasks settle widens what reaches the drain, and a
+    budget refusal is the one outcome that travels this path routinely without
+    meaning anything went wrong.
+    """
+    run = ReviewEngine().new_run()
+    run.spawn(make_coro())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    await run.wait_quiescence()  # must not raise
+
+
+async def _raise(exc: BaseException) -> None:
+    raise exc
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_spawned_task_is_not_reported_as_a_failure() -> None:
+    """Cancellation is how the engine stops its own work, not a defect.
+
+    Recorded as a failure it would turn every budget stop and deadline into a
+    run-ending error, so this is asserted against the same collection path the
+    two arms above use.
+    """
+    run = ReviewEngine().new_run()
+    task = run.spawn(asyncio.sleep(3600))
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    await run.wait_quiescence()  # must not raise

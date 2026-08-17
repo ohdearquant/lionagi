@@ -202,7 +202,7 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  // 1098 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
+  // 1099 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
   // (library.filterHooks + 29 library.hooks.* leaves) when the shared hook
   // library and per-agent assembly landed, + history.detail token-usage stats
   // (statTokensIn/statTokensOut, natively translated in all 16 locales), + 5
@@ -225,8 +225,23 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // shown when a run carries no project for a control to be authorized
   // against. Natively translated in all 16, so unlike its two siblings it adds
   // nothing to the identity-leak baseline below.
-  it("en.json has 1100 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1100);
+  //
+  // 1101 = 1100 - fleet.detail.engineRuns + runCard.outputWithheld
+  // + history.detail.filesUnionBounded. The count is measured from en.json
+  // rather than carried over from either branch: one side removed a key and
+  // the other added two, so neither of their totals survives the merge.
+  //
+  // fleet.detail.engineRuns went with the session-detail link bar that was its
+  // only caller. The route it pointed at stays reachable from the System
+  // page's Data section, so nothing is stranded by the removal.
+  //
+  // runCard.outputWithheld is the badge for a tool result the server withheld
+  // past its per-row size ceiling. history.detail.filesUnionBounded is said
+  // when the run-wide file union stopped at one of its ceilings. Both are
+  // natively translated in all 16, so they add nothing to the identity-leak
+  // baseline.
+  it("en.json has 1101 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1101);
   });
 
   it.each(LOCALES.map((l) => l.code))(

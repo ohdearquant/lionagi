@@ -44,6 +44,7 @@ sit within 0.06 of an integer.
 """
 
 import asyncio
+import sys
 import time
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -101,9 +102,14 @@ async def _measure(
 
     Contention — other tests on the same machine, or a parallel test runner —
     can only push two ops that would have overlapped apart, which inflates a
-    reading. Nothing makes a flow consume less than it really does. So the
-    smallest reading is the truest one, and a busy machine cannot manufacture
-    either a coverage failure or a changed-behaviour failure out of noise.
+    reading. Nothing makes a flow consume less than it really does, so the
+    smallest reading is the truest one.
+
+    That makes the error one-sided but not bounded: enough load and every one of
+    a handful of attempts is inflated, which is a reading above the truth and no
+    way to tell it from a real change. Taking the minimum is what makes the
+    remedy safe rather than what removes the need for one — see
+    `_measure_patiently`.
 
     Peak concurrency is taken as the MAXIMUM across attempts, since a cap breach
     is a breach whenever it happens.
@@ -119,11 +125,55 @@ async def _measure(
     return best, peak
 
 
+# Rounds spent before believing a reading that came in HIGH. Only high readings
+# buy them, and only once.
+PATIENT_ATTEMPTS = 8
+
+
+async def _measure_patiently(
+    dep_indices: list[list[int]],
+    num_ops: int,
+    max_concurrent: int,
+    durations: list[float] | None = None,
+    *,
+    at_most: float,
+    attempts: int = 3,
+) -> tuple[float, int]:
+    """`_measure`, given more rounds when the first reading lands above `at_most`.
+
+    This is not sampling until the answer is convenient. The error is one-sided:
+    a flow cannot consume less than it really does, so more rounds move the
+    minimum down toward the truth and never below it. A shape whose consumption
+    genuinely changed reads high in every round, however many are spent, which
+    is what `test_extra_rounds_do_not_rescue_a_genuinely_slower_shape` holds to.
+
+    Spending the rounds only on high readings keeps the suite's cost where the
+    ordinary case is, and a reading that comes in low is already the assertion's
+    own answer — re-measuring it could only raise it, which is the direction the
+    minimum exists to discard.
+
+    The cost is worth stating plainly, because it is paid by whoever is running
+    a loaded machine: a pattern that reads high costs `attempts + PATIENT_ATTEMPTS`
+    executions instead of `attempts`, so the sweep's worst case is several times
+    its ordinary one. That worst case only arrives when readings are already
+    unreliable, which is when the extra rounds are worth their cost.
+    """
+    consumed, peak = await _measure(dep_indices, num_ops, max_concurrent, durations, attempts)
+    if consumed <= at_most:
+        return consumed, peak
+    patient, patient_peak = await _measure(
+        dep_indices, num_ops, max_concurrent, durations, PATIENT_ATTEMPTS
+    )
+    return min(consumed, patient), max(peak, patient_peak)
+
+
 async def _run_real_flow(
     dep_indices: list[list[int]],
     num_ops: int,
     max_concurrent: int,
     durations: list[float] | None = None,
+    *,
+    admitted_order: list[int] | None = None,
 ) -> tuple[float, int]:
     """Execute this shape on the real executor; return (budgets consumed, peak).
 
@@ -131,6 +181,10 @@ async def _run_real_flow(
     op index, because the point of a long op is that it occupies a slot, and
     which op holds a slot is a scheduling outcome rather than a property of the
     graph.
+
+    Pass `admitted_order` to collect the op indices in the order they were let
+    in, which is the only direct reading of the executor's schedule; everything
+    else here infers it from a span.
 
     Peak concurrency comes from a counter incremented and decremented inside the
     work itself, so it reports ops genuinely in flight. Deriving it from span
@@ -157,6 +211,8 @@ async def _run_real_flow(
     async def work(**_kwargs):
         nonlocal admitted, in_flight, peak
         length = BUDGET if durations is None else durations[admitted % len(durations)]
+        if admitted_order is not None:
+            admitted_order.append(_kwargs["idx"])
         admitted += 1
         in_flight += 1
         peak = max(peak, in_flight)
@@ -209,7 +265,7 @@ async def _run_real_flow(
 @pytest.mark.asyncio
 async def test_a_straight_chain_consumes_one_budget_per_op():
     """Also prices this machine's overhead, in the units everything else uses."""
-    consumed, peak = await _measure([[], [0], [1], [2]], 4, 2)
+    consumed, peak = await _measure_patiently([[], [0], [1], [2]], 4, 2, at_most=4 + TOLERANCE)
     assert peak == 1  # a chain can never overlap, whatever the cap allows
     assert consumed == pytest.approx(4, abs=TOLERANCE), (
         f"a four-op chain consumed {consumed:.2f} budgets where it must consume 4. "
@@ -220,9 +276,181 @@ async def test_a_straight_chain_consumes_one_budget_per_op():
 
 @pytest.mark.asyncio
 async def test_independent_ops_fill_the_cap_and_no_more():
-    consumed, peak = await _measure([[], [], [], []], 4, 2)
+    consumed, peak = await _measure_patiently([[], [], [], []], 4, 2, at_most=2 + TOLERANCE)
     assert peak == 2
     assert consumed == pytest.approx(2, abs=TOLERANCE)
+
+
+@pytest.mark.asyncio
+async def test_the_executor_admits_ready_ops_in_one_order():
+    """The premise every minimum in this file rests on.
+
+    `_measure_patiently` keeps the lowest of several readings. That is a noise
+    floor only where a shape has one schedule. If the executor could admit two
+    simultaneously ready ops in either order, the lowest reading would be the
+    cheaper of two real schedules rather than the cleanest reading of the only
+    one, and every timing assertion below would be pinned to a best case.
+
+    It admits in one order. The executor hands its operations to the concurrent
+    dispatcher in graph insertion order and bounds them with a capacity limiter,
+    which releases slots in the order they were asked for, so ops that become
+    ready together go in by insertion order.
+
+    Held here rather than argued in a comment. A change to either half, handing
+    the ops over in some other order or a limiter that stops queueing fairly,
+    turns every minimum in this file into a choice between schedules, and this
+    is what would say so.
+    """
+    for _ in range(5):
+        order: list[int] = []
+        await _run_real_flow([[], [], [], []], 4, 1, [BUDGET / 8] * 4, admitted_order=order)
+        assert order == [0, 1, 2, 3], (
+            f"four ops ready together under one slot were admitted {order} rather than "
+            f"in insertion order — a minimum across rounds is now choosing a schedule"
+        )
+
+    for _ in range(5):
+        order = []
+        await _run_real_flow([[], [], [0]], 3, 2, [BUDGET / 8] * 3, admitted_order=order)
+        assert order == [0, 1, 2], (
+            f"two ops ready together with a third waiting on the first were admitted "
+            f"{order}; which of the two goes first decides when the third is released"
+        )
+
+
+@pytest.mark.asyncio
+async def test_extra_rounds_do_not_rescue_a_genuinely_slower_shape(monkeypatch):
+    """The patient re-measure is a better estimator, not a softer gate.
+
+    A shape that really consumes more than its bound reads high in every round,
+    so the extra rounds cannot turn it into a pass. Without this, the remedy for
+    a load-sensitive timing assertion is indistinguishable from deleting it.
+    """
+    rounds = 0
+    real = _run_real_flow
+
+    async def counted(*args, **kwargs):
+        nonlocal rounds
+        rounds += 1
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_real_flow", counted)
+
+    # One op that really takes half a budget, held to a fifth of one.
+    consumed, _peak = await _measure_patiently([[]], 1, 1, [BUDGET / 2], at_most=0.2, attempts=3)
+
+    assert rounds == 3 + PATIENT_ATTEMPTS, (
+        f"the patient path ran {rounds} rounds where it must run {3 + PATIENT_ATTEMPTS}. "
+        f"A guard that never reaches the retry says nothing about the retry."
+    )
+    assert consumed > 0.2, (
+        f"{PATIENT_ATTEMPTS} extra rounds pulled a genuinely slow shape down to "
+        f"{consumed:.2f} budgets, under a bound of 0.2 — the retry is hiding changes."
+    )
+
+
+@pytest.mark.asyncio
+async def test_extra_rounds_do_not_rescue_a_shape_that_is_slow_from_its_cap(monkeypatch):
+    """The same guard where the slowness is structural rather than a long op.
+
+    A one-op shape has one schedule, so it cannot say whether extra rounds can
+    find a faster ordering of a shape that has orderings to choose between.
+    Here two independent ops compete for a single slot, so the executor does
+    pick an order, and the two ops carry different work lengths so the orders
+    are not interchangeable by inspection.
+
+    They are interchangeable in the reading, and deliberately: work lengths are
+    handed out in admission order rather than by op index, so whichever op goes
+    first does the short work. The span is the sum either way, which is why the
+    minimum across rounds is a noise floor here and not a choice between two
+    real answers.
+    """
+    rounds = 0
+    real = _run_real_flow
+
+    async def counted(*args, **kwargs):
+        nonlocal rounds
+        rounds += 1
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_real_flow", counted)
+
+    # Two independent ops, one slot: a quarter budget and a half, in whichever
+    # order they are admitted, so the shape cannot finish inside 0.75 budgets.
+    consumed, peak = await _measure_patiently(
+        [[], []], 2, 1, [BUDGET / 4, BUDGET / 2], at_most=0.3, attempts=3
+    )
+
+    assert rounds == 3 + PATIENT_ATTEMPTS, (
+        f"the patient path ran {rounds} rounds where it must run {3 + PATIENT_ATTEMPTS}. "
+        f"A guard that never reaches the retry says nothing about the retry."
+    )
+    assert peak == 1, f"{peak} ops in flight under a cap of 1 — this shape was not serialized"
+    assert consumed > 0.3, (
+        f"{PATIENT_ATTEMPTS} extra rounds found a {consumed:.2f}-budget ordering of a shape "
+        f"the cap forces to take 0.75 — the minimum is picking between schedules, not "
+        f"discarding contention."
+    )
+    assert consumed == pytest.approx(0.75, abs=TOLERANCE), (
+        f"the rounds settled on {consumed:.2f} budgets where the cap and the work lengths "
+        f"require 0.75; the reading is not measuring what this shape costs."
+    )
+
+
+@pytest.mark.asyncio
+async def test_extra_rounds_do_not_rescue_a_shape_with_two_real_orderings(monkeypatch):
+    """The same guard where the executor genuinely has a schedule to choose.
+
+    The two guards above hold a cap of one, so there is a single ordering and
+    the extra rounds have nothing to pick between. This shape does have two, and
+    they cost different amounts.
+
+    Two independent ops share both slots, and a third waits on the first of them.
+    Work lengths are handed out in admission order, so whichever of the two is
+    admitted first gets the quarter-budget op:
+
+      first op admitted first  -> it ends at 1/4, the waiter runs 1/4 -> 1/2
+      other op admitted first  -> the first ends at 1/2, waiter runs 1/4 -> 3/4
+
+    Both orderings cost more than the bound below, so the minimum across rounds
+    cannot buy a pass whichever one the executor picks.
+
+    What that establishes is narrower than it first reads, and the difference
+    matters. Since 1/2 and 3/4 both clear the bound, the assertion passes under
+    either ordering: it holds that eleven rounds of the minimum never reach
+    under the cheaper of the two real schedules, and it cannot tell the two
+    apart. So this is not the guard that rules out the minimum choosing between
+    schedules. `test_the_executor_admits_ready_ops_in_one_order` is, and it does
+    so on this exact shape by asserting the order the ops were admitted in
+    rather than by pricing the result.
+    """
+    rounds = 0
+    real = _run_real_flow
+
+    async def counted(*args, **kwargs):
+        nonlocal rounds
+        rounds += 1
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(sys.modules[__name__], "_run_real_flow", counted)
+
+    consumed, peak = await _measure_patiently(
+        [[], [], [0]], 3, 2, [BUDGET / 4, BUDGET / 2, BUDGET / 4], at_most=0.3, attempts=3
+    )
+
+    assert rounds == 3 + PATIENT_ATTEMPTS, (
+        f"the patient path ran {rounds} rounds where it must run {3 + PATIENT_ATTEMPTS}. "
+        f"A guard that never reaches the retry says nothing about the retry."
+    )
+    assert peak == 2, (
+        f"{peak} ops in flight under a cap of 2 — this shape never overlapped, so it "
+        f"says nothing about a concurrent schedule"
+    )
+    assert consumed > 0.3, (
+        f"{PATIENT_ATTEMPTS} extra rounds found a {consumed:.2f}-budget ordering of a shape "
+        f"whose cheapest ordering costs 0.5 — the minimum is picking between schedules, "
+        f"not discarding contention."
+    )
 
 
 # The claim.
@@ -279,8 +507,17 @@ async def test_the_divisor_covers_every_schedule_this_shape_can_produce(
 
     worst = 0.0
     worst_pattern = ""
+    # The bound assertion below fails upward only. The equality against the
+    # recorded consumption fails in both directions, which is what keeps the
+    # patient re-measure honest: readings pulled too far down redden it just as
+    # readings that are too high redden the bound. A pattern buys extra rounds
+    # when it lands above the lower of the two bounds it will face, since that
+    # is the only direction extra rounds can move it.
+    believable = min(divisor, consumed) + TOLERANCE
     for pattern_name, durations in _duration_patterns(num_ops):
-        budgets, peak = await _measure(deps, num_ops, cap, durations, attempts=2)
+        budgets, peak = await _measure_patiently(
+            deps, num_ops, cap, durations, at_most=believable, attempts=2
+        )
         assert peak <= cap, (
             f"{name}: {peak} ops in flight under a cap of {cap} — the cap was not "
             f"enforced, so this run says nothing about sequencing"
