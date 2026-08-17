@@ -706,6 +706,7 @@ def _resume_anchor(
     has_older: bool,
     next_anchor: str | None,
     current_anchor: str | None,
+    budget_refused: bool,
 ) -> tuple[bool, str | None]:
     """Where the next page starts, once hydration stopped inside this one.
 
@@ -725,11 +726,20 @@ def _resume_anchor(
     branch from the next cursor, and a branch absent from a cursor is a
     branch reported exhausted. Reaching this state needs a request whose
     budget cannot afford one row of the newest page.
+
+    An empty page has two causes and only one of them is a stop. The budget
+    refusing everything means the rows are still owed, so the next request has
+    to ask for this window again. A window whose ids are simply not in the
+    store owes nothing: it has been delivered in full, and everything in it
+    was nothing. Handing back the same anchor there asks for the same absent
+    rows on every subsequent page, and the cursor never moves again.
     """
     if len(present_ids) == len(window_ids):
         return has_older, next_anchor
     if present_ids:
         return True, present_ids[0]
+    if not budget_refused:
+        return has_older, next_anchor
     return True, current_anchor or _NEWEST_ANCHOR
 
 
@@ -802,7 +812,17 @@ async def _fetch_messages_by_ids(
         for msg_id in reversed(chunk):
             if msg_id not in sizes:
                 continue
-            if not budget.admits(sizes[msg_id]):
+            # Charge what pass two will actually hand back, not what the row
+            # weighs. Pass two withholds any payload over the ceiling and
+            # returns the row with content NULL, so an oversized row decodes
+            # nothing and costs nothing in characters -- which is the contract
+            # _HydrationBudget.admits states for itself. Charging the raw
+            # length instead refuses those rows outright, so a row that should
+            # have arrived marked withheld does not arrive at all, and the
+            # bigger it is the more certainly it vanishes. The row allowance is
+            # what bounds them, and it is charged either way.
+            charged = 0 if sizes[msg_id] > MAX_ACTION_CONTENT_CHARS else sizes[msg_id]
+            if not budget.admits(charged):
                 break
             admitted.append(msg_id)
 
@@ -1099,11 +1119,17 @@ async def _fetch_action_file_paths(
             placeholders = ",".join("?" for _ in chunk)
             cur = await db.execute(
                 f"""
-                SELECT CASE WHEN length(m.content) <= ?
+                -- json_valid beside the length check, for the reason given at
+                -- _ACTION_ID: json_extract raises on malformed content and
+                -- takes the whole read down with it, and a row that did not
+                -- come from this application is a state the store is allowed
+                -- to be in. Short-circuits, so the extraction still never runs
+                -- on oversized payloads.
+                SELECT CASE WHEN length(m.content) <= ? AND json_valid(m.content)
                             THEN json_extract(m.content, '$.function') END AS fn,
-                       CASE WHEN length(m.content) <= ?
+                       CASE WHEN length(m.content) <= ? AND json_valid(m.content)
                             THEN json_extract(m.content, '$.arguments.file_path') END AS file_path,
-                       CASE WHEN length(m.content) <= ?
+                       CASE WHEN length(m.content) <= ? AND json_valid(m.content)
                             THEN json_extract(m.content, '$.arguments.path') END AS path,
                        length(m.content) > ? AS oversized,
                        m.lion_class AS type_ref
@@ -1351,6 +1377,13 @@ async def get_session(
                 has_older=has_older,
                 next_anchor=next_anchor,
                 current_anchor=cursor_anchors.get(branch_id) if cursor_anchors else None,
+                # Request-wide rather than window-specific: a budget spent by an
+                # earlier branch also leaves this window unserved. The two differ
+                # only when the budget was already gone and this window's rows
+                # are absent as well, and there the answer is to ask again, which
+                # the next request, with its own budget, resolves. Erring toward
+                # asking again cannot lose a row; erring toward advancing can.
+                budget_refused=content_budget.exhausted,
             )
             if next_anchor:
                 next_branch_anchors[branch_id] = next_anchor

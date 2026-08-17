@@ -2505,6 +2505,7 @@ def test_a_window_the_budget_stopped_inside_resumes_at_the_oldest_row_delivered(
         has_older=True,
         next_anchor="m-1",
         current_anchor=None,
+        budget_refused=True,
     )
 
     assert anchor == "m-3", "the next page has to begin where this one actually stopped"
@@ -2519,13 +2520,17 @@ def test_a_fully_delivered_window_keeps_the_anchor_the_progression_chose():
     window = ["m-1", "m-2"]
 
     assert svc._resume_anchor(
-        window, ["m-1", "m-2"], has_older=True, next_anchor="m-1", current_anchor="m-9"
+        window,
+        ["m-1", "m-2"],
+        has_older=True,
+        next_anchor="m-1",
+        current_anchor="m-9",
+        budget_refused=True,
     ) == (True, "m-1")
     # And an exhausted branch stays exhausted rather than acquiring an anchor.
-    assert svc._resume_anchor([], [], has_older=False, next_anchor=None, current_anchor=None) == (
-        False,
-        None,
-    )
+    assert svc._resume_anchor(
+        [], [], has_older=False, next_anchor=None, current_anchor=None, budget_refused=False
+    ) == (False, None)
 
 
 def test_a_window_that_fit_nothing_is_asked_for_again_rather_than_skipped():
@@ -2534,7 +2539,12 @@ def test_a_window_that_fit_nothing_is_asked_for_again_rather_than_skipped():
     import lionagi.studio.services.sessions as svc
 
     has_older, anchor = svc._resume_anchor(
-        ["m-1", "m-2"], [], has_older=True, next_anchor="m-1", current_anchor="m-3"
+        ["m-1", "m-2"],
+        [],
+        has_older=True,
+        next_anchor="m-1",
+        current_anchor="m-3",
+        budget_refused=True,
     )
 
     assert anchor == "m-3", "the caller's own anchor repeats the window it did not get"
@@ -2545,8 +2555,49 @@ def test_a_window_that_fit_nothing_is_asked_for_again_rather_than_skipped():
     # cursor, and a branch absent from a cursor reads as exhausted -- the
     # messages would be unreachable, not merely undelivered.
     assert svc._resume_anchor(
-        ["m-1", "m-2"], [], has_older=True, next_anchor="m-1", current_anchor=None
+        ["m-1", "m-2"],
+        [],
+        has_older=True,
+        next_anchor="m-1",
+        current_anchor=None,
+        budget_refused=True,
     ) == (True, svc._NEWEST_ANCHOR)
+
+
+def test_a_window_whose_rows_are_all_absent_advances_instead_of_repeating():
+    """An empty page has two causes and only one of them is a stop.
+
+    The budget refusing everything leaves the rows owed, so the window has to
+    be asked for again. A window whose ids are simply not in the store owes
+    nothing: it was delivered in full and there was nothing in it. Handing back
+    the caller's own anchor there asks for the same absent rows on every later
+    page and the cursor never moves, which is a session that pages forever
+    without producing a message.
+    """
+    import lionagi.studio.services.sessions as svc
+
+    has_older, anchor = svc._resume_anchor(
+        ["gone-1", "gone-2"],
+        [],
+        has_older=True,
+        next_anchor="older-1",
+        current_anchor="gone-1",
+        budget_refused=False,
+    )
+
+    assert anchor == "older-1", "an absent window must not be handed back as the next page"
+    assert has_older is True
+
+    # The control that keeps this from reading as "empty pages always advance":
+    # the same shape with the budget implicated still repeats the window.
+    assert svc._resume_anchor(
+        ["gone-1", "gone-2"],
+        [],
+        has_older=True,
+        next_anchor="older-1",
+        current_anchor="gone-1",
+        budget_refused=True,
+    ) == (True, "gone-1")
 
 
 def test_the_newest_end_anchor_selects_the_window_an_anchorless_read_would():
@@ -3145,3 +3196,70 @@ async def test_an_oversized_response_alone_does_not_report_the_file_union_as_cut
     stats = detail["message_stats"]
     assert stats["files"] == ["/run/a"], stats["files"]
     assert stats["files_bounded"] is False, "an oversized response marked a complete union as cut"
+
+
+async def test_a_malformed_action_row_does_not_make_the_session_unreadable(
+    patched_sessions_db,
+):
+    """json_extract aborts the whole statement, not the row that upset it.
+
+    Everything written through this application is serialized JSON, so a row
+    that is not comes from a legacy write or from another writer against a
+    shared store, which is a state the store is allowed to be in. Unguarded,
+    one such row turns every read of that session into OperationalError, and
+    the session stops opening rather than opening degraded.
+    """
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-malformed")
+    await _seed_action_requests(
+        db_path, branch_id="br-malformed", session_id="sess-malformed", count=2
+    )
+    async with svc._open_db(db_path) as db:
+        await db.execute(
+            "UPDATE messages SET content = ? WHERE id = ?",
+            ("this row is not json", "br-malformed-act-0"),
+        )
+        await db.commit()
+
+    result = await svc.get_session("sess-malformed")
+
+    # Reached at all, which is the finding. And the readable row still gives up
+    # its path, so the guard skipped the bad row rather than the extraction.
+    assert result["message_stats"]["files"] == ["/run/f1.py"]
+
+
+async def test_an_oversized_row_arrives_withheld_rather_than_vanishing(
+    patched_sessions_db, monkeypatch
+):
+    """A withheld payload is decoded by nobody, so it costs no characters.
+
+    That is the contract _HydrationBudget.admits states for itself. Charging
+    the raw length instead refuses the row outright, so a row that should have
+    arrived marked withheld does not arrive, and the larger it is the more
+    certainly it disappears. The refusal also breaks the walk, so every older
+    row behind it is lost with it.
+    """
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 50)
+    await seed_paginated_session(db_path, count=3)
+    async with svc._open_db(db_path) as db:
+        await db.execute(
+            "UPDATE messages SET content = ? WHERE id = ?",
+            (json.dumps({"text": "x" * 500}), "pmsg-1"),
+        )
+        await db.commit()
+
+    async with svc._open_db(db_path) as db:
+        rows = await svc._fetch_messages_by_ids(
+            db,
+            ["pmsg-0", "pmsg-1", "pmsg-2"],
+            budget=svc._HydrationBudget(total=100),
+        )
+
+    by_id = {row["id"]: row for row in rows}
+    assert sorted(by_id) == ["pmsg-0", "pmsg-1", "pmsg-2"]
+    assert by_id["pmsg-1"]["content_withheld"] is True
+    assert by_id["pmsg-1"]["content"] is None
+    # The rows that fit are untouched, so the allowance still means something.
+    assert by_id["pmsg-0"]["content_withheld"] is False
+    assert by_id["pmsg-2"]["content_withheld"] is False
