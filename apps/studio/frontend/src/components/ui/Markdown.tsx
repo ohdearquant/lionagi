@@ -30,7 +30,10 @@ export interface MarkdownProps {
   fileContext?: FileResolutionContext;
 }
 
-const RemoteImageContext = createContext(false);
+// Markdown content comes from agents, tools, plugins, and artifact files. A
+// remote image URL can beacon the viewer's IP and encode run data in its path,
+// so blocking is the safe default for every surface, not only the file viewer.
+const RemoteImageContext = createContext(true);
 
 export function RemoteImageGuard({ children }: { children: ReactNode }) {
   return <RemoteImageContext.Provider value>{children}</RemoteImageContext.Provider>;
@@ -141,7 +144,7 @@ export function isNoArtifactRootDetail(detail: string | undefined): boolean {
   return detail != null && detail.toLowerCase().includes("artifact root");
 }
 
-function FileViewerModal({
+export function FileViewerModal({
   runId,
   path,
   onClose,

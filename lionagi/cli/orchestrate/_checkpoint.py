@@ -47,6 +47,7 @@ class CheckpointWriter:
     prompt: str
     plan: list[dict]
     config: dict[str, Any]
+    max_spawn: int | None = None
     flow_context: dict[str, Any] = field(default_factory=dict)
     ops: dict[str, dict[str, Any]] = field(default_factory=dict)
     spawned: list[dict] = field(default_factory=list)
@@ -54,7 +55,7 @@ class CheckpointWriter:
     _seq: int = field(default=0, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        checkpoint = {
             "version": CHECKPOINT_VERSION,
             "session_id": self.session_id,
             "prompt": self.prompt,
@@ -64,6 +65,9 @@ class CheckpointWriter:
             "spawned": self.spawned,
             "config": self.config,
         }
+        if self.max_spawn is not None:
+            checkpoint["max_spawn"] = self.max_spawn
+        return checkpoint
 
     async def record(
         self,

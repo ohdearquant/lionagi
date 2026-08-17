@@ -116,7 +116,8 @@
       "busyPlaceholder": "Operator is working…",
       "hint": "Enter to send · Shift+Enter for a new line",
       "send": "Send",
-      "sending": "Sending…"
+      "sending": "Sending…",
+      "autoAllow": "Auto-allow proposals"
     },
     "message": {
       "you": "You",
@@ -169,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "ডিফল্ট",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · প্রস্তাবিত",
+      "legacyGroup": "পুরোনো নির্বাচন",
+      "efforts": "প্রচেষ্টা: {efforts}",
+      "effortInModel": "প্রচেষ্টা মডেল আইডিতে এনকোড করা হয়",
+      "effortAsSetting": "প্রচেষ্টা প্রদানকারীর সেটিং হিসেবে পাঠানো হয়"
     },
     "effort": {
       "label": "প্রচেষ্টা",
@@ -376,6 +382,38 @@
       "creating": "Creating…",
       "create": "Create",
       "createError": "Could not create this server."
+    },
+    "filterHooks": "Hooks",
+    "hooks": {
+      "title": "Hooks",
+      "description": "Named, reusable hooks defined once here, then assembled per agent: each agent binds hooks from this library to events (before a tool call, on prompt submit, after a response). The same assembly runs on any provider CLI.",
+      "libraryTitle": "Hook library",
+      "newHook": "New hook",
+      "emptyLibrary": "No hooks defined yet. Create one to make it assemblable by every agent.",
+      "emptyLibraryHint": "Define hooks in the library first — attachments bind library hooks to events.",
+      "operatorTitle": "Operator assembly",
+      "operatorDescription": "Hooks the Studio Operator runs. The Operator inherits no user or project settings, so hooks attached here are the only ones its turns load.",
+      "enabled": "Enabled",
+      "save": "Save",
+      "saving": "Saving…",
+      "savedNotice": "Saved — applies from the next turn.",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "fieldName": "Name",
+      "fieldDescription": "Description",
+      "fieldCommand": "Command",
+      "fieldTimeout": "Timeout (seconds)",
+      "nameRequired": "A hook needs a name.",
+      "timeoutInvalid": "Timeout must be a number.",
+      "noAttachments": "No hooks attached.",
+      "attachmentHook": "Hook",
+      "attachmentOn": "on",
+      "attachmentEvent": "Event",
+      "attachmentMatcher": "Matcher",
+      "matcherPlaceholder": "matcher (optional)",
+      "removeAttachment": "Remove attachment",
+      "addAttachment": "Attach hook",
+      "agentSectionTitle": "Hooks"
     }
   },
   "history": {
@@ -445,6 +483,8 @@
       "statMessages": "মেসেজ",
       "statToolCalls": "টুল কল",
       "statErrors": "ত্রুটি",
+      "statTokensIn": "ইনপুট টোকেন",
+      "statTokensOut": "আউটপুট টোকেন",
       "statTopic": "টপিক",
       "statPlay": "Play",
       "statPlaybook": "ওয়ার্কফ্লো",
@@ -481,6 +521,7 @@
       "graphNodeStatusDone": "সম্পন্ন",
       "graphNodeStatusFailed": "ব্যর্থ",
       "graphNodeStatusSkipped": "এড়ানো",
+      "graphNodeStatusCancelled": "বাতিল",
       "graphNodeStatusEscalated": "এস্কেলেটেড",
       "progressTotal": "মোট",
       "progressCompleted": "সম্পন্ন",
@@ -517,10 +558,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "এটি সম্পন্ন করার জন্য এখনও কোনো কমান্ড নেই।"
+          "no-executable-path": "এটি সম্পন্ন করার জন্য এখনও কোনো কমান্ড নেই।",
+          "no-project-scope": "এই রানের কোনো প্রকল্প নেই, তাই কোনো নিয়ন্ত্রণ অনুমোদন করা যাবে না।"
         }
       }
     },

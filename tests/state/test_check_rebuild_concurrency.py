@@ -53,14 +53,14 @@ def _create_legacy_session_status_db(db_path: Path) -> None:
         "  status          TEXT,\n"
         "  started_at      REAL,\n"
         "  ended_at        REAL,\n"
-        "  -- ── Activity"
+        "  -- 1 means ended_at"
     )
     legacy_status_col_with_check = (
         "  status          TEXT CHECK(status IN "
         "('running', 'completed', 'failed', 'aborted')),\n"
         "  started_at      REAL,\n"
         "  ended_at        REAL,\n"
-        "  -- ── Activity"
+        "  -- 1 means ended_at"
     )
     assert schema_sql.count(legacy_status_col) == 1, (
         "sessions.status column definition not found (or found more than once) in schema.sql "

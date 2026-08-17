@@ -380,3 +380,112 @@ async def test_successful_tasks_do_not_raise():
     run.spawn(work("b"))
     await run.wait_quiescence()
     assert sorted(results) == ["a", "b"]
+
+
+def _capture_specs(monkeypatch):
+    """Record every AgentSpec create_agent receives, without changing what it does."""
+    from lionagi.engines import engine as engine_mod
+
+    specs = []
+    real = engine_mod.create_agent
+
+    async def spy(spec, **kwargs):
+        specs.append(spec)
+        return await real(spec, **kwargs)
+
+    monkeypatch.setattr(engine_mod, "create_agent", spy)
+    return specs
+
+
+def _mcp_file(tmp_path, name):
+    path = tmp_path / name
+    path.write_text('{"mcpServers": {}}', encoding="utf-8")
+    return str(path)
+
+
+@pytest.mark.asyncio
+async def test_engine_wide_mcp_config_path_reaches_the_agent_spec(monkeypatch, tmp_path):
+    """An engine can name the .mcp.json its agents resolve.
+
+    Without this the spec field is left unset and every agent falls through to
+    the user-level ~/.lionagi/.mcp.json — a machine-global file other tools
+    write, so a run depends on a config it never named and an unrelated write
+    to that file breaks every engine on the machine at once.
+    """
+    specs = _capture_specs(monkeypatch)
+    declared = _mcp_file(tmp_path, "declared.mcp.json")
+
+    run = Engine(agent_mcp_config_path=declared).new_run()
+    await run.make_agent("researcher", name="r1")
+
+    assert specs[-1].mcp_config_path == declared
+
+
+@pytest.mark.asyncio
+async def test_per_call_mcp_config_path_outranks_the_engine_wide_default(monkeypatch, tmp_path):
+    """Same precedence as cwd and extra_prompt: explicit call beats engine-wide."""
+    specs = _capture_specs(monkeypatch)
+    engine_wide = _mcp_file(tmp_path, "engine.mcp.json")
+    per_call = _mcp_file(tmp_path, "percall.mcp.json")
+
+    run = Engine(agent_mcp_config_path=engine_wide).new_run()
+    await run.make_agent("researcher", name="r1", mcp_config_path=per_call)
+    await run.make_agent("researcher", name="r2")
+
+    assert specs[-2].mcp_config_path == per_call
+    assert specs[-1].mcp_config_path == engine_wide
+
+
+@pytest.mark.asyncio
+async def test_unset_mcp_config_path_leaves_resolution_untouched(monkeypatch, tmp_path):
+    """Default must not change behaviour for the existing make_agent callers.
+
+    Leaving the field None is what preserves the current discovery order;
+    writing a value in by default here would silently repoint every existing
+    engine at a different config.
+
+    HOME is redirected at a scratch dir on purpose. Unset is exactly the case
+    that falls through to the user-level ~/.lionagi/.mcp.json, so without this
+    the assertion below would load whatever MCP servers the developer happens
+    to have configured, and the outcome would differ between a laptop and CI.
+    That machine dependence is the thing this feature exists to remove, so a
+    test for it must not itself rely on the ambient file.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    specs = _capture_specs(monkeypatch)
+
+    run = Engine().new_run()
+    await run.make_agent("researcher", name="r1")
+
+    assert specs[-1].mcp_config_path is None
+
+
+def test_planning_worker_specs_carry_the_engine_wide_mcp_config(tmp_path):
+    """Planning workers must not be exempt from the config the engine declared.
+
+    They are spawned through the role-spawning helper rather than make_agent,
+    so nothing on that path reads engine-wide agent settings: bare role
+    strings had every worker resolve ambient MCP configuration while the
+    engine's own orchestrator and synthesizer honoured the declared file —
+    the feature working on the paths that were tested and silently not on
+    the fan-out.
+    """
+    from lionagi.agent import AgentSpec
+    from lionagi.engines.planning import PlanningEngine
+
+    declared = _mcp_file(tmp_path, "declared.mcp.json")
+    engine = PlanningEngine(agent_mcp_config_path=declared)
+
+    specs = engine._worker_specs({"researcher", "analyst"})
+
+    assert set(specs) == {"researcher", "analyst"}
+    for spec in specs.values():
+        # Composed specs, not bare strings: the spawning helper applies its
+        # own compose to strings, which cannot see the engine's setting.
+        assert isinstance(spec, AgentSpec)
+        assert spec.mcp_config_path == declared
+
+    # Unset engine-wide config keeps the workers on ambient resolution,
+    # exactly as bare role strings behaved.
+    for spec in PlanningEngine()._worker_specs({"researcher"}).values():
+        assert spec.mcp_config_path is None

@@ -6,6 +6,115 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- Resuming a flow whose checkpoint recorded any operation as failed now refuses
+  and names those operations, instead of replaying them as terminal state.
+  Replaying a failed operation as terminal marks it failed without running it,
+  so the executor skipped it and everything downstream, and the resume finished
+  nothing. `--retry-failed` on `li o flow` (and `retry_failed` on the Studio
+  resume request and the Operator `resume_run` command) runs them again; it is
+  an opt-in because re-running re-executes whatever side effects the first
+  attempt already had. Reactive children recorded under a re-running operation
+  are dropped so the new attempt derives its own.
+- The notify hook's delivery timeout is derived from the handler budget, so a
+  delivery now fits inside the deadline that would otherwise terminate it.
+- A delivery stopped part way reports `notify_delivery_state` as `unknown`
+  rather than `failed`. Whether the notice already went out is exactly what
+  such a delivery cannot say, and `failed` tells a caller to send it again.
+  The value appears on every job listing row, so callers switching on
+  `failed` should handle `unknown` as well.
+- Delivery descendants are terminated through the shared process-group helper
+  on POSIX. Cross-platform descendant containment remains out of scope and is
+  tracked in #2576.
+
+### Deprecated
+
+- `--resume-on-timeout` on `li o fanout` and `li o flow`. The flag is accepted
+  and listed in the help output of both commands but neither ever read it, so
+  passing it changes nothing. Both commands now say so at parse time instead of
+  accepting it silently, and will keep accepting it until it is removed in a
+  later release. It remains available and functional on `li agent`, which is
+  the surface that implements it.
+
+## [0.35.0] - 2026-08-12
+
+A broad correctness release across the orchestration engine, the MCP surface,
+CLI providers, and Studio, plus the first Rust workspace in the tree.
+
+### Added
+
+- The run detail page opens on its execution graph, the canvas shows live
+  per-node activity, and nodes are drawn at the ranks the rank function
+  assigns.
+- Run details show total token usage (input and output) for agents and
+  orchestrations.
+- Team coordination verbs are exposed over MCP.
+- Operator: fleet inspection and a run-detail read tool, with the execution
+  root resolved once at startup from a shipped default.
+- The Rust tree opens: a `lionrs` workspace importing lion-core 0.4.0, with
+  workspace checks gated in CI.
+- CLI runs record what an agent did, bounded and without quoting it.
+- Fleet's live list separates orchestrations from single agents.
+
+### Fixed
+
+- Orchestration engine: a failed fanout leg reads as a failure at every
+  surface; refused reactive spawns are surfaced and zero spawn capacity is
+  honored; escalation retries get unique references; assignment-shaped
+  synthesis is rejected; planner assignment contracts are delivered to
+  workers; emission repair failures are isolated to the op that failed; a
+  resumed run no longer reports a permanently-failed op as completed; a
+  gate-skipped node is announced as skipped, not failed; op budgets are sized
+  by sequential depth and dated from when their timeout starts.
+- MCP: detached agents are grounded against undeliverable notification waits
+  instead of waiting forever; declared and effective server sets are
+  distinguished; unselected servers are rejected before connection; terminal
+  notification attempt state is retained; degraded persistence carries its
+  reason.
+- Prompt admission: agent and scheduled prompts are bounded by the shared
+  character cap — inline, from files (reads capped at the bound), and after
+  schedule template rendering — with the cap disclosed in the MCP schema.
+- Codex CLI provider: emits `--sandbox workspace-write` in place of the
+  removed `--full-auto` flag, preserves approval modes via config, and grants
+  linked worktree git stores.
+- Agent runtime: MCP reachability is reported accurately, zero-rate peers no
+  longer skew heartbeat stall thresholds, and routing-pack role models are
+  honored.
+- Studio: Operator run targeting, terminal DAG reconciliation, and extra MCP
+  grants; terminal runs no longer show a `healthy` badge; runs without a
+  project can be renamed and cancelled, and an exact run id passes the
+  project fence; cron schedules report an overdue health state; branch
+  duration is measured from lifecycle timestamps; the playbook editor
+  preserves canonical fields it does not edit; engine-definition writes
+  reject unsupported stage overrides with a 422 instead of silently dropping
+  them; the dev proxy routes to the backend the CLI selected; a schedule
+  request that times out is reported as a timeout with unknown completion,
+  never as an unreachable daemon.
+- CLI: `li kill` confirms process identity before signalling, playbook specs
+  are validated before job creation (unknown fields rejected, real fields
+  accepted), and the daemon check reads the readiness endpoint so a serving
+  daemon stops reading as down.
+- Service layer: a vendor model id ending in an effort word is kept whole,
+  and the Opus line accepts `xhigh` instead of silently downgrading it.
+- State: mirrored provider refusals are recorded as failed, and an imported
+  session's role field no longer receives an engine label.
+- Protocols: Progression's permutation mutators are synchronized.
+- ReAct: the first analysis round receives the branch's tools.
+
+### Security
+
+- Raised the `gitpython` floor to 3.1.58.
+- The Operator no longer leaks credentials spelled with separators, and both
+  redaction layers read a field name the same way.
+
+### Changed
+
+- Inline prose across the tree was trimmed to working density, with rationale
+  relocated to `docs/internals/`.
+- Orchestration documentation explains playbooks, plans, and operations as
+  three distinct tiers, and ships play, fanout, and flow skills.
+
 ## [0.34.1] - 2026-08-07
 
 0.34.0 was tagged but never published to PyPI: its release build stopped on a

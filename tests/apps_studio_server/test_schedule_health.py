@@ -3,12 +3,12 @@
 """Tests for the schedule health verdict
 (healthy/failing/overdue/never-fired/no-evidence/disabled).
 
-Health is derived from cadence + recorded schedule_runs rows, never from
-next_fire_at -- these tests plant fixture rows for each state and assert the
-verdict lands where it should, including the shapes next_fire_at cannot
-represent: a schedule that has never recorded a row, one whose recorded rows
-never became a real execution (skipped/queued/pending), and one that keeps
-skipping instead of running.
+Health is derived from cadence + recorded schedule_runs rows and the threshold
+evaluation watermark, never from next_fire_at -- these tests plant fixture
+rows for each state and assert the verdict lands where it should, including
+the shapes next_fire_at cannot represent: a schedule that has never recorded a
+row, one whose recorded rows never became a real execution
+(skipped/queued/pending), and one that keeps skipping instead of running.
 """
 
 from __future__ import annotations
@@ -286,6 +286,126 @@ async def test_overdue_when_no_execution_within_expected_cadence(temp_db_path):
     assert row["health_state"] == "overdue"
 
 
+def test_threshold_health_uses_recent_evaluation_as_liveness():
+    now = time.time()
+    row = {
+        "enabled": 1,
+        "trigger_type": "interval",
+        "interval_sec": 300,
+        "threshold_config": {
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 60,
+        },
+        "created_at": now - 10_000,
+        "last_fired_at": now - 5_000,
+        "last_evaluated_at": now - 30,
+    }
+    evidence = {
+        "last_recorded_run_at": now - 5_000,
+        "last_executed_run_at": now - 5_000,
+        "last_executed_status": "completed",
+    }
+
+    result = compute_schedule_health(row, evidence, now=now)
+
+    assert result["health_state"] == "healthy"
+
+
+def test_quiet_threshold_alert_with_recent_evaluation_is_healthy():
+    now = time.time()
+    row = {
+        "enabled": 1,
+        "trigger_type": "interval",
+        "interval_sec": 300,
+        "threshold_config": {
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 60,
+        },
+        "created_at": now - 10_000,
+        "last_fired_at": None,
+        "last_evaluated_at": now - 30,
+    }
+    evidence = {
+        "last_recorded_run_at": None,
+        "last_executed_run_at": None,
+        "last_executed_status": None,
+    }
+
+    result = compute_schedule_health(row, evidence, now=now)
+
+    assert result["health_state"] == "healthy"
+
+
+def test_threshold_alert_with_stale_evaluation_is_overdue():
+    now = time.time()
+    row = {
+        "enabled": 1,
+        "trigger_type": "interval",
+        "interval_sec": 300,
+        "threshold_config": {
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 60,
+        },
+        "created_at": now - 10_000,
+        "last_fired_at": None,
+        "last_evaluated_at": now - 5_000,
+    }
+    evidence = {
+        "last_recorded_run_at": None,
+        "last_executed_run_at": None,
+        "last_executed_status": None,
+    }
+
+    result = compute_schedule_health(row, evidence, now=now)
+
+    assert result["health_state"] == "overdue"
+
+
+def test_cron_threshold_alert_derives_cadence_without_an_execution():
+    """A cron threshold alert that has only ever been evaluated is still overdue.
+
+    Cron has no fixed period, so its expected gap is derived from two
+    occurrences after a reference instant. A threshold alert that never
+    breached has no execution to reference, and anchoring the derivation on
+    the execution timestamp therefore hands it None: the gap comes back
+    unknown, and a schedule whose evaluations stopped hours ago reports
+    healthy forever. The evaluation watermark is the reference in that case.
+
+    Interval schedules cannot cover this: their cadence resolves from
+    interval_sec before the reference instant is ever read.
+    """
+    now = time.time()
+    row = {
+        "enabled": 1,
+        "trigger_type": "cron",
+        "cron_expr": "*/5 * * * *",  # 300s gap -> overdue past max(900, 600)
+        "threshold_config": {
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 60,
+        },
+        "created_at": now - 10_000,
+        "last_fired_at": None,
+        "last_evaluated_at": now - 5_000,
+    }
+    evidence = {
+        "last_recorded_run_at": None,
+        "last_executed_run_at": None,
+        "last_executed_status": None,
+    }
+
+    result = compute_schedule_health(row, evidence, now=now)
+
+    assert result["health_state"] == "overdue"
+
+
 async def test_overdue_outranks_a_pile_of_recent_skips(temp_db_path):
     """A schedule skipping every occurrence must not read as fresh just
     because rows keep being recorded -- only executed rows count as evidence."""
@@ -314,10 +434,19 @@ async def test_disabled_takes_precedence_over_any_run_history(temp_db_path):
     assert detail["health_state"] == "disabled"
 
 
-async def test_cron_trigger_has_no_cadence_so_never_reports_overdue(temp_db_path):
+async def test_stopped_cron_schedule_reports_overdue(temp_db_path):
     sid = await _make_schedule(trigger_type="cron", cron_expr="0 18 * * *", interval_sec=None)
     now = time.time()
     await _seed_run(sid, status="completed", fired_at=now - 500_000)
+
+    row = await _list_row(sid)
+    assert row["health_state"] == "overdue"
+
+
+async def test_cron_schedule_firing_on_cadence_reports_healthy(temp_db_path):
+    sid = await _make_schedule(trigger_type="cron", cron_expr="*/5 * * * *", interval_sec=None)
+    now = time.time()
+    await _seed_run(sid, status="completed", fired_at=now - 60)
 
     row = await _list_row(sid)
     assert row["health_state"] == "healthy"

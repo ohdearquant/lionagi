@@ -44,6 +44,7 @@ _KNOWN_TRUE_KEYS = {
     "status",
     "startedAt",
     "endedAt",
+    "endedAtApproximate",
     "createdAt",
     "updatedAt",
     "lastMessageAt",
@@ -421,7 +422,11 @@ async def test_run_detail_happy_path(db_path):
     assert result["runId"] == sid
     assert result["id"] == sid
     assert result["status"] == "completed"
-    assert result["effectiveHealth"] == "healthy"
+    # A terminal run's vacuous "healthy" is dropped from the projection:
+    # health is a liveness concept, and "healthy" beside a terminal status
+    # reads as a claim about the run's outcome. Only a pathological verdict
+    # (leftover locks) would still be projected here.
+    assert result["effectiveHealth"] is None
     assert result["project"] == "acme-research"
     assert result["totalCostUsd"] == 1.23
     assert result["task"] == ""
@@ -563,3 +568,76 @@ async def test_run_detail_race_between_preflight_and_carrier_reports_unavailable
     assert set(result) == _KNOWN_FALSE_KEYS
     assert result == {"known": False, "source": "unavailable"}
     assert calls["n"] == 2, "must recheck availability exactly once after the None"
+
+
+async def test_run_detail_reports_whether_the_end_was_measured_or_reconstructed(db_path):
+    """A reconstructed end has to arrive labelled. The reader has no second
+    source for the provenance, so a projection that drops the flag turns a
+    guess into a measurement for everyone downstream of it."""
+    import sqlite3
+
+    measured_id = str(uuid.uuid4())
+    reconstructed_id = str(uuid.uuid4())
+    for sid in (measured_id, reconstructed_id):
+        await seed_session(
+            db_path, session_id=sid, status="completed", started_at=1000.0, ended_at=1050.0
+        )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "UPDATE sessions SET ended_at_is_approximate = 1 WHERE id = ?", (reconstructed_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    from lionagi.studio.operator.run_detail import run_detail
+
+    reconstructed = await run_detail({"run_id": reconstructed_id})
+    # Control: the same shape with a measured end reports the other value, so
+    # this is a test of the flag rather than of a constant.
+    measured = await run_detail({"run_id": measured_id})
+
+    assert reconstructed["endedAtApproximate"] is True
+    assert measured["endedAtApproximate"] is False
+
+
+async def test_every_projection_that_emits_an_end_also_emits_its_provenance():
+    """Guards the class rather than the three known sites.
+
+    The flag and the end are one fact. Each was added to its projection by
+    hand, and the failure that keeps happening is a projection that carries
+    the end and silently drops the label. This reads the source rather than
+    the output so that a projection added later is covered without anyone
+    remembering to come back here.
+    """
+    import ast
+
+    roots = [
+        Path(__file__).resolve().parents[2] / "lionagi" / "studio",
+        Path(__file__).resolve().parents[2] / "lionagi" / "cli",
+    ]
+    files = [p for root in roots for p in root.rglob("*.py")]
+    assert files, "no source files found -- the walk is broken, not the code"
+
+    missing: list[str] = []
+    checked = 0
+    for path in files:
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Dict):
+                continue
+            keys = {k.value for k in node.keys if isinstance(k, ast.Constant)}
+            if "endedAt" not in keys:
+                continue
+            checked += 1
+            if "endedAtApproximate" not in keys:
+                missing.append(f"{path.name}:{node.lineno}")
+
+    # A walk that found no projections would pass this test while proving
+    # nothing, so the population is asserted before the result is read.
+    assert checked >= 3, f"expected at least 3 endedAt projections, found {checked}"
+    assert not missing, "projections emitting endedAt without endedAtApproximate: " + ", ".join(
+        missing
+    )

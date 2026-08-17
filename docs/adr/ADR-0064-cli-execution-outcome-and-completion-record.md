@@ -4,7 +4,14 @@
 - **Kind**: Retrospective
 - **Area**: cli-surface
 - **Date**: 2026-07-09
-- **Relations**: supersedes v0-0029
+- **Relations**: supersedes v0-0029; prospectively amended by ADR-0123 (canonical Run)
+
+## Proposed ADR-0123 boundary
+
+The shipped CLI bytes, success classification, and StateDB-over-process-exit rule remain during
+migration. ADR-0123 renames the filesystem resource to `RunWorkspace`, makes a new durable Run the
+attempt authority, and supplies a complete legacy kind/status mapping. A manifest remains an
+export/evidence source and cannot independently terminalize the canonical Run.
 
 ## Context
 
@@ -758,6 +765,7 @@ claiming the derived path or reused row is a complete execution model.
 | 2 | Separate reusable conversation branches from immutable execution outcomes; acceptance: every manual resume creates or deliberately appends to a modeled execution record, and its final outcome is persisted before the command returns an exit code. | M | (filled at issue-open time) |
 | 3 | Introduce a lifecycle-owned persistence scope for CLI and Studio execution; acceptance: one-shot cleanup retains its connection/thread reclamation tests while concurrent long-lived runs cannot close one another's StateDB handle. | M | (filled at issue-open time) |
 | 4 | Align the schedule-run schema, `VALID_STATUSES_BY_ENTITY_TYPE`, and `TERMINAL_STATUSES_BY_ENTITY_TYPE`; acceptance: every schema-valid terminal schedule status, including `timed_out`, is writable through `update_status` and causes `li wait` to terminate with the documented success/failure class. | S | Resolved on main (`lionagi/state/lifecycle/policy.py`) |
+| 5 | Make creation and terminalization of CLI/orchestration persistence records resilient to bounded SQLite writer contention without globally retrying arbitrary `StateDB` transactions; acceptance: five concurrent jobs under transient contention either persist through idempotent bounded retry/spooling or return one explicit persistence failure, setup never silently disables persistence for the run, and every recorded terminal outcome remains queryable. | M | (filled at issue-open time) |
 
 ## Alternatives considered
 

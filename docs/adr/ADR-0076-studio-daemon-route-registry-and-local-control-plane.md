@@ -224,6 +224,18 @@ Exact semantics:
   catch-up window, and polls every `5` seconds. These values are inherited operating
   defaults; the source records bounded catch-up and live tailing as the reasons, but
   no measurement selecting exactly 24 hours or 5 seconds.
+- The conventional `~/.lionagi` profile may mirror the ambient
+  `~/.claude/projects` and `~/.codex/sessions` trees by default. Any explicitly
+  selected, different `LIONAGI_HOME` is isolated: Studio starts no ambient mirror
+  unless `LIONAGI_STUDIO_MIRROR_CLAUDE_ROOT` and/or
+  `LIONAGI_STUDIO_MIRROR_CODEX_ROOT` names a source, or
+  `LIONAGI_STUDIO_MIRROR_IMPORT_AMBIENT=1` explicitly restores ambient imports.
+  A custom root wins over the corresponding ambient root, and a missing root
+  removes that provider from a `both` request rather than falling through to home.
+- Mirror startup logs describe the provider selection and window, never source
+  paths or transcript content. An unexpected task failure reports only its exception
+  class at this boundary; detailed transcript-bearing exceptions are not rendered
+  into the user-facing startup log.
 - Mirror shutdown signals its stop event and waits up to 10 seconds, then cancels the
   task. Ten seconds is a backstop inherited from the implementation; no recorded
   measurement justifies the exact value.
@@ -347,9 +359,11 @@ Fetch-based consumers are required when bearer auth is enabled because native
 | # | Delta | Size | Issue |
 |---|---|---|---|
 | 1 | Generate and verify the mounted Studio route manifest and OpenAPI snapshot in CI; fail when an intended public service is absent or an existing method/path changes without an explicit compatibility update. | S | (filled at issue-open time) |
-| 2 | Define a shared SSE frame envelope, error frame, terminal frame, and reconnect-cursor rule for session, signal, show, and Leo streams while preserving endpoint-specific payloads. | M | (filled at issue-open time) |
+| 2 | Define a shared SSE frame envelope, error and terminal frames, a stable replay cursor (composite where timestamps can collide), bounded batch semantics, and reconnect rules for session, signal, show, and Leo streams while preserving endpoint-specific payloads; acceptance covers same-timestamp inserts, reconnect after a partial batch, explicit truncation, prompt cancellation cleanup, and shared web/VS Code behavior fixtures. | M | (filled at issue-open time) |
 | 3 | Decide whether filesystem show import is a browser-admin mutation or a CLI maintenance operation, then enforce one policy with matching authorization and confirmation behavior. | S | (filled at issue-open time) |
 | 4 | Document and test API-only, daemon-hosted SPA, Vite development, and container/reverse-proxy modes against the same host, CORS, token, and API-base rules. | S | (filled at issue-open time) |
+| 5 | Separate stream-subscription lifetime from per-poll database setup and bound per-viewer work; acceptance: idle viewers do not open a new database connection or repeat schema discovery every 500 ms, terminal checks use bounded/shared reads, disconnect closes promptly, and a repeatable benchmark records query and connection growth as viewer count rises. | M | (filled at issue-open time) |
+| 6 | Put a measured bound and observable phase/progress on startup reconciliation while preserving D3's correctness gate; acceptance: a seeded large database reaches ready within the agreed budget, only non-authoritative maintenance is deferred, and no stale execution row is exposed as healthy before reconciliation completes. | M | (filled at issue-open time) |
 
 ## Alternatives considered
 

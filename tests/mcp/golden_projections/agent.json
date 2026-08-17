@@ -2,7 +2,7 @@
   "path": "agent",
   "schema": {
     "additionalProperties": false,
-    "description": "Spawn a single subagent and wait for its final response. Flags may appear anywhere relative to the positionals. Use -r / -c to continue a previous conversation. Use -a to load a profile from .lionagi/agents/. Use --preset to apply a built-in agent configuration. Use --form to load and validate structured inputs before invoking. Use --context-from to hand a new agent distilled context from a prior session/branch/run/file.",
+    "description": "Spawn a single subagent and wait for its final response. Flags may appear anywhere relative to the positionals. Use `resume` / `continue_last` to continue a previous conversation. Use `agent` to load a profile from .lionagi/agents/. Use `preset` to apply a built-in agent configuration. Use `form` to load and validate structured inputs before invoking. Use `context_from` to hand a new agent distilled context from a prior session/branch/run/file.",
     "properties": {
       "agent": {
         "description": "Load agent profile by name. Resolves .lionagi/agents/<NAME>/<NAME>.md first, then .lionagi/agents/<NAME>.md, then a trusted+enabled plugin's declared profile ('<plugin>/<NAME>', or a bare NAME when only one plugin declares it). Profile provides system prompt, default model, effort, yolo, timeout, resume_on_timeout. CLI flags override profile settings.",
@@ -19,12 +19,12 @@
         "x-flag": "--bypass"
       },
       "context_budget": {
-        "description": "Total token budget for --context-from content (default 8000; ~4 chars/token).",
+        "description": "Total token budget for `context_from` content (default 8000; ~4 chars/token).",
         "type": "integer",
         "x-flag": "--context-budget"
       },
       "context_from": {
-        "description": "Inject distilled context from a prior session id, branch id, run id, or file path into this new branch's first instruction, above the prompt. Repeatable (concatenated in argv order); the total budget (see --context-budget) is shared across all refs. Rejected in combination with -r / --resume or -c / --continue-last.",
+        "description": "Inject distilled context from a prior session id, branch id, run id, or file path into this new branch's first instruction, above the prompt. Repeatable (concatenated in argv order); the total budget (see `context_budget`) is shared across all refs. Rejected in combination with `resume` or `continue_last`.",
         "items": {
           "type": "string"
         },
@@ -76,12 +76,12 @@
       },
       "list_profiles": {
         "default": false,
-        "description": "Print every agent profile -a would resolve, as JSON, and exit without running anything. Use it to find out what names are available here.",
+        "description": "Print every agent profile `agent` would resolve, as JSON, and exit without running anything. Use it to find out what names are available here.",
         "type": "boolean",
         "x-flag": "--list-profiles"
       },
       "mcp_config": {
-        "description": "Read this MCP config and hand its servers to the leg explicitly. By default the nearest .mcp.json at or above the directory this command was run in is used, so the leg's tools come from the submission rather than from --cwd. The file is read once at spawn.",
+        "description": "Read this MCP config and hand its servers to the leg explicitly. By default the nearest .mcp.json at or above the directory this command was run in is used, so the leg's tools come from the submission rather than from `cwd`. The file is read once at spawn.",
         "type": "string",
         "x-flag": "--mcp-config"
       },
@@ -120,7 +120,7 @@
         "x-flag": "--prompt"
       },
       "query": {
-        "description": "Optional model spec followed by the prompt. Model is one of 'claude', 'codex', 'gemini-code' (defaults), or a full spec like 'claude/opus'; omit it when -a / --resume / -c provides one. The prompt may instead be passed via --prompt or --prompt-file.",
+        "description": "Optional model spec followed by the prompt. Model is one of 'claude', 'codex', 'gemini-code' (defaults), or a full spec like 'claude/opus'; omit it when `agent` / `resume` / `continue_last` provides one. The prompt may instead be passed via `prompt_flag` or `prompt_file`.",
         "items": {
           "type": "string"
         },
@@ -128,7 +128,7 @@
         "x-positional": true
       },
       "resume": {
-        "description": "Continue a previous run by its branch id, keeping that conversation's history. Cannot be combined with --context-from, which is for starting fresh.",
+        "description": "Continue a previous run by its branch id, keeping that conversation's history. Cannot be combined with `context_from`, which is for starting fresh.",
         "type": "string",
         "x-aliases": [
           "-r"
@@ -137,7 +137,7 @@
       },
       "resume_on_timeout": {
         "default": false,
-        "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+        "description": "If the run terminates on `timeout`, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
         "type": "boolean",
         "x-flag": "--resume-on-timeout"
       },

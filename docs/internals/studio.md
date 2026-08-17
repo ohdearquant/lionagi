@@ -616,9 +616,6 @@ never half-emitted.
 - **Audit event ordering** — Runs after the prune transaction commits;
   `insert_admin_event` opens its own write transaction, and nesting it inside
   the prune transaction would self-deadlock on the sqlite write lock.
-
-## lionagi/studio/services/db_maintenance.py
-
 - **`_session_retention_predicate`** — What makes a session prunable
   (terminal status AND no activity since a cutoff), built as one reusable
   SQL fragment + params rather than a full statement, because the prune
@@ -1384,10 +1381,9 @@ free-text field goes through `scrub_text` and `project` through
 `public_project`; `manifest` (an unbounded mapping) goes through the
 recursive redactor plus a byte cap. These fields are redacted even though
 today's StateDB-backed carrier already fills most of them with safe
-placeholders, because the projection has to be safe for what the field
-names promise across every backing carrier (a manifest-backed builder
-elsewhere fills the same names from raw, untrusted manifest text), not
-just for the values one code path happens to supply right now.
+placeholders, because the projection contract must remain safe for future
+backing carriers rather than depending on the values one current path happens
+to supply.
 
 `run_progress` reports operation counts two ways depending on what the run
 has: for an ordinary run it counts branches by status; for a DAG run (one
@@ -1405,9 +1401,9 @@ it was written to do) while still being counted separately in
 caller can tell "nothing happened" from "the field doesn't exist yet."
 
 `run_findings` derives tool-call outcomes (`success`/`error`/`pending`)
-from message content via the same `_detect_status` heuristic
-`lionagi.studio.services.runs` already uses for the run-detail step list,
-since plain session messages carry no structured `ok: bool`. Every section
+from message content via the shared `_detect_status` heuristic retained in
+`lionagi.studio.services.runs` for Session/operator projections, since plain
+session messages carry no structured `ok: bool`. Every section
 here is bounded by a message *window* (the carrier is called with a fixed
 `message_limit`) before any byte cap ever applies — the byte cap almost
 never fires in practice, so `truncated` reports both, and the response

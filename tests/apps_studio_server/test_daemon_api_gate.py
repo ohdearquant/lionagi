@@ -54,6 +54,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/api/agents/{name}"),
     ("DELETE", "/api/attention/dispositions/{item_id}"),
     ("DELETE", "/api/engine-defs/{def_id}"),
+    ("DELETE", "/api/hooks/library/{name}"),
     ("DELETE", "/api/mcp/servers/{name}"),
     ("DELETE", "/api/operator/conversations/{conversation_id}"),
     ("DELETE", "/api/playbooks/{name}"),
@@ -81,6 +82,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/engine-defs/{def_id}"),
     ("GET", "/api/engine-runs/"),
     ("GET", "/api/engine-runs/{run_id}"),
+    ("GET", "/api/hooks/library"),
     ("GET", "/api/invocations/"),
     ("GET", "/api/invocations/{invocation_id}"),
     ("GET", "/api/mcp/servers/"),
@@ -88,6 +90,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/operator/conversations"),
     ("GET", "/api/operator/conversations/{conversation_id}"),
     ("GET", "/api/operator/conversations/{conversation_id}/stream"),
+    ("GET", "/api/operator/hooks"),
     ("GET", "/api/operator/models"),
     ("GET", "/api/playbook-templates/"),
     ("GET", "/api/playbook-templates/{name}"),
@@ -187,7 +190,9 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("PUT", "/api/agents/{name}"),
     ("PUT", "/api/attention/dispositions/{item_id}"),
     ("PUT", "/api/engine-defs/{def_id}"),
+    ("PUT", "/api/hooks/library/{name}"),
     ("PUT", "/api/mcp/servers/{name}"),
+    ("PUT", "/api/operator/hooks"),
     ("PUT", "/api/playbooks/{name}"),
     ("PUT", "/api/projects/{name}"),
     ("PUT", "/api/workflow-defs/{def_id}"),
@@ -269,7 +274,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 131
+    assert len(_GOLDEN_ROUTES) == 136
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -465,6 +470,7 @@ def test_admin_health_response_shape(tmp_path, monkeypatch):
         "code_identity",
         "db",
         "diagnostic_run_at",
+        "process_snapshot",
         "scheduler_timezone",
         "sessions",
     ]
@@ -569,7 +575,9 @@ _SESSION_DETAIL_KEYS = sorted(
         "duration_ms",
         "effort",
         "ended_at",
+        "ended_at_is_approximate",
         "graph",
+        "has_control_consumer",
         "id",
         "input_tokens",
         "invocation_id",
@@ -583,6 +591,7 @@ _SESSION_DETAIL_KEYS = sorted(
         "name",
         "node_metadata",
         "output_tokens",
+        "pause_is_held",
         "playbook_name",
         "project",
         "project_source",
@@ -687,6 +696,7 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "id",
         "interval_sec",
         "last_alert_at",
+        "last_evaluated_at",
         "last_fired_at",
         "last_healthy_poll_at",
         "last_status",

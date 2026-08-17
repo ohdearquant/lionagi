@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -107,8 +108,15 @@ class _SessionBackedEngineRun:
     async def run_dag(self, graph, **kwargs):
         inspect.signature(EngineRun.run_dag).bind(self, graph, **kwargs)
         assert isinstance(graph, Graph)
-        assert set(kwargs) == _RUN_DAG_KEYWORDS
         self.session.run_dag_calls.append((graph, dict(kwargs)))
+        # Route on a semantic difference between the phases rather than on the
+        # exact set of keywords: the execution phase builds worker branches and
+        # synthesis does not, so on_branch_created is what tells them apart.
+        # Keying on the whole kwargs set made this a second routing contract
+        # that had to be edited in step with every new run_dag option.
+        if "on_branch_created" not in kwargs:
+            return await self.session.flow(graph, verbose=kwargs["verbose"])
+        assert set(kwargs) == _RUN_DAG_KEYWORDS
         node_ids = tuple(node.id for node in graph.internal_nodes)
         assert len(node_ids) == len(self.session.execution_responses)
         return {
@@ -156,7 +164,7 @@ def _env(tmp_path, execution_responses: list[str], *, spawned_operations: int = 
 
 
 def _assert_run_dag_contract(env, *, expected_max_concurrent: int = 2) -> None:
-    assert len(env.session.run_dag_calls) == 1
+    assert env.session.run_dag_calls
     graph, kwargs = env.session.run_dag_calls[0]
     assert graph is env.builder.get_graph()
     on_branch_created = kwargs.pop("on_branch_created")
@@ -257,6 +265,7 @@ async def test_run_flow_inner_sequences_phases_and_propagates_results_to_synthes
         "[implementer via implementer]: implementation output",
     ]
     _assert_run_dag_contract(env)
+    assert len(env.session.run_dag_calls) == 2
     assert len(env.session.flow_calls) == 1
     assert "research output" in output
     assert "implementation output" in output
@@ -294,6 +303,7 @@ async def test_run_flow_inner_with_synthesis_controls_synthesis_gate(
     )
 
     _assert_run_dag_contract(env)
+    assert len(env.session.run_dag_calls) == 1 + int(expected_synthesis)
     assert len(env.session.flow_calls) == int(expected_synthesis)
     assert ("synthesized deliverable" in output) is expected_synthesis
     assert len(env.builder.get_graph().internal_nodes) == (3 if expected_synthesis else 2)
@@ -413,6 +423,59 @@ async def test_run_flow_inner_max_ops_caps_planning_request(
     assert "BUDGET: at most 2 ops total" in planner.calls[0]["guidance"]
     assert env.session.run_dag_calls == []
     fake_runtime.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_flow_inner_zero_spawn_capacity_withholds_spawn_tool(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, fake_runtime
+):
+    planner = _Planner([_assignments()], expected_max_tasks=2)
+    grants: list[bool] = []
+
+    async def capture_spawn_grant(env, *, agent_id, grant_spawn, **kwargs):
+        grants.append(grant_spawn)
+        branch = Branch(name=agent_id)
+        env.session.include_branches(branch)
+        return branch, "fake/model", None, False
+
+    monkeypatch.setattr(flow_module, "plan", planner)
+    monkeypatch.setattr(flow_module, "build_worker_branch", capture_spawn_grant)
+    env = _env(tmp_path, ["research output", "implementation output"])
+
+    await _run_flow_inner(
+        "codex/gpt-5.5",
+        "characterize the flow",
+        env=env,
+        max_ops=2,
+        reactive_spec="all",
+    )
+
+    assert grants == [False, False]
+    assert env.session.run_dag_calls[0][1]["max_spawn"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_flow_inner_records_effective_spawn_capacity(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, fake_runtime
+):
+    planner = _Planner([_assignments()], expected_max_tasks=2)
+    monkeypatch.setattr(flow_module, "plan", planner)
+    env = _env(tmp_path, ["research output", "implementation output"])
+    env.run.checkpoint_path = tmp_path / "checkpoint.json"
+
+    await _run_flow_inner(
+        "codex/gpt-5.5",
+        "characterize the flow",
+        env=env,
+        max_ops=2,
+        reactive_spec="all",
+        checkpoint_config={"model_spec": "codex/gpt-5.5"},
+    )
+
+    checkpoint = json.loads(env.run.checkpoint_path.read_text())
+    assert checkpoint["max_spawn"] == 0
+    assert env._finalize_extras["reactive"] is True
+    assert env._finalize_extras["max_spawn"] == 0
 
 
 @pytest.mark.asyncio

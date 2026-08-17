@@ -324,11 +324,12 @@ def _validate_flow_yaml_spec(yaml_text: str) -> str | None:
     return validate_flow_spec_fields(normalize_flow_spec_keys(data))
 
 
-# Health severity is computed from cadence + observed schedule_runs rows,
-# never from next_fire_at -- next_fire_at is a promise the scheduler made,
-# not evidence that anything happened. A missed-fire/overlap/capacity skip
-# advances the cursor while recording no execution, so silence hidden behind
-# a pile of skips must still read as overdue, not healthy.
+# Health severity is computed from cadence + observed schedule_runs rows and,
+# for threshold alerts, the completed-evaluation watermark. It is never based
+# on next_fire_at -- next_fire_at is a promise the scheduler made, not evidence
+# that anything happened. A missed-fire/overlap/capacity skip advances the
+# cursor while recording no execution, so silence hidden behind a pile of skips
+# must still read as overdue, not healthy.
 _HEALTH_OVERDUE_MULTIPLIER = 3
 _HEALTH_OVERDUE_GRACE_FLOOR_SEC = 300  # 5 minutes
 
@@ -341,14 +342,40 @@ _HEALTH_FAILING_THRESHOLD = 1
 _HEALTH_FAILING_OUTCOMES = ("failed", "timed_out")
 
 
-def _schedule_cadence_seconds(row: dict[str, Any]) -> float | None:
-    # Shares the scheduler's own cadence resolution rather than retyping its
-    # fallback chain -- cron/at have no fixed period and resolve to None,
-    # which skips overdue detection for them rather than guessing from
-    # next_fire_at.
-    from ..scheduler.engine import resolve_schedule_cadence_seconds
+def _schedule_cadence_seconds(row: dict[str, Any], *, reference_at: float) -> float | None:
+    """Return the schedule's expected occurrence gap at ``reference_at``.
 
-    return resolve_schedule_cadence_seconds(row)
+    Fixed-period triggers share the scheduler's cadence resolver. Cron is not
+    fixed-period, so derive its local expected gap from two consecutive
+    occurrences after ``reference_at`` -- the newest liveness evidence the
+    caller has, which is the last execution for most schedules and the last
+    threshold evaluation for a detector that evaluates without firing. This
+    uses the same timezone resolver as the scheduler and never trusts
+    ``next_fire_at`` -- a stored cursor is a promise, not evidence of work.
+    """
+    from ..scheduler.engine import resolve_schedule_cadence_seconds, resolve_schedule_timezone
+
+    cadence = resolve_schedule_cadence_seconds(row)
+    if cadence is not None or row.get("trigger_type") != "cron":
+        return cadence
+
+    expr = row.get("cron_expr")
+    if not expr:
+        return None
+    try:
+        from croniter import croniter
+
+        start = datetime.fromtimestamp(reference_at, tz=resolve_schedule_timezone(row).tzinfo)
+        occurrences = croniter(expr, start_time=start)
+        first = occurrences.get_next(float)
+        second = occurrences.get_next(float)
+        gap = second - first
+        return gap if math.isfinite(gap) and gap > 0 else None
+    except Exception:
+        # Creation/update validation prevents this for current rows. Preserve
+        # list/detail availability for malformed legacy rows instead of making
+        # a read-only health badge take the whole schedules endpoint down.
+        return None
 
 
 def compute_schedule_health(
@@ -365,9 +392,12 @@ def compute_schedule_health(
     its schedule_runs history was pruned by retention; this table cannot
     distinguish those shapes from each other, so it reports "cannot tell"
     rather than guessing either way), overdue (enabled, cadence known, and
-    no execution evidence within grace of the expected cadence), failing
-    (the single latest executed run's outcome was failed/timed_out -- see
-    _HEALTH_FAILING_THRESHOLD), healthy (otherwise).
+    no liveness evidence within grace of the expected cadence), failing (the
+    single latest executed run's outcome was failed/timed_out -- see
+    _HEALTH_FAILING_THRESHOLD), healthy (otherwise). For a threshold alert,
+    ``last_evaluated_at`` is liveness evidence even when the metric did not
+    breach and therefore no schedule_run was created. It does not replace the
+    latest executed outcome used for the failing verdict.
 
     ``schedules.last_fired_at`` is a retained per-schedule column written by
     the normal occurrence paths -- it survives schedule_runs retention
@@ -383,20 +413,26 @@ def compute_schedule_health(
     last_executed_status = evidence.get("last_executed_status")
     last_recorded_at = evidence.get("last_recorded_run_at")
     last_fired_at = row.get("last_fired_at")
+    last_evaluated_at = row.get("last_evaluated_at") if row.get("threshold_config") else None
 
     if not row.get("enabled"):
         state = "disabled"
-    elif last_executed_at is None:
+    elif last_executed_at is None and last_evaluated_at is None:
         state = (
             "never-fired" if last_recorded_at is None and last_fired_at is None else "no-evidence"
         )
     else:
-        cadence_seconds = _schedule_cadence_seconds(row)
+        liveness_at = max(
+            timestamp
+            for timestamp in (last_executed_at, last_evaluated_at)
+            if timestamp is not None
+        )
+        cadence_seconds = _schedule_cadence_seconds(row, reference_at=liveness_at)
         overdue = (
             cadence_seconds is not None
             and cadence_seconds > 0
             and (
-                now - last_executed_at
+                now - liveness_at
                 > max(
                     cadence_seconds * _HEALTH_OVERDUE_MULTIPLIER,
                     cadence_seconds + _HEALTH_OVERDUE_GRACE_FLOOR_SEC,

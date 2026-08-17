@@ -116,7 +116,8 @@
       "busyPlaceholder": "Operator is working…",
       "hint": "Enter to send · Shift+Enter for a new line",
       "send": "Send",
-      "sending": "Sending…"
+      "sending": "Sending…",
+      "autoAllow": "Auto-allow proposals"
     },
     "message": {
       "you": "You",
@@ -169,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "Default",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · recommended",
+      "legacyGroup": "Legacy selection",
+      "efforts": "Effort: {efforts}",
+      "effortInModel": "Effort is encoded in the model ID",
+      "effortAsSetting": "Effort is sent as a provider setting"
     },
     "effort": {
       "label": "Effort",
@@ -376,7 +382,39 @@
     },
     "tabsAria": "Library tabs",
     "masterAria": "Library catalog",
-    "detailAria": "Item detail"
+    "detailAria": "Item detail",
+    "filterHooks": "Hooks",
+    "hooks": {
+      "title": "Hooks",
+      "description": "Named, reusable hooks defined once here, then assembled per agent: each agent binds hooks from this library to events (before a tool call, on prompt submit, after a response). The same assembly runs on any provider CLI.",
+      "libraryTitle": "Hook library",
+      "newHook": "New hook",
+      "emptyLibrary": "No hooks defined yet. Create one to make it assemblable by every agent.",
+      "emptyLibraryHint": "Define hooks in the library first — attachments bind library hooks to events.",
+      "operatorTitle": "Operator assembly",
+      "operatorDescription": "Hooks the Studio Operator runs. The Operator inherits no user or project settings, so hooks attached here are the only ones its turns load.",
+      "enabled": "Enabled",
+      "save": "Save",
+      "saving": "Saving…",
+      "savedNotice": "Saved — applies from the next turn.",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "fieldName": "Name",
+      "fieldDescription": "Description",
+      "fieldCommand": "Command",
+      "fieldTimeout": "Timeout (seconds)",
+      "nameRequired": "A hook needs a name.",
+      "timeoutInvalid": "Timeout must be a number.",
+      "noAttachments": "No hooks attached.",
+      "attachmentHook": "Hook",
+      "attachmentOn": "on",
+      "attachmentEvent": "Event",
+      "attachmentMatcher": "Matcher",
+      "matcherPlaceholder": "matcher (optional)",
+      "removeAttachment": "Remove attachment",
+      "addAttachment": "Attach hook",
+      "agentSectionTitle": "Hooks"
+    }
   },
   "history": {
     "title": "History",
@@ -445,6 +483,8 @@
       "statMessages": "Messages",
       "statToolCalls": "Tool calls",
       "statErrors": "Errors",
+      "statTokensIn": "Tokens in",
+      "statTokensOut": "Tokens out",
       "statTopic": "Topic",
       "statPlay": "Play",
       "statPlaybook": "Workflow",
@@ -481,6 +521,7 @@
       "graphNodeStatusDone": "done",
       "graphNodeStatusFailed": "failed",
       "graphNodeStatusSkipped": "skipped",
+      "graphNodeStatusCancelled": "cancelled",
       "graphNodeStatusEscalated": "escalated",
       "progressTotal": "Total",
       "progressCompleted": "Completed",
@@ -517,10 +558,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "No command exists yet to carry this out."
+          "no-executable-path": "No command exists yet to carry this out.",
+          "no-project-scope": "This run has no project, so a control cannot be authorized for it."
         }
       }
     },

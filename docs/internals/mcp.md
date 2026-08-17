@@ -297,12 +297,16 @@ Inconclusive (settle nothing about death):
 - `possibly_orphaned` flags a gone process with no end recorded whose loss
   wasn't conclusively established (unaskable pid, or an unpublishable
   transition) — advisory, never makes the run terminal.
-- `mcp_config*` mirror what `submit()`'s handle returned. `mcp_config_servers`:
-  `[]` means the question was settled with "none"; `null` means either the
-  caller named their own config (never read by this run), no config was found,
-  or the record predates the field — `mcp_config_reason` disambiguates the
-  first two. This reports what was RESOLVED, not that the child's provider
-  then actually started each server.
+- `mcp_config*` mirror what `submit()`'s handle returned.
+  `declared_mcp_servers` names only the servers in the config snapshot LionAGI
+  wrote: `[]` means that declaration was settled as empty; `null` means either
+  the caller named their own config (never read by this run), no config was
+  found, or the record predates the field — `mcp_config_reason` disambiguates
+  the first two. It is not an effective-capability report: a CLI provider may
+  merge global or cwd-resolved configuration and LionAGI does not observe which
+  declared servers started successfully. `mcp_config_servers` is retained as a
+  deprecated alias with the same value; it must not be read as the effective
+  server set.
 - `known` / `record_state`: only `"absent"` means the run is unknown;
   `"unreadable"`/`"wrong_shape"` mean a file is on disk and damaged — reporting
   either as unknown would send an operator away from a file that exists.
@@ -319,8 +323,12 @@ not-terminal-yet and no-notifier-configured — silence is the documented
 default there, never a failure — and `delivered_unverified` is deliberately
 not collapsed into either neighbor (a zero exit from a command shape whose
 zero exit doesn't prove a send supports neither claim). `unknown` means the
-attempt began but the process ended before its final result could replace the
-write-ahead record; inspect or reconcile it rather than treating it as success.
+attempt began but its final result never replaced the write-ahead record —
+either the process ended first, or the delivery was stopped part-way for
+running past its deadline. A stopped delivery is not `failed`: a notifier can
+send the notice and then hang, and `failed` reads as an instruction to send it
+again. Inspect or reconcile an `unknown` rather than treating it as either
+success or a clean non-delivery.
 
 #### signal-leader-group-safety
 
@@ -508,6 +516,14 @@ Nothing in this path raises: the caller is either a terminal path that has
 already finished, or a read that has already published a durable end, and
 neither can be failed by a notifier. Every way a delivery does not happen
 comes back as an outcome describing it.
+
+When this hook is launched by the flow terminal adapter, the adapter's
+versioned payload is already present in `LIONAGI_NOTIFY_PAYLOAD`. The hook
+accepts its `reason_code` only if it belongs to the controlled runtime
+vocabulary, then preserves it on the MCP job record and offers it to the
+configured downstream notifier. This prevents a degraded completed flow from
+being flattened back to `run.completed.ok` at the outer job boundary; malformed
+or unregistered environment content is ignored rather than persisted.
 
 ### `mcp/projection.py`
 

@@ -198,6 +198,61 @@
       "team.receive",
       "team.send",
       "team.show"
+    ],
+    "entry_key_sets": [
+      [
+        [
+          "available",
+          "cli_path",
+          "summary",
+          "verb"
+        ],
+        26
+      ],
+      [
+        [
+          "required",
+          "required_unenforced",
+          "schema_fingerprint_varies_with",
+          "summary",
+          "verb"
+        ],
+        1
+      ],
+      [
+        [
+          "required",
+          "summary",
+          "verb"
+        ],
+        24
+      ],
+      [
+        [
+          "required_unenforced",
+          "schema_fingerprint",
+          "schema_fingerprint_varies_with",
+          "summary",
+          "verb"
+        ],
+        1
+      ],
+      [
+        [
+          "required_unenforced",
+          "schema_fingerprint",
+          "summary",
+          "verb"
+        ],
+        2
+      ],
+      [
+        [
+          "summary",
+          "verb"
+        ],
+        16
+      ]
     ]
   },
   "projections": {
@@ -213,7 +268,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Optional model spec followed by the prompt. Model is one of 'claude', 'codex', 'gemini-code' (defaults), or a full spec like 'claude/opus'; omit it when -a / --resume / -c provides one. The prompt may instead be passed via --prompt or --prompt-file.",
+            "description": "Optional model spec followed by the prompt. Model is one of 'claude', 'codex', 'gemini-code' (defaults), or a full spec like 'claude/opus'; omit it when `agent` / `resume` / `continue_last` provides one. The prompt may instead be passed via `prompt_flag` or `prompt_file`.",
             "x-positional": true
           },
           "prompt_flag": {
@@ -236,13 +291,13 @@
           },
           "list_profiles": {
             "type": "boolean",
-            "description": "Print every agent profile -a would resolve, as JSON, and exit without running anything. Use it to find out what names are available here.",
+            "description": "Print every agent profile `agent` would resolve, as JSON, and exit without running anything. Use it to find out what names are available here.",
             "default": false,
             "x-flag": "--list-profiles"
           },
           "resume": {
             "type": "string",
-            "description": "Continue a previous run by its branch id, keeping that conversation's history. Cannot be combined with --context-from, which is for starting fresh.",
+            "description": "Continue a previous run by its branch id, keeping that conversation's history. Cannot be combined with `context_from`, which is for starting fresh.",
             "x-flag": "--resume",
             "x-aliases": [
               "-r"
@@ -283,17 +338,17 @@
             "items": {
               "type": "string"
             },
-            "description": "Inject distilled context from a prior session id, branch id, run id, or file path into this new branch's first instruction, above the prompt. Repeatable (concatenated in argv order); the total budget (see --context-budget) is shared across all refs. Rejected in combination with -r / --resume or -c / --continue-last.",
+            "description": "Inject distilled context from a prior session id, branch id, run id, or file path into this new branch's first instruction, above the prompt. Repeatable (concatenated in argv order); the total budget (see `context_budget`) is shared across all refs. Rejected in combination with `resume` or `continue_last`.",
             "x-flag": "--context-from"
           },
           "context_budget": {
             "type": "integer",
-            "description": "Total token budget for --context-from content (default 8000; ~4 chars/token).",
+            "description": "Total token budget for `context_from` content (default 8000; ~4 chars/token).",
             "x-flag": "--context-budget"
           },
           "mcp_config": {
             "type": "string",
-            "description": "Read this MCP config and hand its servers to the leg explicitly. By default the nearest .mcp.json at or above the directory this command was run in is used, so the leg's tools come from the submission rather than from --cwd. The file is read once at spawn.",
+            "description": "Read this MCP config and hand its servers to the leg explicitly. By default the nearest .mcp.json at or above the directory this command was run in is used, so the leg's tools come from the submission rather than from `cwd`. The file is read once at spawn.",
             "x-flag": "--mcp-config"
           },
           "no_mcp_config": {
@@ -365,7 +420,7 @@
           },
           "resume_on_timeout": {
             "type": "boolean",
-            "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+            "description": "If the run terminates on `timeout`, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
             "default": false,
             "x-flag": "--resume-on-timeout"
           },
@@ -376,7 +431,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "Spawn a single subagent and wait for its final response. Flags may appear anywhere relative to the positionals. Use -r / -c to continue a previous conversation. Use -a to load a profile from .lionagi/agents/. Use --preset to apply a built-in agent configuration. Use --form to load and validate structured inputs before invoking. Use --context-from to hand a new agent distilled context from a prior session/branch/run/file.",
+        "description": "Spawn a single subagent and wait for its final response. Flags may appear anywhere relative to the positionals. Use `resume` / `continue_last` to continue a previous conversation. Use `agent` to load a profile from .lionagi/agents/. Use `preset` to apply a built-in agent configuration. Use `form` to load and validate structured inputs before invoking. Use `context_from` to hand a new agent distilled context from a prior session/branch/run/file.",
         "x-required-unenforced": [
           "query"
         ],
@@ -470,7 +525,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Id of a single dispatch to delete, whatever its status. Omit it to bulk-delete by --status/--before instead; one of the two is then required.",
+            "description": "Id of a single dispatch to delete, whatever its status. Omit it to bulk-delete by `status` / `before` instead; one of the two is then required.",
             "x-positional": true
           },
           "status": {
@@ -480,7 +535,7 @@
           },
           "before": {
             "type": "number",
-            "description": "Bulk purge: match rows with updated_at <= this epoch-seconds value. Without --status, this is scoped to terminal statuses only (delivered/acked/dead_letter/expired) and never sweeps pending/delivering rows.",
+            "description": "Bulk purge: match rows with updated_at <= this epoch-seconds value. Without `status`, this is scoped to terminal statuses only (delivered/acked/dead_letter/expired) and never sweeps pending/delivering rows.",
             "x-flag": "--before"
           },
           "dry_run": {
@@ -491,7 +546,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "With ID: delete that one row (any status), auditable via admin_events action=dispatch_purge. Without ID: bulk-delete by --status/--before (at least one required, so a bare `purge` cannot mass-delete); --dry-run reports counts without deleting. An explicit --status is honored exactly as given, including pending/delivering (naming an in-flight status is deliberate operator intent). A bare --before with no --status is scoped to terminal statuses only (delivered/acked/dead_letter/expired) and never touches pending/delivering rows.",
+        "description": "With ID: delete that one row (any status), auditable via admin_events action=dispatch_purge. Without ID: bulk-delete by `status` / `before` (at least one required, so a bare `purge` cannot mass-delete); `dry_run` reports counts without deleting. An explicit `status` is honored exactly as given, including pending/delivering (naming an in-flight status is deliberate operator intent). A bare `before` with no `status` is scoped to terminal statuses only (delivered/acked/dead_letter/expired) and never touches pending/delivering rows.",
         "x-positional-order": [
           "id"
         ]
@@ -667,7 +722,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "The version a machine consumer negotiates against at registration. Add --machine for the contract envelope on stdout."
+        "description": "The version a machine consumer negotiates against at registration. Add `machine` for the contract envelope on stdout."
       }
     },
     "hooks import": {
@@ -856,7 +911,7 @@
           },
           "all_stale": {
             "type": "boolean",
-            "description": "Sweep stale sessions and invocations with dead PIDs older than --threshold. A play older than --threshold whose recorded worker session has gone terminal is marked 'blocked'; a play that records no worker session is left running, because age alone cannot tell it apart from one still working. A show is marked 'aborted' only once it is older than --threshold and ALL of its plays are terminal.",
+            "description": "Sweep stale sessions and invocations with dead PIDs older than `threshold`. A play older than `threshold` whose recorded worker session has gone terminal is marked 'blocked'; a play that records no worker session is left running, because age alone cannot tell it apart from one still working. A show is marked 'aborted' only once it is older than `threshold` and ALL of its plays are terminal.",
             "default": false,
             "x-flag": "--all-stale"
           },
@@ -880,7 +935,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "Kill a running lionagi entity by id, or sweep all stale running entities whose underlying OS process is dead.\n\nThe entity's status is set to 'cancelled' (sessions/invocations), 'blocked' (plays), or 'aborted' (shows) with reason tracking per ADR-0028.\n\nRecursion boundary: --recursive kills a session's or invocation's direct children, which are the PID-bearing workers. A PLAY kill reaches the play's worker chain only when the row records the session it started; a play created by a live run does not, so that kill marks the row terminal and exits non-zero to say no worker was stopped. A SHOW kill only marks the show row terminal. To stop work either one cannot reach, kill the session ids directly; --all-stale marks a play 'blocked' only when the row records a worker session that has gone terminal, and leaves an unlinked play running.\n\nExamples:\n  li kill abc123                        # kill by id prefix\n  li kill <session-id>                  # stop a worker process\n  li kill abc123 --reason 'stuck'\n  li kill abc123 --recursive            # kill + direct children\n  li kill --all-stale                   # sweep dead-PID rows\n  li kill --all-stale --threshold 3600  # only rows older than 1h\n  li kill --all-stale --dry-run",
+        "description": "Kill a running lionagi entity by id, or sweep all stale running entities whose underlying OS process is dead.\n\nThe entity's status is set to 'cancelled' (sessions/invocations), 'blocked' (plays), or 'aborted' (shows) with reason tracking per ADR-0028.\n\nRecursion boundary: `recursive` kills a session's or invocation's direct children, which are the PID-bearing workers. A PLAY kill reaches the play's worker chain only when the row records the session it started; a play created by a live run does not, so that kill marks the row terminal and exits non-zero to say no worker was stopped. A SHOW kill only marks the show row terminal. To stop work either one cannot reach, kill the session ids directly; `all_stale` marks a play 'blocked' only when the row records a worker session that has gone terminal, and leaves an unlinked play running.\n\nExamples:\n  li kill abc123                        # kill by id prefix\n  li kill <session-id>                  # stop a worker process\n  li kill abc123 --reason 'stuck'\n  li kill abc123 --recursive            # kill + direct children\n  li kill --all-stale                   # sweep dead-PID rows\n  li kill --all-stale --threshold 3600  # only rows older than 1h\n  li kill --all-stale --dry-run",
         "x-positional-order": [
           "id"
         ]
@@ -906,7 +961,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "Read-only: what the lifecycle store records about one run id \u2014 whether a session was ever recorded for it, whether every one of them has ended, and with what outcome. A run stopped by `li kill` reads as cancelled here. Add --machine for the contract envelope on stdout.",
+        "description": "Read-only: what the lifecycle store records about one run id \u2014 whether a session was ever recorded for it, whether every one of them has ended, and with what outcome. A run stopped by `li kill` reads as cancelled here. Add `machine` for the contract envelope on stdout.",
         "required": [
           "run_id"
         ],
@@ -953,7 +1008,7 @@
           },
           "watch": {
             "type": "boolean",
-            "description": "Redraw the view every --refresh seconds until interrupted, instead of printing one snapshot and exiting.",
+            "description": "Redraw the view every `refresh` seconds until interrupted, instead of printing one snapshot and exiting.",
             "default": false,
             "x-flag": "--watch",
             "x-aliases": [
@@ -962,7 +1017,7 @@
           },
           "refresh": {
             "type": "integer",
-            "description": "Seconds between redraws under --watch (default 2). Ignored without it.",
+            "description": "Seconds between redraws under `watch` (default 2). Ignored without it.",
             "default": 2,
             "x-flag": "--refresh"
           },
@@ -995,35 +1050,35 @@
           },
           "run_ids": {
             "type": "string",
-            "description": "Wait for one or more schedule_run IDs to reach a terminal state, then exit (scripting primitive; see `li monitor run --help` for the positional form). Follows scheduler on_success/on_fail chain children by default (see --no-chain). Ignores id/--watch/--since/--type/--project.",
+            "description": "Wait for one or more schedule_run IDs to reach a terminal state, then exit (scripting primitive; see `li monitor run --help` for the positional form). Follows scheduler on_success/on_fail chain children by default (see `chain`). Ignores id/`watch` / `since` / `entity_type` / `project`.",
             "x-flag": "--run"
           },
           "interval": {
             "type": "number",
-            "description": "Seconds between state.db polls in --run mode (default 3). Independent of --refresh, which paces the table redraw.",
+            "description": "Seconds between state.db polls in `run_ids` mode (default 3). Independent of `refresh`, which paces the table redraw.",
             "default": 3.0,
             "x-flag": "--interval"
           },
           "follow": {
             "type": "boolean",
-            "description": "With --run: keep discovering schedule_runs created after the initial set drains, instead of exiting once it is empty. Never ends on its own \u2014 pair with --max-wait.",
+            "description": "With `run_ids`: keep discovering schedule_runs created after the initial set drains, instead of exiting once it is empty. Never ends on its own \u2014 pair with `max_wait`.",
             "default": false,
             "x-flag": "--follow"
           },
           "chain": {
             "type": "boolean",
-            "description": "With --run: watch only the literal id(s) given, instead of following scheduler on_success/on_fail chain children by default.",
+            "description": "With `run_ids`: watch only the literal id(s) given, instead of following scheduler on_success/on_fail chain children by default.",
             "default": true,
             "x-flag": "--no-chain"
           },
           "max_wait": {
             "type": "number",
-            "description": "With --run: give up waiting after this many seconds and exit EXIT_RUNNING for whatever is still pending, instead of blocking forever on a stuck session or run. Default: 900s. Pass 0 for unlimited.",
+            "description": "With `run_ids`: give up waiting after this many seconds and exit EXIT_RUNNING for whatever is still pending, instead of blocking forever on a stuck session or run. Default: 900s. Pass 0 for unlimited.",
             "x-flag": "--max-wait"
           }
         },
         "additionalProperties": false,
-        "description": "Show all running entities (sessions, invocations, shows, plays) in a compact table, or drill into one entity by ID. Use --watch for live refresh.",
+        "description": "Show all running entities (sessions, invocations, shows, plays) in a compact table, or drill into one entity by ID. Use `watch` for live refresh.",
         "x-positional-order": [
           "id"
         ]
@@ -1202,7 +1257,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Orchestrator model spec (provider/model-effort) followed by the task prompt. Model is also used as the default worker model unless --workers is set; omit it when -a/--agent provides one. A single positional is treated as the prompt.",
+            "description": "Orchestrator model spec (provider/model-effort) followed by the task prompt. Model is also used as the default worker model unless `workers` is set; omit it when `agent` provides one. A single positional is treated as the prompt.",
             "x-positional": true
           },
           "agent": {
@@ -1215,7 +1270,7 @@
           },
           "num_workers": {
             "type": "integer",
-            "description": "Maximum assignments the orchestrator generates (default 3). It may generate fewer if the task does not divide that far, and --workers specs beyond this cap go unused.",
+            "description": "Maximum assignments the orchestrator generates (default 3). It may generate fewer if the task does not divide that far, and `workers` specs beyond this cap go unused.",
             "default": 3,
             "x-flag": "--num-workers",
             "x-aliases": [
@@ -1229,7 +1284,7 @@
           },
           "pack": {
             "type": "string",
-            "description": "Path to a YAML routing pack. Provides per-role model/effort when --workers is absent. --workers overrides pack routing.",
+            "description": "Path to a YAML routing pack. Provides per-role model/effort when `workers` is absent. `workers` overrides pack routing.",
             "x-flag": "--pack"
           },
           "max_concurrent": {
@@ -1287,7 +1342,7 @@
           },
           "mcp_config": {
             "type": "string",
-            "description": "Read this MCP config and hand its servers to every worker this run builds. By default the nearest .mcp.json at or above the directory this command was run in is used, so the workers' tools come from the submission rather than from --cwd. The file is read once, at startup.",
+            "description": "Read this MCP config and hand its servers to every worker this run builds. By default the nearest .mcp.json at or above the directory this command was run in is used, so the workers' tools come from the submission rather than from `cwd`. The file is read once, at startup.",
             "x-flag": "--mcp-config"
           },
           "no_mcp_config": {
@@ -1359,7 +1414,7 @@
           },
           "resume_on_timeout": {
             "type": "boolean",
-            "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+            "description": "Deprecated and ignored on this command: it is accepted so existing invocations keep working, but nothing here reads it and it will be removed in a future release. Only `li agent` implements it.",
             "default": false,
             "x-flag": "--resume-on-timeout"
           },
@@ -1394,7 +1449,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Orchestrator model spec followed by the task prompt. Model is optional when -a/--agent provides one; a single positional is treated as the prompt. The prompt itself may instead come from -f/--file or -p/--playbook.",
+            "description": "Orchestrator model spec followed by the task prompt. Model is optional when `agent` provides one; a single positional is treated as the prompt. The prompt itself may instead come from `file` or `playbook`.",
             "x-positional": true
           },
           "file": {
@@ -1453,7 +1508,7 @@
           },
           "save": {
             "type": "string",
-            "description": "Directory to write each agent's output and the run's artifacts into. Required by --background, which has nowhere else to report.",
+            "description": "Directory to write each agent's output and the run's artifacts into. Required by `background`, which has nowhere else to report.",
             "x-flag": "--save"
           },
           "team_mode": {
@@ -1471,7 +1526,7 @@
           },
           "team_attach": {
             "type": "string",
-            "description": "Attach to a team by NAME \u2014 upsert semantics: load existing team if found (preserving message history), else create fresh. Mutually exclusive with --team-mode.",
+            "description": "Attach to a team by NAME \u2014 upsert semantics: load existing team if found (preserving message history), else create fresh. Mutually exclusive with `team_mode`.",
             "x-flag": "--team-attach"
           },
           "team_max_rounds": {
@@ -1488,13 +1543,13 @@
           },
           "show_graph": {
             "type": "boolean",
-            "description": "Render DAG as matplotlib visualization. With --save, saves PNG to save dir.",
+            "description": "Render DAG as matplotlib visualization. With `save`, saves PNG to save dir.",
             "default": false,
             "x-flag": "--show-graph"
           },
           "background": {
             "type": "boolean",
-            "description": "Run flow in background. Requires --save. Check output in save dir.",
+            "description": "Run flow in background. Requires `save`. Check output in save dir.",
             "default": false,
             "x-flag": "--background"
           },
@@ -1506,12 +1561,12 @@
           },
           "workers": {
             "type": "string",
-            "description": "Comma-separated worker model specs (assignment i uses pool[i % len]). Overrides the per-role model while KEEPING each role's profile/system prompt \u2014 unlike --bare, which also drops profiles. Enables mixed-model flows (cheap roles + expensive roles).",
+            "description": "Comma-separated worker model specs (assignment i uses pool[i % len]). Overrides the per-role model while KEEPING each role's profile/system prompt \u2014 unlike `bare`, which also drops profiles. Enables mixed-model flows (cheap roles + expensive roles).",
             "x-flag": "--workers"
           },
           "pack": {
             "type": "string",
-            "description": "Path to a YAML routing pack. Provides per-role model/effort when --workers is absent. --workers overrides pack routing.",
+            "description": "Path to a YAML routing pack. Provides per-role model/effort when `workers` is absent. `workers` overrides pack routing.",
             "x-flag": "--pack"
           },
           "max_ops": {
@@ -1525,7 +1580,7 @@
           },
           "reactive": {
             "type": "string",
-            "description": "Who may grow the live DAG by emitting a SpawnRequest: 'all' (default \u2014 every worker), 'off' (flat batch DAG, no spawning), or a comma-separated list of roles (e.g. 'critic,evaluator') that alone may spawn. Caps still apply via --max-ops.",
+            "description": "Who may grow the live DAG by emitting a SpawnRequest: 'all' (default \u2014 every worker), 'off' (flat batch DAG, no spawning), or a comma-separated list of roles (e.g. 'critic,evaluator') that alone may spawn. Caps still apply via `max_ops`.",
             "x-flag": "--reactive"
           },
           "resume": {
@@ -1533,15 +1588,21 @@
             "description": "Resume a checkpointed flow from a prior process (by run id, or any session/invocation/play id backed by one). Replays the persisted plan verbatim \u2014 no planner call, no other flow flags read (model/prompt/playbook/etc. all come from the checkpoint). Distinct from `li o ctl resume`, which un-pauses a still-running session.",
             "x-flag": "--resume"
           },
+          "retry_failed": {
+            "type": "boolean",
+            "description": "With `resume`: run the ops the checkpoint recorded as failed again, instead of refusing. Their reactive children from the superseded attempt are dropped so the re-run decides its own. Without this flag a checkpoint holding any failed op refuses loudly, naming them, because replaying one as terminal skips it and everything downstream. Re-running re-executes whatever side effects the first attempt already had.",
+            "default": false,
+            "x-flag": "--retry-failed"
+          },
           "allow_degraded_context": {
             "type": "boolean",
-            "description": "With --resume: proceed even when a pending op declared inherit_context \u2014 it runs against an empty branch instead of its predecessor's conversation history, which resume does not restore. Without this flag such ops refuse loudly, naming them.",
+            "description": "With `resume`: proceed even when a pending op declared inherit_context \u2014 it runs against an empty branch instead of its predecessor's conversation history, which resume does not restore. Without this flag such ops refuse loudly, naming them.",
             "default": false,
             "x-flag": "--allow-degraded-context"
           },
           "mcp_config": {
             "type": "string",
-            "description": "Read this MCP config and hand its servers to every worker this run builds. By default the nearest .mcp.json at or above the directory this command was run in is used, so the workers' tools come from the submission rather than from --cwd. The file is read once, at startup.",
+            "description": "Read this MCP config and hand its servers to every worker this run builds. By default the nearest .mcp.json at or above the directory this command was run in is used, so the workers' tools come from the submission rather than from `cwd`. The file is read once, at startup.",
             "x-flag": "--mcp-config"
           },
           "no_mcp_config": {
@@ -1613,7 +1674,7 @@
           },
           "resume_on_timeout": {
             "type": "boolean",
-            "description": "If the run terminates on --timeout, automatically fire one resume of the same session with 'continue and conclude the task' and report the combined result. Bounded to a single auto-resume; a timeout on the resumed leg terminates normally. Same effect as an agent profile's 'resume_on_timeout: once'.",
+            "description": "Deprecated and ignored on this command: it is accepted so existing invocations keep working, but nothing here reads it and it will be removed in a future release. Only `li agent` implements it.",
             "default": false,
             "x-flag": "--resume-on-timeout"
           },
@@ -1735,7 +1796,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "Renders the plugin's full inventory \u2014 every tool target, hook command argv, agent/playbook/pack file, and provider module \u2014 then records a sha256 of each in ~/.lionagi/settings.yaml. Any later change to any of these reverts the plugin to 'changed' until re-trusted. Use --yes to skip the confirmation prompt.",
+        "description": "Renders the plugin's full inventory \u2014 every tool target, hook command argv, agent/playbook/pack file, and provider module \u2014 then records a sha256 of each in ~/.lionagi/settings.yaml. Any later change to any of these reverts the plugin to 'changed' until re-trusted. Use `yes` to skip the confirmation prompt.",
         "required": [
           "name"
         ],
@@ -1834,17 +1895,17 @@
           },
           "cron": {
             "type": "string",
-            "description": "Cron expression, e.g. \"0 * * * *\". Required when --trigger-type is cron, which is the default; ignored for other trigger types.",
+            "description": "Cron expression, e.g. \"0 * * * *\". Required when `trigger_type` is cron, which is the default; ignored for other trigger types.",
             "x-flag": "--cron"
           },
           "interval": {
             "type": "integer",
-            "description": "Seconds between fires. Required when --trigger-type is interval; ignored for other trigger types.",
+            "description": "Seconds between fires. Required when `trigger_type` is interval; ignored for other trigger types.",
             "x-flag": "--interval"
           },
           "github_repo": {
             "type": "string",
-            "description": "GitHub repository to poll (required for --trigger-type github/github_poll).",
+            "description": "GitHub repository to poll (required for `trigger_type` github/github_poll).",
             "x-flag": "--github-repo"
           },
           "github_filter": {
@@ -1880,7 +1941,7 @@
           },
           "prompt": {
             "type": "string",
-            "description": "Instruction the scheduled agent runs at each fire. Required when --action-kind is agent, which is the default. A profile named by --agent supplies the model and settings, never this instruction, so a schedule created without it fires and fails.",
+            "description": "Instruction the scheduled agent runs at each fire. Required when `action_kind` is agent, which is the default. A profile named by `agent` supplies the model and settings, never this instruction, so a schedule created without it fires and fails.",
             "x-flag": "--prompt"
           },
           "model": {
@@ -1924,7 +1985,7 @@
           },
           "cwd": {
             "type": "string",
-            "description": "Explicit execution root for this schedule's spawned process (must be an existing directory). Persisted at creation time so the schedule's spawn cwd never depends on where the Studio daemon is running from (default: --project's registered path, or this CLI's own working directory).",
+            "description": "Explicit execution root for this schedule's spawned process (must be an existing directory). Persisted at creation time so the schedule's spawn cwd never depends on where the Studio daemon is running from (default: `project`'s registered path, or this CLI's own working directory).",
             "x-flag": "--cwd"
           },
           "description": {
@@ -1934,12 +1995,12 @@
           },
           "max_runs": {
             "type": "integer",
-            "description": "Auto-disable this schedule once N total runs have fired (default: unlimited). Chained on_success/on_fail fires do not count toward N. Mutually exclusive with --once.",
+            "description": "Auto-disable this schedule once N total runs have fired (default: unlimited). Chained on_success/on_fail fires do not count toward N. Mutually exclusive with `once`.",
             "x-flag": "--max-runs"
           },
           "once": {
             "type": "boolean",
-            "description": "Sugar for --max-runs 1 \u2014 fire once, then auto-disable.",
+            "description": "Sugar for `max_runs` 1 \u2014 fire once, then auto-disable.",
             "default": false,
             "x-flag": "--once"
           },
@@ -1950,17 +2011,17 @@
           },
           "max_tokens": {
             "type": "integer",
-            "description": "Auto-disable this schedule once its cumulative session token usage (input+output) reaches N (default: unlimited). Same pre-fire cumulative semantics as --max-cost-usd.",
+            "description": "Auto-disable this schedule once its cumulative session token usage (input+output) reaches N (default: unlimited). Same pre-fire cumulative semantics as `max_cost_usd`.",
             "x-flag": "--max-tokens"
           },
           "on_success": {
             "type": "string",
-            "description": "Chain action to fire when this run exits 0, as a JSON object (allowed keys: kind/action_kind, model, prompt, agent, playbook, on_success, on_fail). WARNING \u2014 shallow merge: the chain child is built as {**this_schedule, **on_success}, so any key you omit is INHERITED from this schedule, including on_success/on_fail themselves. A 2-level chain must set the inner level's own \"on_success\": null explicitly, or the chain keeps re-firing at each depth (capped, but rarely what you want). Example: --on-success '{\"prompt\": \"notify done\", \"on_success\": null}'.",
+            "description": "Chain action to fire when this run exits 0, as a JSON object (allowed keys: kind/action_kind, model, prompt, agent, playbook, on_success, on_fail). WARNING \u2014 shallow merge: the chain child is built as {**this_schedule, **on_success}, so any key you omit is INHERITED from this schedule, including on_success/on_fail themselves. A 2-level chain must set the inner level's own \"on_success\": null explicitly, or the chain keeps re-firing at each depth (capped, but rarely what you want). Example value: {\"prompt\": \"notify done\", \"on_success\": null}",
             "x-flag": "--on-success"
           },
           "on_fail": {
             "type": "string",
-            "description": "Chain action to fire when this run exits non-zero, as a JSON object (same allowed keys and shallow-merge caveat as --on-success \u2014 see above). Example: --on-fail '{\"prompt\": \"alert on-call\", \"on_fail\": null}'.",
+            "description": "Chain action to fire when this run exits non-zero, as a JSON object (same allowed keys and shallow-merge caveat as `on_success` \u2014 see above). Example value: {\"prompt\": \"alert on-call\", \"on_fail\": null}",
             "x-flag": "--on-fail"
           }
         },
@@ -2160,7 +2221,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Filter by run status; repeatable (e.g. --status failed --status timed_out).",
+            "description": "Filter by run status; repeatable (e.g. failed, timed_out).",
             "x-flag": "--status"
           },
           "as_json": {
@@ -2324,7 +2385,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "A SIGKILL or unclean exit between session-open and teardown leaves the session row at status='running' forever. This command resets such rows (older than --stale-hours, default 24) to --new-status (default 'aborted'). Conservative: a session is swept only if its started_at is older than the threshold AND its recorded process is not running, so an actively-running CLI process is left alone even when the session it resumed started long ago. Use --dry-run first."
+        "description": "A SIGKILL or unclean exit between session-open and teardown leaves the session row at status='running' forever. This command resets such rows (older than `stale_hours`, default 24) to `new_status` (default 'aborted'). Conservative: a session is swept only if its started_at is older than the threshold AND its recorded process is not running, so an actively-running CLI process is left alone even when the session it resumed started long ago. Use `dry_run` first."
       }
     },
     "state import": {
@@ -2400,7 +2461,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "Reclaim the space held by message bodies older than --older-than days, keeping every row, id, role, timestamp and progression reference. THIS IS WHERE THE BYTES ARE, and prune cannot reach them: prune selects SESSIONS, and a message any surviving progression still names is kept whatever its age. A store can therefore be almost entirely message content, have every message inside a keep-window, and give a prune nothing to delete.\n\nA reclaimed body is not emptied. It is replaced with a marker recording that a body was there and how large it was, so it stays distinguishable from a turn that genuinely produced nothing. Reclaiming is not reversible: the text is gone.\n\nThe file does not shrink. Freed pages return to the database's own free list and the bytes on disk stay where they are until `li state vacuum` rebuilds the file.\n\n--dry-run is not a read. It performs the update and rolls it back, so its numbers measure the operation instead of estimating it, and it takes the same write lock for the same duration.",
+        "description": "Reclaim the space held by message bodies older than `older_than` days, keeping every row, id, role, timestamp and progression reference. THIS IS WHERE THE BYTES ARE, and prune cannot reach them: prune selects SESSIONS, and a message any surviving progression still names is kept whatever its age. A store can therefore be almost entirely message content, have every message inside a keep-window, and give a prune nothing to delete.\n\nA reclaimed body is not emptied. It is replaced with a marker recording that a body was there and how large it was, so it stays distinguishable from a turn that genuinely produced nothing. Reclaiming is not reversible: the text is gone.\n\nThe file does not shrink. Freed pages return to the database's own free list and the bytes on disk stay where they are until `li state vacuum` rebuilds the file.\n\n`dry_run` is not a read. It performs the update and rolls it back, so its numbers measure the operation instead of estimating it, and it takes the same write lock for the same duration.",
         "required": [
           "older_than"
         ]
@@ -2433,7 +2494,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "Delete sessions older than --keep-days (default 30), keeping the most recent --keep-n (default 100). Foreign key cascades drop branches; messages are dropped if no other session references them via progression. Use --dry-run to preview.\n\nSESSIONS ARE THE AXIS, AND MESSAGES HOLD THE BYTES. A message a surviving progression still names is kept whatever its age, so a run can delete thousands of sessions and free no message rows. Read the message counts, not the session count, to judge whether this reclaimed space; `li state stats` shows both distributions.\n\n--dry-run is not a read. It runs the real deletes and rolls the transaction back, which is what makes its counts exact rather than estimated, and which means it takes the same write lock for the same duration as the real thing."
+        "description": "Delete sessions older than `keep_days` (default 30), keeping the most recent `keep_n` (default 100). Foreign key cascades drop branches; messages are dropped if no other session references them via progression. Use `dry_run` to preview.\n\nSESSIONS ARE THE AXIS, AND MESSAGES HOLD THE BYTES. A message a surviving progression still names is kept whatever its age, so a run can delete thousands of sessions and free no message rows. Read the message counts, not the session count, to judge whether this reclaimed space; `li state stats` shows both distributions.\n\n`dry_run` is not a read. It runs the real deletes and rolls the transaction back, which is what makes its counts exact rather than estimated, and which means it takes the same write lock for the same duration as the real thing."
       }
     },
     "state stats": {
@@ -2485,7 +2546,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "Aggregate sessions rows updated within --since into run_count, completed, and failed counts per group. Read-only: no writes, no schema changes, no PRAGMA mutations."
+        "description": "Aggregate sessions rows updated within `since` into run_count, completed, and failed counts per group. Read-only: no writes, no schema changes, no PRAGMA mutations."
       }
     },
     "studio start": {
@@ -2512,7 +2573,7 @@
           },
           "no_open": {
             "type": "boolean",
-            "description": "Don't open the hosted UI in a browser (--web only)",
+            "description": "Don't open the hosted UI in a browser (`web` only)",
             "x-flag": "--no-open"
           },
           "no_docker": {
@@ -2671,7 +2732,7 @@
           },
           "artifacts": {
             "type": "string",
-            "description": "Comma-separated artifact paths to attach (used with --kind done).",
+            "description": "Comma-separated artifact paths to attach (used with `kind` done).",
             "x-flag": "--artifacts"
           }
         },

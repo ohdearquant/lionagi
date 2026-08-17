@@ -288,6 +288,12 @@ StateDB/legacy-transition compatibility mapping (`adapters`).
 
 ### `state/reasons.py`
 
+- `RunReasons.COMPLETED_SPAWN_REFUSED` — the planned DAG reached completion,
+  but one or more reactive `SpawnRequest`s were refused after the run exhausted
+  its spawn capacity. Status remains `completed`; the non-clean reason and
+  `refused_spawn` evidence distinguish it from a run that never requested more
+  work. The same reason is preserved when child sessions roll up to an
+  invocation.
 - `ScheduleReasons` — the `schedule.skipped.` prefix is **not** the full set of
   reasons a skipped `schedule_run` can carry. `DEFERRED_CAPACITY` and
   `BUDGET_EXHAUSTED` land on skipped rows without that prefix, and a third
@@ -775,7 +781,9 @@ shell), so shell metacharacters are inert.
   each row's `transition()` call are separate transactions, so a concurrent
   `purge_dispatch(es)` can delete a snapshotted row; `transition()` raises `LookupError` in
   that case, caught per-row so one purged row is skipped without aborting the rest of the
-  batch.
+  batch. Every transition the scan writes carries the caller's `actor`, defaulting to the
+  scheduler tick's own identity; a driver other than the scheduler passes its own so the
+  history does not attribute its writes to the scheduler.
 - `purge_dispatch()` / `purge_dispatches()` — `purge_dispatch` accepts any status (naming an
   exact id is already deliberate non-bulk intent) and writes one `admin_events` audit row on
   success. `purge_dispatches` requires `status` and/or `before` (bare call raises
@@ -1261,8 +1269,9 @@ only while its declared target remains trusted, removing it on
 shortly after the subprocess spawns (e.g. an ndjson "system"/"init" event), making a stalled
 first chunk a reliable dead-worker signal. False for transports that buffer all output until
 the run completes, where a slow-but-healthy call is indistinguishable from a dead one until
-the whole result arrives. This flag gates `run.py`'s default liveness watchdog
-(`LIONAGI_WORKER_LIVENESS_TIMEOUT`).
+the whole result arrives. This flag gates `run.py`'s default first-output and
+between-chunk watchdogs (`LIONAGI_WORKER_LIVENESS_TIMEOUT` and
+`LIONAGI_WORKER_IDLE_TIMEOUT`).
 
 ### `connections/endpoint_config.py`
 

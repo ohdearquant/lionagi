@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from ._db import open_db as _open_db
-from ._db import store_exists, store_path
+from ._db import require_file_store, store_exists, store_path
 
 
 async def get_signals_after(
@@ -18,6 +18,7 @@ async def get_signals_after(
     limit: int = 500,
 ) -> list[dict[str, Any]]:
     """Return signal rows for *session_id* with seq > *after_seq*, ordered by seq."""
+    require_file_store()
     if not store_exists():
         return []
 

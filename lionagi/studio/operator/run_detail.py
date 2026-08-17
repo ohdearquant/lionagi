@@ -30,6 +30,7 @@ from .redact import (
     redact_scalar,
     scrub_text,
 )
+from .run_progress import _terminal_safe_health
 
 __all__ = ("RunDetailInput", "run_detail")
 
@@ -109,10 +110,14 @@ def _project(run: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         "status": run.get("status"),
         "startedAt": run.get("started_at"),
         "endedAt": run.get("ended_at"),
+        # Travels with endedAt everywhere it is projected. A reconstructed end
+        # is indistinguishable from a measured one once the flag is dropped,
+        # and the reader has no second source to recover it from.
+        "endedAtApproximate": bool(run.get("ended_at_is_approximate")),
         "createdAt": run.get("created_at"),
         "updatedAt": run.get("updated_at"),
         "lastMessageAt": run.get("last_message_at"),
-        "effectiveHealth": run.get("effective_health"),
+        "effectiveHealth": _terminal_safe_health(run),
         "branchCount": run.get("branch_count"),
         "messageCount": run.get("message_count"),
         "project": public_project(run.get("project")),

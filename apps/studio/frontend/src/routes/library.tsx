@@ -9,6 +9,7 @@ import { McpServerDetail, CreateMcpServerPanel } from "@/components/library/McpS
 import { SkillDetail } from "@/components/library/SkillDetail";
 import { PluginDetail } from "@/components/library/PluginDetail";
 import { KindBadge } from "@/components/library/KindBadge";
+import HooksView from "@/components/library/HooksView";
 import SplitPane from "@/components/ui/SplitPane";
 import TabBar from "@/components/shell/TabBar";
 import EmptyState from "@/components/ui/EmptyState";
@@ -28,7 +29,7 @@ import {
   listMcpServers,
 } from "@/lib/api";
 import type { AgentProfileSummary } from "@/lib/types";
-import type { EngineDef } from "@/lib/api";
+import type { CreatedWorkflowDef, EngineDef } from "@/lib/api";
 
 // Kinds with no creation flow at all — the toolbar's "+ New" button and the
 // empty-state's create CTA are both meaningless here (skills come from
@@ -45,6 +46,7 @@ const LIBRARY_TABS = [
   "plugin",
   "engine",
   "mcp",
+  "hooks",
 ] as const;
 type LibraryTab = (typeof LIBRARY_TABS)[number];
 
@@ -348,10 +350,11 @@ function LibraryPage() {
   const { items, loading, error, reload, allAgents, allEngines } = useLibraryData();
   const navigate = useNavigate({ from: "/library" });
   const { tab, sel } = Route.useSearch();
-  const kindFilter: LibraryKind | "all" = tab ?? "all";
+  const kindFilter: LibraryTab = tab ?? "all";
 
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
 
   // Collapsed split-pane: show detail when a selection exists or create is open.
   const [detailActive, setDetailActive] = useState(false);
@@ -365,6 +368,7 @@ function LibraryPage() {
     { value: "plugin", label: t("filterPlugin") },
     { value: "engine", label: t("filterEngine") },
     { value: "mcp", label: t("filterMcp") },
+    { value: "hooks", label: t("filterHooks") },
   ];
   const KIND_TABS = ALL_KIND_TABS.filter((tab) => !UNFINISHED_KINDS.has(tab.value));
 
@@ -392,14 +396,21 @@ function LibraryPage() {
     // in `filtered`, so it falls through to select-first.
     if (sel) {
       const parsed = parseSel(sel);
+      const isOptimisticWorkflow =
+        parsed?.kind === "workflow" && optimisticWorkflow?.name === parsed.name;
+      const isHiddenWorkflow =
+        parsed?.kind === "workflow" &&
+        items.some((item) => item.kind === "workflow" && item.name === parsed.name);
       if (
-        parsed &&
-        filtered.some(
-          (i) =>
-            i.kind === parsed.kind &&
-            i.name === parsed.name &&
-            (parsed.kind !== "playbook" || i.subKind === parsed.subKind),
-        )
+        isOptimisticWorkflow ||
+        isHiddenWorkflow ||
+        (parsed &&
+          filtered.some(
+            (i) =>
+              i.kind === parsed.kind &&
+              i.name === parsed.name &&
+              (parsed.kind !== "playbook" || i.subKind === parsed.subKind),
+          ))
       ) {
         return;
       }
@@ -454,7 +465,8 @@ function LibraryPage() {
 
   const selectedWorkflowId =
     parsed?.kind === "workflow"
-      ? (items.find((i) => i.kind === "workflow" && i.name === parsed.name)?.meta ?? parsed.name)
+      ? (items.find((i) => i.kind === "workflow" && i.name === parsed.name)?.meta ??
+        (optimisticWorkflow?.name === parsed.name ? optimisticWorkflow.id : null))
       : null;
 
   const isEmpty = !loading && filtered.length === 0;
@@ -686,11 +698,12 @@ function LibraryPage() {
     detailPane = (
       <div className="flex h-full flex-col overflow-hidden">
         <CreateWorkflowPanel
-          onCreated={(name) => {
+          onCreated={(workflow) => {
+            setOptimisticWorkflow(workflow);
             setShowCreate(false);
             void reload();
             void navigate({
-              search: (prev) => ({ ...prev, sel: encodeSel("workflow", name) }),
+              search: (prev) => ({ ...prev, sel: encodeSel("workflow", workflow.name) }),
               replace: false,
             });
           }}
@@ -791,19 +804,25 @@ function LibraryPage() {
         />
       </div>
 
-      {/* Split body */}
+      {/* Split body — the Hooks tab is a single configuration surface (the
+          shared hook library + the Operator's assembly), not a catalog of
+          selectable items, so it takes the whole body instead of the split. */}
       <div className="min-h-0 flex-1">
-        <SplitPane
-          id="library"
-          master={masterPane}
-          detail={detailPane}
-          defaultMasterWidth={420}
-          minMasterWidth={280}
-          maxMasterWidth={560}
-          detailActive={detailPaneActive}
-          ariaLabelMaster={t("masterAria")}
-          ariaLabelDetail={t("detailAria")}
-        />
+        {kindFilter === "hooks" ? (
+          <HooksView />
+        ) : (
+          <SplitPane
+            id="library"
+            master={masterPane}
+            detail={detailPane}
+            defaultMasterWidth={420}
+            minMasterWidth={280}
+            maxMasterWidth={560}
+            detailActive={detailPaneActive}
+            ariaLabelMaster={t("masterAria")}
+            ariaLabelDetail={t("detailAria")}
+          />
+        )}
       </div>
     </div>
   );

@@ -2,12 +2,25 @@
 
 - **Status**: Accepted
 - **Kind**: Aspirational
+- **Implementation-status**: partial — the v1 callback envelope, post-commit registry,
+  reconciliation store/query, settings adapters, and bootstrap wiring are shipped; D4's unified
+  orphan-classification/recovery target and ADR-0123's v2 canonical-Run source cutover remain open
 - **Area**: scheduling-control-plane
 - **Date**: 2026-07-12
 - **Relations**: supersedes ADR-0060 (run supervision — its outbox-coupled callback and
   two-stage orphan design are replaced by D1/D3/D4 here); builds on ADR-0057 (lifecycle
   transitions), ADR-0035 (terminal-status integrity floor), ADR-0059 (dispatch outbox),
-  ADR-0064 (run outcome records), ADR-0071 (task-worker leases)
+  ADR-0064 (run outcome records), ADR-0071 (task-worker leases); prospectively amended by
+  ADR-0123 (canonical Run identity)
+
+## Proposed ADR-0123 boundary
+
+The callback remains a post-commit lifecycle projection and never becomes terminal authority.
+ADR-0124 freezes callback mode per Invocation before its first Run: legacy-v1 mode permits one
+Run and selects the Invocation event, while canonical-v2 mode permits many Runs, suppresses the
+aggregate Invocation event, and emits each Run fact. Both never emit publicly for the same Run.
+Orphan recovery finalizes Run only through
+ADR-0058 `LifecycleService`; callback failure cannot rewrite or reopen it.
 
 ## Context
 
@@ -55,17 +68,41 @@ A process-wide `TerminalCallbackRegistry` is injected into the lifecycle service
 constructs a terminal event only when all of the following hold: the transition outcome is
 `applied`; `previous_status != current_status` (a same-status reason append is not a new
 terminal event); the destination is terminal under the registered lifecycle policy; and the
-entity is an execution entity (`session`, `invocation`, `schedule_run`, or `play`).
+entity is an execution entity (`session`, `invocation`, `schedule_run`, or `play`). During
+ADR-0123 dual-write, a fifth condition applies: the immutable projection decision staged in the
+owner transaction must select this exact transition. A `suppress` or `attention` decision emits
+nothing.
 
 The audit append stays inside the guarded transaction. Registry emission occurs only after
 the transaction has exited successfully, using the committed `status_transitions.id` as
 `event_id`. The registry never runs handler code while the transaction is open.
 
+ADR-0058's injected `TerminalProjectionParticipant` owns that fifth decision mechanically. It
+validates an exact Run or Invocation terminal-callback binding reference (ID plus expected version)
+supplied by the canonical application path and stages the decision beside transition audit. It does not infer Run correlation from
+`sessions.run_id`, a many-to-many RunSession traversal, recency, or filesystem state. Standalone
+or unbound transitions—including a post-cutover Invocation that creates no Run—retain the
+four-condition v1 behavior. Once an entity enters a
+canonical dual-write binding, missing/stale/ambiguous correlation fails closed to attention/no
+emit; it never falls back to the standalone default.
+
 Handlers are process-local, named, idempotently registered, and may filter by entity kind
 and/or entity ID. They are invoked concurrently from an immutable envelope under one total
-ten-second deadline. Handler exceptions, cancellation, timeout, and nonzero adapter exit are
-logged and swallowed. Awaiting the registry may delay the transition caller's return by at
-most that budget; it cannot delay, roll back, overwrite, or recategorize the terminal write.
+ten-second deadline. The shipped compatibility behavior is intentionally precise:
+
+- an ordinary handler exception (including an adapter's surfaced launch/exit failure) is logged
+  and swallowed;
+- a handler cancellation is re-raised inside the AnyIO task group and is not logged as an ordinary
+  exception; it follows task-group cancellation semantics rather than an isolation guarantee;
+- cancellation of the task emitting the event propagates to its caller;
+- budget expiry silently cancels remaining async handler work and returns, with no timeout log;
+- synchronous handlers are offloaded with `abandon_on_cancel=True`, so expiry/cancellation may
+  return while their worker thread continues; its later result is unobserved and cannot be claimed
+  as delivered, failed, or torn down.
+
+Awaiting the registry may delay the transition caller's return by at most that budget; abandoned
+sync work may outlive that return but cannot delay, roll back, overwrite, or recategorize the
+terminal write. ADR-0120 names this exact compatibility profile before any behavior change.
 
 The push contract is **best effort**. LionAGI claims neither exactly-once nor at-least-once
 callback delivery. The committed transition audit is the durable reconciliation source, and
@@ -86,6 +123,33 @@ concurrent or repeated acks of the same event by the same consumer are single-ro
 The reconciliation query is a read-only anti-join: terminal transitions on execution
 entities with no delivery row for the requesting consumer.
 
+**ADR-0123 target acknowledgement amendment.** Source selection introduces a logical
+`terminal_fact_id` distinct from a wire version and, for bound Runs, potentially distinct from the
+selected source transition. The target delivery row is
+`(terminal_fact_id, consumer, source_transition_id, acked_at)` with primary key
+`(terminal_fact_id, consumer)`. Reconciliation enumerates only staged projection decisions whose
+closed kind is `emit` and whose wire profile is `legacy_v1` or `canonical_run_v2`, then anti-joins
+on fact ID. Suppression and attention records are never deliverable facts.
+
+Compatibility is deterministic:
+
+- a standalone/unbound v1 transition has implicit `terminal_fact_id=transition_id`;
+- a bound v1 envelope may add optional `terminal_fact_id`; if a v1 client acknowledges only its
+  `event_id`, the server resolves that source transition through the immutable staged decision and
+  acknowledges its fact ID;
+- v2 carries `terminal_fact_id` explicitly and acknowledgements use it directly;
+- no wire schema/version component participates in deduplication identity.
+
+Migration is dual-read/dual-write, not an in-place semantic flip. First add nullable fact/source
+columns and backfill every existing delivery with `terminal_fact_id=transition_id`. During the
+compatibility epoch, ack writes populate both the legacy transition lookup and the fact-keyed row;
+reconciliation unions legacy terminal transitions lacking a decision (implicit legacy-v1 fact ID)
+with new `TerminalProjectionEmitDecision` rows and anti-joins on
+`COALESCE(fact_id, transition_id)`. After all
+new terminal writes stage decisions and every existing ack is backfilled, enforce the fact-key
+uniqueness/primary key and remove the legacy write. SQLite uses ADR-0118's preapproved rebuild;
+PostgreSQL uses its authored migration plan. No live diff authors this change.
+
 Retention never expires an unacknowledged event out of an active consumer's reconciliation
 set: an event remains in that set until the consumer acknowledges it, however old it gets —
 a consumer offline longer than any horizon still recovers every missed terminal event on
@@ -96,7 +160,9 @@ The reconciliation query is an anti-join of transition rows against delivery row
 removing an ack whose transition row is still queryable would resurrect that event into
 the consumer's unacknowledged set and redeliver work processed long ago, past any
 consumer-side dedup state. Age alone is therefore never a sufficient pruning condition
-for a delivery row; the transition row's own lifecycle bounds it. Consumer registrations end only by
+for a delivery row. Under the target schema, pruning requires both the selected projection decision
+and its source transition to have left the reconciliation-queryable set; during dual-read it uses
+the stricter legacy-or-target relation. The source fact's own lifecycle bounds it. Consumer registrations end only by
 explicit retirement — a recorded action taken by the registration's owner or a deployment
 operator, never a side effect of inactivity. A registered consumer that merely stops
 querying remains active and its unacknowledged set is retained indefinitely, regardless of
@@ -108,10 +174,12 @@ an anonymous ad-hoc query gets the plain audit history with no completeness guar
 
 Because membership in the unacknowledged set does not depend on any ordering, a
 late-committing older row is simply still in the set the next time the consumer queries.
-Consumers deduplicate on `event_id` (push and reconciliation can both deliver the same
-event; the push-then-crash-before-ack case redelivers). The audit row itself is never
-mutated; acknowledgment lives entirely in the deliveries table, preserving audit
-immutability.
+For standalone v1, consumers deduplicate on `event_id` because it is the implicit fact ID. Bound
+v1 and v2 consumers deduplicate on `terminal_fact_id`; a legacy bound client may present only its
+`event_id`, and the server resolves it through the immutable staged decision before writing the
+fact-keyed acknowledgement. Push and reconciliation can both deliver the same fact, including the
+push-then-crash-before-ack case. The audit row itself is never mutated; acknowledgment lives
+entirely in the deliveries table, preserving audit immutability.
 
 `SESSION_END` remains supported but is not bridged into the registry; a bridge would create a
 loop and a second authority. Persistent direct engine runs are covered through their
@@ -128,6 +196,7 @@ LionAGI guarantees a small, transport-neutral envelope:
   "schema": "lionagi.run-terminal",
   "schema_version": 1,
   "event_id": "<status_transitions.id or synthetic id>",
+  "terminal_fact_id": "<optional; present for a bound Run projection>",
   "durable": true,
   "entity": {"kind": "session|invocation|schedule_run|play|ephemeral_run", "id": "..."},
   "previous_status": "running",
@@ -152,6 +221,11 @@ filesystem discovery or surface-specific joins inside the transaction to populat
 fields. Concrete notification payloads and transports (mail, chat, fleet inboxes) belong to
 the external run wrapper, not to this envelope.
 
+`terminal_fact_id` is an additive optional v1 field under the version rules below. It is omitted
+for unbound v1 pushes, whose fact ID is deterministically the event/transition ID, and present for
+bound v1 projections. Its omission never causes a bound server acknowledgement to guess: the
+staged decision provides the exact event-to-fact mapping.
+
 **Version evolution rules.** Within `schema_version: 1`, the guaranteed fields' names,
 types, semantics, and requiredness are immutable. New *optional* fields may be added without
 a version bump; consumers MUST ignore fields they do not recognize. Any removal, type
@@ -160,6 +234,14 @@ incrementing `schema_version`. A consumer receiving a version it does not suppor
 process the envelope as if it were v1; it logs and drops (or dead-letters) it, and can always
 fall back to the reconciliation query, whose row shape is governed by the schema, not the
 envelope.
+
+ADR-0123's canonical source is therefore a v2 envelope, not a v1 optional-field trick. Version 2
+sets `entity.kind="run"`/`entity.id=run_id`, uses the canonical Run transition ID as `event_id` and
+the Run binding's separately minted version-independent `terminal_fact_id`, and retains typed nullable legacy correlation. No generic
+v2-to-v1 adapter exists because v1 cannot represent a canonical Run without inventing a unique
+legacy entity. Required consumers must advertise v2 support before a Run enters the canonical
+callback cohort. Source selection, rollout, reconciliation identity, and duplicate prevention are
+normative in ADR-0124.
 
 ### D3 — Direct in-process delivery; two bootstrap points; `--notify` becomes scoped sugar
 
@@ -372,9 +454,14 @@ wrapper makes the resume decision against the recovery projection.
    eligibility must have excluded every ack whose transition row remains in the
    reconciliation-queryable set.
 1b-iv. Consumer retirement atomicity: retire a registered consumer holding a nonempty
-   unacknowledged set; assert registration removal and unacknowledged-set disposition occur
-   in one transaction, with neither intermediate state observable (registration absent while
-   the set remains owed, or registration present after the set is released).
+unacknowledged set; assert registration removal and unacknowledged-set disposition occur
+in one transaction, with neither intermediate state observable (registration absent while
+the set remains owed, or registration present after the set is released).
+1b-v. Fact-ID migration: backfill existing `(transition_id, consumer)` acknowledgements, dual-read
+and dual-write one standalone v1, bound v1, and canonical v2 fact, retry each wire delivery, and
+prove one `(terminal_fact_id, consumer)` row per logical fact with no resurrection after pruning.
+Acking a bound v1 `event_id` must resolve through its staged decision; suppressed/attention
+decisions must never appear in reconciliation.
 1c. Settings contract: string form, mapping form, invalid value (warns, disabled, run
    unaffected), per-run override replacing the settings handler for its scope only, and the
    explicit `enabled: false` state. No-shell path: assert no executable adapter invocation
@@ -391,8 +478,11 @@ wrapper makes the resume decision against the recovery projection.
    rejects).
 2. Concurrent terminal transitions plus a same-status reason append: only the winning
    transition emits; no handler runs under the transaction.
-3. One hanging, one failing, one successful handler registered: the successful handler is not
-   starved, total delay is bounded, persisted status unchanged.
+3. One hanging async, one hanging sync, one failing, and one successful handler registered: the
+   successful handler is not starved, caller delay is bounded, async work is cancelled silently,
+   sync work is recorded as abandoned/unknown and may continue, only the ordinary failure logs,
+   and persisted status remains unchanged. Separate fixtures cover handler cancellation and
+   emitter cancellation propagation.
 4. Every surface's terminal path (agent, flow/play, fanout, engine, Studio launch, compiled
    workflow, scheduler fire, worker lease) with Studio present and absent: expected entity
    event and correlation fields.

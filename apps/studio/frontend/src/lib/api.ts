@@ -18,7 +18,6 @@ import type {
   OperatorTurnAccepted,
   OperatorTurnRequest,
   ResumeAvailability,
-  RunDetail,
   RunResumeRequest,
   RunResumeResponse,
   RunSummary,
@@ -309,6 +308,11 @@ function normalizeOperatorConversation(value: unknown): OperatorConversation {
     title: typeof raw.title === "string" ? raw.title : null,
     nextSequence: readNumber("nextSequence", "next_sequence"),
     activeRequestId: readString("activeRequestId", "active_request_id") ?? null,
+    // The pinned selection must survive normalization: dropping it here is
+    // what made the composer fall back to "Default" on every page refresh
+    // even though the store kept the pin the whole time.
+    provider: readString("provider", "provider") ?? null,
+    providerModel: readString("providerModel", "provider_model") ?? null,
     createdAt: readNumber("createdAt", "created_at"),
     updatedAt: readNumber("updatedAt", "updated_at"),
   };
@@ -737,6 +741,8 @@ export interface RunListParams {
   page?: number;
   per_page?: number;
   status?: string[];
+  /** Orchestration-kind facet: agent | play | flow | fanout | show. */
+  kind?: string[];
   playbook?: string;
   project?: string;
   project_null?: boolean;
@@ -768,6 +774,7 @@ export async function listRuns(params?: RunListParams): Promise<RunListResponse>
   if (params?.search) query.set("search", params.search);
   if (params?.sort) query.set("sort", params.sort);
   for (const value of params?.status ?? []) query.append("status", value);
+  for (const value of params?.kind ?? []) query.append("kind", value);
   const suffix = query.toString() ? `?${query.toString()}` : "";
   // The daemon registers this list route with a trailing slash (unlike
   // /api/runs/{run_id}); omitting it triggers Starlette's redirect-with-
@@ -791,10 +798,6 @@ export interface RunProjectsResponse {
  * filter's option list without requiring a full unfiltered run scan. */
 export async function listRunProjects(): Promise<RunProjectsResponse> {
   return fetchJson<RunProjectsResponse>("/api/runs/projects");
-}
-
-export async function getRun(runId: string): Promise<RunDetail> {
-  return fetchJson<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`);
 }
 
 export async function resumeRun(
@@ -1132,7 +1135,7 @@ export async function createAgent(name: string, data: AgentProfile): Promise<unk
   });
 }
 
-export async function updateAgent(name: string, data: AgentProfile): Promise<unknown> {
+export async function updateAgent(name: string, data: Partial<AgentProfile>): Promise<unknown> {
   return fetchJson<unknown>(`/api/agents/${encodeURIComponent(name)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -1234,16 +1237,42 @@ export interface SessionDetail {
   effort?: string | null;
   agent_hash?: string | null;
   invocation_id?: string | null;
+  /** Project scope used by Operator write tools to fail closed across runs. */
+  project?: string | null;
+  /** Whether a queued run control would ever reach a runner (services/
+   * sessions.py get_session, computed by the admission path's own predicate).
+   * False for a mirrored or imported agent session, which no lionagi run owns:
+   * the server admits no control for one, so no control is offered either.
+   * Absent is read as false by the control surface — a missing capability is
+   * not evidence of a capability. */
+  has_control_consumer?: boolean | null;
+  /** Whether this run's pause gate is held, or queued to be (services/
+   * sessions.py _pause_is_held). Server-derived, so it survives a reload: a
+   * pause remembered only in component state comes back as "not paused" and
+   * leaves Resume disabled on a run that is still stopped. Absent is read as
+   * false, which is the pre-pause state and the one that offers Pause. */
+  pause_is_held?: boolean | null;
   // ADR-0028: denormalized status reason (services/sessions.py get_session
   // already returns these; the type was just missing them).
   status_reason_code?: string | null;
   status_reason_summary?: string | null;
+  // Structured refs backing the status reason; entries with kind
+  // "failed_operation" carry the authored node id of an op the run's own
+  // failure evidence names.
+  status_evidence_refs?: Array<{ kind?: string; id?: string; label?: string }> | null;
   // ADR-0029: artifact contract and verification result.
   artifact_contract_json?: ArtifactContract | null;
   artifact_verification_json?: ArtifactVerification | null;
   // Absolute artifact-root path on disk (services/sessions.py get_session
   // returns this verbatim) — the run's save root for file-link resolution.
   artifacts_path?: string | null;
+  // Cost-visibility contract: null means the provider never reported usage
+  // (unknown), never coerced to 0. Token totals are summed across every
+  // branch of the session, so an orchestration run carries its workers'
+  // spend, not just the orchestrator's own turns.
+  total_cost_usd?: number | null;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
   // Full-session aggregate (services/sessions.py get_session, computed over
   // every branch's full progression, not the display window) — `files` is
   // the run-wide known-file union, including files touched before the
@@ -2332,11 +2361,16 @@ export async function getEngineRun(
 
 // ─── Shows / plays ──────────────────────────────────────────────────────────
 
-/** A play currently sitting in the `gated` lifecycle status, read live. */
+/**
+ * A play currently waiting on a real gate decision (gate_failed, escalated,
+ * a failing verdict parked in `gated`, or explicit opt-in), read live.
+ */
 export interface GatedPlaySummary {
   id: string;
   topic: string;
   play_name: string;
+  /** Play lifecycle status; null when the live state is unavailable. */
+  status?: string | null;
   started_at: number | null;
   updated_at: number | null;
   feedback: string | null;
@@ -2349,12 +2383,6 @@ export async function listGatedPlays(): Promise<GatedPlaySummary[]> {
 
 // ─── Engine definitions ───────────────────────────────────────────────────────
 
-/** Per-stage override persisted on an engine definition. */
-export interface StageOverride {
-  role?: string;
-  model?: string;
-}
-
 export interface EngineDef {
   id: string;
   name: string;
@@ -2363,7 +2391,6 @@ export interface EngineDef {
   max_depth: number | null;
   max_agents: number | null;
   options: Record<string, string> | null;
-  stages: Record<string, StageOverride> | null;
   description: string | null;
   created_at: number;
   updated_at: number;
@@ -2376,7 +2403,6 @@ export interface CreateEngineDefRequest {
   max_depth?: number;
   max_agents?: number;
   options?: Record<string, string>;
-  stages?: Record<string, StageOverride>;
   description?: string;
 }
 
@@ -2387,7 +2413,6 @@ export interface UpdateEngineDefRequest {
   max_depth?: number;
   max_agents?: number;
   options?: Record<string, string>;
-  stages?: Record<string, StageOverride>;
   description?: string;
 }
 
@@ -2488,6 +2513,12 @@ export interface CreateWorkflowDefRequest {
   spec_json?: WorkflowSpec;
 }
 
+export interface CreatedWorkflowDef {
+  id: string;
+  name: string;
+  created_at: number;
+}
+
 export interface UpdateWorkflowDefRequest {
   name?: string;
   description?: string;
@@ -2504,7 +2535,7 @@ export async function getWorkflowDef(defId: string): Promise<WorkflowDef> {
 
 export async function createWorkflowDef(
   body: CreateWorkflowDefRequest,
-): Promise<{ id: string; name: string; created_at: number }> {
+): Promise<CreatedWorkflowDef> {
   return fetchJson(`/api/workflow-defs/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -2579,5 +2610,77 @@ export async function launchEngine(body: {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+/** One named, reusable hook definition from the shared hook library. */
+export interface HookDef {
+  description: string;
+  command: string;
+  timeout?: number;
+}
+
+/** Provider-neutral hook events — materialized per provider at launch. */
+export type HookEvent =
+  | "pre_tool"
+  | "post_tool"
+  | "prompt_submit"
+  | "post_response"
+  | "session_start"
+  | "session_end";
+
+/** One assembly row binding a library hook to a neutral event. */
+export interface HookAttachment {
+  hook: string;
+  event: HookEvent;
+  matcher?: string;
+}
+
+export interface HookLibrary {
+  path: string;
+  hooks: Record<string, HookDef>;
+  events?: string[];
+  error?: string;
+}
+
+export async function getHookLibrary(): Promise<HookLibrary> {
+  return fetchJson<HookLibrary>("/api/hooks/library");
+}
+
+export async function putHookDef(name: string, spec: HookDef): Promise<HookDef & { name: string }> {
+  return fetchJson<HookDef & { name: string }>(`/api/hooks/library/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(spec),
+  });
+}
+
+export async function deleteHookDef(name: string): Promise<{ ok: boolean }> {
+  return fetchJson<{ ok: boolean }>(`/api/hooks/library/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
+/** The Operator's hook assembly — attachments materialized into the provider
+ * CLI's settings each turn (the Operator inherits nothing else). */
+export interface OperatorHooksConfig {
+  enabled: boolean;
+  attachments: HookAttachment[];
+  path?: string;
+  error?: string;
+}
+
+export async function getOperatorHooks(): Promise<OperatorHooksConfig> {
+  return fetchJson<OperatorHooksConfig>("/api/operator/hooks");
+}
+
+export async function putOperatorHooks(config: {
+  enabled: boolean;
+  attachments: HookAttachment[];
+}): Promise<OperatorHooksConfig> {
+  return fetchJson<OperatorHooksConfig>("/api/operator/hooks", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(config),
   });
 }

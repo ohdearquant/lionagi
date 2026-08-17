@@ -525,6 +525,7 @@ async def _teardown_common(
     identity_markers: dict | None = None,
     escalated_evidence: list[dict] | None = None,
     failed_operation_evidence: list[dict] | None = None,
+    spawn_refusal_evidence: list[dict] | None = None,
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
     gate_rejected_evidence: list[dict] | None = None,
@@ -741,6 +742,25 @@ async def _teardown_common(
         )
         final_evidence_refs = gate_rejected_evidence
 
+    # A capacity-refused SpawnRequest is work the live DAG asked to perform
+    # but was not allowed to add. The planned graph may still complete, so keep
+    # the terminal status at ``completed`` while distinguishing it from a run
+    # that never needed to grow. The reason code reaches Studio status and the
+    # terminal-callback envelope; the evidence names each requesting node.
+    if spawn_refusal_evidence:
+        from lionagi.state.reasons import RunReasons
+
+        metadata = dict(metadata or {})
+        metadata["spawn_refusal_count"] = len(spawn_refusal_evidence)
+        metadata["spawn_refusals"] = spawn_refusal_evidence
+        if final_status == "completed":
+            final_reason_code = RunReasons.COMPLETED_SPAWN_REFUSED
+            final_reason_summary = (
+                f"{len(spawn_refusal_evidence)} reactive spawn request(s) were refused "
+                "because the run's spawn capacity was exhausted."
+            )
+            final_evidence_refs = spawn_refusal_evidence
+
     # Completion-trust gate: don't accept "completed" on faith. Require a git trace
     # (commits ahead/dirty tree) or a durable assistant response as real evidence.
     # Skipped when gate_rejected_evidence fired above: a gate rejection is itself
@@ -751,6 +771,7 @@ async def _teardown_common(
     if (
         final_status == "completed"
         and not gate_rejected_evidence
+        and not spawn_refusal_evidence
         and not (verification and verification.get("produced"))
     ):
         from lionagi.state.completion_evidence import (
@@ -941,6 +962,7 @@ async def teardown_persist(
     extras: dict | None = None,
     escalated_evidence: list[dict] | None = None,
     failed_operation_evidence: list[dict] | None = None,
+    spawn_refusal_evidence: list[dict] | None = None,
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
     gate_rejected_evidence: list[dict] | None = None,
@@ -966,6 +988,7 @@ async def teardown_persist(
             identity_markers=ctx.get("identity_markers"),
             escalated_evidence=escalated_evidence,
             failed_operation_evidence=failed_operation_evidence,
+            spawn_refusal_evidence=spawn_refusal_evidence,
             finalize_error=finalize_error,
             artifact_write_error=artifact_write_error,
             gate_rejected_evidence=gate_rejected_evidence,

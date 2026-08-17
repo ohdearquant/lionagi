@@ -487,3 +487,109 @@ def test_the_human_path_still_ends_quietly_when_its_reader_goes_away():
     # The reason the default is set at all: `li ... | head` should stop, not
     # print a traceback about a pipe the person closed on purpose.
     assert _sigpipe_disposition_after("handshake") == "SIG_DFL"
+
+
+def test_lifecycle_hands_a_consumer_the_end_and_whether_it_was_observed():
+    """A run's end reaches the consumer with its provenance attached.
+
+    The consumer here is the one this file is written for: another language,
+    reading JSON, with no way to ask what a field means. Given `ended_at`
+    alone it cannot tell an end somebody observed from one reconstructed
+    afterwards from leftover evidence, and the two are arithmetic-identical.
+    The aggregate end IS one of the session ends, so it carries that row's
+    provenance rather than a fresh judgement about the run.
+    """
+    from lionagi.cli.machine import _lifecycle_summary
+
+    summary = _lifecycle_summary(
+        [
+            {
+                "id": "s1",
+                "status": "completed",
+                "started_at": 100.0,
+                "ended_at": 150.0,
+                "ended_at_is_approximate": 0,
+            },
+            {
+                "id": "s2",
+                "status": "completed",
+                "started_at": 150.0,
+                "ended_at": 400.0,
+                "ended_at_is_approximate": 1,
+            },
+        ]
+    )
+
+    assert summary["terminal"] is True
+    assert [entry["ended_at_is_approximate"] for entry in summary["sessions"]] == [False, True]
+    # The run's end is s2's, so it inherits s2's provenance.
+    assert summary["ended_at"] == 400.0
+    assert summary["ended_at_is_approximate"] is True
+
+
+def test_lifecycle_states_the_provenance_key_on_every_branch():
+    """A key that appears only once a run has ended forces the consumer to
+    tell absent from null, and a consumer that does not will read absent as
+    measured. Cheaper to always answer the question."""
+    from lionagi.cli.machine import _lifecycle_summary
+
+    nothing_recorded = _lifecycle_summary([])
+    still_running = _lifecycle_summary(
+        [{"id": "s1", "status": "running", "started_at": 100.0, "ended_at": None}]
+    )
+
+    assert nothing_recorded["found"] is False
+    assert still_running["terminal"] is False
+    for summary in (nothing_recorded, still_running):
+        assert "ended_at_is_approximate" in summary
+        assert summary["ended_at_is_approximate"] is None
+
+
+def test_lifecycle_summary_reports_unknown_when_the_row_has_no_flag_column():
+    """A store predating the column is a real shape, not a hypothetical.
+
+    The machine readers open read-only where the backend supports it, and a
+    read-only open deliberately does not reconcile the schema, because doing so
+    would write to the store being reported on. The query is SELECT *, so rows
+    from such a store arrive with no key at all. Coercing that to false would
+    answer "this end was measured" about a row where nothing recorded whether
+    it was, which is the confusion the column exists to remove.
+    """
+    from lionagi.cli.machine import _lifecycle_summary
+
+    legacy = {
+        "id": "s1",
+        "status": "completed",
+        "started_at": 100.0,
+        "ended_at": 400.0,
+    }
+    assert "ended_at_is_approximate" not in legacy
+
+    out = _lifecycle_summary([legacy])
+
+    assert out["sessions"][0]["ended_at_is_approximate"] is None
+    assert out["ended_at_is_approximate"] is None
+    assert out["ended_at"] == 400.0
+
+
+def test_lifecycle_summary_still_reports_false_when_the_column_says_measured():
+    """Control for the test above: unknown is preserved, not manufactured.
+
+    A row that carries the column and records a measured end must still come
+    back false. Reporting null there would lose the very provenance the field
+    was added to carry.
+    """
+    from lionagi.cli.machine import _lifecycle_summary
+
+    measured = {
+        "id": "s1",
+        "status": "completed",
+        "started_at": 100.0,
+        "ended_at": 400.0,
+        "ended_at_is_approximate": 0,
+    }
+
+    out = _lifecycle_summary([measured])
+
+    assert out["sessions"][0]["ended_at_is_approximate"] is False
+    assert out["ended_at_is_approximate"] is False

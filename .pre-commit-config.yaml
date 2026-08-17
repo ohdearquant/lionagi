@@ -29,7 +29,7 @@ repos:
     rev: v0.17.2
     hooks:
       - id: markdownlint-cli2
-        args: ["--config", ".markdownlint.json"]
+        args: ["--config", ".markdownlint.jsonc"]
         files: ^(docs/|README\.md|AGENT\.md|CLAUDE\.md|CONTRIBUTING\.md|CHANGELOG\.md)
 
   # Studio frontend: ESLint (Next.js + TS) + Prettier on staged files.

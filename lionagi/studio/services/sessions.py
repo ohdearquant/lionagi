@@ -14,13 +14,31 @@ from lionagi.state.claude_mirror import session_db_id
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
 from lionagi.state.session_naming import resolve_display_name
 
+from ..operator.run_control import session_has_control_consumer
 from ..registry import studio_route
 from ._db import open_db as _open_db
-from ._db import require_file_store, store_exists, store_path
+from ._db import require_file_store, store_exists, store_path, table_columns
 from ._io import parse_json_col as _parse_json_col
 from .artifact_verification import resolve_artifact_verification
 
 SESSION_DONE_STABLE_SECS = 60.0
+
+
+def display_model(value: Any) -> Any:
+    """A model column fit to show: the provider CLIs stamp ``<synthetic>`` on
+    their internal bookkeeping turns and the mirror copies it verbatim — it is
+    not a model name, so every projection drops it rather than rendering the
+    literal angle brackets in a model chip."""
+    return None if value == "<synthetic>" else value
+
+
+def display_cost(value: Any, provider: Any) -> Any:
+    """A cost column fit to show. Codex runs' spend is not actually tracked
+    yet: the stored figure is derived from a pricing table known to be wrong,
+    and a plausible-wrong dollar amount is worse than an honest unknown. The
+    cost-visibility contract already reserves NULL for "never reported", so
+    codex rows project as NULL until real tracking lands."""
+    return None if provider == "codex" else value
 
 
 def _parse_metadata(raw: str | None) -> dict[str, Any] | None:
@@ -133,6 +151,7 @@ class SessionFilter:
         project_null: bool = False,
         tags: list[str] | None = None,
         search: str | None = None,
+        kinds: set[str] | None = None,
     ) -> None:
         self.playbook = playbook
         self.statuses = statuses
@@ -140,10 +159,16 @@ class SessionFilter:
         self.project_null = project_null
         self.tags = list(dict.fromkeys(tags)) if tags else None
         self.search = search
+        self.kinds = kinds
 
     def where(self) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
+        # A mirrored CLI transcript attributed to the run that spawned it as
+        # its engine (see claude_mirror.link_engine_child_session) duplicates
+        # that canonical run in every listing; the pair collapses here. The
+        # row itself stays readable by id.
+        clauses.append("json_extract(s.node_metadata, '$.engine_parent_run_id') IS NULL")
         if self.playbook:
             clauses.append(
                 "LOWER(COALESCE(s.playbook_name, '')) LIKE '%' || LOWER(?) || '%' "
@@ -166,6 +191,19 @@ class SessionFilter:
             null_clause = " OR s.status IS NULL" if "completed" in self.statuses else ""
             clauses.append(f"(COALESCE(s.status, 'completed') IN ({placeholders}){null_clause})")
             params.extend(ordered)
+        if self.kinds:
+            # Facet vocabulary: "show" covers both spellings the writers have
+            # used for a show-driven play root. Legacy rows carry NULL
+            # invocation_kind and read as plain agent runs everywhere else,
+            # so the agent facet admits them too.
+            expanded_set: set[str] = set()
+            for kind in self.kinds:
+                expanded_set.update({"show", "show-play"} if kind == "show" else {kind})
+            expanded = sorted(expanded_set)
+            placeholders = ",".join("?" for _ in expanded)
+            null_clause = " OR s.invocation_kind IS NULL" if "agent" in self.kinds else ""
+            clauses.append(f"(s.invocation_kind IN ({placeholders}){null_clause})")
+            params.extend(expanded)
         if self.project_null:
             clauses.append("s.project IS NULL")
         elif self.project:
@@ -178,8 +216,6 @@ class SessionFilter:
                 " GROUP BY session_id HAVING COUNT(DISTINCT tag) = ?)"
             )
             params.extend([*self.tags, len(self.tags)])
-        if not clauses:
-            return "", []
         return "WHERE " + " AND ".join(clauses), params
 
 
@@ -207,6 +243,21 @@ _SESSION_SORTS: dict[str, str] = {
 }
 
 
+async def _approximate_end_selection(db: Any, *, alias: str = "") -> str:
+    """How to read the approximate-end flag from the store in front of us.
+
+    A store written before this column existed has no approximate ends
+    recorded, so a constant zero is the honest answer for it rather than a
+    degraded one: it is exactly what the version that wrote the store reported
+    for every row. Naming the column unconditionally would instead fail the
+    whole read, and these connections cannot migrate the store to avoid that.
+    """
+    prefix = f"{alias}." if alias else ""
+    if "ended_at_is_approximate" in await table_columns(db, "sessions"):
+        return f"{prefix}ended_at_is_approximate"
+    return "0 AS ended_at_is_approximate"
+
+
 async def list_sessions(
     *,
     limit: int = MAX_SESSION_PAGE,
@@ -232,6 +283,7 @@ async def list_sessions(
             from .run_tags import _ensure_table
 
             await _ensure_table(db)
+        approximate_end = await _approximate_end_selection(db, alias="s")
         cur = await db.execute(
             f"""
             WITH page AS (
@@ -258,6 +310,7 @@ async def list_sessions(
                 s.status,
                 s.started_at,
                 s.ended_at,
+                {approximate_end},
                 s.last_message_at,
                 s.invocation_id,
                 s.model,
@@ -304,12 +357,13 @@ async def list_sessions(
             "status": row["status"] or "completed",
             "started_at": row["started_at"],
             "ended_at": row["ended_at"],
+            "ended_at_is_approximate": bool(row["ended_at_is_approximate"]),
             # Caller (runs service) feeds this to staleness_check (ADR-0057 D6).
             "last_message_at": row["last_message_at"],
             # Optional parent skill orchestration.
             "invocation_id": row["invocation_id"],
             # Provenance disclosure — resolved values.
-            "model": row["model"],
+            "model": display_model(row["model"]),
             "provider": row["provider"],
             "effort": row["effort"],
             "agent_hash": row["agent_hash"],
@@ -348,7 +402,7 @@ async def list_sessions(
             "status_reason_summary": row["status_reason_summary"],
             # Cost-visibility contract: NULL means the provider never reported
             # a cost for this session (unknown), never coerced to 0.0 (free).
-            "total_cost_usd": row["total_cost_usd"],
+            "total_cost_usd": display_cost(row["total_cost_usd"], row["provider"]),
             "input_tokens": row["input_tokens"],
             "output_tokens": row["output_tokens"],
         }
@@ -368,6 +422,7 @@ async def list_project_counts() -> list[dict[str, Any]]:
                    COUNT(*) AS count,
                    MAX(updated_at) AS last_activity
             FROM sessions
+            WHERE json_extract(node_metadata, '$.engine_parent_run_id') IS NULL
             GROUP BY project
             """
         )
@@ -646,6 +701,33 @@ def _branch_message_stats(
     }
 
 
+async def _pause_is_held(db: Any, session_id: str) -> bool:
+    """Whether this run's pause gate is held, or queued to be.
+
+    Read from the control transport rather than remembered by whoever clicked.
+    A client-local flag does not survive a reload, and what it leaves behind is
+    the one combination an operator cannot recover from: a still-paused run
+    offering Pause and refusing Resume as "not paused".
+
+    The answer is the verb of the newest pause or resume row that still counts
+    for anything -- one already applied, or one queued and waiting for the
+    poller. A rejected row never held a gate, and a resume releases the pause
+    before it, so ordering by when each was written and taking the first is the
+    whole rule.
+    """
+    cur = await db.execute(
+        """SELECT verb FROM session_controls
+           WHERE session_id = ?
+             AND verb IN ('pause', 'resume')
+             AND (result IS NULL OR result = 'applied')
+           ORDER BY created_at DESC, id DESC
+           LIMIT 1""",
+        (session_id,),
+    )
+    row = await cur.fetchone()
+    return row is not None and row["verb"] == "pause"
+
+
 async def get_session(
     session_id: str,
     *,
@@ -666,18 +748,22 @@ async def get_session(
     )
 
     async with _open_db(store_path()) as db:
+        approximate_end = await _approximate_end_selection(db)
         cur = await db.execute(
             # Include lifecycle and provenance columns (model/provider/effort/agent_hash).
-            """SELECT id, name, created_at, updated_at,
+            # The one interpolated name is chosen from two literals by the
+            # helper above and never comes from a caller.
+            f"""SELECT id, name, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path,
                       artifact_contract_json, artifact_verification_json,
-                      source_kind, status, started_at, ended_at, last_message_at,
-                      model, provider, effort, agent_hash, invocation_id,
+                      source_kind, status, started_at, ended_at,
+                      {approximate_end}, last_message_at,
+                      model, provider, effort, agent_hash, invocation_id, run_id,
                       node_metadata, project, project_source,
                       status_reason_code, status_reason_summary, status_evidence_refs,
-                      total_cost_usd, input_tokens, output_tokens
-               FROM sessions WHERE id = ?""",
+                      total_cost_usd, input_tokens, output_tokens, duration_ms
+               FROM sessions WHERE id = ?""",  # noqa: S608
             (session_id,),
         )
         session_row = await cur.fetchone()
@@ -698,6 +784,7 @@ async def get_session(
             if play_row
             else None
         )
+        pause_is_held = await _pause_is_held(db, session_id)
 
         try:
             branch_cur = await db.execute(
@@ -784,11 +871,15 @@ async def get_session(
                     "message_stats": full_stats["branches"][branch_id],
                     "first_message_at": first_message_at,
                     "last_message_at": last_message_at,
-                    "model": br["model"],
+                    "model": display_model(br["model"]),
                     "provider": br["provider"],
                     "agent_name": br["agent_name"],
                     "status": br["status"] if "status" in br_keys else None,
-                    "started_at": br["started_at"] if "started_at" in br_keys else None,
+                    "started_at": (
+                        br["started_at"]
+                        if "started_at" in br_keys and br["started_at"] is not None
+                        else br["created_at"]
+                    ),
                     "ended_at": br["ended_at"] if "ended_at" in br_keys else None,
                 }
             )
@@ -802,9 +893,18 @@ async def get_session(
 
     started_at = session_row["started_at"]
     ended_at = session_row["ended_at"]
-    duration_ms = (
-        (ended_at - started_at) * 1000 if started_at is not None and ended_at is not None else None
-    )
+    ended_at_is_approximate = bool(session_row["ended_at_is_approximate"])
+    duration_ms = None if ended_at_is_approximate else session_row["duration_ms"]
+    # Only reconstruct from a measured end. Deriving one from an approximate
+    # ended_at hands back a number that reads as measured, which is the whole
+    # thing the flag exists to prevent.
+    if (
+        duration_ms is None
+        and not ended_at_is_approximate
+        and started_at is not None
+        and ended_at is not None
+    ):
+        duration_ms = (ended_at - started_at) * 1000
     status = session_row["status"] or "completed"
     artifact_contract = _parse_json_col(session_row["artifact_contract_json"])
     stored_verification = _parse_json_col(session_row["artifact_verification_json"])
@@ -835,6 +935,7 @@ async def get_session(
         "status": status,
         "started_at": started_at,
         "ended_at": ended_at,
+        "ended_at_is_approximate": ended_at_is_approximate,
         "duration_ms": duration_ms,
         # Full-session aggregate, not derived from the windowed page.
         "last_message_at": session_row["last_message_at"],
@@ -845,11 +946,18 @@ async def get_session(
         "message_next_cursor": message_next_cursor,
         "message_stats": full_stats,
         # Provenance disclosure — same fields exposed on list_sessions().
-        "model": session_row["model"],
+        "model": display_model(session_row["model"]),
         "provider": session_row["provider"],
         "effort": session_row["effort"],
         "agent_hash": session_row["agent_hash"],
         "invocation_id": session_row["invocation_id"],
+        # Whether a queued run control would ever reach a runner. Computed by
+        # the admission path's own predicate rather than restated here, so a
+        # client cannot offer a control this session's admission would refuse.
+        "has_control_consumer": session_has_control_consumer(dict(session_row)),
+        # Whether a pause is currently held on this run. Server-derived so it
+        # survives a reload; see _pause_is_held.
+        "pause_is_held": pause_is_held,
         # ADR-0063: project detection.
         "project": session_row["project"],
         "project_source": session_row["project_source"],
@@ -858,7 +966,7 @@ async def get_session(
         "status_reason_summary": session_row["status_reason_summary"],
         "status_evidence_refs": _parse_json_col(session_row["status_evidence_refs"]),
         # Cost-visibility contract: NULL means unreported, never coerced to 0.0.
-        "total_cost_usd": session_row["total_cost_usd"],
+        "total_cost_usd": display_cost(session_row["total_cost_usd"], session_row["provider"]),
         "input_tokens": session_row["input_tokens"],
         "output_tokens": session_row["output_tokens"],
         "graph": _graph_from_metadata(session_row["node_metadata"]),

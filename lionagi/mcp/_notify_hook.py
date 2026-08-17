@@ -26,7 +26,11 @@ import argparse
 import json
 import os
 import subprocess
+import time
 from typing import Any
+
+from lionagi.ln._proc import terminate_process_group
+from lionagi.state.lifecycle.callbacks import HANDLER_BUDGET_SECONDS
 
 # The CLI runs this file's module by absolute interpreter path; lionagi is on
 # the path because that interpreter is the one lionagi is installed in.
@@ -34,6 +38,42 @@ from . import config, jobs
 from ._terminal_cause import read_terminal_cause
 
 _DELIVERY_TIMEOUT_S = 30
+
+_STARTED_AT = time.monotonic()
+# Interpreter start and this module's imports, which precede _STARTED_AT and so
+# cannot be measured from here.
+_STARTUP_ALLOWANCE_S = 1.0
+# Locking the record, writing the outcome, appending the console note.
+_RECORDING_RESERVE_S = 2.0
+# Collecting a killed delivery, bounded so it cannot spend the reserve above.
+_REAP_TIMEOUT_S = 0.5
+
+
+def _supervised_delivery_timeout() -> float:
+    """How long ``main`` may spend delivering and still record what happened.
+
+    The CLI runs this hook as a lifecycle exec adapter, and that supervisor
+    kills the adapter's whole process group when its deadline expires. A
+    delivery still running at that moment takes the outcome-recording step down
+    with it, leaving the write-ahead "unknown" outcome as the run's permanent
+    answer — a notice that was never sent, recorded as a result nobody can read.
+    So the delivery's own timeout has to fire first, with enough of the deadline
+    left to write the result down.
+
+    The result falls to zero rather than to any minimum. A floor would be the
+    one case worth guarding against: it applies exactly when the budget is
+    already spent, and it buys delivery time by taking it from the reserve that
+    writes the answer down.
+
+    A ceiling, not a guarantee: ``HANDLER_BUDGET_SECONDS`` is the deadline for
+    the whole terminal-callback fan-out rather than for this handler alone, so
+    a co-running handler can consume it first and the kill can still land mid
+    delivery. What it removes is the case where that outcome was certain.
+    """
+    spent = time.monotonic() - _STARTED_AT
+    remaining = HANDLER_BUDGET_SECONDS - _STARTUP_ALLOWANCE_S - spent - _RECORDING_RESERVE_S
+    return max(0.0, remaining)
+
 
 # A notifier's stdout/stderr is free text that may carry a credential, so it's
 # read into memory, matched against the closed vocabulary below, and dropped —
@@ -98,6 +138,65 @@ def _classify_failure(text: str) -> str:
         if any(needle in lowered for needle in needles):
             return name
     return _FAILURE_UNKNOWN
+
+
+def _delivery_failure(exc: BaseException, program: str | None) -> dict[str, Any]:
+    """The outcome record for a delivery that raised instead of returning.
+
+    Only the exception *type* is kept — ``TimeoutExpired`` carries the child's
+    captured output on ``.stdout``/``.stderr``, so ``str(exc)`` would leak
+    exactly the free text this module exists to keep out of the record.
+    """
+    timed_out = isinstance(exc, subprocess.TimeoutExpired)
+    outcome = {
+        "attempted": True,
+        "ok": False,
+        "exit_code": None,
+        "error": type(exc).__name__,
+        "failure_class": _pin_failure_class(_FAILURE_TIMEOUT if timed_out else _FAILURE_UNKNOWN),
+        "command": program,
+    }
+    if timed_out:
+        # Started, then stopped part-way. A nonzero exit is the command's own
+        # report that it failed; a timeout is not, because a notifier can send
+        # the notice and then hang. So this is marked unconfirmed rather than
+        # failed, through the same field a zero-exit-but-unverifiable delivery
+        # uses. ``ok`` stays False because success was never observed, and it
+        # cannot become None: that is the write-ahead value, and it means no
+        # outcome was ever recorded at all.
+        outcome["delivery_verified"] = False
+        outcome["unverified_reason"] = "delivery_timed_out"
+    return outcome
+
+
+def _kill_delivery_group(proc: subprocess.Popen) -> None:
+    """Take down the delivery's whole process group, then reap it.
+
+    The delivery leads its own group (``start_new_session``), so its pid is the
+    group id. The signalling itself belongs to the package's shared terminator
+    rather than to this module: it refuses to signal pid<=1 or this process's
+    own group, which is the difference between ending the notifier and ending
+    the run that spawned it, and it signals the group *and* the direct child,
+    so the child is still collected on a platform where the group call is
+    unavailable or refused.
+
+    Descendant collection is therefore a POSIX property of that shared helper,
+    not a guarantee invented here. Off POSIX ``start_new_session`` creates no
+    group to signal and the direct child is what gets collected — the same
+    behaviour as every other process-group caller in the package, and not a
+    narrowing on this path, since the timeout it replaced terminated the direct
+    child only, on every platform.
+
+    The reap is bounded because this runs inside the window reserved for
+    writing the outcome down: a kill can leave a descendant holding the pipe
+    open, and waiting on it indefinitely would spend the reserve and lose the
+    record, which is the failure this whole path exists to prevent.
+    """
+    terminate_process_group(proc, grace=None)
+    try:
+        proc.communicate(timeout=_REAP_TIMEOUT_S)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _classify_quietly(text: str) -> str:
@@ -177,6 +276,29 @@ def _delivery_env(sender: str) -> dict[str, str] | None:
     return env
 
 
+def _terminal_reason_from_env() -> str | None:
+    """Read the flow callback's controlled reason from its versioned payload.
+
+    The MCP hook is itself launched as a flow ``--notify`` adapter, whose
+    payload is already carried in ``LIONAGI_NOTIFY_PAYLOAD``. Accept only a
+    registered reason code so an inherited free-form environment value can
+    never become unbounded status data or downstream notification content.
+    """
+    raw = os.environ.get("LIONAGI_NOTIFY_PAYLOAD")
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+        reason_code = payload.get("reason_code") if isinstance(payload, dict) else None
+        if not isinstance(reason_code, str):
+            return None
+        from lionagi.state.reasons import validate_reason_code
+
+        return validate_reason_code(reason_code)
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolve_delivery_cwd(
     job: dict[str, Any] | None, override: str | None
 ) -> tuple[str | None, str | None]:
@@ -236,6 +358,7 @@ def _deliver(
     *,
     program: str | None = None,
     cwd: str | None = None,
+    timeout: float = _DELIVERY_TIMEOUT_S,
 ) -> dict[str, Any]:
     """Run the delivery command best-effort; return its outcome for the record.
 
@@ -246,34 +369,34 @@ def _deliver(
     not runtime output). *cwd* is passed explicitly (not inherited) so both
     callers of ``deliver_terminal_notice`` sign the notice the same way.
     """
+    # Its own process group, so a timeout can take the whole tree. Expiry kills
+    # the process it started and nothing below it, and a notifier that forks —
+    # a shell wrapper, a mailer that backgrounds its send — leaves those
+    # descendants running once this hook exits. One per terminal event, each
+    # holding whatever the notifier held, and nothing left watching them.
     try:
-        proc = subprocess.run(  # noqa: S603 — argv is the operator-configured delivery command, no shell
+        proc = subprocess.Popen(  # noqa: S603 — argv is the operator-configured delivery command, no shell
             argv,
-            input=json.dumps(payload),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=_DELIVERY_TIMEOUT_S,
-            capture_output=True,
-            check=False,
             env=env,
             cwd=cwd,
+            start_new_session=True,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        # Only the exception *type* is kept — TimeoutExpired carries the
-        # child's captured output on .stdout/.stderr, so str(exc) would leak
-        # exactly the free text this function exists to keep out.
-        return {
-            "attempted": True,
-            "ok": False,
-            "exit_code": None,
-            "error": type(exc).__name__,
-            "failure_class": _pin_failure_class(
-                _FAILURE_TIMEOUT if isinstance(exc, subprocess.TimeoutExpired) else _FAILURE_UNKNOWN
-            ),
-            "command": program,
-        }
+        return _delivery_failure(exc, program)
+
+    try:
+        stdout, stderr = proc.communicate(input=json.dumps(payload), timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _kill_delivery_group(proc)
+        return _delivery_failure(exc, program)
+
     ok = proc.returncode == 0
     failure_class = _pin_failure_class(
-        None if ok else _classify_quietly(f"{proc.stderr or ''}\n{proc.stdout or ''}")
+        None if ok else _classify_quietly(f"{stderr or ''}\n{stdout or ''}")
     )
     outcome = {
         "attempted": True,
@@ -320,10 +443,20 @@ def _note_delivery_in_console_log(run_id: str, outcome: dict[str, Any]) -> None:
         failure_class = outcome.get("failure_class")
         if failure_class:
             detail = f"{detail} ({failure_class})"
-        line = (
-            f"\n[notify] terminal notice NOT delivered for run {run_id}: {detail}. "
-            f"This run finished; its completion signal did not.\n"
-        )
+        if outcome.get("delivery_verified") is False:
+            # Stopped while running, so whether the notice went out is not
+            # knowable from here. "NOT delivered" would send an operator to
+            # send it again, which is the wrong instruction half the time.
+            line = (
+                f"\n[notify] WARNING: terminal notice for run {run_id} could NOT be "
+                f"confirmed: {detail}. The notifier was stopped while still running, "
+                f"so the notice may or may not have gone out; check before re-sending.\n"
+            )
+        else:
+            line = (
+                f"\n[notify] terminal notice NOT delivered for run {run_id}: {detail}. "
+                f"This run finished; its completion signal did not.\n"
+            )
 
     try:
         path = config.job_dir(run_id) / "console.log"
@@ -359,6 +492,8 @@ def deliver_terminal_notice(
     target: str | None = None,
     command: str | None = None,
     sender: str | None = None,
+    reason_code: str | None = None,
+    timeout: float = _DELIVERY_TIMEOUT_S,
 ) -> dict[str, Any]:
     """Attempt this run's configured terminal notice and report what came of it.
 
@@ -366,6 +501,11 @@ def deliver_terminal_notice(
     whose process never got this far) that must resolve identically; see
     docs/internals/mcp.md#deliver-terminal-notice-two-callers. Nothing raises —
     every way a delivery does not happen comes back as an outcome describing it.
+
+    *timeout* differs between those two callers because only one of them is
+    supervised: the hook runs under a deadline that kills it (see
+    :func:`_supervised_delivery_timeout`), the observer runs in-process with
+    nobody to cut it short.
     """
     target = target or os.environ.get("LIONAGI_MCP_NOTIFY_TARGET") or ""
     sender = sender or os.environ.get("LIONAGI_MCP_NOTIFY_SENDER") or ""
@@ -401,12 +541,15 @@ def deliver_terminal_notice(
             "target": target,
             "sender": sender,
         }
+        if reason_code:
+            fields["reason_code"] = reason_code
         return _deliver(
             _substitute(template, fields),
             fields,
             _delivery_env(sender),
             program=program,
             cwd=delivery_cwd,
+            timeout=timeout,
         )
     if unusable:
         # Configured but unusable — recorded as a failure, not silence.
@@ -434,7 +577,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    terminal = jobs.mark_terminal(args.run_id, args.status)
+    reason_code = _terminal_reason_from_env()
+    terminal = jobs.mark_terminal(args.run_id, args.status, reason_code=reason_code)
     if terminal.refused:
         # End not on disk — no notice sent, since it would assert a
         # completion the record contradicts; run stays non-terminal.
@@ -461,6 +605,8 @@ def main(argv: list[str] | None = None) -> int:
         target=args.target,
         command=args.command,
         sender=args.sender,
+        reason_code=(terminal.record or {}).get("reason_code") or reason_code,
+        timeout=_supervised_delivery_timeout(),
     )
     recorded = jobs.record_notify_delivery(args.run_id, outcome)
     _note_delivery_in_console_log(args.run_id, outcome)

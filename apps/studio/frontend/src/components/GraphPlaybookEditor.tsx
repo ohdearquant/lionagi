@@ -162,6 +162,7 @@ export default function GraphPlaybookEditor({ workerName }: { workerName: string
         />
 
         <button
+          type="button"
           onClick={() => setShowModels((v) => !v)}
           className="rounded-md bg-interactive-secondary px-3 py-1 text-meta text-content-secondary hover:bg-interactive-secondary-hover hover:text-content-primary"
         >
@@ -174,6 +175,7 @@ export default function GraphPlaybookEditor({ workerName }: { workerName: string
         </button>
 
         <button
+          type="button"
           onClick={handleSave}
           disabled={saving}
           className="rounded-md bg-interactive-primary px-4 py-1 text-body font-medium text-content-inverse hover:bg-interactive-primary-hover disabled:cursor-not-allowed disabled:opacity-50"

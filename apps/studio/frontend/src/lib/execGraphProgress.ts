@@ -1,5 +1,5 @@
 // Shared, framework-free state primitives for the execution-graph progress
-// surface (progress summary counts, elapsed timer, descendant-terminal
+// surface (progress summary counts, elapsed timer, descendant-progress
 // status reconciliation, and stage/rank position). Every function here reads
 // from the SAME canonical status source the graph nodes render from
 // (`Record<string, NodeExecStatus>`, keyed by authored node id, as built by
@@ -26,6 +26,7 @@ export interface ProgressCounts {
   paused: number;
   completed: number;
   skipped: number;
+  cancelled: number;
   escalated: number;
   failed: number;
   hasFailure: boolean;
@@ -41,6 +42,7 @@ function emptyCounts(total = 0): ProgressCounts {
     paused: 0,
     completed: 0,
     skipped: 0,
+    cancelled: 0,
     escalated: 0,
     failed: 0,
     hasFailure: false,
@@ -87,6 +89,9 @@ export function deriveProgressCounts(
       case "skipped":
         counts.skipped++;
         break;
+      case "cancelled":
+        counts.cancelled++;
+        break;
       case "escalated":
         counts.escalated++;
         break;
@@ -121,9 +126,28 @@ export function formatElapsed(seconds: number | null): string {
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
 }
 
-// ── Descendant-terminal suppression + terminal-run collapse ────────────────
+// ── Descendant-progress suppression + terminal-run collapse ───────────────
 
-const TERMINAL_STATUSES = new Set<NodeExecStatus>(["completed", "failed", "skipped", "escalated"]);
+/** Descendant statuses that prove an ancestor actually finished.
+ *
+ * The suppression below reads a terminal descendant as evidence that a node
+ * still reporting "running" has in fact completed — the descendant could only
+ * have got there by its dependency being satisfied. That inference is about
+ * how the descendant reached its status, not about the status being terminal,
+ * which is why this is deliberately not "the set of terminal statuses".
+ *
+ * `cancelled` is terminal and is NOT here. A cancellation is delivered to
+ * nodes that never ran, before dependency waiting, so a cancelled descendant
+ * is evidence of nothing about its ancestor. Including it projected a graph
+ * `a -> b` with a still-running `a` and a cancelled `b` as `a=completed`,
+ * reporting work as finished that was in fact interrupted mid-flight.
+ */
+const DEPENDENCY_SATISFIED_STATUSES = new Set<NodeExecStatus>([
+  "completed",
+  "failed",
+  "skipped",
+  "escalated",
+]);
 const NON_TERMINAL_ACTIVE_STATUSES = new Set<NodeExecStatus>([
   "queued",
   "running",
@@ -163,10 +187,13 @@ function buildDescendantIndex(nodeIds: string[], edges: GraphEdge[]): Map<string
 
 // Two invariants a viewer actually relies on, applied in order:
 //
-// 1. Descendant-terminal suppression (holds regardless of `done`): a node
-//    cannot still be "running" once a descendant has reached a terminal
-//    state — the descendant could not have started without this node's
-//    output, so the stale "running" reading is corrected to "completed".
+// 1. Descendant-progress suppression (holds regardless of `done`): a node
+//    cannot still be "running" once a descendant has reached a state that
+//    required this node's output — the descendant could not have got there
+//    without it, so the stale "running" reading is corrected to "completed".
+//    Note this is narrower than "a descendant is terminal": a cancelled
+//    descendant is terminal and proves nothing, because cancellation reaches
+//    nodes that never ran. See DEPENDENCY_SATISFIED_STATUSES.
 // 2. Terminal-run collapse (only once `done`): after the run itself has
 //    ended, no node may present as still in flight. Any status that is
 //    still non-terminal at that point means "no terminal signal was ever
@@ -177,22 +204,32 @@ export function reconcileNodeStatuses(
   edges: GraphEdge[],
   statuses: NodeStatusMap | undefined,
   done: boolean,
+  failedNodeIds?: ReadonlySet<string>,
 ): NodeStatusMap {
   const base: NodeStatusMap = {};
   for (const id of nodeIds) base[id] = statuses?.[id] ?? "pending";
+  // The run's own failure evidence names the op(s) that killed it. That
+  // verdict outranks whatever lifecycle signal the dying engine managed to
+  // record — the named op often still reads "queued" or "running" because
+  // the engine never got to emit its terminal signal.
+  if (failedNodeIds) {
+    for (const id of nodeIds) {
+      if (failedNodeIds.has(id)) base[id] = "failed";
+    }
+  }
 
   const descendants = buildDescendantIndex(nodeIds, edges);
   const afterSuppression: NodeStatusMap = { ...base };
   for (const id of nodeIds) {
     if (afterSuppression[id] !== "running") continue;
-    let hasTerminalDescendant = false;
+    let hasDependencySatisfyingDescendant = false;
     for (const d of descendants.get(id) ?? []) {
-      if (TERMINAL_STATUSES.has(base[d]!)) {
-        hasTerminalDescendant = true;
+      if (DEPENDENCY_SATISFIED_STATUSES.has(base[d]!)) {
+        hasDependencySatisfyingDescendant = true;
         break;
       }
     }
-    if (hasTerminalDescendant) afterSuppression[id] = "completed";
+    if (hasDependencySatisfyingDescendant) afterSuppression[id] = "completed";
   }
 
   if (!done) return afterSuppression;

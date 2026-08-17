@@ -213,6 +213,7 @@ function MaintenanceSection({ doctor }: { doctor: AdminDoctorResponse | null }) 
 
       <div className="flex flex-wrap items-center gap-2">
         <button
+          type="button"
           className={btnSecondary}
           disabled={running !== null}
           onClick={() => void run("checkpoint")}
@@ -220,6 +221,7 @@ function MaintenanceSection({ doctor }: { doctor: AdminDoctorResponse | null }) 
           {running === "checkpoint" ? t("maintenance.running") : t("maintenance.checkpointWal")}
         </button>
         <button
+          type="button"
           className={btnSecondary}
           disabled={running !== null}
           onClick={() => void run("prune")}
@@ -227,6 +229,7 @@ function MaintenanceSection({ doctor }: { doctor: AdminDoctorResponse | null }) 
           {running === "prune" ? t("maintenance.running") : t("maintenance.pruneOldData")}
         </button>
         <button
+          type="button"
           className={btnSecondary}
           disabled={running !== null}
           onClick={() => void run("vacuum")}
@@ -234,7 +237,12 @@ function MaintenanceSection({ doctor }: { doctor: AdminDoctorResponse | null }) 
           {running === "vacuum" ? t("maintenance.running") : t("maintenance.vacuumDb")}
         </button>
         {phantoms > 0 && (
-          <button className={btnDanger} disabled={running !== null} onClick={() => void pruneAll()}>
+          <button
+            type="button"
+            className={btnDanger}
+            disabled={running !== null}
+            onClick={() => void pruneAll()}
+          >
             {t("maintenance.prunePhantoms", {
               count: phantoms,
               plural: phantoms !== 1 ? "s" : "",
@@ -456,7 +464,7 @@ function SettingsSection() {
             <span className={valueCls}>
               {theme === "dark" ? t("settings.themeDark") : t("settings.themeLight")}
             </span>
-            <button className={btnBase} onClick={toggleTheme}>
+            <button type="button" className={btnBase} onClick={toggleTheme}>
               {theme === "dark" ? t("settings.switchToLight") : t("settings.switchToDark")}
             </button>
           </div>

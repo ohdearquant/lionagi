@@ -15,8 +15,13 @@ from lionagi.libs.path_safety import safe_join
 
 from ..config import SHOWS_ROOT
 from ..registry import studio_route
+from ._db import (
+    StoreNotAddressableError,
+    require_file_store,
+    store_exists,
+    store_path,
+)
 from ._db import open_db as _open_db
-from ._db import store_exists, store_path
 from ._io import read_json_file as _read_json
 from ._io import read_json_file_checked as _read_json_checked
 from ._path_safety import public_path, safe_path_join
@@ -88,6 +93,7 @@ def _extract_repo_and_branches(show_md: str | None) -> tuple[str | None, str | N
 
 
 async def _db_available() -> bool:
+    require_file_store()
     return store_exists()
 
 
@@ -349,10 +355,37 @@ async def _all_show_topics() -> set[str]:
     return topics
 
 
+#: Play statuses where the gate said FAIL — a human owes a real decision
+#: (rework the play, accept the escalation). A play merely sitting in
+#: ``gated`` after a PASSING verdict is routine queue advance, not a
+#: decision, so it does not surface here by default: the director declares
+#: ``attention_opt_in: true`` in the play's metadata when a passing gate
+#: still warrants a human look.
+_ATTENTION_PLAY_STATUSES = frozenset({"gate_failed", "escalated"})
+
+
+def _play_needs_attention(status: Any, meta: dict[str, Any], verdict: dict[str, Any]) -> bool:
+    if status in _ATTENTION_PLAY_STATUSES:
+        return True
+    if status != "gated":
+        return False
+    # A play parked in "gated" whose recorded verdict is a FAIL is a decision
+    # waiting on a human even though the director never advanced the status.
+    if verdict.get("gate_passed") is False:
+        return True
+    return meta.get("attention_opt_in") is True
+
+
 async def list_gated_plays() -> list[dict[str, Any]]:
-    """Every play, across every show, currently sitting in the ``gated``
-    lifecycle status — read live (disk status winning over any DB row for
-    the same play), the same merge ``get_show()`` performs.
+    """Every play, across every show, currently waiting on a real human
+    decision at its gate — read live (disk status winning over any DB row
+    for the same play), the same merge ``get_show()`` performs.
+
+    Admission is decision-shaped, not status-shaped: a FAIL outcome
+    (``gate_failed``, ``escalated``, or a ``gated`` play whose verdict
+    records ``gate_passed: false``) always surfaces; a play that passed its
+    gate and is simply next in the queue auto-advances and stays out unless
+    its metadata opts in with ``attention_opt_in: true``.
 
     The ``plays`` table is populated once by ``import_shows()`` and never
     resynced afterward (a show already in the DB is skipped on re-import),
@@ -386,6 +419,7 @@ async def list_gated_plays() -> list[dict[str, Any]]:
                         "id": f"play:{topic}:{play['name']}",
                         "topic": topic,
                         "play_name": play["name"],
+                        "status": None,
                         "started_at": meta.get("started_at"),
                         "updated_at": play.get("updated_at"),
                         "feedback": verdict.get("feedback"),
@@ -395,13 +429,15 @@ async def list_gated_plays() -> list[dict[str, Any]]:
                     }
                 )
                 continue
-            if meta.get("status") != "gated":
+            status = meta.get("status")
+            if not _play_needs_attention(status, meta, verdict):
                 continue
             out.append(
                 {
                     "id": f"play:{topic}:{play['name']}",
                     "topic": topic,
                     "play_name": play["name"],
+                    "status": status,
                     "started_at": meta.get("started_at"),
                     "updated_at": play.get("updated_at"),
                     "feedback": verdict.get("feedback"),
@@ -716,7 +752,18 @@ async def watch_show(topic: str) -> AsyncGenerator[str]:
 
         if not any_change and (time.time() - last_change) >= _SHOW_DONE_STABLE_SECS:
             show_status: str | None = None
-            if await _db_available():
+            try:
+                store_readable = await _db_available()
+            except StoreNotAddressableError:
+                # This generator is already streaming, so the response status is
+                # committed and the app-level 501 handler can no longer run. The
+                # refusal still did its job: no read reached the fallback file.
+                # Leaving the status unknown matches the no-store-yet case and
+                # keeps the file events, which are filesystem-derived and correct,
+                # flowing instead of aborting the stream to report a condition the
+                # client cannot be told about here.
+                store_readable = False
+            if store_readable:
                 try:
                     async with _open_db(store_path()) as db:
                         cur = await db.execute("SELECT status FROM shows WHERE topic = ?", (topic,))

@@ -146,10 +146,9 @@ class SeededDaemon:
         env["LIONAGI_SHOWS_ROOT"] = str(tmp_dir / "shows")
         env["LIONAGI_STUDIO_HOST"] = host
         env["LIONAGI_STUDIO_PORT"] = str(port)
-        # Disable the in-process Claude Code mirror: it tails the real
-        # ~/.claude/projects regardless of LIONAGI_HOME, which would inject
-        # nondeterministic content and violate the "never touch the real
-        # home dir" rule in spirit even though it's a different tree.
+        # Keep the mirror explicitly off in this harness. An isolated
+        # LIONAGI_HOME already blocks ambient transcript roots by default, but
+        # this also protects the fixture if a caller opts ambient imports in.
         env["LIONAGI_STUDIO_MIRROR_CLAUDE"] = "0"
         operator_script = tmp_dir / "operator-script.json"
         operator_script.write_text(json.dumps(_OPERATOR_SCRIPT), encoding="utf-8")

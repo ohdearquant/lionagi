@@ -16,9 +16,14 @@ export function runId(run: Run): string {
 const TERMINAL_STATUSES = new Set([
   "succeeded",
   "completed",
+  "completed_empty",
   "failed",
   "error",
   "cancelled",
+  "canceled",
+  "timed_out",
+  "timeout",
+  "aborted",
   "done",
 ]);
 
@@ -50,36 +55,38 @@ export function mergeRunDetail(base: Run, detail: Run): Run {
 
 export function statusIcon(run: Run): vscode.ThemeIcon {
   const s = (run.status ?? "").toLowerCase();
-  const h = (run.effective_health ?? "").toLowerCase();
 
   if (s === "running" || s === "active" || s === "starting") {
     return new vscode.ThemeIcon(
       "loading~spin",
-      new vscode.ThemeColor("charts.blue")
+      new vscode.ThemeColor("charts.blue"),
     );
   }
-  if (s === "succeeded" || s === "completed" || h === "healthy") {
+  if (s === "succeeded" || s === "completed" || s === "done") {
     return new vscode.ThemeIcon(
       "pass-filled",
-      new vscode.ThemeColor("charts.green")
+      new vscode.ThemeColor("charts.green"),
     );
   }
-  if (s === "failed" || s === "error") {
+  if (s === "failed" || s === "error" || s === "failure") {
+    return new vscode.ThemeIcon("error", new vscode.ThemeColor("charts.red"));
+  }
+  if (s === "timed_out" || s === "timeout" || s === "completed_empty") {
     return new vscode.ThemeIcon(
-      "error",
-      new vscode.ThemeColor("charts.red")
+      "warning",
+      new vscode.ThemeColor("charts.yellow"),
     );
   }
-  if (s === "cancelled") {
+  if (s === "cancelled" || s === "canceled" || s === "aborted") {
     return new vscode.ThemeIcon(
       "circle-slash",
-      new vscode.ThemeColor("descriptionForeground")
+      new vscode.ThemeColor("descriptionForeground"),
     );
   }
   if (s === "queued" || s === "pending") {
     return new vscode.ThemeIcon(
       "clock",
-      new vscode.ThemeColor("charts.yellow")
+      new vscode.ThemeColor("charts.yellow"),
     );
   }
   return new vscode.ThemeIcon("circle-outline");
@@ -87,7 +94,7 @@ export function statusIcon(run: Run): vscode.ThemeIcon {
 
 /** Normalize an API timestamp (epoch seconds, epoch ms, or ISO string) to epoch ms. */
 export function toMillis(
-  v: number | string | null | undefined
+  v: number | string | null | undefined,
 ): number | undefined {
   if (v === null || v === undefined) {
     return undefined;
@@ -103,9 +110,7 @@ export function toMillis(
   return Number.isNaN(ms) ? undefined : ms;
 }
 
-export function relativeTime(
-  ts: number | string | null | undefined
-): string {
+export function relativeTime(ts: number | string | null | undefined): string {
   const ms = toMillis(ts);
   if (ms === undefined) {
     return "";
@@ -132,7 +137,7 @@ export function relativeTime(
 
 /** Last path segment of a project ref: "ohdearquant/lattice" → "lattice". */
 export function shortProject(
-  project: string | null | undefined
+  project: string | null | undefined,
 ): string | undefined {
   if (!project) {
     return undefined;
@@ -144,7 +149,7 @@ export function shortProject(
 /** A name is useful only if set and not just echoing the invocation kind ("agent"). */
 function meaningful(
   v: string | null | undefined,
-  kind: string | null | undefined
+  kind: string | null | undefined,
 ): v is string {
   const s = v?.trim();
   if (!s) {
@@ -229,13 +234,13 @@ export class ProjectGroupItem extends vscode.TreeItem {
   readonly key: string;
   constructor(
     public readonly group: ProjectGroup,
-    expanded: boolean
+    expanded: boolean,
   ) {
     super(
       shortProject(group.project) ?? NO_PROJECT,
       expanded
         ? vscode.TreeItemCollapsibleState.Expanded
-        : vscode.TreeItemCollapsibleState.Collapsed
+        : vscode.TreeItemCollapsibleState.Collapsed,
     );
     this.key = group.project ?? NO_PROJECT;
     this.description = `${group.count}`;
@@ -257,7 +262,10 @@ export class ActiveGroupItem extends vscode.TreeItem {
     super("Active", vscode.TreeItemCollapsibleState.Expanded);
     this.description = `${count}`;
     this.contextValue = "activeGroup";
-    this.iconPath = new vscode.ThemeIcon("zap", new vscode.ThemeColor("charts.blue"));
+    this.iconPath = new vscode.ThemeIcon(
+      "zap",
+      new vscode.ThemeColor("charts.blue"),
+    );
     const noun = count === 1 ? "session" : "sessions";
     this.tooltip = `${count} running ${noun} across all projects`;
     // Stable id so the group's expanded state survives the 4s poll refreshes.
@@ -270,9 +278,12 @@ export class LoadMoreItem extends vscode.TreeItem {
   constructor(
     public readonly key: string,
     loaded: number,
-    total: number
+    total: number,
   ) {
-    super(`Load more · ${loaded} of ${total}`, vscode.TreeItemCollapsibleState.None);
+    super(
+      `Load more · ${loaded} of ${total}`,
+      vscode.TreeItemCollapsibleState.None,
+    );
     this.contextValue = "loadMore";
     this.iconPath = new vscode.ThemeIcon("ellipsis");
     // id encodes the loaded count so the node re-renders as the group grows.
@@ -307,7 +318,10 @@ function buildTooltip(run: Run): vscode.MarkdownString {
     md.appendMarkdown(`**Kind:** ${escapeMd(run.invocation_kind)}\n\n`);
   }
   if (run.model || run.provider) {
-    const parts = [run.model, run.provider].filter(Boolean).map((v) => escapeMd(v!)).join(" / ");
+    const parts = [run.model, run.provider]
+      .filter(Boolean)
+      .map((v) => escapeMd(v!))
+      .join(" / ");
     md.appendMarkdown(`**Model:** ${parts}\n\n`);
   }
   if (run.effort) {
@@ -321,7 +335,7 @@ function buildTooltip(run: Run): vscode.MarkdownString {
     md.appendMarkdown("\n\n");
   }
   md.appendMarkdown(
-    `**Branches / Messages:** ${run.branch_count} / ${run.message_count}\n\n`
+    `**Branches / Messages:** ${run.branch_count} / ${run.message_count}\n\n`,
   );
   if (run.started_at) {
     md.appendMarkdown(`**Started:** ${formatTs(run.started_at)}\n\n`);

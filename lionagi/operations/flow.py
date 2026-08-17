@@ -53,14 +53,14 @@ SKIP_REASON_UPSTREAM_GATE_REJECT = "upstream_gate_reject"
 
 # Lifecycle status to announce for an operation that is already terminal when
 # the flow reaches it -- a resumed run replaying work an earlier attempt
-# finished. CANCELLED and ABORTED are deliberately absent: neither has a
-# lifecycle signal of its own, and announcing either under one of these words
-# would assert an outcome that did not happen. They stay unannounced until they
-# have a signal to be announced as.
+# finished. ABORTED is deliberately absent: it has no node-level lifecycle
+# signal (the live ABORTED reasons are run-level), so mapping it here would
+# assert an outcome the node vocabulary cannot represent.
 _PRETERMINAL_ANNOUNCE_STATUS = {
     EventStatus.COMPLETED: "completed",
     EventStatus.FAILED: "failed",
     EventStatus.SKIPPED: "skipped",
+    EventStatus.CANCELLED: "cancelled",
 }
 
 # Tracks which Operation a reactive task is running (per-task contextvar).
@@ -117,7 +117,7 @@ class FlowEvent:
 
     operation_id: str
     name: str
-    status: str  # "completed" | "failed" | "skipped"
+    status: str  # "completed" | "failed" | "skipped" | "cancelled"
     result: Any
     spawned: bool = False  # True if this node was injected mid-run
 
@@ -183,6 +183,9 @@ class DependencyAwareExecutor:
         # terminal on_progress signal, whichever exit path it takes.
         self._started_ops: set = set()
         self._terminal_emitted: set = set()
+        # Operations announced as queued, by id. Anything in here is owed a
+        # terminal signal, whether or not execution ever reached it.
+        self._queued_announced: dict[Any, Operation] = {}
         self._pause_event: ConcurrencyEvent | None = None
         # Fire-and-forget flow signal tasks, retained until each finishes so a
         # weakly referenced task can't disappear before it runs.
@@ -216,16 +219,23 @@ class DependencyAwareExecutor:
         limiter = CapacityLimiter(capacity)
 
         nodes = [n for n in self.graph.internal_nodes.values() if isinstance(n, Operation)]
-        if self.on_progress:
-            for node in nodes:
-                _name, _fallback = self._display_name(node)
-                self._emit_progress(str(node.id), _name, "queued", 0.0, _fallback)
-        async with create_task_group() as tg:
-            self._tg = tg
-            try:
-                await self._alcall(nodes, self._execute_operation, limiter=limiter)
-            finally:
-                self._tg = None
+        for node in nodes:
+            self._announce_queued(node)
+        try:
+            async with create_task_group() as tg:
+                self._tg = tg
+                try:
+                    await self._alcall(nodes, self._execute_operation, limiter=limiter)
+                finally:
+                    self._tg = None
+        except (get_cancelled_exc_class(), KeyboardInterrupt, SystemExit):
+            # Any entry point that announces must also sweep. Announcing is
+            # structural -- one helper, called from every path -- but this
+            # sweep is hand-placed per entry point, so a new path gets the
+            # announce for free and the settle only if someone remembers.
+            # Without it, an announced operation stays queued forever.
+            self._cancel_announced_unfinished()
+            raise
 
         completed_ops = self._completed_operation_ids()
 
@@ -384,19 +394,22 @@ class DependencyAwareExecutor:
             from lionagi.session.signal import NodePaused  # noqa: PLC0415
 
             op_id = str(operation.id)
-            name = operation.metadata.get("reference_id", op_id[:8])
+            name, _ = self._display_name(operation)
             return NodePaused(op_id=op_id, name=name)
 
         self._emit_best_effort(_factory)
 
     def _display_name(self, operation: Operation) -> tuple[str, bool]:
         """Resolve a lifecycle-signal display name before a branch is bound:
-        the authored ``reference_id`` if the caller set one, else the op_id's
-        own 8-char prefix as a last resort. Returns ``(name, is_fallback)`` so
-        callers know whether the name is genuine without re-deriving it from
-        string equality against the op_id prefix (a real name can coincide
-        with that prefix by chance).
+        an explicit ``display_name`` or authored ``reference_id`` if the caller
+        set one, else the op_id's own 8-char prefix as a last resort. Returns
+        ``(name, is_fallback)`` so callers know whether the name is genuine
+        without re-deriving it from string equality against the op_id prefix (a
+        real name can coincide with that prefix by chance).
         """
+        display_name = operation.metadata.get("display_name")
+        if display_name is not None:
+            return display_name, False
         ref_id = operation.metadata.get("reference_id")
         if ref_id is not None:
             return ref_id, False
@@ -457,14 +470,58 @@ class DependencyAwareExecutor:
         self._terminal_emitted.add(operation.id)
         self._emit_progress(str(operation.id), branch_name, status, elapsed, name_is_fallback)
 
-    def _emit_abandoned_terminal(self, operation: Operation) -> None:
-        """Safety net: emit "failed" (no separate cancelled/abandoned signal
-        kind exists) for an operation that emitted "started" but left
-        `_execute_operation` via cancellation or an unhandled exception,
-        bypassing the normal completed/failed paths. No-op if the operation
-        never started or already has a terminal emitted.
+    def _announce_queued(self, operation: Operation) -> None:
+        """Announce an operation as queued, and record that it was announced.
+
+        The record is what makes cancellation settleable. A node's terminal
+        signal is otherwise emitted by the per-operation handlers, which only
+        run for nodes execution actually reached; a run cancelled before a
+        node's task exists reaches none of them, and the node holds "queued"
+        for the rest of the run. Recording the announcement means the owed
+        terminals can be derived from what the watcher was told, rather than
+        from how far execution happened to get.
         """
-        if operation.id not in self._started_ops:
+        self._queued_announced[operation.id] = operation
+        if self.on_progress:
+            name, name_is_fallback = self._display_name(operation)
+            self._emit_progress(str(operation.id), name, "queued", 0.0, name_is_fallback)
+
+    def _cancel_announced_unfinished(self) -> None:
+        """Settle every announced operation that never reached a terminal.
+
+        Deliberately keyed on the announced set rather than on execution
+        state, so it does not need to know which of the entry paths a
+        cancellation interrupted -- before the task group, between task
+        creations, or inside an operation. Anything already terminal is left
+        alone, since _emit_abandoned_terminal is a no-op for those.
+
+        The invariant callers owe: any entry point that announces must also
+        sweep. Announcing goes through one helper, so a new path picks it up
+        for free; the sweep is placed by hand at each entry point's
+        cancellation path, so a new path that forgets strands whatever it
+        announced in `queued`.
+        """
+        for operation in list(self._queued_announced.values()):
+            self._emit_abandoned_terminal(operation, "cancelled", require_started=False)
+
+    def _emit_abandoned_terminal(
+        self, operation: Operation, status: str = "failed", *, require_started: bool = True
+    ) -> None:
+        """Safety net for an operation that bypassed normal terminals.
+
+        Cancellation and unexpected errors retain their distinct outcome;
+        no-op if the operation already emitted a terminal.
+
+        ``require_started`` guards the unexpected-error path, where announcing
+        a failure for an operation that never ran would invent an outcome.
+        Cancellation passes it False: an operation waiting on dependencies, on
+        a pause gate, or on the capacity limiter has not started, and the graph
+        the caller is watching already lists it. Left out, it holds whatever it
+        last showed for the rest of the run -- and an operation cancelled while
+        paused was announced as paused, so that is a node reporting a live
+        state it is no longer in.
+        """
+        if require_started and operation.id not in self._started_ops:
             return
         if operation.id in self._terminal_emitted:
             return
@@ -473,7 +530,7 @@ class DependencyAwareExecutor:
         branch = self.operation_branches.get(operation.id, self.session.default_branch)
         branch_name, name_is_fallback = self._branch_display_name(operation, branch)
         elapsed = _time.monotonic() - self._op_start_times.get(operation.id, _time.monotonic())
-        self._emit_terminal_once(operation, branch_name, "failed", elapsed, name_is_fallback)
+        self._emit_terminal_once(operation, branch_name, status, elapsed, name_is_fallback)
 
     async def _execute_operation(self, operation: Operation, limiter: CapacityLimiter):
         if operation.execution.status in Event._TERMINAL_STATUSES:
@@ -630,13 +687,20 @@ class DependencyAwareExecutor:
                             operation.execution.error,
                         )
 
+                elif operation.execution.status == EventStatus.CANCELLED:
+                    self._emit_terminal_once(
+                        operation, branch_name, "cancelled", elapsed, name_is_fallback
+                    )
+
         except (get_cancelled_exc_class(), KeyboardInterrupt, SystemExit):
             self.completion_events[operation.id].set()
             # Cancellation (task-group teardown, timeout, abandonment) skips
             # the normal completed/failed paths above; emit the terminal
             # this started operation is still owed so it never renders as
             # perpetually running.
-            self._emit_abandoned_terminal(operation)
+            if operation.execution.status not in Event._TERMINAL_STATUSES:
+                operation.execution.status = EventStatus.CANCELLED
+            self._emit_abandoned_terminal(operation, "cancelled", require_started=False)
             raise
 
         except Exception as e:
@@ -667,11 +731,11 @@ class DependencyAwareExecutor:
         if not isinstance(verdict, str) or verdict.strip().lower() != GATE_VERDICT_REJECT:
             return
 
-        ref_id = operation.metadata.get("reference_id", str(operation.id)[:8])
+        display_name, _ = self._display_name(operation)
         self._gate_rejections[operation.id] = {
             "reason_code": SKIP_REASON_UPSTREAM_GATE_REJECT,
             "gate_id": str(operation.id),
-            "gate_name": ref_id,
+            "gate_name": display_name,
         }
 
     async def _check_edge_conditions(self, operation: Operation) -> bool:
@@ -1007,10 +1071,14 @@ class ReactiveExecutor(DependencyAwareExecutor):
             async with create_task_group() as tg:
                 self._tg = tg
                 for node in initial:
-                    if self.on_progress:
-                        _name, _fallback = self._display_name(node)
-                        self._emit_progress(str(node.id), _name, "queued", 0.0, _fallback)
+                    self._announce_queued(node)
                     tg.start_soon(self._run_tracked, node)
+        except (get_cancelled_exc_class(), KeyboardInterrupt, SystemExit):
+            # Any entry point that announces must also sweep -- see the note
+            # at the first of these. Hand-placed, so a new entry point repeats
+            # it or leaves its announced operations queued forever.
+            self._cancel_announced_unfinished()
+            raise
         finally:
             self._running = False
             self._tg = None
@@ -1073,11 +1141,13 @@ class ReactiveExecutor(DependencyAwareExecutor):
                     async with create_task_group() as tg:
                         self._tg = tg
                         for node in initial:
-                            if self.on_progress:
-                                _name, _fallback = self._display_name(node)
-                                self._emit_progress(str(node.id), _name, "queued", 0.0, _fallback)
+                            self._announce_queued(node)
                             tg.start_soon(self._run_tracked, node)
                 except get_cancelled_exc_class():
+                    # Any entry point that announces must also sweep -- see the
+                    # note at the first of these. Hand-placed, so a new entry
+                    # point repeats it or strands its announced operations.
+                    self._cancel_announced_unfinished()
                     raise  # let driver_cancel_scope absorb our own cancellation
                 except BaseException as e:  # noqa: BLE001
                     driver_errors.append(e)
@@ -1138,13 +1208,16 @@ class ReactiveExecutor(DependencyAwareExecutor):
     def _make_event(self, node: Operation) -> FlowEvent:
         if node.id in self.skipped_operations:
             status = "skipped"
+        elif node.execution.status == EventStatus.CANCELLED:
+            status = "cancelled"
         elif node.execution.status == EventStatus.FAILED:
             status = "failed"
         else:
             status = "completed"
+        name, _ = self._display_name(node)
         return FlowEvent(
             operation_id=str(node.id),
-            name=node.metadata.get("reference_id", str(node.id)[:8]),
+            name=name,
             status=status,
             result=self.results.get(node.id),
             spawned=node.id in self._spawned_ids,
@@ -1177,7 +1250,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
         reason = getattr(req, "reason", "")
         emitter_id = emitter.id if emitter is not None else None
         op_id = str(emitter_id) if emitter_id is not None else ""
-        name = emitter.metadata.get("reference_id", op_id[:8]) if emitter is not None else ""
+        name = self._display_name(emitter)[0] if emitter is not None else ""
 
         self._emit_node_escalated(op_id, name, reason, route, req)
 
@@ -1195,9 +1268,11 @@ class ReactiveExecutor(DependencyAwareExecutor):
             # node it retries (e.g. mirroring a CLI engine's transcript) — cheaper to
             # carry now than to re-derive `name` from a stale emitter reference later.
             child.metadata["escalated_from_name"] = name
-            # Lifecycle signals prefer reference_id over the operation UUID,
-            # so the retry is readable before its branch has been assigned.
-            child.metadata["reference_id"] = f"{name} escalation retry"
+            # Keep the human label separate from the join key: repeated retries
+            # of the same node share a label but must remain individually
+            # addressable by their own stable operation identity.
+            child.metadata["display_name"] = f"{name} escalation retry"
+            child.metadata["reference_id"] = str(child.id)
             if self._accept_node(child, emitter_id=emitter_id, independent=True):
                 self._escalated_ids.add(emitter_id)
         elif route == "notify":
@@ -1350,9 +1425,7 @@ class ReactiveExecutor(DependencyAwareExecutor):
                 child.metadata["parent_id"] = str(emitter_id)
             self._assign_injected_branch(child, emitter_id, independent)
             self._emit_node_spawned(child, emitter_id, independent)
-            if self.on_progress:
-                _name, _fallback = self._display_name(child)
-                self._emit_progress(str(child.id), _name, "queued", 0.0, _fallback)
+            self._announce_queued(child)
         return True
 
     def _emit_node_spawned(self, child: Operation, emitter_id: Any, independent: bool) -> None:

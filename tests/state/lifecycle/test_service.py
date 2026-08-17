@@ -104,6 +104,29 @@ async def test_transition_applied_shape(db: StateDB) -> None:
 
 
 @pytest.mark.asyncio
+async def test_guarded_terminal_session_transition_still_stamps_end_and_duration(
+    db: StateDB, monkeypatch
+) -> None:
+    """A guard on an end-time basis column must not disable the invariant."""
+    sid = await _make_session(db, status="running")
+    await db.update_session(sid, started_at=100.0)
+    monkeypatch.setattr("lionagi.state.lifecycle.service.time.time", lambda: 112.5)
+    service = SQLAlchemyLifecycleService(db)
+
+    outcome = await service._transition(  # noqa: SLF001 - exercises guarded internal path
+        _command(entity_id=sid, to_status="completed"),
+        extra_guard={"started_at": 100.0},
+    )
+
+    assert outcome.result == "applied"
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at"] == 112.5
+    assert row["duration_ms"] == pytest.approx(12_500.0)
+    assert row["ended_at_is_approximate"] is False
+
+
+@pytest.mark.asyncio
 async def test_transition_conflict_shape_on_expected_statuses_mismatch(db: StateDB) -> None:
     sid = await _make_session(db, status="running")
     service = SQLAlchemyLifecycleService(db)
@@ -576,3 +599,304 @@ async def test_history_insert_failure_rolls_back_the_entity_update(db: StateDB) 
 
     row = await db.get_session(sid)
     assert row["status"] == "running"  # rolled back
+
+
+@pytest.mark.asyncio
+async def test_measured_completion_clears_the_approximate_end_flag(db: StateDB) -> None:
+    """A repaired row that runs again and really finishes stops being approximate.
+
+    The flag and duration_ms are one fact. Left set beside a measured duration,
+    the row contradicts itself and every reader believes the flag, so it
+    discards the very number this transition measured.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "UPDATE sessions SET started_at = :started, ended_at = :ended, "
+                "ended_at_is_approximate = 1, duration_ms = NULL WHERE id = :id"
+            ),
+            {"started": 100.0, "ended": 150.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    outcome = await service.transition(_command(entity_id=sid, to_status="completed"))
+    assert outcome.result == "applied"
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at_is_approximate"] is False
+    # The stored 150.0 was a guess, so it is not the basis for a measured end.
+    assert row["ended_at"] > 150.0
+    assert row["duration_ms"] is not None
+    assert row["duration_ms"] == pytest.approx((row["ended_at"] - 100.0) * 1000)
+
+
+@pytest.mark.asyncio
+async def test_a_caller_supplied_end_is_still_honored_on_an_approximate_row(
+    db: StateDB,
+) -> None:
+    """Control for the test above: only the *stored* guess is refused.
+
+    Without this, replacing the basis with `now` unconditionally would look
+    equally correct and would quietly discard an end time the caller measured.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "UPDATE sessions SET started_at = :started, ended_at = :ended, "
+                "ended_at_is_approximate = 1 WHERE id = :id"
+            ),
+            {"started": 100.0, "ended": 150.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(entity_id=sid, to_status="completed", patch={"ended_at": 400.0})
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at"] == 400.0
+    assert row["ended_at_is_approximate"] is False
+    assert row["duration_ms"] == pytest.approx(300_000.0)
+
+
+@pytest.mark.asyncio
+async def test_a_caller_sent_flag_cannot_survive_an_end_measured_here(
+    db: StateDB,
+) -> None:
+    """A caller may send the flag without sending an end. It does not describe
+    the end this transition then takes.
+
+    The transition has no end from the caller, so it measures one and computes
+    a duration from it. Carrying the caller's bit forward past that leaves the
+    row asserting that a moment observed here was reconstructed, and readers
+    believe the bit over the number, so they discard a duration that was
+    actually measured. The flag and the duration are one fact, and this is the
+    write that establishes both.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET started_at = :started WHERE id = :id"),
+            {"started": 100.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(
+            entity_id=sid,
+            to_status="completed",
+            patch={"ended_at_is_approximate": 1},
+        )
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at_is_approximate"] is False
+    assert row["duration_ms"] == pytest.approx((row["ended_at"] - 100.0) * 1000)
+
+
+@pytest.mark.asyncio
+async def test_a_caller_supplying_both_an_end_and_the_flag_keeps_the_flag(
+    db: StateDB,
+) -> None:
+    """Control for the test above: the clear is not unconditional.
+
+    A caller that supplies an end *and* marks it reconstructed is recording a
+    repaired row on purpose. Forcing the flag off there would be the same
+    defect in the other direction, turning a declared guess into a measurement
+    on the strength of nothing.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET started_at = :started WHERE id = :id"),
+            {"started": 100.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(
+            entity_id=sid,
+            to_status="completed",
+            patch={"ended_at": 400.0, "ended_at_is_approximate": 1},
+        )
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at"] == 400.0
+    assert row["ended_at_is_approximate"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_explicitly_null_end_does_not_survive_the_measurement(
+    db: StateDB,
+) -> None:
+    """Sending ``ended_at=None`` is sending the absence of an end, not an end.
+
+    The transition measures one and computes the duration from it. If the
+    caller's null were kept, the row would land with no end, marked measured,
+    carrying a duration -- the same contradiction the flag handling exists to
+    prevent, entered from the other side. Nothing in the tree sends this today;
+    it is reachable through the public update path.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET started_at = :started WHERE id = :id"),
+            {"started": 100.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(
+            entity_id=sid,
+            to_status="completed",
+            patch={"ended_at": None, "ended_at_is_approximate": 1},
+        )
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at"] is not None
+    assert row["ended_at_is_approximate"] is False
+    assert row["duration_ms"] == pytest.approx((row["ended_at"] - 100.0) * 1000)
+
+
+async def test_a_deliberately_approximate_end_leaves_the_duration_unknown(
+    db: StateDB,
+) -> None:
+    """A caller recording a reconstructed end must not get a duration from it.
+
+    Sending an end together with ``ended_at_is_approximate=1`` says the end was
+    derived, not observed. Subtracting the start from it produces a number that
+    reads as a measured length, and once persisted no reader can tell it was
+    derived -- the flag is on the row, but a consumer that trusts a stored
+    duration never consults it. ``docs/internals/state-db.md`` states the
+    contract directly: an approximate end leaves duration unknown.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET started_at = :started WHERE id = :id"),
+            {"started": 100.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(
+            entity_id=sid,
+            to_status="completed",
+            patch={"ended_at": 400.0, "ended_at_is_approximate": 1},
+        )
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at"] == 400.0
+    assert row["ended_at_is_approximate"] is True
+    assert row["duration_ms"] is None, (
+        "an approximate end was subtracted from the start and stored as a duration"
+    )
+
+
+async def test_a_measured_end_still_gets_its_duration(
+    db: StateDB,
+) -> None:
+    """Control: the gate withholds duration from approximate ends, not from all ends.
+
+    Without this, the test above would pass just as well against a transition
+    that had stopped computing durations altogether, which is the ordinary way
+    a fix of this shape goes wrong.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET started_at = :started WHERE id = :id"),
+            {"started": 100.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(entity_id=sid, to_status="completed", patch={"ended_at": 400.0})
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at_is_approximate"] is False
+    assert row["duration_ms"] == pytest.approx(300.0 * 1000)
+
+
+async def test_a_supplied_duration_does_not_survive_an_approximate_end(
+    db: StateDB,
+) -> None:
+    """Sending a duration with an approximate end must not persist the duration.
+
+    Not computing one is only half the contract. Both readers discard a stored
+    duration when the flag is set, so a persisted one is a value nothing can
+    surface, on a row that then asserts a measured length for an end nobody
+    measured. The schema-version repair clears it in the same write that sets
+    the bit; a transition that sets the bit owes the same.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text("UPDATE sessions SET started_at = :started WHERE id = :id"),
+            {"started": 100.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(
+            entity_id=sid,
+            to_status="completed",
+            patch={
+                "ended_at": 400.0,
+                "ended_at_is_approximate": 1,
+                "duration_ms": 300000.0,
+            },
+        )
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["ended_at_is_approximate"] is True
+    assert row["duration_ms"] is None, (
+        "a caller-supplied duration was kept beside an approximate end"
+    )
+
+
+async def test_a_stored_duration_is_cleared_when_a_transition_marks_the_end_approximate(
+    db: StateDB,
+) -> None:
+    """The same holds for a duration already on the row rather than in the patch.
+
+    A row can carry a duration written by an earlier terminal transition and
+    then be re-marked approximate. Guarding only the patch would leave that one
+    in place, which is the same contradiction reached from the store side.
+    """
+    sid = await _make_session(db, status="running")
+    async with db._tx() as conn:
+        await conn.execute(
+            text(
+                "UPDATE sessions SET started_at = :started, duration_ms = :duration WHERE id = :id"
+            ),
+            {"started": 100.0, "duration": 999.0, "id": sid},
+        )
+    service = SQLAlchemyLifecycleService(db)
+
+    await service.transition(
+        _command(
+            entity_id=sid,
+            to_status="completed",
+            patch={"ended_at": 400.0, "ended_at_is_approximate": 1},
+        )
+    )
+
+    row = await db.get_session(sid)
+    assert row is not None
+    assert row["duration_ms"] is None, "a pre-existing duration outlived the approximate mark"

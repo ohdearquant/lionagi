@@ -39,7 +39,9 @@ RESUME_RUN_DESCRIPTION = (
     "persisted checkpoint through `li o flow --resume` -- the checkpoint "
     "owns the plan, so instruction and branch are rejected for those kinds; "
     "set allow_degraded_context only to proceed past a refusal that exists "
-    "to protect conversational context. This is not an un-pause of a paused "
+    "to protect conversational context, and retry_failed only to run ops the "
+    "checkpoint recorded as failed again, which re-executes whatever side "
+    "effects their first attempt already had. This is not an un-pause of a paused "
     "or cancelled run: the run lifecycle has no edge back out of a terminal "
     "status for that, so this always launches a new invocation rather than "
     "reopening the old run's status. Works on a run in any status, including "
@@ -65,6 +67,7 @@ class ResumeRunInput(_StrictInput):
     # Only meaningful for a checkpoint-replay run; never defaulted to true
     # automatically. See run_resume.py::_resume_flow_run.
     allow_degraded_context: bool = False
+    retry_failed: bool = False
 
 
 def _kind_argument_mismatch(
@@ -165,7 +168,11 @@ async def resume_run(arguments: dict[str, Any]) -> dict[str, Any]:
 
     resolution = await resolve_run(args.run)
     if not resolution["found"]:
-        return {"resumed": False, "reason": "not_found"}
+        return {
+            "resumed": False,
+            "reason": "not_found",
+            "detail": resolution.get("reason"),
+        }
     if resolution.get("ambiguous"):
         return {
             "resumed": False,
@@ -193,6 +200,7 @@ async def resume_run(arguments: dict[str, Any]) -> dict[str, Any]:
         "branch_id": args.branch,
         "model": args.model,
         "allow_degraded_context": args.allow_degraded_context,
+        "retry_failed": args.retry_failed,
     }
     stable = store.canonical_hash(
         {"requestId": request_id, "tool": "resume_run", "command": command}
@@ -259,6 +267,7 @@ async def execute_resume_command(command: dict[str, Any]) -> dict[str, Any]:
     branch_id = command.get("branch_id")
     model = command.get("model")
     allow_degraded_context = bool(command.get("allow_degraded_context", False))
+    retry_failed = bool(command.get("retry_failed", False))
 
     try:
         result = await _service_resume_run(
@@ -267,6 +276,7 @@ async def execute_resume_command(command: dict[str, Any]) -> dict[str, Any]:
             branch_id=branch_id,
             model=model,
             allow_degraded_context=allow_degraded_context,
+            retry_failed=retry_failed,
         )
     except RunNotFoundError as exc:
         return {"error": "not_found", "message": scrub_text(str(exc))}

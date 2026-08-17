@@ -10,14 +10,20 @@ in-source essay. Source points here with `# See docs/internals/support-libs.md#<
 
 ## _spec_limits: MAX_SPEC_PROMPT_CHARS
 
-`MAX_SPEC_PROMPT_CHARS` is one number, read by every surface that validates an
-orchestration spec. The readers are named rather than counted, because a count
-goes stale silently when a reader is added while a missing name is visible:
+`MAX_SPEC_PROMPT_CHARS` is one number, read by every admission surface that
+validates an agent or orchestration prompt. The readers are named rather than
+counted, because a count goes stale silently when a reader is added while a
+missing name is visible:
 
+- `lionagi/_flow_spec.py`
+- `lionagi/cli/agent.py`
 - `lionagi/cli/orchestrate/__init__.py`
-- `lionagi/studio/services/schedules.py`
+- `lionagi/mcp/dispatch.py`
+- `lionagi/studio/scheduler/subprocess.py`
 - `lionagi/studio/services/run_resume.py`
-- `lionagi/studio/services/playbooks.py`
+
+Schedule create/update and ad-hoc launch validation delegate to the scheduler
+subprocess validator; playbook validation delegates to the flow-spec validator.
 
 It was written out separately in each of them, which meant that many chances for
 the copies to disagree and no single place to raise the bound.
@@ -26,13 +32,18 @@ The module deliberately imports nothing. Most of its readers are Studio services
 whose import cost is paid on startup, and a constant that arrives with a module
 graph behind it charges every one of them for a number.
 
-The bound exists for the pathological file, not for the long prompt. An
-orchestration prompt carries the whole task — the brief, the constraints, the
-exit criteria — and a real one had already been squeezed to fit the old 8192
-limit, close enough to normal writing that an ordinary edit could push a
-working spec over it and kill the run at submit. `256 * 1024` is set far
-enough out that no honest spec reaches it, while still refusing a file that
-isn't a prompt.
+The bound exists for the pathological file, not for the long prompt. An agent
+or orchestration prompt carries the whole task — the brief, the constraints,
+the exit criteria — and a real one had already been squeezed to fit the old
+8192 limit, close enough to normal writing that an ordinary edit could push a
+working spec over it and kill the run at submit. `256 * 1024` is set far enough
+out that no honest prompt reaches it, while still refusing a file that isn't a
+prompt. Single-agent runs use the same bound because their prompt enters the
+same provider and persistence substrate; transporting it through a file removes
+the operating system's argv ceiling but is not a reason to admit unbounded
+request memory. File readers consume at most the cap plus one character, which
+is enough to distinguish an accepted prompt from an oversized one without
+loading the rest.
 
 <a id="class-registry-builtin-modules"></a>
 
@@ -71,6 +82,15 @@ violation and returns the resolved absolute `Path` on success.
 no first stream chunk within this window is retried once (fresh subprocess),
 then fails loud with `WorkerLivenessError` instead of hanging as a zombie
 "running" leg. `0` disables the watchdog (deterministic / test runs).
+
+`LIONAGI_WORKER_IDLE_TIMEOUT` is the between-chunk idle window for
+early-streaming CLI turns (default 600 seconds). It resets after every chunk.
+The window has to clear the worker's slowest single tool call, not its slowest
+chunk, because a worker emits nothing for the duration of any tool it runs.
+A miss after partial output raises `WorkerLivenessError` with reason
+`worker.stream_idle` without retrying the subprocess. `0` disables this window.
+Buffered transports receive neither default watchdog because silence is their
+normal behavior; callers may still opt in with per-run `idle_timeout`.
 
 `LIONAGI_ANTIGRAVITY_PRINT_TIMEOUT` is the Antigravity print-mode subprocess
 cap (seconds). One hour is comfortably above expected caller deadlines while

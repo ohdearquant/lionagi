@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import time
 
 from lionagi._errors import EmptyOutgoingContentError, LionError
@@ -33,7 +35,10 @@ from ._orchestration import (
     available_roles,
     build_worker_branch,
     finalize_orchestration,
+    mode_roster,
     parse_orchestrator_provider,
+    register_branch_hook,
+    resolve_modes,
     role_roster,
     setup_orchestration,
     start_live_persist,
@@ -53,6 +58,51 @@ class FanoutPlanError(LionError):
 # exclude it rather than synthesize over a placeholder as if it were content.
 FAILED_WORKER_MARKER = "(worker failed: no output)"
 FAILED_SYNTHESIS_MARKER = "(synthesis failed: no output)"
+
+
+def _is_assignment_shaped_synthesis(value: object) -> bool:
+    """True when the entire response is a planner-style assignment payload."""
+    text = str(value).strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL)
+    if fenced is not None:
+        text = fenced.group(1)
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+
+    if isinstance(payload, dict) and isinstance(payload.get("assignments"), list):
+        assignments = payload["assignments"]
+    elif isinstance(payload, list):
+        assignments = payload
+    elif isinstance(payload, dict):
+        assignments = [payload]
+    else:
+        return False
+    return bool(assignments) and all(
+        isinstance(item, dict) and "task" in item and "assignee" in item for item in assignments
+    )
+
+
+async def _fresh_synthesis_branch(env: OrchestrationEnv):
+    """Build a clean synthesizer branch without the planner conversation."""
+    from lionagi.agent import AgentSpec, create_agent
+
+    spec = AgentSpec.compose(
+        "synthesizer",
+        pack=env.pack if env.pack is not None else "default",
+        grant_emissions=False,
+    )
+    branch = await create_agent(
+        spec,
+        load_settings=False,
+        chat_model=env.orc_branch.chat_model.copy(),
+    )
+    branch.name = "synthesis"
+    env.session.include_branches(branch)
+    if env._live_persist:
+        register_branch_hook(env._live_persist, branch)
+    return branch
 
 
 def _parse_worker_pool(workers_str: str | None, *, num_workers: int) -> list[str]:
@@ -271,7 +321,7 @@ async def _run_fanout_inner(
             prompt,
             roles=roster,
             dag=False,
-            guidance=role_roster(env.default_model_spec),
+            guidance=f"{role_roster(env.default_model_spec)}\n\n{mode_roster(env.pack)}",
             max_tasks=num_workers,
         )
     except EmptyOutgoingContentError:
@@ -285,6 +335,27 @@ async def _run_fanout_inner(
     t_decompose = time.monotonic() - t0
     if not assignments:
         return "Orchestrator produced no assignments."
+
+    # Validate the complete plan before creating any worker. The permissive
+    # resolver remains available to flow and legacy callers, but fanout must
+    # not claim success after silently stripping planner intent.
+    planned_modes: list[list[str] | None] = []
+    for index, assignment in enumerate(assignments, start=1):
+        if not assignment.modes:
+            planned_modes.append(None)
+            continue
+        try:
+            planned_modes.append(
+                resolve_modes(
+                    assignment.assignee,
+                    assignment.modes,
+                    env.pack,
+                    reject_invalid=True,
+                )
+            )
+        except ValueError as exc:
+            raise FanoutPlanError(f"assignment {index} has invalid modes: {exc}") from exc
+
     progress(f"Phase 1 done ({t_decompose:.1f}s): {len(assignments)} assignments generated.")
 
     worker_names: list[str] = [env.assign_name(ta.assignee) for ta in assignments]
@@ -326,7 +397,7 @@ async def _run_fanout_inner(
                 role=ta.assignee,
                 model_override=model_override,
                 explicit_name=wname,
-                modes=ta.modes or None,
+                modes=planned_modes[i],
             )
         except BaseException as exc:
             attribute_worker_build_failure(exc, agent_id=wname, role=ta.assignee)
@@ -478,7 +549,7 @@ async def _run_fanout_inner(
         else:
             warn("No workers ran; there is no output to synthesize.")
     if with_synthesis and contexts:
-        synth_spec = synthesis_model or model_spec
+        synth_spec = synthesis_model or env.default_model_spec
         synth_label = str(parse_model_spec(synth_spec))
 
         progress(f"Phase 3: Synthesis [{synth_label}]...")
@@ -487,9 +558,10 @@ async def _run_fanout_inner(
             synthesis_prompt or f"{SYNTHESIS_INSTRUCTION}\n\nOriginal task: {prompt}"
         )
 
+        synth_branch = await _fresh_synthesis_branch(env)
         synth_node = env.builder.add_operation(
             "operate",
-            branch=env.orc_branch,
+            branch=synth_branch,
             depends_on=fanned_nodes,
             instruction=synth_instruction,
             context=contexts,
@@ -503,9 +575,18 @@ async def _run_fanout_inner(
             # bridge, so a failed synthesis reaches the observer above. Calling
             # session.flow directly emits no node signals at all, which leaves
             # the observer silent and renders the failure as an empty response.
+            # The graph still carries the workers, since synthesis depends on
+            # them, but they ran in the worker phase above and already have
+            # their terminal events; signalling them here would record the
+            # same work a second time.
+            synth_graph = env.builder.get_graph()
+            already_ran = {str(n.id) for n in synth_graph.internal_nodes.values()} - {
+                str(synth_node)
+            }
             result3 = await eng_run.run_dag(
-                env.builder.get_graph(),
+                synth_graph,
                 verbose=env.verbose,
+                skip_signal_ops=already_ran,
             )
         finally:
             env.session.observer.unobserve(_record_failed_op)
@@ -516,6 +597,15 @@ async def _run_fanout_inner(
             synth_text = FAILED_SYNTHESIS_MARKER
         else:
             synth_text = str(synth_res) if synth_res is not None else "(no response)"
+            if _is_assignment_shaped_synthesis(synth_text):
+                failed_ops.add(str(synth_node))
+                if _shared is not None:
+                    _shared["op_failures"] = sorted(failed_ops)
+                warn(
+                    "Synthesis returned a planner assignment instead of an integrated "
+                    "result; marking the synthesis leg failed."
+                )
+                synth_text = FAILED_SYNTHESIS_MARKER
         synthesis_result = {
             "model": synth_label,
             "response": synth_text,

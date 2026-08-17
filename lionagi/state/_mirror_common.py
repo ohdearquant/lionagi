@@ -268,20 +268,28 @@ async def reconcile_status(
     now: float,
     live_window: float,
     actor: str,
-) -> None:
+) -> bool:
     """Align a mirrored session's status with its liveness and attested provider errors.
-    Liveness keys off ``last_message_at``, never ``updated_at`` — see docs/internals/runtime.md."""
+    Liveness keys off ``last_message_at``, never ``updated_at`` — see docs/internals/runtime.md.
+
+    Returns ``True`` when an unchanged transcript needs no further status read:
+    the row is absent, or it is idle and already terminal / was made terminal.
+    Returns ``False`` while the session is live, and after a lost idle-status
+    CAS, so the polling mirror keeps observing until one final idle transition
+    succeeds.  The return value is process-local scheduling evidence, never a
+    persisted liveness fact.
+    """
     from lionagi.state.db import SESSION_TERMINAL_STATUSES
     from lionagi.state.reasons import RunReasons
 
     existing = await db.get_session(sid)
     if not existing:
-        return
+        return True
     live = (now - float(existing.get("last_message_at") or 0.0)) <= live_window
     previous = existing.get("status")
     previous_terminal = previous in SESSION_TERMINAL_STATUSES
     if previous_terminal and not live:
-        return
+        return True
 
     desired = "running" if live else "completed"
     reason_code = RunReasons.STARTED_OK if live else RunReasons.COMPLETED_OK
@@ -318,12 +326,12 @@ async def reconcile_status(
             reason_summary = f"mirror provider error: {error_kind}"
 
     if previous == desired:
-        return
+        return not live
 
     reactivating = previous_terminal and desired == "running"
     if reactivating:
         reason_summary = "mirror session reactivated because transcript resumed within live_window"
-    await db.update_status(
+    updated = await db.update_status(
         "session",
         sid,
         new_status=desired,
@@ -341,7 +349,18 @@ async def reconcile_status(
             if reactivating
             else None
         ),
+        # A reactivated row is running again: the terminal stamps must not
+        # survive, or every listing reads it as "running yet ended days ago"
+        # and elapsed-time surfaces keep growing from the stale end mark. The
+        # end's provenance is one of those stamps and clears with it, since a
+        # row with no end cannot have an approximate one.
+        extra_fields=(
+            {"ended_at": None, "duration_ms": None, "ended_at_is_approximate": 0}
+            if reactivating
+            else None
+        ),
     )
+    return bool(updated) and not live
 
 
 async def link_lineage(

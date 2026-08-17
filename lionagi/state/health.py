@@ -1,6 +1,6 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
-"""ADR-0057: six-level session health classification (see docs/reference/testing-state-session.md)."""
+"""ADR-0057 process/resource health (not execution outcome) classification."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ IDLE_THRESHOLD: int = 3600
 
 
 class SessionHealth(str, Enum):
-    """Six-level derived health (ADR-0057 D6)."""
+    """Six-level derived process/resource health (ADR-0057 D6)."""
 
     HEALTHY = "healthy"
     IDLE = "idle"
@@ -44,13 +44,19 @@ def classify_session_health(
     has_artifacts: bool,
     has_stale_locks: bool,
 ) -> SessionHealth:
-    """Classify a session dict into a SessionHealth level; pure function, caller
-    supplies liveness signals. Decision order matters — see docs/internals/runtime.md."""
+    """Classify process/resource health; never infer execution success.
+
+    The caller supplies volatile liveness signals. A clean terminal session is
+    ``HEALTHY`` only in the sense that it has no leaked live resources; its
+    execution outcome remains the session ``status``. Decision order matters —
+    see docs/internals/runtime.md.
+    """
     status = session.get("status") or "completed"
 
     if status in {"completed", "completed_empty", "failed", "timed_out", "aborted", "cancelled"}:
         if has_stale_locks:
             return SessionHealth.ZOMBIE
+        # Cleanly stopped, not necessarily successfully completed.
         return SessionHealth.HEALTHY
 
     last_activity = (
