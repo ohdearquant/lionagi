@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import socket
 import time
 import uuid
 from pathlib import Path
@@ -481,7 +482,7 @@ def test_a_stale_session_hosted_on_another_machine_is_not_reaped(tmp_path, monke
     import lionagi.studio.services.admin as admin_mod
     import lionagi.studio.services.lifecycle as lc_mod
 
-    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
 
     stale_time = time.time() - 7200
     remote = run_async(
@@ -530,7 +531,7 @@ def test_phantom_classifier_returns_no_reason_for_another_machines_row(tmp_path,
     """
     import lionagi.studio.services.admin as admin_mod
 
-    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
 
     now = time.time()
     stale = now - 7200
@@ -565,7 +566,7 @@ def test_process_identity_is_foreign_reads_host_and_unknown_modes(monkeypatch):
     """Foreign means "not measurable here", which covers two distinct records."""
     import lionagi.studio.services.admin as admin_mod
 
-    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
     foreign = admin_mod.process_identity_is_foreign
 
     assert foreign({"node_metadata": {"pid_host": "other-host"}}) is True

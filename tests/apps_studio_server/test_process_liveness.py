@@ -149,9 +149,10 @@ async def test_explicit_nonlocal_run_is_unverifiable_without_legacy_snapshot(mon
 
 
 def test_process_identity_from_another_host_is_unknown(monkeypatch):
-    import lionagi.studio.services.admin as admin_mod
-
-    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "current-host")
+    # Patched on the socket module itself rather than through the admin module:
+    # the host question is answered by recorded_pid_is_foreign in cli._util, and
+    # both modules read the same module object.
+    monkeypatch.setattr(socket, "gethostname", lambda: "current-host")
     session = {
         "id": "remote-session",
         "node_metadata": {
@@ -205,7 +206,7 @@ def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(monkeypatch):
     import lionagi.studio.services.admin as admin_mod
     from lionagi.cli._util import BOOT_TIME_TOLERANCE
 
-    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
     drift = BOOT_TIME_TOLERANCE / 2
     assert drift > 0, "a zero tolerance would make this test assert nothing"
 
@@ -230,7 +231,7 @@ def test_a_boot_time_from_before_the_last_reboot_is_dead(monkeypatch):
     """
     import lionagi.studio.services.admin as admin_mod
 
-    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
     session = {
         "id": "pre-reboot-session",
         "node_metadata": {
@@ -253,9 +254,7 @@ def test_a_boot_time_that_cannot_be_read_does_not_make_a_live_process_unknown(mo
     would eventually be reaped. The pid checks still run, which is the same
     best-effort stance the status and create-time reads already take.
     """
-    import lionagi.studio.services.admin as admin_mod
-
-    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
 
     recorded_boot = psutil.boot_time()
 
@@ -283,9 +282,7 @@ def test_a_failed_boot_time_read_still_reports_a_dead_pid_as_dead(monkeypatch):
     Without this, returning True unconditionally on a read failure would pass
     the test above while reporting every dead session as alive.
     """
-    import lionagi.studio.services.admin as admin_mod
-
-    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    monkeypatch.setattr(socket, "gethostname", lambda: "this-host")
 
     recorded_boot = psutil.boot_time()
     dead = _dead_pid()
@@ -305,3 +302,85 @@ def test_a_failed_boot_time_read_still_reports_a_dead_pid_as_dead(monkeypatch):
     }
 
     assert process_liveness(session, None, ps_snapshot="") is False
+
+
+# ---------------------------------------------------------------------------
+# The host question, asked once
+#
+# The oracle used to answer it with its own inline comparison while the
+# reapers' foreign-row guard answered it with recorded_pid_is_foreign. Two
+# implementations of one predicate disagreed about the values neither was
+# written for, and the disagreement was only visible from a caller that
+# consulted both.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "host_value, is_foreign",
+    [
+        pytest.param({}, False, id="pid_host-absent-is-a-legacy-row-not-a-foreign-one"),
+        pytest.param({"pid_host": ""}, False, id="empty-pid_host-records-no-host"),
+        pytest.param({"pid_host": 1234}, False, id="non-string-pid_host-records-no-host"),
+        pytest.param({"pid_host": None}, False, id="null-pid_host-records-no-host"),
+        pytest.param({"pid_host": "definitely-another-machine"}, True, id="a-real-other-host"),
+    ],
+)
+def test_the_guard_and_the_oracle_read_every_shape_of_pid_host_the_same_way(host_value, is_foreign):
+    """The property is agreement, not either answer taken alone.
+
+    Asserting only the oracle would let the guard drift back, and asserting
+    only the guard would miss the case that actually bit: an empty pid_host
+    read as "no host recorded" by the guard and as "a host that is not mine"
+    by the oracle. A row sat in that gap with a live process, unprotected by
+    the guard and answered unknown by the oracle, and the reapers turn a
+    non-True answer into death once the row goes stale.
+    """
+    from lionagi.cli._util import recorded_pid_is_foreign
+
+    meta = {
+        "pid": os.getpid(),
+        "pid_create_time": psutil.Process(os.getpid()).create_time(),
+        **host_value,
+    }
+
+    assert recorded_pid_is_foreign(meta) is is_foreign
+
+    liveness = process_liveness({"id": "s", "node_metadata": meta}, None, ps_snapshot="")
+    # Foreign => unknown. Not foreign => this genuinely live process is seen.
+    assert (liveness is None) is is_foreign
+    if not is_foreign:
+        assert liveness is True
+
+
+def test_an_unparseable_pid_on_a_foreign_row_cannot_pick_up_a_local_one(tmp_path):
+    """The artifact fallback resolves a pid against *this* machine.
+
+    The host check used to be gated on having parsed a pid, so a row whose pid
+    was unreadable skipped it entirely and then reached the fallback below,
+    which reads the local process table. Another machine's row could acquire a
+    local pid that way and be reported alive by a host that cannot see it.
+    """
+    (tmp_path / "session.pid").write_text(str(os.getpid()))  # a live LOCAL pid
+
+    session = {
+        "id": "remote-session",
+        "node_metadata": {"pid": "not-a-number", "pid_host": "definitely-another-machine"},
+    }
+
+    assert process_liveness(session, tmp_path, ps_snapshot="") is None
+
+
+def test_the_same_unparseable_pid_on_a_local_row_still_uses_the_artifact_fallback(tmp_path):
+    """The control, and the reason the fix is a reorder rather than a removal.
+
+    Without this, deleting the fallback outright would satisfy the test above
+    while breaking every local row that relies on the pid file.
+    """
+    (tmp_path / "session.pid").write_text(str(os.getpid()))
+
+    session = {
+        "id": "local-session",
+        "node_metadata": {"pid": "not-a-number", "pid_host": socket.gethostname()},
+    }
+
+    assert process_liveness(session, tmp_path, ps_snapshot="") is True

@@ -7,7 +7,6 @@ import asyncio
 import json
 import logging
 import os
-import socket
 import sqlite3
 import subprocess
 import threading
@@ -444,7 +443,6 @@ def process_liveness(
     dead, None = unknown (no recorded pid/no process match)."""
     pid: int | None = None
     create_time: float | None = None
-    pid_host: str | None = None
     pid_boot_time: float | None = None
     identity_mode: str | None = None
 
@@ -472,16 +470,30 @@ def process_liveness(
         raw_ct = meta.get("host_pid_create_time" if in_process else "pid_create_time")
         if isinstance(raw_ct, int | float):
             create_time = float(raw_ct)
-        raw_host = meta.get("pid_host")
-        if isinstance(raw_host, str):
-            pid_host = raw_host
         raw_boot = meta.get("pid_boot_time")
         if isinstance(raw_boot, int | float):
             pid_boot_time = float(raw_boot)
 
     if identity_mode not in (None, "local", "in_process"):
         return None
-    if pid is not None and pid_host is not None and pid_host != socket.gethostname():
+
+    # Asked of the host alone, never of "host and a readable pid". Gating it on
+    # a parsed pid left two ways for a remote row to be answered locally.
+    #
+    # A row whose pid does not parse skipped the question entirely and then
+    # reached the artifacts fallback below, which resolves a pid against *this*
+    # machine's process table. Another host's row could pick up a local pid
+    # that way and be reported alive by a machine that cannot see it.
+    #
+    # And an empty pid_host read here as "a host that is not mine" while the
+    # reapers' foreign-row guard read the same value as "no host recorded". A
+    # live row sat in the gap: not foreign enough to be protected, foreign
+    # enough to be answered unknown, and a non-True answer becomes death once
+    # the row goes stale. Both readings now come from one predicate, so they
+    # cannot disagree about a value neither of them was written for.
+    from lionagi.cli._util import recorded_pid_is_foreign
+
+    if recorded_pid_is_foreign(meta if isinstance(meta, dict) else None):
         return None
     if pid is not None and pid_boot_time is not None:
         rebooted_since = False
