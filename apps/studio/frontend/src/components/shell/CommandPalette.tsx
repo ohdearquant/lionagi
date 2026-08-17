@@ -55,9 +55,7 @@ function PaletteInner({ onClose, toggleTheme, toggleOperator }: Omit<Props, "ope
     [doNavigate, onClose],
   );
 
-  // Focus the search field on mount and return focus to the launch control
-  // when the palette closes. Keyboard users should never lose their place in
-  // the shell after a command or Escape dismisses the dialog.
+  // Focus the field on mount, restore the launcher on close, so keyboard users keep their place.
   useEffect(() => {
     const previouslyFocused =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -73,13 +71,8 @@ function PaletteInner({ onClose, toggleTheme, toggleOperator }: Omit<Props, "ope
     el?.scrollIntoView?.({ block: "nearest" });
   }, [active]);
 
-  // Registered on its own, because the key handler below re-subscribes on every
-  // keystroke that changes the filtered list. Registering there would re-push
-  // the palette on every keystroke, which orders it against its own layer for
-  // no reason.
-  //
-  // On the shell layer: AppShell renders the palette after the routed view, so
-  // it draws above any modal a route opens however the two happened to mount.
+  // Registered apart from the key handler, which re-subscribes on every keystroke.
+  // Shell layer: rendered after the routed view, so it draws above a route's modal.
   const overlayRef = useRef<symbol | null>(null);
   useEffect(() => {
     const overlay = pushOverlay("CommandPalette", OverlayLayer.Shell);
@@ -90,9 +83,7 @@ function PaletteInner({ onClose, toggleTheme, toggleOperator }: Omit<Props, "ope
     };
   }, []);
 
-  // Keyboard handler for navigation within the palette. Enter only executes
-  // a result while focus is on the command surface; pressing Enter on the
-  // close control must remain a close action.
+  // Enter executes a result only from the command surface; on the close control it closes.
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       // Never react while an IME composition is in flight (zh input):

@@ -261,9 +261,7 @@ export default function ScheduleDetailModal({
     if (form) nameInputRef.current?.focus();
   }, [form != null]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Keep focus inside the custom dialog and return it to the launch control on
-  // close. (Most Studio dialogs use ui/Modal; this larger split-pane editor
-  // retains its custom shell.)
+  // Trap focus and restore the launcher; this split-pane editor keeps its own shell rather than ui/Modal.
   useEffect(() => {
     const previouslyFocused =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -273,10 +271,8 @@ export default function ScheduleDetailModal({
     };
   }, []);
 
-  // Registered on its own, because the key handler below re-subscribes whenever
-  // `requestClose` changes. Registering there would re-push this dialog to the
-  // top of the stack mid-life and take the keyboard back from an overlay the
-  // operator opened over it.
+  // Registered apart from the key handler, which re-subscribes on `requestClose`;
+  // re-pushing mid-life would steal the keyboard from an overlay opened over this.
   const overlayRef = useRef<symbol | null>(null);
   useEffect(() => {
     const overlay = pushOverlay("ScheduleDetailModal");
@@ -289,8 +285,7 @@ export default function ScheduleDetailModal({
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      // Another overlay opened on top of this one. It owns the keyboard, and
-      // the focus check below would read its focus as focus that escaped here.
+      // An overlay opened on top owns the keyboard; its focus is not focus escaping here.
       if (!overlayRef.current || !isTopmostOverlay(overlayRef.current)) return;
       if (e.key === "Escape") {
         e.preventDefault();

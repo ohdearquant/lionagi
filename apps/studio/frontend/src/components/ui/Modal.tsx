@@ -10,14 +10,12 @@ export interface ModalProps {
   closeLabel: string;
   onClose: () => void;
   children: ReactNode;
-  /** Width utility for the dialog card. Spelled out rather than left open so
-   *  every class the app can produce is literally present for Tailwind to find. */
+  /** Spelled out, not open, so every class the app can produce is present for Tailwind. */
   maxWidth?: "max-w-md" | "max-w-lg" | "max-w-xl" | "max-w-2xl" | "max-w-4xl";
   className?: string;
 }
 
-/** Overlay dialog — backdrop click and Escape both close. The overlay
- *  scrolls, not the card, so tall forms never trap inner scrollbars. */
+/** Overlay dialog; backdrop click and Escape close. The overlay scrolls, not the card. */
 export default function Modal({
   title,
   closeLabel,
@@ -29,9 +27,7 @@ export default function Modal({
   const dialogRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   const titleId = useId();
-  // Captured during the first render: child effects run before this component's
-  // mount effect, so by effect time a self-focusing child has already moved
-  // focus into the dialog and the original trigger would be unrecoverable.
+  // Captured during first render: child effects run first, so by mount the trigger is unrecoverable.
   const previouslyFocusedRef = useRef<HTMLElement | null | undefined>(undefined);
   if (previouslyFocusedRef.current === undefined) {
     previouslyFocusedRef.current =
@@ -65,8 +61,7 @@ export default function Modal({
     const overlay = pushOverlay("Modal");
 
     const onKey = (e: KeyboardEvent) => {
-      // Another overlay opened on top of this one. It owns the keyboard, and
-      // the focus check below would read its focus as focus that escaped here.
+      // An overlay opened on top owns the keyboard; its focus is not focus escaping here.
       if (!isTopmostOverlay(overlay)) return;
       if (e.key === "Escape") {
         e.preventDefault();
@@ -96,9 +91,7 @@ export default function Modal({
       }
     };
 
-    // Same ownership question the key handler asks: a dialog painted under
-    // another overlay must not pull the caret out of it. A child may also have
-    // focused its own field first, so only claim when nothing inside holds it.
+    // A dialog painted underneath must not pull the caret out, and a child may hold it already.
     const holdsFocus = () => dialog?.contains(document.activeElement) ?? false;
     if (isTopmostOverlay(overlay) && !holdsFocus()) {
       (focusableElements()[0] ?? dialog)?.focus();
@@ -108,8 +101,7 @@ export default function Modal({
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
-      // Restore only if this dialog still owns focus; otherwise restoring
-      // pulls the caret out of whatever is still on screen.
+      // Restore only while this dialog still owns focus.
       const restoresFocus = tookFocus && isTopmostOverlay(overlay);
       popOverlay(overlay);
       if (restoresFocus && previouslyFocused?.isConnected) previouslyFocused.focus();

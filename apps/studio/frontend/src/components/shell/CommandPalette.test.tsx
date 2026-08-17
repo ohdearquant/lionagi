@@ -91,10 +91,7 @@ describe("CommandPalette keyboard behavior", () => {
   });
 
   it("keeps focus inside itself when a dialog is already open underneath", async () => {
-    // Both surfaces trap Tab with a listener above the tree, and the dialog's
-    // was added first, so it sees the key first. Its trap finds focus sitting
-    // outside itself, which is what the palette on top looks like, and without
-    // the topmost check it pulls focus down into the dialog the operator left.
+    // The dialog's trap was added first and reads the palette's focus as focus that escaped it.
     await act(async () => {
       root.render(
         <IntlProvider locale="en" messages={enMessages}>
@@ -129,9 +126,7 @@ describe("CommandPalette keyboard behavior", () => {
   });
 
   it("leaves focus in an open palette when a route opens a dialog beneath it", async () => {
-    // Registration order is not paint order: the palette draws above a modal
-    // a route opens later, so the caret must stay in the palette. Keys keep the
-    // palette instance across renders; without them React remounts it.
+    // Registration order is not paint order; the keys stop React remounting the palette.
     const palette = (
       <CommandPalette
         key="palette"
