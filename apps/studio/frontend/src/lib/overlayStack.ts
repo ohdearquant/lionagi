@@ -9,28 +9,74 @@
  * using. `preventDefault()` does not help: the older listener has already run,
  * and stopping propagation there would break the newer one instead.
  *
- * Registering here gives every trap one question to ask before it acts. The
- * newest registration wins, which matches what the operator sees on screen.
+ * Registering here gives every trap one question to ask before it acts: am I
+ * the overlay the operator is looking at?
+ *
+ * Answering that from registration order alone would be wrong, because
+ * registration order is mount order and mount order is not what the operator
+ * sees. Every overlay here is `fixed` at the same z-index and none of them
+ * portals, so paint order is document order, and AppShell renders the command
+ * palette after the routed view rather than inside it. The palette therefore
+ * draws above any modal belonging to a route no matter which mounted first: a
+ * modal that mounts while the palette is open registers later and would claim
+ * the keyboard while sitting visually underneath it.
+ *
+ * So ownership is ordered by paint layer first and registration second. Within
+ * one layer the newest registration wins, which is the mount-order rule that
+ * was right all along for overlays that really do stack on each other.
  */
 
-const stack: symbol[] = [];
+/**
+ * Paint layers, in the order they draw. A layer exists here only because
+ * something in the shell already fixes that overlay's paint position; this
+ * declares that fact where the keyboard decision is made rather than leaving
+ * it implicit in AppShell's JSX order.
+ */
+export const OverlayLayer = {
+  /** Anything rendered inside the routed view. */
+  Routed: 0,
+  /** Rendered by AppShell after the routed view, so it always draws above it. */
+  Shell: 1,
+} as const;
+
+export type OverlayLayer = (typeof OverlayLayer)[keyof typeof OverlayLayer];
+
+interface Registration {
+  token: symbol;
+  layer: OverlayLayer;
+}
+
+const stack: Registration[] = [];
 
 /** Claim the keyboard. Call from the same effect that adds the key listener,
- *  and release with `popOverlay` in that effect's cleanup, so the stack order
- *  matches the order the overlays actually mounted. */
-export function pushOverlay(description: string): symbol {
+ *  and release with `popOverlay` in that effect's cleanup. Pass the layer the
+ *  overlay paints on; the default suits anything inside the routed view. */
+export function pushOverlay(
+  description: string,
+  layer: OverlayLayer = OverlayLayer.Routed,
+): symbol {
   const token = Symbol(description);
-  stack.push(token);
+  stack.push({ token, layer });
   return token;
 }
 
 export function popOverlay(token: symbol): void {
-  const index = stack.lastIndexOf(token);
-  if (index !== -1) stack.splice(index, 1);
+  for (let i = stack.length - 1; i >= 0; i -= 1) {
+    if (stack[i].token === token) {
+      stack.splice(i, 1);
+      return;
+    }
+  }
 }
 
-/** True when nothing is stacked above this overlay. An overlay that never
- *  registered is not topmost, which fails toward leaving the key alone. */
+/** True when nothing is painted above this overlay: no registration on a
+ *  higher layer, and none newer on its own. An overlay that never registered
+ *  is not topmost, which fails toward leaving the key alone. */
 export function isTopmostOverlay(token: symbol): boolean {
-  return stack.length > 0 && stack[stack.length - 1] === token;
+  let owner: Registration | undefined;
+  for (const registration of stack) {
+    // `>=` so the last registration on the winning layer takes it.
+    if (!owner || registration.layer >= owner.layer) owner = registration;
+  }
+  return owner !== undefined && owner.token === token;
 }

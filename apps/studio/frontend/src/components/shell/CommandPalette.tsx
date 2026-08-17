@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useLocale, useTranslations } from "use-intl";
 import { buildRegistry, fuzzyMatch, type Command } from "@/lib/commands";
-import { isTopmostOverlay, popOverlay, pushOverlay } from "@/lib/overlayStack";
+import { isTopmostOverlay, OverlayLayer, popOverlay, pushOverlay } from "@/lib/overlayStack";
 
 interface Props {
   open: boolean;
@@ -75,11 +75,14 @@ function PaletteInner({ onClose, toggleTheme, toggleOperator }: Omit<Props, "ope
 
   // Registered on its own, because the key handler below re-subscribes on every
   // keystroke that changes the filtered list. Registering there would re-push
-  // the palette to the top of the stack constantly, which is harmless only for
-  // as long as nothing ever opens above it.
+  // the palette on every keystroke, which orders it against its own layer for
+  // no reason.
+  //
+  // On the shell layer: AppShell renders the palette after the routed view, so
+  // it draws above any modal a route opens however the two happened to mount.
   const overlayRef = useRef<symbol | null>(null);
   useEffect(() => {
-    const overlay = pushOverlay("CommandPalette");
+    const overlay = pushOverlay("CommandPalette", OverlayLayer.Shell);
     overlayRef.current = overlay;
     return () => {
       popOverlay(overlay);
@@ -95,7 +98,7 @@ function PaletteInner({ onClose, toggleTheme, toggleOperator }: Omit<Props, "ope
       // Never react while an IME composition is in flight (zh input):
       // Enter/arrows there confirm the composition, not a command.
       if (e.isComposing) return;
-      // Another overlay opened on top of the palette; it owns the keyboard.
+      // Something is painted above the palette; it owns the keyboard.
       if (!overlayRef.current || !isTopmostOverlay(overlayRef.current)) return;
       const target = e.target instanceof Node ? e.target : null;
       const isCommandSurface =
