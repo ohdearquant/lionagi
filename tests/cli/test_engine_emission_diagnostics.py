@@ -498,3 +498,103 @@ async def test_engine_reuse_second_run_resets_emission_failures(monkeypatch):
     assert real_engine._emission_failures == [], (
         f"second clean run must reset _emission_failures; got: {real_engine._emission_failures}"
     )
+
+
+# Engine CLI: a degraded run must not be indistinguishable from a complete one
+
+
+class _DegradedResult(str):
+    """Stands in for EngineResult, which subclasses str for back-compatibility.
+
+    The subclassing is the whole difficulty: the CLI's ``isinstance(result, str)``
+    branch catches it, so the structured outcome travels on the object and every
+    plain-string path drops it silently.
+    """
+
+    def __new__(cls, text, *, degraded, degrade_reason, skipped):
+        obj = super().__new__(cls, text)
+        obj.degraded = degraded
+        obj.degrade_reason = degrade_reason
+        obj.skipped = skipped
+        return obj
+
+
+async def _run_engine_returning(monkeypatch, capsys, result):
+    import lionagi.cli._logging as log_mod
+    import lionagi.cli.engine as engine_mod
+    import lionagi.state.db as db_mod
+
+    warnings: list[str] = []
+    monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "warn", lambda msg, *a, **kw: warnings.append(str(msg)))
+    monkeypatch.setattr(engine_mod, "warn", lambda msg, *a, **kw: warnings.append(str(msg)))
+
+    mock_engine = MagicMock()
+    mock_engine._emission_failures = []
+    mock_engine._total_agent_failure = False
+
+    async def _mock_run(spec, *, on_event=None, **kwargs):
+        return result
+
+    mock_engine.run = _mock_run
+    monkeypatch.setattr(
+        engine_mod, "_import_engine_class", lambda m, n: MagicMock(return_value=mock_engine)
+    )
+    mock_db = MockStateDB()
+    monkeypatch.setattr(db_mod, "StateDB", lambda: mock_db)
+
+    rc = await engine_mod._do_engine_run(_build_args(kind="review", spec="ART"))
+    return rc, mock_db, warnings, capsys.readouterr().out
+
+
+async def test_a_degraded_run_says_so_in_its_output_and_its_row(monkeypatch, capsys):
+    """A caller must be able to tell a full run from one that skipped work.
+
+    The run reaches a result, so it is persisted completed and exits zero, and
+    on the plain-string path that was the entire visible outcome: a review whose
+    security dimension was never verified read exactly like one that was. The
+    degradation now reaches all three places a caller might look — the JSON, the
+    stored row, and the terminal.
+    """
+    import json as _json
+
+    result = _DegradedResult(
+        "verdict reached",
+        degraded=True,
+        degrade_reason="verify-clean (ProviderAuthError)",
+        skipped=["security"],
+    )
+    rc, mock_db, warnings, out = await _run_engine_returning(monkeypatch, capsys, result)
+
+    payload = _json.loads(out)
+    assert payload["degraded"] is True
+    assert "ProviderAuthError" in payload["degrade_reason"]
+    assert payload["skipped"] == ["security"]
+
+    completed = [c for c in mock_db.update_calls if c["status"] == "completed"]
+    assert completed, f"no completed update; calls={mock_db.update_calls}"
+    assert "degraded" in (completed[0]["error"] or "")
+    assert "security" in (completed[0]["error"] or "")
+
+    assert any("degraded" in w for w in warnings), f"no warning emitted; warnings={warnings}"
+    assert rc == 0  # it did produce a result; the caller decides what that is worth
+
+
+async def test_an_undegraded_run_gains_no_degradation_fields(monkeypatch, capsys):
+    """The must-not-fire side, so the arm above cannot pass by always reporting.
+
+    A clean run's JSON keeps the shape callers already parse, and its row keeps
+    a null error column.
+    """
+    import json as _json
+
+    result = _DegradedResult("verdict reached", degraded=False, degrade_reason="", skipped=[])
+    rc, mock_db, warnings, out = await _run_engine_returning(monkeypatch, capsys, result)
+
+    payload = _json.loads(out)
+    assert "degraded" not in payload
+    assert "skipped" not in payload
+    completed = [c for c in mock_db.update_calls if c["status"] == "completed"]
+    assert completed and completed[0]["error"] is None
+    assert not any("degraded" in w for w in warnings)
+    assert rc == 0
