@@ -153,7 +153,7 @@ jobs:
           CLAUDE.md
           CONTRIBUTING.md
           CHANGELOG.md
-        config: ".markdownlint.json"
+        config: ".markdownlint.jsonc"
 
     - name: Check internal links
       uses: lycheeverse/lychee-action@v2
