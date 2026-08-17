@@ -59,29 +59,11 @@ _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
 
 _ISOLATED_ERRORS: tuple[type[BaseException], ...] = (ProviderError, *_TRANSPORT_ERRORS)
 
-# Refusals that describe the run rather than one attempt. The credentials, the
-# quota, the model and the safety policy are the same for every dimension, so a
-# refusal on any of those grounds recurs identically on the next dimension and
-# on any retry. They are ProviderError subclasses, so the isolated set above
-# already covers them, and covering them is wrong: isolating one records a
-# skipped dimension and lets the run reach a verdict, which turns a run-wide
-# misconfiguration into a quietly degraded pass over an artifact whose
-# dimensions were never actually read. A safety refusal is the sharpest case,
-# because the reason the content was not reviewed is the finding.
-#
-# Context overflow is deliberately not here. That is a property of the single
-# prompt that overflowed rather than of the run -- one verifier's oversized
-# prompt says nothing about the next one's, which is why the engine repairs it
-# instead of failing.
-#
-# A quota refusal belongs here despite being marked retryable, which looks like
-# a contradiction and is not. Retryability is about time: the same request may
-# well succeed once the limit resets. This tuple is about scope: at the moment
-# it is raised, the limit applies to every dimension alike. A run in flight has
-# no later, so isolating the quota failure would let the remaining dimensions
-# report and the run publish a verdict over an artifact one dimension never
-# read. Failing the whole run is the louder and more accurate outcome, and it
-# is the same principle the coverage check enforces downstream.
+# Refusals that describe the run, not one attempt: they recur identically on
+# every dimension, so isolating one would publish a verdict over an artifact
+# nothing read. Quota counts despite being retryable — retry is about time,
+# this is about scope, and a run in flight has no later. Context overflow is a
+# property of the one prompt that overflowed, so it is repaired, not here.
 _RUN_WIDE_REFUSALS: tuple[type[BaseException], ...] = (
     ProviderAuthError,
     ProviderQuotaError,
@@ -261,17 +243,9 @@ class VerifyResult(EngineEvent):
 class ProposedVerdict(EngineEvent):
     """What synthesis concluded, before the evidence gate has ruled on it.
 
-    Synthesis proposes; the engine decides and publishes. The two were one step
-    before, and the ordering that produced was wrong in a way no later
-    correction can undo: the terminal event went onto the bus while synthesis
-    ran, and the gate relabelled it afterwards. A consumer watching the stream
-    had already seen the approval. An emitted decision cannot be recalled, so
-    nothing may emit one before the thing that can refuse it has run.
-
-    This is an ``EngineEvent`` and deliberately not a ``Verdict``. A consumer
-    watching for the run's decision must not be able to mistake a proposal for
-    one, and inheriting from ``Verdict`` would put it in exactly the type the
-    verdict is found by.
+    An emitted decision cannot be recalled, so nothing may emit one before the
+    thing that can refuse it has run. Deliberately not a ``Verdict``: that is
+    the type consumers find the run's decision by.
     """
 
     verdict: str = Field(
@@ -637,19 +611,8 @@ class ReviewEngine(Engine):
     ) -> bool:
         """Record an isolated verification failure; False means the caller must re-raise.
 
-        Verification is discretionary work performed on evidence that already
-        exists: by the time a verifier runs, its dimension has reported and its
-        findings are on the run. A provider or transport failure here says the
-        worker died, not that the review is unsound, so it degrades the audit of
-        one finding rather than the run that produced it. The drain already
-        treats one failure this way — ``EngineBudgetError`` is swallowed as
-        discretionary work declined — and this extends the same reading to the
-        transport failures the dimension stage isolates.
-
-        The failure stays visible: the marker reaches the caller through
-        ``_emission_failures`` and is reported alongside the result, so a run
-        that verified less than it intended says so instead of presenting a
-        verdict as fully audited.
+        A dead verifier degrades the audit of one finding, not the run that
+        already produced it. Stays visible via ``_emission_failures``.
         """
         if not _is_all_isolated_failure(exc):
             return False
@@ -791,21 +754,9 @@ class ReviewEngine(Engine):
     ) -> tuple[str, ...]:
         """Declared dimensions that produced nothing this run can point at.
 
-        The set is enumerated from the dimensions the run was CONFIGURED with,
-        never from the reviewers that happened to report. Deriving it from who
-        reported would shrink the obligation by exactly the dimensions that
-        failed, so a dimension whose worker died -- or never launched at all --
-        would quietly leave the denominator and the gate would read clean on
-        the smaller one. Died and never-born are different mechanisms and they
-        need the same answer, and both of them look like this: nothing.
-
-        A dimension counts as evidenced when it produced at least one issue or
-        an affirmative all-clear. Reporting issues is execution evidence even
-        when none of them drew a verifier -- whether an issue is verified is a
-        severity policy, and a dimension that returned three minor findings
-        demonstrably ran. Requiring verification instead would make a
-        minor-only review unapprovable, since minors spawn no verifier and a
-        dimension that reported issues has no all-clear to audit.
+        Enumerated from the configured dimensions, never from who reported:
+        deriving it from reporters drops the failed ones out of the denominator.
+        An issue or an all-clear both count as evidence a dimension ran.
         """
         reported = self._reported_dimensions(run)
         return tuple(d for d in dimensions if d not in reported)
@@ -813,15 +764,9 @@ class ReviewEngine(Engine):
     def _verification_arrived(self, run: EngineRun, issue: IssueFound) -> bool:
         """Whether *issue* has its verification outcome on this run.
 
-        Arrival keys on the echoed ref token; the verbatim-description match
-        stays only as a fallback for a verifier that filled issue exactly but
-        dropped the ref. Two issues that share a verify key share one verifier
-        and therefore one ref, so the second is answered by the first's result
-        rather than being owed one of its own.
-
-        Read by repair, to decide whether to re-prompt, and by the gate, to
-        decide whether an approval has an open question under it. One
-        definition for the same reason the dimension predicate has one.
+        Keys on the echoed ref; the description match is a fallback for a
+        verifier that dropped it. Read by both repair and the gate, one
+        definition so they cannot drift.
         """
         ref = _verify_ref(issue)
         return any(v.ref == ref or v.issue == issue.description for v in run.by_type(VerifyResult))
@@ -829,17 +774,9 @@ class ReviewEngine(Engine):
     def _unverified_findings(self, run: EngineRun) -> tuple[IssueFound, ...]:
         """Findings owed a verification outcome that do not have one.
 
-        Coverage asks whether a dimension produced anything and cannot see
-        this: a dimension that reported and then lost its verifier is covered
-        and still has an open question underneath it. That is the shape the
-        gate exists for -- an issue serious enough to be worth refuting, no
-        refutation, and an approval resting on the gap.
-
-        Which findings are owed an outcome is the severity policy's call, read
-        from the same set that decides whether to spawn a verifier at all. A
-        minor is not owed one, so a minor-only review stays approvable; taking
-        the obligation from anywhere else would either invent work the engine
-        never scheduled or forgive work it did.
+        Coverage cannot see this: a dimension that reported and lost its
+        verifier is covered with an open question under it. What is owed comes
+        from the same severity set that decides whether to spawn a verifier.
         """
         return tuple(
             issue
@@ -851,14 +788,8 @@ class ReviewEngine(Engine):
     def _reported_dimensions(self, run: EngineRun) -> set[str]:
         """Dimensions that have produced something this run can point at.
 
-        Two decisions read this and they must not drift apart. Repair asks it
-        to decide whether a reviewer arrived or needs re-prompting, and the
-        coverage gate asks it to decide whether the verdict may approve. Two
-        spellings of the same predicate would eventually disagree, and both
-        directions of that disagreement are bad: repair stopping while the gate
-        still calls the dimension unevidenced wastes a retry that would have
-        helped, and the gate calling it evidenced while repair thinks otherwise
-        approves over a dimension nothing ever heard from.
+        Repair and the coverage gate both read it; two spellings would drift,
+        and either direction of that drift is wrong.
         """
         reported = {i.dimension for i in run.by_type(IssueFound)}
         reported |= {c.dimension for c in run.by_type(DimensionClean)}

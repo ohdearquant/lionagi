@@ -170,15 +170,7 @@ async def _verdict_with(eng, run, dimensions, verdict="APPROVE"):
     ids=["issue", "clean", "nothing"],
 )
 async def test_repair_and_the_coverage_gate_read_one_definition_of_reported(emit, reported):
-    """Whether a dimension reported decides two things, and they must agree.
-
-    Repair asks it to decide whether to re-prompt a reviewer; the gate asks it
-    to decide whether the verdict may approve. Written twice they would drift,
-    and a drift in either direction is a defect: one wastes a retry, the other
-    approves over a dimension nothing was heard from. Asserting both against
-    the same emission is what pins them together, since either alone passes
-    while the other is wrong.
-    """
+    """Repair and the gate read one predicate; asserting both on one emission pins them."""
     eng = ReviewEngine()
     run = eng.new_run()
     if emit is not None:
@@ -194,13 +186,7 @@ async def test_repair_and_the_coverage_gate_read_one_definition_of_reported(emit
 
 @pytest.mark.asyncio
 async def test_a_dimension_whose_reviewer_died_withholds_the_approval():
-    """One dimension reported, one produced nothing. An approve cannot stand.
-
-    This is the run that reads healthiest and is least safe: the surviving
-    dimension supplies real findings, real verifications, and a synthesis with
-    something to reason over, so every signal except the missing one looks
-    like a completed review.
-    """
+    """One dimension reported, one produced nothing: every signal but the missing one looks healthy."""
     eng = ReviewEngine()
     run = eng.new_run()
     await run.emit(DimensionClean(dimension="correctness", rationale="read it, fine"))
@@ -217,14 +203,7 @@ async def test_a_dimension_whose_reviewer_died_withholds_the_approval():
 
 @pytest.mark.asyncio
 async def test_a_dimension_that_never_started_withholds_it_too():
-    """Died and never-born are different mechanisms with one required answer.
-
-    The obligation is enumerated from the dimensions the run was configured
-    with. Were it taken from the reviewers that actually reported, a dimension
-    whose worker never launched would leave the denominator on its way out and
-    the gate would pass on the remainder, which is the failure it exists to
-    catch, wearing the shape of a smaller review.
-    """
+    """A dimension that never launched must not leave the denominator on its way out."""
     eng = ReviewEngine(dimensions=("correctness", "security", "performance"))
     run = eng.new_run()
     await run.emit(IssueFound(dimension="correctness", description="c", severity="minor"))
@@ -241,17 +220,7 @@ async def test_a_dimension_that_never_started_withholds_it_too():
 
 @pytest.mark.asyncio
 async def test_an_issue_whose_verifier_died_withholds_the_approval():
-    """Reporting is coverage. It is not a finding's verification outcome.
-
-    A dimension that reported and then lost its verifier is covered under the
-    coverage rule and has an open question underneath it, and this is the shape
-    the guard was built for: an issue serious enough to be worth refuting, no
-    refutation, and an approval resting on the gap. Coverage alone cannot see
-    it, because the dimension did report.
-
-    Which issues are owed a verification outcome is the severity policy's call,
-    so this asserts on one the engine would itself have sent to a verifier.
-    """
+    """Covered and still open underneath: coverage cannot see a lost verifier, since the dimension did report."""
     eng = ReviewEngine()
     run = eng.new_run()
     await run.emit(DimensionClean(dimension="correctness", rationale="read it, fine"))
@@ -272,12 +241,7 @@ async def test_an_issue_whose_verifier_died_withholds_the_approval():
 
 @pytest.mark.asyncio
 async def test_a_verified_issue_does_not_withhold_it():
-    """The other side of the same rule, so it cannot pass by refusing always.
-
-    A finding that got its verification outcome leaves nothing open. Without
-    this arm the assertion above is satisfied by a gate that never approves,
-    which would be a different defect wearing the same green.
-    """
+    """The other side of the rule: without it, a gate that never approves passes too."""
     eng = ReviewEngine()
     run = eng.new_run()
     issue = IssueFound(
@@ -298,13 +262,7 @@ async def test_a_verified_issue_does_not_withhold_it():
 
 @pytest.mark.asyncio
 async def test_a_dimension_that_reported_only_minor_issues_still_approves():
-    """Reporting is the evidence; verification is a severity policy.
-
-    Minor findings draw no verifier and a dimension that reported issues has
-    no all-clear to audit, so requiring verification here would make every
-    minor-only review unapprovable. What the gate is asking is whether the
-    dimension ran, and three findings answer that.
-    """
+    """Minors draw no verifier, so requiring one would make every minor-only review unapprovable."""
     eng = ReviewEngine(dimensions=("correctness",))
     run = eng.new_run()
     await run.emit(IssueFound(dimension="correctness", description="nit", severity="minor"))
@@ -318,13 +276,7 @@ async def test_a_dimension_that_reported_only_minor_issues_still_approves():
 
 @pytest.mark.asyncio
 async def test_a_refusal_stands_even_when_coverage_was_partial():
-    """The gate only ever refuses in one direction.
-
-    A dimension that produced nothing could only have added findings, so it
-    cannot be the reason a refusal is wrong. Withholding it as unevidenced
-    would discard a real objection over evidence that would not have changed
-    it.
-    """
+    """Refuses in one direction only: a silent dimension could only have added findings."""
     eng = ReviewEngine()
     run = eng.new_run()
     await run.emit(IssueFound(dimension="correctness", description="real bug", severity="major"))
@@ -338,13 +290,7 @@ async def test_a_refusal_stands_even_when_coverage_was_partial():
 
 @pytest.mark.asyncio
 async def test_a_previous_runs_evidence_does_not_cover_this_runs_dimension():
-    """Evidence is this run's, even when the Session is handed in reused.
-
-    A Session can be injected, and the answer to "did this dimension report"
-    was being read off the session's whole event flow. A second run over the
-    same Session inherited the first one's coverage, and the inherited answer
-    is indistinguishable from a true one.
-    """
+    """A second run over an injected Session must not inherit the first one's coverage."""
     from lionagi.session.session import Session
 
     session = Session()
@@ -368,13 +314,7 @@ async def test_a_previous_runs_evidence_does_not_cover_this_runs_dimension():
 
 @pytest.mark.asyncio
 async def test_no_approval_is_observable_on_the_stream_before_the_gate_rules():
-    """The ordering property, asserted over the sequence rather than the end state.
-
-    An emitted decision cannot be recalled. Reading only the final state
-    cannot see an APPROVE that went out and was corrected afterwards, which is
-    exactly the shape being ruled out, so the assertion has to be made against
-    what a consumer watching would have seen in order.
-    """
+    """Asserted over the sequence: the end state cannot see an APPROVE that went out and was corrected."""
     seen: list[dict] = []
     eng = ReviewEngine()
     run = eng.new_run(on_event=seen.append)
