@@ -71,7 +71,13 @@ export function popOverlay(token: symbol): void {
 
 /** True when nothing is painted above this overlay: no registration on a
  *  higher layer, and none newer on its own. An overlay that never registered
- *  is not topmost, which fails toward leaving the key alone. */
+ *  is not topmost, which fails toward leaving the key alone.
+ *
+ *  The scan is linear in the number of overlays open at once, which is however
+ *  many surfaces a person has stacked on screen. Caching the winner instead
+ *  would buy nothing at that size and would add an invalidation rule that
+ *  every future push and pop has to remember, which is the kind of invariant
+ *  that breaks quietly and decides who owns the keyboard when it does. */
 export function isTopmostOverlay(token: symbol): boolean {
   let owner: Registration | undefined;
   for (const registration of stack) {

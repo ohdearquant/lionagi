@@ -96,16 +96,32 @@ export default function Modal({
       }
     };
 
-    // A child may have focused its own field in its mount effect (which runs
-    // before this one); only claim focus when nothing inside holds it yet.
-    if (!dialog?.contains(document.activeElement)) {
+    // Claiming focus is the same ownership question the key handler asks, so
+    // it gets the same answer. A dialog opened beneath an overlay that is
+    // already painted above it is not what the operator is looking at, and
+    // pulling the caret down into it is the mount-time form of the defect the
+    // topmost check exists to prevent.
+    //
+    // A child may also have focused its own field in its mount effect (which
+    // runs before this one); only claim focus when nothing inside holds it yet.
+    const holdsFocus = () => dialog?.contains(document.activeElement) ?? false;
+    if (isTopmostOverlay(overlay) && !holdsFocus()) {
       (focusableElements()[0] ?? dialog)?.focus();
     }
+    // Whether this dialog ended up with the caret, by its own hand or a
+    // child's. Read after the claim above, so a child that focused its own
+    // field counts the same as this effect focusing the first control.
+    const tookFocus = holdsFocus();
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
+      // Give focus back only if this dialog is the one holding it. It never
+      // took focus if it opened underneath something, and it no longer owns
+      // focus if something opened on top of it while it was up; restoring in
+      // either case pulls the caret out of the surface still on screen.
+      const restoresFocus = tookFocus && isTopmostOverlay(overlay);
       popOverlay(overlay);
-      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+      if (restoresFocus && previouslyFocused?.isConnected) previouslyFocused.focus();
     };
   }, []);
 
