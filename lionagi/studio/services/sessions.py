@@ -613,9 +613,7 @@ def _resume_anchor(
     current_anchor: str | None,
     budget_refused: bool,
 ) -> tuple[bool, str | None]:
-    """Where the next page resumes: the oldest row actually delivered (not the window's own
-    oldest id), or the same window again if the budget refused it outright; a window whose ids
-    are simply absent from the store still advances, since nothing was owed for it."""
+    """Where the next page resumes: the oldest row actually delivered, or the same window again if the budget refused it."""
     if len(present_ids) == len(window_ids):
         return has_older, next_anchor
     if present_ids:
@@ -648,10 +646,8 @@ def _init_message_stats() -> dict[str, Any]:
         "error_count": 0,
         "errors": [],
         "files": [],
-        # True when the action-message pass stopped at its bound, so the four
-        # fields above describe the session's most recent action messages
-        # rather than all of them: the counts are floors and the errors and
-        # files are the ones that fell inside the window.
+        # True when the action pass stopped at its bound, so the four fields
+        # above describe the most recent action messages, not all of them.
         "bounded": False,
     }
 
@@ -662,8 +658,7 @@ async def _fetch_messages_by_ids(
     *,
     budget: _HydrationBudget,
 ) -> list[dict[str, Any]]:
-    """Hydrate message rows for msg_ids, chunked under SQLite's bound-variable limit, spending
-    from the same shared request budget as every other reader."""
+    """Hydrate message rows for msg_ids, chunked under SQLite's bound-variable limit, spending from the shared request budget."""
     if not msg_ids:
         return []
     chunks = [msg_ids[start : start + 500] for start in range(0, len(msg_ids), 500)]
@@ -769,9 +764,7 @@ async def _fetch_action_messages(
     limit: int,
     budget: _HydrationBudget,
 ) -> tuple[dict[str, list[dict[str, Any]]], bool]:
-    """Hydrate at most *limit* action rows across the whole session, newest first, as one
-    selection over every branch (not a per-branch share, which would depend on visit order);
-    two passes so the cap applies before payloads are read. Returns (messages_by_branch, bounded)."""
+    """Hydrate at most *limit* action rows session-wide, newest first, in two passes so the cap applies before payloads are read."""
     empty: dict[str, list[dict[str, Any]]] = {branch_id: [] for branch_id in ids_by_branch}
     any_ids = any(ids_by_branch.values())
     if not any_ids or limit <= 0:
@@ -852,8 +845,7 @@ _FILE_TOOL_NAMES = frozenset(
 
 
 def _action_file_path(function: Any, arguments: Any) -> str | None:
-    """The file an action request touched, or None -- shared by the per-branch stats and the
-    run-wide file union so both agree on what counts as a file call."""
+    """The file an action request touched, or None; shared so per-branch stats and the run-wide union agree on what counts."""
     arguments = arguments if isinstance(arguments, dict) else {}
     tool_name = str(function or "").lower().replace("-", "_").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
     if tool_name and tool_name not in _FILE_TOOL_NAMES:
@@ -865,9 +857,7 @@ def _action_file_path(function: Any, arguments: Any) -> str | None:
 async def _fetch_action_file_paths(
     db: aiosqlite.Connection, ids_by_branch: dict[str, list[str]]
 ) -> tuple[list[str], bool]:
-    """Every file this session's action requests touched, over the whole run -- a union, not the
-    newest slice the hydrated set uses, since a reference can resolve against an old name.
-    Decodes nothing (SQLite extracts short fields only) and reports whether it was cut short."""
+    """Every file this session's action requests touched, as a whole-run union rather than the hydrated slice, decoding nothing."""
     class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
     cur = await db.execute(
         f"SELECT type_id, lion_class FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
@@ -1138,9 +1128,8 @@ async def get_session(
                         ids = []
             progression_ids[br["id"]] = ids
 
-        # One budget for the whole read, not one per branch or reader, so it isn't multiplied by
-        # branch count. Display windows spend from it first; the action aggregate can degrade
-        # gracefully (it already reports itself as bounded), so it spends what's left.
+        # One budget for the whole read, so it isn't multiplied by branch count;
+        # display windows spend first and the action aggregate takes what's left.
         content_budget = _HydrationBudget()
 
         window_by_branch: dict[str, tuple[list[dict[str, Any]], bool]] = {}
@@ -1356,11 +1345,7 @@ async def get_session_messages_after(
     after_id: str | None = None,
     after_branch: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Poll-friendly, bounded tail read for the SSE stream/signals endpoints. Joins via json_each
-    instead of an IN (...) clause to stay under SQLite's bound-variable limit, and cursors on the
-    full sort key ``(created_at, id, branch_id)`` so it can resume mid-group rather than take a
-    whole timestamp-sharing group unbounded; ``after_id``/``after_branch`` are optional for
-    backward compatibility with the old timestamp-only cursor."""
+    """Poll-friendly bounded tail read for the SSE endpoints; joins via json_each and cursors on the full sort key so it can resume mid-group."""
     if not store_exists():
         return []
 
