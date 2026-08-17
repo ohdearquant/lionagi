@@ -359,7 +359,7 @@ class EngineRun:
         if kind == "agent_error":
             self._agent_errors.append(f"{data.get('agent')}: {data.get('error')}")
         if self.on_event:
-            self.on_event({"type": kind, **data})
+            self.on_event({"type": kind, "engine_instance_id": self.run_id, **data})
 
     def seen(self, key: str) -> bool:
         norm = key.strip().lower()
@@ -922,6 +922,7 @@ class Engine:
     ) -> Any:
         """Execute the engine pipeline; on internal budget cancellation calls _partial_export instead of raising. External cancellation propagates as CancelledError."""
         run = self.new_run(session=session, on_event=on_event, on_branch_created=on_branch_created)
+        self._last_run_id = run.run_id
         # Reset so a reused engine never carries diagnostics from a prior run.
         self._emission_failures: list[str] = []
         self._agent_errors: list[str] = []
