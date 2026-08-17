@@ -428,7 +428,10 @@ class ReviewEngine(Engine):
             # background work mutates shared run state after _run exits.
             await run.cancel_active()
             raise
-        # Drain any adversarial verifiers spawned by high-severity issues.
+        # Drain any adversarial verifiers spawned by high-severity issues. Each
+        # was spawned already wrapped, so a dead verifier worker is recorded and
+        # the drain stays clean; anything the wrapper does not claim still
+        # reaches here and ends the run.
         await run.wait_quiescence()
         # A clean or minor-only review spawns no issue verifiers, so it would
         # reach the verdict with zero VerifyResult — and a downstream evidence
@@ -437,14 +440,14 @@ class ReviewEngine(Engine):
         # carry one adversarial audit of the clean verdict itself: positive
         # executed evidence rather than absence.
         if self.verify_clean and not run.by_type(VerifyResult):
-            await self._verify_clean(run, artifact, dims)
+            await self._verify_clean_isolated(run, artifact, dims)
         return await self._verdict(run, artifact, dims)
 
     # -- reactions ------------------------------------------------------------
 
     def _on_issue(self, run: EngineRun, issue: IssueFound) -> None:
         if issue.severity in self.verify_severities and not run.seen(_verify_key(issue)):
-            run.spawn(self._verify(run, issue))
+            run.spawn(self._verify_isolated(run, issue))
 
     # -- stages ---------------------------------------------------------------
 
@@ -476,6 +479,53 @@ class ReviewEngine(Engine):
             marker = f"review-{dimension} ({error_type})"
             if marker not in run._emission_failures:
                 run._emission_failures.append(marker)
+
+    def _isolate_verification_failure(
+        self, run: EngineRun, exc: BaseException, *, stage: str
+    ) -> bool:
+        """Record an isolated verification failure; False means the caller must re-raise.
+
+        Verification is discretionary work performed on evidence that already
+        exists: by the time a verifier runs, its dimension has reported and its
+        findings are on the run. A provider or transport failure here says the
+        worker died, not that the review is unsound, so it degrades the audit of
+        one finding rather than the run that produced it. The drain already
+        treats one failure this way — ``EngineBudgetError`` is swallowed as
+        discretionary work declined — and this extends the same reading to the
+        transport failures the dimension stage isolates.
+
+        The failure stays visible: the marker reaches the caller through
+        ``_emission_failures`` and is reported alongside the result, so a run
+        that verified less than it intended says so instead of presenting a
+        verdict as fully audited.
+        """
+        if not _is_all_isolated_failure(exc):
+            return False
+        error_type = _failure_label(exc)
+        run.notify("verification_failed", stage=stage, error_type=error_type)
+        marker = f"{stage} ({error_type})"
+        if marker not in run._emission_failures:
+            run._emission_failures.append(marker)
+        return True
+
+    async def _verify_isolated(self, run: EngineRun, issue: IssueFound) -> None:
+        try:
+            await self._verify(run, issue)
+        except Exception as exc:
+            # Spawned into the run's background set, so an escape does not fail
+            # this verifier alone: the drain collects it and re-raises, which
+            # discards a review whose dimensions have already succeeded.
+            if not self._isolate_verification_failure(run, exc, stage=f"verify-{issue.dimension}"):
+                raise
+
+    async def _verify_clean_isolated(
+        self, run: EngineRun, artifact: str, dimensions: tuple[str, ...]
+    ) -> None:
+        try:
+            await self._verify_clean(run, artifact, dimensions)
+        except Exception as exc:
+            if not self._isolate_verification_failure(run, exc, stage="verify-clean"):
+                raise
 
     async def _review_dimension(self, run: EngineRun, artifact: str, dimension: str) -> None:
         emits = (IssueFound, DimensionClean)
