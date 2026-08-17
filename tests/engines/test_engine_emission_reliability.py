@@ -11,9 +11,21 @@ import anyio
 import pytest
 
 from lionagi.engines.engine import Engine, EngineBudgetError
-from lionagi.engines.review import ReviewEngine, _is_all_isolated_failure
+from lionagi.engines.review import (
+    DimensionClean,
+    IssueFound,
+    ReviewEngine,
+    _is_all_isolated_failure,
+)
 from lionagi.ln.concurrency._compat import ExceptionGroup
-from lionagi.providers._provider_errors import ProviderContextError
+from lionagi.providers._provider_errors import (
+    ProviderAuthError,
+    ProviderContextError,
+    ProviderQuotaError,
+    ProviderSafetyError,
+    ProviderUnsupportedModelError,
+    WorkerLivenessError,
+)
 
 
 class _StubEngine(Engine):
@@ -387,3 +399,311 @@ async def test_the_sdks_own_transport_failures_are_still_recognised(failure: str
                 task_group.cancel_scope.cancel()
 
     assert _is_all_isolated_failure(caught.value) is True
+
+
+# ---------------------------------------------------------------------------
+# Verifier-stage isolation.
+#
+# The dimension stage is only one of three places this engine does work. The
+# adversarial verifiers are spawned into the run's background set and drained by
+# wait_quiescence(), which re-raises everything except cancellation and budget
+# exhaustion; the clean-verify is awaited directly at the end of _run. A worker
+# that dies in either place therefore discarded a review whose dimensions had
+# already reported, throwing away findings that were already on the run.
+# ---------------------------------------------------------------------------
+
+
+class _DeadVerifierReview(ReviewEngine):
+    """The dimension reports a finding; the verifier that finding triggers dies."""
+
+    def __init__(self, failure: BaseException) -> None:
+        super().__init__(dimensions=("security",), verify_clean=False)
+        self._failure = failure
+        self.issues_at_verdict = -1
+
+    async def _review_dimension(self, run, artifact: str, dimension: str) -> None:
+        await run.emit(
+            IssueFound(
+                dimension=dimension,
+                description="a finding worth verifying",
+                severity="critical",
+            )
+        )
+
+    async def _verify(self, run, issue) -> None:
+        # The sleep is load-bearing, not scene-setting. A spawned task that
+        # finishes before the drain is entered removes itself from the active
+        # set via its done-callback, so wait_quiescence() finds nothing to
+        # collect and the exception is discarded. Failing while still in flight
+        # is what puts this arm on the isolation predicate rather than on that
+        # timing, and it is also what a real verifier does: it works, then dies.
+        await asyncio.sleep(0.05)
+        raise self._failure
+
+    async def _verdict(self, run, artifact: str, dimensions: tuple[str, ...]) -> str:
+        self.issues_at_verdict = len(run.by_type(IssueFound))
+        return "verdict reached"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("make_failure", "expected_label"),
+    [
+        # The class that actually took the lane down. It subclasses
+        # ProviderError, so it always qualified for isolation — it escaped
+        # because this path had no isolation to qualify for.
+        (
+            lambda: WorkerLivenessError("worker produced no first stream output"),
+            "WorkerLivenessError",
+        ),
+        (lambda: anyio.ClosedResourceError(), "ClosedResourceError"),
+        (lambda: ProviderContextError("provider context overflow"), "ProviderContextError"),
+        # Two verifiers dying together is the observed shape: the drain gathers
+        # every spawned failure and reports them as one group.
+        (
+            lambda: ExceptionGroup(
+                "unhandled errors in a TaskGroup",
+                [
+                    WorkerLivenessError("worker produced no first stream output"),
+                    WorkerLivenessError("worker produced no first stream output"),
+                ],
+            ),
+            "WorkerLivenessError",
+        ),
+    ],
+)
+async def test_a_dead_verifier_does_not_discard_a_review_whose_dimensions_succeeded(
+    make_failure, expected_label: str
+) -> None:
+    events: list[dict] = []
+    engine = _DeadVerifierReview(make_failure())
+
+    result = await engine.run("artifact", on_event=events.append)
+
+    assert result == "verdict reached"
+    # The evidence the dead verifier was auditing is still on the run. This is
+    # the whole point: the findings existed before the verifier was spawned.
+    assert engine.issues_at_verdict == 1
+    assert result.degraded is True
+    assert result.skipped == [f"verify-security ({expected_label})"]
+    # The marker has to reach the caller, not just the run: this string is what
+    # the CLI folds into the recorded error for the run, so a degraded review
+    # says which stage degraded rather than only that something did.
+    assert result.degrade_reason == f"emission_failure: verify-security ({expected_label})"
+    assert any(
+        event["type"] == "verification_failed"
+        and event["stage"] == "verify-security"
+        and event["error_type"] == expected_label
+        for event in events
+    )
+
+
+class _NonTransportVerifierReview(_DeadVerifierReview):
+    def __init__(self) -> None:
+        super().__init__(ValueError("a genuine defect in the verifier"))
+
+
+@pytest.mark.asyncio
+async def test_a_non_transport_verifier_failure_still_ends_the_run() -> None:
+    """Isolation is a claim about transport, not a blanket swallow.
+
+    Without this arm the fix reads identically whether the predicate is
+    consulted or the except clause simply discards everything.
+    """
+    engine = _NonTransportVerifierReview()
+
+    with pytest.raises(ValueError, match="a genuine defect in the verifier"):
+        await engine.run("artifact")
+
+
+class _DeadCleanVerifierReview(ReviewEngine):
+    """No issues, so the clean-verify runs — and its worker dies."""
+
+    def __init__(self, failure: BaseException) -> None:
+        super().__init__(dimensions=("security",), verify_clean=True)
+        self._failure = failure
+
+    async def _review_dimension(self, run, artifact: str, dimension: str) -> None:
+        await run.emit(DimensionClean(dimension=dimension, rationale="nothing found"))
+
+    async def _verify_clean(self, run, artifact: str, dimensions: tuple[str, ...]) -> None:
+        raise self._failure
+
+    async def _verdict(self, run, artifact: str, dimensions: tuple[str, ...]) -> str:
+        return "clean verdict reached"
+
+
+@pytest.mark.asyncio
+async def test_a_dead_clean_verifier_degrades_instead_of_killing_the_run() -> None:
+    events: list[dict] = []
+    engine = _DeadCleanVerifierReview(WorkerLivenessError("worker produced no first stream output"))
+
+    result = await engine.run("artifact", on_event=events.append)
+
+    assert result == "clean verdict reached"
+    assert result.degraded is True
+    assert result.skipped == ["verify-clean (WorkerLivenessError)"]
+    assert result.degrade_reason == "emission_failure: verify-clean (WorkerLivenessError)"
+    assert any(
+        event["type"] == "verification_failed"
+        and event["stage"] == "verify-clean"
+        and event["error_type"] == "WorkerLivenessError"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_non_transport_clean_verifier_failure_still_ends_the_run() -> None:
+    engine = _DeadCleanVerifierReview(ValueError("a genuine defect in the clean verifier"))
+
+    with pytest.raises(ValueError, match="a genuine defect in the clean verifier"):
+        await engine.run("artifact")
+
+
+# -- run-wide refusals are not per-dimension blips ----------------------------
+# Every one of these derives from ProviderError, so the isolated set matched
+# them all and each was recorded as a skipped dimension. The run then reached a
+# verdict over an artifact whose dimensions were never read, and the reason was
+# a bad credential or a safety refusal rather than a dropped socket.
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ProviderAuthError("invalid api key"),
+        ProviderQuotaError("rate limit exceeded"),
+        ProviderSafetyError("content flagged by a safety filter"),
+        ProviderUnsupportedModelError("unknown model"),
+    ],
+    ids=lambda failure: type(failure).__name__,
+)
+def test_a_refusal_that_describes_the_run_is_not_isolated(failure: BaseException) -> None:
+    assert _is_all_isolated_failure(failure) is False
+
+
+def test_the_neighbouring_provider_failures_are_still_isolated() -> None:
+    """The control for the exclusion: it must not widen into ProviderError itself.
+
+    Without this arm, deleting the whole isolated set passes every assertion
+    above, because refusing everything satisfies a suite that only ever asks
+    what is refused.
+    """
+    assert _is_all_isolated_failure(ProviderContextError("provider context overflow")) is True
+    assert _is_all_isolated_failure(WorkerLivenessError("no first stream output")) is True
+    assert _is_all_isolated_failure(anyio.ClosedResourceError()) is True
+
+
+def test_a_group_of_transport_failures_carrying_one_refusal_is_not_isolated() -> None:
+    # The shape that hides it: several dimensions die of transport at once and
+    # one dies of a bad credential. Judged as a group, the majority reads as an
+    # ordinary blip.
+    group = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [
+            anyio.ClosedResourceError(),
+            WorkerLivenessError("no first stream output"),
+            ProviderAuthError("invalid api key"),
+        ],
+    )
+
+    assert _is_all_isolated_failure(group) is False
+
+
+@pytest.mark.asyncio
+async def test_a_clean_verifier_refused_for_credentials_ends_the_run() -> None:
+    """The end-to-end arm: the predicate is consulted where it decides a run.
+
+    Its control is the WorkerLivenessError case above, which takes the same
+    path with the same engine and degrades to a verdict. One failure class
+    reaches a result and the other does not, so this cannot pass by the engine
+    having stopped isolating anything.
+    """
+    engine = _DeadCleanVerifierReview(ProviderAuthError("invalid api key"))
+
+    with pytest.raises(ProviderAuthError, match="invalid api key"):
+        await engine.run("artifact")
+
+
+# ---------------------------------------------------------------------------
+# A spawned task's failure has to outlive the task
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("settle_before_drain", [True, False], ids=["fast", "slow"])
+async def test_a_spawned_failure_is_raised_whether_or_not_it_beat_the_drain(
+    settle_before_drain,
+) -> None:
+    """Timing must not decide whether a run-ending refusal is noticed.
+
+    Spawned tasks take themselves off the active set as they finish. When the
+    drain was the only thing reading failures, anything that finished first was
+    already gone by the time it looked, and the drain saw an empty set and
+    reported nothing wrong.
+
+    That is backwards from which failures matter. A refusal the provider issues
+    without doing any work -- a bad key here -- comes back almost at once, so
+    the failures that describe the whole run were the ones most reliably lost,
+    while a slow one was caught. Both timings are asserted together because
+    either alone reads as correct: the slow arm passed throughout.
+    """
+    run = ReviewEngine().new_run()
+
+    async def refused() -> None:
+        if not settle_before_drain:
+            await asyncio.sleep(0.05)
+        raise ProviderAuthError("invalid api key")
+
+    run.spawn(refused())
+    if settle_before_drain:
+        # Let it finish, and let its done callback run, before the drain starts.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    with pytest.raises(ProviderAuthError, match="invalid api key"):
+        await run.wait_quiescence()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "make_coro, label",
+    [
+        (lambda: asyncio.sleep(0), "a task that simply succeeded"),
+        (lambda: _raise(EngineBudgetError("exhausted")), "declined discretionary work"),
+    ],
+)
+async def test_the_drain_stays_quiet_for_outcomes_that_are_not_failures(make_coro, label) -> None:
+    """The must-not-fire side, so the arm above cannot pass by raising always.
+
+    Collecting failures as tasks settle widens what reaches the drain, and a
+    budget refusal is the one outcome that travels this path routinely without
+    meaning anything went wrong.
+    """
+    run = ReviewEngine().new_run()
+    run.spawn(make_coro())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    await run.wait_quiescence()  # must not raise
+
+
+async def _raise(exc: BaseException) -> None:
+    raise exc
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_spawned_task_is_not_reported_as_a_failure() -> None:
+    """Cancellation is how the engine stops its own work, not a defect.
+
+    Recorded as a failure it would turn every budget stop and deadline into a
+    run-ending error, so this is asserted against the same collection path the
+    two arms above use.
+    """
+    run = ReviewEngine().new_run()
+    task = run.spawn(asyncio.sleep(3600))
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    await run.wait_quiescence()  # must not raise

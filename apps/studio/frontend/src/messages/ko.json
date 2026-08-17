@@ -912,7 +912,7 @@
     "stale": {
       "error": "오류 · {message}",
       "unreachable": "API에 연결할 수 없음",
-      "lastUpdated": "오래됨 · 마지막 업데이트 {age}초 전"
+      "lastUpdated": "마지막 업데이트 {age}초 전"
     },
     "detail": {
       "hint": "조회할 세션을 선택하세요",
@@ -928,8 +928,7 @@
       "updated": "업데이트됨",
       "branchesTitle": "브랜치({count})",
       "noBranches": "브랜치 없음.",
-      "msgs": " 메시지",
-      "engineRuns": "엔진 실행"
+      "msgs": " 메시지"
     },
     "split": {
       "master": "세션 목록",
@@ -1075,7 +1074,7 @@
     "stale": {
       "error": "오류 · {message}",
       "unreachable": "API에 연결할 수 없음",
-      "lastUpdated": "오래됨 · 마지막 업데이트 {age}초 전"
+      "lastUpdated": "마지막 업데이트 {age}초 전"
     },
     "zeroState": {
       "heading": "시작하기",

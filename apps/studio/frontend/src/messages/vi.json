@@ -912,7 +912,7 @@
     "stale": {
       "error": "lỗi · {message}",
       "unreachable": "không kết nối được API",
-      "lastUpdated": "cũ · cập nhật lần cuối {age} giây trước"
+      "lastUpdated": "cập nhật lần cuối {age} giây trước"
     },
     "detail": {
       "hint": "chọn một phiên để kiểm tra",
@@ -928,8 +928,7 @@
       "updated": "đã cập nhật",
       "branchesTitle": "nhánh ({count})",
       "noBranches": "không có nhánh.",
-      "msgs": " tin nhắn",
-      "engineRuns": "Lượt chạy engine"
+      "msgs": " tin nhắn"
     },
     "split": {
       "master": "danh sách phiên",
@@ -1075,7 +1074,7 @@
     "stale": {
       "error": "lỗi · {message}",
       "unreachable": "không kết nối được API",
-      "lastUpdated": "cũ · cập nhật lần cuối {age} giây trước"
+      "lastUpdated": "cập nhật lần cuối {age} giây trước"
     },
     "zeroState": {
       "heading": "bắt đầu",

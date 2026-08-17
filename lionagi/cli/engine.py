@@ -444,6 +444,22 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     if _emission_failures:
         emission_error = "emission_missing: " + "; ".join(_emission_failures)
 
+    # A degraded run reached a result without all of its work. The engine says
+    # so on the result object, and nothing downstream was reading it: the row
+    # persisted as "completed" with no trace of what was skipped, which is the
+    # same shape as a run that did everything. Joined to the same field the
+    # emission diagnostics use, which already carries this kind of non-fatal
+    # detail on a completed row.
+    _degraded: bool = bool(getattr(result, "degraded", False))
+    _degrade_reason: str = str(getattr(result, "degrade_reason", "") or "")
+    _skipped: list[str] = list(getattr(result, "skipped", []) or [])
+    if _degraded:
+        degraded_text = "degraded: " + (_degrade_reason or "reason not recorded")
+        if _skipped:
+            degraded_text += f" (skipped: {', '.join(_skipped)})"
+        emission_error = f"{emission_error}; {degraded_text}" if emission_error else degraded_text
+        warn(degraded_text)
+
     # Every agent terminally erroring must not report "completed" as green.
     _total_agent_failure: bool = getattr(engine, "_total_agent_failure", False)
     if _total_agent_failure:
@@ -463,7 +479,16 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
             _rd_export = result_data.get("export_dir")
             export_dir_for_db = _rd_export if _rd_export is not None else export_dir_from_args
         elif isinstance(result, str):
-            result_data = {"result": result}
+            # EngineResult subclasses str to stay back-compatible, so it lands
+            # here and the plain-string shape would carry only the text. A
+            # consumer reading the JSON could not then tell a run that did all
+            # its work from one that skipped a dimension, which is the whole
+            # thing the caller needs in order to decide whether to trust it.
+            result_data = {"result": str(result)}
+            if _degraded:
+                result_data["degraded"] = True
+                result_data["degrade_reason"] = _degrade_reason
+                result_data["skipped"] = _skipped
         else:
             result_data = {"result": str(result)}
         print(json.dumps(result_data, ensure_ascii=False, indent=2))

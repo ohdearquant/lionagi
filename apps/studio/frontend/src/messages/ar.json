@@ -912,7 +912,7 @@
     "stale": {
       "error": "خطأ · {message}",
       "unreachable": "تعذّر الوصول إلى API",
-      "lastUpdated": "قديم · آخر تحديث منذ {age}ث"
+      "lastUpdated": "آخر تحديث منذ {age}ث"
     },
     "detail": {
       "hint": "حدّد جلسة لفحصها",
@@ -928,8 +928,7 @@
       "updated": "آخر تحديث",
       "branchesTitle": "الفروع ({count})",
       "noBranches": "لا توجد فروع.",
-      "msgs": " رسائل",
-      "engineRuns": "عمليات تشغيل المحرك"
+      "msgs": " رسائل"
     },
     "split": {
       "master": "قائمة الجلسات",
@@ -1075,7 +1074,7 @@
     "stale": {
       "error": "خطأ · {message}",
       "unreachable": "تعذّر الوصول إلى API",
-      "lastUpdated": "قديم · آخر تحديث منذ {age}ث"
+      "lastUpdated": "آخر تحديث منذ {age}ث"
     },
     "zeroState": {
       "heading": "ابدأ",
