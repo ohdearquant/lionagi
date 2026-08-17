@@ -306,6 +306,16 @@ class ReviewRun(EngineRun):
     concurrently against one shared session; that is a stronger property, it is
     not what the reuse defect was, and claiming it here would be claiming more
     than this does.
+
+    To be precise about that boundary, since a coverage gate is exactly the
+    place where an unstated limit turns into a wrong approval: two runs started
+    against one shared ``Session`` and overlapping in time will each see the
+    other's events, because the other's events did not exist when either one
+    took its snapshot. Sequential reuse of a session is safe, which is the case
+    that occurs. Concurrent sharing is not a path anything here takes -- a
+    session is constructed per run at the entry points -- and separating it
+    needs per-run attribution on the events themselves rather than a snapshot,
+    which is a change to what the observer records and not to this class.
     """
 
     def __init__(self, engine: Engine, **kwargs: Any) -> None:
@@ -660,10 +670,7 @@ class ReviewEngine(Engine):
             await run.operate_with_repair(
                 agent,
                 _dimension_instruction(artifact, dimension),
-                arrived=lambda: (
-                    any(i.dimension == dimension for i in run.by_type(IssueFound))
-                    or any(c.dimension == dimension for c in run.by_type(DimensionClean))
-                ),
+                arrived=lambda: dimension in self._reported_dimensions(run),
                 emits=emits,
                 retries=self.repair_retries,
             )
@@ -765,9 +772,24 @@ class ReviewEngine(Engine):
         minor-only review unapprovable, since minors spawn no verifier and a
         dimension that reported issues has no all-clear to audit.
         """
+        reported = self._reported_dimensions(run)
+        return tuple(d for d in dimensions if d not in reported)
+
+    def _reported_dimensions(self, run: EngineRun) -> set[str]:
+        """Dimensions that have produced something this run can point at.
+
+        Two decisions read this and they must not drift apart. Repair asks it
+        to decide whether a reviewer arrived or needs re-prompting, and the
+        coverage gate asks it to decide whether the verdict may approve. Two
+        spellings of the same predicate would eventually disagree, and both
+        directions of that disagreement are bad: repair stopping while the gate
+        still calls the dimension unevidenced wastes a retry that would have
+        helped, and the gate calling it evidenced while repair thinks otherwise
+        approves over a dimension nothing ever heard from.
+        """
         reported = {i.dimension for i in run.by_type(IssueFound)}
         reported |= {c.dimension for c in run.by_type(DimensionClean)}
-        return tuple(d for d in dimensions if d not in reported)
+        return reported
 
     def _rule(
         self, proposed: ProposedVerdict | None, unevidenced: tuple[str, ...], text: str

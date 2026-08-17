@@ -156,6 +156,39 @@ async def _verdict_with(eng, run, dimensions, verdict="APPROVE"):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("emit", "reported"),
+    [
+        (lambda: IssueFound(dimension="security", severity="minor", description="d"), True),
+        (lambda: DimensionClean(dimension="security", rationale="read it"), True),
+        (None, False),
+    ],
+    ids=["issue", "clean", "nothing"],
+)
+async def test_repair_and_the_coverage_gate_read_one_definition_of_reported(emit, reported):
+    """Whether a dimension reported decides two things, and they must agree.
+
+    Repair asks it to decide whether to re-prompt a reviewer; the gate asks it
+    to decide whether the verdict may approve. Written twice they would drift,
+    and a drift in either direction is a defect: one wastes a retry, the other
+    approves over a dimension nothing was heard from. Asserting both against
+    the same emission is what pins them together, since either alone passes
+    while the other is wrong.
+    """
+    eng = ReviewEngine()
+    run = eng.new_run()
+    if emit is not None:
+        await run.emit(emit())
+
+    # The repair path's arrival question and the gate's coverage question.
+    arrived = "security" in eng._reported_dimensions(run)
+    unevidenced = eng._unevidenced_dimensions(run, ("security",))
+
+    assert arrived is reported
+    assert ("security" not in unevidenced) is reported
+
+
+@pytest.mark.asyncio
 async def test_a_dimension_whose_reviewer_died_withholds_the_approval():
     """One dimension reported, one produced nothing. An approve cannot stand.
 
