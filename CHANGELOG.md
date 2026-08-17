@@ -28,6 +28,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   on POSIX. Cross-platform descendant containment remains out of scope and is
   tracked in #2576.
 
+### Fixed
+
+- Writable StateDB migration now fails closed when a table's columns cannot be
+  inspected, preserving the prior schema-version stamp instead of recording an
+  upgrade whose additive column reconciliation did not complete.
+
 ### Deprecated
 
 - `--resume-on-timeout` on `li o fanout` and `li o flow`. The flag is accepted
