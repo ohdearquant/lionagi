@@ -18,7 +18,14 @@ from lionagi.engines.review import (
     _is_all_isolated_failure,
 )
 from lionagi.ln.concurrency._compat import ExceptionGroup
-from lionagi.providers._provider_errors import ProviderContextError, WorkerLivenessError
+from lionagi.providers._provider_errors import (
+    ProviderAuthError,
+    ProviderContextError,
+    ProviderQuotaError,
+    ProviderSafetyError,
+    ProviderUnsupportedModelError,
+    WorkerLivenessError,
+)
 
 
 class _StubEngine(Engine):
@@ -550,4 +557,68 @@ async def test_a_non_transport_clean_verifier_failure_still_ends_the_run() -> No
     engine = _DeadCleanVerifierReview(ValueError("a genuine defect in the clean verifier"))
 
     with pytest.raises(ValueError, match="a genuine defect in the clean verifier"):
+        await engine.run("artifact")
+
+
+# -- run-wide refusals are not per-dimension blips ----------------------------
+# Every one of these derives from ProviderError, so the isolated set matched
+# them all and each was recorded as a skipped dimension. The run then reached a
+# verdict over an artifact whose dimensions were never read, and the reason was
+# a bad credential or a safety refusal rather than a dropped socket.
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ProviderAuthError("invalid api key"),
+        ProviderQuotaError("rate limit exceeded"),
+        ProviderSafetyError("content flagged by a safety filter"),
+        ProviderUnsupportedModelError("unknown model"),
+    ],
+    ids=lambda failure: type(failure).__name__,
+)
+def test_a_refusal_that_describes_the_run_is_not_isolated(failure: BaseException) -> None:
+    assert _is_all_isolated_failure(failure) is False
+
+
+def test_the_neighbouring_provider_failures_are_still_isolated() -> None:
+    """The control for the exclusion: it must not widen into ProviderError itself.
+
+    Without this arm, deleting the whole isolated set passes every assertion
+    above, because refusing everything satisfies a suite that only ever asks
+    what is refused.
+    """
+    assert _is_all_isolated_failure(ProviderContextError("provider context overflow")) is True
+    assert _is_all_isolated_failure(WorkerLivenessError("no first stream output")) is True
+    assert _is_all_isolated_failure(anyio.ClosedResourceError()) is True
+
+
+def test_a_group_of_transport_failures_carrying_one_refusal_is_not_isolated() -> None:
+    # The shape that hides it: several dimensions die of transport at once and
+    # one dies of a bad credential. Judged as a group, the majority reads as an
+    # ordinary blip.
+    group = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [
+            anyio.ClosedResourceError(),
+            WorkerLivenessError("no first stream output"),
+            ProviderAuthError("invalid api key"),
+        ],
+    )
+
+    assert _is_all_isolated_failure(group) is False
+
+
+@pytest.mark.asyncio
+async def test_a_clean_verifier_refused_for_credentials_ends_the_run() -> None:
+    """The end-to-end arm: the predicate is consulted where it decides a run.
+
+    Its control is the WorkerLivenessError case above, which takes the same
+    path with the same engine and degrades to a verdict. One failure class
+    reaches a result and the other does not, so this cannot pass by the engine
+    having stopped isolating anything.
+    """
+    engine = _DeadCleanVerifierReview(ProviderAuthError("invalid api key"))
+
+    with pytest.raises(ProviderAuthError, match="invalid api key"):
         await engine.run("artifact")
