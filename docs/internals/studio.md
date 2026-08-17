@@ -595,9 +595,6 @@ never half-emitted.
 - **Audit event ordering** — Runs after the prune transaction commits;
   `insert_admin_event` opens its own write transaction, and nesting it inside
   the prune transaction would self-deadlock on the sqlite write lock.
-
-## lionagi/studio/services/db_maintenance.py
-
 - **`_session_retention_predicate`** — What makes a session prunable
   (terminal status AND no activity since a cutoff), built as one reusable
   SQL fragment + params rather than a full statement, because the prune
@@ -1002,7 +999,7 @@ carrying the reason and — whenever `notify_request()` finds a notify
 payload — emits a `dispatch_outbox` row via
 `lionagi.dispatch.outbox.enqueue_dispatch`.
 
-## lionagi/studio/scheduler/engine.py
+## lionagi/studio/scheduler/engine.py (max_runs budget reservation)
 
 **`_reserve_max_runs_budget`** — reserves one top-level fire against a
 schedule's `max_runs` cap. A fire consumes budget the instant it fires, not
