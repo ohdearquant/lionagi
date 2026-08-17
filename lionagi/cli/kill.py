@@ -438,11 +438,8 @@ async def _kill_one(
     if pid is not None:
         meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
         if _recorded_row_is_foreign(meta):
-            # This pid names a process in another host's pid space. Signalling
-            # it would aim at whatever unrelated local process holds that
-            # number, and recording a cancellation would report a kill that
-            # never happened to a run still going on the machine that owns it.
-            # Refused for the same reason an identity mismatch is.
+            # Another host's pid space: signalling it would hit an unrelated
+            # local process, and cancelling would report a kill that never was.
             warn(
                 f"  {entity_type} {entity_id[:12]}: pid {pid} was recorded on "
                 f"{meta.get('pid_host')!r}, not this host — kill skipped"
@@ -708,12 +705,8 @@ async def _do_kill_all_stale(
                     continue
 
                 pid = _read_pid_from_entity(row_dict)
-                # Asked before liveness, not inside it, because a remote row's
-                # pid is normally absent from this host and absence is what the
-                # sweep reads as dead. Judged on the liveness branch this check
-                # would never run for exactly the rows it exists to protect,
-                # and every row from another machine would be cancelled here
-                # while its process kept running there.
+                # Before liveness: a remote row's pid is absent here, and the
+                # sweep reads absence as dead.
                 if _recorded_row_is_foreign(
                     row_dict.get("node_metadata")
                     if isinstance(row_dict.get("node_metadata"), dict)

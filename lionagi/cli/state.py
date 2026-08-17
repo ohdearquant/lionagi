@@ -1153,11 +1153,8 @@ async def _doctor(
                     meta = None
             entity["node_metadata"] = meta if isinstance(meta, dict) else None
             if recorded_row_is_foreign(entity["node_metadata"]):
-                # Asked before liveness for the same reason the stale sweep
-                # asks before it: a row recorded on another machine has no pid
-                # here, and this loop reads a pid it cannot find as reapable.
-                # Inside the liveness branch the check would never run for the
-                # rows it exists to protect.
+                # Before liveness: a remote row has no pid here, and a pid
+                # this loop cannot find reads as reapable.
                 skipped += 1
                 continue
             pid = _read_pid_from_entity(entity)

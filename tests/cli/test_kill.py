@@ -778,14 +778,7 @@ def test_the_composed_guard_refuses_a_mode_the_host_question_would_pass():
 async def test_kill_one_refuses_a_row_recorded_on_another_host(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A pid from another machine is not this machine's pid to signal.
-
-    Both rows here are identical except for the host marker, and the fake
-    process is built to be positively identified as the run: matching
-    create_time and a matching session marker. So the control is genuinely
-    killed, which is what makes the refusal below attributable to the marker
-    and not to some other check happening to refuse.
-    """
+    """A pid from another machine is not this machine's pid to signal."""
     import socket
 
     async with StateDB() as db:
@@ -812,8 +805,7 @@ async def test_kill_one_refuses_a_row_recorded_on_another_host(
 
         assert socket.gethostname() != "some-other-machine"
 
-        # CONTROL: same row without the marker. It must actually be killed,
-        # or the refusal below is evidence of nothing.
+        # CONTROL: must actually be killed, or the refusal proves nothing.
         kill_calls = _mock_psutil(
             monkeypatch,
             cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
@@ -830,11 +822,8 @@ async def test_kill_one_refuses_a_row_recorded_on_another_host(
         )
         assert kill_calls, "control sent no signal"
 
-        # SUBJECT: identical row, recorded elsewhere. The local process is
-        # re-mocked to match THIS row's session id, so the pid here is one the
-        # identity check would positively confirm. That is the case the marker
-        # exists for: a collision the other checks cannot see, where without
-        # the host question this row is killed rather than merely mismatched.
+        # SUBJECT: identical row, recorded elsewhere. Re-mocked to match this
+        # row's session id, so without the host check it would be killed.
         kill_calls = _mock_psutil(
             monkeypatch,
             cmdline=["/usr/bin/python3", "-m", "lionagi.cli"],
