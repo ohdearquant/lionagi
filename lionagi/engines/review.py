@@ -72,6 +72,15 @@ _ISOLATED_ERRORS: tuple[type[BaseException], ...] = (ProviderError, *_TRANSPORT_
 # prompt that overflowed rather than of the run -- one verifier's oversized
 # prompt says nothing about the next one's, which is why the engine repairs it
 # instead of failing.
+#
+# A quota refusal belongs here despite being marked retryable, which looks like
+# a contradiction and is not. Retryability is about time: the same request may
+# well succeed once the limit resets. This tuple is about scope: at the moment
+# it is raised, the limit applies to every dimension alike. A run in flight has
+# no later, so isolating the quota failure would let the remaining dimensions
+# report and the run publish a verdict over an artifact one dimension never
+# read. Failing the whole run is the louder and more accurate outcome, and it
+# is the same principle the coverage check enforces downstream.
 _RUN_WIDE_REFUSALS: tuple[type[BaseException], ...] = (
     ProviderAuthError,
     ProviderQuotaError,
