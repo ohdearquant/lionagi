@@ -518,12 +518,7 @@ async def seed_branch(
     name: str = "worker",
     created_at: float = 200.0,
 ) -> str:
-    """Create a progression + branch row; returns the progression id.
-
-    created_at is a parameter because branches are read in that order, so a
-    test about what the order does needs to set it. Left alone every branch
-    ties, and a tie is decided by insertion order, which is not the thing.
-    """
+    """Create a progression + branch row; returns the progression id."""
     prog_id = f"{branch_id}-prog"
     async with StateDB(db_path) as db:
         if msg_ids:
@@ -630,9 +625,8 @@ async def test_list_sessions_agrees_with_the_detail_route_on_terminal_absence(
 
     assert len(rows) == 1
     assert rows[0]["artifact_verification_json"] == {"status": "not_recorded"}
-    # Asserted as equality between the two routes rather than against the literal
-    # twice: the defect being closed is a disagreement, so the test fails if
-    # either side moves, not only if the list side does.
+    # Asserted as equality between the two routes, not against the literal twice, so the
+    # test fails if either side moves.
     assert detail is not None
     assert rows[0]["artifact_verification_json"] == detail["artifact_verification_json"]
 
@@ -1144,12 +1138,7 @@ async def test_get_session_cursor_pages_are_stable_under_concurrent_appends(patc
 async def test_a_page_that_delivered_nothing_hands_back_a_cursor_that_reaches_it(
     patched_sessions_db, monkeypatch
 ):
-    """The two halves of this are written separately -- one names the window it
-    could not deliver, the other resolves that name -- and each half passes on
-    its own while the pair is broken. What a caller has is the cursor it was
-    given, so the assertion is that spending it returns the page, and it must
-    be the same page an anchor-less read chooses: a first request that fit
-    nothing has not read anything, so nothing may be skipped over."""
+    """The two halves of this are written separately -- one names the window it could not deliver, the other resolves that name -- and each half passes on its own while the pair is broken."""
     svc, db_path = patched_sessions_db
     await seed_paginated_session(db_path, count=10)
 
@@ -1200,10 +1189,8 @@ async def test_get_session_full_aggregates_do_not_hydrate_every_message_row(
 
     result = await svc.get_session("sess-paged", message_limit=3)
 
-    # Every hydration is a chosen set, not the progression. Asserted as "no
-    # call was handed all fifty ids" rather than as a call count: the aggregate
-    # pass hydrates through this helper too, so counting calls measures how the
-    # readers are wired and not whether the whole history was decoded.
+    # Asserted as "no call was handed all fifty ids" rather than a call count, since counting
+    # calls would measure how readers are wired, not whether the whole history was decoded.
     assert calls, "the spy never fired"
     assert all(len(ids) <= 3 for ids in calls), calls
     assert ["pmsg-47", "pmsg-48", "pmsg-49"] in calls
@@ -1435,9 +1422,8 @@ async def test_get_session_does_not_reconstruct_a_duration_from_an_approximate_e
 
     assert approximate is not None
     assert approximate["duration_ms"] is None
-    # Control: the same shape with a measured end still reconstructs, so the
-    # assertion above is about the flag and not about a reconstruction that
-    # stopped working.
+    # Control: the same shape with a measured end still reconstructs, so the assertion above
+    # is about the flag, not a reconstruction that stopped working.
     assert measured is not None
     assert measured["duration_ms"] == 3500.0
 
@@ -1543,10 +1529,7 @@ async def _seed_action_requests(
 async def test_action_hydration_stops_at_its_bound_and_keeps_the_newest(
     patched_sessions_db, monkeypatch
 ):
-    """A session accumulates action rows for as long as it runs, so the detail
-    read has to stop somewhere. It stops at the newest end, because that is the
-    part every field derived from these rows is describing, and it says that it
-    stopped rather than reporting a short list as a complete one."""
+    """A session accumulates action rows for as long as it runs, so the detail read has to stop somewhere."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 3)
     await seed_session(db_path, session_id="sess-hydration")
@@ -1558,15 +1541,13 @@ async def test_action_hydration_stops_at_its_bound_and_keeps_the_newest(
     stats = detail["message_stats"]
     assert stats["bounded"] is True
     assert stats["tool_call_count"] == 3
-    # The counts are floors over the newest rows. The file union is not: it is
-    # what a reader resolves a file reference against, and a reference is
-    # written against a name from anywhere in the run.
+    # The counts are floors over the newest rows; the file union is not, since a reference can
+    # resolve against a name from anywhere in the run.
     assert set(stats["files"]) == {f"/run/f{i}.py" for i in range(8)}
 
 
 async def test_an_unbounded_session_reports_the_whole_action_surface(patched_sessions_db):
-    """Control: the flag above has to be able to read false, or a caller cannot
-    tell a bounded read from a complete one."""
+    """Control: the flag above has to be able to read false, or a caller cannot tell a bounded read from a complete one."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-hydration-small")
     await _seed_action_requests(db_path, branch_id="b1", session_id="sess-hydration-small", count=3)
@@ -1579,9 +1560,7 @@ async def test_an_unbounded_session_reports_the_whole_action_surface(patched_ses
 
 
 async def test_the_hydration_budget_is_spent_on_the_newest_branch(patched_sessions_db, monkeypatch):
-    """The budget covers the session, not each branch, so where it is spent is
-    a real choice. Spending it in branch order would hand back the oldest
-    branch's activity under a heading about this run."""
+    """The budget covers the session, not each branch, so where it is spent is a real choice."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 2)
     await seed_session(db_path, session_id="sess-two-branches")
@@ -1623,15 +1602,7 @@ async def test_the_hydration_budget_is_spent_on_the_newest_branch(patched_sessio
 async def test_the_action_cap_follows_recent_activity_not_branch_creation_order(
     patched_sessions_db, monkeypatch
 ):
-    """Branch creation order is not a proxy for recent activity, and using it as
-    one starves exactly the branch a reader is watching.
-
-    A long-lived orchestrator branch is created first and is still producing
-    when a worker branch created later has already finished. Spending the cap
-    one branch at a time, newest-created first, hands the whole of it to the
-    worker's older rows and leaves none for the newer ones under it -- and the
-    result is still labelled this session's recent activity.
-    """
+    """Branch creation order is not a proxy for recent activity, and using it as one starves exactly the branch a reader is watching."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 3)
     await seed_session(db_path, session_id="sess-activity-order")
@@ -1680,11 +1651,7 @@ async def test_the_action_cap_follows_recent_activity_not_branch_creation_order(
 async def test_an_oversized_action_payload_never_reaches_the_parser(
     patched_sessions_db, monkeypatch
 ):
-    """A row count bounds how many payloads are decoded, not what one costs.
-    `messages.content` is written from a caller's own tool arguments and has no
-    ceiling of its own, so one row can cost more than a whole bounded set of
-    ordinary ones. The row stays listed with its identity and timing; only the
-    payload is withheld, and the read says it was bounded."""
+    """A row count bounds how many payloads are decoded, not what one costs."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
     await seed_session(db_path, session_id="sess-oversized")
@@ -1700,16 +1667,14 @@ async def test_an_oversized_action_payload_never_reaches_the_parser(
 
     assert detail is not None
     assert detail["message_stats"]["bounded"] is True
-    # Withheld, not dropped: the row still counts as a tool call, because its
-    # identity and timing survive. Only what the payload would have told us --
-    # here, which file the call touched -- is gone.
+    # Withheld, not dropped: the row still counts as a tool call since its identity and timing
+    # survive; only what the payload would have told us (the file touched) is gone.
     assert detail["message_stats"]["tool_call_count"] == 1
     assert detail["message_stats"]["files"] == []
 
 
 async def test_a_payload_inside_the_ceiling_is_parsed_and_reported_whole(patched_sessions_db):
-    """Control for the ceiling: an ordinary payload is decoded and the read
-    does not call itself bounded."""
+    """Control for the ceiling: an ordinary payload is decoded and the read does not call itself bounded."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-normal-payload")
     await _seed_action_requests(db_path, branch_id="b1", session_id="sess-normal-payload", count=1)
@@ -1725,14 +1690,7 @@ async def test_a_payload_inside_the_ceiling_is_parsed_and_reported_whole(patched
 async def test_the_decoded_total_is_bounded_not_just_the_row_count_and_the_row_size(
     patched_sessions_db, monkeypatch
 ):
-    """The two bounds above are bounds on different things, and two bounds on
-    different things multiply. A row count of N and a payload ceiling of M
-    permit N*M, which is the number that has to fit in memory -- so the total
-    is bounded in its own right, under both of them rather than beside them.
-
-    Every row here is comfortably inside the per-payload ceiling and the count
-    is inside the row bound, so neither of the other two can be what stops it.
-    """
+    """The two bounds above are bounds on different things, and two bounds on different things multiply."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_HYDRATED_CONTENT_CHARS", 400)
     await seed_session(db_path, session_id="sess-total")
@@ -1757,8 +1715,7 @@ async def test_the_decoded_total_is_bounded_not_just_the_row_count_and_the_row_s
 
 
 async def test_a_session_inside_every_bound_reports_itself_complete(patched_sessions_db):
-    """Control for the total: with all three bounds at their real values, an
-    ordinary session is not bounded by any of them."""
+    """Control for the total: with all three bounds at their real values, an ordinary session is not bounded by any of them."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-complete")
     await _seed_action_requests(db_path, branch_id="b1", session_id="sess-complete", count=5)
@@ -1773,15 +1730,7 @@ async def test_a_session_inside_every_bound_reports_itself_complete(patched_sess
 async def test_the_walk_reads_from_the_newest_end_across_more_than_one_chunk(
     patched_sessions_db, monkeypatch
 ):
-    """Which end the walk starts from is only observable past one chunk.
-
-    Inside a single chunk every row is read and the newest are selected
-    afterwards, so both directions agree and a small fixture cannot tell them
-    apart -- it passes against a walk that reads the whole progression and
-    throws most of it away. Past the chunk size the two diverge: an oldest-first
-    walk fills its budget from the start of the progression and stops there,
-    handing back the oldest rows under a heading about recent activity.
-    """
+    """Which end the walk starts from is only observable past one chunk."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-chunks")
     await _seed_action_requests(db_path, branch_id="b1", session_id="sess-chunks", count=600)
@@ -1797,12 +1746,7 @@ async def test_the_walk_reads_from_the_newest_end_across_more_than_one_chunk(
 
 
 async def _content_chars(svc, db_path: Path, msg_id: str) -> int:
-    """How many characters one seeded row's payload occupies in the database.
-
-    Read rather than computed from the literal the seeder passes: the column
-    holds whatever the store's own serializer wrote, and a budget assertion
-    derived from a re-serialization of my own would be measuring my guess.
-    """
+    """How many characters one seeded row's payload occupies in the database."""
     async with svc._open_db(db_path) as db:
         cur = await db.execute("SELECT length(content) AS n FROM messages WHERE id = ?", (msg_id,))
         row = await cur.fetchone()
@@ -1813,13 +1757,7 @@ async def _content_chars(svc, db_path: Path, msg_id: str) -> int:
 async def test_one_read_has_one_content_budget_across_all_of_its_branches(
     patched_sessions_db, monkeypatch
 ):
-    """A ceiling each reader keeps for itself is not a ceiling on the read.
-
-    A session detail hydrates once per branch and holds every result at the
-    same time, so a per-call budget of N admits N times however many branches
-    the session happens to have -- and nothing bounds that. The number only
-    means what it says if one object is spent by everything the request does.
-    """
+    """A ceiling each reader keeps for itself is not a ceiling on the read."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-budget-branches")
     await _seed_action_requests(
@@ -1841,9 +1779,7 @@ async def test_one_read_has_one_content_budget_across_all_of_its_branches(
 
 
 async def test_a_session_under_the_ceiling_still_returns_every_branch_whole(patched_sessions_db):
-    """Control for the budget: with the real ceiling in place, a two-branch
-    session hands back both branches complete, so the assertion above is
-    measuring the bound and not some other reason rows go missing."""
+    """Control for the budget: with the real ceiling in place, a two-branch session hands back both branches complete, so the assertion above is measuring the bound and not some other reason rows go missing."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-budget-ok")
     await _seed_action_requests(db_path, branch_id="b-one", session_id="sess-budget-ok", count=4)
@@ -1856,10 +1792,7 @@ async def test_a_session_under_the_ceiling_still_returns_every_branch_whole(patc
 
 
 async def test_the_display_window_spends_from_the_budget_too(patched_sessions_db, monkeypatch):
-    """The window is bounded by its row count, which says nothing about what
-    those rows cost: a page of rows each just under the per-row ceiling is a
-    megabyte-scale read that no row count refuses. It comes back short and says
-    so, rather than being the one reader the total does not cover."""
+    """The window is bounded by its row count, which says nothing about what those rows cost: a page of rows each just under the per-row ceiling is a megabyte-scale read that no row count refuses."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-window-budget")
     await _seed_action_requests(db_path, branch_id="b1", session_id="sess-window-budget", count=6)
@@ -1878,11 +1811,7 @@ async def test_the_display_window_spends_from_the_budget_too(patched_sessions_db
 async def test_the_tail_read_is_bounded_and_defers_the_rest_to_the_next_poll(
     patched_sessions_db, monkeypatch
 ):
-    """The stream poll is the reader with the least to lose from a bound and
-    the most to lose from not having one: its cursor starts at zero, so a first
-    poll against a long finished run matches everything the session ever
-    recorded. Bounding it costs half a second, and only if there is more.
-    """
+    """The stream poll is the reader with the least to lose from a bound and the most to lose from not having one: its cursor starts at zero, so a first poll against a long finished run matches everything th"""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-tail-budget")
     await _seed_action_requests(db_path, branch_id="b1", session_id="sess-tail-budget", count=8)
@@ -1912,10 +1841,7 @@ async def test_the_tail_read_is_bounded_and_defers_the_rest_to_the_next_poll(
 async def test_the_action_row_limit_bounds_what_is_decoded_not_only_what_is_returned(
     patched_sessions_db,
 ):
-    """Asking for three rows and getting three back says nothing about how many
-    were read to produce them. Checked once per chunk, a request for three
-    decodes five hundred and then discards four hundred and ninety-seven -- the
-    cost the limit exists to refuse, paid in full before it is consulted."""
+    """Asking for three rows and getting three back says nothing about how many were read to produce them."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-decode-limit")
     await _seed_action_requests(db_path, branch_id="b1", session_id="sess-decode-limit", count=10)
@@ -1938,11 +1864,7 @@ async def test_the_action_row_limit_bounds_what_is_decoded_not_only_what_is_retu
 async def test_a_stopped_action_walk_keeps_the_newest_rows_not_the_first_ones_read(
     patched_sessions_db,
 ):
-    """Stopping the walk early is only safe if the rows it stopped on are the
-    ones worth keeping. An id list comes back in whatever order the index walk
-    produces, which for messages inserted in time order is oldest first, so a
-    walk that stops after three would keep the three oldest and label them as
-    this session's recent activity."""
+    """Stopping the walk early is only safe if the rows it stopped on are the ones worth keeping."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-newest-kept")
     await _seed_action_requests(db_path, branch_id="b1", session_id="sess-newest-kept", count=10)
@@ -1960,14 +1882,7 @@ async def test_a_stopped_action_walk_keeps_the_newest_rows_not_the_first_ones_re
 async def test_rows_whose_payload_was_withheld_still_spend_the_budget(
     patched_sessions_db, monkeypatch
 ):
-    """A character budget cannot bound rows that decode to nothing.
-
-    The per-row ceiling withholds an oversized payload, which is the point --
-    but a withheld row charges zero characters, so under a character bound
-    alone it is free. A progression of them is then read to the end, and what
-    accumulates is one identity and timestamp per row, unbounded, produced by
-    exactly the input the ceiling exists to refuse.
-    """
+    """A character budget cannot bound rows that decode to nothing."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
     monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 3)
@@ -1996,9 +1911,7 @@ async def test_rows_whose_payload_was_withheld_still_spend_the_budget(
 
 
 async def test_rows_inside_both_allowances_are_all_returned(patched_sessions_db, monkeypatch):
-    """Control for the row allowance: with the payloads inside the per-row
-    ceiling and the count inside the allowance, nothing is withheld and nothing
-    is dropped, so the assertion above is measuring the allowance."""
+    """Control for the row allowance: with the payloads inside the per-row ceiling and the count inside the allowance, nothing is withheld and nothing is dropped, so the assertion above is measuring the allowance."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 3)
     await seed_session(db_path, session_id="sess-withheld-ok")
@@ -2013,9 +1926,7 @@ async def test_rows_inside_both_allowances_are_all_returned(patched_sessions_db,
 
 
 async def test_the_tail_read_stops_on_the_row_allowance_too(patched_sessions_db, monkeypatch):
-    """The stream poll has no row bound of its own -- its cursor is what ends
-    it -- so a progression of withheld rows is where the allowance matters
-    most: every one of them is free under a character budget."""
+    """The stream poll has no row bound of its own -- its cursor is what ends it -- so a progression of withheld rows is where the allowance matters most: every one of them is free under a character budget."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
     monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 4)
@@ -2052,14 +1963,7 @@ async def test_the_tail_read_stops_on_the_row_allowance_too(patched_sessions_db,
 async def test_the_newest_action_rows_are_chosen_across_the_whole_progression(
     patched_sessions_db, monkeypatch
 ):
-    """Progression order and time order are not the same order.
-
-    Selecting the newest from the last chunk of the progression gives the
-    newest of that chunk, which is only the newest of the run while the two
-    orders agree. They stop agreeing whenever a branch merges history, resumes,
-    or replays -- and the answer then reads as this run's recent activity while
-    describing rows from the middle of it.
-    """
+    """Progression order and time order are not the same order."""
     import aiosqlite as aio
 
     svc, db_path = patched_sessions_db
@@ -2089,11 +1993,7 @@ async def test_the_newest_action_rows_are_chosen_across_the_whole_progression(
 
 
 async def test_choosing_which_action_rows_to_keep_reads_no_payloads(patched_sessions_db):
-    """Sorting a query that also selects content makes SQLite buffer every
-    matching row -- payloads included -- into its sorter before it yields the
-    first, so a bound applied afterwards is applied to work already done. The
-    pass that decides which rows to keep therefore selects no content at all.
-    """
+    """Sorting a query that also selects content makes SQLite buffer every matching row -- payloads included -- into its sorter before it yields the first, so a bound applied afterwards is applied to work already done."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-select-cost")
     await _seed_action_requests(db_path, branch_id="b1", session_id="sess-select-cost", count=8)
@@ -2122,13 +2022,7 @@ async def test_choosing_which_action_rows_to_keep_reads_no_payloads(patched_sess
 async def test_the_tail_read_charges_its_first_row_like_every_other(
     patched_sessions_db, monkeypatch
 ):
-    """Whether a row is taken and whether it was paid for are two questions.
-
-    The poll always hands back at least one row, or the caller's cursor never
-    moves and the same rows come back forever. Reading that guarantee off the
-    same expression that charges the budget let the first row through free, so
-    every poll returned one row more than the allowance it was given.
-    """
+    """Whether a row is taken and whether it was paid for are two questions."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 1)
     await seed_session(db_path, session_id="sess-tail-first")
@@ -2160,15 +2054,7 @@ async def test_the_tail_read_charges_its_first_row_like_every_other(
 async def test_a_group_sharing_one_timestamp_is_split_and_resumed_without_loss(
     patched_sessions_db, monkeypatch
 ):
-    """A tie is not indivisible, because the cursor names a row and not a time.
-
-    This is the case that decides whether the bound is a bound. Rows sharing a
-    timestamp can arrive in any number -- branch fan-out puts many at one
-    instant -- and a reader that can only stop at a group's edge has to take
-    the whole group whatever its size, which is the same as having no bound at
-    all on that path. Cutting mid-group is safe here only because the cursor
-    carries the whole sort key, so the resume lands on the very next row.
-    """
+    """A tie is not indivisible, because the cursor names a row and not a time."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 1)
     await seed_session(db_path, session_id="sess-tail-tied")
@@ -2212,9 +2098,7 @@ async def test_a_group_sharing_one_timestamp_is_split_and_resumed_without_loss(
 async def test_a_short_hydration_keeps_the_newest_of_what_was_asked_for(
     patched_sessions_db, monkeypatch
 ):
-    """Which rows survive a short read is a choice, so it is made rather than
-    left to the query planner's row order. A window is asked for because its
-    newest end is what the reader is looking at."""
+    """Which rows survive a short read is a choice, so it is made rather than left to the query planner's row order."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 2)
     await seed_paginated_session(db_path, count=5)
@@ -2229,9 +2113,7 @@ async def test_a_short_hydration_keeps_the_newest_of_what_was_asked_for(
 async def test_a_hydration_inside_the_allowance_returns_everything_asked_for(
     patched_sessions_db,
 ):
-    """Control for the test above: the selection only drops rows when it has to,
-    and what it returns stays in the caller's order rather than the newest-first
-    order the charging walks in."""
+    """Control for the test above: the selection only drops rows when it has to, and what it returns stays in the caller's order rather than the newest-first order the charging walks in."""
     svc, db_path = patched_sessions_db
     await seed_paginated_session(db_path, count=5)
     ids = [f"pmsg-{i}" for i in range(5)]
@@ -2272,12 +2154,7 @@ async def test_a_run_with_no_controls_reports_no_pause_held(patched_sessions_db)
 
 @pytest.mark.asyncio
 async def test_a_queued_pause_is_already_held_before_the_poller_applies_it(patched_sessions_db):
-    """A pause counts from the moment it is queued, not from when it drains.
-
-    The window between the two is exactly when a reader is most likely to
-    reload, and reporting "not paused" there offers a second Pause for a gate
-    already on its way in.
-    """
+    """A pause counts from the moment it is queued, not from when it drains."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path)
     await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
@@ -2319,12 +2196,7 @@ async def test_a_later_resume_releases_the_pause_before_it(patched_sessions_db):
 
 @pytest.mark.asyncio
 async def test_a_pause_after_a_resume_holds_the_gate_again(patched_sessions_db):
-    """The control arm for the ordering: newest-wins has to work both ways.
-
-    A rule that simply answered "has there ever been a resume" would pass the
-    release case above and fail here, leaving a re-paused run readable as
-    running.
-    """
+    """The control arm for the ordering: newest-wins has to work both ways."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path)
     first = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
@@ -2342,11 +2214,7 @@ async def test_a_pause_after_a_resume_holds_the_gate_again(patched_sessions_db):
 
 @pytest.mark.asyncio
 async def test_a_rejected_pause_never_held_the_gate(patched_sessions_db):
-    """A control the runner refused is not a pause, and must not read as one.
-
-    Without this the refusal would present as a paused run: Pause disabled,
-    Resume offered, and neither describing what actually happened.
-    """
+    """A control the runner refused is not a pause, and must not read as one."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path)
     control_id = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
@@ -2360,12 +2228,7 @@ async def test_a_rejected_pause_never_held_the_gate(patched_sessions_db):
 
 @pytest.mark.asyncio
 async def test_a_steering_message_is_not_a_pause(patched_sessions_db):
-    """Only pause and resume speak to the gate.
-
-    A steer queued after a resume is the newest control row on the session, so
-    a rule reading "the newest row" without filtering the verb would answer
-    from it.
-    """
+    """Only pause and resume speak to the gate."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path)
     pause_id = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
@@ -2411,11 +2274,7 @@ async def _drain_stream(response, *, limit: int = 200) -> list[dict]:
 
 @pytest.mark.asyncio
 async def test_a_finished_stream_drains_its_deferred_pages_before_saying_done(monkeypatch):
-    """A bounded read hands back one page and defers the rest, so reaching the
-    end of a page is not reaching the end of the session. A finished session
-    satisfies the done check on the very first pass, and answering it there
-    ends the stream with the deferred rows still unsent -- the viewer is told
-    the run is complete while holding part of it."""
+    """A bounded read hands back one page and defers the rest, so reaching the end of a page is not reaching the end of the session."""
     import lionagi.studio.services.sessions as svc
 
     pages = [
@@ -2457,9 +2316,7 @@ async def test_a_finished_stream_drains_its_deferred_pages_before_saying_done(mo
 
 @pytest.mark.asyncio
 async def test_a_page_that_does_not_move_the_cursor_does_not_spin(monkeypatch):
-    """Draining is only safe while the cursor advances. A page that leaves it
-    where it was cannot be drained by asking again, so the loop has to fall
-    through to its wait rather than re-ask immediately and spin."""
+    """Draining is only safe while the cursor advances."""
     import lionagi.studio.services.sessions as svc
 
     calls = {"n": 0}
@@ -2489,11 +2346,7 @@ async def _true() -> bool:
 
 
 def test_a_window_the_budget_stopped_inside_resumes_at_the_oldest_row_delivered():
-    """The window is picked from the progression before anything is decoded,
-    and the budget then admits from the newest end. Anchoring the next page at
-    the window's own oldest id steps over exactly the rows the budget refused:
-    they sit inside this window and before the next one, so nothing asks for
-    them again."""
+    """The window is picked from the progression before anything is decoded, and the budget then admits from the newest end."""
     import lionagi.studio.services.sessions as svc
 
     window = ["m-1", "m-2", "m-3", "m-4"]  # oldest first, as the progression orders them
@@ -2513,8 +2366,7 @@ def test_a_window_the_budget_stopped_inside_resumes_at_the_oldest_row_delivered(
 
 
 def test_a_fully_delivered_window_keeps_the_anchor_the_progression_chose():
-    """Control: with nothing refused there is nothing to resume, so the paging
-    anchor is the one the window logic already computed."""
+    """Control: with nothing refused there is nothing to resume, so the paging anchor is the one the window logic already computed."""
     import lionagi.studio.services.sessions as svc
 
     window = ["m-1", "m-2"]
@@ -2534,8 +2386,7 @@ def test_a_fully_delivered_window_keeps_the_anchor_the_progression_chose():
 
 
 def test_a_window_that_fit_nothing_is_asked_for_again_rather_than_skipped():
-    """Nothing was delivered, so the window has not been read. Moving the
-    anchor past it would retire a page the caller never saw."""
+    """Nothing was delivered, so the window has not been read."""
     import lionagi.studio.services.sessions as svc
 
     has_older, anchor = svc._resume_anchor(
@@ -2550,10 +2401,8 @@ def test_a_window_that_fit_nothing_is_asked_for_again_rather_than_skipped():
     assert anchor == "m-3", "the caller's own anchor repeats the window it did not get"
     assert has_older is True
 
-    # A first page has no caller anchor to repeat, so it names the newest end
-    # instead. Returning None here would leave the branch out of the next
-    # cursor, and a branch absent from a cursor reads as exhausted -- the
-    # messages would be unreachable, not merely undelivered.
+    # A first page has no caller anchor to repeat, so it names the newest end instead --
+    # returning None would leave the branch out of the next cursor and read as exhausted.
     assert svc._resume_anchor(
         ["m-1", "m-2"],
         [],
@@ -2565,15 +2414,7 @@ def test_a_window_that_fit_nothing_is_asked_for_again_rather_than_skipped():
 
 
 def test_a_window_whose_rows_are_all_absent_advances_instead_of_repeating():
-    """An empty page has two causes and only one of them is a stop.
-
-    The budget refusing everything leaves the rows owed, so the window has to
-    be asked for again. A window whose ids are simply not in the store owes
-    nothing: it was delivered in full and there was nothing in it. Handing back
-    the caller's own anchor there asks for the same absent rows on every later
-    page and the cursor never moves, which is a session that pages forever
-    without producing a message.
-    """
+    """An empty page has two causes and only one of them is a stop."""
     import lionagi.studio.services.sessions as svc
 
     has_older, anchor = svc._resume_anchor(
@@ -2601,8 +2442,7 @@ def test_a_window_whose_rows_are_all_absent_advances_instead_of_repeating():
 
 
 def test_the_newest_end_anchor_selects_the_window_an_anchorless_read_would():
-    """The sentinel has to mean the same window a first read picks, or the
-    page it resumes is not the page that was missed."""
+    """The sentinel has to mean the same window a first read picks, or the page it resumes is not the page that was missed."""
     import lionagi.studio.services.sessions as svc
 
     progression = ["m-1", "m-2", "m-3", "m-4", "m-5"]
@@ -2626,10 +2466,7 @@ def test_the_newest_end_anchor_selects_the_window_an_anchorless_read_would():
 
 
 async def test_a_store_with_no_action_message_types_still_reads(patched_sessions_db):
-    """The file union returns a pair and its caller unpacks two names. A store
-    whose message_types table carries no action row took the one branch that
-    returned a bare list, so the detail read raised at the unpack -- with
-    nothing wrong with the session being read."""
+    """The file union returns a pair and its caller unpacks two names."""
     import aiosqlite
 
     svc, db_path = patched_sessions_db
@@ -2661,11 +2498,7 @@ async def test_a_store_with_no_action_message_types_still_reads(patched_sessions
 async def test_a_withheld_action_row_still_carries_the_link_to_its_other_half(
     patched_sessions_db, monkeypatch
 ):
-    """The pairing between an action request and its response lives in the
-    payload, which is exactly what withholding removes. Both halves of one call
-    can be oversized at once, and a reader with neither link has no way to tell
-    one refused call from two. SQLite extracts the two ids without the payload
-    being decoded here, so they survive the refusal that took the rest."""
+    """The pairing between an action request and its response lives in the payload, which is exactly what withholding removes."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
     await seed_session(db_path, session_id="sess-pairing")
@@ -2716,9 +2549,7 @@ async def test_a_withheld_action_row_still_carries_the_link_to_its_other_half(
 async def test_a_row_that_kept_its_payload_does_not_grow_the_lifted_link_fields(
     patched_sessions_db, monkeypatch
 ):
-    """Control for the test above. The ids are lifted onto the row only where
-    the payload is gone; a row that kept its content already carries them, and
-    a shape that widens for every reader would be a different change."""
+    """Control for the test above."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 20_000)
     await seed_session(db_path, session_id="sess-pairing-ok")
@@ -2754,11 +2585,7 @@ async def test_a_row_that_kept_its_payload_does_not_grow_the_lifted_link_fields(
 async def test_the_file_union_stops_at_its_ceiling_and_says_that_it_did(
     patched_sessions_db, monkeypatch
 ):
-    """The union is over the whole run by design, and how many distinct names a
-    run touches is decided by its own tool arguments. Without a ceiling one long
-    run builds an unbounded set on every session-detail request. The ceiling is
-    reported, because a union that was cut is a different answer from a complete
-    one to the reader resolving a name against it."""
+    """The union is over the whole run by design, and how many distinct names a run touches is decided by its own tool arguments."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATHS", 3)
     await seed_session(db_path, session_id="sess-files-capped")
@@ -2780,8 +2607,7 @@ async def test_the_file_union_stops_at_its_ceiling_and_says_that_it_did(
 async def test_a_run_under_the_ceiling_returns_every_path_and_says_it_was_complete(
     patched_sessions_db, monkeypatch
 ):
-    """Control. Without it a union that always reports bounded, or one capped to
-    nothing, satisfies the assertion above."""
+    """Control. Without it a union that always reports bounded, or one capped to nothing, satisfies the assertion above."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATHS", 50)
     await seed_session(db_path, session_id="sess-files-whole")
@@ -2801,10 +2627,7 @@ async def test_a_run_under_the_ceiling_returns_every_path_and_says_it_was_comple
 
 
 async def test_the_file_union_stops_on_weight_as_well_as_on_count(patched_sessions_db, monkeypatch):
-    """A count says how many names come back and nothing about how long each
-    one is, and a path is only as short as the row it was read out of. Both
-    reads below hold the count ceiling well clear of the fixture, so the only
-    difference between them is what the set is allowed to weigh."""
+    """A count says how many names come back and nothing about how long each one is, and a path is only as short as the row it was read out of."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATHS", 5_000)
     await seed_session(db_path, session_id="sess-files-heavy")
@@ -2837,12 +2660,7 @@ async def test_the_file_union_stops_on_weight_as_well_as_on_count(patched_sessio
 async def test_the_file_union_stops_on_rows_read_even_when_the_answer_is_small(
     patched_sessions_db, monkeypatch
 ):
-    """The two ceilings on the answer bound what comes back. Neither bounds the
-    work of getting there, and the run that pays most for it is the one that
-    touches a single file over and over: the set stays at one name, so nothing
-    about the answer ever grows enough to stop the scan. Both reads return the
-    same one path, which leaves the ceiling on the scan as the only thing the
-    flag can be reporting."""
+    """The two ceilings on the answer bound what comes back."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-files-rescanned")
     await _seed_action_requests(
@@ -2871,16 +2689,7 @@ async def test_the_file_union_stops_on_rows_read_even_when_the_answer_is_small(
 async def test_the_scan_ceiling_charges_for_rows_the_query_filters_out(
     patched_sessions_db, monkeypatch
 ):
-    """A ceiling that counts replies is not a ceiling on the walk.
-
-    The union walks a whole progression, and the query it runs per chunk keeps
-    only action rows. A session of ordinary assistant messages therefore hands
-    back almost nothing while costing the full walk, so a ceiling charged for
-    what came back would let a progression of any length through untouched --
-    the exact shape a caller controls. Charged for the ids handed to the query
-    instead, the walk stops and says it stopped, even though the answer it
-    reached is one path either way.
-    """
+    """A ceiling that counts replies is not a ceiling on the walk."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-files-filtered")
 
@@ -2936,14 +2745,7 @@ async def test_the_scan_ceiling_charges_for_rows_the_query_filters_out(
 
 
 async def test_an_oversized_action_row_drops_its_path_and_says_so(patched_sessions_db, monkeypatch):
-    """The one cut with no counter behind it.
-
-    An action row too heavy to read is withheld, which is right: a path pulled
-    out of a payload that size is not the short field this read is built on.
-    But nothing about withholding it raises a ceiling, so the union comes back
-    missing a name while every ceiling still reports room to spare, and a
-    reader resolving that name against the union concludes it is not a file.
-    """
+    """The one cut with no counter behind it."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-files-oversized")
     await _seed_action_requests(
@@ -2980,12 +2782,7 @@ async def test_an_oversized_action_row_drops_its_path_and_says_so(patched_sessio
 async def test_a_lifted_link_id_cannot_carry_the_payload_that_was_just_withheld(
     patched_sessions_db, monkeypatch
 ):
-    """The ids are a link, and nothing constrains what a writer puts under them.
-
-    Withholding the content and then emitting an unbounded slice of that same
-    content through the id column gives back exactly what the bound was for, so
-    the lifted value is cut to a length no real id approaches.
-    """
+    """The ids are a link, and nothing constrains what a writer puts under them."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
     await seed_session(db_path, session_id="sess-idcap")
@@ -3019,14 +2816,7 @@ async def test_a_lifted_link_id_cannot_carry_the_payload_that_was_just_withheld(
 async def test_lifting_a_link_id_does_not_read_a_payload_of_unbounded_size(
     patched_sessions_db, monkeypatch
 ):
-    """Capping the id that comes back does not cap the work of finding it.
-
-    The parse that locates the key reads the whole document however short the
-    value under it turns out to be, and a row past the withholding ceiling is
-    charged nothing for its length, so without a second ceiling a row costs a
-    full scan of any size while counting as one row against every budget that
-    could otherwise stop it.
-    """
+    """Capping the id that comes back does not cap the work of finding it."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
     monkeypatch.setattr(svc, "MAX_ACTION_ID_SCAN_CHARS", 2_000)
@@ -3038,9 +2828,8 @@ async def test_lifting_a_link_id_does_not_read_a_payload_of_unbounded_size(
         msg_ids=["within-scan", "past-scan"],
     )
     async with StateDB(db_path) as db:
-        # Withheld, and short enough that finding the link is bounded work. The
-        # control for the row below: without it a lifted id going missing reads
-        # the same as the extraction never having worked at all.
+        # Withheld, and short enough that finding the link is bounded work -- the control for
+        # the row below, without which a lifted id going missing looks like extraction failing.
         await db.insert_message(
             {
                 "id": "within-scan",
@@ -3086,14 +2875,7 @@ async def test_lifting_a_link_id_does_not_read_a_payload_of_unbounded_size(
 async def test_one_row_of_unparseable_content_does_not_take_the_whole_read_down(
     patched_sessions_db, monkeypatch
 ):
-    """json_extract raises for the statement, not for the offending row.
-
-    Everything this application writes arrives as serialized JSON, so such a
-    row comes from a legacy write or from another writer against a shared
-    store. Either way one of them would make every message in the session
-    unreadable rather than just itself, so the extraction is guarded and the
-    row simply has no link to lift.
-    """
+    """json_extract raises for the statement, not for the offending row."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
     await seed_session(db_path, session_id="sess-badjson")
@@ -3149,13 +2931,7 @@ async def test_one_row_of_unparseable_content_does_not_take_the_whole_read_down(
 async def test_an_oversized_response_alone_does_not_report_the_file_union_as_cut(
     patched_sessions_db, monkeypatch
 ):
-    """A response withholds nothing the union wanted.
-
-    Paths are read from `$.function` and `$.arguments`, which only a request
-    carries, so an oversized response cannot have contributed one. Counting it
-    as a cut reports a complete union as incomplete, and the reader resolving a
-    name against it is told to distrust a correct answer.
-    """
+    """A response withholds nothing the union wanted."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
     await seed_session(db_path, session_id="sess-union")
@@ -3201,14 +2977,7 @@ async def test_an_oversized_response_alone_does_not_report_the_file_union_as_cut
 async def test_a_malformed_action_row_does_not_make_the_session_unreadable(
     patched_sessions_db,
 ):
-    """json_extract aborts the whole statement, not the row that upset it.
-
-    Everything written through this application is serialized JSON, so a row
-    that is not comes from a legacy write or from another writer against a
-    shared store, which is a state the store is allowed to be in. Unguarded,
-    one such row turns every read of that session into OperationalError, and
-    the session stops opening rather than opening degraded.
-    """
+    """json_extract aborts the whole statement, not the row that upset it."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-malformed")
     await _seed_action_requests(
@@ -3231,14 +3000,7 @@ async def test_a_malformed_action_row_does_not_make_the_session_unreadable(
 async def test_an_oversized_row_arrives_withheld_rather_than_vanishing(
     patched_sessions_db, monkeypatch
 ):
-    """A withheld payload is decoded by nobody, so it costs no characters.
-
-    That is the contract _HydrationBudget.admits states for itself. Charging
-    the raw length instead refuses the row outright, so a row that should have
-    arrived marked withheld does not arrive, and the larger it is the more
-    certainly it disappears. The refusal also breaks the walk, so every older
-    row behind it is lost with it.
-    """
+    """A withheld payload is decoded by nobody, so it costs no characters."""
     svc, db_path = patched_sessions_db
     monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 50)
     await seed_paginated_session(db_path, count=3)

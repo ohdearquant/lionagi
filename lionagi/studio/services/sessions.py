@@ -103,104 +103,46 @@ def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
     return {"nodes": nodes, "edges": edges} if nodes else None
 
 
-# What one session read is allowed to decode.
-#
-# Three numbers rather than one, because a session read can grow along three
-# independent axes and a bound on any one of them leaves the others free. How
-# many rows are held scales with how long the run went on. What a single row
-# costs is set by a caller's own tool arguments and has no ceiling of its own:
-# `messages.content` is written from them, and decoding one builds an object
-# graph several times the size of its text, so one row can cost more than a
-# whole bounded set of ordinary ones. And the product of those two is what has
-# to fit in memory at once, which is neither of them.
-#
-# So the total is the number that actually says what a request can cost, and
-# the other two sit under it rather than beside it.
+# What one session read is allowed to decode: three independent ceilings (rows, per-row size,
+# total decoded), since none of them bounds the others.
 
-# What one message payload may decode to. Applied in SQL, before the value
-# reaches a parser, because a check written in Python has already paid the cost
-# it refuses. An oversized row still contributes its identity and timing; only
-# the payload is withheld, and the read reports itself as bounded so nothing
-# downstream presents the result as the whole surface. Set far above any
-# plausible tool call, so this refuses payloads that are already pathological
-# rather than trimming ordinary ones.
+# What one message payload may decode to, enforced in SQL before a parser runs. An oversized
+# row is withheld (not dropped), and the read reports itself as bounded.
 MAX_ACTION_CONTENT_CHARS = 1_048_576
 
 # What one session read may decode in total, across every row it holds.
 MAX_HYDRATED_CONTENT_CHARS = 64 * 1_048_576
 
-# How many rows one session read may hold, across every reader, whatever they
-# cost. The character total above bounds what gets decoded, and a row whose
-# payload was withheld decodes nothing -- so under a character bound alone a
-# stream of withheld rows is free, and the read accumulates identities and
-# timestamps until the progression runs out. Which is the case the per-row
-# ceiling exists to produce.
+# How many rows one session read may hold, across every reader. A withheld row decodes nothing,
+# so without this a stream of withheld rows would cost nothing and run unbounded.
 MAX_HYDRATED_ROWS = 50_000
 
-# How many action rows one session detail will pull out of the database, newest
-# first, across all of its branches together. Everything derived from action
-# messages -- the tool and error counts, the error list -- reads this set, so
-# all of them say so when it binds.
+# How many action rows one session detail pulls, newest first, across all branches; every
+# aggregate derived from action messages reads this same set and reports when it binds.
 MAX_HYDRATED_ACTION_MESSAGES = 20_000
 
-# How many distinct file paths one session detail will collect. The union is
-# over the whole run by design, and the run's own tool arguments decide how
-# many distinct names that is, so this is the only thing standing between a
-# long run and an unbounded set built on every request. Generous enough that
-# an ordinary session never meets it, and reported when it does.
+# How many distinct file paths one session detail will collect, over the whole run. Generous
+# enough that an ordinary session never meets it; reported when it does.
 MAX_ACTION_FILE_PATHS = 5_000
 
-# What that union is allowed to weigh. A count bounds how many names come
-# back and says nothing about how long each one is: a path is only bounded by
-# the row it was read out of, so a count-only ceiling admits a set orders of
-# magnitude larger than the count suggests. Both ceilings report through the
-# same flag, because a reader only needs to know the union was cut.
+# What the file-path union may weigh in bytes, since a row count alone says nothing about path
+# length. Both ceilings report through the same cut flag.
 MAX_ACTION_FILE_PATH_BYTES = 1_048_576
 
-# How many action rows the union will look at before it stops. The two
-# ceilings above bound the answer; this one bounds the work of reaching it,
-# which is otherwise a full scan with a JSON extraction per row -- paid on
-# every session-detail request, and paid in full precisely when the run
-# touched few enough distinct files to never reach the other two.
+# How many action rows the file-path union will scan before stopping -- bounds the work of
+# reaching an answer, not the answer itself.
 MAX_ACTION_FILE_ROWS_SCANNED = 200_000
 
-# Selected in place of `m.content` by every query that hydrates a message row.
-# The ceiling is one property of the data, so it belongs to the column rather
-# than to whichever reader was being looked at when the cost was noticed: there
-# are several readers, they were added at different times, and bounding them one
-# at a time is how the next one gets added unbounded. Takes seven bind
-# parameters, the first seven of the statement it appears in: this ceiling five
-# times and the scan ceiling below twice, in the order the placeholders appear.
-# An id is a link between two rows, not a payload, and nothing constrains what
-# a writer puts under those keys. Cut to a length no real id approaches, so the
-# pairing survives and a row cannot route its payload out through them.
+# Max length for an extracted action_request_id/action_response_id link, cut well below any real
+# id so a writer cannot route a payload out through those keys.
 MAX_ACTION_ID_CHARS = 256
 
-# How much text SQLite may read to recover one link id from a row whose payload
-# is already being withheld. This is a separate question from how much may be
-# decoded, and it needs its own answer: capping the extracted id bounds what
-# comes back, and bounds nothing about the work of finding it, because the parse
-# that locates the key reads the whole document whatever the key turns out to
-# hold. Higher than the decode ceiling because a scan that yields at most
-# MAX_ACTION_ID_CHARS is far cheaper per byte than building Python objects and
-# serializing them to a client, and stated as a multiple of that ceiling so the
-# two move together. Past it the row is still listed and still says its content
-# was withheld; it just arrives with no link to pair it by, which is the same
-# answer the file union gives for a row it will not read.
+# How much text SQLite may scan to recover a withheld row's link id -- separate from the decode
+# ceiling because finding a short id still means parsing the whole document.
 MAX_ACTION_ID_SCAN_CHARS = 16 * MAX_ACTION_CONTENT_CHARS
 
-# Only a withheld row is asked for its ids, because only a withheld row uses
-# them: a row that kept its payload carries them inside it, so extracting them
-# there parses every hydrated row in the session to produce a value the shaping
-# step discards. The upper bound is what keeps that parse from being unbounded
-# on the rows that do reach it.
-#
-# `json_extract` raises on text that is not JSON, and it raises for the whole
-# statement rather than for the row that carries it, so one such row would take
-# the entire read down with it. Everything written through this application
-# arrives as serialized JSON, so that row does not come from here -- it comes
-# from a legacy row, or from another writer against a shared store, which is
-# exactly the case the store is allowed to be in. Guarding costs one call.
+# Only a withheld row needs its ids extracted this way; a kept payload already carries them.
+# json_valid guards non-JSON content, since json_extract would otherwise abort the whole query.
 _ACTION_ID = (
     "CASE WHEN length(m.content) > ? AND length(m.content) <= ? THEN "
     "substr(json_extract(CASE WHEN json_valid(m.content) THEN m.content END, '$.{key}'), "
@@ -211,50 +153,27 @@ _BOUNDED_CONTENT_COLUMNS = (
     "CASE WHEN length(m.content) > ? THEN NULL ELSE m.content END AS content, "
     "CASE WHEN length(m.content) > ? THEN 1 ELSE 0 END AS content_oversized, "
     "CASE WHEN length(m.content) > ? THEN 0 ELSE length(m.content) END AS content_length, "
-    # A withheld row still has to be pairable. These two ids are the only link
-    # between an action request and its response, and SQLite extracts them
-    # without the payload ever being decoded here. Without them a withheld
-    # request and its withheld response arrive as two unrelated rows describing
-    # one call. Bounded, because withholding the content and then emitting an
-    # unbounded slice of that same content gives back what was just withheld.
+    # A withheld row still needs to be pairable, so its link ids are extracted here without
+    # decoding the payload -- bounded, or an unbounded slice would give back what was withheld.
     f"{_ACTION_ID.format(key='action_request_id')} AS action_request_id, "
     f"{_ACTION_ID.format(key='action_response_id')} AS action_response_id"
 )
 
 
 class _HydrationBudget:
-    """What one session read may decode in total, spent across every reader.
-
-    A ceiling each reader keeps for itself is not a total. `get_session`
-    hydrates once per branch and holds every result, so a per-call ceiling of N
-    admits N times the branch count, and the display window and the tail read
-    spend nothing against it at all. One object, passed to every reader a single
-    request uses, is what makes the number mean what it says.
-
-    A row is admitted only if it fits in what is left, so the total is a bound
-    rather than a bound plus one row: the length is already on the row, and
-    reading it is what the caller was trying not to do.
-    """
+    """Decode budget for one session read, shared across every reader instead of per-call."""
 
     __slots__ = ("exhausted", "remaining", "rows_remaining")
 
     def __init__(self, total: int | None = None, rows: int | None = None) -> None:
-        # Read at construction rather than bound as a default argument: a
-        # default is evaluated once when this file is imported, so the ceiling
-        # would stop being the module constant the moment anything rebound it.
+        # Read here, not as a default argument, so it reflects the current module constant
+        # rather than freezing whatever it was when this file was imported.
         self.remaining = MAX_HYDRATED_CONTENT_CHARS if total is None else total
         self.rows_remaining = MAX_HYDRATED_ROWS if rows is None else rows
         self.exhausted = False
 
     def admits(self, chars: int) -> bool:
-        """Charge one row against both allowances, or refuse it.
-
-        Two allowances rather than one because a row costs two things and
-        neither bounds the other. A row whose payload was withheld charges
-        nothing against the characters -- correctly, since nothing was decoded
-        -- so the row count is the only thing standing between a caller and an
-        unbounded number of them.
-        """
+        """Charge one row against both the character and row allowances, or refuse it."""
         if chars > self.remaining or self.rows_remaining <= 0:
             self.exhausted = True
             return False
@@ -264,30 +183,22 @@ class _HydrationBudget:
 
 
 def _format_message(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
-    """Shape one hydrated message row for the API.
-
-    Reads `content_oversized`, and so raises on a row selected without
-    ``_BOUNDED_CONTENT_COLUMNS``. That is the point: the alternative to failing
-    here is a query that silently decodes payloads of any size, which is what
-    this reads as when it is missing.
-    """
+    """Shape one hydrated message row; requires `_BOUNDED_CONTENT_COLUMNS` in the query."""
     withheld = bool(row["content_oversized"])
     formatted = {
         "id": row["id"],
         "role": row["role"],
         "content": _parse_json_col(row["content"]),
-        # The row is still listed, with its identity and timing intact; only the
-        # payload is withheld, and a reader has to be able to tell that apart
-        # from a message that carried no content.
+        # The row is still listed with identity/timing intact; a reader must be able to tell
+        # a withheld payload apart from a message that carried no content.
         "content_withheld": withheld,
         "sender": row["sender"],
         "timestamp": row["created_at"],
         "lion_class": row["lion_class_str"] or "",
     }
     if withheld:
-        # Only on a withheld row. A row that kept its payload carries these ids
-        # inside it already, and lifting them out there would widen the shape
-        # every reader sees for the sake of rows that do not need it.
+        # Only on a withheld row: a kept payload already carries these ids, so lifting them
+        # out there would widen the shape every reader sees for no reason.
         for key in ("action_request_id", "action_response_id"):
             value = row[key]
             if value:
@@ -653,14 +564,8 @@ def _decode_message_cursor(token: str, *, session_id: str, limit: int) -> dict[s
     return anchors
 
 
-# An anchor names the row a page ends just before, so the newest page has no
-# anchor to name: it ends at the end. That left one state inexpressible -- a
-# first page whose budget could not afford a single row -- and a branch with
-# nothing to say was simply left out of the next cursor, which is how a
-# cursor says exhausted. Its messages then could not be reached again. This
-# value means "the newest end", so the branch stays in the cursor and the
-# next request asks for that window instead of stepping over it. No message
-# id can collide with it: ids are UUIDs.
+# Names "the newest end", so a branch whose first page can't afford a single row still stays in
+# the cursor instead of reading as exhausted and losing its messages. No UUID can collide with it.
 _NEWEST_ANCHOR = "@newest"
 
 
@@ -708,32 +613,9 @@ def _resume_anchor(
     current_anchor: str | None,
     budget_refused: bool,
 ) -> tuple[bool, str | None]:
-    """Where the next page starts, once hydration stopped inside this one.
-
-    The window is chosen from the progression before any row is decoded, and
-    the budget then admits from the newest end, so the rows it stops short of
-    are the oldest of the window. Anchoring the next page at the window's own
-    oldest id steps straight over them: they sit inside this window and before
-    the next one, and nothing ever asks for them again. The anchor is the
-    oldest row that was actually handed over instead, which makes the rows the
-    budget refused the start of the next page rather than a hole.
-
-    When nothing fit at all, this window has not been delivered, so the next
-    request has to ask for it again rather than move past it. On a resumed
-    page that is the anchor the caller gave; on a first page it is
-    ``_NEWEST_ANCHOR``, which names the same newest window an anchor-less
-    read would have chosen. Returning nothing there instead would drop the
-    branch from the next cursor, and a branch absent from a cursor is a
-    branch reported exhausted. Reaching this state needs a request whose
-    budget cannot afford one row of the newest page.
-
-    An empty page has two causes and only one of them is a stop. The budget
-    refusing everything means the rows are still owed, so the next request has
-    to ask for this window again. A window whose ids are simply not in the
-    store owes nothing: it has been delivered in full, and everything in it
-    was nothing. Handing back the same anchor there asks for the same absent
-    rows on every subsequent page, and the cursor never moves again.
-    """
+    """Where the next page resumes: the oldest row actually delivered (not the window's own
+    oldest id), or the same window again if the budget refused it outright; a window whose ids
+    are simply absent from the store still advances, since nothing was owed for it."""
     if len(present_ids) == len(window_ids):
         return has_older, next_anchor
     if present_ids:
@@ -780,24 +662,14 @@ async def _fetch_messages_by_ids(
     *,
     budget: _HydrationBudget,
 ) -> list[dict[str, Any]]:
-    """Hydrate message rows for msg_ids, chunked to stay under SQLite's bound-variable limit.
-
-    Spends from the same budget the rest of the request spends from. A display
-    window is bounded by its own row count, but a thousand rows each carrying a
-    payload just under the per-row ceiling is still a megabyte-scale read, and
-    the request may already have spent most of the total elsewhere.
-    """
+    """Hydrate message rows for msg_ids, chunked under SQLite's bound-variable limit, spending
+    from the same shared request budget as every other reader."""
     if not msg_ids:
         return []
     chunks = [msg_ids[start : start + 500] for start in range(0, len(msg_ids), 500)]
 
-    # Pass one decides who is paid for, reading sizes and no payloads. An
-    # IN (...) query hands rows back in whatever order suits the query planner,
-    # so charging as they arrive picks the survivors of a short read at random,
-    # and the reader who asked for recent history is the one who loses. Here the
-    # order is the caller's own, walked from the newest end, which is the end a
-    # window is about. Sorting in SQL would answer the same question and buffer
-    # every payload into the sorter to do it.
+    # Pass one decides who is paid for, reading sizes only, walked from the newest end in the
+    # caller's own order -- an IN(...) query returns rows in planner order, not request order.
     admitted: list[str] = []
     for chunk in reversed(chunks):
         if budget.exhausted:
@@ -812,15 +684,8 @@ async def _fetch_messages_by_ids(
         for msg_id in reversed(chunk):
             if msg_id not in sizes:
                 continue
-            # Charge what pass two will actually hand back, not what the row
-            # weighs. Pass two withholds any payload over the ceiling and
-            # returns the row with content NULL, so an oversized row decodes
-            # nothing and costs nothing in characters -- which is the contract
-            # _HydrationBudget.admits states for itself. Charging the raw
-            # length instead refuses those rows outright, so a row that should
-            # have arrived marked withheld does not arrive at all, and the
-            # bigger it is the more certainly it vanishes. The row allowance is
-            # what bounds them, and it is charged either way.
+            # Charge what pass two will actually hand back, not the row's raw size: an oversized
+            # row is withheld (content NULL) and costs nothing in characters.
             charged = 0 if sizes[msg_id] > MAX_ACTION_CONTENT_CHARS else sizes[msg_id]
             if not budget.admits(charged):
                 break
@@ -904,39 +769,9 @@ async def _fetch_action_messages(
     limit: int,
     budget: _HydrationBudget,
 ) -> tuple[dict[str, list[dict[str, Any]]], bool]:
-    """Hydrate at most *limit* ActionRequest/ActionResponse rows across the whole
-    session, newest first, returned per branch in progression order.
-
-    These are the only kinds the tool and error aggregates need, and the cap is
-    on the hydration rather than on some later pass because the rows are the
-    cost: their content is what has to be held, and a long-running session has
-    no natural end to how many it accumulates.
-
-    The cap is spent over the session's rows rather than handed to branches one
-    at a time, because a per-branch share makes the answer depend on the order
-    branches are visited in rather than on when the work happened. Visiting them
-    newest-created first sounds like the recent end, and is not: a branch created
-    late whose work finished early can take the whole cap while an older branch
-    that is still producing gets none of it, and the aggregate that calls itself
-    recent activity then describes neither. One selection over every candidate
-    has no order to depend on.
-
-    Newest first is what makes the cap safe to apply at all. A response always
-    sits later in its branch's progression than the request it answers, so a
-    window taken from the newest end never keeps a request whose response it
-    dropped; it drops whole request/response pairs off the old end instead.
-
-    Which rows, then those rows -- two passes, because they cannot be one. A
-    single sorted query that also selects content makes SQLite buffer every
-    matching row, payloads included, into its sorter before it yields the
-    first, so the bound below would be applied to work already done. The first
-    pass reads ids and timestamps only, over the whole progression rather than
-    its last chunk, since the newest rows of the last chunk are not the newest
-    rows of the run wherever progression order and time order disagree.
-
-    Returns (messages_by_branch, bounded), where bounded says the answer
-    describes less than what is there.
-    """
+    """Hydrate at most *limit* action rows across the whole session, newest first, as one
+    selection over every branch (not a per-branch share, which would depend on visit order);
+    two passes so the cap applies before payloads are read. Returns (messages_by_branch, bounded)."""
     empty: dict[str, list[dict[str, Any]]] = {branch_id: [] for branch_id in ids_by_branch}
     any_ids = any(ids_by_branch.values())
     if not any_ids or limit <= 0:
@@ -955,18 +790,16 @@ async def _fetch_action_messages(
         return empty, False
     type_placeholders = ",".join("?" for _ in type_ids)
 
-    # A heap of the newest `limit` seen so far, rather than every candidate
-    # sorted at the end: what is held is then the size of the answer and not
-    # the size of the progression, which is the whole point of the cap.
+    # A heap of the newest `limit` seen so far, so what is held is the size of the answer,
+    # not of the whole progression.
     newest: list[tuple[float, str]] = []
     candidates = 0
     for msg_ids in ids_by_branch.values():
         for chunk_start in range(0, len(msg_ids), 500):
             chunk = msg_ids[chunk_start : chunk_start + 500]
             placeholders = ",".join("?" for _ in chunk)
-            # `+m.lion_class` disqualifies the lion_class index so the planner
-            # probes the id primary key for the IN list instead of rescanning
-            # every action-class row in the whole table per chunk.
+            # `+m.lion_class` disqualifies the lion_class index so the planner probes the id primary
+            # key for the IN list instead of rescanning every action-class row per chunk.
             cur = await db.execute(
                 f"""
                 SELECT m.id, m.created_at
@@ -983,21 +816,19 @@ async def _fetch_action_messages(
                 elif key > newest[0]:
                     heapq.heapreplace(newest, key)
 
-    # Oldest to newest, so the hydration budget -- which pays from the end of
-    # the list it is handed -- pays for the newest of the selection first.
+    # Oldest to newest, so the hydration budget -- which pays from the end of the list it is
+    # handed -- pays for the newest of the selection first.
     ordered_ids = [message_id for _, message_id in sorted(newest)]
     messages = await _fetch_messages_by_ids(db, ordered_ids, budget=budget)
     hydrated = {message["id"]: message for message in messages}
-    # Message ids are unique to one branch: cloning a message into another
-    # branch mints a new id. So a selected row belongs to exactly one
+    # Message ids are unique to one branch, so a selected row belongs to exactly one
     # progression and this splits the selection without duplicating it.
     by_branch = {
         branch_id: [hydrated[mid] for mid in msg_ids if mid in hydrated]
         for branch_id, msg_ids in ids_by_branch.items()
     }
-    # Three ways this describes less than what is there, and they are all the
-    # same answer to a caller: the cap dropped older rows, the budget stopped
-    # the hydration short, or a payload was withheld for its size.
+    # Three ways this describes less than what is there: the cap dropped older rows, the budget
+    # stopped hydration short, or a payload was withheld for its size.
     bounded = (
         candidates > limit
         or len(messages) < len(ordered_ids)
@@ -1021,14 +852,8 @@ _FILE_TOOL_NAMES = frozenset(
 
 
 def _action_file_path(function: Any, arguments: Any) -> str | None:
-    """The file an action request touched, or None if it touched none.
-
-    One function rather than one per reader. Two readers ask this: the
-    per-branch stats, over the action rows that were hydrated, and the run-wide
-    file union, over every action row there is. They have to agree on which
-    calls count as file calls, and two copies of that rule is how they stop
-    agreeing.
-    """
+    """The file an action request touched, or None -- shared by the per-branch stats and the
+    run-wide file union so both agree on what counts as a file call."""
     arguments = arguments if isinstance(arguments, dict) else {}
     tool_name = str(function or "").lower().replace("-", "_").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
     if tool_name and tool_name not in _FILE_TOOL_NAMES:
@@ -1040,31 +865,9 @@ def _action_file_path(function: Any, arguments: Any) -> str | None:
 async def _fetch_action_file_paths(
     db: aiosqlite.Connection, ids_by_branch: dict[str, list[str]]
 ) -> tuple[list[str], bool]:
-    """Every file this session's action requests touched, over the whole run.
-
-    Separate from the hydration above because it answers a different question.
-    The hydrated set is the newest slice of a long session's action rows, and
-    the fields derived from it say so; this one is a union, and a union that
-    covers only recent rows is not a smaller union, it is a wrong one. It is
-    what the reader resolves a file reference against, and a reference is
-    resolved by a name written long before the window this read is showing.
-
-    Affordable because it decodes nothing: SQLite extracts the two short fields
-    the answer depends on and the payloads never leave it. What comes back is
-    bounded by the number of distinct paths a run touched, not by what its
-    arguments weigh -- with the per-row ceiling applied here too, because a
-    path read out of an oversized payload is not short, and a row past that
-    ceiling is withheld from every reader or from none. Withheld and *reported*:
-    an oversized row leaves no trace in any counter, so without saying so the
-    union comes back short while every ceiling still reports room to spare.
-
-    "The number of distinct paths a run touched" is still a number a caller
-    chooses. A run that writes a new filename on every call grows this set
-    without limit, once per session-detail request, so it stops at a ceiling
-    and returns whether it stopped. Reported rather than silent: a union that
-    was cut is a different answer from one that was complete, and the reader
-    resolving a name against it has to know which it holds.
-    """
+    """Every file this session's action requests touched, over the whole run -- a union, not the
+    newest slice the hydrated set uses, since a reference can resolve against an old name.
+    Decodes nothing (SQLite extracts short fields only) and reports whether it was cut short."""
     class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
     cur = await db.execute(
         f"SELECT type_id, lion_class FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
@@ -1076,10 +879,8 @@ async def _fetch_action_file_paths(
         # No action rows to union, and nothing was cut reaching that answer.
         return [], False
     type_placeholders = ",".join("?" for _ in type_ids)
-    # Only a request carries the fields a path is read from. Both kinds are
-    # scanned, because both are action rows and the scan is defined over those,
-    # but an oversized response withheld nothing the union wanted -- counting it
-    # as a cut reports a complete answer as incomplete.
+    # Only a request carries the fields a path is read from; an oversized response withheld
+    # nothing the union wanted, so it must not count as a cut.
     request_type_ids = {
         row["type_id"]
         for row in type_rows
@@ -1099,9 +900,7 @@ async def _fetch_action_file_paths(
         )
 
     def union_was_cut() -> bool:
-        # An omitted oversized row is a cut with no counter behind it: nothing
-        # about it raises a ceiling, so the union can be short while every
-        # ceiling reports room to spare.
+        # An omitted oversized row is a cut with no counter behind it, so it's checked separately.
         return at_ceiling() or omitted_oversized
 
     for msg_ids in ids_by_branch.values():
@@ -1111,10 +910,8 @@ async def _fetch_action_file_paths(
             if at_ceiling():
                 break
             chunk = msg_ids[chunk_start : chunk_start + 500]
-            # Charged before the query, against the ids handed to it rather than
-            # the rows it gives back. Counting replies would let a progression of
-            # any length pass through free as long as its rows are filtered out
-            # here, which is the traversal this ceiling exists to stop.
+            # Charged before the query, against the ids handed to it rather than the rows it
+            # gives back, so a progression cannot pass through free by having its rows filtered.
             rows_scanned += len(chunk)
             placeholders = ",".join("?" for _ in chunk)
             cur = await db.execute(
@@ -1146,10 +943,8 @@ async def _fetch_action_file_paths(
                 ],
             )
             async for row in cur:
-                # Selected rather than filtered, so the row still arrives and can
-                # be reported. The payload stays in SQLite either way: the CASE
-                # guards keep the extraction off oversized content, and only the
-                # short fields cross.
+                # Selected rather than filtered, so the row still arrives and can be reported;
+                # the CASE guards keep extraction off oversized content, only short fields cross.
                 if row["oversized"]:
                     if row["type_ref"] in request_type_ids:
                         omitted_oversized = True
@@ -1162,10 +957,8 @@ async def _fetch_action_file_paths(
                     path_bytes += len(found.encode())
                 if at_ceiling():
                     break
-    # Equality, not the count alone: a ceiling is reached by the item that
-    # would have exceeded it, so a run sitting exactly on one reports bounded
-    # and a reader treats the union as possibly short. That is the safe
-    # direction for a set used to decide whether a name is a file.
+    # Equality, not the count alone: a run sitting exactly on a ceiling reports bounded, which
+    # is the safe direction for a set used to decide whether a name is a file.
     return sorted(paths), union_was_cut()
 
 
@@ -1345,15 +1138,9 @@ async def get_session(
                         ids = []
             progression_ids[br["id"]] = ids
 
-        # One budget for the whole read, rather than one per branch or one per
-        # reader: a ceiling each caller keeps for itself multiplies by however
-        # many callers a request happens to make, which is the branch count here
-        # and is not bounded by anything.
-        #
-        # The display windows spend from it first. They are what the caller is
-        # looking at; the action aggregate under them is a summary that already
-        # reports itself as bounded when it comes up short, so it is the half
-        # that can degrade without the page going blank.
+        # One budget for the whole read, not one per branch or reader, so it isn't multiplied by
+        # branch count. Display windows spend from it first; the action aggregate can degrade
+        # gracefully (it already reports itself as bounded), so it spends what's left.
         content_budget = _HydrationBudget()
 
         window_by_branch: dict[str, tuple[list[dict[str, Any]], bool]] = {}
@@ -1377,21 +1164,16 @@ async def get_session(
                 has_older=has_older,
                 next_anchor=next_anchor,
                 current_anchor=cursor_anchors.get(branch_id) if cursor_anchors else None,
-                # Request-wide rather than window-specific: a budget spent by an
-                # earlier branch also leaves this window unserved. The two differ
-                # only when the budget was already gone and this window's rows
-                # are absent as well, and there the answer is to ask again, which
-                # the next request, with its own budget, resolves. Erring toward
-                # asking again cannot lose a row; erring toward advancing can.
+                # Request-wide rather than window-specific: erring toward asking again cannot
+                # lose a row, but erring toward advancing can.
                 budget_refused=content_budget.exhausted,
             )
             if next_anchor:
                 next_branch_anchors[branch_id] = next_anchor
             window_by_branch[branch_id] = (present, has_older)
 
-        # Row count gets its own ceiling for the same reason, and it is spent
-        # over the session rather than shared out branch by branch: which rows
-        # survive is then decided by when they happened and by nothing else.
+        # Row count gets its own ceiling too, spent over the session rather than per branch, so
+        # which rows survive depends only on when they happened.
         action_by_branch, action_messages_bounded = await _fetch_action_messages(
             db,
             progression_ids,
@@ -1454,15 +1236,11 @@ async def get_session(
             )
 
         full_stats["bounded"] = action_messages_bounded
-        # Read over every action row rather than the hydrated slice. The counts
-        # beside this are honest as floors and say so; a file union cannot be a
-        # floor in the same way, because the reader uses it to decide whether a
-        # name refers to a file at all, and the names it fails on are exactly
-        # the old ones a bounded read drops.
+        # Read over every action row, not the hydrated slice: a file union can't be an honest
+        # floor the way the counts beside it are, since it decides whether a name is a file at all.
         full_stats["files"], files_bounded = await _fetch_action_file_paths(db, progression_ids)
-        # Its own flag rather than folding into `bounded`: that one is about the
-        # message counts beside it, and a caller resolving a file reference needs
-        # to know this union specifically was cut.
+        # Its own flag rather than folding into `bounded`, so a caller resolving a file
+        # reference knows this union specifically was cut.
         full_stats["files_bounded"] = files_bounded
         message_next_cursor = (
             _encode_message_cursor(session_id, message_limit, next_branch_anchors)
@@ -1578,35 +1356,16 @@ async def get_session_messages_after(
     after_id: str | None = None,
     after_branch: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Poll-friendly tail read for the SSE stream/signals endpoints. Joins via
-    json_each rather than binding every message id into an IN (...) clause,
-    which would blow past SQLite's 999 bound-variable limit at scale.
-
-    Bounded like the rest of a session read, and with less to lose by it: the
-    caller advances its cursor from the rows it was handed, so whatever this
-    stops short of arrives on the next poll half a second later. What it
-    prevents is a first poll on a long finished run, where the cursor is empty
-    and everything the session ever recorded matches at once.
-
-    The cursor is the whole sort key, not just the timestamp. A timestamp alone
-    cannot name a position inside a group of rows that share one, so a read
-    cursored on it can only stop at a group's edge -- which means a single
-    group larger than the budget has to be taken whole, and the work of taking
-    it is bounded by nothing. Ordering by ``(created_at, id, branch_id)`` and
-    resuming from all three lets this stop at any row and pick up at the next
-    one, so the budget bounds every call and no row is skipped to do it.
-
-    ``after_id`` and ``after_branch`` are optional so a caller that only has a
-    timestamp still gets the old exclusive-on-timestamp read. That is the right
-    reading of a bare timestamp: it is the cursor a previous version handed
-    out, and rows at exactly that timestamp were all delivered under it.
-    """
+    """Poll-friendly, bounded tail read for the SSE stream/signals endpoints. Joins via json_each
+    instead of an IN (...) clause to stay under SQLite's bound-variable limit, and cursors on the
+    full sort key ``(created_at, id, branch_id)`` so it can resume mid-group rather than take a
+    whole timestamp-sharing group unbounded; ``after_id``/``after_branch`` are optional for
+    backward compatibility with the old timestamp-only cursor."""
     if not store_exists():
         return []
 
-    # A bare timestamp keeps the old exclusive read; a full cursor resumes at
-    # the row after the one it names, which is what lets a group sharing one
-    # timestamp be cut in the middle.
+    # A bare timestamp keeps the old exclusive read; a full cursor resumes at the row after the
+    # one it names, letting a group sharing one timestamp be cut in the middle.
     if after_id is None or after_branch is None:
         cursor_sql = "m.created_at > ?"
         cursor_params: tuple[Any, ...] = (after_ts,)
@@ -1643,12 +1402,8 @@ async def get_session_messages_after(
                 MAX_ACTION_ID_SCAN_CHARS,
                 session_id,
                 *cursor_params,
-                # The loop below stops at the row budget, so this returns exactly
-                # what it could ever take: the budget's rows, plus the single
-                # overspent row an empty page is allowed. Without it the ORDER BY
-                # sorts every remaining row of the stream before Python sees the
-                # first one, on every page, so a long stream pays for its own
-                # tail once per page rather than once.
+                # The loop below stops at the row budget, so this is exactly what it could ever
+                # take. Without it ORDER BY sorts the whole remaining stream on every page.
                 MAX_HYDRATED_ROWS + 1,
             ),
         )
@@ -1658,22 +1413,15 @@ async def get_session_messages_after(
         # Iterated rather than fetchall'd: a budget can only bound what has not
         # been read yet.
         async for row in cur:
-            # Charged on every row including the first. Whether a row is taken
-            # is a separate question from whether it was paid for, and reading
-            # the two off one expression let the first row through for free.
+            # Charged on every row including the first, so a row taken is always a row paid for.
             admitted = budget.admits(int(row["content_length"] or 0))
             if not admitted:
-                # Stop wherever the budget runs out. The sort key is the whole
-                # cursor, so the caller resumes at exactly the next row and
-                # nothing is skipped by cutting here -- including inside a run
-                # of rows that share a timestamp, which is the case that used
-                # to force taking the entire run however large it was.
+                # The sort key is the whole cursor, so cutting here skips nothing, even inside
+                # a run of rows sharing a timestamp.
                 if result:
                     break
-                # Nothing has been taken yet, so stopping now would return an
-                # empty page with the cursor unmoved and the next poll would
-                # read the same row again, forever. One row over is the whole
-                # overspend, and it is what makes the stream advance.
+                # Nothing taken yet -- stopping now would leave the cursor unmoved and the next
+                # poll would read the same row forever, so this one row is let through anyway.
             msg = _format_message(row)
             msg["branch_id"] = row["branch_id"]
             result.append(msg)
@@ -1809,26 +1557,15 @@ async def stream_session_route(session_id: str):
             if messages:
                 for msg in messages:
                     yield f"data: {json.dumps(msg)}\n\n"
-                # The read hands rows back in cursor order, so the last one is
-                # the position to resume from. Taking the newest timestamp
-                # instead would name a whole group rather than a row, and a
-                # group is exactly what the cursor has to be able to point
-                # inside of.
+                # Rows come back in cursor order, so the last one is the resume position; the
+                # newest timestamp alone would name a whole group rather than a specific row.
                 last = messages[-1]
                 after_ts = last.get("timestamp") or last.get("created_at") or after_ts
                 after_id = last.get("id")
                 after_branch = last.get("branch_id")
                 last_heartbeat = time.monotonic()
-                # A page may have left rows behind the budget, so the tail has
-                # not been reached yet. Going straight to the done check here
-                # is what loses them: a session that is already finished
-                # satisfies it on the first pass, and the deferred rows are
-                # never asked for again. Come back for them instead, without
-                # the poll wait, since they are already written.
-                #
-                # Only while the cursor is actually moving. A page that leaves
-                # it where it was cannot be drained by asking again, and
-                # looping on that would spin instead of waiting.
+                # A page may have left rows behind the budget; loop immediately (skipping the
+                # done check) to drain them, but only while the cursor is actually moving.
                 if (after_ts, after_id, after_branch) != cursor:
                     continue
 
@@ -1836,9 +1573,8 @@ async def stream_session_route(session_id: str):
                 yield 'data: {"type":"heartbeat"}\n\n'
                 last_heartbeat = time.monotonic()
 
-            # Reached only once a read stopped moving the cursor, so there is
-            # nothing left to hand over and "done" describes the whole stream
-            # rather than one page of it.
+            # Reached only once the cursor stopped moving, so "done" describes the whole
+            # stream rather than one page of it.
             state = await get_session_stream_state(session_id)
             if is_session_stream_done(state, now=time.time()):
                 yield 'data: {"type":"done"}\n\n'
