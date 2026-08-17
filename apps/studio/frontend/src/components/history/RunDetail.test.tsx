@@ -3197,19 +3197,51 @@ describe("history/RunDetail.tsx — a tool result nobody read is not a tool call
     expect(calls.map((c) => c.status)).toEqual(["withheld"]);
   });
 
-  it("still reads a failure out of the text when nothing was withheld", async () => {
-    // The text heuristic is unchanged for ordinary rows, where it is the only
-    // signal some tools leave. Demoting it below the badge must not silently
-    // delete it: a failure recorded only in prose still has to show as one.
-    const { branchToRunStep } = await import("./RunDetail");
-    const branch = withheldRequestBranch("Error: command not found") as never as {
+  // The same fixture with nothing withheld, so the text is the only thing left
+  // deciding the outcome. Sessions mirrored from the Codex CLI arrive this way
+  // and carry no error field, which is why the text is read at all.
+  const plainCallBranch = (output: string) => {
+    const branch = withheldRequestBranch(output) as never as {
       messages: Record<string, unknown>[];
     };
     delete branch.messages[0].content_withheld;
     branch.messages[0].content = { function: "Bash", arguments: {}, action_response_id: "resp-1" };
-    const step = branchToRunStep(branch as never, "completed");
-    const calls = (step.messages ?? []).filter((m) => m.role === "tool_call");
-    expect(calls.map((c) => c.status)).toEqual(["error"]);
+    return branch as never;
+  };
+
+  const statusOf = async (output: string) => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(plainCallBranch(output), "completed");
+    return (step.messages ?? []).filter((m) => m.role === "tool_call").map((c) => c.status);
+  };
+
+  it("still reads a failure out of the text when nothing was withheld", async () => {
+    // The text is the only signal some tools leave. Demoting it below the badge
+    // must not silently delete it: a failure recorded only in prose still has
+    // to show as one.
+    expect(await statusOf("Error: command not found")).toEqual(["error"]);
+  });
+
+  it.each([
+    ["a sentence mentioning one", "No errors found"],
+    ["a count of them", "Errors: 0"],
+    ["one inside ordinary prose", "Retrying after a transient error was handled"],
+  ])("does not call an ordinary call failed for %s", async (_label, output) => {
+    // The case the badge already covered for withheld rows, on the rows where
+    // nothing was withheld and so nothing outranks the text. Reading the word
+    // anywhere in the output marked every one of these failed, and each is a
+    // successful call: two report zero errors, the third reports handling one.
+    expect(await statusOf(output)).toEqual(["ok"]);
+  });
+
+  it("reads a failure announced further down the output", async () => {
+    // Anchoring is per line, not to the start of the payload, or a tool that
+    // prints progress before it fails would come back green.
+    expect(await statusOf("running checks\nTraceback (most recent call last):")).toEqual(["error"]);
+  });
+
+  it("reads an exception class name as the announcement it is", async () => {
+    expect(await statusOf("ValueError: bad input")).toEqual(["error"]);
   });
 
   it("pairs a withheld request with its response from the response's own end", async () => {

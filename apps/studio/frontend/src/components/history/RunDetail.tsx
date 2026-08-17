@@ -455,6 +455,15 @@ export function computeProgressCountsForGraph(
   );
 }
 
+// A line that announces a failure: a label at the start of a line, optionally
+// prefixed the way exception class names are ("ValueError:"), or a traceback or
+// panic header. Anchored to the line start on purpose, so that a count such as
+// "Errors: 0" and a sentence such as "No errors found" are not read as failures.
+// No `g` flag: this is used with `.test()`, which would otherwise advance a
+// shared lastIndex between calls and return alternating answers.
+const FAILURE_ANNOUNCEMENT =
+  /^[ \t]*(?:\w*(?:error|exception)[ \t]*:|fatal\b|traceback\b|panic\b)/im;
+
 export function branchToRunStep(
   branch: SessionBranch,
   status: string,
@@ -570,10 +579,18 @@ export function branchToRunStep(
       // out to fix.
       const decodedError = Boolean(respContent.error);
       // Kept underneath the badge, exactly where it already sat, for replies
-      // that record a failure only in their text. Dropping it would turn those
-      // green, and a missed failure is the costlier direction of the same
-      // imprecision.
-      const outputSaysError = output.toLowerCase().includes("error");
+      // that record a failure only in their text. Sessions mirrored from the
+      // Codex CLI are the reason that population is not empty: those rows carry
+      // no error field at all, so reading only the structured one would show
+      // every one of their failures as a success.
+      //
+      // What it looks for is a line that announces a failure, not the word
+      // anywhere in the text. A failing tool leads with its label -- "Error:
+      // command not found", "ValueError: ...", a traceback header -- while
+      // prose carries the word mid-sentence, and "No errors found" is a
+      // successful run reporting exactly that. Matching the bare substring
+      // could not tell those apart and marked the second kind failed.
+      const outputSaysError = FAILURE_ANNOUNCEMENT.test(output);
 
       const summary = Object.entries(args)
         .slice(0, 2)
