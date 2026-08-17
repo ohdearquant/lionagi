@@ -352,6 +352,55 @@ def test_the_guard_and_the_oracle_read_every_shape_of_pid_host_the_same_way(host
         assert liveness is True
 
 
+def test_an_unknown_identity_mode_is_refused_before_the_host_is_consulted():
+    """The order these two checks run in is what makes a malformed host safe.
+
+    The host guard reads an unreadable ``pid_host`` as no host recorded, which
+    is only defensible because a row written by something this code does not
+    understand is already refused a step earlier, by its identity mode. That is
+    an ordering dependency and nothing else asserts it: swap the two and a row
+    announcing a foreign protocol would be judged on a local pid, with the host
+    field the only thing left to catch it and unable to.
+
+    Asserted through the caller, and against a host guard that says *not*
+    foreign for the same row, so it cannot pass by the host answer changing.
+    """
+    from lionagi.cli._util import recorded_pid_is_foreign
+    from lionagi.studio.services.admin import process_identity_is_foreign
+
+    meta = {
+        "pid": os.getpid(),
+        "pid_create_time": psutil.Process(os.getpid()).create_time(),
+        "process_identity_mode": "a-protocol-this-code-does-not-know",
+        "pid_host": 1234,
+    }
+
+    assert recorded_pid_is_foreign(meta) is False, (
+        "premise: the host guard does not catch this row, so the refusal below "
+        "can only come from the identity-mode check running first"
+    )
+    assert process_identity_is_foreign({"id": "s", "node_metadata": meta}) is True
+
+
+def test_a_pid_that_collides_with_a_live_local_one_is_rejected_by_its_creation_time():
+    """The check the host marker is a fast path in front of, not a substitute for.
+
+    A row from elsewhere whose pid happens to name a live process here is the
+    failure the host marker exists to make cheap to spot. It is not the only
+    thing standing in the way: the recorded creation time rejects the
+    coincidence on its own, and it keeps doing so when the host field says
+    nothing usable. If this stops holding, an unreadable host stops being safe
+    to treat as absent.
+    """
+    live_pid = os.getpid()
+    real_create_time = psutil.Process(live_pid).create_time()
+
+    for host in ({}, {"pid_host": 1234}, {"pid_host": ""}):
+        meta = {"pid": live_pid, "pid_create_time": real_create_time - 9999, **host}
+        liveness = process_liveness({"id": "s", "node_metadata": meta}, None, ps_snapshot="")
+        assert liveness is False, f"pid collision admitted as live for pid_host={host}"
+
+
 def test_an_unparseable_pid_on_a_foreign_row_cannot_pick_up_a_local_one(tmp_path):
     """The artifact fallback resolves a pid against *this* machine.
 

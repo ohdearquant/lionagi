@@ -159,6 +159,29 @@ def recorded_pid_is_foreign(metadata: dict[str, Any] | None) -> bool:
     "another machine" would stop every one of them from being cancelled or
     swept. The callers that go on to act still have their own identity checks;
     this only removes the rows where those checks could not mean anything.
+
+    A value that is present but unreadable -- empty, or not a string -- reads
+    the same way, as no host recorded, which is worth stating because the
+    neighbouring identity-mode reader deliberately does the opposite. It can
+    tell a row it does not understand from a row that predates it, and refuses
+    the first. The difference is that a mode has several legitimate spellings
+    and gains more over time, so an unrecognized one plausibly names a protocol
+    written by something newer. A host does not: this marker is written in one
+    place, always from ``socket.gethostname()``, so no writer past or present
+    emits a malformed one and an unreadable value names nothing to defer to.
+
+    What makes that safe is not the marker. A row that announces an identity
+    mode this code does not know is refused before the host is consulted at
+    all, so a genuinely alien writer never reaches this question. What remains
+    is a row claiming a local mode whose pid happens to match a live local pid,
+    and the recorded creation time is what answers that -- it rejects the
+    coincidence whatever the host field says, which is the check that has to
+    hold for this one to be a fast path rather than a guarantee.
+
+    Nor is a self-reported host a trust boundary. Nothing here authenticates a
+    hostname, so a row claiming this machine's name is indistinguishable from
+    one written on it. This removes rows whose local answer would be
+    meaningless; it does not defend against a writer that lies.
     """
     if not isinstance(metadata, dict):
         return False
