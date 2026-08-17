@@ -129,17 +129,9 @@ describe("CommandPalette keyboard behavior", () => {
   });
 
   it("leaves focus in an open palette when a route opens a dialog beneath it", async () => {
-    // The palette is already open and holds the caret. A routed modal that
-    // mounts underneath registers later, and its mount effect claims initial
-    // focus exactly as it would if it were the only overlay on screen. But
-    // registration order is not paint order: the palette draws above it, the
-    // operator is still typing in the palette, and the caret must not drop
-    // into a dialog that is visually behind what they are looking at.
-    //
-    // Keys keep the palette instance across both renders. Without them React
-    // matches children by position, remounts the palette when the modal takes
-    // slot zero, and the remount re-claims focus for reasons that have nothing
-    // to do with the behavior under test.
+    // Registration order is not paint order: the palette draws above a modal
+    // a route opens later, so the caret must stay in the palette. Keys keep the
+    // palette instance across renders; without them React remounts it.
     const palette = (
       <CommandPalette
         key="palette"
@@ -178,15 +170,13 @@ describe("CommandPalette keyboard behavior", () => {
     const dialog = Array.from(container.querySelectorAll<HTMLElement>("button"))
       .find((button) => button.textContent === "Dialog first")
       ?.closest<HTMLElement>('[role="dialog"]');
-    // The dialog really mounted, so the assertion below is about where focus
-    // went rather than about a modal that never rendered.
+    // Premises: the dialog mounted and the palette was not remounted.
     expect(dialog).toBeTruthy();
     expect(container.querySelector('[role="combobox"]')).toBe(input);
     expect(dialog?.contains(document.activeElement)).toBe(false);
     expect(document.activeElement).toBe(input);
 
-    // And closing it must not hand focus back to whatever the dialog recorded
-    // on the way in. It never held focus, so it has none to return.
+    // Closing must not restore focus it never held.
     await act(async () => {
       root.render(
         <IntlProvider locale="en" messages={enMessages}>
