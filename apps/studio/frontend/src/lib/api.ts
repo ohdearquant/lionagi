@@ -1188,7 +1188,26 @@ export interface SessionSummary {
 export interface SessionMessage {
   id: string;
   role: string;
-  content: Record<string, unknown>;
+  /**
+   * Null when the server refused to decode this payload, which it does above a
+   * size ceiling. Nullable rather than optional on purpose: the withholding is
+   * a state a renderer has to handle, and an optional field reads as one a
+   * caller may ignore.
+   */
+  content: Record<string, unknown> | null;
+  /**
+   * True when `content` is null because it was refused, as opposed to a message
+   * that carried none. This endpoint returns no per-session bounds beside the
+   * rows, so this flag is the only place that distinction is available.
+   */
+  content_withheld?: boolean;
+  /**
+   * Present only on a withheld row, where the payload that normally carries the
+   * pairing is gone. An action request and its response are one call, and
+   * without these a withheld pair renders as two unrelated rows.
+   */
+  action_request_id?: string;
+  action_response_id?: string;
   sender: string | null;
   timestamp: number;
   lion_class: string;
@@ -1283,6 +1302,17 @@ export interface SessionDetail {
     tool_call_count: number;
     error_count: number;
     files: string[];
+    // The server hydrates the newest slice of a long session's action rows and
+    // stops at a bound. When it stopped, every field above derived from those
+    // rows is a floor rather than a total, and the reader has to say so —
+    // a lower bound presented as a count is read as a count.
+    bounded?: boolean;
+    // `files` has its own ceilings (distinct names, total bytes, rows
+    // scanned), separate from `bounded` above: the union is computed over the
+    // whole run rather than the hydrated slice, so it can be cut when nothing
+    // else was. A file union that was cut answers "is this name a file?" with
+    // a no it has not earned, so it is never presented as complete.
+    files_bounded?: boolean;
   };
 }
 
@@ -2306,13 +2336,30 @@ export async function getAttentionDispositionHistory(
 export interface EngineRunSummary {
   id: string;
   kind: string;
-  spec_json: Record<string, unknown>;
   status: string;
   started_at: number;
   ended_at: number | null;
   session_id: string | null;
+  invocation_id: string | null;
+  signal_session_id: string | null;
+  parent_session_id: string | null;
+  outcome: Record<string, unknown> | null;
+  has_output: boolean;
+  error_code: string | null;
+}
+
+export interface EngineRunDetail extends Omit<EngineRunSummary, "outcome"> {
+  spec_json: Record<string, unknown> | null;
+  spec_preview: Record<string, unknown>;
+  outcome_json: Record<string, unknown> | null;
   export_dir: string | null;
   error: string | null;
+}
+
+export interface EngineRunPage {
+  version: 1;
+  items: EngineRunSummary[];
+  next_cursor: string | null;
 }
 
 export interface EngineRunListParams {
@@ -2320,22 +2367,26 @@ export interface EngineRunListParams {
   status?: string;
   session_id?: string;
   limit?: number;
-  offset?: number;
+  cursor?: string;
 }
 
-export async function listEngineRuns(params?: EngineRunListParams): Promise<EngineRunSummary[]> {
+export async function listEngineRuns(params?: EngineRunListParams): Promise<EngineRunPage> {
   const query = new URLSearchParams();
   if (params?.kind) query.set("kind", params.kind);
   if (params?.status) query.set("status", params.status);
   if (params?.session_id) query.set("session_id", params.session_id);
   if (params?.limit != null) query.set("limit", String(params.limit));
-  if (params?.offset != null) query.set("offset", String(params.offset));
+  if (params?.cursor) query.set("cursor", params.cursor);
   const qs = query.toString();
-  return fetchJson<EngineRunSummary[]>(`/api/engine-runs${qs ? `?${qs}` : ""}`);
+  return fetchJson<EngineRunPage>(`/api/engine-runs/${qs ? `?${qs}` : ""}`);
 }
 
-export async function getEngineRun(runId: string): Promise<EngineRunSummary> {
-  return fetchJson<EngineRunSummary>(`/api/engine-runs/${encodeURIComponent(runId)}`);
+export async function getEngineRun(
+  runId: string,
+  options?: { includeSpec?: boolean },
+): Promise<EngineRunDetail> {
+  const query = options?.includeSpec ? "?include_spec=true" : "";
+  return fetchJson<EngineRunDetail>(`/api/engine-runs/${encodeURIComponent(runId)}${query}`);
 }
 
 // ─── Shows / plays ──────────────────────────────────────────────────────────
