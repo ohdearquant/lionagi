@@ -2924,3 +2924,105 @@ async def test_an_oversized_action_row_drops_its_path_and_says_so(patched_sessio
     assert whole is not None
     assert whole["message_stats"]["files"] == ["/run/f0.py", "/run/f1.py"]
     assert whole["message_stats"]["files_bounded"] is False
+
+
+async def test_a_lifted_link_id_cannot_carry_the_payload_that_was_just_withheld(
+    patched_sessions_db, monkeypatch
+):
+    """The ids are a link, and nothing constrains what a writer puts under them.
+
+    Withholding the content and then emitting an unbounded slice of that same
+    content through the id column gives back exactly what the bound was for, so
+    the lifted value is cut to a length no real id approaches.
+    """
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    await seed_session(db_path, session_id="sess-idcap")
+    await seed_branch(db_path, branch_id="br-idcap", session_id="sess-idcap", msg_ids=["req-cap"])
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "req-cap",
+                "created_at": 110.0,
+                "content": {"output": "y" * 500, "action_request_id": "Z" * 100_000},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+
+    result = await svc.get_session_messages_after("sess-idcap", 100.0)
+
+    row = {r["id"]: r for r in result}["req-cap"]
+    assert row["content_withheld"] is True
+    assert row["content"] is None
+    lifted = row["action_request_id"]
+    assert len(lifted) == svc.MAX_ACTION_ID_CHARS, (
+        f"a withheld row emitted {len(lifted)} characters through its link id"
+    )
+
+
+async def test_one_row_of_unparseable_content_does_not_take_the_whole_read_down(
+    patched_sessions_db, monkeypatch
+):
+    """json_extract raises for the statement, not for the offending row.
+
+    Everything this application writes arrives as serialized JSON, so such a
+    row comes from a legacy write or from another writer against a shared
+    store. Either way one of them would make every message in the session
+    unreadable rather than just itself, so the extraction is guarded and the
+    row simply has no link to lift.
+    """
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    await seed_session(db_path, session_id="sess-badjson")
+    await seed_branch(
+        db_path, branch_id="br-badjson", session_id="sess-badjson", msg_ids=["ok-1", "bad-1"]
+    )
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "ok-1",
+                "created_at": 110.0,
+                "content": {"output": "y" * 500, "action_request_id": "req-ok"},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+        # Written past the JSON-typed column on purpose: this is the foreign
+        # writer, and going through insert_message could not produce it.
+        await db.execute(
+            "UPDATE messages SET content = ? WHERE id = ?",
+            ("this is not json at all", "ok-1"),
+        )
+        await db.insert_message(
+            {
+                "id": "bad-1",
+                "created_at": 120.0,
+                "content": {"output": "z" * 500, "action_request_id": "req-bad"},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+
+    result = await svc.get_session_messages_after("sess-badjson", 100.0)
+
+    by_id = {r["id"]: r for r in result}
+    assert set(by_id) == {"ok-1", "bad-1"}, "the unparseable row took the read down with it"
+    assert (
+        "action_request_id" not in by_id["ok-1"] or by_id["ok-1"].get("action_request_id") is None
+    )
+    assert by_id["bad-1"]["action_request_id"] == "req-bad", (
+        "the healthy row must still get its link lifted"
+    )

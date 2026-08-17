@@ -170,17 +170,34 @@ MAX_ACTION_FILE_ROWS_SCANNED = 200_000
 # are several readers, they were added at different times, and bounding them one
 # at a time is how the next one gets added unbounded. Takes the ceiling three
 # times, as the first three bind parameters of the statement it appears in.
+# An id is a link between two rows, not a payload, and nothing constrains what
+# a writer puts under those keys. Cut to a length no real id approaches, so the
+# pairing survives and a row cannot route its payload out through them.
+MAX_ACTION_ID_CHARS = 256
+
+# `json_extract` raises on text that is not JSON, and it raises for the whole
+# statement rather than for the row that carries it, so one such row would take
+# the entire read down with it. Everything written through this application
+# arrives as serialized JSON, so that row does not come from here -- it comes
+# from a legacy row, or from another writer against a shared store, which is
+# exactly the case the store is allowed to be in. Guarding costs one call.
+_ACTION_ID = (
+    "substr(json_extract(CASE WHEN json_valid(m.content) THEN m.content END, '$.{key}'), "
+    f"1, {MAX_ACTION_ID_CHARS})"
+)
+
 _BOUNDED_CONTENT_COLUMNS = (
     "CASE WHEN length(m.content) > ? THEN NULL ELSE m.content END AS content, "
     "CASE WHEN length(m.content) > ? THEN 1 ELSE 0 END AS content_oversized, "
     "CASE WHEN length(m.content) > ? THEN 0 ELSE length(m.content) END AS content_length, "
     # A withheld row still has to be pairable. These two ids are the only link
-    # between an action request and its response, SQLite extracts them without
-    # the payload ever being decoded here, and they are short whatever the
-    # payload weighs. Without them a withheld request and its withheld response
-    # arrive as two unrelated rows describing one call.
-    "json_extract(m.content, '$.action_request_id') AS action_request_id, "
-    "json_extract(m.content, '$.action_response_id') AS action_response_id"
+    # between an action request and its response, and SQLite extracts them
+    # without the payload ever being decoded here. Without them a withheld
+    # request and its withheld response arrive as two unrelated rows describing
+    # one call. Bounded, because withholding the content and then emitting an
+    # unbounded slice of that same content gives back what was just withheld.
+    f"{_ACTION_ID.format(key='action_request_id')} AS action_request_id, "
+    f"{_ACTION_ID.format(key='action_response_id')} AS action_response_id"
 )
 
 
