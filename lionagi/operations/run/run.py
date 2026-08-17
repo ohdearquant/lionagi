@@ -116,28 +116,11 @@ async def _stream_with_deadline(model, api_call, deadline: float | None):
 
 
 def _stalled_worker_context(api_call) -> str:
-    """Name the worker that stalled, for a log where many are in flight.
+    """Identify a stalled worker using only generated values.
 
-    A bare "no first stream output" line identifies nothing. With dozens of
-    concurrent spawns a burst of stalls is indistinguishable from one worker
-    retrying, and there is no way to join the line to the call that produced
-    it. The call id answers both, and the line already carries the attempt
-    counter beside it.
-
-    Only values lionagi generated itself appear here. The model name and the
-    provider would also be informative, but both are whatever the caller put
-    in the config, so a key pasted into the wrong field would be copied into a
-    log line and an exception message. Deciding by inspection whether a given
-    string is a credential is not a solvable problem: a real model name
-    reaches the same length and the same character set as a key. These two
-    values are properties of the iModel rather than of one call, and the API
-    hooks already report them per branch, so the reader can recover them
-    without this failure path widening where they are written.
-
-    The id is read defensively because this runs only on the failure path. An
-    attribute error raised while describing a stall would replace the stall
-    report with an unrelated traceback, which is strictly worse than the
-    missing attribution it was added to fix.
+    Model and provider are caller-configured and stay out of this line; the
+    API hooks already report them per branch. Read defensively: this runs on
+    the failure path, where raising would replace the stall report.
     """
     call_id = getattr(api_call, "id", None)
     return f"call={call_id}" if call_id else "worker unidentified"

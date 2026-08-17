@@ -1191,24 +1191,14 @@ async def test_run_liveness_watchdog_raises_after_exhausting_retries():
 
 
 def test_the_stall_context_names_the_call():
-    """A stall line has to say which worker stalled.
-
-    With many concurrent spawns an unattributed "no first stream output"
-    cannot be joined back to the call that produced it, so a burst of stalls
-    reads the same as one worker retrying.
-    """
+    """A burst of stalls must be tellable from one worker retrying."""
     from lionagi.operations.run.run import _stalled_worker_context
 
     assert _stalled_worker_context(types.SimpleNamespace(id="call-123")) == "call=call-123"
 
 
 def test_the_stall_context_survives_an_object_that_answers_nothing():
-    """It is built on the failure path, so it must not raise there.
-
-    An attribute error thrown while describing a stall would replace the stall
-    report with an unrelated traceback, which is worse than the missing
-    attribution it exists to fix.
-    """
+    """Built on the failure path, so it must not raise there."""
     from lionagi.operations.run.run import _stalled_worker_context
 
     assert _stalled_worker_context(object()) == "worker unidentified"
@@ -1239,11 +1229,7 @@ async def test_the_liveness_error_names_the_worker_that_stalled(monkeypatch):
         lambda model, api_call, deadline: NeverYields(),
     )
 
-    # The caller-configured fields carry a key here, which is the whole reason
-    # they are not written to this line. Nothing validates that a model name is
-    # a model name, so a key pasted into the wrong config field travels as that
-    # field's value, and the failure path is where it is most likely to be
-    # captured, copied into an issue and sent to whoever is helping.
+    # A key in the caller-configured fields, which is why they are not logged.
     secret = "01234567-89ab-cdef-0123-456789abcdef"
     model = types.SimpleNamespace(
         endpoint=types.SimpleNamespace(config=types.SimpleNamespace(provider=secret)),
@@ -1268,9 +1254,7 @@ async def test_the_liveness_error_names_the_worker_that_stalled(monkeypatch):
     assert "call=call-abc" in message, message
     # The prefix external log greps key on must survive the addition.
     assert "no first stream output within" in message, message
-    # Absence of the key alone would still pass if the fields came back
-    # redacted, so this pins the bracketed context to the generated id. Adding
-    # any config-derived field back reddens here whether or not it is masked.
+    # Pins the context to the generated id, so a masked field back reddens too.
     assert "[call=call-abc]" in message, message
     assert secret not in message, message
 
