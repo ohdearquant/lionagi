@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -1045,3 +1046,101 @@ def test_run_chunk_archive_failure_aborts_dispatch_and_keeps_session_deletes(tmp
     assert list(archive_dir.glob("run-*.zip")) == []
     assert list(archive_dir.glob("dispatch-*.zip")) == []
     assert len(list(archive_dir.glob("prune-*.zip"))) == 1
+
+
+# ── candidate paging keeps a forward seek ─────────────────────────────────────
+
+
+def _captured_chunk_sql(tmp_path, monkeypatch) -> tuple[Path, str, tuple]:
+    """Drive `_candidate_chunks` and return the SQL it actually built.
+
+    The statement is taken from the running code rather than restated here, so
+    the plan assertions below fail if the source stops asking for the index.
+    """
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    seen: list[tuple[str, tuple]] = []
+    real_q = maint._q
+
+    def capture(sql, params):
+        seen.append((sql, tuple(params)))
+        return real_q(sql, params)
+
+    monkeypatch.setattr(maint, "_q", capture)
+
+    old = time.time() - 90 * 86400
+
+    async def drive() -> None:
+        async with StateDB() as db:
+            for _ in range(3):
+                await _make_session(db, status="completed", started_at=old)
+            where_sql, params = maint._session_retention_predicate(time.time() - 30 * 86400)
+            async for _chunk in maint._candidate_chunks(
+                db, table="sessions", where_sql=where_sql, params=params, size=2
+            ):
+                pass
+
+    run_async(drive())
+
+    selects = [(s, p) for s, p in seen if s.lstrip().upper().startswith("SELECT ID FROM SESSIONS")]
+    assert selects, f"no candidate SELECT captured; saw {[s[:60] for s, _ in seen]}"
+    sql, params = selects[0]
+    return db_path, sql, params
+
+
+def test_the_candidate_paging_query_seeks_rather_than_sorting(tmp_path, monkeypatch):
+    """Each page must be a forward seek on the primary key, not a re-sort.
+
+    Left to the planner with no collected statistics, SQLite prefers the
+    status/time index and adds a temporary sort for ORDER BY id, which makes
+    every page re-read and re-sort the whole remaining backlog. That is
+    invisible to a correctness test -- the ids come out identical either way --
+    so the plan itself is what has to be asserted.
+    """
+    db_path, sql, params = _captured_chunk_sql(tmp_path, monkeypatch)
+
+    con = sqlite3.connect(db_path)
+    try:
+        plan = [row[-1] for row in con.execute("EXPLAIN QUERY PLAN " + sql, params)]
+    finally:
+        con.close()
+
+    rendered = " | ".join(plan)
+    assert "TEMP B-TREE" not in rendered.upper(), (
+        f"the paging query sorts instead of seeking, which is the quadratic plan: {rendered}"
+    )
+    assert "sqlite_autoindex_sessions_1" in rendered, (
+        f"the paging query is not walking the primary key: {rendered}"
+    )
+
+
+def test_every_paged_table_has_the_primary_key_index_the_query_names(tmp_path, monkeypatch):
+    """The paging query names `sqlite_autoindex_<table>_1` for three tables.
+
+    That name exists because each table declares `id TEXT PRIMARY KEY`. If a
+    schema change removes or renames it the prune fails at prepare time, so
+    this pins the assumption where it is cheap to read rather than leaving it
+    to be discovered during a retention pass.
+    """
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    async def touch() -> None:
+        async with StateDB() as db:
+            await _make_session(db, status="completed", started_at=time.time())
+
+    run_async(touch())
+
+    con = sqlite3.connect(db_path)
+    try:
+        for table in ("sessions", "schedule_runs", "dispatch_outbox"):
+            name = f"sqlite_autoindex_{table}_1"
+            indexes = {row[1] for row in con.execute(f"PRAGMA index_list({table})")}
+            assert name in indexes, f"{table} has no {name}; found {sorted(indexes)}"
+            columns = [row[2] for row in con.execute(f"PRAGMA index_info({name})")]
+            assert columns == ["id"], f"{name} covers {columns}, not the id the query seeks on"
+    finally:
+        con.close()

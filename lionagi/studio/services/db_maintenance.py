@@ -270,10 +270,25 @@ async def _candidate_chunks(
     a chunk can legitimately delete nothing: `_prune_session_chunk` re-checks
     each row under the write lock and skips one that stopped being terminal.
     Re-asking the same question would hand that row back forever.
+
+    The primary key index is named explicitly because leaving the choice to the
+    planner makes this loop quadratic. Left alone, and with no collected
+    statistics -- which is the permanent state here, since nothing runs ANALYZE
+    -- SQLite prefers the narrower status/time index and then sorts for the
+    ORDER BY, so every page re-reads and re-sorts the whole remaining eligible
+    backlog instead of seeking past the ids it already returned. Measured on a
+    240k-row store, walking the backlog took 43.8s that way against 0.12s
+    seeking the primary key. Naming the index turns each page back into a
+    forward seek, and asking for one that does not exist is a prepare-time
+    error, so a schema change that removes it fails loudly rather than
+    silently restoring the quadratic plan.
     """
     after = ""
     while True:
-        sql = f"SELECT id FROM {table} WHERE ({where_sql}) AND id > ? ORDER BY id LIMIT ?"  # noqa: S608
+        sql = (
+            f"SELECT id FROM {table} INDEXED BY sqlite_autoindex_{table}_1 "  # noqa: S608
+            f"WHERE ({where_sql}) AND id > ? ORDER BY id LIMIT ?"
+        )
         async with db.transaction() as conn:
             rows = (await conn.execute(*_q(sql, (*params, after, size)))).fetchall()
         ids = sorted({r[0] for r in rows})
