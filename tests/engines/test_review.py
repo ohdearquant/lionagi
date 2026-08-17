@@ -703,3 +703,54 @@ def test_verdict_instruction_inverts_polarity_for_refuted_clean_audit():
     without_audit = _verdict_instruction("ART", dims, [issue], [ordinary], [])
     assert "Clean-verdict audit" not in without_audit
     assert "weigh that AGAINST approval" not in without_audit
+
+
+@pytest.mark.asyncio
+async def test_runs_started_side_by_side_on_one_session_cannot_approve():
+    """Neither run is in the other's snapshot, so a dimension nobody reviewed looks covered."""
+    from lionagi.session.session import Session
+
+    session = Session()
+    eng = ReviewEngine()
+
+    first = eng.new_run(session=session)
+    second = eng.new_run(session=session)
+
+    # Mutual: the earlier run is contaminated too.
+    assert first.shares_session is True
+    assert second.shares_session is True
+
+    # Complete to `second` only because `first` supplied it.
+    await first.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await first.emit(DimensionClean(dimension="security", rationale="fine"))
+    assert eng._unevidenced_dimensions(second, ("correctness", "security")) == ()
+
+    await _verdict_with(eng, second, ("correctness", "security"))
+    final = second.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES"
+    assert "another review run" in final[0].rationale
+
+
+@pytest.mark.asyncio
+async def test_sequential_reuse_of_one_session_still_approves():
+    """Without this arm the detector could refuse every reused session and still look correct."""
+    from lionagi.session.session import Session
+
+    session = Session()
+    eng = ReviewEngine()
+
+    first = eng.new_run(session=session)
+    await first.emit(DimensionClean(dimension="correctness", rationale="fine"))
+
+    second = eng.new_run(session=session)
+    assert second.shares_session is False
+    assert first.shares_session is False
+
+    await second.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await second.emit(DimensionClean(dimension="security", rationale="fine"))
+
+    await _verdict_with(eng, second, ("correctness", "security"))
+    final = second.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "APPROVE"

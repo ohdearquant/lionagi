@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import weakref
 from functools import lru_cache
 from typing import Any
 
@@ -290,37 +291,38 @@ class ReviewVerdict(Verdict):
     )
 
 
+# Runs per session, weak both ways, so a run can see whether it started beside another.
+_SESSION_RUNS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
 class ReviewRun(EngineRun):
-    """A review run whose evidence queries see only this run's own events.
+    """Evidence queries scoped to this run: a gate that admits another run's evidence is not a gate.
 
-    ``EngineRun.by_type`` reads the session's event flow, and a ``Session`` can
-    be injected and reused across runs. Every question this engine asks about
-    what was executed -- was anything verified, did this dimension report --
-    would then be answered partly by a previous run, and the answer is
-    indistinguishable from a true one. A gate that admits another run's
-    evidence is not a gate.
-
-    Scoping is by identity of the events that existed before this run started,
-    which is what makes it correct for the reuse case without needing to
-    intercept anything on the way in. It does not separate two runs executing
-    concurrently against one shared session; that is a stronger property, it is
-    not what the reuse defect was, and claiming it here would be claiming more
-    than this does.
-
-    To be precise about that boundary, since a coverage gate is exactly the
-    place where an unstated limit turns into a wrong approval: two runs started
-    against one shared ``Session`` and overlapping in time will each see the
-    other's events, because the other's events did not exist when either one
-    took its snapshot. Sequential reuse of a session is safe, which is the case
-    that occurs. Concurrent sharing is not a path anything here takes -- a
-    session is constructed per run at the entry points -- and separating it
-    needs per-run attribution on the events themselves rather than a snapshot,
-    which is a change to what the observer records and not to this class.
+    Scoping is by identity of the events that predate the run, which is exact
+    for sequential reuse of a session and blind to two runs started before
+    either emitted. Separating those needs per-run attribution on the events,
+    a change to what the observer records; short of that this notices the
+    condition (``shares_session``) and the gate refuses to approve on it.
     """
 
     def __init__(self, engine: Engine, **kwargs: Any) -> None:
         super().__init__(engine, **kwargs)
         self._inherited: set[Any] = {e.id for e in self.session.observer.flow.items}
+        # Equal snapshots = nothing emitted in between = overlap; sequential reuse
+        # always leaves the later run a strictly larger one. Contamination is mutual.
+        self.shares_session: bool = False
+        peers = _SESSION_RUNS.setdefault(self.session, [])
+        live = []
+        for ref in peers:
+            peer = ref()
+            if peer is None:
+                continue
+            live.append(ref)
+            if peer._inherited == self._inherited:
+                peer.shares_session = True
+                self.shares_session = True
+        live.append(weakref.ref(self))
+        _SESSION_RUNS[self.session] = live
 
     @property
     def events(self) -> list[Any]:
@@ -375,6 +377,15 @@ def _unverified_note(unverified: tuple[IssueFound, ...]) -> str:
         f"withdrawn — {named}. A pass cannot rest on a finding whose "
         "verification did not come back, whether the verifier failed or never "
         "returned a result."
+    )
+
+
+def _shared_session_note() -> str:
+    """Unlike the coverage note, nothing on the stream is known to belong to this run."""
+    return (
+        "Approval withheld: another review run started against this session "
+        "before either had emitted, so this run's evidence cannot be told "
+        "apart from that run's. Give each run its own Session."
     )
 
 
@@ -756,12 +767,16 @@ class ReviewEngine(Engine):
 
         unevidenced = self._unevidenced_dimensions(run, dimensions)
         unverified = self._unverified_findings(run)
+        # Base runs carry no attribution, so they cannot report the condition.
+        shared = bool(getattr(run, "shares_session", False))
         proposals = run.by_type(ProposedVerdict)
         proposed = proposals[-1] if proposals else None
-        final = self._rule(proposed, unevidenced, unverified, text)
+        final = self._rule(proposed, unevidenced, unverified, text, shared=shared)
         await run.emit(final)
 
         notes = []
+        if shared:
+            notes.append(_shared_session_note())
         if unevidenced:
             notes.append(_withheld_note(unevidenced))
         if unverified:
@@ -855,20 +870,14 @@ class ReviewEngine(Engine):
         unevidenced: tuple[str, ...],
         unverified: tuple[IssueFound, ...],
         text: str,
+        *,
+        shared: bool = False,
     ) -> ReviewVerdict:
         """Turn the proposal into the one verdict this run publishes.
 
-        Two conditions withhold an approval and they are not the same question.
-        Coverage asks whether every declared dimension produced something.
-        Verification asks whether the findings that were produced got the
-        outcome they were owed. A dimension can satisfy the first and fail the
-        second, which is exactly the run this gate was built for: findings
-        reported, verifier dead, approval resting on the gap.
-
-        Approving is the only direction either condition refuses. A refusal
-        that rests on partial coverage or an unverified finding still stands,
-        because neither could have removed an objection; withholding it would
-        discard a real one over evidence that would not have changed it.
+        Coverage, verification and attribution are separate questions and each
+        refuses in one direction only: approval. A refusal already proposed
+        stands, since none of the three could have removed an objection.
         """
         verdict = (proposed.verdict if proposed else "").strip()
         rationale = (proposed.rationale if proposed else "") or text
@@ -883,8 +892,10 @@ class ReviewEngine(Engine):
                 ),
                 blocking=blocking,
             )
-        if verdict.upper().startswith("APPROVE") and (unevidenced or unverified):
+        if verdict.upper().startswith("APPROVE") and (shared or unevidenced or unverified):
             notes = []
+            if shared:
+                notes.append(_shared_session_note())
             if unevidenced:
                 notes.append(_withheld_note(unevidenced))
             if unverified:
