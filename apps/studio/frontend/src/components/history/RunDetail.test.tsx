@@ -3197,21 +3197,41 @@ describe("history/RunDetail.tsx — a tool result nobody read is not a tool call
     expect(calls.map((c) => c.status)).toEqual(["withheld"]);
   });
 
-  // The same fixture with nothing withheld, so the text is the only thing left
+  // An ordinary call with nothing withheld, so the text is the only thing left
   // deciding the outcome. Sessions mirrored from the Codex CLI arrive this way
   // and carry no error field, which is why the text is read at all.
-  const plainCallBranch = (output: string) => {
-    const branch = withheldRequestBranch(output) as never as {
-      messages: Record<string, unknown>[];
-    };
-    delete branch.messages[0].content_withheld;
-    branch.messages[0].content = { function: "Bash", arguments: {}, action_response_id: "resp-1" };
-    return branch as never;
-  };
+  //
+  // Built here rather than derived from the withheld fixture by deleting a
+  // field. These cases are about what the text says, and deriving them would
+  // tie them to the shape of a fixture that exists to test something else.
+  const plainCallBranch = (output: string) => ({
+    id: "branch-plain-call",
+    name: "worker",
+    created_at: 10,
+    message_total: 2,
+    messages: [
+      {
+        id: "req-1",
+        role: "action",
+        content: { function: "Bash", arguments: {}, action_response_id: "resp-1" },
+        sender: "worker",
+        timestamp: 11,
+        lion_class: "ActionRequest",
+      },
+      {
+        id: "resp-1",
+        role: "action",
+        content: { function: "Bash", output, action_request_id: "req-1" },
+        sender: "tool",
+        timestamp: 12,
+        lion_class: "ActionResponse",
+      },
+    ],
+  });
 
   const statusOf = async (output: string) => {
     const { branchToRunStep } = await import("./RunDetail");
-    const step = branchToRunStep(plainCallBranch(output), "completed");
+    const step = branchToRunStep(plainCallBranch(output) as never, "completed");
     return (step.messages ?? []).filter((m) => m.role === "tool_call").map((c) => c.status);
   };
 
@@ -3232,6 +3252,19 @@ describe("history/RunDetail.tsx — a tool result nobody read is not a tool call
     // anywhere in the output marked every one of these failed, and each is a
     // successful call: two report zero errors, the third reports handling one.
     expect(await statusOf(output)).toEqual(["ok"]);
+  });
+
+  it.each([
+    ["one", "Errors: 1"],
+    ["several", "Errors: 12"],
+    ["exceptions instead", "Exceptions: 2"],
+    ["a count after other output", "ran 3 steps\nErrors: 1\n"],
+  ])("reads a nonzero count as the failure it is, for %s", async (_label, output) => {
+    // A count label was excluded wholesale to keep "Errors: 0" from reading as
+    // a failure. That also excluded every nonzero count, so a call reporting
+    // real failures came back ok and rendered a success badge. Zero and
+    // nonzero differ only in the number, so the number is what has to be read.
+    expect(await statusOf(output)).toEqual(["error"]);
   });
 
   it("reads a failure announced further down the output", async () => {

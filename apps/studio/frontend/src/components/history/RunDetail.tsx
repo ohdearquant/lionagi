@@ -457,12 +457,20 @@ export function computeProgressCountsForGraph(
 
 // A line that announces a failure: a label at the start of a line, optionally
 // prefixed the way exception class names are ("ValueError:"), or a traceback or
-// panic header. Anchored to the line start on purpose, so that a count such as
-// "Errors: 0" and a sentence such as "No errors found" are not read as failures.
+// panic header. Anchored to the line start on purpose, so that a sentence such
+// as "No errors found" is not read as a failure.
+//
+// A plural label is a count and has to be read as one. "Errors: 0" is a report
+// of success and "Errors: 1" is a report of failure, and they differ only in
+// the number, so the count is part of the match rather than something excluded
+// wholesale. Reading the label alone would flag the healthy case; skipping the
+// label entirely, which is what excluding it did, silently passed the failing
+// one and rendered a success badge over it.
+//
 // No `g` flag: this is used with `.test()`, which would otherwise advance a
 // shared lastIndex between calls and return alternating answers.
 const FAILURE_ANNOUNCEMENT =
-  /^[ \t]*(?:\w*(?:error|exception)[ \t]*:|fatal\b|traceback\b|panic\b)/im;
+  /^[ \t]*(?:\w*(?:error|exception)[ \t]*:|\w*(?:errors|exceptions)[ \t]*:[ \t]*(?!0+\b)\d+|fatal\b|traceback\b|panic\b)/im;
 
 export function branchToRunStep(
   branch: SessionBranch,
