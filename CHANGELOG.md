@@ -32,6 +32,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`.
+- `Operable` selection and legacy `OperableModel` materialization now retain declaration order
+  for every supported membership collection and across hash seeds. Multiple unnamed `Spec`
+  values no longer collide; concrete duplicate names still fail, and name-required Pydantic
+  materialization now rejects unnamed fields instead of silently dropping them. Legacy
+  `FieldModel` materialization uses the owning field key rather than emitting a second field.
+  An explicit empty `include` or `use_fields` collection now selects no fields, unknown
+  exclusions fail instead of being ignored, and `Operable.allowed()` returns an immutable
+  membership view.
 
 ### Deprecated
 

@@ -306,8 +306,24 @@ class TestEdgeCases:
             Spec(int),  # No name
         ]
         operable = Operable(specs)
-        TestModel = PydanticSpecAdapter.create_model(operable, "TestModel")
 
-        # Only named field should be included
-        assert "valid" in TestModel.model_fields
-        assert len(TestModel.model_fields) == 1
+        with pytest.raises(
+            ValueError,
+            match="Pydantic model fields require a string name.*index 1",
+        ):
+            PydanticSpecAdapter.create_model(operable, "TestModel")
+
+    def test_empty_string_name_is_not_collapsed_into_absence(self):
+        def reject_bad(value):
+            if value == "bad":
+                raise ValueError("bad value")
+            return value
+
+        operable = Operable((Spec(str, name="", validator=reject_bad),))
+
+        model_type = PydanticSpecAdapter.create_model(operable, "EmptyNameModel")
+
+        assert tuple(model_type.model_fields) == ("",)
+        assert model_type.model_validate({"": "value"}).model_dump() == {"": "value"}
+        with pytest.raises(ValidationError, match="bad value"):
+            model_type.model_validate({"": "bad"})
