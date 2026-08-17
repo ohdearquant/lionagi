@@ -60,6 +60,11 @@ class TestMessengerRequestModel:
         assert req.to is None
         assert req.content is None
 
+    def test_to_accepts_one_recipient_or_many(self):
+        """Both shapes are advertised in the tool schema, so both must load."""
+        assert MessengerRequest(action="send", to="alice").to == "alice"
+        assert MessengerRequest(action="send", to=["alice", "bob"]).to == ["alice", "bob"]
+
 
 class TestLionMessengerBasics:
     def test_is_system_tool(self):
