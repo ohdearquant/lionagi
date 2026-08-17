@@ -347,10 +347,15 @@ mod tests {
     /// Serves one response and tolerates the client hanging up before the body
     /// is fully written, which is what a client enforcing a size ceiling does.
     /// `serve_once` unwraps its write on purpose, so it cannot serve this case.
-    async fn serve_once_allowing_disconnect(body: String) -> u16 {
+    ///
+    /// The handle resolves to whether the whole body reached the client. That
+    /// is the only thing that separates stopping at the ceiling from reading
+    /// past it and rejecting afterwards: both produce the same error, so a test
+    /// reading the error alone cannot tell them apart.
+    async fn serve_once_allowing_disconnect(body: String) -> (u16, tokio::task::JoinHandle<bool>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = Vec::new();
             loop {
@@ -369,9 +374,9 @@ mod tests {
                 body.len(),
                 body
             );
-            let _ = socket.write_all(response.as_bytes()).await;
+            socket.write_all(response.as_bytes()).await.is_ok()
         });
-        port
+        (port, handle)
     }
 
     /// The exact answer our own backend gives, padded to a chosen length with a
@@ -386,14 +391,24 @@ mod tests {
 
     #[tokio::test]
     async fn identity_check_stops_reading_a_body_past_the_ceiling() {
-        let port =
-            serve_once_allowing_disconnect(padded_identity(MAX_IDENTITY_BODY_BYTES + 1)).await;
+        // Far past the ceiling on purpose. One byte over fits in the socket
+        // buffers whole, so the server finishes writing it whether the client
+        // stopped early or read it all and rejected afterwards, and the test
+        // cannot see the difference it is named for. A body this size cannot
+        // be written unless someone is still reading it.
+        let oversized = MAX_IDENTITY_BODY_BYTES * 256;
+        let (port, served) = serve_once_allowing_disconnect(padded_identity(oversized)).await;
 
         let error = verify_identity(port, "desktop-test-token")
             .await
             .expect_err("a body past the ceiling must not be read to the end");
 
         assert!(error.to_string().contains("exceeded"), "got: {error}");
+        assert!(
+            !served.await.expect("the serving task panicked"),
+            "the server wrote all {oversized} bytes, so the client kept reading past the \
+             {MAX_IDENTITY_BODY_BYTES}-byte ceiling and only rejected the body afterwards"
+        );
     }
 
     #[tokio::test]
