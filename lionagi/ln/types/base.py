@@ -344,15 +344,15 @@ class DataClass:
         """Return constructor values without applying wire omission rules."""
         return _declared_field_state(self)
 
-    def __hash__(self) -> int:
-        from .._hash import hash_dict
+    __hash__ = None  # type: ignore[assignment]
 
-        return hash_dict(self.to_dict())
-
-    def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, DataClass):
-            return False
-        return hash(self) == hash(other)
+    def __eq__(self, other: object) -> bool:
+        """Compare public field state without granting mutable hash authority."""
+        if self is other:
+            return True
+        return type(self) is type(other) and _structural_key(
+            self._field_state()
+        ) == _structural_key(cast(DataClass, other)._field_state())
 
 
 # Concrete key-container types accepted by fuzzy_match_keys. Bare ``str`` is

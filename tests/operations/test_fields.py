@@ -9,7 +9,10 @@ from pydantic import BaseModel
 
 from lionagi.operations.fields import (
     ActionRequestModel,
+    ActionResponseModel,
     Instruct,
+    Reason,
+    _validate_listable_field,
     get_default_field,
 )
 
@@ -211,8 +214,106 @@ class TestGetDefaultFieldChaining:
         fm = _get_default_fields("reason", nullable=False, default="fallback")
         assert fm.extract_metadata("default") == "fallback"
 
-    def test_get_default_field_caches_results(self):
-        """Calling get_default_field twice with same args returns cached object."""
+    def test_get_default_field_returns_fresh_declarations(self):
+        """Mutable defaults are never retained by a process-global field cache."""
         fm1 = get_default_field("reason")
         fm2 = get_default_field("reason")
-        assert fm1 is fm2
+        assert fm1 is not fm2
+        assert fm1 == fm2
+
+    def test_get_default_field_distinguishes_typed_defaults(self):
+        """Presentation strings never act as cache identity for declaration values."""
+        numeric = get_default_field("reason", default=1, nullable=False)
+        textual = get_default_field("reason", default="1", nullable=False)
+
+        assert numeric.extract_metadata("default") == 1
+        assert type(numeric.extract_metadata("default")) is int
+        assert textual.extract_metadata("default") == "1"
+        assert type(textual.extract_metadata("default")) is str
+
+    def test_list_validator_identity_is_stable_without_field_cache(self):
+        first = get_default_field("action_requests", nullable=False)
+        second = get_default_field("action_requests", nullable=False)
+
+        assert first is not second
+        assert first.extract_metadata("validator") is second.extract_metadata("validator")
+
+    def test_action_required_validator_identity_is_stable_without_field_cache(self):
+        first = get_default_field("action_required", nullable=False)
+        second = get_default_field("action_required", nullable=False)
+
+        assert first is not second
+        assert first.extract_metadata("validator") is second.extract_metadata("validator")
+
+    def test_lazy_field_constants_preserve_identity(self):
+        import lionagi.operations.fields as fields
+
+        assert fields.REASON_FIELD is fields.REASON_FIELD
+        assert fields.ACTION_REQUESTS_FIELD is fields.ACTION_REQUESTS_FIELD
+
+    def test_repeated_action_structures_reuse_generated_model_identity(self):
+        from lionagi.operations.schema.structure import Structure
+
+        class Payload(BaseModel):
+            value: int
+
+        first = Structure(Payload, actions=True, name="StableActions").request_schema()
+        second = Structure(Payload, actions=True, name="StableActions").request_schema()
+
+        assert first is second
+
+    @pytest.mark.parametrize(
+        ("first", "duplicate", "distinct"),
+        [
+            (
+                Instruct(instruction="first"),
+                Instruct(instruction="first"),
+                Instruct(instruction="second"),
+            ),
+            (
+                ActionRequestModel(function="f", arguments={"value": 1}),
+                ActionRequestModel(function="f", arguments={"value": 1}),
+                ActionRequestModel(function="f", arguments={"value": 2}),
+            ),
+            (
+                ActionResponseModel(function="f", output={"value": 1}),
+                ActionResponseModel(function="f", output={"value": 1}),
+                ActionResponseModel(function="f", output={"value": 2}),
+            ),
+            (
+                Reason(title="same"),
+                Reason(title="same"),
+                Reason(title="different"),
+            ),
+        ],
+    )
+    def test_listable_mutable_models_deduplicate_by_equality(
+        self,
+        first,
+        duplicate,
+        distinct,
+    ):
+        result = _validate_listable_field(None, [first, duplicate, distinct])
+
+        assert result == [first, distinct]
+        assert result[0] is first
+
+    def test_listable_action_outputs_follow_opaque_child_equality(self):
+        class EqualValue:
+            __hash__ = None
+
+            def __init__(self, value: int) -> None:
+                self.value = value
+
+            def __eq__(self, other: object) -> bool:
+                return isinstance(other, EqualValue) and self.value == other.value
+
+        first = ActionResponseModel(function="f", output=EqualValue(1))
+        duplicate = ActionResponseModel(function="f", output=EqualValue(1))
+        distinct = ActionResponseModel(function="f", output=EqualValue(2))
+        assert first == duplicate
+
+        result = _validate_listable_field(None, [first, duplicate, distinct])
+
+        assert result == [first, distinct]
+        assert result[0] is first

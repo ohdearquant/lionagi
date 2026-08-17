@@ -1,9 +1,11 @@
 # tests/libs/test_to_list.py
 from collections.abc import Mapping
 from enum import Enum
+from typing import Any, Generic, TypeVar
 
+import msgspec
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 from lionagi.ln._to_list import ToListParams, to_list
 
@@ -436,3 +438,129 @@ def test_unique_keeps_distinct_nans_across_fallback():
     result = to_list([nan_a, {"unhashable": 1}, nan_b], flatten=True, unique=True)
     assert result == [nan_a, {"unhashable": 1}, nan_b]
     assert result[0] is nan_a and result[2] is nan_b
+
+
+def test_unique_deduplicates_mutable_dataclass_contexts_by_equality():
+    from dataclasses import dataclass
+
+    from lionagi.ln.types import DataClass
+
+    @dataclass(slots=True)
+    class MutableContext(DataClass):
+        value: int
+
+    first = MutableContext(1)
+    duplicate = MutableContext(1)
+    distinct = MutableContext(2)
+
+    result = to_list([first, duplicate, distinct], flatten=True, unique=True)
+
+    assert result == [first, distinct]
+    assert result[0] is first
+
+
+def test_unique_deduplicates_pydantic_models_with_legacy_transient_bucket():
+    from pydantic import BaseModel
+
+    class MutableModel(BaseModel):
+        payload: dict[str, int]
+
+    first = MutableModel(payload={"value": 1})
+    duplicate = MutableModel(payload={"value": 1})
+    distinct = MutableModel(payload={"value": 2})
+
+    result = to_list([first, duplicate, distinct], flatten=True, unique=True)
+
+    assert result == [first, distinct]
+    assert result[0] is first
+
+
+def test_unique_contexts_preserve_pydantic_private_equality_state():
+    class PrivateStateModel(BaseModel):
+        value: int
+        _tag: str = PrivateAttr()
+
+    first = PrivateStateModel(value=1)
+    second = PrivateStateModel(value=1)
+    first._tag = "first"
+    second._tag = "second"
+    assert first != second
+
+    result = to_list([first, second], flatten=True, unique=True)
+
+    assert result == [first, second]
+
+
+def test_unique_contexts_preserve_pydantic_generic_equality():
+    value_type = TypeVar("value_type")
+
+    class GenericModel(BaseModel, Generic[value_type]):
+        value: value_type
+
+    generic = GenericModel[Any](value=1)
+    concrete = GenericModel[int](value=1)
+    assert generic == concrete
+
+    result = to_list([generic, concrete], flatten=True, unique=True)
+
+    assert result == [generic]
+    assert result[0] is generic
+
+
+@pytest.mark.parametrize(("first_value", "second_value"), [(True, 1), (1, 1.0), (-0.0, 0.0)])
+def test_unique_contexts_follow_pydantic_scalar_equality(first_value, second_value):
+    class AnyValueModel(BaseModel):
+        value: Any
+
+    first = AnyValueModel(value=first_value)
+    duplicate = AnyValueModel(value=second_value)
+    assert first == duplicate
+
+    result = to_list([first, duplicate], flatten=True, unique=True)
+
+    assert result == [first]
+
+
+def test_unique_dataclass_contexts_follow_opaque_child_equality():
+    from dataclasses import dataclass
+
+    from lionagi.ln.types import DataClass
+
+    class EqualValue:
+        __hash__ = None
+
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, EqualValue) and self.value == other.value
+
+    @dataclass(slots=True)
+    class MutableContext(DataClass):
+        payload: Any
+
+    dataclass_first = MutableContext(payload=EqualValue(1))
+    dataclass_duplicate = MutableContext(payload=EqualValue(1))
+    assert dataclass_first == dataclass_duplicate
+
+    result = to_list(
+        [dataclass_first, dataclass_duplicate],
+        flatten=True,
+        unique=True,
+    )
+
+    assert result == [dataclass_first]
+
+
+@pytest.mark.parametrize(("first_value", "second_value"), [(True, 1), (1, 1.0), (-0.0, 0.0)])
+def test_unique_contexts_follow_msgspec_scalar_equality(first_value, second_value):
+    class MutableStruct(msgspec.Struct):
+        value: object
+
+    first = MutableStruct(first_value)
+    duplicate = MutableStruct(second_value)
+    assert first == duplicate
+
+    result = to_list([first, duplicate], flatten=True, unique=True)
+
+    assert result == [first]

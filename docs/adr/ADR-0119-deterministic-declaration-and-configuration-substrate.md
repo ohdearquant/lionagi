@@ -12,8 +12,8 @@
   types are `Undefined`; `Params`, `Meta`, and `Spec` use one typed structural equality/hash
   projection, production declarations use the explicit `eq=False` authority, and declaration,
   field-layout, sentinel, singleton, annotation, and Pydantic model caches use identity-safe keys;
-  mutable `DataClass`/`HashableModel` migration, registry snapshots, and canonical durable
-  serialization remain open
+  `DataClass` and every current `HashableModel` descendant are unhashable behind a closed consumer
+  inventory; registry snapshots and canonical durable serialization remain open
 - **Area**: utilities
 - **Date**: 2026-08-16
 - **Relations**: extends ADR-0050 (foundational utility and typed adaptation strata); required
@@ -239,8 +239,12 @@ The ownership rule is:
   envelope;
 - plain dataclass: local implementation detail with none of the substrate behavior.
 
-`DataClass` is unhashable unless a concrete frozen subclass supplies an explicit immutable
-structural key. The base never promises hashability for mutable state.
+`DataClass` and its descendants are mutable and unhashable. Python does not allow a frozen
+dataclass to inherit this non-frozen base; immutable configuration belongs in `Params`, while an
+independently frozen local type may opt into its own explicitly reviewed structural authority.
+Normal decorated subclasses retain dataclass-generated exact-class equality. The base also keeps
+an exact-class, public-field structural equality fallback for a compatibility subclass that
+explicitly requests `eq=False`; neither path grants a hash.
 
 ### D3 — Declaration order is canonical
 
@@ -394,10 +398,12 @@ Neither column is what D4 specifies. The decision is therefore:
   subclass that relies on the first row's same-class requirement changes behavior when the
   structural implementation takes over.
 
-`HashableModel` is split by semantics during migration: immutable concrete models retain a
-structural hash, while mutable models become unhashable. Existing uses are audited before the
-base behavior changes because a mutable object already stored in a set cannot be repaired after
-mutation.
+The closed audit found no immutable production `HashableModel` consumer: the base and all nine
+descendants permit assignment, and `OperableModel` additionally mutates its field declarations.
+The entire current family is therefore unhashable. The historical public class name remains as a
+serialization compatibility surface, not a hash guarantee. A future immutable Pydantic owner must
+enter the inventory with a separately reviewed exact structural authority; it may not inherit or
+recreate a content hash from this mutable base.
 
 ### D5 — `Spec` and `Operable` are the only neutral declaration vocabulary
 
@@ -567,7 +573,8 @@ The foundation suite adds the following required matrices.
 - unequal values remain unequal even under an injected hash collision;
 - immutable sequences and frozensets produce equal runtime hashes for equal projections within a
   process; mutable dict/list/set descendants make `Params`/`Meta`/`Spec` unhashable;
-- mutable `DataClass` and mutable Pydantic models are unhashable after their consumer migration;
+- `DataClass`, its production descendants, and the current mutable `HashableModel` family are
+  unhashable; the inventory currently contains no immutable Pydantic exception;
 - callable metadata retains identity semantics;
 - unsupported opaque mutable metadata fails explicitly;
 - `True`, `1`, `1.0`, signed zero, sentinel states, enum types, and custom-metaclass type identities
@@ -579,6 +586,10 @@ The foundation suite adds the following required matrices.
 - a subclass of `Params`, `Spec`, or `Meta` decorated `eq=True`, or defining `__eq__` or
   `__hash__` outside the three base authorities, fails a closed static check rather than silently
   selecting generated implementations;
+- a new `DataClass` or `HashableModel` descendant fails the closed mutable-model inventory until
+  it records its mutation surface and set/dict-key or transient-dedup consumers; current entries
+  declare no production set/dict-key consumer, and listable operation DTOs deduplicate by
+  identity-or-equality without restoring a model content hash;
 - `none_as_sentinel` and `empty_as_sentinel` are set only from call sites named in D1's
   enumerated list, and a diff that sets either elsewhere fails.
 
@@ -608,7 +619,8 @@ The foundation suite adds the following required matrices.
    `allowed()` as membership compatibility.
 4. Fix `Operable` selection and unnamed-spec handling; remove set conversion from model
    materialization.
-5. Correct `Meta`/`Spec` equality and hash; inventory and split mutable `HashableModel` users.
+5. Correct `Meta`/`Spec` equality and hash; close the mutable-model consumer inventory and make
+   the current `DataClass`/`HashableModel` families unhashable.
 6. Move production callers from `OperableModel` to neutral declarations and adapters.
 7. Introduce explicit registry fragments at composition roots.
 8. Land strict snapshot envelopes, canonical bytes/digest, and versioned CallableRef resolution.

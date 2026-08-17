@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Mutable `DataClass` contexts and every current `HashableModel` descendant now reject `hash()`,
+  set membership, and dictionary-key admission instead of exposing a content hash that changed
+  after assignment. `DataClass`'s compatibility equality fallback compares exact concrete type
+  and public field state without using a hash; ordinary message dataclasses retain their generated
+  equality. Listable operation DTOs deduplicate directly by identity-or-equality; generic list
+  normalization adds the same safe path for `DataClass` while retaining its existing transient
+  structural-hash fallback for mappings, Pydantic models, and msgspec structs. The legacy
+  `HashableModel` name and serialization API remain available, but no longer promise hashability.
+- Default operation `FieldModel` declarations are built fresh instead of being retained in an
+  unbounded process-global cache keyed by `str(default)`. This prevents typed defaults such as
+  `1` and `"1"` from colliding and avoids retaining mutable defaults; a shared named list
+  validator and action-required validator preserve stable declaration identity for downstream
+  caches, while the six public lazy field constants retain their one-object module identity.
 - `Params`, `Meta`, and `Spec` now compare through one exact-type structural projection instead of
   generated dataclass equality, string fallback hashes, or hash-as-equality. Mutable nested
   dict/list/set values remain structurally comparable but now raise
