@@ -912,7 +912,7 @@
     "stale": {
       "error": "ত্রুটি · {message}",
       "unreachable": "API পৌঁছানো যায় না",
-      "lastUpdated": "স্টেল · শেষ আপডেট {age}s আগে"
+      "lastUpdated": "শেষ আপডেট {age}s আগে"
     },
     "detail": {
       "hint": "বিস্তারিত দেখতে একটি সেশন নির্বাচন করুন",
@@ -928,8 +928,7 @@
       "updated": "আপডেটেড",
       "branchesTitle": "{count, plural, one {ব্রাঞ্চ (#)} other {ব্রাঞ্চ (#)}}",
       "noBranches": "কোনো ব্রাঞ্চ নেই।",
-      "msgs": " মেসেজ",
-      "engineRuns": "ইঞ্জিন রান"
+      "msgs": " মেসেজ"
     },
     "split": {
       "master": "সেশন তালিকা",
@@ -1075,7 +1074,7 @@
     "stale": {
       "error": "ত্রুটি · {message}",
       "unreachable": "API পৌঁছানো যায় না",
-      "lastUpdated": "স্টেল · শেষ আপডেট {age}s আগে"
+      "lastUpdated": "শেষ আপডেট {age}s আগে"
     },
     "zeroState": {
       "heading": "শুরু করুন",

@@ -912,7 +912,7 @@
     "stale": {
       "error": "त्रुटि · {message}",
       "unreachable": "API पहुँच से बाहर है",
-      "lastUpdated": "स्टेल · आखिरी अपडेट {age} सेकंड पहले"
+      "lastUpdated": "आखिरी अपडेट {age} सेकंड पहले"
     },
     "detail": {
       "hint": "जाँचने के लिए सेशन चुनें",
@@ -928,8 +928,7 @@
       "updated": "अपडेट हुआ",
       "branchesTitle": "ब्रांच ({count})",
       "noBranches": "कोई ब्रांच नहीं।",
-      "msgs": " मैसेज",
-      "engineRuns": "इंजन रन"
+      "msgs": " मैसेज"
     },
     "split": {
       "master": "सेशन सूची",
@@ -1075,7 +1074,7 @@
     "stale": {
       "error": "त्रुटि · {message}",
       "unreachable": "API पहुँच से बाहर है",
-      "lastUpdated": "स्टेल · आखिरी अपडेट {age} सेकंड पहले"
+      "lastUpdated": "आखिरी अपडेट {age} सेकंड पहले"
     },
     "zeroState": {
       "heading": "शुरू करें",
