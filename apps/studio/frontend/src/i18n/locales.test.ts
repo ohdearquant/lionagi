@@ -202,7 +202,7 @@ describe("applyDocumentLocale — <html lang>/<html dir> wiring", () => {
 });
 
 describe("messages — leaf-key parity across all 16 locales", () => {
-  // 1098 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
+  // 1099 = 1059 + operator.composer.autoAllow (1) + the Library hooks surface
   // (library.filterHooks + 29 library.hooks.* leaves) when the shared hook
   // library and per-agent assembly landed, + history.detail token-usage stats
   // (statTokensIn/statTokensOut, natively translated in all 16 locales), + 5
@@ -225,8 +225,16 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // shown when a run carries no project for a control to be authorized
   // against. Natively translated in all 16, so unlike its two siblings it adds
   // nothing to the identity-leak baseline below.
-  it("en.json has 1100 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1100);
+  //
+  // 1101 = 1100 + runCard.outputWithheld, the badge for a tool result the
+  // server withheld past its per-row size ceiling. Natively translated in all
+  // 16, so it adds nothing to the identity-leak baseline either.
+  //
+  // 1102 = 1101 + history.detail.filesUnionBounded, said when the run-wide
+  // file union stopped at one of its ceilings. Natively translated in all 16,
+  // same as the two above.
+  it("en.json has 1102 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1102);
   });
 
   it.each(LOCALES.map((l) => l.code))(
