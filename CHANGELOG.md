@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- ADR-0070 now records the shipped one-shot `at` schedule trigger alongside
+  `cron`, `interval`, and `github_poll`; a schema-parity guard keeps that
+  persisted vocabulary and the documented trigger set aligned.
 - Resuming a flow whose checkpoint recorded any operation as failed now refuses
   and names those operations, instead of replaying them as terminal state.
   Replaying a failed operation as terminal marks it failed without running it,
