@@ -19,7 +19,7 @@ than guessing what a later release's shape means (`SchemaTooNewError`).
 Read-only opens apply no schema migration at all and are unaffected by this
 check.
 
-Two kinds of schema change show up in the code:
+Three kinds of schema change show up in the code:
 
 - **In-place table rebuilds**, used when SQLite's lack of `ALTER TABLE ...
   DROP CONSTRAINT` means the only way to drop a stale `CHECK` constraint is
@@ -29,6 +29,18 @@ Two kinds of schema change show up in the code:
   first checks (by inspecting the live `CREATE TABLE` SQL for a marker
   substring) whether the constraint it exists to remove is even still there,
   and no-ops if not.
+- **Constraint replacements**, the PostgreSQL counterpart to the rebuild
+  above, listed in `MIGRATION_CONSTRAINTS` and applied by
+  `_reconcile_constraints`. PostgreSQL can drop and re-add a `CHECK` in
+  place, so no copy is needed, but it needs the step for the same reason:
+  `metadata.create_all` only creates missing tables, so a store that already
+  had the table keeps whatever constraint it was created with, and a value
+  added to the declared vocabulary afterwards is rejected by exactly the
+  store that has been running longest. The same marker reading applies —
+  each statement looks for the newest value in the live definition and does
+  nothing if it is already there, so it does not take the table's lock on
+  every open, and a constraint that is absent entirely is left alone,
+  because a column with no `CHECK` already accepts every value.
 - **Backfills**, used when a later release adds a column to a table that
   already existed, and old rows need real values instead of the `DEFAULT`
   placeholder `ALTER TABLE` gave them. Every backfill is guarded by a durable

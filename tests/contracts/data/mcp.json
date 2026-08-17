@@ -683,6 +683,11 @@
             "description": "Associate this engine run with an existing session in StateDB (written to engine_runs.session_id).",
             "x-flag": "--session-id"
           },
+          "invocation_id": {
+            "type": "string",
+            "description": "Parent Studio invocation id. Defaults to LIONAGI_INVOCATION_ID; an explicit value takes precedence.",
+            "x-flag": "--invocation"
+          },
           "no_persist": {
             "type": "boolean",
             "description": "Skip writing the engine run record to StateDB.",
