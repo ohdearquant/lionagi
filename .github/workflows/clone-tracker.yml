@@ -69,12 +69,27 @@ jobs:
         # carry the value we actually use.
         run: |
           set -euo pipefail
-          # Until the token exists, skip loudly instead of failing. A scheduled
-          # workflow that is red on every run is one nobody reads by the second
-          # week, and the thing it would eventually be red ABOUT is a missing
-          # measurement. Skipping writes no ledger entry, so a gap in the data
-          # stays a visible gap rather than becoming a recorded zero.
+          # Without the token nothing can be read, and whether that should fail
+          # depends on which run this is. A scheduled run exists to capture a
+          # window the API is about to drop, so a scheduled run without the
+          # token is losing data that no later run can recover, and failing is
+          # how that gets said to anyone. A push or a manual run is here for
+          # some other reason, and failing those would put a missing secret on
+          # surfaces that are not about traffic at all. Either way nothing is
+          # appended, so a gap in the data stays a visible gap rather than
+          # becoming a recorded zero.
+          #
+          # The scheduled failure repeats every cycle until the token is stored,
+          # which is deliberate. The alternative is a run that remembers having
+          # complained already and then stays quiet, and a control that has
+          # spent its one complaint looks exactly like a control that was never
+          # armed. Three reds a month that stop the moment the secret exists is
+          # the cheaper mistake.
           if [ -z "${GH_TOKEN:-}" ]; then
+            if [ "${GITHUB_EVENT_NAME:-}" = "schedule" ]; then
+              echo "::error::TRAFFIC_READ_TOKEN is not set, so this cycle read no traffic. The API keeps only 14 days, so the clone and view counts for this window are now unrecoverable. Store a fine-grained token carrying only Administration: read as TRAFFIC_READ_TOKEN."
+              exit 1
+            fi
             echo "::warning::TRAFFIC_READ_TOKEN is not set, so no traffic was read and nothing was appended. The ledger has a gap for this run, not a zero."
             echo "skipped=true" >> "$GITHUB_OUTPUT"
             exit 0

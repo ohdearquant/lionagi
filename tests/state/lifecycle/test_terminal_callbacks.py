@@ -8,6 +8,8 @@ reconciliation ledger."""
 from __future__ import annotations
 
 import asyncio
+import logging
+import threading
 import time
 import uuid
 
@@ -168,6 +170,65 @@ async def test_registry_swallows_handler_exception_and_still_runs_others():
 
 
 @pytest.mark.asyncio
+async def test_registry_logs_ordinary_handler_failure_with_event_and_entity(caplog):
+    registry = TerminalCallbackRegistry()
+
+    def _boom(_envelope):
+        raise ValueError("ordinary failure")
+
+    registry.register("boom", _boom)
+    envelope = RunTerminalEnvelope(
+        event_id="ev-log",
+        entity=EntityRef(kind="session", id="session-log"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=time.time(),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.state.lifecycle.callbacks"):
+        await registry.emit(envelope)
+
+    record = next(
+        item for item in caplog.records if item.name == "lionagi.state.lifecycle.callbacks"
+    )
+    assert record.getMessage() == (
+        "terminal callback handler 'boom' raised for event ev-log (entity session/session-log)"
+    )
+    assert record.exc_info is not None
+
+
+@pytest.mark.asyncio
+async def test_registry_logs_ordinary_async_handler_failure(caplog):
+    registry = TerminalCallbackRegistry()
+
+    async def _boom(_envelope):
+        raise ValueError("ordinary async failure")
+
+    registry.register("async-boom", _boom)
+    envelope = RunTerminalEnvelope(
+        event_id="ev-async-log",
+        entity=EntityRef(kind="session", id="session-async-log"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=time.time(),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="lionagi.state.lifecycle.callbacks"):
+        await registry.emit(envelope)
+
+    record = next(
+        item for item in caplog.records if item.name == "lionagi.state.lifecycle.callbacks"
+    )
+    assert record.getMessage() == (
+        "terminal callback handler 'async-boom' raised for event ev-async-log "
+        "(entity session/session-async-log)"
+    )
+    assert record.exc_info is not None
+
+
+@pytest.mark.asyncio
 async def test_override_registration_replaces_matching_handler_for_its_own_scope():
     # An override registration (the flow/play `--notify` scoped sugar) must
     # win outright for any envelope it matches -- an unscoped, non-override
@@ -261,10 +322,15 @@ async def test_blocking_sync_handler_does_not_stall_the_fan_out():
     # thread so the deadline still cuts the fan-out short.
     registry = TerminalCallbackRegistry(budget_seconds=0.2)
     ran: list[str] = []
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
 
     def _blocking_sync(env):
-        time.sleep(30)  # far longer than the budget
-        ran.append("blocking-completed")  # should never observably append
+        started.set()
+        release.wait(timeout=2.0)
+        ran.append("blocking-completed")
+        finished.set()
 
     async def _fast_async(env):
         ran.append("fast-async")
@@ -287,9 +353,15 @@ async def test_blocking_sync_handler_does_not_stall_the_fan_out():
 
     assert "fast-async" in ran
     assert "blocking-completed" not in ran
-    # Bounded well under the blocking handler's 30s sleep -- the offloaded
-    # thread is abandoned at the deadline, not awaited to completion.
-    assert elapsed < 5.0
+    assert started.is_set()
+    assert not finished.is_set()
+    # If the sync callback ran inline, emit would wait for the 2s fallback.
+    assert elapsed < 1.0
+
+    # Release and join the abandoned worker so this test leaves no sleeping
+    # thread behind for the rest of the worker process.
+    release.set()
+    assert await asyncio.to_thread(finished.wait, 1.0)
 
 
 @pytest.mark.asyncio
@@ -322,6 +394,160 @@ async def test_fast_sync_handler_still_runs_and_error_handling_is_unchanged():
     # like the existing async/sync-on-loop behavior.
     await registry.emit(envelope)
     assert ran == ["ok-sync"]
+
+
+@pytest.mark.asyncio
+async def test_sync_handler_custom_awaitable_is_awaited_after_thread_offload():
+    registry = TerminalCallbackRegistry()
+
+    class TrackingAwaitable:
+        def __init__(self):
+            self.awaited = False
+
+        def __await__(self):
+            self.awaited = True
+            if False:  # pragma: no cover - makes this a generator-based awaitable
+                yield None
+            return None
+
+    returned = TrackingAwaitable()
+    registry.register("custom-awaitable", lambda _env: returned)
+    envelope = RunTerminalEnvelope(
+        event_id="ev-custom-awaitable",
+        entity=EntityRef(kind="session", id="s"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=time.time(),
+    )
+
+    await registry.emit(envelope)
+
+    assert returned.awaited is True
+
+
+@pytest.mark.asyncio
+async def test_matching_handlers_start_concurrently():
+    registry = TerminalCallbackRegistry(budget_seconds=1.0)
+    started: list[str] = []
+    first_started = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def _handler(name: str) -> None:
+        started.append(name)
+        own = first_started if name == "first" else second_started
+        peer = second_started if name == "first" else first_started
+        own.set()
+        await peer.wait()
+
+    registry.register("first", lambda _env: _handler("first"))
+    registry.register("second", lambda _env: _handler("second"))
+
+    envelope = RunTerminalEnvelope(
+        event_id="ev-concurrent",
+        entity=EntityRef(kind="session", id="s"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=time.time(),
+    )
+    await asyncio.wait_for(registry.emit(envelope), timeout=2.0)
+
+    assert sorted(started) == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_handler_cancellation_is_not_logged_as_an_ordinary_failure(caplog):
+    registry = TerminalCallbackRegistry(budget_seconds=5.0)
+    sibling_started = asyncio.Event()
+    sibling_cancelled = asyncio.Event()
+
+    async def _cancel(_env):
+        await sibling_started.wait()
+        raise asyncio.CancelledError("handler cancelled")
+
+    async def _sibling(_env):
+        sibling_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            sibling_cancelled.set()
+
+    registry.register("cancel", _cancel)
+    registry.register("sibling", _sibling)
+
+    envelope = RunTerminalEnvelope(
+        event_id="ev-handler-cancel",
+        entity=EntityRef(kind="session", id="s"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=time.time(),
+    )
+    await asyncio.wait_for(registry.emit(envelope), timeout=1.0)
+
+    assert sibling_cancelled.is_set()
+    assert "terminal callback handler" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_emitter_cancellation_propagates_and_cancels_handler_work():
+    registry = TerminalCallbackRegistry()
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def _slow(_env):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    registry.register("slow", _slow)
+    envelope = RunTerminalEnvelope(
+        event_id="ev-emitter-cancel",
+        entity=EntityRef(kind="session", id="s"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=time.time(),
+    )
+    task = asyncio.create_task(registry.emit(envelope))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_budget_return_leaves_abandoned_sync_offload_outcome_unknown():
+    registry = TerminalCallbackRegistry(budget_seconds=0.5)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def _blocking(_env):
+        started.set()
+        release.wait(timeout=2.0)
+        finished.set()
+
+    registry.register("blocking", _blocking)
+    envelope = RunTerminalEnvelope(
+        event_id="ev-abandoned-sync",
+        entity=EntityRef(kind="session", id="s"),
+        previous_status="running",
+        terminal_status="completed",
+        reason_code="run.completed.ok",
+        occurred_at=time.time(),
+    )
+    await registry.emit(envelope)
+
+    assert started.is_set()
+    assert not finished.is_set()
+    release.set()
+    assert await asyncio.to_thread(finished.wait, 1.0)
 
 
 # Lifecycle-service integration (D1 hook point)

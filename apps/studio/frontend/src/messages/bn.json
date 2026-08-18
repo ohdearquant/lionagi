@@ -508,6 +508,7 @@
       "statErrorsRecent": "ত্রুটি (সাম্প্রতিক)",
       "noBranchErrorsPartial": "লোড করা মেসেজে কোনো ত্রুটি নেই।",
       "noFilesPartial": "লোড করা মেসেজে কোনো ফাইল অপারেশন শনাক্ত হয়নি।",
+      "filesUnionBounded": "কিছু ফাইল অপারেশন তালিকাভুক্ত নয়: এই রানটি একটি ভিউ যত ফাইল সংগ্রহ করে তার চেয়ে বেশি ফাইল স্পর্শ করেছে।",
       "olderUnavailable": "পুরোনো ইতিহাস লোড করা যায়নি — অনুরোধ সম্পূর্ণ হওয়ার আগেই এই কথোপকথনটি এগিয়ে গেছে।",
       "reloadConversation": "কথোপকথন পুনরায় লোড করুন",
       "graphEdgeCount": "{count}টি প্রান্ত",
@@ -914,7 +915,7 @@
     "stale": {
       "error": "ত্রুটি · {message}",
       "unreachable": "API পৌঁছানো যায় না",
-      "lastUpdated": "স্টেল · শেষ আপডেট {age}s আগে"
+      "lastUpdated": "শেষ আপডেট {age}s আগে"
     },
     "detail": {
       "hint": "বিস্তারিত দেখতে একটি সেশন নির্বাচন করুন",
@@ -1076,7 +1077,7 @@
     "stale": {
       "error": "ত্রুটি · {message}",
       "unreachable": "API পৌঁছানো যায় না",
-      "lastUpdated": "স্টেল · শেষ আপডেট {age}s আগে"
+      "lastUpdated": "শেষ আপডেট {age}s আগে"
     },
     "zeroState": {
       "heading": "শুরু করুন",
@@ -1165,6 +1166,7 @@
     "showEarlier": "{count, plural, one {আগের {count, number}টি মেসেজ দেখান} other {আগের {count, number}টি মেসেজ দেখান}}",
     "noArgs": "(কোনো args নেই)",
     "noOutput": "(কোনো আউটপুট নেই)",
+    "outputWithheld": "পড়া হয়নি",
     "roleUser": "ইউজার",
     "roleThinking": "ভাবছে",
     "roleResponse": "রেসপন্স",

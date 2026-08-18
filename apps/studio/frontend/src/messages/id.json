@@ -508,6 +508,7 @@
       "statErrorsRecent": "Kesalahan (terbaru)",
       "noBranchErrorsPartial": "Tidak ada kesalahan dalam pesan yang dimuat.",
       "noFilesPartial": "Tidak ada operasi file terdeteksi dalam pesan yang dimuat.",
+      "filesUnionBounded": "Sebagian operasi file tidak tercantum: proses ini menyentuh lebih banyak berkas daripada yang dikumpulkan satu tampilan.",
       "olderUnavailable": "Riwayat lama tidak dapat dimuat — percakapan ini berlanjut sebelum permintaan selesai.",
       "reloadConversation": "Muat ulang percakapan",
       "graphEdgeCount": "{count} sisi",
@@ -914,7 +915,7 @@
     "stale": {
       "error": "kesalahan · {message}",
       "unreachable": "API tidak terjangkau",
-      "lastUpdated": "usang · terakhir diperbarui {age}s lalu"
+      "lastUpdated": "terakhir diperbarui {age}s lalu"
     },
     "detail": {
       "hint": "Pilih sesi untuk diperiksa",
@@ -1076,7 +1077,7 @@
     "stale": {
       "error": "kesalahan · {message}",
       "unreachable": "API tidak terjangkau",
-      "lastUpdated": "usang · terakhir diperbarui {age}s lalu"
+      "lastUpdated": "terakhir diperbarui {age}s lalu"
     },
     "zeroState": {
       "heading": "Mulai",
@@ -1165,6 +1166,7 @@
     "showEarlier": "Tampilkan {count, plural, other {{count, number} pesan sebelumnya}}",
     "noArgs": "(tanpa args)",
     "noOutput": "(tanpa output)",
+    "outputWithheld": "tidak dibaca",
     "roleUser": "pengguna",
     "roleThinking": "berpikir",
     "roleResponse": "respons",

@@ -194,6 +194,10 @@ MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("started_at", "REAL NOT NULL"),
         ("ended_at", "REAL"),
         ("session_id", "TEXT"),
+        ("invocation_id", "TEXT"),
+        ("signal_session_id", "TEXT"),
+        ("parent_session_id", "TEXT"),
+        ("outcome_json", "JSON"),
         ("export_dir", "TEXT"),
         ("error", "TEXT"),
     ],
@@ -259,6 +263,17 @@ _ATTENTION_HISTORY_SEQUENCE_INDEX = (
     "ON attention_disposition_history(sequence)",
 )
 
+# Declaring an index in the table metadata only reaches databases created after
+# the declaration: `metadata.create_all` skips a table that already exists, and
+# skips its indexes with it. Every store that predates the declaration therefore
+# keeps running the query the index exists to fix. That is what this table is
+# for, and an index that lives only in the metadata is an index most installs
+# will never have.
+_ACTIVE_SNAPSHOT_CHILD_INDEX = (
+    "CREATE INDEX IF NOT EXISTS idx_sessions_invocation_status_created "
+    "ON sessions(invocation_id, status, created_at, id) WHERE invocation_id IS NOT NULL",
+)
+
 MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
     "sqlite": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
@@ -273,7 +288,16 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         *_MESSAGE_POINTER_INDEXES,
         "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
         "ON branches(session_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_started_id "
+        "ON engine_runs(started_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_invocation "
+        "ON engine_runs(invocation_id) WHERE invocation_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_signal_session "
+        "ON engine_runs(signal_session_id) WHERE signal_session_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_parent_session "
+        "ON engine_runs(parent_session_id) WHERE parent_session_id IS NOT NULL",
         *_ATTENTION_HISTORY_SEQUENCE_INDEX,
+        *_ACTIVE_SNAPSHOT_CHILD_INDEX,
     ),
     "postgresql": (
         "CREATE INDEX IF NOT EXISTS idx_sessions_cc_session "
@@ -288,6 +312,75 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         *_MESSAGE_POINTER_INDEXES,
         "CREATE INDEX IF NOT EXISTS idx_branches_session_created "
         "ON branches(session_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_started_id "
+        "ON engine_runs(started_at DESC, id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_invocation "
+        "ON engine_runs(invocation_id) WHERE invocation_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_signal_session "
+        "ON engine_runs(signal_session_id) WHERE signal_session_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_engine_runs_parent_session "
+        "ON engine_runs(parent_session_id) WHERE parent_session_id IS NOT NULL",
         *_ATTENTION_HISTORY_SEQUENCE_INDEX,
+        *_ACTIVE_SNAPSHOT_CHILD_INDEX,
+    ),
+}
+
+
+def _widen_sessions_check(name: str, column: str, values: tuple[str, ...], marker: str) -> str:
+    """A PostgreSQL statement that replaces a narrow CHECK on ``sessions``.
+
+    ``metadata.create_all`` only creates missing tables, so a store that
+    already had ``sessions`` keeps whatever CHECK it was created with, and a
+    value added to the declared vocabulary afterwards is rejected by the
+    store that has been running longest. SQLite gets this from
+    ``_rebuild_legacy_sessions_table``, which returns early on every other
+    dialect.
+
+    ``marker`` is the newest value in the vocabulary: its absence from the
+    live definition is what identifies a constraint that predates it, so the
+    statement is a no-op once applied and does not take the table's lock on
+    every open. A constraint that is absent entirely is left alone, for the
+    same reason the SQLite side leaves it: a column with no CHECK already
+    accepts every value.
+    """
+    if marker not in values:
+        raise ValueError(f"{marker!r} is not in the vocabulary it marks: {values!r}")
+    allowed = ", ".join(f"'{value}'" for value in values)
+    # Every interpolated part is a literal written in the table below, and a
+    # constraint name cannot be bound as a parameter in any case.
+    return f"""
+DO $$
+DECLARE existing text;
+BEGIN
+  SELECT pg_get_constraintdef(c.oid) INTO existing
+    FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+   WHERE c.conname = '{name}' AND t.relname = 'sessions';
+  IF existing IS NOT NULL AND existing NOT LIKE '%{marker}%' THEN
+    ALTER TABLE sessions DROP CONSTRAINT {name};
+    ALTER TABLE sessions ADD CONSTRAINT {name}
+      CHECK ({column} IS NULL OR {column} IN ({allowed}));
+  END IF;
+END $$;
+"""  # noqa: S608
+
+
+# Statements that reconcile an existing table's constraints with the declared
+# schema. SQLite is absent on purpose: it cannot alter a CHECK in place, and
+# StateDB rebuilds the whole table there instead.
+MIGRATION_CONSTRAINTS: dict[str, tuple[str, ...]] = {
+    "postgresql": (
+        _widen_sessions_check(
+            "ck_sessions_invocation_kind",
+            "invocation_kind",
+            ("agent", "play", "flow", "fanout", "show-play", "engine"),
+            marker="engine",
+        ),
+        _widen_sessions_check(
+            "ck_sessions_source_kind",
+            "source_kind",
+            ("live", "imported_fs", "imported_codex"),
+            marker="imported_codex",
+        ),
     ),
 }

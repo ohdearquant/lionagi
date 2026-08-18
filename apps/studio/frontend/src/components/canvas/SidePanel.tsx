@@ -305,8 +305,8 @@ function EdgePanel({
           <div role="group" aria-label="Link mode" className="flex gap-1">
             {(["simple", "code"] as const).map((m) => (
               <button
-                key={m}
                 type="button"
+                key={m}
                 aria-pressed={data.mode === m}
                 onClick={() => update("mode", m)}
                 className={`focus-ring rounded px-3 py-1 text-xs font-medium ${

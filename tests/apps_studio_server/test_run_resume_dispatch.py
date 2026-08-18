@@ -307,6 +307,7 @@ def test_unknown_invocation_kind_refuses_and_never_silently_picks_a_path():
                 branch_id=None,
                 model=None,
                 allow_degraded_context=False,
+                retry_failed=False,
             )
         )
     assert "totally-unrecognized" in str(excinfo.value)
@@ -825,6 +826,101 @@ def test_conflicting_flow_resume_while_active_returns_409(flow_resume_harness):
         f"/api/runs/{session_id}/resume",
         json={"allow_degraded_context": True},
     )
+
+    assert response.status_code == 409, response.text
+    assert "already has a flow resume in progress" in response.json()["detail"]
+    assert launched == []
+
+
+# ── retry-failed opt-in ───────────────────────────────────────────────────────
+#
+# The same shape as the degraded-context opt-in above, and for the same reason:
+# both proceed past a refusal that exists to stop resume guessing. This one
+# re-executes whatever side effects a failed attempt already had, so it is never
+# defaulted and never inferred.
+
+
+def test_retry_failed_is_never_defaulted_and_only_set_on_opt_in(flow_resume_harness):
+    _svc, db_path, runs_root, client, launched = flow_resume_harness
+    session_id = str(uuid.uuid4())
+    cli_run_id = f"cli-run-{uuid.uuid4()}"
+    _run(
+        _seed_session(
+            db_path,
+            session_id=session_id,
+            invocation_kind="flow",
+            node_metadata={"run_id": cli_run_id},
+        )
+    )
+    _write_checkpoint(runs_root / cli_run_id, plan=_SOME_PLAN)
+
+    default_response = client.post(f"/api/runs/{session_id}/resume", json={})
+    assert default_response.status_code == 202, default_response.text
+    assert "--retry-failed" not in launched[0][0]
+    assert launched[0][1]["node_metadata"]["retry_failed"] is False
+
+
+def test_retry_failed_opt_in_reaches_the_launched_command(flow_resume_harness):
+    _svc, db_path, runs_root, client, launched = flow_resume_harness
+    session_id = str(uuid.uuid4())
+    cli_run_id = f"cli-run-{uuid.uuid4()}"
+    _run(
+        _seed_session(
+            db_path,
+            session_id=session_id,
+            invocation_kind="flow",
+            node_metadata={"run_id": cli_run_id},
+        )
+    )
+    _write_checkpoint(runs_root / cli_run_id, plan=_SOME_PLAN)
+
+    response = client.post(f"/api/runs/{session_id}/resume", json={"retry_failed": True})
+
+    assert response.status_code == 202, response.text
+    assert "--retry-failed" in launched[0][0]
+    assert launched[0][1]["node_metadata"]["retry_failed"] is True
+
+
+def test_a_retry_failed_resume_does_not_coalesce_onto_a_plain_one(flow_resume_harness):
+    """The in-flight dedup has to see this flag, or the caller silently gets the
+    other resume's invocation id and none of the retrying they asked for."""
+    _svc, db_path, runs_root, client, launched = flow_resume_harness
+    session_id = str(uuid.uuid4())
+    cli_run_id = f"cli-run-{uuid.uuid4()}"
+    _run(
+        _seed_session(
+            db_path,
+            session_id=session_id,
+            invocation_kind="flow",
+            node_metadata={"run_id": cli_run_id},
+        )
+    )
+    _write_checkpoint(runs_root / cli_run_id, plan=_SOME_PLAN)
+
+    async def _seed_active() -> None:
+        async with StateDB(db_path) as db:
+            await db.create_invocation(
+                {
+                    "id": "active-flow-inv",
+                    "skill": "resume:flow",
+                    "plugin": "studio_run_resume",
+                    "prompt": None,
+                    "started_at": time.time(),
+                    "status": "running",
+                    "node_metadata": {
+                        "run_id": session_id,
+                        "invocation_kind": "flow",
+                        "resume": True,
+                        "allow_degraded_context": False,
+                        "retry_failed": False,
+                        "checkpoint_run_id": cli_run_id,
+                    },
+                }
+            )
+
+    _run(_seed_active())
+
+    response = client.post(f"/api/runs/{session_id}/resume", json={"retry_failed": True})
 
     assert response.status_code == 409, response.text
     assert "already has a flow resume in progress" in response.json()["detail"]

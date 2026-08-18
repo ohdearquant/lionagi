@@ -15,7 +15,7 @@ from . import plugins as plugins_svc
 from . import sessions as sessions_svc
 from . import shows as shows_svc
 from . import skills as skills_svc
-from ._db import get_active_connection_count, store_path
+from ._db import get_active_connection_count, require_file_store, store_path
 from ._db import open_db as _open_db
 from ._path_safety import public_path
 
@@ -249,6 +249,7 @@ async def _pragmas(db: Any) -> dict[str, Any]:
 async def get_db_stats() -> dict[str, Any]:
     from .db_maintenance import get_db_size_alert, get_last_checkpoint_at
 
+    require_file_store()
     db_path = Path(store_path())
     size_bytes = db_path.stat().st_size if db_path.exists() else 0
     wal_path = db_path.parent / (db_path.name + "-wal")
@@ -308,6 +309,11 @@ async def get_db_stats() -> dict[str, Any]:
 async def get_stats() -> dict[str, Any]:
     from lionagi.studio.services.lifecycle import get_phantom_count
 
+    # Refuse before composing a response from StateDB-backed values and the
+    # SQLite-direct diagnostics below.  Otherwise a server-backed deployment
+    # can receive a well-formed aggregate whose ``db`` section describes the
+    # unrelated fallback file.
+    require_file_store()
     return {
         "playbooks": len(playbooks_svc.list_playbooks()),
         "agents": len(agents_svc.list_agents()),
