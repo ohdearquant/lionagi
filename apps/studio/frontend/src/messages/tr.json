@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "Varsayılan",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · önerilen",
+      "legacyGroup": "Eski seçim",
+      "efforts": "Çaba: {efforts}",
+      "effortInModel": "Çaba model kimliğine kodlanır",
+      "effortAsSetting": "Çaba sağlayıcı ayarı olarak gönderilir"
     },
     "effort": {
       "label": "Çaba",
@@ -503,6 +508,7 @@
       "statErrorsRecent": "hatalar (son)",
       "noBranchErrorsPartial": "yüklenen mesajlarda hata yok.",
       "noFilesPartial": "yüklenen mesajlarda dosya işlemi algılanmadı.",
+      "filesUnionBounded": "Bazı dosya işlemleri listelenmiyor: bu çalışma, bir görünümün topladığından daha fazla dosyaya dokundu.",
       "olderUnavailable": "Daha eski geçmiş yüklenemedi — bu konuşma istek tamamlanmadan önce ilerledi.",
       "reloadConversation": "Konuşmayı yeniden yükle",
       "graphEdgeCount": "{count} kenar",
@@ -516,6 +522,7 @@
       "graphNodeStatusDone": "tamamlandı",
       "graphNodeStatusFailed": "başarısız",
       "graphNodeStatusSkipped": "atlandı",
+      "graphNodeStatusCancelled": "iptal edildi",
       "graphNodeStatusEscalated": "yükseltildi",
       "progressTotal": "Toplam",
       "progressCompleted": "Tamamlandı",
@@ -552,10 +559,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "Bunu gerçekleştirecek bir komut henüz yok."
+          "no-executable-path": "Bunu gerçekleştirecek bir komut henüz yok.",
+          "no-project-scope": "Bu çalışmanın bir projesi yok, bu nedenle hiçbir denetim yetkilendirilemez."
         }
       }
     },
@@ -903,7 +912,7 @@
     "stale": {
       "error": "hata · {message}",
       "unreachable": "API erişilemiyor",
-      "lastUpdated": "güncel değil · son güncelleme {age} sn önce"
+      "lastUpdated": "son güncelleme {age} sn önce"
     },
     "detail": {
       "hint": "incelemek için bir oturum seç",
@@ -919,8 +928,7 @@
       "updated": "güncellendi",
       "branchesTitle": "dallar ({count})",
       "noBranches": "dal yok.",
-      "msgs": " mesaj",
-      "engineRuns": "Motor çalıştırmaları"
+      "msgs": " mesaj"
     },
     "split": {
       "master": "oturum listesi",
@@ -1066,7 +1074,7 @@
     "stale": {
       "error": "hata · {message}",
       "unreachable": "API erişilemiyor",
-      "lastUpdated": "güncel değil · son güncelleme {age} sn önce"
+      "lastUpdated": "son güncelleme {age} sn önce"
     },
     "zeroState": {
       "heading": "başla",
@@ -1155,6 +1163,7 @@
     "showEarlier": "önceki {count, number} mesajı göster",
     "noArgs": "(argüman yok)",
     "noOutput": "(çıktı yok)",
+    "outputWithheld": "okunmadı",
     "roleUser": "kullanıcı",
     "roleThinking": "düşünüyor",
     "roleResponse": "yanıt",

@@ -90,18 +90,32 @@ relative timestamps, formatted durations, or tables.
   "verbs": [
     {
       "verb": "agent.submit",
-      "available": true,
       "summary": "Run one agent on one task as a detached background run.",
-      "required": []
+      "required_unenforced": ["query"],
+      "schema_fingerprint": "ae06438e99123763"
+    },
+    {
+      "verb": "schedule.apply",
+      "available": false,
+      "summary": "Reconcile a whole ScheduleSet file into the store, atomically.",
+      "cli_path": "schedule apply"
     }
   ],
-  "verb_count": 68,
-  "available_count": 40,
+  "verb_count": 70,
+  "available_count": 44,
   "max_ops": 8,
   "help_usage": "help=true returns this catalog; help='<verb>' returns that verb's full parameter schema; ...",
   "synonyms_removed_after": "2026-09-30"
 }
 ```
+
+An entry states only what it cannot be read without. `available` and `required`
+are omitted at their defaults, so a verb with neither key is available and takes
+no required parameters. A verb that is not served here says so and names the
+`cli_path` that does run it, rather than repeating why; `help='<verb>'` returns
+that reason. The one entry that carries a reason inline is a verb whose schema
+failed to build, which reports a defect in this server rather than a deliberate
+exclusion.
 
 `help='<verb>'` returns that one verb's full parameter schema:
 

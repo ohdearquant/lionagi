@@ -170,7 +170,7 @@ sessions = Table(
         "invocation_kind",
         Text,
         CheckConstraint(
-            "invocation_kind IS NULL OR invocation_kind IN ('agent','play','flow','fanout','show-play')",
+            "invocation_kind IS NULL OR invocation_kind IN ('agent','play','flow','fanout','show-play','engine')",
             name="ck_sessions_invocation_kind",
         ),
     ),
@@ -190,6 +190,9 @@ sessions = Table(
     Column("status", Text),
     Column("started_at", Float),
     Column("ended_at", Float),
+    # True only when migration/import evidence supplied an approximate end;
+    # never interpret such a row as a measured wall-clock duration.
+    Column("ended_at_is_approximate", Integer, nullable=False, server_default="0"),
     # Activity.
     Column("last_message_at", Float),
     # Phase.
@@ -239,6 +242,26 @@ Index(
     sqlite_where=text("invocation_id IS NOT NULL"),
     postgresql_where=text("invocation_id IS NOT NULL"),
 )
+# The active snapshot reads one invocation's running children in creation order,
+# once per poll. On the index above, sqlite matched only `status` and then built
+# a temp b-tree to order the result, so every running session in the database was
+# visited and sorted before a LIMIT could discard any of it: the work per poll
+# tracked the whole table rather than the rows asked for. Carrying status and the
+# sort columns lets that read seek straight to the invocation and stop at its
+# limit.
+#
+# The narrower index above stays. It is a prefix of this one and so is redundant
+# for planning, but removing it is a drop that existing databases would have to
+# be migrated through, which is a separate change from this one.
+Index(
+    "idx_sessions_invocation_status_created",
+    sessions.c.invocation_id,
+    sessions.c.status,
+    sessions.c.created_at,
+    sessions.c.id,
+    sqlite_where=text("invocation_id IS NOT NULL"),
+    postgresql_where=text("invocation_id IS NOT NULL"),
+)
 Index(
     "idx_sessions_project",
     sessions.c.project,
@@ -250,6 +273,18 @@ Index(
     sessions.c.cc_session_id,
     sqlite_where=text("cc_session_id IS NOT NULL"),
     postgresql_where=text("cc_session_id IS NOT NULL"),
+)
+Index(
+    "idx_sessions_terminal_missing_end",
+    sessions.c.id,
+    sqlite_where=text(
+        "ended_at IS NULL AND status IN "
+        "('completed','completed_empty','failed','timed_out','aborted','cancelled')"
+    ),
+    postgresql_where=text(
+        "ended_at IS NULL AND status IN "
+        "('completed','completed_empty','failed','timed_out','aborted','cancelled')"
+    ),
 )
 
 # branches
@@ -540,9 +575,10 @@ schedules = Table(
     # Rolling-window fire cap: NULL means unlimited (see schema.sql).
     Column("rate_limit", JSON),
     Column("project", Text),
-    # Metric threshold alerts config + last breach fire; see schema.sql.
+    # Metric threshold alerts config + breach/evaluation watermarks; see schema.sql.
     Column("threshold_config", JSON),
     Column("last_alert_at", Float),
+    Column("last_evaluated_at", Float),
     # Observer self-health (github_poll poller); see schema.sql.
     Column("last_healthy_poll_at", Float),
     Column("poller_consecutive_401", Integer, nullable=False, server_default="0"),
@@ -904,6 +940,10 @@ engine_runs = Table(
     Column("started_at", Float, nullable=False),
     Column("ended_at", Float),
     Column("session_id", Text, ForeignKey("sessions.id", ondelete="SET NULL")),
+    Column("invocation_id", Text, ForeignKey("invocations.id", ondelete="SET NULL")),
+    Column("signal_session_id", Text, ForeignKey("sessions.id", ondelete="SET NULL")),
+    Column("parent_session_id", Text, ForeignKey("sessions.id", ondelete="SET NULL")),
+    Column("outcome_json", JSON),
     Column("export_dir", Text),
     Column("error", Text),
 )
@@ -911,11 +951,30 @@ engine_runs = Table(
 Index("idx_engine_runs_kind", engine_runs.c.kind)
 Index("idx_engine_runs_status", engine_runs.c.status)
 Index("idx_engine_runs_started", engine_runs.c.started_at)
+Index("idx_engine_runs_started_id", engine_runs.c.started_at.desc(), engine_runs.c.id.desc())
 Index(
     "idx_engine_runs_session",
     engine_runs.c.session_id,
     sqlite_where=text("session_id IS NOT NULL"),
     postgresql_where=text("session_id IS NOT NULL"),
+)
+Index(
+    "idx_engine_runs_invocation",
+    engine_runs.c.invocation_id,
+    sqlite_where=text("invocation_id IS NOT NULL"),
+    postgresql_where=text("invocation_id IS NOT NULL"),
+)
+Index(
+    "idx_engine_runs_signal_session",
+    engine_runs.c.signal_session_id,
+    sqlite_where=text("signal_session_id IS NOT NULL"),
+    postgresql_where=text("signal_session_id IS NOT NULL"),
+)
+Index(
+    "idx_engine_runs_parent_session",
+    engine_runs.c.parent_session_id,
+    sqlite_where=text("parent_session_id IS NOT NULL"),
+    postgresql_where=text("parent_session_id IS NOT NULL"),
 )
 
 # engine_defs

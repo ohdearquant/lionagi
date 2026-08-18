@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "डिफ़ॉल्ट",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · अनुशंसित",
+      "legacyGroup": "पुराना चयन",
+      "efforts": "प्रयास: {efforts}",
+      "effortInModel": "प्रयास मॉडल ID में एन्कोड किया गया है",
+      "effortAsSetting": "प्रयास प्रदाता सेटिंग के रूप में भेजा जाता है"
     },
     "effort": {
       "label": "प्रयास",
@@ -503,6 +508,7 @@
       "statErrorsRecent": "त्रुटियाँ (हाल की)",
       "noBranchErrorsPartial": "लोड किए गए मैसेज में कोई त्रुटि नहीं।",
       "noFilesPartial": "लोड किए गए मैसेज में कोई फ़ाइल ऑपरेशन नहीं मिला।",
+      "filesUnionBounded": "कुछ फ़ाइल संचालन सूचीबद्ध नहीं हैं: इस रन ने एक दृश्य में संकलित होने वाली फ़ाइलों से अधिक फ़ाइलें छुईं।",
       "olderUnavailable": "पुराना इतिहास लोड नहीं किया जा सका — अनुरोध पूरा होने से पहले यह बातचीत आगे बढ़ गई।",
       "reloadConversation": "बातचीत फिर से लोड करें",
       "graphEdgeCount": "{count} किनारे",
@@ -516,6 +522,7 @@
       "graphNodeStatusDone": "पूर्ण",
       "graphNodeStatusFailed": "विफल",
       "graphNodeStatusSkipped": "छोड़ा गया",
+      "graphNodeStatusCancelled": "रद्द",
       "graphNodeStatusEscalated": "एस्केलेटेड",
       "progressTotal": "कुल",
       "progressCompleted": "पूर्ण",
@@ -552,10 +559,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "इसे पूरा करने के लिए अभी कोई कमांड मौजूद नहीं है।"
+          "no-executable-path": "इसे पूरा करने के लिए अभी कोई कमांड मौजूद नहीं है।",
+          "no-project-scope": "इस रन का कोई प्रोजेक्ट नहीं है, इसलिए नियंत्रण अधिकृत नहीं किया जा सकता।"
         }
       }
     },
@@ -903,7 +912,7 @@
     "stale": {
       "error": "त्रुटि · {message}",
       "unreachable": "API पहुँच से बाहर है",
-      "lastUpdated": "स्टेल · आखिरी अपडेट {age} सेकंड पहले"
+      "lastUpdated": "आखिरी अपडेट {age} सेकंड पहले"
     },
     "detail": {
       "hint": "जाँचने के लिए सेशन चुनें",
@@ -919,8 +928,7 @@
       "updated": "अपडेट हुआ",
       "branchesTitle": "ब्रांच ({count})",
       "noBranches": "कोई ब्रांच नहीं।",
-      "msgs": " मैसेज",
-      "engineRuns": "इंजन रन"
+      "msgs": " मैसेज"
     },
     "split": {
       "master": "सेशन सूची",
@@ -1066,7 +1074,7 @@
     "stale": {
       "error": "त्रुटि · {message}",
       "unreachable": "API पहुँच से बाहर है",
-      "lastUpdated": "स्टेल · आखिरी अपडेट {age} सेकंड पहले"
+      "lastUpdated": "आखिरी अपडेट {age} सेकंड पहले"
     },
     "zeroState": {
       "heading": "शुरू करें",
@@ -1155,6 +1163,7 @@
     "showEarlier": "{count, plural, one {# पुराना मैसेज दिखाएँ} other {# पुराने मैसेज दिखाएँ}}",
     "noArgs": "(कोई args नहीं)",
     "noOutput": "(कोई आउटपुट नहीं)",
+    "outputWithheld": "पढ़ा नहीं गया",
     "roleUser": "यूज़र",
     "roleThinking": "सोच रहा है",
     "roleResponse": "रिस्पॉन्स",

@@ -35,6 +35,7 @@ import type {
   OperatorFrame,
   OperatorModelCatalogEntry,
   OperatorProposalPayload,
+  OperatorProvider,
   OperatorTextPayload,
   OperatorToolCallPayload,
   OperatorToolResultPayload,
@@ -73,6 +74,23 @@ const AUTO_ALLOW_KEY = "studio:operator-auto-allow";
 const DEFAULT_WIDTH = 408;
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 640;
+
+const OPERATOR_PROVIDER_ORDER: OperatorProvider[] = ["claude_code", "codex", "gemini_code"];
+
+const OPERATOR_PROVIDER_LABELS: Record<OperatorProvider, string> = {
+  claude_code: "Claude",
+  codex: "Codex",
+  gemini_code: "Gemini",
+};
+
+function groupModelsByProvider(
+  catalog: OperatorModelCatalogEntry[],
+): { provider: OperatorProvider; models: OperatorModelCatalogEntry[] }[] {
+  return OPERATOR_PROVIDER_ORDER.map((provider) => ({
+    provider,
+    models: catalog.filter((entry) => entry.provider === provider),
+  })).filter((group) => group.models.length > 0);
+}
 
 interface Props {
   open: boolean;
@@ -803,6 +821,11 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const effortChoices = useMemo(
     () => modelCatalog.find((entry) => entry.id === model)?.efforts ?? [],
+    [modelCatalog, model],
+  );
+  const modelGroups = useMemo(() => groupModelsByProvider(modelCatalog), [modelCatalog]);
+  const selectedModelEntry = useMemo(
+    () => modelCatalog.find((entry) => entry.id === model) ?? null,
     [modelCatalog, model],
   );
   // Derived, not synced via effect: a stale selection from a previous model
@@ -1728,6 +1751,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
               <div className="flex shrink-0 items-center gap-1.5">
                 <select
                   aria-label={t("model.label")}
+                  aria-describedby={selectedModelEntry ? "operator-model-consequence" : undefined}
                   title={t("model.label")}
                   value={model}
                   onChange={(event) => {
@@ -1740,14 +1764,27 @@ export default function OperatorPanel({ open, onClose }: Props) {
                   className="max-w-32 border-0 bg-transparent py-0 font-data text-meta text-content-muted outline-none focus:text-content-primary"
                 >
                   <option value="">{t("model.default")}</option>
-                  {model && !modelCatalog.some((entry) => entry.id === model) && (
-                    <option value={model}>{t("model.unavailable", { model })}</option>
-                  )}
-                  {modelCatalog.map((entry) => (
-                    <option key={entry.id} value={entry.id}>
-                      {entry.label}
-                    </option>
+                  {modelGroups.map((group) => (
+                    <optgroup
+                      key={group.provider}
+                      label={t("model.recommendedGroup", {
+                        provider: OPERATOR_PROVIDER_LABELS[group.provider],
+                      })}
+                    >
+                      {group.models.map((entry) => (
+                        <option key={entry.id} value={entry.id}>
+                          {entry.efforts.length > 0
+                            ? `${entry.label} · ${entry.efforts.join(" / ")}`
+                            : entry.label}
+                        </option>
+                      ))}
+                    </optgroup>
                   ))}
+                  {model && !selectedModelEntry && (
+                    <optgroup label={t("model.legacyGroup")}>
+                      <option value={model}>{t("model.unavailable", { model })}</option>
+                    </optgroup>
+                  )}
                 </select>
                 {effortChoices.length > 0 && (
                   // Effort is the first thing to go when the row gets tight. It
@@ -1808,6 +1845,25 @@ export default function OperatorPanel({ open, onClose }: Props) {
                 </Button>
               )}
             </div>
+            {selectedModelEntry && (
+              <p
+                id="operator-model-consequence"
+                data-testid="operator-model-consequence"
+                className="-mt-1 flex flex-wrap items-center gap-x-1.5 px-2 pb-2 font-data text-[length:var(--t-xs)] leading-tight text-content-muted"
+              >
+                <span>{OPERATOR_PROVIDER_LABELS[selectedModelEntry.provider]}</span>
+                <span aria-hidden>·</span>
+                <span>
+                  {t("model.efforts", { efforts: selectedModelEntry.efforts.join(" / ") })}
+                </span>
+                <span aria-hidden>·</span>
+                <span>
+                  {selectedModelEntry.provider === "gemini_code"
+                    ? t("model.effortInModel")
+                    : t("model.effortAsSetting")}
+                </span>
+              </p>
+            )}
           </div>
         </footer>
       </aside>

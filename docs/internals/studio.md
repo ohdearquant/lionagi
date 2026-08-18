@@ -396,6 +396,27 @@ message ids) must not fall through to `0 or fallback`.
   necessarily about *now*), shelling out to git off the event loop under
   its own budget so a daemon never stalls on its own health check.
 
+## lionagi/studio/services/engine_runs.py
+
+- **Canonical runtime identity** — A persisted Engine execution has one
+  `engine_runs.id`, one signal session whose id is the same value, and optional
+  links to its outer Studio invocation and caller-supplied parent session.
+  `li engine run --invocation` wins over `LIONAGI_INVOCATION_ID`; the signal
+  session is persisted with `invocation_kind="engine"`. Embedded Workflow
+  Engine nodes stay inside the workflow's canonical session and expose a
+  per-node `engine_span_id` instead of creating a second top-level run row.
+- **Outcome envelope** — `outcome_json` is a bounded, versioned summary of
+  status, degradation, timing, result shape, effective-model provenance, and a
+  configuration fingerprint. It never stores prompt or result content. A run
+  that completed with degraded branches keeps `status="completed"` and
+  `error=NULL`; terminal `error` is reserved for total failure/cancellation.
+- **List/detail split** — `GET /api/engine-runs/` reads a seekable summary
+  projection and never selects stored `spec_json`, export paths, or raw error
+  text. Its cursor is opaque and bound to the active filters. Detail returns a
+  redacted, byte-capped preview by default; the larger redacted stored input is
+  available only through the explicit `include_spec=true` request made by the
+  Studio reveal control.
+
 ## lionagi/studio/services/operator.py
 
 **`report_operator_view`** — Records where the human is now, so the
@@ -654,7 +675,7 @@ never half-emitted.
   worker actually uses, which is why claim-time rejections must also
   surface observably (`worker._reject_claim`).
 
-## lionagi/studio/services/db_maintenance.py
+## lionagi/studio/services/db_maintenance.py — retention lineage cleanup
 
 - **`prune_old_data` FK safety** — `branches` CASCADE on `sessions`;
   `artifacts`/`plays`/`team_messages`/`dispatch_outbox` have soft FKs (no
@@ -674,7 +695,6 @@ never half-emitted.
 - **Audit event ordering** — Runs after the prune transaction commits;
   `insert_admin_event` opens its own write transaction, and nesting it inside
   the prune transaction would self-deadlock on the sqlite write lock.
-
 - **`_session_retention_predicate`** — What makes a session prunable
   (terminal status AND no activity since a cutoff), built as one reusable
   SQL fragment + params rather than a full statement, because the prune
@@ -1079,6 +1099,52 @@ carrying the reason and — whenever `notify_request()` finds a notify
 payload — emits a `dispatch_outbox` row via
 `lionagi.dispatch.outbox.enqueue_dispatch`.
 
+## lionagi/studio/scheduler/engine.py — admission and dispatch details
+
+**`_reserve_max_runs_budget`** — reserves one top-level fire against a
+schedule's `max_runs` cap. A fire consumes budget the instant it fires, not
+when it resolves, so the count it checks is `fired + inflight`: `fired` is
+the persisted count of `running`-or-terminal `schedule_run` rows, and
+`inflight` is an in-process counter of fires that have claimed budget but
+whose occurrence row has not yet committed. The two are disjoint views of
+the same fire — a claim is released the moment the occurrence row lands —
+so summing them counts each fire exactly once, except for a brief instant
+during the handoff where a fire can appear in both; that only ever
+over-counts, which just causes a spurious refusal that self-corrects on the
+next tick. Only one scheduler process runs today, so this reservation is
+in-memory (an `asyncio.Lock`-guarded dict), not a database compare-and-set.
+
+The order of the two reads inside that lock is the load-bearing part.
+`inflight` is read *before* the `await` on `count_schedule_runs()`, not
+after. `release()` (called from `_fire()`'s `finally` block on every exit
+path, so a claim always gets freed even from a cancelled or failing fire)
+does not take the lock — it must work even while a fire is mid-cancellation,
+where acquiring a lock from a `finally` block risks a deadlock. That makes
+it possible for a concurrent fire to release its claim *while this call is
+suspended awaiting the database*. If `inflight` were read after that await,
+a fire that both writes its occurrence row and releases its claim entirely
+inside the suspended window would vanish from both counts at once: too late
+for the in-flight snapshot (already released) and too early for the
+persisted count (the read started before the write landed) — letting a
+bounded schedule fire one more time than `max_runs` allows. Reading
+`inflight` first means it still captures that other fire's claim before it
+can disappear, so the sum can only ever over-count, never under-count.
+
+`_tick()`'s ad-hoc task-worker pass runs single-flight: a second `_tick()`
+firing while the first pass is still in progress must not start a second
+pass, and must not await the first pass either — a slow or hung worker pass
+would otherwise stall every schedule's due-time evaluation for the whole
+tick. `_tick()` starts the pass as a background task and returns promptly
+regardless of whether it is still running.
+
+`resolve_terminal` (child-session outcome inference) does not trust a
+leader process's exit code as evidence that a still-running child session's
+own work has finished — the terminal stamp comes from the leader's stderr
+pipe closing, not from the child's work actually ending. A child session
+that has not reached any terminal status of its own is reported as
+`completed_empty` (no positive evidence) rather than being inferred as
+`completed`.
+
 ## lionagi/studio/scheduler/worker.py
 
 `claim_and_execute`'s D4 match rule: row R is claimable iff its capability
@@ -1355,8 +1421,22 @@ to the same spelling) so the marker list only needs one spelling per
 concept. A short, closed set of names (`auth`, `authentication`, `bearer`)
 is matched by exact equality rather than substring, because those words
 also occur inside unrelated field names (`author`, `authorized_keys_count`)
-that must not be redacted. `redact_arguments` applies the same field-name
-judgment recursively, carrying the parent key down into nested containers
+that must not be redacted. The free-text rule asks the same question: a
+`name=value` or `name: value` assignment in prose is matched generically and
+then judged by `is_secret_field_name`, so a name the mapping layer calls a
+credential cannot be one the prose layer serves. That gap was real —
+`Authorization=Token ...` written into a spec's own free text kept its value
+while the same name used as a key had it removed, and `auth_token=`,
+`credential=` and `MY_API_KEY=` behaved the same way. Two consequences follow
+from sharing the rule. An auth header keeps its scheme
+(`Authorization: Bearer [redacted]`), because the scheme names a mechanism
+and not a credential, and an unrecognized scheme is taken along with the
+credential rather than left standing in front of it. And a purely numeric
+value is left alone, since the marker test matches by substring and
+`max_tokens: 4096` is a count — the mapping layer already lets that through,
+because `redact_scalar` only redacts strings. `redact_arguments` applies the
+same field-name judgment recursively, carrying the parent key down into
+nested containers
 — without that, `{"auth": "..."}` was withheld while `{"auth": {"value":
 "..."}}` was served, the same field-name gap recurring one level down.
 Two independent byte caps (`cap_by_bytes` for a list of items,
@@ -1380,10 +1460,9 @@ free-text field goes through `scrub_text` and `project` through
 `public_project`; `manifest` (an unbounded mapping) goes through the
 recursive redactor plus a byte cap. These fields are redacted even though
 today's StateDB-backed carrier already fills most of them with safe
-placeholders, because the projection has to be safe for what the field
-names promise across every backing carrier (a manifest-backed builder
-elsewhere fills the same names from raw, untrusted manifest text), not
-just for the values one code path happens to supply right now.
+placeholders, because the projection contract must remain safe for future
+backing carriers rather than depending on the values one current path happens
+to supply.
 
 `run_progress` reports operation counts two ways depending on what the run
 has: for an ordinary run it counts branches by status; for a DAG run (one
@@ -1401,9 +1480,9 @@ it was written to do) while still being counted separately in
 caller can tell "nothing happened" from "the field doesn't exist yet."
 
 `run_findings` derives tool-call outcomes (`success`/`error`/`pending`)
-from message content via the same `_detect_status` heuristic
-`lionagi.studio.services.runs` already uses for the run-detail step list,
-since plain session messages carry no structured `ok: bool`. Every section
+from message content via the shared `_detect_status` heuristic retained in
+`lionagi.studio.services.runs` for Session/operator projections, since plain
+session messages carry no structured `ok: bool`. Every section
 here is bounded by a message *window* (the carrier is called with a fixed
 `message_limit`) before any byte cap ever applies — the byte cap almost
 never fires in practice, so `truncated` reports both, and the response

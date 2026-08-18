@@ -3,7 +3,7 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
-import type { EngineRunSummary } from "@/lib/api";
+import type { EngineRunPage, EngineRunSummary } from "@/lib/api";
 
 const api = vi.hoisted(() => ({
   listEngineRuns: vi.fn(),
@@ -25,14 +25,21 @@ function run(index: number): EngineRunSummary {
   return {
     id: `run-${index}`,
     kind: `engine-${index}`,
-    spec_json: {},
     status: "completed",
     started_at: index,
     ended_at: index + 1,
     session_id: null,
-    export_dir: null,
-    error: null,
+    invocation_id: null,
+    signal_session_id: null,
+    parent_session_id: null,
+    outcome: null,
+    has_output: false,
+    error_code: null,
   };
+}
+
+function page(items: EngineRunSummary[], nextCursor: string | null = null): EngineRunPage {
+  return { version: 1, items, next_cursor: nextCursor };
 }
 
 describe("EngineRunsSpace", () => {
@@ -70,7 +77,7 @@ describe("EngineRunsSpace", () => {
   }
 
   it("keeps filter edits local until the user submits Apply", async () => {
-    api.listEngineRuns.mockResolvedValue([]);
+    api.listEngineRuns.mockResolvedValue(page([]));
     await mount();
     expect(api.listEngineRuns).toHaveBeenCalledOnce();
 
@@ -96,14 +103,19 @@ describe("EngineRunsSpace", () => {
     });
     expect(api.listEngineRuns).toHaveBeenCalledTimes(2);
     expect(api.listEngineRuns).toHaveBeenLastCalledWith(
-      expect.objectContaining({ kind: "chat", limit: 100, offset: 0 }),
+      expect.objectContaining({ kind: "chat", limit: 100 }),
     );
   });
 
   it("loads the next page so rows beyond the first 100 are reachable", async () => {
     api.listEngineRuns
-      .mockResolvedValueOnce(Array.from({ length: 100 }, (_, index) => run(index)))
-      .mockResolvedValueOnce([run(100)]);
+      .mockResolvedValueOnce(
+        page(
+          Array.from({ length: 100 }, (_, index) => run(index)),
+          "c1",
+        ),
+      )
+      .mockResolvedValueOnce(page([run(100)]));
     await mount();
 
     const loadMore = Array.from(container.querySelectorAll("button")).find(
@@ -118,29 +130,39 @@ describe("EngineRunsSpace", () => {
     });
 
     expect(api.listEngineRuns).toHaveBeenLastCalledWith(
-      expect.objectContaining({ limit: 100, offset: 100 }),
+      expect.objectContaining({ limit: 100, cursor: "c1" }),
     );
     expect(container.textContent).toContain("engine-100");
   });
 
   it("cancels stale load-more state when filters start a new first page", async () => {
-    let resolveOldPage!: (runs: EngineRunSummary[]) => void;
-    let resolveNewPage!: (runs: EngineRunSummary[]) => void;
-    api.listEngineRuns.mockImplementation((options: { kind?: string; offset?: number } = {}) => {
-      if (options.kind === "chat" && options.offset === 100) {
-        return new Promise<EngineRunSummary[]>((resolve) => {
+    let resolveOldPage!: (runs: EngineRunPage) => void;
+    let resolveNewPage!: (runs: EngineRunPage) => void;
+    api.listEngineRuns.mockImplementation((options: { kind?: string; cursor?: string } = {}) => {
+      if (options.kind === "chat" && options.cursor === "c-chat") {
+        return new Promise<EngineRunPage>((resolve) => {
           resolveNewPage = resolve;
         });
       }
       if (options.kind === "chat") {
-        return Promise.resolve(Array.from({ length: 100 }, (_, index) => run(index + 200)));
+        return Promise.resolve(
+          page(
+            Array.from({ length: 100 }, (_, index) => run(index + 200)),
+            "c-chat",
+          ),
+        );
       }
-      if (options.offset === 100) {
-        return new Promise<EngineRunSummary[]>((resolve) => {
+      if (options.cursor === "c-all") {
+        return new Promise<EngineRunPage>((resolve) => {
           resolveOldPage = resolve;
         });
       }
-      return Promise.resolve(Array.from({ length: 100 }, (_, index) => run(index)));
+      return Promise.resolve(
+        page(
+          Array.from({ length: 100 }, (_, index) => run(index)),
+          "c-all",
+        ),
+      );
     });
     await mount();
 
@@ -181,7 +203,7 @@ describe("EngineRunsSpace", () => {
     expect(buttonNamed("Loading…")?.disabled).toBe(true);
 
     await act(async () => {
-      resolveOldPage([run(100)]);
+      resolveOldPage(page([run(100)]));
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -189,7 +211,7 @@ describe("EngineRunsSpace", () => {
     expect(container.textContent).not.toContain("engine-100");
 
     await act(async () => {
-      resolveNewPage([run(300)]);
+      resolveNewPage(page([run(300)]));
       await Promise.resolve();
       await Promise.resolve();
     });

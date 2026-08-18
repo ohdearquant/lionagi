@@ -10,6 +10,7 @@ in-memory DB, mirrors test_scheduler_budget.py's sum_schedule_spend tests).
 
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -288,6 +289,7 @@ async def test_maybe_fire_no_breach_advances_next_fire_without_firing():
     args, kwargs = svc.update_schedule.await_args
     assert args[0] == "sched-001"
     assert "next_fire_at" in kwargs
+    assert kwargs["last_evaluated_at"] == 1000.0
     assert "last_alert_at" not in kwargs
 
 
@@ -355,7 +357,7 @@ async def test_maybe_fire_breach_within_cooldown_suppresses_refire():
         await engine._maybe_fire(schedule, now=1000.0)
 
     mock_tracked.assert_not_called()
-    # Only the next_fire_at advance -- no second last_alert_at stamp.
+    # Cadence/evaluation watermarks advance, but no second last_alert_at stamp.
     last_alert_calls = [
         c for c in svc.update_schedule.await_args_list if "last_alert_at" in c.kwargs
     ]
@@ -1094,11 +1096,11 @@ async def test_metric_value_github_poll_consecutive_401_counts_and_resets():
     await state.close()
 
 
-# create_schedule / update_schedule round-trip threshold_config + last_alert_at
+# create_schedule / update_schedule round-trip threshold watermarks
 
 
 @pytest.mark.asyncio
-async def test_schedule_round_trips_threshold_config_and_last_alert_at():
+async def test_schedule_round_trips_threshold_config_and_watermarks():
     from lionagi.state.db import StateDB
 
     state = StateDB(":memory:")
@@ -1128,10 +1130,12 @@ async def test_schedule_round_trips_threshold_config_and_last_alert_at():
         "window_minutes": 60,
     }
     assert row["last_alert_at"] is None
+    assert row["last_evaluated_at"] is None
 
-    await state.update_schedule("sched-threshold-1", last_alert_at=123.0)
+    await state.update_schedule("sched-threshold-1", last_alert_at=123.0, last_evaluated_at=456.0)
     row = await state.get_schedule("sched-threshold-1")
     assert row["last_alert_at"] == 123.0
+    assert row["last_evaluated_at"] == 456.0
 
     await state.close()
 
@@ -1168,3 +1172,319 @@ def test_threshold_metric_queries_serve_only_metrics_the_scheduler_accepts():
     from lionagi.studio.scheduler.threshold import VALID_METRICS
 
     assert set(StateDB._THRESHOLD_METRIC_QUERIES) <= VALID_METRICS
+
+
+# The evaluation watermark is stamped for every outcome of a breach, not
+# only the ones that fire. A suppressed breach still means the detector ran;
+# leaving last_evaluated_at unset there makes a healthy detector read as one
+# that never evaluated. Each gate gets its own arm rather than a sample,
+# because the failure mode is one branch missing the stamp.
+
+
+def _breach_schedule(**overrides) -> dict:
+    return _minimal_schedule(
+        next_fire_at=1000.0,
+        threshold_config={
+            "metric": "failed_sessions",
+            "op": "gt",
+            "value": 5,
+            "window_minutes": 30,
+        },
+        **overrides,
+    )
+
+
+def _stamped_watermarks(svc) -> list[float]:
+    return [
+        call.kwargs["last_evaluated_at"]
+        for call in svc.update_schedule.await_args_list
+        if "last_evaluated_at" in call.kwargs
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "gate",
+    ["overlap", "budget", "rate_limit", "max_runs", "global_slot", "admitted"],
+)
+async def test_a_breach_stamps_the_watermark_whatever_suppresses_the_fire(gate: str):
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.metric_value = AsyncMock(return_value=9.0)
+    engine = SchedulerEngine(svc=svc)
+    schedule = _breach_schedule()
+
+    stack = []
+    if gate == "overlap":
+        engine._running[schedule["id"]] = object()
+        stack.append(patch("lionagi.studio.scheduler.engine.create_skipped_run", AsyncMock()))
+    else:
+        stack.append(
+            patch.object(engine, "_check_budget", AsyncMock(return_value=gate == "budget"))
+        )
+        if gate == "budget":
+            stack.append(patch.object(engine, "_disable_for_budget_exhausted", AsyncMock()))
+        else:
+            stack.append(
+                patch.object(
+                    engine,
+                    "_reserve_rate_limit",
+                    AsyncMock(return_value=(gate != "rate_limit", None)),
+                )
+            )
+            if gate != "rate_limit":
+                stack.append(
+                    patch.object(
+                        engine,
+                        "_reserve_max_runs_budget",
+                        AsyncMock(return_value=(gate != "max_runs", None)),
+                    )
+                )
+                if gate != "max_runs":
+                    stack.append(
+                        patch.object(
+                            engine,
+                            "_reserve_global_slot",
+                            AsyncMock(return_value=(gate != "global_slot", None)),
+                        )
+                    )
+                    if gate == "global_slot":
+                        stack.append(patch.object(engine, "_maybe_record_deferred", AsyncMock()))
+    # _tracked_fire is called, not awaited (it schedules its own task), so the
+    # double is a plain mock — an AsyncMock would leave an un-awaited coroutine.
+    stack.append(patch.object(engine, "_tracked_fire"))
+
+    with contextlib.ExitStack() as es:
+        for ctx in stack:
+            es.enter_context(ctx)
+        await engine._maybe_fire(schedule, now=1000.0)
+
+    assert _stamped_watermarks(svc) == [1000.0], (
+        f"the {gate} outcome left last_evaluated_at unset, so a detector that "
+        "did evaluate reads as one that never ran"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_watermark_write_gives_back_the_cooldown_reservation():
+    """A leaked reservation would mute the alert until the engine restarts.
+
+    The watermark is stamped after the cooldown reservation is taken, so the
+    write has to sit inside the region whose finally releases that reservation.
+    """
+    from lionagi.studio.scheduler.engine import SchedulerEngine
+
+    svc = _make_svc()
+    svc.metric_value = AsyncMock(return_value=9.0)
+    svc.update_schedule = AsyncMock(side_effect=RuntimeError("db down"))
+    engine = SchedulerEngine(svc=svc)
+    schedule = _breach_schedule()
+
+    with pytest.raises(RuntimeError, match="db down"):
+        await engine._maybe_fire(schedule, now=1000.0)
+
+    assert schedule["id"] not in engine._threshold_pending, (
+        "the failed watermark write kept the cooldown reservation, so every "
+        "later tick reads a fire as already pending and the alert never fires again"
+    )
+
+    # The next tick, against a healthy service, still fires.
+    svc.update_schedule = AsyncMock()
+    with (
+        patch.object(engine, "_check_budget", AsyncMock(return_value=False)),
+        patch.object(engine, "_reserve_rate_limit", AsyncMock(return_value=(True, None))),
+        patch.object(engine, "_reserve_max_runs_budget", AsyncMock(return_value=(True, None))),
+        patch.object(engine, "_reserve_global_slot", AsyncMock(return_value=(True, None))),
+        patch.object(engine, "_tracked_fire") as fire,
+    ):
+        await engine._maybe_fire(schedule, now=1100.0)
+    assert fire.call_count == 1
+
+
+# failed_sessions counts distinct causes, not rows
+
+
+async def _make_failed(
+    state,
+    sess_id: str,
+    *,
+    ended_at: float,
+    invocation_id: str | None = None,
+    reason: str | None = None,
+    status: str = "failed",
+):
+    """Create a session and drive it to *status* the way production does.
+
+    status_reason_code is written by the lifecycle transition, not as a plain
+    column, so a session that is born terminal never carries one. These rows
+    are created running and then transitioned, which is what puts a real
+    reason code on them.
+    """
+    prog_id = f"prog-{sess_id}"
+    await state.create_progression(prog_id)
+    await state.create_session(
+        {
+            "id": sess_id,
+            "progression_id": prog_id,
+            "status": "running",
+            "started_at": ended_at - 1,
+        }
+    )
+    if invocation_id is not None:
+        # invocation_id is a foreign key, so the invocation has to exist. The
+        # same id is shared deliberately across a fan-out's sessions, and
+        # create_invocation is ON CONFLICT DO NOTHING, so the repeated calls
+        # that come with it are already no-ops. Nothing is caught here on
+        # purpose: a fixture that swallows its own database errors reports
+        # them later as a wrong count somewhere else.
+        await state.create_invocation(
+            {"id": invocation_id, "skill": "test", "started_at": ended_at - 2}
+        )
+        await state.update_session(sess_id, invocation_id=invocation_id)
+    await state.update_status(
+        "session",
+        sess_id,
+        new_status=status,
+        reason_code=reason or "run.failed.exception",
+    )
+    await state.update_session(sess_id, ended_at=ended_at)
+
+
+@pytest.mark.asyncio
+async def test_a_fanout_sharing_one_invocation_and_one_wall_is_one_cause():
+    """A wide fan-out meeting a single wall must not breach a threshold by width.
+
+    One invocation spawns a session per worker. When a provider refuses all of
+    them, that is one thing going wrong reported many times, and counting rows
+    makes any fan-out wider than the threshold breach it by construction.
+    """
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    for i in range(24):
+        await _make_failed(
+            state,
+            f"worker-{i}",
+            ended_at=100.0 + i,
+            invocation_id="one-fanout",
+            reason="run.failed.provider_retryable",
+        )
+
+    assert await state.metric_value("failed_sessions", window_start=50.0) == 1.0
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_failures_carrying_no_invocation_are_not_merged_together():
+    """NULL is an unknown grouping, not a shared one.
+
+    Most failed sessions carry no invocation id. Grouping on the raw column
+    lets SQL treat those NULLs as equal and collapses unrelated failures into
+    a single row, which silently disables the alarm for the bulk of the
+    population. Unknown groupings stay apart.
+    """
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    for i in range(3):
+        await _make_failed(
+            state, f"orphan-{i}", ended_at=100.0 + i, reason="run.failed.provider_nonretryable"
+        )
+
+    assert await state.metric_value("failed_sessions", window_start=50.0) == 3.0
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_one_invocation_meeting_two_different_walls_is_two_causes():
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await _make_failed(
+        state, "a", ended_at=100.0, invocation_id="shared", reason="run.failed.provider_retryable"
+    )
+    await _make_failed(
+        state, "b", ended_at=101.0, invocation_id="shared", reason="run.failed.provider_retryable"
+    )
+    await _make_failed(
+        state, "c", ended_at=102.0, invocation_id="shared", reason="run.failed.exception"
+    )
+
+    assert await state.metric_value("failed_sessions", window_start=50.0) == 2.0
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_a_session_id_cannot_answer_for_another_sessions_invocation_id():
+    """The fallback and the real column are different namespaces.
+
+    A session with no invocation falls back to its own id for grouping. If
+    that value is compared against invocation ids as though they were the same
+    namespace, a session whose id happens to equal another session's
+    invocation_id shares a grouping key with it, and when the two also share a
+    reason they count once instead of twice. The error runs toward reporting
+    fewer causes than there are, which is the direction that holds an alert
+    below its threshold, so it fails quietly rather than loudly.
+
+    Nothing stops the two id spaces from overlapping: they are separate tables
+    with separately assigned ids, and equality between them carries no meaning
+    at all.
+    """
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    # No invocation, so this row groups under its own id.
+    await _make_failed(state, "shared", ended_at=100.0, reason="run.failed.exception")
+    # A different failure that really does belong to an invocation, whose id
+    # collides with the session id above. Same reason, so the grouping key is
+    # the only thing keeping these two apart.
+    await _make_failed(
+        state, "other", ended_at=101.0, invocation_id="shared", reason="run.failed.exception"
+    )
+
+    assert await state.metric_value("failed_sessions", window_start=50.0) == 2.0
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_cause_counting_still_respects_the_window_and_the_status_filter():
+    """The grouping change must not widen or narrow what is eligible to count."""
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await _make_failed(
+        state, "in-failed", ended_at=100.0, invocation_id="i1", reason="run.failed.exception"
+    )
+    await _make_failed(
+        state,
+        "in-timed-out",
+        ended_at=110.0,
+        invocation_id="i2",
+        reason="run.timed_out.deadline",
+        status="timed_out",
+    )
+    await _make_failed(
+        state,
+        "in-completed",
+        ended_at=120.0,
+        invocation_id="i3",
+        reason="run.completed.ok",
+        status="completed",
+    )
+    await _make_failed(
+        state, "before-window", ended_at=10.0, invocation_id="i4", reason="run.failed.exception"
+    )
+
+    assert await state.metric_value("failed_sessions", window_start=50.0) == 2.0
+    await state.close()

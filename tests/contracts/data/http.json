@@ -1309,7 +1309,7 @@
         "GET"
       ],
       "name": "list_engine_runs",
-      "response_model": "builtins.list",
+      "response_model": "builtins.dict",
       "dependencies": [],
       "response_class": {
         "default_placeholder": "starlette.responses.JSONResponse"
@@ -1320,11 +1320,8 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "additionalProperties": true
-                },
+                "type": "object",
+                "additionalProperties": true,
                 "title": "Response List Engine Runs Api Engine Runs  Get"
               }
             }
@@ -1346,7 +1343,7 @@
         "engine-runs"
       ],
       "summary": null,
-      "description": "List engine runs, newest-first.  All query params are optional filters.",
+      "description": "List engine-run summaries without stored input, newest-first.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi.studio.services.engine_runs",
@@ -8218,8 +8215,26 @@
             "engine-runs"
           ],
           "summary": "List Engine Runs",
-          "description": "List engine runs, newest-first.  All query params are optional filters.",
+          "description": "List engine-run summaries without stored input, newest-first.",
           "parameters": [
+            {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Opaque keyset cursor.",
+                "title": "Cursor"
+              },
+              "description": "Opaque keyset cursor."
+            },
             {
               "name": "kind",
               "in": "query",
@@ -8248,17 +8263,6 @@
                 "minimum": 1,
                 "default": 100,
                 "title": "Limit"
-              }
-            },
-            {
-              "name": "offset",
-              "in": "query",
-              "required": false,
-              "schema": {
-                "type": "integer",
-                "minimum": 0,
-                "default": 0,
-                "title": "Offset"
               }
             },
             {
@@ -8304,11 +8308,8 @@
               "content": {
                 "application/json": {
                   "schema": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "additionalProperties": true
-                    },
+                    "type": "object",
+                    "additionalProperties": true,
                     "title": "Response List Engine Runs Api Engine Runs  Get"
                   }
                 }
@@ -8335,6 +8336,18 @@
           "summary": "Get Engine Run",
           "description": "Return a single engine run row by id.",
           "parameters": [
+            {
+              "name": "include_spec",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "boolean",
+                "description": "Reveal the redacted, byte-capped stored input.",
+                "default": false,
+                "title": "Include Spec"
+              },
+              "description": "Reveal the redacted, byte-capped stored input."
+            },
             {
               "name": "run_id",
               "in": "path",
@@ -14255,6 +14268,11 @@
           "allow_degraded_context": {
             "type": "boolean",
             "title": "Allow Degraded Context",
+            "default": false
+          },
+          "retry_failed": {
+            "type": "boolean",
+            "title": "Retry Failed",
             "default": false
           }
         },

@@ -4,7 +4,13 @@
  * a multi-agent invocation kind, or any run that spawned more than one branch.
  */
 import { describe, it, expect } from "vitest";
-import { hasRunTree, mergeRunDetail, RunItem } from "../src/runs/runItem.js";
+import {
+  hasRunTree,
+  isTerminal,
+  mergeRunDetail,
+  RunItem,
+  statusIcon,
+} from "../src/runs/runItem.js";
 import type { Run } from "../src/api/types.js";
 
 function run(overrides: Partial<Run>): Run {
@@ -37,32 +43,53 @@ function run(overrides: Partial<Run>): Run {
 describe("hasRunTree", () => {
   it("is true for multi-agent invocation kinds even with a single branch", () => {
     for (const kind of ["flow", "fanout", "show-play"]) {
-      expect(hasRunTree(run({ invocation_kind: kind, branch_count: 1 }))).toBe(true);
+      expect(hasRunTree(run({ invocation_kind: kind, branch_count: 1 }))).toBe(
+        true,
+      );
     }
   });
 
   it("is false for single-agent and observed runs with one branch", () => {
-    expect(hasRunTree(run({ invocation_kind: "agent", branch_count: 1 }))).toBe(false);
-    expect(hasRunTree(run({ invocation_kind: "play", branch_count: 1 }))).toBe(false);
-    expect(hasRunTree(run({ invocation_kind: null, branch_count: 1 }))).toBe(false);
+    expect(hasRunTree(run({ invocation_kind: "agent", branch_count: 1 }))).toBe(
+      false,
+    );
+    expect(hasRunTree(run({ invocation_kind: "play", branch_count: 1 }))).toBe(
+      false,
+    );
+    expect(hasRunTree(run({ invocation_kind: null, branch_count: 1 }))).toBe(
+      false,
+    );
   });
 
   it("is true for any run that spawned more than one branch", () => {
-    expect(hasRunTree(run({ invocation_kind: "agent", branch_count: 3 }))).toBe(true);
-    expect(hasRunTree(run({ invocation_kind: null, branch_count: 2 }))).toBe(true);
+    expect(hasRunTree(run({ invocation_kind: "agent", branch_count: 3 }))).toBe(
+      true,
+    );
+    expect(hasRunTree(run({ invocation_kind: null, branch_count: 2 }))).toBe(
+      true,
+    );
   });
 
   it("is false when branch_count is zero or missing", () => {
-    expect(hasRunTree(run({ invocation_kind: "agent", branch_count: 0 }))).toBe(false);
+    expect(hasRunTree(run({ invocation_kind: "agent", branch_count: 0 }))).toBe(
+      false,
+    );
     expect(
-      hasRunTree(run({ invocation_kind: null, branch_count: undefined as unknown as number }))
+      hasRunTree(
+        run({
+          invocation_kind: null,
+          branch_count: undefined as unknown as number,
+        }),
+      ),
     ).toBe(false);
   });
 });
 
 describe("RunItem run-tree button gating (contextValue)", () => {
   it("adds the Tree suffix only when a stable id is present", () => {
-    const item = new RunItem(run({ id: "s1", branch_count: 3, status: "completed" }));
+    const item = new RunItem(
+      run({ id: "s1", branch_count: 3, status: "completed" }),
+    );
     expect(item.contextValue).toBe("runTerminalTree");
   });
 
@@ -78,7 +105,12 @@ describe("RunItem run-tree button gating (contextValue)", () => {
 
   it("withholds the Tree suffix for a single-branch single-agent run", () => {
     const item = new RunItem(
-      run({ id: "s1", invocation_kind: "agent", branch_count: 1, status: "running" })
+      run({
+        id: "s1",
+        invocation_kind: "agent",
+        branch_count: 1,
+        status: "running",
+      }),
     );
     expect(item.contextValue).toBe("runActive");
   });
@@ -86,7 +118,11 @@ describe("RunItem run-tree button gating (contextValue)", () => {
 
 describe("mergeRunDetail", () => {
   it("preserves list-row invocation_id when the detail omits it (keeps the banner wired)", () => {
-    const base = run({ invocation_id: "inv-1", status: "running", branch_count: 1 });
+    const base = run({
+      invocation_id: "inv-1",
+      status: "running",
+      branch_count: 1,
+    });
     const detail = run({ status: "failed", branch_count: 3 });
     // Simulate a partial/legacy detail response that drops invocation_id entirely.
     delete (detail as Partial<Run>).invocation_id;
@@ -100,5 +136,37 @@ describe("mergeRunDetail", () => {
     const base = run({ invocation_id: "inv-1", status: "running" });
     const detail = run({ invocation_id: "inv-2", status: "failed" });
     expect(mergeRunDetail(base, detail).invocation_id).toBe("inv-2");
+  });
+});
+
+describe("terminal outcome versus process health", () => {
+  it("keeps unsuccessful terminal statuses terminal", () => {
+    for (const status of [
+      "completed_empty",
+      "failed",
+      "timed_out",
+      "aborted",
+      "cancelled",
+    ]) {
+      expect(isTerminal(run({ status }))).toBe(true);
+    }
+  });
+
+  it("renders failed status as failure even with a legacy healthy signal", () => {
+    expect(
+      statusIcon(run({ status: "failed", effective_health: "healthy" })).id,
+    ).toBe("error");
+  });
+
+  it("renders timeout status as a warning even with a legacy healthy signal", () => {
+    expect(
+      statusIcon(run({ status: "timed_out", effective_health: "healthy" })).id,
+    ).toBe("warning");
+  });
+
+  it("keeps completed status as the successful control", () => {
+    expect(
+      statusIcon(run({ status: "completed", effective_health: null })).id,
+    ).toBe("pass-filled");
   });
 });

@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "پہلے سے طے شدہ",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · تجویز کردہ",
+      "legacyGroup": "پرانا انتخاب",
+      "efforts": "کوشش: {efforts}",
+      "effortInModel": "کوشش ماڈل آئی ڈی میں شامل ہے",
+      "effortAsSetting": "کوشش فراہم کنندہ کی ترتیب کے طور پر بھیجی جاتی ہے"
     },
     "effort": {
       "label": "کوشش",
@@ -503,6 +508,7 @@
       "statErrorsRecent": "خرابیاں (حالیہ)",
       "noBranchErrorsPartial": "لوڈ شدہ پیغامات میں کوئی خرابی نہیں۔",
       "noFilesPartial": "لوڈ شدہ پیغامات میں کوئی فائل آپریشن نہیں ملا۔",
+      "filesUnionBounded": "کچھ فائل آپریشنز درج نہیں ہیں: اس رن نے اتنی فائلیں چھوئیں جو ایک ویو جمع کرتا ہے اس سے زیادہ ہیں۔",
       "olderUnavailable": "پرانی ہسٹری لوڈ نہیں ہو سکی — درخواست مکمل ہونے سے پہلے یہ گفتگو آگے بڑھ گئی۔",
       "reloadConversation": "گفتگو دوبارہ لوڈ کریں",
       "graphEdgeCount": "{count} کنارے",
@@ -516,6 +522,7 @@
       "graphNodeStatusDone": "مکمل",
       "graphNodeStatusFailed": "ناکام",
       "graphNodeStatusSkipped": "چھوڑ دیا گیا",
+      "graphNodeStatusCancelled": "منسوخ",
       "graphNodeStatusEscalated": "بڑھایا گیا",
       "progressTotal": "کل",
       "progressCompleted": "مکمل",
@@ -552,10 +559,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "اسے انجام دینے کے لیے ابھی کوئی کمانڈ موجود نہیں ہے۔"
+          "no-executable-path": "اسے انجام دینے کے لیے ابھی کوئی کمانڈ موجود نہیں ہے۔",
+          "no-project-scope": "اس رن کا کوئی پروجیکٹ نہیں ہے، اس لیے کنٹرول کی اجازت نہیں دی جا سکتی۔"
         }
       }
     },
@@ -903,7 +912,7 @@
     "stale": {
       "error": "خرابی · ⁨{message}⁩",
       "unreachable": "API تک رسائی نہیں",
-      "lastUpdated": "سٹیل · آخری اپ ڈیٹ {age} سیکنڈ پہلے"
+      "lastUpdated": "آخری اپ ڈیٹ {age} سیکنڈ پہلے"
     },
     "detail": {
       "hint": "تفصیل دیکھنے کے لیے سیشن منتخب کریں",
@@ -919,8 +928,7 @@
       "updated": "اپ ڈیٹ شدہ",
       "branchesTitle": "برانچز (⁨{count}⁩)",
       "noBranches": "کوئی برانچ نہیں۔",
-      "msgs": " پیغامات",
-      "engineRuns": "انجن رنز"
+      "msgs": " پیغامات"
     },
     "split": {
       "master": "سیشن فہرست",
@@ -1066,7 +1074,7 @@
     "stale": {
       "error": "خرابی · ⁨{message}⁩",
       "unreachable": "API تک رسائی نہیں",
-      "lastUpdated": "سٹیل · آخری اپ ڈیٹ {age} سیکنڈ پہلے"
+      "lastUpdated": "آخری اپ ڈیٹ {age} سیکنڈ پہلے"
     },
     "zeroState": {
       "heading": "شروع کریں",
@@ -1155,6 +1163,7 @@
     "showEarlier": "پچھلے {count, number} پیغامات دکھائیں",
     "noArgs": "(کوئی args نہیں)",
     "noOutput": "(کوئی output نہیں)",
+    "outputWithheld": "پڑھا نہیں گیا",
     "roleUser": "یوزر",
     "roleThinking": "سوچ رہا ہے",
     "roleResponse": "جواب",

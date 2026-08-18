@@ -72,6 +72,7 @@ from lionagi.state.schema_meta import definitions as _definitions_table
 from lionagi.state.schema_meta import metadata
 from lionagi.state.schema_meta import schedules as _schedules_table
 from lionagi.state.schema_migrations import MIGRATION_COLUMNS as _MIGRATION_COLUMNS
+from lionagi.state.schema_migrations import MIGRATION_CONSTRAINTS as _MIGRATION_CONSTRAINTS
 from lionagi.state.schema_migrations import MIGRATION_INDEXES as _MIGRATION_INDEXES
 
 _RUN_DEFAULTS: dict[str, str] = {
@@ -128,11 +129,13 @@ DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 # whenever a migration changes the shape a reader would see -- a new table, a
 # rebuilt CHECK constraint, a column whose meaning changed. Version "1" is the
 # original shape, before the migrations now applied on open existed.
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 _SCHEMA_MIGRATION_LOCK_KEY = "lionagi.state.schema.migration"
 _DISPATCHED_AT_BACKFILL_KEY = "migration.dispatched_at_backfill"
 _ATTENTION_DISPOSITIONS_BACKFILL_KEY = "migration.attention_dispositions_backfill"
 _IMPORTED_ROLE_LABEL_BACKFILL_KEY = "migration.imported_role_label_backfill"
+_SESSION_ENDED_AT_BACKFILL_KEY = "migration.session_ended_at_backfill"
+_SESSION_ENDED_AT_BACKFILL_BATCH_SIZE = 500
 
 
 class SchemaTooNewError(RuntimeError):
@@ -142,6 +145,16 @@ class SchemaTooNewError(RuntimeError):
     into a shape this code understands and stamp that shape into the version
     row — blind, since a later release's shape is unknown here. Read-only
     opens apply no schema and are unaffected.
+    """
+
+
+class BackupNotTrustworthyError(RuntimeError):
+    """A pre-rebuild backup could not be taken from a fully checkpointed store.
+
+    Raised instead of copying, and it aborts the rebuild that asked for the
+    backup. A rebuild replaces a table in place, so the backup is the only way
+    back; a copy that is missing committed data restores cleanly and silently
+    returns a database to an earlier state, which is worse than not migrating.
     """
 
 
@@ -415,8 +428,11 @@ TEAM_TERMINAL_STATUSES = TERMINAL_STATUSES_BY_ENTITY_TYPE["team"]
 # rows their status filter already selected.
 EXTRA_STATUS_WRITE_FIELDS_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
     # duration_ms is derived from ended_at, so it carries the same requirement:
-    # it must land in the status write, never in a separate earlier one.
-    "session": frozenset({"ended_at", "duration_ms", "node_metadata"}),
+    # it must land in the status write, never in a separate earlier one. The
+    # same goes for ended_at_is_approximate, which describes that ended_at:
+    # split across two writes there is a window where the row states a
+    # provenance for an end it no longer has.
+    "session": frozenset({"ended_at", "duration_ms", "ended_at_is_approximate", "node_metadata"}),
     "invocation": frozenset({"ended_at"}),
     "schedule_run": frozenset({"ended_at", "error_detail", "exit_code"}),
     "play": frozenset({"ended_at"}),
@@ -442,7 +458,7 @@ VALID_STATUSES_BY_ENTITY_TYPE: dict[str, frozenset[str]] = {
 TransitionRejectedError = _lifecycle_adapters.TransitionRejectedError
 
 
-_INVOCATION_KINDS = frozenset({"agent", "play", "flow", "fanout", "show-play"})
+_INVOCATION_KINDS = frozenset({"agent", "play", "flow", "fanout", "show-play", "engine"})
 _SOURCE_KINDS = frozenset({"live", "imported_fs", "imported_codex"})
 
 _SHOW_STATUSES = frozenset({"active", "completed", "aborted", "imported"})
@@ -971,6 +987,17 @@ class StateDB:
             # real, distinct value.
             await self._backfill_attention_dispositions_once(conn)
             await self._reconcile_indexes(conn)
+            # After create_all, which is what guarantees sessions exists for a
+            # store that never had it, and before any write that carries a
+            # value the pre-existing CHECK does not name.
+            await self._reconcile_constraints(conn)
+            await conn.execute(
+                text(
+                    "UPDATE engine_runs SET parent_session_id = session_id "
+                    "WHERE parent_session_id IS NULL AND session_id IS NOT NULL "
+                    "AND EXISTS (SELECT 1 FROM sessions WHERE sessions.id = engine_runs.session_id)"
+                )
+            )
             await self._backfill_dispatched_at_once(conn)
             await self._backfill_imported_role_label_once(conn)
             # Seed immutable reference rows; ON CONFLICT DO NOTHING is safe to
@@ -1008,8 +1035,15 @@ class StateDB:
                 )
             )
 
+        # Historical terminal sessions can be numerous, so do not hold the
+        # schema transaction (or SQLite's writer lock) while repairing all of
+        # them. Each batch below commits independently; a crash leaves the
+        # durable completion marker absent and the next open resumes safely.
+        await self._backfill_session_ended_at_once()
+
     _MIGRATION_COLUMNS: dict[str, list[tuple[str, str]]] = _MIGRATION_COLUMNS
     _MIGRATION_INDEXES: dict[str, tuple[str, ...]] = _MIGRATION_INDEXES
+    _MIGRATION_CONSTRAINTS: dict[str, tuple[str, ...]] = _MIGRATION_CONSTRAINTS
 
     async def _reconcile_columns(self) -> None:
         for table, columns in self._MIGRATION_COLUMNS.items():
@@ -1021,8 +1055,14 @@ class StateDB:
                     existing = await conn.run_sync(
                         lambda c, t=table: [col["name"] for col in inspect(c).get_columns(t)]
                     )
-            except Exception:  # noqa: BLE001, S112
-                continue
+            except Exception as exc:  # noqa: BLE001
+                _log.error(
+                    "failed to inspect migration columns for table %r: %r",
+                    table,
+                    exc,
+                    exc_info=True,
+                )
+                raise
             for name, defn in columns:
                 if name not in existing:
                     add_column = f"ALTER TABLE {table} ADD COLUMN {name} {defn}"
@@ -1054,6 +1094,17 @@ class StateDB:
         for statement in self._MIGRATION_INDEXES.get(self.dialect, ()):
             await conn.execute(text(statement))
 
+    async def _reconcile_constraints(self, conn) -> None:
+        """Widen CHECK constraints that ``metadata.create_all`` cannot alter.
+
+        SQLite is not in the table: it cannot alter a CHECK in place, so
+        ``_rebuild_legacy_sessions_table`` copies the whole table there
+        instead. Every statement is written to be a no-op once applied, so
+        this does not take a table lock on each open.
+        """
+        for statement in self._MIGRATION_CONSTRAINTS.get(self.dialect, ()):
+            await conn.execute(text(statement))
+
     async def _backfill_dispatched_at_once(self, conn) -> None:
         """Backfill legacy rows exactly once, even if the column predates this release."""
         claimed = await conn.execute(
@@ -1065,6 +1116,118 @@ class StateDB:
         )
         if claimed.rowcount:
             await self._backfill_dispatched_at(conn)
+
+    async def _backfill_session_ended_at_once(self) -> None:
+        """Repair historical terminal sessions in bounded, resumable batches.
+
+        The marker is written only after an empty probe. A crash between
+        batches therefore leaves already-repaired rows protected by the
+        ``ended_at IS NULL`` predicate and lets the next writable open finish
+        the remaining rows instead of mistaking partial work for completion.
+        """
+        # Completed databases take the ordinary read connection and return;
+        # opening StateDB must not consume an otherwise unrelated write
+        # transaction merely to discover a durable marker already exists.
+        async with self._read() as conn:
+            marker = (
+                await conn.execute(
+                    text("SELECT 1 FROM schema_meta WHERE key = :key"),
+                    {"key": _SESSION_ENDED_AT_BACKFILL_KEY},
+                )
+            ).first()
+        if marker is not None:
+            return
+
+        while True:
+            async with self._tx() as conn:
+                await self._refuse_newer_schema(conn)
+                marker = (
+                    await conn.execute(
+                        text("SELECT 1 FROM schema_meta WHERE key = :key"),
+                        {"key": _SESSION_ENDED_AT_BACKFILL_KEY},
+                    )
+                ).first()
+                if marker is not None:
+                    return
+
+                repaired = await self._backfill_session_ended_at_batch(conn)
+                if repaired:
+                    continue
+
+                await conn.execute(
+                    text(
+                        "INSERT INTO schema_meta (key, value) VALUES (:key, '1') "
+                        "ON CONFLICT (key) DO NOTHING"
+                    ),
+                    {"key": _SESSION_ENDED_AT_BACKFILL_KEY},
+                )
+                return
+
+    async def _backfill_session_ended_at_batch(self, conn) -> int:
+        """Approximate at most one batch of missing historical end times."""
+        if self.dialect == "sqlite":
+            query = (
+                "SELECT id, created_at, updated_at, started_at, last_message_at "
+                "FROM sessions INDEXED BY idx_sessions_terminal_missing_end "
+                "WHERE ended_at IS NULL AND status IN "
+                "('completed','completed_empty','failed','timed_out','aborted','cancelled') "
+                "ORDER BY id LIMIT :limit"
+            )
+        else:
+            query = (
+                "SELECT id, created_at, updated_at, started_at, last_message_at "
+                "FROM sessions WHERE ended_at IS NULL AND status IN "
+                "('completed','completed_empty','failed','timed_out','aborted','cancelled') "
+                "ORDER BY id LIMIT :limit FOR UPDATE"
+            )
+        rows = (
+            (
+                await conn.execute(
+                    text(query),
+                    {"limit": _SESSION_ENDED_AT_BACKFILL_BATCH_SIZE},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        if not rows:
+            return 0
+
+        repairs = []
+        for row in rows:
+            evidence = [
+                value
+                for value in (
+                    row["updated_at"],
+                    row["last_message_at"],
+                    row["started_at"],
+                    row["created_at"],
+                )
+                if isinstance(value, int | float)
+            ]
+            # created_at is NOT NULL in every supported schema, but keep a
+            # defensive fallback for malformed hand-built legacy stores.
+            repairs.append(
+                {
+                    "id": row["id"],
+                    "ended_at": max(evidence) if evidence else time.time(),
+                }
+            )
+
+        await conn.execute(
+            text(
+                # duration_ms is cleared with the same write that sets the bit.
+                # A legacy row can carry a duration from an older writer, and
+                # keeping it beside an approximate end leaves the row asserting
+                # a measured length for an end nobody measured.
+                "UPDATE sessions SET ended_at = :ended_at, "
+                "ended_at_is_approximate = 1, duration_ms = NULL "
+                "WHERE id = :id AND ended_at IS NULL AND status IN "
+                "('completed','completed_empty','failed','timed_out','aborted','cancelled')"
+            ),
+            repairs,
+        )
+        return len(rows)
 
     async def _backfill_dispatched_at(self, conn) -> None:
         """Stamp ``dispatched_at`` on pre-existing running rows, once.
@@ -1267,6 +1430,7 @@ class StateDB:
     # their own provenance value; its absence beside a source_kind CHECK is what
     # marks a DB that would reject 'imported_codex'.
     _NARROW_SOURCE_KIND_MARKER = "'live', 'imported_fs')"
+    _NARROW_INVOCATION_KIND_MARKER = "'show-play')"
 
     @classmethod
     def _sessions_rebuild_needed(cls, create_sql: str) -> bool:
@@ -1278,11 +1442,21 @@ class StateDB:
         """
         if cls._LEGACY_SESSION_STATUS_CHECK_MARKER in create_sql:
             return True
-        return cls._NARROW_SOURCE_KIND_MARKER in create_sql
+        return (
+            cls._NARROW_SOURCE_KIND_MARKER in create_sql
+            or cls._NARROW_INVOCATION_KIND_MARKER in create_sql
+        )
 
     async def _rebuild_legacy_sessions_table(self) -> None:
         """Rebuild sessions if it carries either legacy CHECK: the 4-value status
-        vocabulary, or a source_kind that predates the codex-import provenance value."""
+        vocabulary, or a source_kind that predates the codex-import provenance value.
+
+        The rebuild pattern the other legacy-CHECK rebuilds refer back to, in the
+        order it executes: CREATE new → INSERT SELECT → DROP old → RENAME. The
+        table being replaced keeps its own name until the DROP; it is the new
+        table that is built alongside under a temporary name and renamed into
+        place last.
+        """
         if self.dialect != "sqlite":
             return
         async with self._engine.connect() as conn:
@@ -1370,7 +1544,7 @@ class StateDB:
                               invocation_kind TEXT CHECK(
                                                 invocation_kind IS NULL
                                                 OR invocation_kind IN
-                                                  ('agent', 'play', 'flow', 'fanout', 'show-play')
+                                                  ('agent', 'play', 'flow', 'fanout', 'show-play', 'engine')
                                               ),
                               show_topic      TEXT,
                               show_play_name  TEXT,
@@ -1383,6 +1557,7 @@ class StateDB:
                               status          TEXT,
                               started_at      REAL,
                               ended_at        REAL,
+                              ended_at_is_approximate INTEGER NOT NULL DEFAULT 0,
                               last_message_at REAL,
                               current_phase   TEXT,
                               invocation_id   TEXT    REFERENCES invocations(id),
@@ -1441,8 +1616,8 @@ class StateDB:
         """Rebuild ``schedules`` if it still carries the legacy action_kind CHECK.
 
         The old CHECK omits ``'flow_yaml'``; SQLite cannot drop a constraint via
-        ALTER TABLE, so we use the rename → CREATE new → INSERT SELECT → DROP
-        old pattern (same as ``_rebuild_legacy_sessions_table``).
+        ALTER TABLE, so we use the CREATE new → INSERT SELECT → DROP old →
+        RENAME pattern (same as ``_rebuild_legacy_sessions_table``).
         """
         if self.dialect != "sqlite":
             return
@@ -1545,7 +1720,7 @@ class StateDB:
         """Rebuild ``schedules`` if its action_kind CHECK still omits 'command'.
 
         SQLite cannot widen a CHECK constraint via ALTER TABLE, so this uses
-        the same rename -> CREATE new -> INSERT SELECT -> DROP old pattern as
+        the same CREATE new -> INSERT SELECT -> DROP old -> RENAME pattern as
         ``_drop_legacy_action_kind_check``. Runs after ``_reconcile_columns``
         (via ``_apply_schema``), so the ADD COLUMN for action_command /
         action_command_args has already landed on the pre-rebuild table.
@@ -1648,7 +1823,7 @@ class StateDB:
     async def _drop_legacy_schedules_trigger_type_check(self) -> None:
         """Rebuild ``schedules`` if its trigger_type CHECK still omits 'at'.
 
-        Same rename -> CREATE new -> INSERT SELECT -> DROP old pattern as
+        Same CREATE new -> INSERT SELECT -> DROP old -> RENAME pattern as
         ``_drop_legacy_schedules_command_check``.
         """
         if self.dialect != "sqlite":
@@ -1737,7 +1912,7 @@ class StateDB:
         """Rebuild ``invocations`` if its status CHECK still omits 'completed_empty'.
 
         SQLite cannot drop a constraint via ALTER TABLE, so we use the same
-        rename → CREATE new → INSERT SELECT → DROP old pattern as
+        CREATE new → INSERT SELECT → DROP old → RENAME pattern as
         ``_rebuild_legacy_sessions_table`` / ``_drop_legacy_action_kind_check``.
         """
         if self.dialect != "sqlite":
@@ -1870,11 +2045,42 @@ class StateDB:
         # In WAL mode, recently committed transactions can live only in the
         # `-wal` sidecar file until a checkpoint occurs. A raw file copy taken
         # without checkpointing first can silently omit that data, defeating
-        # the rollback guarantee this backup exists to provide. TRUNCATE forces
-        # a full checkpoint and truncates the WAL file back to zero length.
-        await self.checkpoint("TRUNCATE")
+        # the rollback guarantee this backup exists to provide.
+        #
+        # TRUNCATE *asks* for a full checkpoint; it does not promise one. When
+        # it cannot get the locks within the busy timeout it falls back and
+        # reports busy, leaving committed frames in the WAL, and the copy below
+        # would then be a rollback artifact predating them. So the result is
+        # read rather than discarded, and a partial checkpoint refuses.
+        result = await self.checkpoint("TRUNCATE")
+        if result is None:
+            # checkpoint() returns None for a non-sqlite dialect or for a pragma
+            # read that produced no row. The dialect was ruled out above, so
+            # only the failed read is left, and it says nothing about whether
+            # the WAL was folded in. Reading that silence as permission would
+            # be the same mistake as discarding the result outright.
+            raise BackupNotTrustworthyError(
+                f"cannot back up {mask_credentials(str(p))} before the {label} rebuild: "
+                "wal_checkpoint(TRUNCATE) returned no row, so whether the write-ahead "
+                "log was folded into the database file is unknown. A file copy would "
+                "not be a verifiable backup. Retry, and check the database is readable."
+            )
+        busy, log_pages, checkpointed = result
+        if busy or log_pages != checkpointed:
+            raise BackupNotTrustworthyError(
+                f"cannot back up {mask_credentials(str(p))} before the {label} rebuild: "
+                f"wal_checkpoint(TRUNCATE) reported busy={busy}, "
+                f"{checkpointed} of {log_pages} WAL pages checkpointed. Committed data "
+                "may still be in the write-ahead log, so a file copy would not be a "
+                "complete backup. Stop other writers to this database and retry."
+            )
         backup_path = p.with_name(f"{p.name}.pre-{label}.{int(time.time())}.bak")
         shutil.copy2(p, backup_path)
+        # Not a snapshot: a writer committing between the checkpoint above and
+        # this copy lands in the WAL again, and those frames are not in the
+        # file just written. The check above bounds what was missed to writes
+        # concurrent with the backup itself rather than to the whole unflushed
+        # WAL, which is a narrower window, not no window.
 
     # Substring present only in the current schedule_runs CREATE SQL
     # (the widened status CHECK); its absence indicates a legacy DB whose
@@ -1885,8 +2091,8 @@ class StateDB:
         """Rebuild ``schedule_runs`` if it still carries the legacy status CHECK.
 
         SQLite cannot widen a CHECK constraint nor drop a NOT NULL via ALTER
-        TABLE, so this uses the same rename → CREATE new → INSERT SELECT →
-        DROP old pattern as ``_drop_legacy_action_kind_check`` /
+        TABLE, so this uses the same CREATE new → INSERT SELECT → DROP old →
+        RENAME pattern as ``_drop_legacy_action_kind_check`` /
         ``_drop_legacy_invocations_status_check``. Takes a pre-rebuild backup
         of the database file first (``_backup_before_rebuild``); see its
         docstring for the rollback path.
@@ -2075,7 +2281,7 @@ class StateDB:
         """Rebuild ``definitions`` if it still carries the pre-skill-editor kind CHECK.
 
         SQLite cannot widen a CHECK constraint via ALTER TABLE, so this uses
-        the same rename → CREATE new → INSERT SELECT → DROP old pattern as
+        the same CREATE new → INSERT SELECT → DROP old → RENAME pattern as
         ``_drop_legacy_action_kind_check``. ``definitions`` is not itself an
         FK target, but the foreign_keys-off dance is applied anyway to match
         every other rebuild in this file rather than special-casing this one
@@ -2392,19 +2598,35 @@ class StateDB:
             adr="ADR-0012",
         )
         now = time.time()
+        created_at = session.get("created_at", now)
+        updated_at = session.get("updated_at", now)
+        started_at = session.get("started_at")
+        last_message_at = session.get("last_message_at", session.get("started_at", now))
+        ended_at = session.get("ended_at")
+        ended_at_is_approximate = bool(session.get("ended_at_is_approximate", False))
+        if session.get("status") in SESSION_TERMINAL_STATUSES and ended_at is None:
+            evidence = [
+                value
+                for value in (updated_at, last_message_at, started_at, created_at)
+                if isinstance(value, int | float)
+            ]
+            ended_at = max(evidence) if evidence else now
+            ended_at_is_approximate = True
+
         # A row can be born terminal (e.g. `li state import` of a completed
         # run) without ever passing through _transition() or the admin CAS —
         # both of which derive duration_ms from started_at/ended_at. Derive
-        # it here too so a terminal insert is never the one path that skips
-        # duration centralization.
-        duration_ms = session.get("duration_ms")
+        # it here too when the end was measured. An approximate historical
+        # marker intentionally leaves duration unknown.
+        duration_ms = None if ended_at_is_approximate else session.get("duration_ms")
         if (
             duration_ms is None
             and session.get("status") in SESSION_TERMINAL_STATUSES
-            and isinstance(session.get("started_at"), int | float)
-            and isinstance(session.get("ended_at"), int | float)
+            and not ended_at_is_approximate
+            and isinstance(started_at, int | float)
+            and isinstance(ended_at, int | float)
         ):
-            duration_ms = max(0.0, (session["ended_at"] - session["started_at"]) * 1000)
+            duration_ms = max(0.0, (ended_at - started_at) * 1000)
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
@@ -2413,7 +2635,8 @@ class StateDB:
                        playbook_name, agent_name, invocation_kind, show_topic,
                        show_play_name, artifacts_path, artifact_contract_json,
                        artifact_verification_json, source_kind,
-                       status, started_at, ended_at, last_message_at, invocation_id,
+                       status, started_at, ended_at, ended_at_is_approximate,
+                       last_message_at, invocation_id,
                        model, provider, effort, agent_hash,
                        project, project_source, duration_ms)
                        VALUES (:id, :cc_session_id, :run_id, :created_at, :node_metadata, :name, :user,
@@ -2421,7 +2644,8 @@ class StateDB:
                                :playbook_name, :agent_name, :invocation_kind, :show_topic,
                                :show_play_name, :artifacts_path, :artifact_contract_json,
                                :artifact_verification_json, :source_kind,
-                               :status, :started_at, :ended_at, :last_message_at, :invocation_id,
+                               :status, :started_at, :ended_at, :ended_at_is_approximate,
+                               :last_message_at, :invocation_id,
                                :model, :provider, :effort, :agent_hash,
                                :project, :project_source, :duration_ms)
                        ON CONFLICT (id) DO NOTHING"""
@@ -2434,14 +2658,14 @@ class StateDB:
                     "id": session["id"],
                     "cc_session_id": session.get("cc_session_id"),
                     "run_id": session.get("run_id"),
-                    "created_at": session.get("created_at", now),
+                    "created_at": created_at,
                     "node_metadata": session.get("node_metadata"),
                     "name": session.get("name"),
                     "user": session.get("user"),
                     "progression_id": session["progression_id"],
                     "first_msg_id": session.get("first_msg_id"),
                     "last_msg_id": session.get("last_msg_id"),
-                    "updated_at": session.get("updated_at", now),
+                    "updated_at": updated_at,
                     "playbook_name": session.get("playbook_name"),
                     "agent_name": session.get("agent_name"),
                     "invocation_kind": session.get("invocation_kind"),
@@ -2452,11 +2676,10 @@ class StateDB:
                     "artifact_verification_json": session.get("artifact_verification_json"),
                     "source_kind": session.get("source_kind", "live"),
                     "status": session.get("status"),
-                    "started_at": session.get("started_at"),
-                    "ended_at": session.get("ended_at"),
-                    "last_message_at": session.get(
-                        "last_message_at", session.get("started_at", now)
-                    ),
+                    "started_at": started_at,
+                    "ended_at": ended_at,
+                    "ended_at_is_approximate": int(ended_at_is_approximate),
+                    "last_message_at": last_message_at,
                     "invocation_id": session.get("invocation_id"),
                     "model": session.get("model"),
                     "provider": session.get("provider"),
@@ -3979,6 +4202,7 @@ class StateDB:
             "project",
             "threshold_config",
             "last_alert_at",
+            "last_evaluated_at",
             "last_healthy_poll_at",
             "poller_consecutive_401",
             "predispatch_refusal_event",
@@ -4539,10 +4763,46 @@ class StateDB:
     # every VALID_METRICS member is answered somewhere in metric_value, not
     # that it is answered here.
     _THRESHOLD_METRIC_QUERIES: dict[str, str] = {
+        # Counts distinct CAUSES, not rows. A fan-out spawns one session per
+        # worker, so a single wall -- a provider refusing every worker of one
+        # invocation -- lands as many rows carrying one cause, and a fan-out
+        # wider than the threshold would breach it on that single cause by
+        # construction. Grouping by (invocation, reason) makes the observed
+        # value the number of distinct things that went wrong.
+        #
+        # Both columns fall back to the session id rather than grouping on
+        # NULL, and that is the whole correctness of this query. NULL is not a
+        # shared value: rows without an invocation are rows whose grouping is
+        # unknown, and letting SQL treat them as equal merges unrelated
+        # failures into one. Most failed sessions carry no invocation id, so
+        # the naive form collapses nearly the whole population to one row per
+        # reason and the alarm stops being able to fire. Falling back to a
+        # unique per-row value keeps unknown groupings apart, which errs
+        # toward alerting.
+        #
+        # The fallback is tagged rather than bare, because a bare one puts two
+        # different namespaces in one column and lets a value from either side
+        # answer for the other: a session with no invocation whose id happens
+        # to equal some other session's invocation_id would share a grouping
+        # key with it, and two distinct causes carrying the same reason would
+        # then count once. That is the direction that suppresses an alert, so
+        # it is the one worth spending a prefix on. Every value now says which
+        # namespace it came from, and no value in one can equal a value in the
+        # other, since the two prefixes differ at their first character.
         "failed_sessions": (
-            "SELECT COUNT(*) AS n FROM sessions "
+            "SELECT COUNT(*) AS n FROM ("
+            "SELECT DISTINCT CASE WHEN invocation_id IS NULL "
+            "THEN 'session:' || id ELSE 'invocation:' || invocation_id END AS cause_group, "
+            "CASE WHEN status_reason_code IS NULL "
+            "THEN 'session:' || id ELSE 'reason:' || status_reason_code END AS cause_class "
+            "FROM sessions "
             "WHERE status IN ('failed', 'timed_out') "
             "AND COALESCE(ended_at, started_at, created_at) >= :window_start"
+            # PostgreSQL requires a name for a subquery in FROM; SQLite does
+            # not, so an unaliased form runs here and fails only on the other
+            # dialect, where the dual-backend suite needs a live server to
+            # catch it.
+            ") AS causes"
         ),
         "total_cost_usd": (
             "SELECT COALESCE(SUM(total_cost_usd), 0) AS n FROM sessions "
@@ -5998,6 +6258,40 @@ class StateDB:
                 },
             )
 
+    async def set_engine_run_lineage(
+        self,
+        run_id: str,
+        *,
+        invocation_id: str | None,
+        signal_session_id: str | None,
+        parent_session_id: str | None,
+    ) -> None:
+        """Attach the three non-interchangeable identities for one engine execution."""
+        async with self._tx() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE engine_runs SET invocation_id = :invocation_id, "
+                    "signal_session_id = :signal_session_id, "
+                    "parent_session_id = :parent_session_id WHERE id = :id"
+                ),
+                {
+                    "id": run_id,
+                    "invocation_id": invocation_id,
+                    "signal_session_id": signal_session_id,
+                    "parent_session_id": parent_session_id,
+                },
+            )
+
+    async def record_engine_run_outcome(self, run_id: str, outcome_json: dict[str, Any]) -> None:
+        """Persist the bounded terminal envelope separately from failure text."""
+        async with self._tx() as conn:
+            await conn.execute(
+                text("UPDATE engine_runs SET outcome_json = :outcome WHERE id = :id").bindparams(
+                    bindparam("outcome", type_=JSON)
+                ),
+                {"id": run_id, "outcome": outcome_json},
+            )
+
     async def get_engine_run(self, run_id: str) -> dict[str, Any] | None:
         """Return a single engine run row as a dict, or None if not found."""
         async with self._read() as conn:
@@ -6006,7 +6300,8 @@ class StateDB:
                     await conn.execute(
                         text(
                             "SELECT id, kind, spec_json, status, started_at, ended_at, "
-                            "session_id, export_dir, error "
+                            "session_id, invocation_id, signal_session_id, parent_session_id, "
+                            "outcome_json, export_dir, error "
                             "FROM engine_runs WHERE id = :id"
                         ),
                         {"id": run_id},
@@ -6023,7 +6318,65 @@ class StateDB:
                 d["spec_json"] = json.loads(d["spec_json"])
             except (json.JSONDecodeError, TypeError):
                 pass
+        if isinstance(d.get("outcome_json"), str):
+            try:
+                d["outcome_json"] = json.loads(d["outcome_json"])
+            except (json.JSONDecodeError, TypeError):
+                pass
         return d
+
+    async def list_engine_run_summaries(
+        self,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        session_id: str | None = None,
+        before_started_at: float | None = None,
+        before_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return a deterministic keyset page without selecting stored input."""
+        conditions: list[str] = []
+        params: dict[str, Any] = {"limit": limit}
+        if kind is not None:
+            conditions.append("kind = :kind")
+            params["kind"] = kind
+        if status is not None:
+            conditions.append("status = :status")
+            params["status"] = status
+        if session_id is not None:
+            conditions.append(
+                "(signal_session_id = :session_id OR parent_session_id = :session_id "
+                "OR (signal_session_id IS NULL AND parent_session_id IS NULL "
+                "AND session_id = :session_id))"
+            )
+            params["session_id"] = session_id
+        if before_started_at is not None or before_id is not None:
+            if before_started_at is None or before_id is None:
+                raise ValueError("engine run cursor requires both started_at and id")
+            conditions.append("(started_at, id) < (:before_started_at, :before_id)")
+            params["before_started_at"] = before_started_at
+            params["before_id"] = before_id
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = (
+            "SELECT id, kind, status, started_at, ended_at, session_id, "  # noqa: S608
+            "invocation_id, signal_session_id, parent_session_id, outcome_json, "
+            "CASE WHEN export_dir IS NULL THEN 0 ELSE 1 END AS has_output, "
+            "CASE WHEN error IS NULL THEN 0 ELSE 1 END AS has_error FROM engine_runs "
+            f"{where} ORDER BY started_at DESC, id DESC LIMIT :limit"
+        )
+        async with self._read() as conn:
+            rows = (await conn.execute(text(sql), params)).mappings().all()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            if isinstance(item.get("outcome_json"), str):
+                try:
+                    item["outcome_json"] = json.loads(item["outcome_json"])
+                except (json.JSONDecodeError, TypeError):
+                    item["outcome_json"] = None
+            result.append(item)
+        return result
 
     async def list_engine_runs(
         self,
@@ -6332,8 +6685,19 @@ class StateDB:
         verb: str,
         payload: dict[str, Any] | None = None,
         created_at: float | None = None,
+        project: str | None = None,
     ) -> str | None:
         """Queue a control verb for *session_id*; returns the new control id, or None.
+
+        *project*, when given, is an ownership predicate carried into the same
+        admission condition as the status check, so a caller that is only
+        authorized for one project cannot queue a control against a run in
+        another. It belongs in the statement for the same reason the status
+        check does: a caller-side ``SELECT project`` followed by an insert
+        leaves a window in which the run is reassigned, and the insert then
+        commits against a run the approval never covered. Omitting it keeps
+        the previous unscoped behavior for callers that have already
+        established ownership by other means.
 
         The admission condition (session still 'running') is evaluated by the
         INSERT statement itself, not by a caller-side status check, to close
@@ -6351,12 +6715,34 @@ class StateDB:
         other append-only session logs.
         """
         control_id = uuid.uuid4().hex
-        admit_source = (
-            "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running')"
-            if self.dialect == "sqlite"
-            else "FROM (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running' "
-            "FOR UPDATE) _admitted"
-        )
+        # Four complete literals, selected rather than assembled: the statement
+        # text never depends on a runtime value, and the ownership predicate is
+        # visible in the SQL it actually runs. :project stays a bound parameter
+        # in the two owned forms.
+        if self.dialect == "sqlite":
+            admit_source = (
+                "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid "
+                "AND status = 'running' AND project = :project)"
+                if project is not None
+                else "WHERE EXISTS (SELECT 1 FROM sessions WHERE id = :sid AND status = 'running')"
+            )
+        else:
+            admit_source = (
+                "FROM (SELECT 1 FROM sessions WHERE id = :sid "
+                "AND status = 'running' AND project = :project FOR UPDATE) _admitted"
+                if project is not None
+                else "FROM (SELECT 1 FROM sessions WHERE id = :sid "
+                "AND status = 'running' FOR UPDATE) _admitted"
+            )
+        params = {
+            "id": control_id,
+            "sid": session_id,
+            "verb": verb,
+            "payload": payload,
+            "created_at": created_at if created_at is not None else time.time(),
+        }
+        if project is not None:
+            params["project"] = project
         async with self._tx() as conn:
             result = await conn.execute(
                 text(
@@ -6366,13 +6752,7 @@ class StateDB:
                     "SELECT :id, :sid, :verb, :payload, :created_at, NULL, NULL, NULL "
                     f"{admit_source}"  # noqa: S608 — dialect-selected literal, no caller input
                 ).bindparams(bindparam("payload", type_=JSON)),
-                {
-                    "id": control_id,
-                    "sid": session_id,
-                    "verb": verb,
-                    "payload": payload,
-                    "created_at": created_at if created_at is not None else time.time(),
-                },
+                params,
             )
             if not result.rowcount:
                 return None
@@ -6588,6 +6968,8 @@ class StateDB:
         d = dict(row)
         if "embedding" in d:
             d["embedding"] = _unpack_embedding(d["embedding"])
+        if "ended_at_is_approximate" in d:
+            d["ended_at_is_approximate"] = bool(d["ended_at_is_approximate"])
         for key in (
             "node_metadata",
             "content",

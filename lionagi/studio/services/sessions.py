@@ -14,9 +14,10 @@ from lionagi.state.claude_mirror import session_db_id
 from lionagi.state.db import SESSION_TERMINAL_STATUSES
 from lionagi.state.session_naming import resolve_display_name
 
+from ..operator.run_control import session_has_control_consumer
 from ..registry import studio_route
 from ._db import open_db as _open_db
-from ._db import require_file_store, store_exists, store_path
+from ._db import require_file_store, store_exists, store_path, table_columns
 from ._io import parse_json_col as _parse_json_col
 from .artifact_verification import resolve_artifact_verification
 
@@ -242,6 +243,21 @@ _SESSION_SORTS: dict[str, str] = {
 }
 
 
+async def _approximate_end_selection(db: Any, *, alias: str = "") -> str:
+    """How to read the approximate-end flag from the store in front of us.
+
+    A store written before this column existed has no approximate ends
+    recorded, so a constant zero is the honest answer for it rather than a
+    degraded one: it is exactly what the version that wrote the store reported
+    for every row. Naming the column unconditionally would instead fail the
+    whole read, and these connections cannot migrate the store to avoid that.
+    """
+    prefix = f"{alias}." if alias else ""
+    if "ended_at_is_approximate" in await table_columns(db, "sessions"):
+        return f"{prefix}ended_at_is_approximate"
+    return "0 AS ended_at_is_approximate"
+
+
 async def list_sessions(
     *,
     limit: int = MAX_SESSION_PAGE,
@@ -267,6 +283,7 @@ async def list_sessions(
             from .run_tags import _ensure_table
 
             await _ensure_table(db)
+        approximate_end = await _approximate_end_selection(db, alias="s")
         cur = await db.execute(
             f"""
             WITH page AS (
@@ -293,6 +310,7 @@ async def list_sessions(
                 s.status,
                 s.started_at,
                 s.ended_at,
+                {approximate_end},
                 s.last_message_at,
                 s.invocation_id,
                 s.model,
@@ -339,6 +357,7 @@ async def list_sessions(
             "status": row["status"] or "completed",
             "started_at": row["started_at"],
             "ended_at": row["ended_at"],
+            "ended_at_is_approximate": bool(row["ended_at_is_approximate"]),
             # Caller (runs service) feeds this to staleness_check (ADR-0057 D6).
             "last_message_at": row["last_message_at"],
             # Optional parent skill orchestration.
@@ -682,6 +701,33 @@ def _branch_message_stats(
     }
 
 
+async def _pause_is_held(db: Any, session_id: str) -> bool:
+    """Whether this run's pause gate is held, or queued to be.
+
+    Read from the control transport rather than remembered by whoever clicked.
+    A client-local flag does not survive a reload, and what it leaves behind is
+    the one combination an operator cannot recover from: a still-paused run
+    offering Pause and refusing Resume as "not paused".
+
+    The answer is the verb of the newest pause or resume row that still counts
+    for anything -- one already applied, or one queued and waiting for the
+    poller. A rejected row never held a gate, and a resume releases the pause
+    before it, so ordering by when each was written and taking the first is the
+    whole rule.
+    """
+    cur = await db.execute(
+        """SELECT verb FROM session_controls
+           WHERE session_id = ?
+             AND verb IN ('pause', 'resume')
+             AND (result IS NULL OR result = 'applied')
+           ORDER BY created_at DESC, id DESC
+           LIMIT 1""",
+        (session_id,),
+    )
+    row = await cur.fetchone()
+    return row is not None and row["verb"] == "pause"
+
+
 async def get_session(
     session_id: str,
     *,
@@ -702,18 +748,22 @@ async def get_session(
     )
 
     async with _open_db(store_path()) as db:
+        approximate_end = await _approximate_end_selection(db)
         cur = await db.execute(
             # Include lifecycle and provenance columns (model/provider/effort/agent_hash).
-            """SELECT id, name, created_at, updated_at,
+            # The one interpolated name is chosen from two literals by the
+            # helper above and never comes from a caller.
+            f"""SELECT id, name, created_at, updated_at,
                       playbook_name, agent_name, invocation_kind,
                       show_topic, show_play_name, artifacts_path,
                       artifact_contract_json, artifact_verification_json,
-                      source_kind, status, started_at, ended_at, last_message_at,
-                      model, provider, effort, agent_hash, invocation_id,
+                      source_kind, status, started_at, ended_at,
+                      {approximate_end}, last_message_at,
+                      model, provider, effort, agent_hash, invocation_id, run_id,
                       node_metadata, project, project_source,
                       status_reason_code, status_reason_summary, status_evidence_refs,
-                      total_cost_usd, input_tokens, output_tokens
-               FROM sessions WHERE id = ?""",
+                      total_cost_usd, input_tokens, output_tokens, duration_ms
+               FROM sessions WHERE id = ?""",  # noqa: S608
             (session_id,),
         )
         session_row = await cur.fetchone()
@@ -734,6 +784,7 @@ async def get_session(
             if play_row
             else None
         )
+        pause_is_held = await _pause_is_held(db, session_id)
 
         try:
             branch_cur = await db.execute(
@@ -842,9 +893,18 @@ async def get_session(
 
     started_at = session_row["started_at"]
     ended_at = session_row["ended_at"]
-    duration_ms = (
-        (ended_at - started_at) * 1000 if started_at is not None and ended_at is not None else None
-    )
+    ended_at_is_approximate = bool(session_row["ended_at_is_approximate"])
+    duration_ms = None if ended_at_is_approximate else session_row["duration_ms"]
+    # Only reconstruct from a measured end. Deriving one from an approximate
+    # ended_at hands back a number that reads as measured, which is the whole
+    # thing the flag exists to prevent.
+    if (
+        duration_ms is None
+        and not ended_at_is_approximate
+        and started_at is not None
+        and ended_at is not None
+    ):
+        duration_ms = (ended_at - started_at) * 1000
     status = session_row["status"] or "completed"
     artifact_contract = _parse_json_col(session_row["artifact_contract_json"])
     stored_verification = _parse_json_col(session_row["artifact_verification_json"])
@@ -875,6 +935,7 @@ async def get_session(
         "status": status,
         "started_at": started_at,
         "ended_at": ended_at,
+        "ended_at_is_approximate": ended_at_is_approximate,
         "duration_ms": duration_ms,
         # Full-session aggregate, not derived from the windowed page.
         "last_message_at": session_row["last_message_at"],
@@ -890,6 +951,13 @@ async def get_session(
         "effort": session_row["effort"],
         "agent_hash": session_row["agent_hash"],
         "invocation_id": session_row["invocation_id"],
+        # Whether a queued run control would ever reach a runner. Computed by
+        # the admission path's own predicate rather than restated here, so a
+        # client cannot offer a control this session's admission would refuse.
+        "has_control_consumer": session_has_control_consumer(dict(session_row)),
+        # Whether a pause is currently held on this run. Server-derived so it
+        # survives a reload; see _pause_is_held.
+        "pause_is_held": pause_is_held,
         # ADR-0063: project detection.
         "project": session_row["project"],
         "project_source": session_row["project_source"],

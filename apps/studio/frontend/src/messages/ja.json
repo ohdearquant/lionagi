@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "デフォルト",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · 推奨",
+      "legacyGroup": "以前の選択",
+      "efforts": "労力: {efforts}",
+      "effortInModel": "労力はモデル ID に組み込まれます",
+      "effortAsSetting": "労力はプロバイダー設定として送信されます"
     },
     "effort": {
       "label": "労力",
@@ -503,6 +508,7 @@
       "statErrorsRecent": "エラー (最近)",
       "noBranchErrorsPartial": "読み込まれたメッセージにエラーはありません。",
       "noFilesPartial": "読み込まれたメッセージにファイル操作は検出されていません。",
+      "filesUnionBounded": "一部のファイル操作は表示されていません。この実行は 1 つのビューが収集できる数を超えるファイルに触れました。",
       "olderUnavailable": "過去の履歴を読み込めませんでした — リクエストが完了する前に会話が進みました。",
       "reloadConversation": "会話を再読み込み",
       "graphEdgeCount": "{count} 本のエッジ",
@@ -516,6 +522,7 @@
       "graphNodeStatusDone": "完了",
       "graphNodeStatusFailed": "失敗",
       "graphNodeStatusSkipped": "スキップ",
+      "graphNodeStatusCancelled": "キャンセル",
       "graphNodeStatusEscalated": "エスカレーション",
       "progressTotal": "合計",
       "progressCompleted": "完了",
@@ -552,10 +559,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "この操作を実行するコマンドはまだありません。"
+          "no-executable-path": "この操作を実行するコマンドはまだありません。",
+          "no-project-scope": "この実行にはプロジェクトがないため、操作を承認できません。"
         }
       }
     },
@@ -903,7 +912,7 @@
     "stale": {
       "error": "エラー · {message}",
       "unreachable": "APIに接続できません",
-      "lastUpdated": "古い状態 · 最終更新は{age}秒前"
+      "lastUpdated": "最終更新は{age}秒前"
     },
     "detail": {
       "hint": "調査するセッションを選択",
@@ -919,8 +928,7 @@
       "updated": "更新",
       "branchesTitle": "ブランチ ({count})",
       "noBranches": "ブランチはありません。",
-      "msgs": " 件のメッセージ",
-      "engineRuns": "エンジン実行"
+      "msgs": " 件のメッセージ"
     },
     "split": {
       "master": "セッション一覧",
@@ -1066,7 +1074,7 @@
     "stale": {
       "error": "エラー · {message}",
       "unreachable": "APIに接続できません",
-      "lastUpdated": "古い状態 · 最終更新は{age}秒前"
+      "lastUpdated": "最終更新は{age}秒前"
     },
     "zeroState": {
       "heading": "はじめる",
@@ -1155,6 +1163,7 @@
     "showEarlier": "{count, plural, other {# 件の古いメッセージを表示}}",
     "noArgs": "(引数なし)",
     "noOutput": "(出力なし)",
+    "outputWithheld": "未読み込み",
     "roleUser": "ユーザー",
     "roleThinking": "思考",
     "roleResponse": "応答",

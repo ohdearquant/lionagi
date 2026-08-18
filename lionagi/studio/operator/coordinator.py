@@ -149,6 +149,18 @@ async def _execute_application_command(
         from .rename_session import execute_rename_session_command
 
         return await execute_rename_session_command(command)
+    if command_type == "pause_run":
+        from .run_control import execute_pause_run_command
+
+        return await execute_pause_run_command(command)
+    if command_type == "release_run_pause":
+        from .run_control import execute_release_run_pause_command
+
+        return await execute_release_run_pause_command(command)
+    if command_type == "steer_run":
+        from .run_control import execute_steer_run_command
+
+        return await execute_steer_run_command(command)
     if command_type != "launch":
         raise ValueError(f"Unsupported Operator application command: {command_type!r}")
     from lionagi.studio.services.launches import launch

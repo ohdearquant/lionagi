@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "По умолчанию",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · рекомендуется",
+      "legacyGroup": "Устаревший выбор",
+      "efforts": "Усилие: {efforts}",
+      "effortInModel": "Уровень усилия закодирован в ID модели",
+      "effortAsSetting": "Уровень усилия передаётся как настройка провайдера"
     },
     "effort": {
       "label": "Усилие",
@@ -503,6 +508,7 @@
       "statErrorsRecent": "Ошибки (последние)",
       "noBranchErrorsPartial": "В загруженных сообщениях ошибок нет.",
       "noFilesPartial": "В загруженных сообщениях операции с файлами не обнаружены.",
+      "filesUnionBounded": "Часть файловых операций не показана: этот запуск затронул больше файлов, чем собирает одно представление.",
       "olderUnavailable": "Не удалось загрузить более раннюю историю — разговор продолжился до завершения запроса.",
       "reloadConversation": "Перезагрузить разговор",
       "graphEdgeCount": "рёбер: {count}",
@@ -516,6 +522,7 @@
       "graphNodeStatusDone": "готово",
       "graphNodeStatusFailed": "ошибка",
       "graphNodeStatusSkipped": "пропущено",
+      "graphNodeStatusCancelled": "отменено",
       "graphNodeStatusEscalated": "эскалировано",
       "progressTotal": "Всего",
       "progressCompleted": "Завершено",
@@ -552,10 +559,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "Пока нет команды, которая бы это выполнила."
+          "no-executable-path": "Пока нет команды, которая бы это выполнила.",
+          "no-project-scope": "У этого запуска нет проекта, поэтому управление не может быть авторизовано."
         }
       }
     },
@@ -903,7 +912,7 @@
     "stale": {
       "error": "ошибка · {message}",
       "unreachable": "API недоступен",
-      "lastUpdated": "устарело · последнее обновление {age} с назад"
+      "lastUpdated": "последнее обновление {age} с назад"
     },
     "detail": {
       "hint": "Выберите сессию для проверки",
@@ -919,8 +928,7 @@
       "updated": "Обновлено",
       "branchesTitle": "Ветки ({count})",
       "noBranches": "Веток нет.",
-      "msgs": " сообщ.",
-      "engineRuns": "Запуски движка"
+      "msgs": " сообщ."
     },
     "split": {
       "master": "Список сессий",
@@ -1066,7 +1074,7 @@
     "stale": {
       "error": "ошибка · {message}",
       "unreachable": "API недоступен",
-      "lastUpdated": "устарело · последнее обновление {age} с назад"
+      "lastUpdated": "последнее обновление {age} с назад"
     },
     "zeroState": {
       "heading": "Начните работу",
@@ -1155,6 +1163,7 @@
     "showEarlier": "{count, plural, one {Показать # предыдущее сообщение} few {Показать # предыдущих сообщения} many {Показать # предыдущих сообщений} other {Показать # предыдущих сообщения}}",
     "noArgs": "(нет аргументов)",
     "noOutput": "(нет вывода)",
+    "outputWithheld": "не прочитано",
     "roleUser": "пользователь",
     "roleThinking": "размышление",
     "roleResponse": "ответ",

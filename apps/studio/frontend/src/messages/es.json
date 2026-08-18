@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "Predeterminado",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · recomendado",
+      "legacyGroup": "Selección heredada",
+      "efforts": "Esfuerzo: {efforts}",
+      "effortInModel": "El esfuerzo está codificado en el ID del modelo",
+      "effortAsSetting": "El esfuerzo se envía como ajuste del proveedor"
     },
     "effort": {
       "label": "Esfuerzo",
@@ -503,6 +508,7 @@
       "statErrorsRecent": "Errores (recientes)",
       "noBranchErrorsPartial": "No hay errores en los mensajes cargados.",
       "noFilesPartial": "No se detectaron operaciones de archivo en los mensajes cargados.",
+      "filesUnionBounded": "Algunas operaciones de archivo no aparecen: esta ejecución tocó más archivos de los que recoge una vista.",
       "olderUnavailable": "No se pudo cargar el historial anterior — esta conversación avanzó antes de que se completara la solicitud.",
       "reloadConversation": "Recargar conversación",
       "graphEdgeCount": "{count} aristas",
@@ -516,6 +522,7 @@
       "graphNodeStatusDone": "listo",
       "graphNodeStatusFailed": "fallido",
       "graphNodeStatusSkipped": "omitido",
+      "graphNodeStatusCancelled": "cancelado",
       "graphNodeStatusEscalated": "escalado",
       "progressTotal": "Total",
       "progressCompleted": "Completado",
@@ -552,10 +559,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "Todavía no existe ningún comando que ejecute esta acción."
+          "no-executable-path": "Todavía no existe ningún comando que ejecute esta acción.",
+          "no-project-scope": "Esta ejecución no tiene proyecto, por lo que no se puede autorizar ningún control."
         }
       }
     },
@@ -903,7 +912,7 @@
     "stale": {
       "error": "error · {message}",
       "unreachable": "API inaccesible",
-      "lastUpdated": "inactivo · última actualización hace {age} s"
+      "lastUpdated": "última actualización hace {age} s"
     },
     "detail": {
       "hint": "Selecciona una sesión para inspeccionarla",
@@ -919,8 +928,7 @@
       "updated": "Actualizado",
       "branchesTitle": "Ramas ({count})",
       "noBranches": "Sin ramas.",
-      "msgs": " mensajes",
-      "engineRuns": "Ejecuciones de motor"
+      "msgs": " mensajes"
     },
     "split": {
       "master": "Lista de sesiones",
@@ -1066,7 +1074,7 @@
     "stale": {
       "error": "error · {message}",
       "unreachable": "API inaccesible",
-      "lastUpdated": "obsoleto · última actualización hace {age} s"
+      "lastUpdated": "última actualización hace {age} s"
     },
     "zeroState": {
       "heading": "Comenzar",
@@ -1155,6 +1163,7 @@
     "showEarlier": "Mostrar {count, plural, one {# mensaje anterior} other {# mensajes anteriores}}",
     "noArgs": "(sin args)",
     "noOutput": "(sin salida)",
+    "outputWithheld": "no leído",
     "roleUser": "usuario",
     "roleThinking": "pensando",
     "roleResponse": "respuesta",

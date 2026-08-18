@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "Default",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · recommended",
+      "legacyGroup": "Legacy selection",
+      "efforts": "Effort: {efforts}",
+      "effortInModel": "Effort is encoded in the model ID",
+      "effortAsSetting": "Effort is sent as a provider setting"
     },
     "effort": {
       "label": "Effort",
@@ -503,6 +508,7 @@
       "statErrorsRecent": "Errors (recent)",
       "noBranchErrorsPartial": "No runtime errors in the loaded messages.",
       "noFilesPartial": "No file operations detected in the loaded messages.",
+      "filesUnionBounded": "Some file operations are not listed: this run touched more files than one view collects.",
       "olderUnavailable": "Older history could not be loaded — this conversation moved on before the request completed.",
       "reloadConversation": "Reload conversation",
       "graphEdgeCount": "{count} edges",
@@ -516,6 +522,7 @@
       "graphNodeStatusDone": "done",
       "graphNodeStatusFailed": "failed",
       "graphNodeStatusSkipped": "skipped",
+      "graphNodeStatusCancelled": "cancelled",
       "graphNodeStatusEscalated": "escalated",
       "progressTotal": "Total",
       "progressCompleted": "Completed",
@@ -552,10 +559,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "No command exists yet to carry this out."
+          "no-executable-path": "No command exists yet to carry this out.",
+          "no-project-scope": "This run has no project, so a control cannot be authorized for it."
         }
       }
     },
@@ -903,7 +912,7 @@
     "stale": {
       "error": "error · {message}",
       "unreachable": "API unreachable",
-      "lastUpdated": "stale · last updated {age}s ago"
+      "lastUpdated": "last updated {age}s ago"
     },
     "detail": {
       "hint": "Select a session to inspect it",
@@ -919,8 +928,7 @@
       "updated": "Updated",
       "branchesTitle": "{count, plural, one {Branch (#)} other {Branches (#)}}",
       "noBranches": "No branches.",
-      "msgs": " msgs",
-      "engineRuns": "Engine runs"
+      "msgs": " msgs"
     },
     "split": {
       "master": "Session list",
@@ -1066,7 +1074,7 @@
     "stale": {
       "error": "error · {message}",
       "unreachable": "API unreachable",
-      "lastUpdated": "stale · last updated {age}s ago"
+      "lastUpdated": "last updated {age}s ago"
     },
     "zeroState": {
       "heading": "Get started",
@@ -1155,6 +1163,7 @@
     "showEarlier": "{count, plural, one {Show # earlier message} other {Show # earlier messages}}",
     "noArgs": "(no args)",
     "noOutput": "(no output)",
+    "outputWithheld": "not read",
     "roleUser": "user",
     "roleThinking": "thinking",
     "roleResponse": "response",

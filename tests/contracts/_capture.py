@@ -21,6 +21,8 @@ import socket
 import subprocess
 import sys
 import time
+from collections import Counter
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -315,22 +317,14 @@ _DIFFERENTIAL_FAKE_TMPDIR = "/tmp/lionagi-differential-fake-tmp"
 _DIFFERENTIAL_FAKE_USER = "lionagi-differential-fake-user"
 
 
-def differential_capture(argv: list[str], timeout: float = 20.0) -> list[dict[str, Any]]:
-    """Capture *argv* three times: once under the ambient environment and
-    working directory, once under a deliberately different HOME / TMPDIR /
-    USER and a different working directory, and once more after a wall-clock
-    gap crossing a one-second boundary. A stream that reads anything from
-    the environment, the current directory, or the clock necessarily differs
-    across these runs; genuinely static argparse usage/error text does not.
-    This replaces guessing at what a leaked value looks like (a pattern list,
-    a vocabulary of "known-safe" words) with a check on the property that
-    actually matters: does the output depend on the machine at all."""
+def _environment_and_cwd_runs(argv: Sequence[str], timeout: float) -> list[dict[str, Any]]:
     fake_cwd = Path(_DIFFERENTIAL_FAKE_TMPDIR)
     fake_cwd.mkdir(parents=True, exist_ok=True)
-    runs = [
-        _run_cli_env(argv, timeout=timeout),
+    args = list(argv)
+    return [
+        _run_cli_env(args, timeout=timeout),
         _run_cli_env(
-            argv,
+            args,
             env_overrides={
                 "HOME": _DIFFERENTIAL_FAKE_HOME,
                 "TMPDIR": _DIFFERENTIAL_FAKE_TMPDIR,
@@ -342,8 +336,30 @@ def differential_capture(argv: list[str], timeout: float = 20.0) -> list[dict[st
             timeout=timeout,
         ),
     ]
-    time.sleep(1.05)
-    runs.append(_run_cli_env(argv, timeout=timeout))
+
+
+def _wait_for_next_wall_clock_second() -> None:
+    now = time.time()
+    time.sleep(max(0.001, int(now) + 1.001 - now))
+
+
+def differential_capture_many(
+    argvs: Iterable[Sequence[str]], timeout: float = 20.0
+) -> dict[tuple[str, ...], list[dict[str, Any]]]:
+    """Capture every argv under ambient and changed host state, then cross
+    one shared wall-clock boundary before the final ambient captures.
+
+    Sharing the boundary preserves the clock-variance proof without paying a
+    one-second sleep for every CLI case assigned to the same pytest worker.
+    """
+    keys = tuple(tuple(argv) for argv in argvs)
+    if len(keys) != len(set(keys)):
+        raise ValueError("differential capture argv values must be unique")
+
+    runs = {argv: _environment_and_cwd_runs(argv, timeout) for argv in keys}
+    _wait_for_next_wall_clock_second()
+    for argv in keys:
+        runs[argv].append(_run_cli_env(list(argv), timeout=timeout))
     return runs
 
 
@@ -351,7 +367,7 @@ def known_machine_identity() -> frozenset[str]:
     """Literal values that identify *this* machine or checkout: hostname,
     real username, home directory, and this repo's own checkout path.
 
-    ``differential_capture`` above cannot catch a value that is constant on
+    ``differential_capture_many`` above cannot catch a value that is constant on
     this machine but still identifying -- a hostname baked into a banner
     line does not vary between two runs on the same box. This closes that
     gap by redacting known values rather than guessing at shapes: it is
@@ -604,7 +620,24 @@ def capture_mcp() -> dict[str, Any]:
             "available_count": catalog["available_count"],
             "max_ops": catalog["max_ops"],
             "verb_names": sorted(v["verb"] for v in catalog["verbs"]),
-            "available_verb_names": sorted(v["verb"] for v in catalog["verbs"] if v["available"]),
+            # the catalog omits `available` at its default, so absence means available
+            "available_verb_names": sorted(
+                v["verb"] for v in catalog["verbs"] if v.get("available", True)
+            ),
+            # Which keys an entry carries is the contract every caller reads, and
+            # names and counts alone are blind to it: fields can be added to or
+            # dropped from all 70 entries without moving anything above. Held as
+            # the distinct key sets with their frequency, so the baseline moves on
+            # a shape change without carrying a row per verb.
+            # lists rather than tuples: this is compared against the JSON
+            # baseline, which has no tuple to round-trip back to
+            "entry_key_sets": [
+                [sorted(shape), count]
+                for shape, count in sorted(
+                    Counter(frozenset(v) for v in catalog["verbs"]).items(),
+                    key=lambda kv: sorted(kv[0]),
+                )
+            ],
         },
         "projections": projections,
         "projection_count": len(projections),

@@ -170,7 +170,12 @@
     "model": {
       "label": "Model",
       "default": "Mặc định",
-      "unavailable": "{model} (unavailable)"
+      "unavailable": "{model} (unavailable)",
+      "recommendedGroup": "{provider} · đề xuất",
+      "legacyGroup": "Lựa chọn cũ",
+      "efforts": "Nỗ lực: {efforts}",
+      "effortInModel": "Mức nỗ lực được mã hóa trong ID mô hình",
+      "effortAsSetting": "Mức nỗ lực được gửi dưới dạng cài đặt nhà cung cấp"
     },
     "effort": {
       "label": "Nỗ lực",
@@ -503,6 +508,7 @@
       "statErrorsRecent": "lỗi (gần đây)",
       "noBranchErrorsPartial": "không có lỗi trong các tin nhắn đã tải.",
       "noFilesPartial": "không phát hiện thao tác tệp trong các tin nhắn đã tải.",
+      "filesUnionBounded": "Một số thao tác tệp không được liệt kê: lần chạy này đã chạm vào nhiều tệp hơn mức một khung hiển thị thu thập.",
       "olderUnavailable": "Không thể tải lịch sử cũ hơn — cuộc trò chuyện này đã tiếp tục trước khi yêu cầu hoàn tất.",
       "reloadConversation": "Tải lại cuộc trò chuyện",
       "graphEdgeCount": "{count} cạnh",
@@ -516,6 +522,7 @@
       "graphNodeStatusDone": "xong",
       "graphNodeStatusFailed": "thất bại",
       "graphNodeStatusSkipped": "đã bỏ qua",
+      "graphNodeStatusCancelled": "đã hủy",
       "graphNodeStatusEscalated": "đã leo thang",
       "progressTotal": "Tổng",
       "progressCompleted": "Hoàn tất",
@@ -552,10 +559,12 @@
         "reason": {
           "run-terminal": "This run has ended.",
           "agent-no-pause-seam": "An agent run has no pause seam inside a single turn — steer instead.",
+          "no-live-consumer": "This run is a mirrored or imported session, so no runner would deliver a control.",
           "already-pause-requested": "A pause has already been requested.",
           "not-paused": "The run is not paused.",
           "still-pausing": "Still finishing in-flight operations.",
-          "no-executable-path": "Chưa có lệnh nào để thực hiện thao tác này."
+          "no-executable-path": "Chưa có lệnh nào để thực hiện thao tác này.",
+          "no-project-scope": "Lần chạy này không có dự án, nên không thể ủy quyền điều khiển."
         }
       }
     },
@@ -903,7 +912,7 @@
     "stale": {
       "error": "lỗi · {message}",
       "unreachable": "không kết nối được API",
-      "lastUpdated": "cũ · cập nhật lần cuối {age} giây trước"
+      "lastUpdated": "cập nhật lần cuối {age} giây trước"
     },
     "detail": {
       "hint": "chọn một phiên để kiểm tra",
@@ -919,8 +928,7 @@
       "updated": "đã cập nhật",
       "branchesTitle": "nhánh ({count})",
       "noBranches": "không có nhánh.",
-      "msgs": " tin nhắn",
-      "engineRuns": "Lượt chạy engine"
+      "msgs": " tin nhắn"
     },
     "split": {
       "master": "danh sách phiên",
@@ -1066,7 +1074,7 @@
     "stale": {
       "error": "lỗi · {message}",
       "unreachable": "không kết nối được API",
-      "lastUpdated": "cũ · cập nhật lần cuối {age} giây trước"
+      "lastUpdated": "cập nhật lần cuối {age} giây trước"
     },
     "zeroState": {
       "heading": "bắt đầu",
@@ -1155,6 +1163,7 @@
     "showEarlier": "hiển thị {count, number} tin nhắn trước đó",
     "noArgs": "(không có đối số)",
     "noOutput": "(không có đầu ra)",
+    "outputWithheld": "chưa đọc",
     "roleUser": "người dùng",
     "roleThinking": "đang nghĩ",
     "roleResponse": "phản hồi",

@@ -112,3 +112,18 @@ async def open_db(path: str) -> AsyncIterator[aiosqlite.Connection]:
             yield db
         finally:
             _ACTIVE_CONNECTIONS -= 1
+
+
+async def table_columns(db: aiosqlite.Connection, table: str) -> set[str]:
+    """Columns the store actually has on a table, as it is on disk right now.
+
+    These connections read the store; they never migrate it. A store last
+    written by an older version therefore keeps that version's shape for as
+    long as nothing opens it for writing, which is the state of every store
+    immediately after an upgrade and the permanent state of one this process
+    can only read. A read that names a column added by a later version has to
+    ask whether it is there, because SQLite rejects the statement outright
+    rather than returning NULL for the column that is missing.
+    """
+    cur = await db.execute(f"PRAGMA table_info({table})")
+    return {row[1] for row in await cur.fetchall()}

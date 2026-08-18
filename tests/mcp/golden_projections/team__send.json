@@ -4,7 +4,7 @@
     "additionalProperties": false,
     "properties": {
       "artifacts": {
-        "description": "Comma-separated artifact paths to attach (used with --kind done).",
+        "description": "Comma-separated artifact paths to attach (used with `kind` done).",
         "type": "string",
         "x-flag": "--artifacts"
       },

@@ -19,7 +19,7 @@ than guessing what a later release's shape means (`SchemaTooNewError`).
 Read-only opens apply no schema migration at all and are unaffected by this
 check.
 
-Two kinds of schema change show up in the code:
+Three kinds of schema change show up in the code:
 
 - **In-place table rebuilds**, used when SQLite's lack of `ALTER TABLE ...
   DROP CONSTRAINT` means the only way to drop a stale `CHECK` constraint is
@@ -29,12 +29,46 @@ Two kinds of schema change show up in the code:
   first checks (by inspecting the live `CREATE TABLE` SQL for a marker
   substring) whether the constraint it exists to remove is even still there,
   and no-ops if not.
+- **Constraint replacements**, the PostgreSQL counterpart to the rebuild
+  above, listed in `MIGRATION_CONSTRAINTS` and applied by
+  `_reconcile_constraints`. PostgreSQL can drop and re-add a `CHECK` in
+  place, so no copy is needed, but it needs the step for the same reason:
+  `metadata.create_all` only creates missing tables, so a store that already
+  had the table keeps whatever constraint it was created with, and a value
+  added to the declared vocabulary afterwards is rejected by exactly the
+  store that has been running longest. The same marker reading applies —
+  each statement looks for the newest value in the live definition and does
+  nothing if it is already there, so it does not take the table's lock on
+  every open, and a constraint that is absent entirely is left alone,
+  because a column with no `CHECK` already accepts every value.
 - **Backfills**, used when a later release adds a column to a table that
   already existed, and old rows need real values instead of the `DEFAULT`
   placeholder `ALTER TABLE` gave them. Every backfill is guarded by a durable
   claim row in `schema_meta` (`INSERT ... ON CONFLICT (key) DO NOTHING`), so
   it runs exactly once even if an earlier release already added the column
   without running the corresponding update.
+
+### Historical session end times are approximate, not measured
+
+Every live transition from a nonterminal session status to a terminal one
+persists `ended_at` in the same transaction as `status`; when `started_at` is
+known it also persists the measured `duration_ms`. Older databases can contain
+terminal rows from before that invariant. Schema version 4 repairs those rows
+in batches of at most 500 per transaction, choosing the latest available value
+among `updated_at`, `last_message_at`, `started_at`, and `created_at` as an
+explicit approximation. It sets `ended_at_is_approximate = 1` and deliberately
+leaves `duration_ms` null: the evidence proves the run was no longer active by
+roughly that time, not its exact wall-clock duration.
+
+The batch completion marker is written only after an empty probe. If an open is
+interrupted, repaired rows remain excluded by `ended_at IS NULL` and the next
+writable open resumes the remaining batches. Rows with `status IS NULL` are not
+eligible: that state means a terminal status itself was never recorded and is
+owned by the stale-session reaper. Filesystem imports apply the same provenance
+rule prospectively: a manifest-provided end is measured, while an `st_mtime`
+fallback is marked approximate. Consumers such as Operator expose an
+approximate end but report duration as unknown rather than deriving a number or
+letting a terminal row's clock grow against the current time.
 
 ### The SQLite rebuild hazard: PRAGMA foreign_keys inside a transaction
 

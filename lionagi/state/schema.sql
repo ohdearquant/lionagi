@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 
 -- Must match SCHEMA_VERSION in db.py, which re-stamps this row on every open
 -- so a migrated database reports the shape it now has.
-INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '3');
+INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('version', '4');
 INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('created_at', strftime('%s', 'now'));
 
 -- ── Message types (int enum for lion_class) ───────────────────────────────
@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   invocation_kind TEXT CHECK(
                     invocation_kind IS NULL
                     OR invocation_kind IN
-                      ('agent', 'play', 'flow', 'fanout', 'show-play')
+                      ('agent', 'play', 'flow', 'fanout', 'show-play', 'engine')
                   ),
   show_topic      TEXT,
   show_play_name  TEXT,
@@ -143,6 +143,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   status          TEXT,
   started_at      REAL,
   ended_at        REAL,
+  -- 1 means ended_at was reconstructed from historical activity evidence,
+  -- not observed at the terminal transition. Consumers must not derive a
+  -- measured duration from it.
+  ended_at_is_approximate INTEGER NOT NULL DEFAULT 0,
   -- ── Activity ────────────────────────────────────────────
   -- Bumped on every message INSERT so staleness_check() can answer
   -- "is this running session still active?" without scanning messages.
@@ -209,6 +213,15 @@ CREATE INDEX IF NOT EXISTS idx_sessions_status_last_msg
 -- The grouped runs view fetches all sessions for an invocation.
 CREATE INDEX IF NOT EXISTS idx_sessions_invocation
   ON sessions(invocation_id) WHERE invocation_id IS NOT NULL;
+-- The active snapshot reads one invocation's running children in creation
+-- order, once per poll. On the index above, sqlite matched only `status` and
+-- then built a temp b-tree to order the result, so every running session in the
+-- database was visited and sorted before a LIMIT could discard any of it.
+-- Carrying status and the sort columns lets that read seek straight to the
+-- invocation and stop at its limit. The narrower index above is a prefix of
+-- this one and stays only because dropping it is a separate migration.
+CREATE INDEX IF NOT EXISTS idx_sessions_invocation_status_created
+  ON sessions(invocation_id, status, created_at, id) WHERE invocation_id IS NOT NULL;
 -- Project-scoped session listing in Studio.
 CREATE INDEX IF NOT EXISTS idx_sessions_project
   ON sessions(project) WHERE project IS NOT NULL;
@@ -216,6 +229,12 @@ CREATE INDEX IF NOT EXISTS idx_sessions_cc_session
   ON sessions(cc_session_id) WHERE cc_session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_run_id
   ON sessions(run_id) WHERE run_id IS NOT NULL;
+-- Keeps the resumable v4 end-time repair linear as each completed batch
+-- removes itself from this otherwise-empty partial index.
+CREATE INDEX IF NOT EXISTS idx_sessions_terminal_missing_end
+  ON sessions(id)
+  WHERE ended_at IS NULL
+    AND status IN ('completed','completed_empty','failed','timed_out','aborted','cancelled');
 -- first_msg_id / last_msg_id are child keys of messages(id); without an
 -- index, a message delete scans the whole table looking for referrers, once
 -- per deleted row. Not partial: only a plain index is certain to serve it.
@@ -491,6 +510,10 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- (no refire until window_minutes has elapsed since the last alert).
   threshold_config    JSON,
   last_alert_at       REAL,
+  -- Detector-liveness watermark for threshold schedules. This advances
+  -- whenever the metric is evaluated, including the healthy no-breach path;
+  -- last_alert_at remains the most recent action-producing breach.
+  last_evaluated_at   REAL,
   -- Observer self-health (github_poll poller): last_healthy_poll_at is
   -- stamped on any 2xx/304 github_poll() read (including a healthy-empty
   -- one); poller_consecutive_401 counts consecutive 401s and resets only
@@ -798,7 +821,11 @@ CREATE TABLE IF NOT EXISTS engine_runs (
               CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
   started_at  REAL    NOT NULL,            -- Unix epoch seconds
   ended_at    REAL,                        -- NULL while running
-  session_id  TEXT    REFERENCES sessions(id) ON DELETE SET NULL,
+  session_id  TEXT    REFERENCES sessions(id) ON DELETE SET NULL, -- legacy parent-session alias
+  invocation_id TEXT  REFERENCES invocations(id) ON DELETE SET NULL,
+  signal_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+  outcome_json JSON,                       -- bounded, schema-versioned terminal outcome
   export_dir  TEXT,                        -- filesystem path when --save used
   error       TEXT                         -- last exception message on failure
 );
@@ -809,8 +836,16 @@ CREATE INDEX IF NOT EXISTS idx_engine_runs_status
   ON engine_runs(status);
 CREATE INDEX IF NOT EXISTS idx_engine_runs_started
   ON engine_runs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_engine_runs_started_id
+  ON engine_runs(started_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_engine_runs_session
   ON engine_runs(session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_engine_runs_invocation
+  ON engine_runs(invocation_id) WHERE invocation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_engine_runs_signal_session
+  ON engine_runs(signal_session_id) WHERE signal_session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_engine_runs_parent_session
+  ON engine_runs(parent_session_id) WHERE parent_session_id IS NOT NULL;
 
 -- ── Engine definitions ────────────────────────────────────────────────────────
 -- Named, persisted engine configurations created via Studio.  A definition

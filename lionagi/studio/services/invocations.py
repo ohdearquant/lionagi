@@ -18,11 +18,10 @@ from ..registry import studio_route
 from ._io import parse_json_col as _parse_json_col
 
 
-def _invocation_health(
+async def _invocation_health(
     sessions: list[dict[str, Any]],
     *,
     now: float,
-    ps_snapshot: str | None,
 ) -> tuple[str, float | None]:
     """Worst-of health verdict + latest activity timestamp across an
     invocation's child sessions, reusing the session health classifier
@@ -32,13 +31,15 @@ def _invocation_health(
     if not sessions:
         return "unknown", None
 
-    from .admin import _artifacts_path, process_liveness
+    from .admin import _artifacts_path, resolve_process_liveness
 
     healths: list[SessionHealth] = []
     last_activity: float | None = None
     for s in sessions:
         artifacts = _artifacts_path(s)
-        process_alive = process_liveness(s, artifacts, ps_snapshot)
+        process_alive = (
+            await resolve_process_liveness(s, artifacts) if s.get("status") == "running" else False
+        )
         healths.append(
             classify_session_health(
                 s,
@@ -70,17 +71,10 @@ async def list_invocations(
             skill=skill, plugin=plugin, status=status, limit=limit, offset=offset
         )
         now = time.time()
-        ps_snapshot: str | None = None
         out: list[dict[str, Any]] = []
         for r in rows:
             child_sessions = await db.list_sessions_for_invocation(r["id"])
-            if child_sessions and ps_snapshot is None:
-                from .admin import _ps_snapshot
-
-                ps_snapshot = _ps_snapshot()
-            health, last_activity_at = _invocation_health(
-                child_sessions, now=now, ps_snapshot=ps_snapshot
-            )
+            health, last_activity_at = await _invocation_health(child_sessions, now=now)
             node_meta = r.get("node_metadata")
             if isinstance(node_meta, str):
                 try:
@@ -162,14 +156,7 @@ async def get_invocation(invocation_id: str, *, readonly: bool = False) -> dict[
         # The schedule_run that fired this invocation, when scheduled, so the
         # detail page can show exit_code/error_detail without correlating IDs.
         schedule_run = await db.get_schedule_run_by_invocation(invocation_id)
-        ps_snapshot: str | None = None
-        if sessions:
-            from .admin import _ps_snapshot
-
-            ps_snapshot = _ps_snapshot()
-        health, last_activity_at = _invocation_health(
-            sessions, now=time.time(), ps_snapshot=ps_snapshot
-        )
+        health, last_activity_at = await _invocation_health(sessions, now=time.time())
     return {
         "id": row["id"],
         "skill": row["skill"],

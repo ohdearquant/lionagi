@@ -218,6 +218,8 @@ Exact semantics:
 
 - A running row with confirmed dead process/liveness becomes `stale`; raw `running` is kept
   for diagnostics.
+- `effectiveHealth` is a running-process signal and is null for terminal rows; success/failure is
+  derived from raw status and reason fields, never from `effectiveHealth="healthy"`.
 - Confirmed terminal failure/timed-out/cancelled/aborted states remain terminal even when
   liveness is unknown.
 - `completed_empty` is distinct from successful `completed` because it carries missing-

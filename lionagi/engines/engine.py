@@ -300,6 +300,11 @@ class EngineRun:
         self.agents_made: int = 0
         self._sem = Semaphore(engine.max_concurrent)
         self._active: set[asyncio.Task] = set()
+        # Failures of spawned tasks, recorded as each one settles. The drain
+        # cannot be the only collector: a task that finishes before the drain
+        # starts is already out of _active by then, and its failure would have
+        # nowhere to be seen.
+        self._settled_errors: list[BaseException] = []
         self._pending: deque = deque()
         self._seen: set[str] = set()
         self._t0 = monotonic()
@@ -359,7 +364,7 @@ class EngineRun:
         if kind == "agent_error":
             self._agent_errors.append(f"{data.get('agent')}: {data.get('error')}")
         if self.on_event:
-            self.on_event({"type": kind, **data})
+            self.on_event({"type": kind, "engine_instance_id": self.run_id, **data})
 
     def seen(self, key: str) -> bool:
         norm = key.strip().lower()
@@ -383,6 +388,7 @@ class EngineRun:
         secure: bool = True,
         exempt: bool = False,
         mcp_servers: list[str] | None = None,
+        mcp_config_path: str | None = None,
         extra_prompt: str | None = None,
         khive_injection: Any = None,
     ) -> Branch:
@@ -398,6 +404,8 @@ class EngineRun:
             cwd = self.engine.agent_cwd
         if extra_prompt is None:
             extra_prompt = self.engine.agent_extra_prompt
+        if mcp_config_path is None:
+            mcp_config_path = self.engine.agent_mcp_config_path
         # Resolution order: explicit call > engine-wide > role profile. An
         # effort suffix baked into the model spec outranks prof_effort too.
         prof_model, prof_effort = role_profile_route(role)
@@ -437,6 +445,8 @@ class EngineRun:
         )
         if mcp_servers is not None:
             spec.mcp_servers = mcp_servers
+        if mcp_config_path is not None:
+            spec.mcp_config_path = mcp_config_path
         if secure and tools:
             from lionagi.agent.spec import _wire_secure_guards
 
@@ -526,15 +536,37 @@ class EngineRun:
             self._pending.append(coro)
             return None
         self._active.add(task)
-        task.add_done_callback(self._active.discard)
+        task.add_done_callback(self._task_settled)
         return task
+
+    def _task_settled(self, task: asyncio.Task) -> None:
+        """Take a finished spawned task off the active set, keeping its failure.
+
+        Discarding alone loses the failure of anything that finishes before the
+        drain runs, and that is not the rare case: a refusal the provider issues
+        without doing any work -- a bad key, an unsupported model -- arrives
+        almost immediately, so the failures most certain to describe the whole
+        run are the ones most certain to be gone before anyone looks. The drain
+        then finds an empty set and the run reaches a verdict as though nothing
+        had failed.
+
+        Reading ``exception()`` here is also what marks the failure retrieved,
+        so a real defect stops surfacing as an unretrieved-task warning from the
+        event loop long after the run reported success.
+        """
+        self._active.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._settled_errors.append(exc)
 
     def drain_pending(self) -> None:
         while self._pending:
             coro = self._pending.popleft()
             task = asyncio.ensure_future(coro)
             self._active.add(task)
-            task.add_done_callback(self._active.discard)
+            task.add_done_callback(self._task_settled)
 
     async def cancel_active(self) -> None:
         """Cancel and await all in-flight spawned tasks; tasks that don't settle
@@ -577,15 +609,23 @@ class EngineRun:
     async def wait_quiescence(self) -> None:
         """Block until all spawned tasks settle; re-raise non-cancellation, non-budget
         failures. EngineBudgetError is benign (discretionary work declined) and swallowed."""
-        task_errors: list[BaseException] = []
         while self._active:
-            results = await gather(*list(self._active), return_exceptions=True)
-            task_errors.extend(
-                r
-                for r in results
-                if isinstance(r, BaseException)
-                and not isinstance(r, asyncio.CancelledError | EngineBudgetError)
-            )
+            await gather(*list(self._active), return_exceptions=True)
+            # Completion schedules the done callbacks rather than running them,
+            # so yield once and let the tasks just awaited record themselves
+            # before the set is re-tested.
+            await asyncio.sleep(0)
+
+        # Every spawned task records its own failure as it settles, whether that
+        # happened during this drain or before it started. Collecting from one
+        # place is what makes the two cases indistinguishable here, which is the
+        # point: the drain should not be able to see one and miss the other.
+        task_errors = [
+            exc
+            for exc in self._settled_errors
+            if not isinstance(exc, asyncio.CancelledError | EngineBudgetError)
+        ]
+        self._settled_errors.clear()
         if task_errors:
             for exc in task_errors:
                 logger.error("engine spawned task failed: %s", exc)
@@ -640,11 +680,18 @@ class EngineRun:
         on_branch_created: Any = None,
         spawn_branch_setup: Any = None,
         on_op_complete: Any = None,
+        skip_signal_ops: set[Any] | None = None,
     ) -> dict[str, Any]:
-        """Execute a prebuilt operation DAG on the run's session and return operation results."""
+        """Execute a prebuilt operation DAG on the run's session and return operation results.
+
+        ``skip_signal_ops`` names ops that already ran in an earlier pass, so this
+        pass does not signal them a second time. Default signals every node.
+        """
         from .flow_signals import flow_progress_signals  # noqa: PLC0415
 
-        async with flow_progress_signals(self.session, graph) as on_progress:
+        async with flow_progress_signals(
+            self.session, graph, skip_ops=skip_signal_ops
+        ) as on_progress:
             result = await self.session.flow(
                 graph,
                 context=context,
@@ -758,6 +805,7 @@ class Engine:
         cancel_timeout_s: float = 30.0,
         agent_cwd: str | None = None,
         agent_extra_prompt: str | None = None,
+        agent_mcp_config_path: str | None = None,
         khive_injection: Any = None,
         yolo: bool = False,
     ) -> None:
@@ -766,6 +814,15 @@ class Engine:
         # make_agent(cwd=..., extra_prompt=...) still wins.
         self.agent_cwd = agent_cwd
         self.agent_extra_prompt = agent_extra_prompt
+        # Which .mcp.json this engine's agents resolve. Left unset, every agent
+        # falls through to the user-level ~/.lionagi/.mcp.json, which is a
+        # machine-global file other tools write: a run then depends on a config
+        # it never named and cannot see change underneath it, and an unrelated
+        # write to that file breaks every engine on the machine at once. Naming
+        # it also makes a bad path fail loudly at resolution instead of silently
+        # falling back to the global one. Per-call
+        # make_agent(mcp_config_path=...) still wins.
+        self.agent_mcp_config_path = agent_mcp_config_path
         # Auto-approve tool permission requests for every agent this engine
         # spawns, applied per provider from the same table the CLI and profile
         # paths use. Default False: auto-approving tool execution is not
@@ -900,6 +957,7 @@ class Engine:
     ) -> Any:
         """Execute the engine pipeline; on internal budget cancellation calls _partial_export instead of raising. External cancellation propagates as CancelledError."""
         run = self.new_run(session=session, on_event=on_event, on_branch_created=on_branch_created)
+        self._last_run_id = run.run_id
         # Reset so a reused engine never carries diagnostics from a prior run.
         self._emission_failures: list[str] = []
         self._agent_errors: list[str] = []

@@ -6,7 +6,7 @@ import EmptyState from "@/components/ui/EmptyState";
 import Modal from "@/components/ui/Modal";
 import Timestamp from "@/components/ui/Timestamp";
 import { listEngineRuns, getEngineRun } from "@/lib/api";
-import type { EngineRunSummary } from "@/lib/api";
+import type { EngineRunDetail, EngineRunSummary } from "@/lib/api";
 
 export interface EngineRunsRouteSearch {
   kind?: string;
@@ -26,7 +26,7 @@ function useEngineRunsData(kind: string, status: string, sessionId: string) {
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState(false);
   const generationRef = useRef(0);
-  const nextOffsetRef = useRef(0);
+  const nextCursorRef = useRef<string | null>(null);
   const loadingMoreRef = useRef(false);
 
   const load = useCallback(() => {
@@ -44,13 +44,12 @@ function useEngineRunsData(kind: string, status: string, sessionId: string) {
       status: status.trim() || undefined,
       session_id: sessionId.trim() || undefined,
       limit: PAGE_SIZE,
-      offset: 0,
     })
-      .then((res) => {
+      .then((page) => {
         if (generation !== generationRef.current) return;
-        setRuns(res);
-        nextOffsetRef.current = res.length;
-        setHasMore(res.length === PAGE_SIZE);
+        setRuns(page.items);
+        nextCursorRef.current = page.next_cursor;
+        setHasMore(page.next_cursor != null);
       })
       .catch(() => {
         if (generation === generationRef.current) setError(true);
@@ -65,6 +64,8 @@ function useEngineRunsData(kind: string, status: string, sessionId: string) {
 
   const loadMore = useCallback(async () => {
     if (loadingMoreRef.current) return;
+    const cursor = nextCursorRef.current;
+    if (cursor == null) return;
     loadingMoreRef.current = true;
     setLoadingMore(true);
     const generation = generationRef.current;
@@ -74,15 +75,15 @@ function useEngineRunsData(kind: string, status: string, sessionId: string) {
         status: status.trim() || undefined,
         session_id: sessionId.trim() || undefined,
         limit: PAGE_SIZE,
-        offset: nextOffsetRef.current,
+        cursor,
       });
       if (generation !== generationRef.current) return;
-      nextOffsetRef.current += page.length;
+      nextCursorRef.current = page.next_cursor;
       setRuns((current) => {
         const seen = new Set(current.map((run) => run.id));
-        return [...current, ...page.filter((run) => !seen.has(run.id))];
+        return [...current, ...page.items.filter((run) => !seen.has(run.id))];
       });
-      setHasMore(page.length === PAGE_SIZE);
+      setHasMore(page.next_cursor != null);
     } catch {
       if (generation === generationRef.current) setError(true);
     } finally {
@@ -104,7 +105,7 @@ function useEngineRunsData(kind: string, status: string, sessionId: string) {
 export default function EngineRunsSpace({ search }: { search: EngineRunsRouteSearch }) {
   const t = useTranslations("engineRuns");
   const tDaemon = useTranslations("daemon");
-  const tPagination = useTranslations("teams");
+  const tPagination = useTranslations("fleet.history");
   const navigate = useNavigate({ from: "/engine-runs/" });
 
   const [kind, setKind] = useState(search.kind ?? "");
@@ -301,8 +302,9 @@ export default function EngineRunsSpace({ search }: { search: EngineRunsRouteSea
 
 function EngineRunDetailModal({ runId, onClose }: { runId: string; onClose: () => void }) {
   const t = useTranslations("engineRuns");
-  const [run, setRun] = useState<EngineRunSummary | null>(null);
+  const [run, setRun] = useState<EngineRunDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [revealing, setRevealing] = useState(false);
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -325,6 +327,13 @@ function EngineRunDetailModal({ runId, onClose }: { runId: string; onClose: () =
       alive = false;
     };
   }, [runId]);
+
+  const revealSpec = () => {
+    setRevealing(true);
+    getEngineRun(runId, { includeSpec: true })
+      .then(setRun)
+      .finally(() => setRevealing(false));
+  };
 
   return (
     <Modal
@@ -386,8 +395,19 @@ function EngineRunDetailModal({ runId, onClose }: { runId: string; onClose: () =
                 {t("detail.spec")}
               </p>
               <pre className="mt-1.5 overflow-x-auto rounded border border-edge bg-surface-overlay p-2.5 font-mono text-meta text-content-secondary">
-                {JSON.stringify(run.spec_json, null, 2)}
+                {JSON.stringify(run.spec_json ?? run.spec_preview, null, 2)}
               </pre>
+              {run.spec_json == null && (
+                <Button
+                  className="mt-2"
+                  variant="secondary"
+                  size="sm"
+                  disabled={revealing}
+                  onClick={revealSpec}
+                >
+                  {t("detail.spec")}
+                </Button>
+              )}
             </div>
           </div>
         )}

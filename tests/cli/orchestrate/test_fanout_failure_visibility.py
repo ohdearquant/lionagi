@@ -113,10 +113,17 @@ def _one_fails_one_completes(session):
     graph with the synthesis node appended and completes that. ``passes`` records
     one entry per call, which is how a test tells the two phases apart."""
     passes: list = []
+    pass_kwargs: list = []
+    pass_node_ids: list = []
 
     async def run_dag(graph, **kwargs):
         passes.append(graph)
+        pass_kwargs.append(dict(kwargs))
         nodes = list(graph.internal_nodes.values())
+        # Snapshot the ids now: get_graph() hands back the builder's live graph,
+        # so a later read of `passes[0]` sees the synthesis node too and would
+        # describe the worker pass as having run work it had not yet been given.
+        pass_node_ids.append({str(n.id) for n in nodes})
         if len(passes) == 1:
             emits = [
                 _failed(session, nodes[0]),
@@ -132,6 +139,8 @@ def _one_fails_one_completes(session):
         return {"operation_results": {synth.id: "synthesis result"}}
 
     run_dag.passes = passes
+    run_dag.pass_kwargs = pass_kwargs
+    run_dag.pass_node_ids = pass_node_ids
     return run_dag
 
 
@@ -214,6 +223,16 @@ async def test_a_failed_worker_is_excluded_from_the_synthesis_context(
     assert synthesis_context == ["worker 2 result"]
     # Both phases execute through the engine, so synthesis is a second pass.
     assert len(run_dag.passes) == 2
+    # That second pass re-runs the worker nodes' graph, so it must name them as
+    # already-run. Signalling them again would record their work twice, and a
+    # resume rebuilt from the replayed terminal events would treat it as real.
+    worker_ids = run_dag.pass_node_ids[0]
+    assert worker_ids, "control: the worker pass must have had nodes to skip"
+    assert run_dag.pass_kwargs[1]["skip_signal_ops"] == worker_ids
+    # ...and the synthesis node itself is not skipped, or the run's own
+    # synthesis would leave no trace.
+    synth_ids = run_dag.pass_node_ids[1] - run_dag.pass_kwargs[1]["skip_signal_ops"]
+    assert len(synth_ids) == 1
 
 
 async def test_all_workers_failed_skips_synthesis_and_says_why(

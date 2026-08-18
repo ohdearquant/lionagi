@@ -261,8 +261,9 @@ def test_verify_instruction_names_the_ref_field():
 
 # -- clean-verdict audit ------------------------------------------------------
 # A clean or minor-only review spawns no issue verifiers, so it used to reach
-# the verdict with zero VerifyResult — and a downstream evidence floor then
-# refused the APPROVE as evidence-empty, structurally, on every clean run.
+# the verdict with zero VerifyResult and ship an APPROVE backed by nothing
+# executed. Whether a consumer refuses that as evidence-empty is the consumer's
+# own code and is not observable from here, so it is not what these tests pin.
 # The engine now audits its own clean verdict: one adversarial verifier that
 # must execute a real check and emit a VerifyResult carrying the run's clean
 # ref, so a clean verdict ships positive evidence instead of absence.
