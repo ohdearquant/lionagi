@@ -508,6 +508,7 @@
       "statErrorsRecent": "Errores (recientes)",
       "noBranchErrorsPartial": "No hay errores en los mensajes cargados.",
       "noFilesPartial": "No se detectaron operaciones de archivo en los mensajes cargados.",
+      "filesUnionBounded": "Algunas operaciones de archivo no aparecen: esta ejecución tocó más archivos de los que recoge una vista.",
       "olderUnavailable": "No se pudo cargar el historial anterior — esta conversación avanzó antes de que se completara la solicitud.",
       "reloadConversation": "Recargar conversación",
       "graphEdgeCount": "{count} aristas",
@@ -911,7 +912,7 @@
     "stale": {
       "error": "error · {message}",
       "unreachable": "API inaccesible",
-      "lastUpdated": "inactivo · última actualización hace {age} s"
+      "lastUpdated": "última actualización hace {age} s"
     },
     "detail": {
       "hint": "Selecciona una sesión para inspeccionarla",
@@ -927,8 +928,7 @@
       "updated": "Actualizado",
       "branchesTitle": "Ramas ({count})",
       "noBranches": "Sin ramas.",
-      "msgs": " mensajes",
-      "engineRuns": "Ejecuciones de motor"
+      "msgs": " mensajes"
     },
     "split": {
       "master": "Lista de sesiones",
@@ -1074,7 +1074,7 @@
     "stale": {
       "error": "error · {message}",
       "unreachable": "API inaccesible",
-      "lastUpdated": "obsoleto · última actualización hace {age} s"
+      "lastUpdated": "última actualización hace {age} s"
     },
     "zeroState": {
       "heading": "Comenzar",
@@ -1163,6 +1163,7 @@
     "showEarlier": "Mostrar {count, plural, one {# mensaje anterior} other {# mensajes anteriores}}",
     "noArgs": "(sin args)",
     "noOutput": "(sin salida)",
+    "outputWithheld": "no leído",
     "roleUser": "usuario",
     "roleThinking": "pensando",
     "roleResponse": "respuesta",

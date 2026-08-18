@@ -688,7 +688,7 @@ def test_new_case_becomes_committable_only_via_declaration(monkeypatch):
 # clock-derived content later without ever leaving the allowlist. The checks
 # below re-verify the property that actually matters -- committable output
 # must not depend on the machine, environment, or clock at all -- via
-# `differential_capture` (see docs/internals/contracts.md). A hostname is
+# `differential_capture_many` (see docs/internals/contracts.md). A hostname is
 # identifying but constant per machine, so it can't show up as cross-run
 # variance; that gap is closed separately by `known_machine_identity`.
 
@@ -704,6 +704,37 @@ def _offending_fields(runs: list[dict]) -> list[str]:
         if len(values) > 1:
             offenders.append(field)
     return offenders
+
+
+def test_differential_capture_batch_crosses_the_clock_boundary_once(monkeypatch):
+    now = [100.25]
+    sleeps: list[float] = []
+
+    def fake_run(argv, **_kwargs):
+        return {
+            "argv": list(argv),
+            "stdout": f"second={int(now[0])}",
+            "stderr": "",
+            "exit_code": 0,
+        }
+
+    def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        now[0] += delay
+
+    monkeypatch.setattr(_capture, "_run_cli_env", fake_run)
+    monkeypatch.setattr(_capture.time, "time", lambda: now[0])
+    monkeypatch.setattr(_capture.time, "sleep", fake_sleep)
+
+    runs = _capture.differential_capture_many((("first",), ("second",)))
+
+    assert len(sleeps) == 1
+    assert sleeps[0] > 0
+    assert set(runs) == {("first",), ("second",)}
+    for case_runs in runs.values():
+        assert len(case_runs) == 3
+        assert case_runs[0]["stdout"] == case_runs[1]["stdout"] == "second=100"
+        assert case_runs[2]["stdout"] == "second=101"
 
 
 def _identity_hits(text: str, identity: frozenset[str]) -> list[str]:
@@ -770,9 +801,11 @@ def test_committable_case_output_is_env_and_clock_invariant():
     declared-safe command's output starting to depend on the machine later:
     the case-level declaration only asserts the command was safe when it was
     reviewed, not that it stays safe forever."""
+    argvs = (*_COMMITTABLE_SPECIALIZED_ARGV, *_COMMITTABLE_MACHINE_ARGV)
+    captures = _capture.differential_capture_many(argvs)
     offenders: dict[str, list[str]] = {}
-    for argv in (*_COMMITTABLE_SPECIALIZED_ARGV, *_COMMITTABLE_MACHINE_ARGV):
-        bad = _offending_fields(_capture.differential_capture(list(argv)))
+    for argv in argvs:
+        bad = _offending_fields(captures[argv])
         if bad:
             offenders[str(argv)] = bad
     assert not offenders, (

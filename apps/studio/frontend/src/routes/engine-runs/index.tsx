@@ -5,14 +5,14 @@
  * deep link from a session's detail view can scope straight to its runs.
  */
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslations } from "use-intl";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
 import Modal from "@/components/ui/Modal";
 import Timestamp from "@/components/ui/Timestamp";
 import { listEngineRuns, getEngineRun } from "@/lib/api";
-import type { EngineRunSummary } from "@/lib/api";
+import type { EngineRunDetail, EngineRunSummary } from "@/lib/api";
 
 export interface EngineRunsRouteSearch {
   kind?: string;
@@ -65,43 +65,69 @@ const PAGE_SIZE = 100;
 function useEngineRunsData(kind: string, status: string, sessionId: string) {
   const [runs, setRuns] = useState<EngineRunSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [error, setError] = useState(false);
+  const generation = useRef(0);
 
-  const load = useCallback(() => {
-    let alive = true;
-    setLoading(true);
-    setError(false);
-    listEngineRuns({
-      kind: kind.trim() || undefined,
-      status: status.trim() || undefined,
-      session_id: sessionId.trim() || undefined,
-      limit: PAGE_SIZE,
-    })
-      .then((res) => {
-        if (alive) setRuns(res);
+  const load = useCallback(
+    (cursor?: string) => {
+      const request = ++generation.current;
+      const append = cursor != null;
+      if (append) setLoadingMore(true);
+      else setLoading(true);
+      setError(false);
+      listEngineRuns({
+        kind: kind.trim() || undefined,
+        status: status.trim() || undefined,
+        session_id: sessionId.trim() || undefined,
+        limit: PAGE_SIZE,
+        cursor,
       })
-      .catch(() => {
-        if (alive) setError(true);
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [kind, status, sessionId]);
+        .then((page) => {
+          if (request !== generation.current) return;
+          setRuns((current) => {
+            if (!append) return page.items;
+            const seen = new Set(current.map((run) => run.id));
+            return [...current, ...page.items.filter((run) => !seen.has(run.id))];
+          });
+          setNextCursor(page.next_cursor);
+        })
+        .catch(() => {
+          if (request === generation.current) setError(true);
+        })
+        .finally(() => {
+          if (request !== generation.current) return;
+          setLoading(false);
+          setLoadingMore(false);
+        });
+    },
+    [kind, status, sessionId],
+  );
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- load() calls setState inside async callbacks; synchronous reset clears stale runs before the fetch resolves
-    return load();
+    load();
+    return () => {
+      generation.current += 1;
+    };
   }, [load]);
 
-  return { runs, loading, error, refresh: load };
+  return {
+    runs,
+    loading,
+    loadingMore,
+    error,
+    refresh: () => load(),
+    loadMore: () => nextCursor && load(nextCursor),
+    hasMore: nextCursor != null,
+  };
 }
 
 function EngineRunsSpace() {
   const t = useTranslations("engineRuns");
   const tDaemon = useTranslations("daemon");
+  const tHistory = useTranslations("fleet.history");
   const navigate = useNavigate({ from: "/engine-runs/" });
   const search = Route.useSearch();
 
@@ -117,7 +143,11 @@ function EngineRunsSpace() {
     setSessionId(search.session_id ?? "");
   }, [search.session_id]);
 
-  const { runs, loading, error, refresh } = useEngineRunsData(kind, status, sessionId);
+  const { runs, loading, loadingMore, error, refresh, loadMore, hasMore } = useEngineRunsData(
+    kind,
+    status,
+    sessionId,
+  );
 
   function applyFilters(e: React.FormEvent) {
     e.preventDefault();
@@ -254,6 +284,18 @@ function EngineRunsSpace() {
               ))}
             </tbody>
           </table>
+          {hasMore && (
+            <div className="flex justify-center py-4">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={loadingMore}
+                onClick={() => loadMore()}
+              >
+                {loadingMore ? tHistory("loadingMore") : tHistory("loadMore")}
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
@@ -264,8 +306,9 @@ function EngineRunsSpace() {
 
 function EngineRunDetailModal({ runId, onClose }: { runId: string; onClose: () => void }) {
   const t = useTranslations("engineRuns");
-  const [run, setRun] = useState<EngineRunSummary | null>(null);
+  const [run, setRun] = useState<EngineRunDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [revealing, setRevealing] = useState(false);
   const [error, setError] = useState(false);
 
   useEffect(() => {
@@ -288,6 +331,13 @@ function EngineRunDetailModal({ runId, onClose }: { runId: string; onClose: () =
       alive = false;
     };
   }, [runId]);
+
+  const revealSpec = () => {
+    setRevealing(true);
+    getEngineRun(runId, { includeSpec: true })
+      .then(setRun)
+      .finally(() => setRevealing(false));
+  };
 
   return (
     <Modal
@@ -349,8 +399,19 @@ function EngineRunDetailModal({ runId, onClose }: { runId: string; onClose: () =
                 {t("detail.spec")}
               </p>
               <pre className="mt-1.5 overflow-x-auto rounded border border-edge bg-surface-overlay p-2.5 font-mono text-meta text-content-secondary">
-                {JSON.stringify(run.spec_json, null, 2)}
+                {JSON.stringify(run.spec_json ?? run.spec_preview, null, 2)}
               </pre>
+              {run.spec_json == null && (
+                <Button
+                  className="mt-2"
+                  variant="secondary"
+                  size="sm"
+                  disabled={revealing}
+                  onClick={revealSpec}
+                >
+                  {t("detail.spec")}
+                </Button>
+              )}
             </div>
           </div>
         )}
