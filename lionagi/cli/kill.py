@@ -19,6 +19,7 @@ from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 from ._logging import log_error, warn
 from ._util import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
 from ._util import pid_alive as _pid_alive
+from ._util import recorded_identity_mode as _recorded_identity_mode
 from ._util import recorded_row_is_foreign as _recorded_row_is_foreign
 from ._util import resolve_entity as _resolve_entity
 
@@ -408,6 +409,11 @@ async def _persist_cancel(
         pass
 
 
+# Outcomes where nothing was signalled and nothing was persisted, so reporting
+# them as kills would claim work that did not happen.
+_NOT_A_KILL = ("identity_mismatch", "foreign_host")
+
+
 async def _kill_one(
     db: Any,
     entity_type: str,
@@ -423,22 +429,32 @@ async def _kill_one(
 
     pid = _read_pid_from_entity(row)
     signal_used = "no_pid"
+    meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
+
+    # Foreignness is a property of the row, not of whether it recorded a pid.
+    # Signalling would hit an unrelated local process, and cancelling would
+    # report a kill that never happened — which is what a foreign row carrying
+    # no pid used to get, having skipped this guard entirely.
+    if _recorded_row_is_foreign(meta):
+        host = meta.get("pid_host")
+        where = (
+            repr(host)
+            if isinstance(host, str) and host
+            else f"identity mode {_recorded_identity_mode(meta)!r}"
+        )
+        subject = f"pid {pid}" if pid is not None else "the run"
+        warn(
+            f"  {entity_type} {entity_id[:12]}: {subject} was recorded under "
+            f"{where}, which this host cannot judge — kill skipped"
+        )
+        return {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "signal": "foreign_host",
+            "pid": pid,
+        }
 
     if pid is not None:
-        meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
-        if _recorded_row_is_foreign(meta):
-            # Another host's pid space: signalling it would hit an unrelated
-            # local process, and cancelling would report a kill that never was.
-            warn(
-                f"  {entity_type} {entity_id[:12]}: pid {pid} was recorded on "
-                f"{meta.get('pid_host')!r}, not this host — kill skipped"
-            )
-            return {
-                "entity_type": entity_type,
-                "entity_id": entity_id,
-                "signal": "foreign_host",
-                "pid": pid,
-            }
         expected_session_id = entity_id if entity_type == "session" else None
         raw_ct = meta.get("pid_create_time")
         try:
@@ -580,7 +596,7 @@ async def _do_kill(
                     verbose=verbose,
                 )
                 results.append(r)
-                if r["signal"] == "identity_mismatch":
+                if r["signal"] in _NOT_A_KILL:
                     blocked.append(r)
                 else:
                     print(
@@ -597,7 +613,7 @@ async def _do_kill(
             verbose=verbose,
         )
         results.append(r)
-        if r["signal"] == "identity_mismatch":
+        if r["signal"] in _NOT_A_KILL:
             blocked.append(r)
         else:
             print(f"killed {entity_type} {row['id'][:12]} (signal={r['signal']}, pid={r['pid']})")

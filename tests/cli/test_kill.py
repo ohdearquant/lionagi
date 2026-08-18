@@ -827,6 +827,94 @@ async def test_kill_one_refuses_a_row_recorded_on_another_host(
         ] == "running", "cancelled a row whose process is alive on another machine"
 
 
+async def test_kill_one_refuses_a_foreign_row_that_recorded_no_pid(
+    temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Foreignness belongs to the row, not to whether it recorded a pid: a foreign row with no pid used to skip the guard and be persisted as cancelled with nothing signalled."""
+    import socket
+
+    async with StateDB() as db:
+        local_sid = str(uuid.uuid4())
+        foreign_sid = str(uuid.uuid4())
+        for sid, meta in (
+            (local_sid, {}),
+            (foreign_sid, {"pid_host": "some-other-machine"}),
+        ):
+            prog = str(uuid.uuid4())
+            await db.create_progression(prog)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": prog,
+                    "status": "running",
+                    "started_at": time.time(),
+                    "node_metadata": meta,
+                }
+            )
+
+        assert socket.gethostname() != "some-other-machine"
+
+        # CONTROL: a local row with no pid is still cancelled, so the refusal
+        # below is attributable to the host marker and not to the absent pid.
+        row = db._row_to_dict(
+            await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (local_sid,))
+        )
+        control = await _kill_one(db, "session", local_sid, row, user_reason="")
+        assert control["signal"] == "no_pid"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (local_sid,)))[
+            "status"
+        ] == "cancelled", (
+            f"control row was not cancelled ({control['signal']}), so this test cannot "
+            "attribute the refusal below to the host marker"
+        )
+
+        row = db._row_to_dict(
+            await db.fetch_one("SELECT * FROM sessions WHERE id = ?", (foreign_sid,))
+        )
+        result = await _kill_one(db, "session", foreign_sid, row, user_reason="")
+
+        assert result["signal"] == "foreign_host"
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (foreign_sid,)))[
+            "status"
+        ] == "running", "cancelled another machine's row without signalling anything"
+
+
+async def test_do_kill_a_foreign_row_reports_failure(temp_db_path: Path, capsys):
+    """A host that cannot judge a row must not report a kill: no 'killed' line, exit code 1.
+
+    The control is a local row with no pid either, which DOES report a kill --
+    without it this passes on any refusal rather than on this one.
+    """
+    local_sid = str(uuid.uuid4())
+    foreign_sid = str(uuid.uuid4())
+    async with StateDB() as db:
+        for sid, meta in ((local_sid, {}), (foreign_sid, {"pid_host": "some-other-machine"})):
+            prog = str(uuid.uuid4())
+            await db.create_progression(prog)
+            await db.create_session(
+                {
+                    "id": sid,
+                    "progression_id": prog,
+                    "status": "running",
+                    "started_at": time.time(),
+                    "node_metadata": meta,
+                }
+            )
+
+    assert await _do_kill(local_sid) == 0, (
+        "control row was refused, so the refusal below proves nothing"
+    )
+    assert "killed" in capsys.readouterr().out
+
+    assert await _do_kill(foreign_sid) == 1, "a refused kill must return non-zero"
+    assert "killed" not in capsys.readouterr().out, "reported a kill that never happened"
+
+    async with StateDB() as db:
+        assert (await db.fetch_one("SELECT status FROM sessions WHERE id = ?", (foreign_sid,)))[
+            "status"
+        ] == "running"
+
+
 async def test_kill_one_skips_recycled_pid_via_create_time(
     temp_db_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
