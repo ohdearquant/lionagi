@@ -302,7 +302,7 @@ describe("selectedRunId deep link", () => {
 import { formatElapsed, formatCompactCount, patchSearch, isPlayRoot } from "./FleetView";
 import { resetDetailScrollPosition } from "./SessionDetail";
 
-// ─── isPlayRoot — the play-vs-single-agent discriminator (issue #2842) ───────
+// ─── isPlayRoot — the play-vs-single-agent discriminator ───────────────────
 
 describe("isPlayRoot", () => {
   it("is true for every multi-agent invocation_kind", () => {

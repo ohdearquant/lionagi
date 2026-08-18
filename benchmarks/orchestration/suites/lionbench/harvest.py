@@ -134,7 +134,7 @@ _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 # Stateful raw-diff stripper (see _strip_raw_diff_blocks below). A bare "line
 # starts with + or -" pattern is a false-positive magnet on its own — it nukes
 # ordinary markdown bullet lists ("- **file.py** — did X") in PR bodies, which
-# is exactly the prose we want to KEEP (confirmed live against PR #1665's
+# is exactly the prose we want to KEEP (confirmed against a real harvested PR
 # body). But dropping that alternative entirely leaves *unfenced* raw diffs
 # untouched: a PR/issue body is not guaranteed to fence a pasted patch, and a
 # flat regex with no notion of "am I inside a diff block" can't tell a diff's
@@ -246,8 +246,8 @@ def default_oracle_command(held_out_paths: list[str]) -> str:
     # project deps, so any held-out test that imports an extra-gated module
     # fails at COLLECTION (ModuleNotFoundError), which is indistinguishable
     # from a real regression unless you inspect the traceback. Confirmed live
-    # against PR #1643 (tests/cli/test_argv_injection.py imports
-    # lionagi.studio.services.schedules -> fastapi).
+    # against a harvested instance whose held-out test imports
+    # lionagi.studio.services.schedules -> fastapi.
     return f"uv run --all-extras pytest {' '.join(held_out_paths)} -q"
 
 
@@ -280,8 +280,8 @@ def harvest(
     # moved past the PR's actual base — using it as base_commit silently pulls
     # in unrelated later history. baseRefOid is "world before the fix" for a
     # squash merge (verified against LIONAGI_NOMINATIONS.md's methodology, and
-    # confirmed live: PR #1665's merge-commit parent b01d8190.. != its
-    # baseRefOid b1fd2ad2..).
+    # confirmed live on a harvested instance whose merge-commit parent differs
+    # from its baseRefOid).
     base_commit = view.get("baseRefOid")
     if not base_commit:
         save_rejection(instance_id, "no baseRefOid recorded", out_dir, subject=subject)

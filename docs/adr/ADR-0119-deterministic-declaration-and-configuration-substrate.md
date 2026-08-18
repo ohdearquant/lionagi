@@ -2,7 +2,9 @@
 
 - **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial — `Params` honors declared dataclass defaults and
+  per-instance `default_factory` values; ordered field discovery, structural equality/hash,
+  `Operable` hardening, registry snapshots, and canonical durable serialization remain open
 - **Area**: utilities
 - **Date**: 2026-08-16
 - **Relations**: extends ADR-0050 (foundational utility and typed adaptation strata); required

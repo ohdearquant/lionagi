@@ -44,6 +44,14 @@ class MyParams(Params):
     field3: bool = Unset
 
 
+@dataclass(slots=True, frozen=True, init=False)
+class ParamsWithDefaults(Params):
+    """Params fixture covering dataclass default semantics."""
+
+    label: str = "default-label"
+    items: list[str] = field(default_factory=list)
+
+
 def test_params_invalid_parameter():
     """Test Params.__init__ with invalid parameter - Line 188"""
     with pytest.raises(ValueError, match="Invalid parameter"):
@@ -55,6 +63,76 @@ def test_params_valid():
     params = MyParams(field1="test", field2=42)
     assert params.field1 == "test"
     assert params.field2 == 42
+
+
+def test_params_uses_declared_dataclass_default():
+    params = ParamsWithDefaults()
+
+    assert params.label == "default-label"
+
+
+def test_params_explicit_value_overrides_declared_default():
+    params = ParamsWithDefaults(label="explicit")
+
+    assert params.label == "explicit"
+
+
+def test_params_calls_default_factory_for_each_instance():
+    calls = 0
+
+    def make_items() -> list[str]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class CountingParams(Params):
+        items: list[str] = field(default_factory=make_items)
+
+    first = CountingParams()
+    second = CountingParams()
+
+    assert first.items == []
+    assert second.items == []
+    assert first.items is not second.items
+    assert calls == 2
+
+
+def test_params_explicit_value_skips_default_factory():
+    calls = 0
+
+    def make_items() -> list[str]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class CountingParams(Params):
+        items: list[str] = field(default_factory=make_items)
+
+    supplied = ["explicit"]
+    params = CountingParams(items=supplied)
+
+    assert params.items is supplied
+    assert calls == 0
+
+
+def test_params_rejects_unknown_key_before_calling_default_factory():
+    calls = 0
+
+    def make_items() -> list[str]:
+        nonlocal calls
+        calls += 1
+        return []
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class CountingParams(Params):
+        items: list[str] = field(default_factory=make_items)
+
+    with pytest.raises(ValueError, match="Invalid parameter"):
+        CountingParams(unknown=True)
+
+    assert calls == 0
 
 
 def test_params_allowed():

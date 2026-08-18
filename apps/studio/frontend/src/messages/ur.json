@@ -508,6 +508,7 @@
       "statErrorsRecent": "خرابیاں (حالیہ)",
       "noBranchErrorsPartial": "لوڈ شدہ پیغامات میں کوئی خرابی نہیں۔",
       "noFilesPartial": "لوڈ شدہ پیغامات میں کوئی فائل آپریشن نہیں ملا۔",
+      "filesUnionBounded": "کچھ فائل آپریشنز درج نہیں ہیں: اس رن نے اتنی فائلیں چھوئیں جو ایک ویو جمع کرتا ہے اس سے زیادہ ہیں۔",
       "olderUnavailable": "پرانی ہسٹری لوڈ نہیں ہو سکی — درخواست مکمل ہونے سے پہلے یہ گفتگو آگے بڑھ گئی۔",
       "reloadConversation": "گفتگو دوبارہ لوڈ کریں",
       "graphEdgeCount": "{count} کنارے",
@@ -911,7 +912,7 @@
     "stale": {
       "error": "خرابی · ⁨{message}⁩",
       "unreachable": "API تک رسائی نہیں",
-      "lastUpdated": "سٹیل · آخری اپ ڈیٹ {age} سیکنڈ پہلے"
+      "lastUpdated": "آخری اپ ڈیٹ {age} سیکنڈ پہلے"
     },
     "detail": {
       "hint": "تفصیل دیکھنے کے لیے سیشن منتخب کریں",
@@ -927,8 +928,7 @@
       "updated": "اپ ڈیٹ شدہ",
       "branchesTitle": "برانچز (⁨{count}⁩)",
       "noBranches": "کوئی برانچ نہیں۔",
-      "msgs": " پیغامات",
-      "engineRuns": "انجن رنز"
+      "msgs": " پیغامات"
     },
     "split": {
       "master": "سیشن فہرست",
@@ -1074,7 +1074,7 @@
     "stale": {
       "error": "خرابی · ⁨{message}⁩",
       "unreachable": "API تک رسائی نہیں",
-      "lastUpdated": "سٹیل · آخری اپ ڈیٹ {age} سیکنڈ پہلے"
+      "lastUpdated": "آخری اپ ڈیٹ {age} سیکنڈ پہلے"
     },
     "zeroState": {
       "heading": "شروع کریں",
@@ -1163,6 +1163,7 @@
     "showEarlier": "پچھلے {count, number} پیغامات دکھائیں",
     "noArgs": "(کوئی args نہیں)",
     "noOutput": "(کوئی output نہیں)",
+    "outputWithheld": "پڑھا نہیں گیا",
     "roleUser": "یوزر",
     "roleThinking": "سوچ رہا ہے",
     "roleResponse": "جواب",

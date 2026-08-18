@@ -2231,6 +2231,17 @@
                 },
                 {
                   "option_strings": [
+                    "--invocation"
+                  ],
+                  "dest": "invocation_id",
+                  "required": false,
+                  "nargs": null,
+                  "default": null,
+                  "choices": null,
+                  "help": "Parent Studio invocation id. Defaults to LIONAGI_INVOCATION_ID; an explicit value takes precedence."
+                },
+                {
+                  "option_strings": [
                     "--no-persist"
                   ],
                   "dest": "no_persist",
