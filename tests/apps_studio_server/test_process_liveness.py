@@ -4,7 +4,10 @@
 
 import json
 import os
+import socket
 import subprocess
+import time
+from unittest.mock import AsyncMock
 
 import psutil
 import pytest
@@ -90,4 +93,185 @@ def test_node_metadata_pid_with_matching_create_time_but_zombie_status_is_dead(m
     monkeypatch.setattr(psutil, "Process", _ZombieProcess)
 
     session = {"id": "s1", "node_metadata": {"pid": pid, "pid_create_time": ct}}
+    assert process_liveness(session, None, ps_snapshot="") is False
+
+
+async def test_identity_complete_runs_page_does_not_capture_process_table(monkeypatch):
+    import lionagi.studio.services.admin as admin_mod
+    import lionagi.studio.services.run_tags as run_tags_mod
+    import lionagi.studio.services.runs as runs_mod
+
+    created = psutil.Process(os.getpid()).create_time()
+    sessions = [
+        {
+            "id": f"session-{i}",
+            "status": "running",
+            "started_at": time.time(),
+            "updated_at": time.time(),
+            "node_metadata": {"pid": os.getpid(), "pid_create_time": created},
+        }
+        for i in range(20)
+    ]
+    monkeypatch.setattr(runs_mod._sessions_svc, "list_sessions", AsyncMock(return_value=sessions))
+    monkeypatch.setattr(run_tags_mod, "tags_for_sessions", AsyncMock(return_value={}))
+    snapshot = AsyncMock(return_value="")
+    monkeypatch.setattr(admin_mod, "cached_ps_snapshot", snapshot)
+
+    result = await runs_mod.list_runs(limit=20)
+
+    assert len(result) == 20
+    snapshot.assert_not_awaited()
+
+
+async def test_explicit_nonlocal_run_is_unverifiable_without_legacy_snapshot(monkeypatch):
+    import lionagi.studio.services.admin as admin_mod
+    import lionagi.studio.services.run_tags as run_tags_mod
+    import lionagi.studio.services.runs as runs_mod
+
+    sessions = [
+        {
+            "id": "imported-session",
+            "status": "running",
+            "started_at": time.time(),
+            "updated_at": time.time(),
+            "node_metadata": {"process_identity_mode": "external"},
+        }
+    ]
+    monkeypatch.setattr(runs_mod._sessions_svc, "list_sessions", AsyncMock(return_value=sessions))
+    monkeypatch.setattr(run_tags_mod, "tags_for_sessions", AsyncMock(return_value={}))
+    snapshot = AsyncMock(return_value="")
+    monkeypatch.setattr(admin_mod, "cached_ps_snapshot", snapshot)
+
+    result = await runs_mod.list_runs(limit=1)
+
+    assert len(result) == 1
+    snapshot.assert_not_awaited()
+
+
+def test_process_identity_from_another_host_is_unknown(monkeypatch):
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "current-host")
+    session = {
+        "id": "remote-session",
+        "node_metadata": {
+            "pid": os.getpid(),
+            "pid_create_time": psutil.Process(os.getpid()).create_time(),
+            "pid_host": "another-host",
+            "pid_boot_time": psutil.boot_time(),
+        },
+    }
+
+    assert process_liveness(session, None, ps_snapshot="") is None
+
+
+def test_an_unreadable_identity_mode_is_unknown_not_local():
+    """A mode marker of the wrong type must not be read as no marker at all — with a genuine live local process otherwise, the two readings give opposite liveness answers."""
+    markers = {
+        "pid": os.getpid(),
+        "pid_create_time": psutil.Process(os.getpid()).create_time(),
+        "pid_host": socket.gethostname(),
+        "pid_boot_time": psutil.boot_time(),
+    }
+
+    # Control: without a mode marker at all, this exact row is observed alive.
+    assert process_liveness({"id": "s", "node_metadata": dict(markers)}, None) is True
+
+    for unreadable in (123, {"kind": "remote"}, ["external"]):
+        session = {
+            "id": "s",
+            "node_metadata": {**markers, "process_identity_mode": unreadable},
+        }
+        assert process_liveness(session, None) is None
+
+
+def test_a_boot_time_that_drifted_within_tolerance_is_not_a_reboot(monkeypatch):
+    """Clock jitter must not read as a reboot on the liveness path either — boot time is re-derived from the clock each read, so it needs its own, looser tolerance than process create time."""
+    import lionagi.studio.services.admin as admin_mod
+    from lionagi.cli._util import BOOT_TIME_TOLERANCE
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    drift = BOOT_TIME_TOLERANCE / 2
+    assert drift > 0, "a zero tolerance would make this test assert nothing"
+
+    session = {
+        "id": "drifted-session",
+        "node_metadata": {
+            "pid": os.getpid(),
+            "pid_create_time": psutil.Process(os.getpid()).create_time(),
+            "pid_host": "this-host",
+            "pid_boot_time": psutil.boot_time() - drift,
+        },
+    }
+
+    assert process_liveness(session, None, ps_snapshot="") is True
+
+
+def test_a_boot_time_from_before_the_last_reboot_is_dead(monkeypatch):
+    """The control for the tolerance: a real reboot still reads as dead — without it, an absurdly wide tolerance would pass the test above unnoticed."""
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+    session = {
+        "id": "pre-reboot-session",
+        "node_metadata": {
+            "pid": os.getpid(),
+            "pid_create_time": psutil.Process(os.getpid()).create_time(),
+            "pid_host": "this-host",
+            "pid_boot_time": psutil.boot_time() - 86400.0,
+        },
+    }
+
+    assert process_liveness(session, None, ps_snapshot="") is False
+
+
+def test_a_boot_time_that_cannot_be_read_does_not_make_a_live_process_unknown(monkeypatch):
+    """A failed boot-time read leaves one check unevaluated, not an answer — reporting unknown here would let reapers eventually kill every live session on a machine where this read fails."""
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+
+    recorded_boot = psutil.boot_time()
+
+    def _unreadable_boot_time():
+        raise OSError("boot time unavailable")
+
+    monkeypatch.setattr(psutil, "boot_time", _unreadable_boot_time)
+
+    session = {
+        "id": "live-session",
+        "node_metadata": {
+            "pid": os.getpid(),
+            "pid_create_time": psutil.Process(os.getpid()).create_time(),
+            "pid_host": "this-host",
+            "pid_boot_time": recorded_boot,
+        },
+    }
+
+    assert process_liveness(session, None, ps_snapshot="") is True
+
+
+def test_a_failed_boot_time_read_still_reports_a_dead_pid_as_dead(monkeypatch):
+    """The control: falling through to the pid checks means they still decide — without this, returning True unconditionally on a read failure would report every dead session as alive."""
+    import lionagi.studio.services.admin as admin_mod
+
+    monkeypatch.setattr(admin_mod.socket, "gethostname", lambda: "this-host")
+
+    recorded_boot = psutil.boot_time()
+    dead = _dead_pid()
+
+    def _unreadable_boot_time():
+        raise OSError("boot time unavailable")
+
+    monkeypatch.setattr(psutil, "boot_time", _unreadable_boot_time)
+
+    session = {
+        "id": "dead-session",
+        "node_metadata": {
+            "pid": dead,
+            "pid_host": "this-host",
+            "pid_boot_time": recorded_boot,
+        },
+    }
+
     assert process_liveness(session, None, ps_snapshot="") is False
