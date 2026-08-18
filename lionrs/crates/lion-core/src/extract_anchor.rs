@@ -51,7 +51,7 @@ use crate::{
     },
     // Actor and message types
     state::{ActorError, ActorRuntime, Message},
-    // Thread and scheduler types (Issue #111)
+    // Thread and scheduler types
     state::{
         DomainScheduleEntry,
         FaultType,
@@ -68,7 +68,7 @@ use crate::{
         // due to Vec<ThreadTableEntry> where ThreadTableEntry contains deeply nested TCB
         TCB,
     },
-    // Workflow types (Issue #110: WorkflowDef and WorkflowInstance now extractable)
+    // Workflow types (WorkflowDef and WorkflowInstance now extractable)
     state::{
         Edge, NodeState, NodeStateEntry, RetryEntry, WorkflowDef, WorkflowError, WorkflowInstance,
         WorkflowStatus,
@@ -160,7 +160,7 @@ pub fn export_types(
     _host_function: HostFunction,
     _host_call: HostCall,
     _host_result: HostResult,
-    // Workflow types (WorkflowDef + WorkflowInstance newly extractable - Issue #110)
+    // Workflow types (WorkflowDef + WorkflowInstance newly extractable)
     _workflow_status: WorkflowStatus,
     _node_state: NodeState,
     _edge: Edge,
@@ -170,13 +170,13 @@ pub fn export_types(
     _workflow_instance: WorkflowInstance,
     // Policy error (NEW)
     _policy_error: PolicyError,
-    // Kernel operations (NEW - Issue #108)
+    // Kernel operations (NEW)
     _kernel_op: KernelOp,
-    // Authorization errors (NEW - Issue #109)
+    // Authorization errors (NEW)
     _auth_error: AuthorizationError,
-    // Actor runtime (NEW - Issue #112)
+    // Actor runtime (NEW)
     _actor_runtime: ActorRuntime,
-    // Thread/scheduler types (NEW - Issue #111)
+    // Thread/scheduler types (NEW)
     _thread_state: ThreadState,
     _ipc_block_reason: IPCBlockReason,
     _fault_type: FaultType,

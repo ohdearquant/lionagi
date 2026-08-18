@@ -373,7 +373,7 @@ async def resolve_invocation_terminal(
         # ANY terminal status (e.g. still "running") even though the
         # invocation's own leader process has already exited. The leader's
         # exit is not evidence that a child's own work finished -- it is
-        # only evidence that the leader's stderr pipe closed (see #2535).
+        # only evidence that the leader's stderr pipe closed.
         # Never silently trust fallback_status="completed" here; route to
         # the same no-evidence bucket a known-empty child already uses.
         if fallback_status == "completed":

@@ -1,3 +1,6 @@
+// TODO: SidePanel form labels need htmlFor/id wiring. Deferred because it is a
+// substantial refactor of label+input pairs across this file.
+
 "use client";
 
 import { useCallback } from "react";
