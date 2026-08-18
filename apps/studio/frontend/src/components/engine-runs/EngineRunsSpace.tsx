@@ -307,8 +307,11 @@ function EngineRunDetailModal({ runId, onClose }: { runId: string; onClose: () =
   const [revealing, setRevealing] = useState(false);
   const [error, setError] = useState(false);
 
+  const shownRunId = useRef(runId);
+
   useEffect(() => {
     let alive = true;
+    shownRunId.current = runId;
     /* eslint-disable react-hooks/set-state-in-effect -- synchronous resets clear stale state before the async fetch resolves */
     setLoading(true);
     setError(false);
@@ -329,10 +332,17 @@ function EngineRunDetailModal({ runId, onClose }: { runId: string; onClose: () =
   }, [runId]);
 
   const revealSpec = () => {
+    // The modal is reused across selections, so a reveal for the run the user
+    // just left would otherwise resolve into the run they just opened.
+    const revealedFor = runId;
     setRevealing(true);
     getEngineRun(runId, { includeSpec: true })
-      .then(setRun)
-      .finally(() => setRevealing(false));
+      .then((d) => {
+        if (shownRunId.current === revealedFor) setRun(d);
+      })
+      .finally(() => {
+        if (shownRunId.current === revealedFor) setRevealing(false);
+      });
   };
 
   return (

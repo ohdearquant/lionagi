@@ -217,4 +217,54 @@ describe("EngineRunsSpace", () => {
     });
     expect(container.textContent).toContain("engine-300");
   });
+
+  it("does not let a late spec reveal overwrite the run opened after it", async () => {
+    const detail = (index: number) => ({
+      ...run(index),
+      spec_json: null,
+      spec_preview: { of: `run-${index}` },
+      outcome_json: null,
+      export_dir: null,
+      error: null,
+    });
+    let resolveReveal!: (value: unknown) => void;
+
+    // Empty list: engine-N can then only come from the modal, not a row behind it.
+    api.listEngineRuns.mockResolvedValue(page([]));
+    api.getEngineRun.mockImplementation((id: string, options?: { includeSpec?: boolean }) => {
+      if (options?.includeSpec) {
+        return new Promise((resolve) => {
+          resolveReveal = resolve;
+        });
+      }
+      return Promise.resolve(detail(Number(id.slice("run-".length))));
+    });
+
+    const buttonNamed = (name: string) =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent === name,
+      );
+
+    router.search = { s: "run-1" };
+    await mount();
+    expect(container.textContent).toContain("engine-1");
+
+    await act(async () => {
+      buttonNamed("Spec")?.click();
+      await Promise.resolve();
+    });
+
+    router.search = { s: "run-2" };
+    await mount();
+    expect(container.textContent).toContain("engine-2");
+
+    await act(async () => {
+      resolveReveal({ ...detail(1), spec_json: { revealed: "run-1" } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("engine-2");
+    expect(container.textContent).not.toContain("engine-1");
+  });
 });

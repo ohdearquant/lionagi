@@ -21,6 +21,7 @@ import DrawerBackButton from "@/components/ui/DrawerBackButton";
 import DrawerHeader from "@/components/ui/DrawerHeader";
 import type { LibraryKind } from "@/components/library/KindBadge";
 import type { AgentProfileSummary } from "@/lib/types";
+import { listWorkflowDefs } from "@/lib/api";
 import type { CreatedWorkflowDef, EngineDef } from "@/lib/api";
 
 // Kinds with no creation flow at all — the toolbar's "+ New" button and the
@@ -198,6 +199,13 @@ function LibraryPage() {
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [optimisticWorkflow, setOptimisticWorkflow] = useState<CreatedWorkflowDef | null>(null);
+  // The workflow tab is unfinished so the catalog does not load workflows, but a
+  // workflow deep link still renders a detail pane. Resolve just that one name.
+  const [linkedWorkflow, setLinkedWorkflow] = useState<{
+    name: string;
+    id: string | null;
+    state: "pending" | "settled";
+  } | null>(null);
 
   // Collapsed split-pane: show detail when a selection exists or create is open.
   const [detailActive, setDetailActive] = useState(false);
@@ -234,6 +242,32 @@ function LibraryPage() {
     [items, kindFilter, search],
   );
 
+  const linkedWorkflowName =
+    parseSel(sel)?.kind === "workflow" ? (parseSel(sel)?.name ?? null) : null;
+
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- synchronous reset clears a stale resolve before the fetch replaces it */
+    if (!linkedWorkflowName || optimisticWorkflow?.name === linkedWorkflowName) {
+      setLinkedWorkflow(null);
+      return;
+    }
+    let alive = true;
+    setLinkedWorkflow({ name: linkedWorkflowName, id: null, state: "pending" });
+    /* eslint-enable react-hooks/set-state-in-effect */
+    void listWorkflowDefs()
+      .then((defs) => {
+        if (!alive) return;
+        const match = defs.find((def) => def.name === linkedWorkflowName);
+        setLinkedWorkflow({ name: linkedWorkflowName, id: match?.id ?? null, state: "settled" });
+      })
+      .catch(() => {
+        if (alive) setLinkedWorkflow({ name: linkedWorkflowName, id: null, state: "settled" });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [linkedWorkflowName, optimisticWorkflow?.name]);
+
   // Keep detail selection aligned with the rows the current tab/search shows.
   useEffect(() => {
     if (loading) return;
@@ -245,9 +279,12 @@ function LibraryPage() {
       const parsed = parseSel(sel);
       const isOptimisticWorkflow =
         parsed?.kind === "workflow" && optimisticWorkflow?.name === parsed.name;
+      // A workflow never appears in `items`, so this asks the resolve instead:
+      // hold the link while it is in flight, and keep it if the name exists.
       const isHiddenWorkflow =
         parsed?.kind === "workflow" &&
-        items.some((item) => item.kind === "workflow" && item.name === parsed.name);
+        linkedWorkflow?.name === parsed.name &&
+        (linkedWorkflow.state === "pending" || linkedWorkflow.id !== null);
       if (
         isOptimisticWorkflow ||
         isHiddenWorkflow ||
@@ -282,7 +319,17 @@ function LibraryPage() {
     }
     // `items` rather than only `filtered`: the hidden-workflow check reads rows
     // that `filtered` drops, so `filtered` changing does not track them.
-  }, [tab, loading, items, filtered, optimisticWorkflow?.name, search, sel, navigate]);
+  }, [
+    tab,
+    loading,
+    items,
+    filtered,
+    optimisticWorkflow?.name,
+    linkedWorkflow,
+    search,
+    sel,
+    navigate,
+  ]);
 
   const selectItem = useCallback(
     (item: LibraryItem) => {
@@ -313,8 +360,11 @@ function LibraryPage() {
 
   const selectedWorkflowId =
     parsed?.kind === "workflow"
-      ? (items.find((i) => i.kind === "workflow" && i.name === parsed.name)?.meta ??
-        (optimisticWorkflow?.name === parsed.name ? optimisticWorkflow.id : null))
+      ? optimisticWorkflow?.name === parsed.name
+        ? optimisticWorkflow.id
+        : linkedWorkflow?.name === parsed.name
+          ? linkedWorkflow.id
+          : null
       : null;
 
   const isEmpty = !loading && filtered.length === 0;

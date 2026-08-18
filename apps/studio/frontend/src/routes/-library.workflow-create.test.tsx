@@ -97,6 +97,9 @@ function deferred<T>(): Deferred<T> {
     resolve = resolvePromise;
     reject = rejectPromise;
   });
+  // A deferred a test rejects may never be consumed, so it swallows its own
+  // rejection rather than surfacing as an unhandled one that fails the run.
+  promise.catch(() => {});
   return { promise, resolve, reject };
 }
 
@@ -108,15 +111,11 @@ async function flush() {
   });
 }
 
-// The workflow tab has been in UNFINISHED_KINDS all along, so these cases were
-// always driving a surface the Library does not show. What changed is that the
-// catalog loader no longer requests what it cannot display: listWorkflowDefs is
-// called zero times here where it was called twice. The cases still pass, but
-// only because their assertions read the create response rather than the
-// reload, and the reload promise nothing consumes surfaces as an unhandled
-// rejection that fails the whole run. Restore this block when the workflow tab
-// leaves UNFINISHED_KINDS; do not unskip it just to make the file green.
-describe.skip("Library workflow creation identity", () => {
+// The workflow tab is in UNFINISHED_KINDS, so these drive the detail pane a
+// workflow selection still renders rather than a tab row. Right after a create
+// the optimistic id answers, so the catalog reload these set up is not always
+// consumed; each deferred therefore owns a catch of its own.
+describe("Library workflow creation identity", () => {
   let container: HTMLDivElement;
   let root: Root;
 
@@ -213,5 +212,39 @@ describe.skip("Library workflow creation identity", () => {
     expect(
       container.querySelector<HTMLElement>('[data-testid="workflow-detail"]')?.dataset.workflowId,
     ).toBe(createdWorkflow.id);
+  });
+
+  it("resolves a workflow deep link with no create behind it", async () => {
+    router.search = { sel: `workflow:${createdWorkflow.name}` };
+    api.listWorkflowDefs.mockResolvedValue([
+      { id: "wf_other", name: "something else" },
+      { id: createdWorkflow.id, name: createdWorkflow.name },
+    ]);
+
+    await act(async () => {
+      root.render(<LibraryPage />);
+    });
+    await flush();
+
+    expect(api.listWorkflowDefs).toHaveBeenCalled();
+    expect(router.search.sel).toBe(`workflow:${createdWorkflow.name}`);
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="workflow-detail"]')?.dataset.workflowId,
+    ).toBe(createdWorkflow.id);
+  });
+
+  it("drops a workflow deep link whose name no longer exists", async () => {
+    router.search = { sel: "workflow:deleted" };
+    api.listWorkflowDefs.mockResolvedValue([
+      { id: createdWorkflow.id, name: createdWorkflow.name },
+    ]);
+
+    await act(async () => {
+      root.render(<LibraryPage />);
+    });
+    await flush();
+
+    expect(router.search.sel).not.toBe("workflow:deleted");
+    expect(container.querySelector('[data-testid="workflow-detail"]')).toBeNull();
   });
 });
