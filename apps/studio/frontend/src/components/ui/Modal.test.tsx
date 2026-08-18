@@ -123,4 +123,23 @@ describe("Modal keyboard and screen-reader behavior", () => {
 
     expect(document.activeElement).toBe(lastAction);
   });
+
+  it("pulls focus back into the dialog on Tab in either direction", async () => {
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    await renderModal();
+    const buttons = Array.from(container.querySelectorAll("button"));
+
+    outside.focus();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    expect(document.activeElement).toBe(buttons[0]);
+
+    outside.focus();
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }),
+    );
+    expect(document.activeElement).toBe(buttons.at(-1));
+
+    outside.remove();
+  });
 });

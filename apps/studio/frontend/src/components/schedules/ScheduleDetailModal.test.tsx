@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import Modal from "@/components/ui/Modal";
 import { ToastProvider } from "@/components/ui/Toast";
 import enMessages from "@/messages/en.json";
 import type { ScheduleDetail } from "@/lib/types";
@@ -94,34 +95,12 @@ describe("ScheduleDetailModal interactions", () => {
     });
   }
 
-  function isReachableAtMobile(element: Element): boolean {
-    let current: Element | null = element;
-    while (current && current !== container.parentElement) {
-      if (current.classList.contains("hidden")) return false;
-      current = current.parentElement;
-    }
-    return true;
-  }
-
-  function mobileButtons(label: string): HTMLButtonElement[] {
-    return Array.from(container.querySelectorAll<HTMLButtonElement>("button")).filter(
-      (button) => button.textContent === label && isReachableAtMobile(button),
-    );
-  }
-
-  function mobileSelect(label: string): HTMLSelectElement | undefined {
-    return (
-      Array.from(container.querySelectorAll<HTMLLabelElement>("label"))
-        .filter((field) => isReachableAtMobile(field))
-        .find((field) => field.querySelector(":scope > span")?.textContent === label)
-        ?.querySelector<HTMLSelectElement>("select") ?? undefined
-    );
+  function policySelect(label: string): HTMLSelectElement | null {
+    return container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`);
   }
 
   beforeEach(async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    vi.stubGlobal("innerWidth", 390);
-    vi.stubGlobal("innerHeight", 844);
     api.getSchedule.mockResolvedValue(detail);
     api.listScheduleRuns.mockResolvedValue({ runs: [], total: 0 });
     onClose = vi.fn<() => void>();
@@ -157,31 +136,12 @@ describe("ScheduleDetailModal interactions", () => {
     });
   }
 
-  it("exposes one mobile Delete control and one of each firing-policy selector in logical order", () => {
-    const deleteButtons = mobileButtons("Delete");
-    const missedFire = mobileSelect("Missed fire");
-    const overlap = mobileSelect("Overlap");
-
-    expect(deleteButtons).toHaveLength(1);
-    expect(missedFire).toBeDefined();
-    expect(overlap).toBeDefined();
-    expect(deleteButtons[0].tabIndex).toBe(0);
-    expect(missedFire?.tabIndex).toBe(0);
-    expect(overlap?.tabIndex).toBe(0);
-    expect(
-      deleteButtons[0].compareDocumentPosition(missedFire!) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(
-      missedFire!.compareDocumentPosition(overlap!) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-  });
-
   it.each([
     ["Missed fire", "run_once"],
     ["Overlap", "queue"],
-  ])("a mobile %s edit participates in the dirty-close guard", (label, value) => {
-    const select = mobileSelect(label);
-    expect(select).toBeDefined();
+  ])("a %s edit participates in the dirty-close guard", (label, value) => {
+    const select = policySelect(label);
+    expect(select).not.toBeNull();
     const setValue = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
     act(() => {
       setValue?.call(select, value);
@@ -193,22 +153,6 @@ describe("ScheduleDetailModal interactions", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain(
       "You have unsaved changes.",
     );
-  });
-
-  it("mobile Delete keeps its explicit two-step confirmation", async () => {
-    const deleteButton = mobileButtons("Delete")[0];
-    expect(deleteButton).toBeDefined();
-
-    act(() => deleteButton?.click());
-    expect(api.deleteSchedule).not.toHaveBeenCalled();
-    expect(deleteButton?.textContent).toBe("Confirm delete");
-
-    await act(async () => {
-      deleteButton?.click();
-      await Promise.resolve();
-    });
-    expect(api.deleteSchedule).toHaveBeenCalledWith(detail.id);
-    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("asks before Cancel discards an edited schedule", () => {
@@ -282,5 +226,164 @@ describe("ScheduleDetailModal interactions", () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("leaves the keyboard to a dialog opened over it", async () => {
+    // This editor traps keys with a listener above the tree, and it was added
+    // before the one on top, so it sees every key first. Without a check for
+    // which surface is topmost it answers Escape meant for the newer dialog,
+    // and its Tab trap pulls focus down out of it for the same reason.
+    const closeOverlay = vi.fn<() => void>();
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <ToastProvider>
+            <ScheduleDetailModal
+              scheduleId="schedule-1"
+              onClose={onClose}
+              onChanged={vi.fn<() => void>()}
+            />
+            <Modal title="On top" closeLabel="Close overlay" onClose={closeOverlay}>
+              <button type="button">Overlay action</button>
+            </Modal>
+          </ToastProvider>
+        </IntlProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+
+    expect(closeOverlay).toHaveBeenCalledOnce();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("does not take focus from a dialog above it when its data arrives", async () => {
+    let resolveDetail: (value: ScheduleDetail) => void = () => {};
+    api.getSchedule.mockReturnValueOnce(
+      new Promise<ScheduleDetail>((resolve) => {
+        resolveDetail = resolve;
+      }),
+    );
+
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <ToastProvider>
+            <ScheduleDetailModal
+              key="beneath"
+              scheduleId="schedule-1"
+              onClose={onClose}
+              onChanged={vi.fn<() => void>()}
+            />
+            <Modal title="On top" closeLabel="Close overlay" onClose={vi.fn<() => void>()}>
+              <button type="button">Overlay action</button>
+            </Modal>
+          </ToastProvider>
+        </IntlProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    const above = Array.from(container.querySelectorAll<HTMLElement>("button"))
+      .find((button) => button.textContent === "Overlay action")
+      ?.closest<HTMLElement>('[role="dialog"]');
+    // Premise: the dialog above holds the keyboard before the load resolves.
+    expect(above).toBeTruthy();
+    expect(above?.contains(document.activeElement)).toBe(true);
+
+    await act(async () => {
+      resolveDetail(detail);
+      await Promise.resolve();
+    });
+
+    expect(above?.contains(document.activeElement)).toBe(true);
+  });
+
+  it("returns focus to the launcher when it closes with nothing above it", async () => {
+    const launcher = document.createElement("button");
+    document.body.appendChild(launcher);
+    launcher.focus();
+
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <ToastProvider>
+            <ScheduleDetailModal
+              key="alone"
+              scheduleId="schedule-1"
+              onClose={onClose}
+              onChanged={vi.fn<() => void>()}
+            />
+          </ToastProvider>
+        </IntlProvider>,
+      );
+      await Promise.resolve();
+    });
+    const dialog = container.querySelector<HTMLElement>('[role="dialog"]');
+    // Premise: it took focus, so it owes a restore.
+    expect(dialog?.contains(document.activeElement)).toBe(true);
+
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <div />
+        </IntlProvider>,
+      );
+    });
+    // Reading ownership after the stack entry is removed would retire this restore silently.
+    expect(document.activeElement).toBe(launcher);
+
+    launcher.remove();
+  });
+
+  it("leaves focus with the surface above when it closes underneath one", async () => {
+    const launcher = document.createElement("button");
+    document.body.appendChild(launcher);
+    launcher.focus();
+
+    const above = (
+      <Modal key="above" title="On top" closeLabel="Close overlay" onClose={vi.fn<() => void>()}>
+        <button type="button">Overlay action</button>
+      </Modal>
+    );
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <ToastProvider>
+            <ScheduleDetailModal
+              key="beneath"
+              scheduleId="schedule-1"
+              onClose={onClose}
+              onChanged={vi.fn<() => void>()}
+            />
+            {above}
+          </ToastProvider>
+        </IntlProvider>,
+      );
+      await Promise.resolve();
+    });
+    const aboveDialog = Array.from(container.querySelectorAll<HTMLElement>("button"))
+      .find((button) => button.textContent === "Overlay action")
+      ?.closest<HTMLElement>('[role="dialog"]');
+    expect(aboveDialog?.contains(document.activeElement)).toBe(true);
+
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <ToastProvider>{[above]}</ToastProvider>
+        </IntlProvider>,
+      );
+    });
+    const stillAbove = Array.from(container.querySelectorAll<HTMLElement>("button"))
+      .find((button) => button.textContent === "Overlay action")
+      ?.closest<HTMLElement>('[role="dialog"]');
+    // An unconditional restore would pull the caret down to the launcher here.
+    expect(document.activeElement).not.toBe(launcher);
+    expect(stillAbove?.contains(document.activeElement)).toBe(true);
+
+    launcher.remove();
   });
 });

@@ -17,11 +17,11 @@ import {
   type ReactNode,
 } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { createPortal } from "react-dom";
 import { useTranslations } from "use-intl";
 import InvocationSection from "@/components/history/InvocationDetail";
 import OperationGraphSection from "@/components/history/OperationGraphSection";
 import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
+import { useOverlayFocus } from "@/lib/useOverlayFocus";
 import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import ResumeRun from "@/components/history/ResumeRun";
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
@@ -724,6 +724,31 @@ export function buildRunSteps(
 }
 
 // ── Section shared header ─────────────────────────────────────────────────────
+
+function ExpandedGraphDialog({
+  label,
+  onClose,
+  children,
+}: {
+  label: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useOverlayFocus({ description: "ExpandedGraph", dialogRef, onEscape: onClose });
+  return (
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+      tabIndex={-1}
+      className="fixed inset-4 z-50 flex flex-col rounded border border-edge bg-surface-raised shadow-card"
+    >
+      {children}
+    </div>
+  );
+}
 
 function SectionHeader({
   label,
@@ -1909,8 +1934,6 @@ export default function RunDetail({ id }: RunDetailProps) {
   // button or Escape; never by anything else, so a stray keypress elsewhere
   // can't dismiss it.
   const [graphExpanded, setGraphExpanded] = useState(false);
-  const graphDialogRef = useRef<HTMLDivElement>(null);
-  const graphExpandButtonRef = useRef<HTMLButtonElement>(null);
   // ADR-0113 D6: the two raw sources resolveInitialView weighs against the
   // default — the URL's `view` param (a pasted deep link) and the stored
   // per-user preference — read once at mount (lazy useState initializers,
@@ -2265,76 +2288,6 @@ export default function RunDetail({ id }: RunDetailProps) {
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [selectedStepKey]);
 
-  useEffect(() => {
-    if (!graphExpanded) return;
-    const dialog = graphDialogRef.current;
-    if (!dialog) return;
-    const launcher = graphExpandButtonRef.current;
-    const previousBodyOverflow = document.body.style.overflow;
-    const backgroundElements = Array.from(document.body.children)
-      .filter((element): element is HTMLElement => element instanceof HTMLElement)
-      .filter((element) => element !== dialog)
-      .map((element) => ({ element, wasInert: element.hasAttribute("inert") }));
-    const focusableSelector = [
-      "button:not([disabled])",
-      "[href]",
-      "input:not([disabled])",
-      "select:not([disabled])",
-      "textarea:not([disabled])",
-      '[tabindex]:not([tabindex="-1"])',
-    ].join(",");
-    const focusableElements = () =>
-      Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector)).filter(
-        (element) =>
-          element.tabIndex >= 0 &&
-          !element.hidden &&
-          !element.closest(".hidden") &&
-          element.getAttribute("aria-hidden") !== "true",
-      );
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        setGraphExpanded(false);
-        return;
-      }
-      if (event.key !== "Tab" || !dialog) return;
-
-      const focusable = focusableElements();
-      if (focusable.length === 0) {
-        event.preventDefault();
-        dialog.focus();
-        return;
-      }
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!dialog.contains(document.activeElement)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.body.style.overflow = "hidden";
-    for (const { element } of backgroundElements) element.setAttribute("inert", "");
-    (focusableElements()[0] ?? dialog)?.focus();
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown, true);
-      document.body.style.overflow = previousBodyOverflow;
-      for (const { element, wasInert } of backgroundElements) {
-        if (!wasInert) element.removeAttribute("inert");
-      }
-      if (launcher?.isConnected) launcher.focus();
-    };
-  }, [graphExpanded]);
-
   const hiddenOlderCount = useMemo(() => {
     // The cursor gates the arithmetic instead of sitting beside it. The
     // per-branch subtraction counts every message not loaded, which is older
@@ -2642,18 +2595,9 @@ export default function RunDetail({ id }: RunDetailProps) {
     return () => clearInterval(interval);
   }, [live, done]);
 
-  // Navigating to another run reuses this component instance, and the expand
-  // overlay lives inside the graph section, so the dialog unmounts with the
-  // outgoing run. graphExpanded is what holds the body scroll lock, the inert
-  // background and the key listener in place, and the effect that installs
-  // them is keyed on graphExpanded alone — so a flag that outlives its dialog
-  // means the teardown never runs and the page is left scrolled-locked behind
-  // an inert root. Closing on the run id keeps the flag from outliving what it
-  // describes; the teardown is then the ordinary cleanup of that same effect.
-  // Closed in the cleanup, the same way the per-run subscriptions above clear
-  // their accumulated state, so leaving one run tears the overlay down before
-  // the next run's effects set up. This must stay above the error/loading
-  // early returns below to keep the hook order stable across renders.
+  // Navigating to another run reuses this component instance, so a graphExpanded
+  // left set would reopen the overlay over the incoming run. Must stay above the
+  // early returns below to keep hook order stable.
   useEffect(() => {
     return () => setGraphExpanded(false);
   }, [id]);
@@ -2894,7 +2838,6 @@ export default function RunDetail({ id }: RunDetailProps) {
             showImplied={showImpliedEdges}
             trailing={
               <button
-                ref={graphExpandButtonRef}
                 type="button"
                 onClick={() => setGraphExpanded(true)}
                 aria-label={t("expandGraph")}
@@ -2933,64 +2876,52 @@ export default function RunDetail({ id }: RunDetailProps) {
               />
             </Suspense>
           </div>
-          {graphExpanded &&
-            createPortal(
-              <div
-                ref={graphDialogRef}
-                role="dialog"
-                aria-modal="true"
-                aria-label={t("sectionExecutionGraph")}
-                tabIndex={-1}
-                className="fixed inset-0 z-50 flex flex-col bg-black/50 p-4"
-              >
-                <div className="flex min-h-0 flex-1 flex-col rounded border border-edge bg-surface-raised shadow-card">
-                  <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-2">
-                    <SectionHeader
-                      label={t("sectionExecutionGraph")}
-                      count={runGraph.nodes.length}
-                      edgeCount={displayEdges.length}
-                      hiddenCount={hiddenCount}
-                      onToggleImplied={() => setShowImpliedEdges((v) => !v)}
-                      showImplied={showImpliedEdges}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setGraphExpanded(false)}
-                      aria-label={t("collapseGraph")}
-                      className="rounded border border-edge px-2 py-0.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary"
-                    >
-                      {t("closeExpandedGraph")}
-                    </button>
-                  </div>
-                  {progressCounts && (
-                    <div className="px-3 pt-2">
-                      <ProgressSummaryBar
-                        counts={progressCounts}
-                        elapsedLabel={elapsedLabel}
-                        t={t}
-                      />
-                    </div>
-                  )}
-                  {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- see note on the inline panel's identical delegation above */}
-                  <div className="min-h-0 flex-1 p-3" onClick={handleDagPanelClick}>
-                    <Suspense fallback={null}>
-                      <WorkerCanvas
-                        graph={{ ...runGraph, edges: displayEdges }}
-                        editable={false}
-                        execSteps={execSteps}
-                        nodeStatuses={reconciledNodeStatuses}
-                        nodeActivity={nodeActivity}
-                        compact
-                        onLayoutHeight={noopLayoutHeight}
-                        live={live}
-                        done={done}
-                      />
-                    </Suspense>
-                  </div>
+          {graphExpanded && (
+            <ExpandedGraphDialog
+              label={t("sectionExecutionGraph")}
+              onClose={() => setGraphExpanded(false)}
+            >
+              <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-2">
+                <SectionHeader
+                  label={t("sectionExecutionGraph")}
+                  count={runGraph.nodes.length}
+                  edgeCount={displayEdges.length}
+                  hiddenCount={hiddenCount}
+                  onToggleImplied={() => setShowImpliedEdges((v) => !v)}
+                  showImplied={showImpliedEdges}
+                />
+                <button
+                  type="button"
+                  onClick={() => setGraphExpanded(false)}
+                  aria-label={t("collapseGraph")}
+                  className="rounded border border-edge px-2 py-0.5 font-mono text-[length:var(--t-xs)] text-content-secondary transition-colors hover:border-accent/50 hover:text-content-primary"
+                >
+                  {t("closeExpandedGraph")}
+                </button>
+              </div>
+              {progressCounts && (
+                <div className="px-3 pt-2">
+                  <ProgressSummaryBar counts={progressCounts} elapsedLabel={elapsedLabel} t={t} />
                 </div>
-              </div>,
-              document.body,
-            )}
+              )}
+              {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- see note on the inline panel's identical delegation above */}
+              <div className="min-h-0 flex-1 p-3" onClick={handleDagPanelClick}>
+                <Suspense fallback={null}>
+                  <WorkerCanvas
+                    graph={{ ...runGraph, edges: displayEdges }}
+                    editable={false}
+                    execSteps={execSteps}
+                    nodeStatuses={reconciledNodeStatuses}
+                    nodeActivity={nodeActivity}
+                    compact
+                    onLayoutHeight={noopLayoutHeight}
+                    live={live}
+                    done={done}
+                  />
+                </Suspense>
+              </div>
+            </ExpandedGraphDialog>
+          )}
         </div>
       ) : (
         effectiveView === "graph" &&

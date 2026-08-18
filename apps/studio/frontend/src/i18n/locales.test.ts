@@ -239,22 +239,12 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // against. Natively translated in all 16, so unlike its two siblings it adds
   // nothing to the identity-leak baseline below.
   //
-  // 1104 = 1100 + 3 schedules.detail leaves for the discard-changes
-  // confirmation (discardChanges, discardWarning, keepEditing), + runCard
-  // .outputWithheld and history.detail.filesUnionBounded, - fleet.detail
-  // .engineRuns. Both sides of the merge moved this number and a merge keeps
-  // both sets of keys, so it is measured from the merged en.json rather than
-  // carried from either side.
-  //
-  // fleet.detail.engineRuns went with the session-detail link bar that was its
-  // only caller. The route it pointed at stays reachable from the System
-  // page's Data section, so nothing is stranded by the removal.
-  //
-  // runCard.outputWithheld is the badge for a tool result the server withheld
-  // past its per-row size ceiling. history.detail.filesUnionBounded is said
-  // when the run-wide file union stopped at one of its ceilings. All five
-  // added keys are natively translated in all 16, so they add nothing to the
-  // identity-leak baseline.
+  // 1104, measured from en.json rather than carried from either side: main
+  // dropped fleet.detail.engineRuns with the link bar that was its only caller
+  // and added runCard.outputWithheld and history.detail.filesUnionBounded,
+  // while this branch added three schedules.detail leaves for the
+  // discard-changes confirmation. All five additions are natively translated in
+  // all 16 locales, so they add nothing to the identity-leak baseline.
   it("en.json has 1104 leaves", () => {
     expect(EN_LEAVES.size).toBe(1104);
   });

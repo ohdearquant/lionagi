@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import enMessages from "@/messages/en.json";
+import Modal from "@/components/ui/Modal";
 import CommandPalette from "./CommandPalette";
 
 const commandAction = vi.fn();
@@ -87,5 +88,178 @@ describe("CommandPalette keyboard behavior", () => {
       );
     });
     expect(document.activeElement).toBe(launcher);
+  });
+
+  it("keeps focus inside itself when a dialog is already open underneath", async () => {
+    // The dialog's trap was added first and reads the palette's focus as focus that escaped it.
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <Modal title="Underneath" closeLabel="Close dialog" onClose={vi.fn<() => void>()}>
+            <button type="button">Dialog first</button>
+            <button type="button">Dialog last</button>
+          </Modal>
+          <CommandPalette
+            open
+            onClose={onClose}
+            toggleTheme={vi.fn<() => void>()}
+            toggleOperator={vi.fn<() => void>()}
+          />
+        </IntlProvider>,
+      );
+    });
+
+    const dialog = Array.from(container.querySelectorAll<HTMLElement>("button"))
+      .find((button) => button.textContent === "Dialog first")
+      ?.closest<HTMLElement>('[role="dialog"]');
+    const input = container.querySelector<HTMLInputElement>('[role="combobox"]');
+    const paletteClose = container.querySelector<HTMLButtonElement>('button[aria-label="Close"]');
+    expect(dialog).toBeTruthy();
+    expect(document.activeElement).toBe(input);
+
+    input?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }),
+    );
+
+    expect(dialog?.contains(document.activeElement)).toBe(false);
+    expect(document.activeElement).toBe(paletteClose);
+  });
+
+  it("leaves focus in an open palette when a route opens a dialog beneath it", async () => {
+    // Registration order is not paint order; the keys stop React remounting the palette.
+    const palette = (
+      <CommandPalette
+        key="palette"
+        open
+        onClose={onClose}
+        toggleTheme={vi.fn<() => void>()}
+        toggleOperator={vi.fn<() => void>()}
+      />
+    );
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          {palette}
+        </IntlProvider>,
+      );
+    });
+    const input = container.querySelector<HTMLInputElement>('[role="combobox"]');
+    expect(document.activeElement).toBe(input);
+
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <Modal
+            key="routed"
+            title="Underneath"
+            closeLabel="Close dialog"
+            onClose={vi.fn<() => void>()}
+          >
+            <button type="button">Dialog first</button>
+          </Modal>
+          {palette}
+        </IntlProvider>,
+      );
+    });
+
+    const dialog = Array.from(container.querySelectorAll<HTMLElement>("button"))
+      .find((button) => button.textContent === "Dialog first")
+      ?.closest<HTMLElement>('[role="dialog"]');
+    // Premises: the dialog mounted and the palette was not remounted.
+    expect(dialog).toBeTruthy();
+    expect(container.querySelector('[role="combobox"]')).toBe(input);
+    expect(dialog?.contains(document.activeElement)).toBe(false);
+    expect(document.activeElement).toBe(input);
+
+    // Closing must not restore focus it never held.
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          {palette}
+        </IntlProvider>,
+      );
+    });
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("closes only the topmost surface on Escape", async () => {
+    const closeDialog = vi.fn<() => void>();
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <Modal title="Underneath" closeLabel="Close dialog" onClose={closeDialog}>
+            <button type="button">Dialog first</button>
+          </Modal>
+          <CommandPalette
+            open
+            onClose={onClose}
+            toggleTheme={vi.fn<() => void>()}
+            toggleOperator={vi.fn<() => void>()}
+          />
+        </IntlProvider>,
+      );
+    });
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(closeDialog).not.toHaveBeenCalled();
+  });
+
+  it("hands focus to the dialog beneath once the palette closes", async () => {
+    const dialog = (
+      <Modal
+        key="routed"
+        title="Underneath"
+        closeLabel="Close dialog"
+        onClose={vi.fn<() => void>()}
+      >
+        <button type="button">Dialog first</button>
+      </Modal>
+    );
+    const palette = (
+      <CommandPalette
+        key="palette"
+        open
+        onClose={onClose}
+        toggleTheme={vi.fn<() => void>()}
+        toggleOperator={vi.fn<() => void>()}
+      />
+    );
+
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          {palette}
+        </IntlProvider>,
+      );
+    });
+    const input = container.querySelector<HTMLInputElement>('[role="combobox"]');
+    expect(document.activeElement).toBe(input);
+
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          {dialog}
+          {palette}
+        </IntlProvider>,
+      );
+    });
+    const dialogEl = Array.from(container.querySelectorAll<HTMLElement>("button"))
+      .find((button) => button.textContent === "Dialog first")
+      ?.closest<HTMLElement>('[role="dialog"]');
+    // Premises: it mounted beneath, and declined the claim while the palette held it.
+    expect(dialogEl).toBeTruthy();
+    expect(document.activeElement).toBe(input);
+
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          {dialog}
+        </IntlProvider>,
+      );
+    });
+    expect(container.querySelector('[role="combobox"]')).toBeNull();
+    expect(dialogEl?.contains(document.activeElement)).toBe(true);
   });
 });

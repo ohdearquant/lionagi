@@ -2071,9 +2071,14 @@ describe("history/RunDetail.tsx — computeReconciledNodeStatuses / computeProgr
 describe("history/RunDetail.tsx — execution-graph expand/close wiring", () => {
   const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
 
-  it("Escape closes the expanded graph overlay", () => {
-    expect(src).toMatch(/event\.key === "Escape"/);
-    expect(src).toMatch(/setGraphExpanded\(false\)/);
+  // Escape behaviour itself is covered in useOverlayFocus.test.tsx; this asserts the wiring,
+  // since a window-level listener here would fire even while a higher surface owns the keyboard.
+  it("the expanded graph registers on the overlay stack rather than listening on window", () => {
+    expect(src).toMatch(
+      /useOverlayFocus\(\{ description: "ExpandedGraph", dialogRef, onEscape: onClose \}\)/,
+    );
+    expect(src).toMatch(/onClose={\(\) => setGraphExpanded\(false\)}/);
+    expect(src).not.toMatch(/window\.addEventListener\("keydown"/);
   });
 
   it("an explicit close button also closes the overlay", () => {
@@ -2496,32 +2501,25 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
     return { dialog: dialog!, expand: expand! };
   }
 
-  it("opening the expanded graph moves focus inside, names it, and locks the background", async () => {
+  it("opening the expanded graph moves focus inside and names it", async () => {
     const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
     try {
       const { dialog } = await openExpandedGraph(container);
       expect(dialog.contains(document.activeElement)).toBe(true);
       expect(dialog.getAttribute("aria-label")).toBe("Execution graph");
-      expect(container.hasAttribute("inert")).toBe(true);
-      expect(document.body.style.overflow).toBe("hidden");
     } finally {
       unmount();
     }
   });
 
-  // Navigating to another run reuses this RunDetail instance. The overlay is
-  // rendered inside the graph section, so the dialog goes away, but the flag
-  // that installed the body lock, the inert background and the key listener
-  // is not per-dialog — if it survives the navigation, the teardown never
-  // runs and the app is left scroll-locked behind an inert root.
-  it("switching to another run releases the background lock the overlay installed", async () => {
+  // Navigating to another run reuses this RunDetail instance, so an overlay flag
+  // that survives the navigation reopens the dialog over the incoming run.
+  it("switching to another run closes the overlay the outgoing run opened", async () => {
     const { container, rerenderWithRun, unmount } = await mountRunDetail(
       sessionWithBranches(edgedGraph),
     );
     try {
       await openExpandedGraph(container);
-      expect(container.hasAttribute("inert")).toBe(true);
-      expect(document.body.style.overflow).toBe("hidden");
 
       // The next run also has a resolvable graph, so the section itself stays
       // rendered. Only the run identity changed.
@@ -2531,8 +2529,6 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
         name: "run-next",
       });
 
-      expect(document.body.style.overflow).toBe("");
-      expect(container.hasAttribute("inert")).toBe(false);
       expect(
         document.body.querySelector('[role="dialog"][aria-label="Execution graph"]'),
       ).toBeNull();
@@ -2541,13 +2537,15 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
     }
   });
 
-  it("moving to a run with no resolvable graph also releases the lock", async () => {
+  // Overdetermined, and deliberately kept as a case rather than a guard: the graph
+  // section unmounts with the graphless run, so this stays green even without the
+  // flag reset that the test above pins.
+  it("moving to a run with no resolvable graph also closes it", async () => {
     const { container, rerenderWithRun, unmount } = await mountRunDetail(
       sessionWithBranches(edgedGraph),
     );
     try {
       await openExpandedGraph(container);
-      expect(document.body.style.overflow).toBe("hidden");
 
       await rerenderWithRun("run-graphless", {
         ...(sessionWithBranches(null) as Record<string, unknown>),
@@ -2555,8 +2553,9 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
         name: "run-graphless",
       });
 
-      expect(document.body.style.overflow).toBe("");
-      expect(container.hasAttribute("inert")).toBe(false);
+      expect(
+        document.body.querySelector('[role="dialog"][aria-label="Execution graph"]'),
+      ).toBeNull();
     } finally {
       unmount();
     }
@@ -2613,8 +2612,6 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
         document.body.querySelector('[role="dialog"][aria-label="Execution graph"]'),
       ).toBeNull();
       expect(document.activeElement).toBe(expand);
-      expect(container.hasAttribute("inert")).toBe(false);
-      expect(document.body.style.overflow).toBe("");
     } finally {
       unmount();
     }

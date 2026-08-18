@@ -10,6 +10,7 @@ import StatusPill from "@/components/ui/StatusPill";
 import { IconArrowUpRight, IconClose } from "@/components/ui/icons";
 import { useToast } from "@/components/ui/Toast";
 import ErrorBanner from "@/components/ui/ErrorBanner";
+import { useOverlayFocus } from "@/lib/useOverlayFocus";
 import EnabledToggle from "./EnabledToggle";
 import TemplateVarChips from "./TemplateVarChips";
 import { classifyError } from "./errorClassify";
@@ -225,12 +226,6 @@ export default function ScheduleDetailModal({
   }, [blocker, onClose]);
   const showDiscardConfirmation = confirmDiscard || blocker.status === "blocked";
 
-  useEffect(() => {
-    if (showDiscardConfirmation) {
-      discardPromptRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
-    }
-  }, [showDiscardConfirmation]);
-
   // Load detail + recent runs on mount
   useEffect(() => {
     let alive = true;
@@ -255,52 +250,24 @@ export default function ScheduleDetailModal({
     };
   }, [scheduleId]);
 
-  // Focus name input once loaded
-  useEffect(() => {
-    if (form) nameInputRef.current?.focus();
-  }, [form != null]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { claimFocus, ownsKeyboard } = useOverlayFocus({
+    description: "ScheduleDetailModal",
+    dialogRef,
+    onEscape: requestClose,
+    initialFocusRef: nameInputRef,
+  });
 
-  // Keep focus inside the custom dialog and return it to the launch control on
-  // close. (Most Studio dialogs use ui/Modal; this larger split-pane editor
-  // retains its custom shell.)
+  // The caret was offered before the fields existed; offer it again now they do.
   useEffect(() => {
-    const previouslyFocused =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    dialogRef.current?.focus();
-    return () => {
-      if (previouslyFocused?.isConnected) previouslyFocused.focus();
-    };
-  }, []);
+    if (form) claimFocus();
+  }, [form != null, claimFocus]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Moving the caret to the prompt is only ours to do while nothing is painted above.
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        requestClose();
-        return;
-      }
-      if (e.key !== "Tab" || !dialogRef.current) return;
-      const focusable = Array.from(
-        dialogRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
-        ),
-      ).filter((element) => element.tabIndex >= 0 && !element.hidden);
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!dialogRef.current.contains(document.activeElement)) {
-        e.preventDefault();
-        (e.shiftKey ? last : first)?.focus();
-      } else if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last?.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first?.focus();
-      }
+    if (showDiscardConfirmation && ownsKeyboard()) {
+      discardPromptRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
     }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [requestClose]);
+  }, [showDiscardConfirmation, ownsKeyboard]);
 
   function set(key: keyof DetailForm, value: string) {
     keepEditing();

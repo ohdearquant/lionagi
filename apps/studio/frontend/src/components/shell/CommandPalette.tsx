@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useLocale, useTranslations } from "use-intl";
 import { buildRegistry, fuzzyMatch, type Command } from "@/lib/commands";
+import { OverlayLayer } from "@/lib/overlayStack";
+import { useOverlayFocus } from "@/lib/useOverlayFocus";
 
 interface Props {
   open: boolean;
@@ -54,40 +56,33 @@ function PaletteInner({ onClose, toggleTheme, toggleOperator }: Omit<Props, "ope
     [doNavigate, onClose],
   );
 
-  // Focus the search field on mount and return focus to the launch control
-  // when the palette closes. Keyboard users should never lose their place in
-  // the shell after a command or Escape dismisses the dialog.
-  useEffect(() => {
-    const previouslyFocused =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    inputRef.current?.focus();
-    return () => {
-      if (previouslyFocused?.isConnected) previouslyFocused.focus();
-    };
-  }, []);
-
   // Scroll active option into view
   useEffect(() => {
     const el = listboxRef.current?.querySelectorAll<HTMLElement>("[role=option]")[active];
     el?.scrollIntoView?.({ block: "nearest" });
   }, [active]);
 
-  // Keyboard handler for navigation within the palette. Enter only executes
-  // a result while focus is on the command surface; pressing Enter on the
-  // close control must remain a close action.
+  // Shell layer: rendered after the routed view, so it draws above a route's modal.
+  const { ownsKeyboard } = useOverlayFocus({
+    description: "CommandPalette",
+    layer: OverlayLayer.Shell,
+    dialogRef,
+    onEscape: onClose,
+    initialFocusRef: inputRef,
+  });
+
+  // Enter executes a result only from the command surface; on the close control it closes.
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       // Never react while an IME composition is in flight (zh input):
       // Enter/arrows there confirm the composition, not a command.
       if (e.isComposing) return;
+      if (!ownsKeyboard()) return;
       const target = e.target instanceof Node ? e.target : null;
       const isCommandSurface =
         target === inputRef.current || Boolean(target && listboxRef.current?.contains(target));
       const vimNav = e.ctrlKey && !e.metaKey && !e.altKey;
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      } else if (isCommandSurface && (e.key === "ArrowDown" || (vimNav && e.key === "j"))) {
+      if (isCommandSurface && (e.key === "ArrowDown" || (vimNav && e.key === "j"))) {
         e.preventDefault();
         setActive((a) => Math.min(a + 1, filtered.length - 1));
       } else if (isCommandSurface && (e.key === "ArrowUp" || (vimNav && e.key === "k"))) {
@@ -118,7 +113,7 @@ function PaletteInner({ onClose, toggleTheme, toggleOperator }: Omit<Props, "ope
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose, filtered, active, execute]);
+  }, [ownsKeyboard, filtered, active, execute]);
 
   function handleQueryChange(value: string) {
     setQuery(value);
