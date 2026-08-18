@@ -1300,3 +1300,191 @@ async def test_a_failed_watermark_write_gives_back_the_cooldown_reservation():
     ):
         await engine._maybe_fire(schedule, now=1100.0)
     assert fire.call_count == 1
+
+
+# failed_sessions counts distinct causes, not rows
+
+
+async def _make_failed(
+    state,
+    sess_id: str,
+    *,
+    ended_at: float,
+    invocation_id: str | None = None,
+    reason: str | None = None,
+    status: str = "failed",
+):
+    """Create a session and drive it to *status* the way production does.
+
+    status_reason_code is written by the lifecycle transition, not as a plain
+    column, so a session that is born terminal never carries one. These rows
+    are created running and then transitioned, which is what puts a real
+    reason code on them.
+    """
+    prog_id = f"prog-{sess_id}"
+    await state.create_progression(prog_id)
+    await state.create_session(
+        {
+            "id": sess_id,
+            "progression_id": prog_id,
+            "status": "running",
+            "started_at": ended_at - 1,
+        }
+    )
+    if invocation_id is not None:
+        # invocation_id is a foreign key, so the invocation has to exist. The
+        # same id is shared deliberately across a fan-out's sessions, and
+        # create_invocation is ON CONFLICT DO NOTHING, so the repeated calls
+        # that come with it are already no-ops. Nothing is caught here on
+        # purpose: a fixture that swallows its own database errors reports
+        # them later as a wrong count somewhere else.
+        await state.create_invocation(
+            {"id": invocation_id, "skill": "test", "started_at": ended_at - 2}
+        )
+        await state.update_session(sess_id, invocation_id=invocation_id)
+    await state.update_status(
+        "session",
+        sess_id,
+        new_status=status,
+        reason_code=reason or "run.failed.exception",
+    )
+    await state.update_session(sess_id, ended_at=ended_at)
+
+
+@pytest.mark.asyncio
+async def test_a_fanout_sharing_one_invocation_and_one_wall_is_one_cause():
+    """A wide fan-out meeting a single wall must not breach a threshold by width.
+
+    One invocation spawns a session per worker. When a provider refuses all of
+    them, that is one thing going wrong reported many times, and counting rows
+    makes any fan-out wider than the threshold breach it by construction.
+    """
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    for i in range(24):
+        await _make_failed(
+            state,
+            f"worker-{i}",
+            ended_at=100.0 + i,
+            invocation_id="one-fanout",
+            reason="run.failed.provider_retryable",
+        )
+
+    assert await state.metric_value("failed_sessions", window_start=50.0) == 1.0
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_failures_carrying_no_invocation_are_not_merged_together():
+    """NULL is an unknown grouping, not a shared one.
+
+    Most failed sessions carry no invocation id. Grouping on the raw column
+    lets SQL treat those NULLs as equal and collapses unrelated failures into
+    a single row, which silently disables the alarm for the bulk of the
+    population. Unknown groupings stay apart.
+    """
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    for i in range(3):
+        await _make_failed(
+            state, f"orphan-{i}", ended_at=100.0 + i, reason="run.failed.provider_nonretryable"
+        )
+
+    assert await state.metric_value("failed_sessions", window_start=50.0) == 3.0
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_one_invocation_meeting_two_different_walls_is_two_causes():
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await _make_failed(
+        state, "a", ended_at=100.0, invocation_id="shared", reason="run.failed.provider_retryable"
+    )
+    await _make_failed(
+        state, "b", ended_at=101.0, invocation_id="shared", reason="run.failed.provider_retryable"
+    )
+    await _make_failed(
+        state, "c", ended_at=102.0, invocation_id="shared", reason="run.failed.exception"
+    )
+
+    assert await state.metric_value("failed_sessions", window_start=50.0) == 2.0
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_a_session_id_cannot_answer_for_another_sessions_invocation_id():
+    """The fallback and the real column are different namespaces.
+
+    A session with no invocation falls back to its own id for grouping. If
+    that value is compared against invocation ids as though they were the same
+    namespace, a session whose id happens to equal another session's
+    invocation_id shares a grouping key with it, and when the two also share a
+    reason they count once instead of twice. The error runs toward reporting
+    fewer causes than there are, which is the direction that holds an alert
+    below its threshold, so it fails quietly rather than loudly.
+
+    Nothing stops the two id spaces from overlapping: they are separate tables
+    with separately assigned ids, and equality between them carries no meaning
+    at all.
+    """
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    # No invocation, so this row groups under its own id.
+    await _make_failed(state, "shared", ended_at=100.0, reason="run.failed.exception")
+    # A different failure that really does belong to an invocation, whose id
+    # collides with the session id above. Same reason, so the grouping key is
+    # the only thing keeping these two apart.
+    await _make_failed(
+        state, "other", ended_at=101.0, invocation_id="shared", reason="run.failed.exception"
+    )
+
+    assert await state.metric_value("failed_sessions", window_start=50.0) == 2.0
+    await state.close()
+
+
+@pytest.mark.asyncio
+async def test_cause_counting_still_respects_the_window_and_the_status_filter():
+    """The grouping change must not widen or narrow what is eligible to count."""
+    from lionagi.state.db import StateDB
+
+    state = StateDB(":memory:")
+    await state.open()
+
+    await _make_failed(
+        state, "in-failed", ended_at=100.0, invocation_id="i1", reason="run.failed.exception"
+    )
+    await _make_failed(
+        state,
+        "in-timed-out",
+        ended_at=110.0,
+        invocation_id="i2",
+        reason="run.timed_out.deadline",
+        status="timed_out",
+    )
+    await _make_failed(
+        state,
+        "in-completed",
+        ended_at=120.0,
+        invocation_id="i3",
+        reason="run.completed.ok",
+        status="completed",
+    )
+    await _make_failed(
+        state, "before-window", ended_at=10.0, invocation_id="i4", reason="run.failed.exception"
+    )
+
+    assert await state.metric_value("failed_sessions", window_start=50.0) == 2.0
+    await state.close()
