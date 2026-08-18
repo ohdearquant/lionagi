@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import MISSING, dataclass, field, fields
+from collections.abc import Callable, Collection, MutableMapping
+from dataclasses import MISSING, dataclass, fields
 from enum import Enum as _Enum
 from typing import Any, ClassVar
+from weakref import WeakKeyDictionary
 
-from typing_extensions import TypedDict, override
+from typing_extensions import Self, TypedDict, override
 
 from ._sentinel import Undefined, Unset, is_sentinel
 
@@ -50,28 +52,97 @@ class ModelConfig:
     serialize_exclude: frozenset[str] = frozenset()
 
 
+@dataclass(slots=True, frozen=True)
+class _FieldLayout:
+    declared: tuple[Any, ...]
+    names: tuple[str, ...]
+    allowed: frozenset[str]
+
+
+# Keyed off the type rather than stored on it: any attribute name this could use is
+# also a name a subclass may declare as a field, and under slots that field becomes a
+# descriptor in the class namespace which reads back as a cached layout. Weak keys so
+# a type stays collectable, and one entry per type so nothing evicts under a cap.
+_LAYOUTS: MutableMapping[type[Any], _FieldLayout] = WeakKeyDictionary()
+
+
+def _field_layout(model_type: type[Any]) -> _FieldLayout:
+    """One immutable public-field layout per model type, keyed on the type itself."""
+    cached = _LAYOUTS.get(model_type)
+    if cached is not None:
+        return cached
+    declared = tuple(
+        field_info for field_info in fields(model_type) if not field_info.name.startswith("_")
+    )
+    names = tuple(field_info.name for field_info in declared)
+    layout = _FieldLayout(declared=declared, names=names, allowed=frozenset(names))
+    _LAYOUTS[model_type] = layout
+    return layout
+
+
+def _validate_declared_fields(
+    instance: Any,
+    set_field: Callable[[Any, str, Any], None],
+) -> None:
+    for name in _field_layout(type(instance)).names:
+        _validate_declared_field(instance, name, set_field)
+
+
+def _validate_declared_field(
+    instance: Any,
+    name: str,
+    set_field: Callable[[Any, str, Any], None],
+) -> None:
+    value = getattr(instance, name, Undefined)
+    if instance._config.strict and instance._is_sentinel(value):
+        raise ValueError(f"Missing required parameter: {name}")
+    if instance._config.prefill_unset and value is Undefined:
+        set_field(instance, name, Unset)
+
+
+def _declared_fields_to_dict(
+    instance: Any,
+    exclude: Collection[str] | None,
+) -> dict[str, Any]:
+    excluded = frozenset(exclude or ())
+    data: dict[str, Any] = {}
+    for name in _field_layout(type(instance)).names:
+        if name in excluded:
+            continue
+        value = getattr(instance, name, Undefined)
+        if not instance._is_sentinel(value):
+            data[name] = instance._normalize_value(value)
+    return data
+
+
+def _declared_field_state(instance: Any) -> dict[str, Any]:
+    """Copy the complete in-memory field state without wire omission."""
+    return {
+        name: getattr(instance, name, Undefined) for name in _field_layout(type(instance)).names
+    }
+
+
 @dataclass(slots=True, frozen=True, init=False)
 class Params:
     """Immutable keyword-argument parameter bag; configure via _config = ModelConfig(...)."""
 
     _config: ClassVar[ModelConfig] = ModelConfig()
 
-    _allowed_keys: ClassVar[set[str]] = field(default=set(), init=False, repr=False)
-
     def __init__(self, **kwargs: Any):
-        for k, v in kwargs.items():
-            if k in self.allowed():
-                object.__setattr__(self, k, v)
-            else:
-                raise ValueError(f"Invalid parameter: {k}")
+        unknown = next((key for key in kwargs if key not in self.allowed()), None)
+        if unknown is not None:
+            raise ValueError(f"Invalid parameter: {unknown}")
 
-        for field_info in fields(self):
-            if field_info.name in kwargs or field_info.name.startswith("_"):
-                continue
-            if field_info.default is not MISSING:
-                object.__setattr__(self, field_info.name, field_info.default)
+        for field_info in _field_layout(type(self)).declared:
+            if field_info.name in kwargs:
+                value = kwargs[field_info.name]
+            elif field_info.default is not MISSING:
+                value = field_info.default
             elif field_info.default_factory is not MISSING:
-                object.__setattr__(self, field_info.name, field_info.default_factory())
+                value = field_info.default_factory()
+            else:
+                value = Undefined
+            object.__setattr__(self, field_info.name, value)
 
         self._validate()
 
@@ -91,22 +162,18 @@ class Params:
         return value
 
     @classmethod
-    def allowed(cls) -> set[str]:
-        if "_allowed_keys" in cls.__dict__ and cls.__dict__["_allowed_keys"]:
-            return cls._allowed_keys
-        cls._allowed_keys = {i for i in cls.__dataclass_fields__.keys() if not i.startswith("_")}
-        return cls._allowed_keys
+    def field_names(cls) -> tuple[str, ...]:
+        """Return public fields in inherited dataclass declaration order."""
+        return _field_layout(cls).names
+
+    @classmethod
+    def allowed(cls) -> frozenset[str]:
+        """Return the immutable membership view of declared public fields."""
+        return _field_layout(cls).allowed
 
     @override
     def _validate(self) -> None:
-        def _validate_strict(k):
-            if self._config.strict and self._is_sentinel(getattr(self, k, Unset)):
-                raise ValueError(f"Missing required parameter: {k}")
-            if self._config.prefill_unset and getattr(self, k, Undefined) is Undefined:
-                object.__setattr__(self, k, Unset)
-
-        for k in self.allowed():
-            _validate_strict(k)
+        _validate_declared_fields(self, object.__setattr__)
 
     def default_kw(self) -> Any:
         dict_ = self.to_dict()
@@ -118,15 +185,8 @@ class Params:
         dict_.update(kw_)
         return dict_
 
-    def to_dict(self, exclude: set[str] | None = None) -> dict[str, str]:
-        data = {}
-        exclude = exclude or set()
-        for k in self.allowed():
-            if k not in exclude:
-                v = getattr(self, k, Undefined)
-                if not self._is_sentinel(v):
-                    data[k] = self._normalize_value(v)
-        return data
+    def to_dict(self, exclude: Collection[str] | None = None) -> dict[str, Any]:
+        return _declared_fields_to_dict(self, exclude)
 
     def __hash__(self) -> int:
         from .._hash import hash_dict
@@ -138,11 +198,15 @@ class Params:
             return False
         return hash(self) == hash(other)
 
-    def with_updates(self, **kwargs: Any) -> DataClass:
+    def with_updates(self, **kwargs: Any) -> Self:
         """Return a new instance with updated fields."""
-        dict_ = self.to_dict()
+        dict_ = self._field_state()
         dict_.update(kwargs)
         return type(self)(**dict_)
+
+    def _field_state(self) -> dict[str, Any]:
+        """Return constructor values without applying wire omission rules."""
+        return _declared_field_state(self)
 
 
 @dataclass(slots=True)
@@ -151,38 +215,25 @@ class DataClass:
 
     _config: ClassVar[ModelConfig] = ModelConfig()
 
-    _allowed_keys: ClassVar[set[str]] = field(default=set(), init=False, repr=False)
-
     def __post_init__(self):
         self._validate()
 
     @classmethod
-    def allowed(cls) -> set[str]:
-        if "_allowed_keys" in cls.__dict__ and cls.__dict__["_allowed_keys"]:
-            return cls._allowed_keys
-        cls._allowed_keys = {i for i in cls.__dataclass_fields__.keys() if not i.startswith("_")}
-        return cls._allowed_keys
+    def field_names(cls) -> tuple[str, ...]:
+        """Return public fields in inherited dataclass declaration order."""
+        return _field_layout(cls).names
+
+    @classmethod
+    def allowed(cls) -> frozenset[str]:
+        """Return the immutable membership view of declared public fields."""
+        return _field_layout(cls).allowed
 
     @override
     def _validate(self) -> None:
-        def _validate_strict(k):
-            if self._config.strict and self._is_sentinel(getattr(self, k, Unset)):
-                raise ValueError(f"Missing required parameter: {k}")
-            if self._config.prefill_unset and getattr(self, k, Undefined) is Undefined:
-                self.__setattr__(k, Unset)
+        _validate_declared_fields(self, setattr)
 
-        for k in self.allowed():
-            _validate_strict(k)
-
-    def to_dict(self, exclude: set[str] | None = None) -> dict[str, str]:
-        data = {}
-        exclude = exclude or set()
-        for k in type(self).allowed():
-            if k not in exclude:
-                v = getattr(self, k)
-                if not self._is_sentinel(v):
-                    data[k] = self._normalize_value(v)
-        return data
+    def to_dict(self, exclude: Collection[str] | None = None) -> dict[str, Any]:
+        return _declared_fields_to_dict(self, exclude)
 
     @classmethod
     def _is_sentinel(cls, value: Any) -> bool:
@@ -201,11 +252,33 @@ class DataClass:
             return value.value
         return value
 
-    def with_updates(self, **kwargs: Any) -> DataClass:
+    def with_updates(self, **kwargs: Any) -> Self:
         """Return a new instance with updated fields."""
-        dict_ = self.to_dict()
+        layout = _field_layout(type(self))
+        unknown = next((name for name in kwargs if name not in layout.allowed), None)
+        if unknown is not None:
+            raise TypeError(
+                f"{type(self).__name__}.__init__() got an unexpected keyword argument {unknown!r}"
+            )
+
+        dict_ = self._field_state()
         dict_.update(kwargs)
-        return type(self)(**dict_)
+        constructor_values = {
+            field_info.name: dict_[field_info.name]
+            for field_info in layout.declared
+            if field_info.init
+        }
+        updated = type(self)(**constructor_values)
+        deferred = tuple(field_info for field_info in layout.declared if not field_info.init)
+        for field_info in deferred:
+            setattr(updated, field_info.name, dict_[field_info.name])
+        if deferred:
+            updated._validate()
+        return updated
+
+    def _field_state(self) -> dict[str, Any]:
+        """Return constructor values without applying wire omission rules."""
+        return _declared_field_state(self)
 
     def __hash__(self) -> int:
         from .._hash import hash_dict
