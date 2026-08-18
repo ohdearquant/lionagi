@@ -1,0 +1,1545 @@
+{
+  "schema": "lionagi.provider-authority-inventory",
+  "version": 1,
+  "bootstrap_modules": [
+    "lionagi.providers.openai.chat",
+    "lionagi.providers.openai.codex",
+    "lionagi.providers.openai.audio",
+    "lionagi.providers.openai.batch",
+    "lionagi.providers.openai.images",
+    "lionagi.providers.openai.embed",
+    "lionagi.providers.openai.response",
+    "lionagi.providers.anthropic.messages",
+    "lionagi.providers.anthropic.claude_code",
+    "lionagi.providers.ollama.chat",
+    "lionagi.providers.ollama.embed",
+    "lionagi.providers.ollama.generate",
+    "lionagi.providers.tavily.search",
+    "lionagi.providers.exa.search",
+    "lionagi.providers.exa.contents",
+    "lionagi.providers.exa.find_similar",
+    "lionagi.providers.firecrawl.scrape",
+    "lionagi.providers.firecrawl.map",
+    "lionagi.providers.firecrawl.crawl",
+    "lionagi.providers.perplexity.chat",
+    "lionagi.providers.nvidia_nim.chat",
+    "lionagi.providers.nvidia_nim.embed",
+    "lionagi.providers.deepseek.chat",
+    "lionagi.providers.google.chat",
+    "lionagi.providers.google.gemini_code",
+    "lionagi.providers.groq.chat",
+    "lionagi.providers.groq.audio_transcription",
+    "lionagi.providers.pi.cli",
+    "lionagi.providers.openrouter.chat",
+    "lionagi.providers.ag2.groupchat",
+    "lionagi.providers.ag2.agent",
+    "lionagi.providers.ag2.nlip",
+    "lionagi.testing._endpoint"
+  ],
+  "optional_dependencies": {},
+  "endpoint_rows": [
+    {
+      "bootstrap_module": "lionagi.providers.openai.chat",
+      "provider": "openai",
+      "provider_aliases": [],
+      "endpoint": "chat/completions",
+      "endpoint_aliases": [
+        "chat"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai._chat_schemas:OpenAIChatCompletionsRequest",
+      "implementation_ref": "lionagi.providers.openai.chat:OpenaiChatEndpoint",
+      "base_url": "https://api.openai.com/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.openai.codex",
+      "provider": "codex",
+      "provider_aliases": [
+        "openai-codex"
+      ],
+      "endpoint": "query_cli",
+      "endpoint_aliases": [
+        "cli",
+        "code"
+      ],
+      "endpoint_type": "agentic",
+      "options_ref": "lionagi.providers.openai.codex:CodexCodeRequest",
+      "implementation_ref": "lionagi.providers.openai.codex:CodexCLIEndpoint",
+      "base_url": null,
+      "auth_type": null,
+      "content_type": "application/json",
+      "api_key_env": null
+    },
+    {
+      "bootstrap_module": "lionagi.providers.openai.audio",
+      "provider": "openai",
+      "provider_aliases": [],
+      "endpoint": "audio/speech",
+      "endpoint_aliases": [
+        "tts"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai._audio_schemas:AudioSpeechRequest",
+      "implementation_ref": "lionagi.providers.openai.audio:OpenaiAudioSpeechEndpoint",
+      "base_url": "https://api.openai.com/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.openai.audio",
+      "provider": "openai",
+      "provider_aliases": [],
+      "endpoint": "audio/transcriptions",
+      "endpoint_aliases": [
+        "stt",
+        "whisper"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai._audio_schemas:AudioTranscriptionRequest",
+      "implementation_ref": "lionagi.providers.openai.audio:OpenaiAudioTranscriptionEndpoint",
+      "base_url": "https://api.openai.com/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.openai.batch",
+      "provider": "openai",
+      "provider_aliases": [],
+      "endpoint": "batches",
+      "endpoint_aliases": [
+        "batch"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai.batch:OpenAIBatchRequest",
+      "implementation_ref": "lionagi.providers.openai.batch:OpenaiBatchEndpoint",
+      "base_url": "https://api.openai.com/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.openai.images",
+      "provider": "openai",
+      "provider_aliases": [],
+      "endpoint": "images/generations",
+      "endpoint_aliases": [
+        "dalle",
+        "image"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai.images:ImageGenerationRequest",
+      "implementation_ref": "lionagi.providers.openai.images:OpenaiImageGenerationEndpoint",
+      "base_url": "https://api.openai.com/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.openai.images",
+      "provider": "openai",
+      "provider_aliases": [],
+      "endpoint": "images/edits",
+      "endpoint_aliases": [
+        "image_edit"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai.images:ImageEditRequest",
+      "implementation_ref": "lionagi.providers.openai.images:OpenaiImageEditEndpoint",
+      "base_url": "https://api.openai.com/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.openai.embed",
+      "provider": "openai",
+      "provider_aliases": [],
+      "endpoint": "embeddings",
+      "endpoint_aliases": [
+        "embed"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai.embed:OpenAIEmbeddingRequest",
+      "implementation_ref": "lionagi.providers.openai.embed:OpenaiEmbedEndpoint",
+      "base_url": "https://api.openai.com/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.openai.response",
+      "provider": "openai",
+      "provider_aliases": [],
+      "endpoint": "responses",
+      "endpoint_aliases": [
+        "response"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai.response:OpenAIResponsesRequest",
+      "implementation_ref": "lionagi.providers.openai.response:OpenaiResponseEndpoint",
+      "base_url": "https://api.openai.com/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.anthropic.messages",
+      "provider": "anthropic",
+      "provider_aliases": [],
+      "endpoint": "messages",
+      "endpoint_aliases": [
+        "chat"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.anthropic.messages:CreateMessageRequest",
+      "implementation_ref": "lionagi.providers.anthropic.messages:AnthropicMessagesEndpoint",
+      "base_url": "https://api.anthropic.com/v1",
+      "auth_type": "x-api-key",
+      "content_type": "application/json",
+      "api_key_env": "ANTHROPIC_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.anthropic.claude_code",
+      "provider": "claude_code",
+      "provider_aliases": [
+        "claude-code",
+        "claude"
+      ],
+      "endpoint": "query_cli",
+      "endpoint_aliases": [
+        "cli",
+        "code"
+      ],
+      "endpoint_type": "agentic",
+      "options_ref": "lionagi.providers.anthropic.claude_code:ClaudeCodeRequest",
+      "implementation_ref": "lionagi.providers.anthropic.claude_code:ClaudeCodeCLIEndpoint",
+      "base_url": null,
+      "auth_type": null,
+      "content_type": "application/json",
+      "api_key_env": null
+    },
+    {
+      "bootstrap_module": "lionagi.providers.ollama.chat",
+      "provider": "ollama",
+      "provider_aliases": [],
+      "endpoint": "chat/completions",
+      "endpoint_aliases": [
+        "chat"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai._chat_schemas:OpenAIChatCompletionsRequest",
+      "implementation_ref": "lionagi.providers.ollama.chat:OllamaChatEndpoint",
+      "base_url": "http://localhost:11434/v1",
+      "auth_type": "none",
+      "content_type": "application/json",
+      "api_key_env": null
+    },
+    {
+      "bootstrap_module": "lionagi.providers.ollama.embed",
+      "provider": "ollama",
+      "provider_aliases": [],
+      "endpoint": "embeddings",
+      "endpoint_aliases": [
+        "embed"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.ollama.embed:OllamaEmbedRequest",
+      "implementation_ref": "lionagi.providers.ollama.embed:OllamaEmbedEndpoint",
+      "base_url": "http://localhost:11434/api",
+      "auth_type": "none",
+      "content_type": "application/json",
+      "api_key_env": null
+    },
+    {
+      "bootstrap_module": "lionagi.providers.ollama.generate",
+      "provider": "ollama",
+      "provider_aliases": [],
+      "endpoint": "generate",
+      "endpoint_aliases": [
+        "generate",
+        "completion"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.ollama.generate:OllamaGenerateRequest",
+      "implementation_ref": "lionagi.providers.ollama.generate:OllamaGenerateEndpoint",
+      "base_url": "http://localhost:11434/api",
+      "auth_type": "none",
+      "content_type": "application/json",
+      "api_key_env": null
+    },
+    {
+      "bootstrap_module": "lionagi.providers.tavily.search",
+      "provider": "tavily",
+      "provider_aliases": [],
+      "endpoint": "search",
+      "endpoint_aliases": [],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.tavily.search:TavilySearchRequest",
+      "implementation_ref": "lionagi.providers.tavily.search:TavilySearchEndpoint",
+      "base_url": "https://api.tavily.com",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "TAVILY_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.tavily.search",
+      "provider": "tavily",
+      "provider_aliases": [],
+      "endpoint": "extract",
+      "endpoint_aliases": [],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.tavily.search:TavilyExtractRequest",
+      "implementation_ref": "lionagi.providers.tavily.search:TavilyExtractEndpoint",
+      "base_url": "https://api.tavily.com",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "TAVILY_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.exa.search",
+      "provider": "exa",
+      "provider_aliases": [],
+      "endpoint": "search",
+      "endpoint_aliases": [],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.exa.search:ExaSearchRequest",
+      "implementation_ref": "lionagi.providers.exa.search:ExaSearchEndpoint",
+      "base_url": "https://api.exa.ai",
+      "auth_type": "x-api-key",
+      "content_type": "application/json",
+      "api_key_env": "EXA_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.exa.contents",
+      "provider": "exa",
+      "provider_aliases": [],
+      "endpoint": "contents",
+      "endpoint_aliases": [
+        "get_contents"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.exa.contents:ExaContentsRequest",
+      "implementation_ref": "lionagi.providers.exa.contents:ExaContentsEndpoint",
+      "base_url": "https://api.exa.ai",
+      "auth_type": "x-api-key",
+      "content_type": "application/json",
+      "api_key_env": "EXA_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.exa.find_similar",
+      "provider": "exa",
+      "provider_aliases": [],
+      "endpoint": "findSimilar",
+      "endpoint_aliases": [
+        "similar",
+        "find_similar"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.exa.find_similar:ExaFindSimilarRequest",
+      "implementation_ref": "lionagi.providers.exa.find_similar:ExaFindSimilarEndpoint",
+      "base_url": "https://api.exa.ai",
+      "auth_type": "x-api-key",
+      "content_type": "application/json",
+      "api_key_env": "EXA_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.firecrawl.scrape",
+      "provider": "firecrawl",
+      "provider_aliases": [],
+      "endpoint": "v1/scrape",
+      "endpoint_aliases": [
+        "scrape"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.firecrawl.scrape:FirecrawlScrapeRequest",
+      "implementation_ref": "lionagi.providers.firecrawl.scrape:FirecrawlScrapeEndpoint",
+      "base_url": "https://api.firecrawl.dev",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "FIRECRAWL_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.firecrawl.map",
+      "provider": "firecrawl",
+      "provider_aliases": [],
+      "endpoint": "v1/map",
+      "endpoint_aliases": [
+        "map"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.firecrawl.map:FirecrawlMapRequest",
+      "implementation_ref": "lionagi.providers.firecrawl.map:FirecrawlMapEndpoint",
+      "base_url": "https://api.firecrawl.dev",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "FIRECRAWL_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.firecrawl.crawl",
+      "provider": "firecrawl",
+      "provider_aliases": [],
+      "endpoint": "v1/crawl",
+      "endpoint_aliases": [
+        "crawl"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.firecrawl.crawl:FirecrawlCrawlRequest",
+      "implementation_ref": "lionagi.providers.firecrawl.crawl:FirecrawlCrawlEndpoint",
+      "base_url": "https://api.firecrawl.dev",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "FIRECRAWL_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.perplexity.chat",
+      "provider": "perplexity",
+      "provider_aliases": [],
+      "endpoint": "chat/completions",
+      "endpoint_aliases": [
+        "chat"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.perplexity.chat:PerplexityChatRequest",
+      "implementation_ref": "lionagi.providers.perplexity.chat:PerplexityChatEndpoint",
+      "base_url": "https://api.perplexity.ai",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "PERPLEXITY_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.nvidia_nim.chat",
+      "provider": "nvidia_nim",
+      "provider_aliases": [
+        "nvidia",
+        "nim"
+      ],
+      "endpoint": "chat/completions",
+      "endpoint_aliases": [
+        "chat"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai._chat_schemas:OpenAIChatCompletionsRequest",
+      "implementation_ref": "lionagi.providers.nvidia_nim.chat:NvidiaNimChatEndpoint",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "NVIDIA_NIM_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.nvidia_nim.embed",
+      "provider": "nvidia_nim",
+      "provider_aliases": [
+        "nvidia",
+        "nim"
+      ],
+      "endpoint": "embeddings",
+      "endpoint_aliases": [
+        "embed"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.nvidia_nim.embed:NvidiaNimEmbeddingRequest",
+      "implementation_ref": "lionagi.providers.nvidia_nim.embed:NvidiaNimEmbedEndpoint",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "NVIDIA_NIM_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.deepseek.chat",
+      "provider": "deepseek",
+      "provider_aliases": [],
+      "endpoint": "chat/completions",
+      "endpoint_aliases": [
+        "chat"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.deepseek.chat:DeepseekChatCompletionsRequest",
+      "implementation_ref": "lionagi.providers.deepseek.chat:DeepseekChatEndpoint",
+      "base_url": "https://api.deepseek.com/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "DEEPSEEK_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.google.chat",
+      "provider": "gemini",
+      "provider_aliases": [
+        "gemini-api"
+      ],
+      "endpoint": "chat/completions",
+      "endpoint_aliases": [
+        "chat"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai._chat_schemas:OpenAIChatCompletionsRequest",
+      "implementation_ref": "lionagi.providers.google.chat:GeminiChatEndpoint",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "GEMINI_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.google.gemini_code",
+      "provider": "gemini_code",
+      "provider_aliases": [
+        "gemini-code",
+        "gemini_cli",
+        "gemini-cli"
+      ],
+      "endpoint": "query_cli",
+      "endpoint_aliases": [
+        "cli"
+      ],
+      "endpoint_type": "agentic",
+      "options_ref": "lionagi.providers.google.gemini_code:GeminiCodeRequest",
+      "implementation_ref": "lionagi.providers.google.gemini_code:GeminiCLIEndpoint",
+      "base_url": null,
+      "auth_type": null,
+      "content_type": "application/json",
+      "api_key_env": null
+    },
+    {
+      "bootstrap_module": "lionagi.providers.groq.chat",
+      "provider": "groq",
+      "provider_aliases": [],
+      "endpoint": "chat/completions",
+      "endpoint_aliases": [
+        "chat"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai._chat_schemas:OpenAIChatCompletionsRequest",
+      "implementation_ref": "lionagi.providers.groq.chat:GroqChatEndpoint",
+      "base_url": "https://api.groq.com/openai/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "GROQ_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.groq.audio_transcription",
+      "provider": "groq",
+      "provider_aliases": [],
+      "endpoint": "audio/transcriptions",
+      "endpoint_aliases": [
+        "whisper",
+        "stt"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openai._audio_schemas:AudioTranscriptionRequest",
+      "implementation_ref": "lionagi.providers.groq.audio_transcription:GroqAudioTranscriptionEndpoint",
+      "base_url": "https://api.groq.com/openai/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "GROQ_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.pi.cli",
+      "provider": "pi",
+      "provider_aliases": [
+        "pi-code",
+        "pi_code"
+      ],
+      "endpoint": "query_cli",
+      "endpoint_aliases": [
+        "cli",
+        "code"
+      ],
+      "endpoint_type": "agentic",
+      "options_ref": "lionagi.providers.pi.cli:PiCodeRequest",
+      "implementation_ref": "lionagi.providers.pi.cli:PiCLIEndpoint",
+      "base_url": null,
+      "auth_type": null,
+      "content_type": "application/json",
+      "api_key_env": null
+    },
+    {
+      "bootstrap_module": "lionagi.providers.openrouter.chat",
+      "provider": "openrouter",
+      "provider_aliases": [
+        "open-router"
+      ],
+      "endpoint": "chat/completions",
+      "endpoint_aliases": [
+        "chat",
+        "chat/completions"
+      ],
+      "endpoint_type": "api",
+      "options_ref": "lionagi.providers.openrouter.chat:OpenRouterRequest",
+      "implementation_ref": "lionagi.providers.openrouter.chat:OpenRouterEndpoint",
+      "base_url": "https://openrouter.ai/api/v1",
+      "auth_type": "bearer",
+      "content_type": "application/json",
+      "api_key_env": "OPENROUTER_API_KEY"
+    },
+    {
+      "bootstrap_module": "lionagi.providers.ag2.groupchat",
+      "provider": "ag2",
+      "provider_aliases": [
+        "autogen"
+      ],
+      "endpoint": "group_chat",
+      "endpoint_aliases": [
+        "groupchat",
+        "chat"
+      ],
+      "endpoint_type": "agentic",
+      "options_ref": "lionagi.providers.ag2.groupchat:AG2GroupChatRequest",
+      "implementation_ref": "lionagi.providers.ag2.groupchat:AG2GroupChatEndpoint",
+      "base_url": null,
+      "auth_type": null,
+      "content_type": "application/json",
+      "api_key_env": null
+    },
+    {
+      "bootstrap_module": "lionagi.providers.ag2.agent",
+      "provider": "ag2",
+      "provider_aliases": [
+        "autogen"
+      ],
+      "endpoint": "agent",
+      "endpoint_aliases": [
+        "beta",
+        "ask"
+      ],
+      "endpoint_type": "agentic",
+      "options_ref": "lionagi.providers.ag2.agent:AG2AgentRequest",
+      "implementation_ref": "lionagi.providers.ag2.agent:AG2BetaEndpoint",
+      "base_url": null,
+      "auth_type": null,
+      "content_type": "application/json",
+      "api_key_env": null
+    },
+    {
+      "bootstrap_module": "lionagi.providers.ag2.nlip",
+      "provider": "ag2",
+      "provider_aliases": [
+        "autogen"
+      ],
+      "endpoint": "nlip",
+      "endpoint_aliases": [
+        "nlip_remote",
+        "remote"
+      ],
+      "endpoint_type": "agentic",
+      "options_ref": "lionagi.providers.ag2.nlip:AG2NlipRequest",
+      "implementation_ref": "lionagi.providers.ag2.nlip:AG2NlipEndpoint",
+      "base_url": null,
+      "auth_type": null,
+      "content_type": "application/json",
+      "api_key_env": null
+    },
+    {
+      "bootstrap_module": "lionagi.testing._endpoint",
+      "provider": "scripted",
+      "provider_aliases": [],
+      "endpoint": "chat/completions",
+      "endpoint_aliases": [
+        "chat",
+        "query_cli",
+        "cli"
+      ],
+      "endpoint_type": "agentic",
+      "options_ref": null,
+      "implementation_ref": "lionagi.testing._endpoint:ScriptedEndpoint",
+      "base_url": "internal",
+      "auth_type": "bearer",
+      "content_type": null,
+      "api_key_env": null
+    }
+  ],
+  "context_windows": [
+    {
+      "provider": "openai",
+      "source_module": "lionagi.providers.openai._config",
+      "entries": [
+        {
+          "model": "gpt-5.5",
+          "context_window": 1000000
+        },
+        {
+          "model": "gpt-5.4-mini",
+          "context_window": 1000000
+        },
+        {
+          "model": "gpt-5.4",
+          "context_window": 1048576
+        },
+        {
+          "model": "gpt-5",
+          "context_window": 1000000
+        },
+        {
+          "model": "gpt-4.1-mini",
+          "context_window": 1000000
+        },
+        {
+          "model": "gpt-4.1-nano",
+          "context_window": 1000000
+        },
+        {
+          "model": "gpt-4.1",
+          "context_window": 1000000
+        },
+        {
+          "model": "gpt-4o-mini",
+          "context_window": 128000
+        },
+        {
+          "model": "gpt-4o",
+          "context_window": 128000
+        },
+        {
+          "model": "gpt-4-turbo",
+          "context_window": 128000
+        },
+        {
+          "model": "gpt-4",
+          "context_window": 128000
+        },
+        {
+          "model": "o4-mini",
+          "context_window": 200000
+        },
+        {
+          "model": "o3-mini",
+          "context_window": 200000
+        },
+        {
+          "model": "o3",
+          "context_window": 200000
+        },
+        {
+          "model": "o1-pro",
+          "context_window": 200000
+        },
+        {
+          "model": "o1-mini",
+          "context_window": 128000
+        },
+        {
+          "model": "o1",
+          "context_window": 200000
+        }
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "source_module": "lionagi.providers.anthropic.messages",
+      "entries": [
+        {
+          "model": "claude-opus-4-7",
+          "context_window": 1000000
+        },
+        {
+          "model": "claude-opus-4-6",
+          "context_window": 1000000
+        },
+        {
+          "model": "claude-sonnet-4-6",
+          "context_window": 1000000
+        },
+        {
+          "model": "claude-sonnet-4-5",
+          "context_window": 200000
+        },
+        {
+          "model": "claude-haiku-4-5",
+          "context_window": 200000
+        },
+        {
+          "model": "claude-3-5-sonnet",
+          "context_window": 200000
+        },
+        {
+          "model": "claude-3-5-haiku",
+          "context_window": 200000
+        },
+        {
+          "model": "claude-3-opus",
+          "context_window": 200000
+        }
+      ]
+    },
+    {
+      "provider": "claude_code",
+      "source_module": "lionagi.providers.anthropic.claude_code",
+      "entries": [
+        {
+          "model": "opus-4-7",
+          "context_window": 1000000
+        },
+        {
+          "model": "opus-4-6",
+          "context_window": 1000000
+        },
+        {
+          "model": "opus",
+          "context_window": 1000000
+        },
+        {
+          "model": "sonnet-5",
+          "context_window": 1000000
+        },
+        {
+          "model": "sonnet-4-6",
+          "context_window": 1000000
+        },
+        {
+          "model": "sonnet-4-5",
+          "context_window": 200000
+        },
+        {
+          "model": "sonnet",
+          "context_window": 1000000
+        },
+        {
+          "model": "haiku-4-5",
+          "context_window": 200000
+        },
+        {
+          "model": "haiku",
+          "context_window": 200000
+        },
+        {
+          "model": "fable-5",
+          "context_window": 1000000
+        },
+        {
+          "model": "fable",
+          "context_window": 1000000
+        }
+      ]
+    },
+    {
+      "provider": "codex",
+      "source_module": "lionagi.providers.openai.codex",
+      "entries": [
+        {
+          "model": "codex-mini",
+          "context_window": 200000
+        },
+        {
+          "model": "o4-mini",
+          "context_window": 200000
+        },
+        {
+          "model": "o3",
+          "context_window": 200000
+        }
+      ]
+    },
+    {
+      "provider": "deepseek",
+      "source_module": "lionagi.providers.deepseek.chat",
+      "entries": [
+        {
+          "model": "deepseek-v4-pro",
+          "context_window": 1000000
+        },
+        {
+          "model": "deepseek-v4-flash",
+          "context_window": 1000000
+        },
+        {
+          "model": "deepseek-v4",
+          "context_window": 1000000
+        },
+        {
+          "model": "deepseek-coder-v2",
+          "context_window": 128000
+        },
+        {
+          "model": "deepseek-chat",
+          "context_window": 1000000
+        },
+        {
+          "model": "deepseek-reasoner",
+          "context_window": 1000000
+        },
+        {
+          "model": "deepseek-v3",
+          "context_window": 128000
+        },
+        {
+          "model": "deepseek-r1",
+          "context_window": 64000
+        }
+      ]
+    },
+    {
+      "provider": "nvidia_nim",
+      "source_module": "lionagi.providers.nvidia_nim.chat",
+      "entries": [
+        {
+          "model": "nemotron-ultra",
+          "context_window": 131072
+        },
+        {
+          "model": "nemotron-super",
+          "context_window": 131072
+        },
+        {
+          "model": "llama-4-scout",
+          "context_window": 10485760
+        },
+        {
+          "model": "llama-4-maverick",
+          "context_window": 1048576
+        },
+        {
+          "model": "llama-3",
+          "context_window": 128000
+        }
+      ]
+    },
+    {
+      "provider": "perplexity",
+      "source_module": "lionagi.providers.perplexity.chat",
+      "entries": [
+        {
+          "model": "sonar-pro",
+          "context_window": 200000
+        },
+        {
+          "model": "sonar",
+          "context_window": 128000
+        }
+      ]
+    },
+    {
+      "provider": "gemini_code",
+      "source_module": "lionagi.providers.google.gemini_code",
+      "entries": [
+        {
+          "model": "gemini-3.6-flash",
+          "context_window": 1048576
+        },
+        {
+          "model": "gemini-3.5-flash",
+          "context_window": 1048576
+        },
+        {
+          "model": "gemini-3.1-pro",
+          "context_window": 1048576
+        },
+        {
+          "model": "gemini-3-flash-preview",
+          "context_window": 1048576
+        },
+        {
+          "model": "gemini-3-pro-preview",
+          "context_window": 1048576
+        },
+        {
+          "model": "gemini-2.5-flash",
+          "context_window": 1048576
+        },
+        {
+          "model": "gemini-2.5-pro",
+          "context_window": 2097152
+        }
+      ]
+    },
+    {
+      "provider": "pi",
+      "source_module": "lionagi.providers.pi.cli",
+      "entries": [
+        {
+          "model": "pi",
+          "context_window": 128000
+        }
+      ]
+    },
+    {
+      "provider": "groq",
+      "source_module": "lionagi.providers.groq.chat",
+      "entries": [
+        {
+          "model": "llama-3.3-70b-versatile",
+          "context_window": 128000
+        },
+        {
+          "model": "llama-3.1-8b-instant",
+          "context_window": 128000
+        },
+        {
+          "model": "mixtral-8x7b-32768",
+          "context_window": 32768
+        },
+        {
+          "model": "gemma2-9b-it",
+          "context_window": 8192
+        }
+      ]
+    },
+    {
+      "provider": "gemini",
+      "source_module": "lionagi.providers.google.chat",
+      "entries": [
+        {
+          "model": "gemini-2.5-flash",
+          "context_window": 1048576
+        },
+        {
+          "model": "gemini-2.5-pro",
+          "context_window": 1048576
+        },
+        {
+          "model": "gemini-2.0-flash",
+          "context_window": 1048576
+        }
+      ]
+    },
+    {
+      "provider": "openrouter",
+      "source_module": "lionagi.providers.openrouter.chat",
+      "entries": [
+        {
+          "model": "google/gemini-2.5-flash",
+          "context_window": 1048576
+        },
+        {
+          "model": "google/gemini-2.5-pro",
+          "context_window": 1048576
+        },
+        {
+          "model": "anthropic/claude-opus-4-5",
+          "context_window": 200000
+        },
+        {
+          "model": "anthropic/claude-sonnet-4-5",
+          "context_window": 200000
+        },
+        {
+          "model": "openai/gpt-4.1",
+          "context_window": 1000000
+        },
+        {
+          "model": "meta-llama/llama-3.3-70b-instruct",
+          "context_window": 128000
+        }
+      ]
+    }
+  ],
+  "documentation_surfaces": [
+    {
+      "path": "docs/reference/providers.md",
+      "anchor": "# Provider Reference",
+      "token_counts": {
+        "Canonical names and declared aliases match exactly": 1,
+        "trusted and enabled plugin providers are consulted": 1,
+        "generic OpenAI-compatible fallback": 1
+      }
+    },
+    {
+      "path": "docs/reference/providers.md",
+      "anchor": "## API providers",
+      "token_counts": {
+        "| OpenAI |": 1,
+        "| Anthropic |": 1,
+        "| Google Gemini |": 1,
+        "| Ollama (local) |": 1,
+        "| NVIDIA NIM |": 1,
+        "| Perplexity |": 1,
+        "| Groq |": 1,
+        "| OpenRouter |": 1,
+        "| DeepSeek |": 1
+      }
+    },
+    {
+      "path": "docs/reference/providers.md",
+      "anchor": "## CLI / agentic providers",
+      "token_counts": {
+        "| Claude Code |": 1,
+        "| Codex |": 1,
+        "| Gemini CLI |": 1,
+        "| Pi |": 1
+      }
+    },
+    {
+      "path": "docs/reference/providers.md",
+      "anchor": "## Search and scraping providers",
+      "token_counts": {
+        "| Exa |": 1,
+        "| Firecrawl |": 1,
+        "| Tavily |": 1
+      }
+    },
+    {
+      "path": "docs/reference/providers.md",
+      "anchor": "## AG2 (multi-agent)",
+      "token_counts": {
+        "| AG2 GroupChat |": 1,
+        "| AG2 beta Agent |": 1,
+        "| AG2 NLIP remote |": 1
+      }
+    },
+    {
+      "path": "docs/reference/providers.md",
+      "anchor": "## Adding a new provider",
+      "token_counts": {
+        "@MyProviderConfigs.CHAT.register": 1,
+        "_import_all_providers()": 2,
+        "plugin provider": 1
+      }
+    },
+    {
+      "path": "docs/reference/operations-service.md",
+      "anchor": "### Token Budget",
+      "token_counts": {
+        "provider longest-prefix lookup": 1,
+        "default (128k)": 1
+      }
+    },
+    {
+      "path": "docs/reference/operations-service.md",
+      "anchor": "### EndpointRegistry",
+      "token_counts": {
+        "`register_endpoint`": 1,
+        "`_ENDPOINT_META`": 1
+      }
+    },
+    {
+      "path": "docs/api/imodel.md",
+      "anchor": "### Fallback",
+      "token_counts": {
+        "ProviderNotFoundError": 1,
+        "openai_compatible=True": 1,
+        "registered provider": 1
+      }
+    },
+    {
+      "path": "docs/api/imodel.md",
+      "anchor": "## Endpoint matching",
+      "token_counts": {
+        "`EndpointRegistry`": 1,
+        "single-endpoint provider": 1,
+        "Built-in provider names win": 1,
+        "ProviderNotFoundError": 1
+      }
+    },
+    {
+      "path": "docs/migration/0.23.0-to-0.23.1.md",
+      "anchor": "## New: Provider registry",
+      "token_counts": {
+        "self-register via decorator at import time": 1,
+        "@register_endpoint(": 1
+      }
+    },
+    {
+      "path": "docs/adr/ADR-0027-model-service-facade-and-endpoint-resolution.md",
+      "anchor": "### D2 — `EndpointRegistry` is the sole endpoint resolver",
+      "token_counts": {
+        "Provider classes register by decorator": 1,
+        "def register(": 1,
+        "_import_all_providers": 1
+      }
+    },
+    {
+      "path": "docs/adr/ADR-0052-supported-validation-and-testing-surfaces.md",
+      "anchor": "### D5 — The scripted endpoint uses normal discovery and no external request",
+      "token_counts": {
+        "standard decorator": 1,
+        "@register_endpoint(": 1,
+        "lionagi.testing._endpoint": 1
+      }
+    },
+    {
+      "path": "docs/adr/ADR-0088-plugin-system.md",
+      "anchor": "### D2 — Manifest schema: declarative, pure data",
+      "token_counts": {
+        "providers/searchapi.py": 1,
+        "self-registers": 1
+      }
+    },
+    {
+      "path": "docs/adr/ADR-0088-plugin-system.md",
+      "anchor": "### D3 — Lazy activation: manifests at first need, code at first use",
+      "token_counts": {
+        "self-registers at import time via the existing decorator": 1,
+        "declared provider module": 1
+      }
+    },
+    {
+      "path": "docs/adr/ADR-0088-plugin-system.md",
+      "anchor": "### D6 — Collisions: built-ins win; peers hard-fail",
+      "token_counts": {
+        "**Providers**": 1,
+        "activation trigger": 1,
+        "Two **enabled plugins**": 1
+      }
+    },
+    {
+      "path": "docs/adr/ADR-0088-plugin-system.md",
+      "anchor": "## Implementation status (2026-07-13)",
+      "token_counts": {
+        "match-miss interception": 1,
+        "`EndpointRegistry._reject_builtin_collisions`": 1
+      }
+    },
+    {
+      "path": "docs/internals/runtime.md",
+      "anchor": "### `connections/registry.py`",
+      "token_counts": {
+        "`_consult_plugin_providers()`": 1,
+        "declared provider module": 1,
+        "`PluginRegistry.activate_target`": 1
+      }
+    },
+    {
+      "path": "docs/internals/core.md",
+      "anchor": "### EndpointRegistry match",
+      "token_counts": {
+        "`register()`/`_claim_provider_identity`": 1,
+        "`ProviderNotFoundError`": 2,
+        "`openai_compatible=True`": 1
+      }
+    },
+    {
+      "path": "docs/internals/core.md",
+      "anchor": "### EndpointRegistry plugin revalidation",
+      "token_counts": {
+        "`_revalidate_plugin_entry`": 1,
+        "`PluginRegistry.activate_target()`": 1
+      }
+    }
+  ],
+  "public_authority": {
+    "registry_exports": [
+      "EndpointType",
+      "EndpointMeta",
+      "EndpointRegistry",
+      "ProviderAliasCollisionError",
+      "ProviderNotFoundError",
+      "register_endpoint"
+    ],
+    "compatibility_facades": [
+      {
+        "module": "lionagi.service.connections.registry",
+        "qualname": "EndpointRegistry.match",
+        "parameters": [
+          {
+            "name": "provider",
+            "kind": "positional_or_keyword",
+            "annotation": "str",
+            "required": true,
+            "default": null
+          },
+          {
+            "name": "endpoint",
+            "kind": "positional_or_keyword",
+            "annotation": "str",
+            "required": false,
+            "default": "''"
+          },
+          {
+            "name": "openai_compatible",
+            "kind": "keyword_only",
+            "annotation": "bool",
+            "required": false,
+            "default": "False"
+          }
+        ],
+        "return_annotation": "Any",
+        "var_keyword": "kwargs"
+      },
+      {
+        "module": "lionagi.service.connections.registry",
+        "qualname": "EndpointRegistry.list_providers",
+        "parameters": [],
+        "return_annotation": "list[dict[str, Any]]",
+        "var_keyword": null
+      },
+      {
+        "module": "lionagi.service.connections.match_endpoint",
+        "qualname": "match_endpoint",
+        "parameters": [
+          {
+            "name": "provider",
+            "kind": "positional_or_keyword",
+            "annotation": "str",
+            "required": true,
+            "default": null
+          },
+          {
+            "name": "endpoint",
+            "kind": "positional_or_keyword",
+            "annotation": "str",
+            "required": true,
+            "default": null
+          },
+          {
+            "name": "openai_compatible",
+            "kind": "keyword_only",
+            "annotation": "bool",
+            "required": false,
+            "default": "False"
+          }
+        ],
+        "return_annotation": "Endpoint",
+        "var_keyword": "kwargs"
+      },
+      {
+        "module": "lionagi.service.token_budget",
+        "qualname": "lookup_context_window",
+        "parameters": [
+          {
+            "name": "model_name",
+            "kind": "positional_or_keyword",
+            "annotation": "str",
+            "required": true,
+            "default": null
+          },
+          {
+            "name": "provider",
+            "kind": "positional_or_keyword",
+            "annotation": "str | None",
+            "required": false,
+            "default": "None"
+          }
+        ],
+        "return_annotation": "int",
+        "var_keyword": null
+      }
+    ],
+    "mutation_surfaces": [
+      {
+        "module": "lionagi.service.connections.registry",
+        "qualname": "EndpointRegistry.register",
+        "parameters": [
+          {
+            "name": "provider",
+            "kind": "positional_or_keyword",
+            "annotation": "str",
+            "required": true,
+            "default": null
+          },
+          {
+            "name": "endpoint",
+            "kind": "positional_or_keyword",
+            "annotation": "str",
+            "required": true,
+            "default": null
+          },
+          {
+            "name": "aliases",
+            "kind": "positional_or_keyword",
+            "annotation": "list[str] | None",
+            "required": false,
+            "default": "None"
+          },
+          {
+            "name": "endpoint_type",
+            "kind": "positional_or_keyword",
+            "annotation": "EndpointType",
+            "required": false,
+            "default": "EndpointType.API"
+          },
+          {
+            "name": "provider_aliases",
+            "kind": "positional_or_keyword",
+            "annotation": "list[str] | None",
+            "required": false,
+            "default": "None"
+          },
+          {
+            "name": "options",
+            "kind": "positional_or_keyword",
+            "annotation": "type[BaseModel] | None",
+            "required": false,
+            "default": "None"
+          },
+          {
+            "name": "base_url",
+            "kind": "positional_or_keyword",
+            "annotation": "str | None",
+            "required": false,
+            "default": "None"
+          },
+          {
+            "name": "auth_type",
+            "kind": "positional_or_keyword",
+            "annotation": "str | None",
+            "required": false,
+            "default": "None"
+          },
+          {
+            "name": "content_type",
+            "kind": "positional_or_keyword",
+            "annotation": "str | None",
+            "required": false,
+            "default": "None"
+          },
+          {
+            "name": "api_key_env",
+            "kind": "positional_or_keyword",
+            "annotation": "str | None",
+            "required": false,
+            "default": "None"
+          }
+        ],
+        "return_annotation": null,
+        "var_keyword": null
+      },
+      {
+        "module": "lionagi.service.connections.registry",
+        "qualname": "register_endpoint",
+        "parameters": [
+          {
+            "name": "provider",
+            "kind": "positional_or_keyword",
+            "annotation": "str",
+            "required": true,
+            "default": null
+          },
+          {
+            "name": "endpoint",
+            "kind": "positional_or_keyword",
+            "annotation": "str",
+            "required": true,
+            "default": null
+          },
+          {
+            "name": "aliases",
+            "kind": "positional_or_keyword",
+            "annotation": "list[str] | None",
+            "required": false,
+            "default": "None"
+          },
+          {
+            "name": "endpoint_type",
+            "kind": "positional_or_keyword",
+            "annotation": "EndpointType",
+            "required": false,
+            "default": "EndpointType.API"
+          },
+          {
+            "name": "provider_aliases",
+            "kind": "positional_or_keyword",
+            "annotation": "list[str] | None",
+            "required": false,
+            "default": "None"
+          },
+          {
+            "name": "options",
+            "kind": "positional_or_keyword",
+            "annotation": "type[BaseModel] | None",
+            "required": false,
+            "default": "None"
+          },
+          {
+            "name": "base_url",
+            "kind": "positional_or_keyword",
+            "annotation": "str | None",
+            "required": false,
+            "default": "None"
+          },
+          {
+            "name": "auth_type",
+            "kind": "positional_or_keyword",
+            "annotation": "str | None",
+            "required": false,
+            "default": "None"
+          },
+          {
+            "name": "content_type",
+            "kind": "positional_or_keyword",
+            "annotation": "str | None",
+            "required": false,
+            "default": "None"
+          },
+          {
+            "name": "api_key_env",
+            "kind": "positional_or_keyword",
+            "annotation": "str | None",
+            "required": false,
+            "default": "None"
+          }
+        ],
+        "return_annotation": null,
+        "var_keyword": null
+      },
+      {
+        "module": "lionagi.service.connections.provider_config",
+        "qualname": "ProviderConfig.register",
+        "parameters": [
+          {
+            "name": "cls",
+            "kind": "positional_or_keyword",
+            "annotation": null,
+            "required": false,
+            "default": "None"
+          }
+        ],
+        "return_annotation": null,
+        "var_keyword": null
+      }
+    ]
+  },
+  "deletion_ledger": {
+    "authorities": [
+      {
+        "module": "lionagi.service.connections.registry",
+        "symbols": [
+          "EndpointRegistry._entries",
+          "EndpointRegistry._loaded",
+          "EndpointRegistry._lock",
+          "EndpointRegistry._plugin_registration",
+        "EndpointRegistry._alias_owners",
+        "EndpointRegistry.register",
+        "EndpointRegistry._claim_provider_identity",
+        "EndpointRegistry._remove_entries",
+        "EndpointRegistry._rebuild_alias_owners",
+        "EndpointRegistry._is_known_provider",
+        "EndpointRegistry._provider_not_found_error",
+        "EndpointRegistry._match_registered",
+        "EndpointRegistry._revalidate_plugin_entry",
+          "EndpointRegistry._plugin_entry_stat",
+          "EndpointRegistry._plugin_entry_digest",
+          "EndpointRegistry._consult_plugin_providers",
+          "EndpointRegistry._reject_builtin_collisions",
+          "EndpointRegistry._ensure_loaded",
+          "register_endpoint",
+          "_PROVIDER_OPTIONAL_DEPENDENCIES",
+          "_import_provider_module",
+          "_import_all_providers"
+        ]
+      },
+      {
+        "module": "lionagi.service.connections.provider_config",
+        "symbols": [
+          "ProviderConfig.register"
+        ]
+      },
+      {
+        "module": "lionagi.service.token_budget",
+        "symbols": [
+          "_provider_cache",
+          "_PROVIDER_MODULES",
+          "_get_provider_windows",
+          "_all_provider_windows"
+        ]
+      }
+    ],
+    "provider_registration_decorators": 36
+  },
+  "plugin_fail_soft": {
+    "builtin_collision": {
+      "activation_scope": "entry.plugin_name == plugin_name and entry.plugin_target == module",
+      "collision_predicate": "entry.meta.provider in builtin_names or any((alias in builtin_names for alias in entry.meta.provider_aliases))",
+    "rejection_guard": "is_this_activation and collides",
+    "append_call": "rejected.append(entry)",
+    "removal_call": "cls._remove_entries(rejected)",
+    "removal_after_append": true
+    },
+  "provider_alias_collision": {
+    "exception": "ProviderAliasCollisionError",
+    "handler_logs_warning": true,
+    "handler_continues": true
+  }
+  }
+}
