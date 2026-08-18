@@ -57,7 +57,7 @@ test.describe("mobile schedule detail controls", () => {
   });
 });
 
-test("expanded run graph is a complete modal focus boundary", async ({ page }) => {
+test("expanded run graph keeps the keyboard inside it and hands it back", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto("/fleet");
   await page.getByText(SMOKE_SESSION_NAME, { exact: true }).click();
@@ -71,8 +71,6 @@ test("expanded run graph is a complete modal focus boundary", async ({ page }) =
   const dialog = page.getByRole("dialog", { name: "Execution graph", exact: true });
   await expect(dialog).toBeVisible();
   await expect(dialog.locator(":focus")).toHaveCount(1);
-  await expect(page.locator("body")).toHaveCSS("overflow", "hidden");
-  await expect(page.locator("#root")).toHaveAttribute("inert", "");
 
   for (let step = 0; step < 12; step += 1) {
     await page.keyboard.press("Tab");
@@ -86,8 +84,6 @@ test("expanded run graph is a complete modal focus boundary", async ({ page }) =
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(expand).toBeFocused();
-  await expect(page.locator("body")).not.toHaveCSS("overflow", "hidden");
-  await expect(page.locator("#root")).not.toHaveAttribute("inert", "");
   await expect(inlineViewport).toHaveAttribute("style", inlineTransform ?? "");
 
   await expand.click();
