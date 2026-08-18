@@ -55,7 +55,12 @@ class _Studio(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
         self.recorded.append(
-            {"method": method, "path": self.path, "body": json.loads(raw) if raw else None}
+            {
+                "method": method,
+                "path": self.path,
+                "body": json.loads(raw) if raw else None,
+                "content_type": self.headers.get("Content-Type"),
+            }
         )
         path = self.path
         if path == "/api/schedules/":
@@ -283,6 +288,7 @@ def test_create_reports_the_row_written_and_when_it_next_fires(studio, tmp_path)
     assert data["id"] == "sched-1"
     posted = studio.recorded[0]
     assert posted["method"] == "POST"
+    assert posted["content_type"] == "application/json"
     assert posted["body"]["cron_expr"] == "0 9 * * *"
     assert posted["body"]["action_cwd"] == str(tmp_path)
 
@@ -321,6 +327,7 @@ def test_trigger_reports_an_accepted_fire_and_claims_nothing_about_the_run(studi
     data = result_of("schedule.trigger", {"id": "sched-1"})
     assert data == {"schedule_id": "sched-1", "run_id": "run-9", "fire_accepted": True}
     assert studio.recorded[-1]["method"] == "POST"
+    assert studio.recorded[-1]["content_type"] == "application/json"
     # Nothing in the payload can be read as a status, because at this moment the
     # occurrence row may not even be written yet.
     assert "status" not in data
@@ -331,10 +338,12 @@ def test_enable_and_disable_report_the_state_that_was_committed(studio):
         "schedule_id": "sched-1",
         "enabled": True,
     }
+    assert studio.recorded[-1]["content_type"] == "application/json"
     assert result_of("schedule.disable", {"id": "sched-1"}) == {
         "schedule_id": "sched-1",
         "enabled": False,
     }
+    assert studio.recorded[-1]["content_type"] == "application/json"
 
 
 def test_delete_reports_the_deletion_the_store_confirmed(studio):
@@ -343,6 +352,7 @@ def test_delete_reports_the_deletion_the_store_confirmed(studio):
         "deleted": True,
     }
     assert studio.recorded[-1]["method"] == "DELETE"
+    assert studio.recorded[-1]["content_type"] == "application/json"
 
 
 def test_deleting_a_schedule_that_is_gone_does_not_report_success(studio):

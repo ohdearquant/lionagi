@@ -245,7 +245,7 @@
       "createWorkflow": "নতুন ওয়ার্কফ্লো",
       "createAgent": "নতুন এজেন্ট",
       "allSkill": "কোনো স্কিল পাওয়া যায়নি।",
-      "allSkillHint": "এখানে দেখতে ~/.lionagi/skills/<name>/ এর অধীনে একটি SKILL.md যোগ করুন।",
+      "allSkillHint": "এখানে দেখতে ~/.lionagi/skills/NAME/ এর অধীনে একটি SKILL.md যোগ করুন।",
       "allPlugin": "কোনো প্লাগইন পাওয়া যায়নি।",
       "allPluginHint": "এখানে দেখতে ~/.claude/plugins/ এর অধীনে একটি প্লাগইন ইনস্টল করুন।"
     },

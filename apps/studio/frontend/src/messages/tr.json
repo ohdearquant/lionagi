@@ -245,7 +245,7 @@
       "createWorkflow": "yeni iş akışı",
       "createAgent": "yeni ajan",
       "allSkill": "Skill bulunamadı.",
-      "allSkillHint": "Burada görmek için ~/.lionagi/skills/<name>/ altına bir SKILL.md ekleyin.",
+      "allSkillHint": "Burada görmek için ~/.lionagi/skills/NAME/ altına bir SKILL.md ekleyin.",
       "allPlugin": "Eklenti bulunamadı.",
       "allPluginHint": "Burada görmek için ~/.claude/plugins/ altına bir eklenti kurun."
     },

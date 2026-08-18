@@ -1,5 +1,5 @@
 {
-  "count": 140,
+  "count": 141,
   "routes": [
     {
       "ordinal": 0,
@@ -3897,6 +3897,44 @@
     },
     {
       "ordinal": 86,
+      "path": "/api/identity",
+      "methods": [
+        "GET"
+      ],
+      "name": "get_identity",
+      "response_model": "builtins.dict",
+      "dependencies": [],
+      "response_class": {
+        "default_placeholder": "starlette.responses.JSONResponse"
+      },
+      "responses": {
+        "200": {
+          "description": "Successful Response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object",
+                "title": "Response Get Identity Api Identity Get"
+              }
+            }
+          }
+        }
+      },
+      "status_code": null,
+      "tags": [],
+      "summary": null,
+      "description": "Identify this daemon only to a caller that proved it holds the token.",
+      "include_in_schema": true,
+      "handler_identity": {
+        "module": "lionagi.studio.services.identity",
+        "qualname": "get_identity_route"
+      }
+    },
+    {
+      "ordinal": 87,
       "path": "/api/engine-defs/",
       "methods": [
         "GET"
@@ -3947,7 +3985,7 @@
       }
     },
     {
-      "ordinal": 87,
+      "ordinal": 88,
       "path": "/api/engine-defs/",
       "methods": [
         "POST"
@@ -3995,7 +4033,7 @@
       }
     },
     {
-      "ordinal": 88,
+      "ordinal": 89,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "GET"
@@ -4043,7 +4081,7 @@
       }
     },
     {
-      "ordinal": 89,
+      "ordinal": 90,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "PUT"
@@ -4091,7 +4129,7 @@
       }
     },
     {
-      "ordinal": 90,
+      "ordinal": 91,
       "path": "/api/engine-defs/{def_id}",
       "methods": [
         "DELETE"
@@ -4139,7 +4177,7 @@
       }
     },
     {
-      "ordinal": 91,
+      "ordinal": 92,
       "path": "/api/workflow-defs/",
       "methods": [
         "GET"
@@ -4190,7 +4228,7 @@
       }
     },
     {
-      "ordinal": 92,
+      "ordinal": 93,
       "path": "/api/workflow-defs/",
       "methods": [
         "POST"
@@ -4238,7 +4276,7 @@
       }
     },
     {
-      "ordinal": 93,
+      "ordinal": 94,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "GET"
@@ -4286,7 +4324,7 @@
       }
     },
     {
-      "ordinal": 94,
+      "ordinal": 95,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "PUT"
@@ -4334,7 +4372,7 @@
       }
     },
     {
-      "ordinal": 95,
+      "ordinal": 96,
       "path": "/api/workflow-defs/{def_id}",
       "methods": [
         "DELETE"
@@ -4382,7 +4420,7 @@
       }
     },
     {
-      "ordinal": 96,
+      "ordinal": 97,
       "path": "/api/workflow-defs/{def_id}/run",
       "methods": [
         "POST"
@@ -4430,7 +4468,7 @@
       }
     },
     {
-      "ordinal": 97,
+      "ordinal": 98,
       "path": "/api/sessions/{session_id}/tags",
       "methods": [
         "POST"
@@ -4478,7 +4516,7 @@
       }
     },
     {
-      "ordinal": 98,
+      "ordinal": 99,
       "path": "/api/sessions/{session_id}/tags/{tag:path}",
       "methods": [
         "DELETE"
@@ -4526,7 +4564,7 @@
       }
     },
     {
-      "ordinal": 99,
+      "ordinal": 100,
       "path": "/api/operator/conversations",
       "methods": [
         "GET"
@@ -4574,7 +4612,7 @@
       }
     },
     {
-      "ordinal": 100,
+      "ordinal": 101,
       "path": "/api/operator/conversations",
       "methods": [
         "POST"
@@ -4622,7 +4660,7 @@
       }
     },
     {
-      "ordinal": 101,
+      "ordinal": 102,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "PATCH"
@@ -4670,7 +4708,7 @@
       }
     },
     {
-      "ordinal": 102,
+      "ordinal": 103,
       "path": "/api/operator/conversations/{conversation_id}/fork",
       "methods": [
         "POST"
@@ -4718,7 +4756,7 @@
       }
     },
     {
-      "ordinal": 103,
+      "ordinal": 104,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "GET"
@@ -4766,7 +4804,7 @@
       }
     },
     {
-      "ordinal": 104,
+      "ordinal": 105,
       "path": "/api/operator/conversations/{conversation_id}",
       "methods": [
         "DELETE"
@@ -4814,7 +4852,7 @@
       }
     },
     {
-      "ordinal": 105,
+      "ordinal": 106,
       "path": "/api/operator/conversations/{conversation_id}/turns",
       "methods": [
         "POST"
@@ -4862,7 +4900,7 @@
       }
     },
     {
-      "ordinal": 106,
+      "ordinal": 107,
       "path": "/api/operator/models",
       "methods": [
         "GET"
@@ -4900,7 +4938,7 @@
       }
     },
     {
-      "ordinal": 107,
+      "ordinal": 108,
       "path": "/api/operator/conversations/{conversation_id}/view",
       "methods": [
         "POST"
@@ -4948,7 +4986,7 @@
       }
     },
     {
-      "ordinal": 108,
+      "ordinal": 109,
       "path": "/api/operator/conversations/{conversation_id}/requests/{request_id}/cancel",
       "methods": [
         "POST"
@@ -4996,7 +5034,7 @@
       }
     },
     {
-      "ordinal": 109,
+      "ordinal": 110,
       "path": "/api/operator/conversations/{conversation_id}/stream",
       "methods": [
         "GET"
@@ -5040,7 +5078,7 @@
       }
     },
     {
-      "ordinal": 110,
+      "ordinal": 111,
       "path": "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/confirm",
       "methods": [
         "POST"
@@ -5088,7 +5126,7 @@
       }
     },
     {
-      "ordinal": 111,
+      "ordinal": 112,
       "path": "/api/operator/conversations/{conversation_id}/proposals/{proposal_id}/decision",
       "methods": [
         "POST"
@@ -5136,7 +5174,7 @@
       }
     },
     {
-      "ordinal": 112,
+      "ordinal": 113,
       "path": "/api/operator/conversations/{conversation_id}/effects/{effect_id}/ack",
       "methods": [
         "POST"
@@ -5184,7 +5222,7 @@
       }
     },
     {
-      "ordinal": 113,
+      "ordinal": 114,
       "path": "/api/hooks/library",
       "methods": [
         "GET"
@@ -5222,7 +5260,7 @@
       }
     },
     {
-      "ordinal": 114,
+      "ordinal": 115,
       "path": "/api/hooks/library/{name}",
       "methods": [
         "PUT"
@@ -5270,7 +5308,7 @@
       }
     },
     {
-      "ordinal": 115,
+      "ordinal": 116,
       "path": "/api/hooks/library/{name}",
       "methods": [
         "DELETE"
@@ -5318,7 +5356,7 @@
       }
     },
     {
-      "ordinal": 116,
+      "ordinal": 117,
       "path": "/api/operator/hooks",
       "methods": [
         "GET"
@@ -5356,7 +5394,7 @@
       }
     },
     {
-      "ordinal": 117,
+      "ordinal": 118,
       "path": "/api/operator/hooks",
       "methods": [
         "PUT"
@@ -5404,7 +5442,7 @@
       }
     },
     {
-      "ordinal": 118,
+      "ordinal": 119,
       "path": "/api/approvals/",
       "methods": [
         "POST"
@@ -5452,7 +5490,7 @@
       }
     },
     {
-      "ordinal": 119,
+      "ordinal": 120,
       "path": "/api/approvals/evidence/verify",
       "methods": [
         "GET"
@@ -5490,7 +5528,7 @@
       }
     },
     {
-      "ordinal": 120,
+      "ordinal": 121,
       "path": "/api/approvals/{approval_id}",
       "methods": [
         "GET"
@@ -5538,7 +5576,7 @@
       }
     },
     {
-      "ordinal": 121,
+      "ordinal": 122,
       "path": "/api/approvals/{approval_id}/grant",
       "methods": [
         "POST"
@@ -5586,7 +5624,7 @@
       }
     },
     {
-      "ordinal": 122,
+      "ordinal": 123,
       "path": "/api/approvals/{approval_id}/deny",
       "methods": [
         "POST"
@@ -5634,7 +5672,7 @@
       }
     },
     {
-      "ordinal": 123,
+      "ordinal": 124,
       "path": "/api/admin/doctor",
       "methods": [
         "GET"
@@ -5682,7 +5720,7 @@
       }
     },
     {
-      "ordinal": 124,
+      "ordinal": 125,
       "path": "/api/admin/health",
       "methods": [
         "GET"
@@ -5720,7 +5758,7 @@
       }
     },
     {
-      "ordinal": 125,
+      "ordinal": 126,
       "path": "/api/admin/readiness",
       "methods": [
         "GET"
@@ -5768,7 +5806,7 @@
       }
     },
     {
-      "ordinal": 126,
+      "ordinal": 127,
       "path": "/api/admin/transition",
       "methods": [
         "POST"
@@ -5816,7 +5854,7 @@
       }
     },
     {
-      "ordinal": 127,
+      "ordinal": 128,
       "path": "/api/admin/events",
       "methods": [
         "GET"
@@ -5864,7 +5902,7 @@
       }
     },
     {
-      "ordinal": 128,
+      "ordinal": 129,
       "path": "/api/admin/prune-old-data",
       "methods": [
         "POST"
@@ -5914,7 +5952,7 @@
       }
     },
     {
-      "ordinal": 129,
+      "ordinal": 130,
       "path": "/api/admin/maintenance",
       "methods": [
         "POST"
@@ -5962,7 +6000,7 @@
       }
     },
     {
-      "ordinal": 130,
+      "ordinal": 131,
       "path": "/api/admin/prune",
       "methods": [
         "POST"
@@ -6012,7 +6050,7 @@
       }
     },
     {
-      "ordinal": 131,
+      "ordinal": 132,
       "path": "/api/stats/activity",
       "methods": [
         "GET"
@@ -6058,7 +6096,7 @@
       }
     },
     {
-      "ordinal": 132,
+      "ordinal": 133,
       "path": "/api/stats/spend",
       "methods": [
         "GET"
@@ -6104,7 +6142,7 @@
       }
     },
     {
-      "ordinal": 133,
+      "ordinal": 134,
       "path": "/api/stats/spend/rollup",
       "methods": [
         "GET"
@@ -6150,7 +6188,7 @@
       }
     },
     {
-      "ordinal": 134,
+      "ordinal": 135,
       "path": "/api/stats",
       "methods": [
         "GET"
@@ -6186,7 +6224,7 @@
       }
     },
     {
-      "ordinal": 135,
+      "ordinal": 136,
       "path": "/api/attention/dispositions/",
       "methods": [
         "GET"
@@ -6224,7 +6262,7 @@
       }
     },
     {
-      "ordinal": 136,
+      "ordinal": 137,
       "path": "/api/attention/dispositions/{item_id}",
       "methods": [
         "PUT"
@@ -6272,7 +6310,7 @@
       }
     },
     {
-      "ordinal": 137,
+      "ordinal": 138,
       "path": "/api/attention/dispositions/{item_id}",
       "methods": [
         "DELETE"
@@ -6320,7 +6358,7 @@
       }
     },
     {
-      "ordinal": 138,
+      "ordinal": 139,
       "path": "/api/attention/dispositions/{item_id}/history",
       "methods": [
         "GET"
@@ -6368,7 +6406,7 @@
       }
     },
     {
-      "ordinal": 139,
+      "ordinal": 140,
       "path": "/health",
       "methods": [
         "GET"
@@ -6408,7 +6446,7 @@
     "openapi": "3.1.0",
     "info": {
       "title": "Lion Studio Server",
-      "version": "0.34.1"
+      "version": "0.35.0"
     },
     "paths": {
       "/api/admin/doctor": {
@@ -8399,6 +8437,28 @@
                 "application/json": {
                   "schema": {
                     "$ref": "#/components/schemas/HTTPValidationError"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/api/identity": {
+        "get": {
+          "summary": "Get Identity",
+          "description": "Identify this daemon only to a caller that proved it holds the token.",
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object",
+                    "title": "Response Get Identity Api Identity Get"
                   }
                 }
               }
@@ -11855,6 +11915,16 @@
           "summary": "Stream Signals",
           "parameters": [
             {
+              "name": "after_seq",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "type": "integer",
+                "default": 0,
+                "title": "After Seq"
+              }
+            },
+            {
               "name": "session_id",
               "in": "path",
               "required": true,
@@ -11895,6 +11965,24 @@
           ],
           "summary": "Stream Session",
           "parameters": [
+            {
+              "name": "cursor",
+              "in": "query",
+              "required": false,
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Opaque cursor from the last delivered session-message SSE frame",
+                "title": "Cursor"
+              },
+              "description": "Opaque cursor from the last delivered session-message SSE frame"
+            },
             {
               "name": "session_id",
               "in": "path",
@@ -12865,7 +12953,7 @@
         }
       }
     },
-    "path_count": 107,
+    "path_count": 108,
     "schemas": {
       "AcknowledgeEffectRequest": {
         "properties": {

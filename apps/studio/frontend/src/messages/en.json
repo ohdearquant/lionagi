@@ -247,7 +247,7 @@
       "createWorkflow": "New Workflow",
       "createAgent": "New Agent",
       "allSkill": "No skills found.",
-      "allSkillHint": "Add a SKILL.md under ~/.lionagi/skills/<name>/ to see it here.",
+      "allSkillHint": "Add a SKILL.md under ~/.lionagi/skills/NAME/ to see it here.",
       "allPlugin": "No plugins found.",
       "allPluginHint": "Install a plugin under ~/.claude/plugins/ to see it here."
     },

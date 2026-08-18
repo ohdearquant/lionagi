@@ -23,15 +23,17 @@ Content-Type/CSRF check -> bearer-token gate -> route. A real preflight
 never reaches the bearer-token/Content-Type middlewares because CORS
 answers it first.
 
-**`require_json_content_type`** — rejects state-changing `/api` requests
-that don't declare a JSON body. FastAPI parses request bodies as JSON
-regardless of declared Content-Type, so a cross-site "simple request"
-(`text/plain`, no CORS preflight) carrying a JSON-shaped body would
-otherwise reach route handlers unchecked — the classic form-based JSON CSRF
-vector. The SPA always sends `application/json` on requests carrying a body
-(`apps/studio/frontend/src/lib/api.ts` `fetchJson`) and no body at all for
-routes that need none, so this only rejects traffic the frontend itself
-never produces.
+**`require_json_content_type`** — rejects every state-changing `/api`
+request that does not declare `application/json`, including bodyless action
+routes. FastAPI parses bodies as JSON regardless of declared Content-Type,
+and a cross-site "simple request" can also reach an empty-body trigger,
+enable, disable, delete, or cancel route without a CORS preflight. The shared
+SPA `fetchJson` transport adds the JSON media type to every unsafe method, so
+first-party callers satisfy the contract even when they have no body.
+
+**`GET /api/identity`** — authenticated, state-store-free desktop launch probe.
+It returns only the fixed daemon identity and LionAGI version; desktop startup
+uses it after `/health` instead of invoking the database-backed `/api/stats`.
 
 **`_mount_spa`** — uses a 404 exception handler, not a catch-all route, for
 the SPA fallback: a catch-all `/{full_path:path}` route would intercept
@@ -166,6 +168,50 @@ ever attempted — the exact silent-loss shape the feature exists to prevent.
 Only top-level fires (`chain_depth == 0`) of a threshold-configured schedule
 stamp the cooldown; `on_success`/`on_fail` chain children are follow-on
 actions of the same alert cycle, not a new one.
+
+**`_reserve_max_runs_budget`** — reserves one top-level fire against a
+schedule's `max_runs` cap. A fire consumes budget the instant it fires, not
+when it resolves, so the count it checks is `fired + inflight`: `fired` is
+the persisted count of `running`-or-terminal `schedule_run` rows, and
+`inflight` is an in-process counter of fires that have claimed budget but
+whose occurrence row has not yet committed. The two are disjoint views of
+the same fire — a claim is released the moment the occurrence row lands —
+so summing them counts each fire exactly once, except for a brief instant
+during the handoff where a fire can appear in both; that only ever
+over-counts, which just causes a spurious refusal that self-corrects on the
+next tick. Only one scheduler process runs today, so this reservation is
+in-memory (an `asyncio.Lock`-guarded dict), not a database compare-and-set.
+
+The order of the two reads inside that lock is the load-bearing part.
+`inflight` is read *before* the `await` on `count_schedule_runs()`, not
+after. `release()` (called from `_fire()`'s `finally` block on every exit
+path, so a claim always gets freed even from a cancelled or failing fire)
+does not take the lock — it must work even while a fire is mid-cancellation,
+where acquiring a lock from a `finally` block risks a deadlock. That makes
+it possible for a concurrent fire to release its claim *while this call is
+suspended awaiting the database*. If `inflight` were read after that await,
+a fire that both writes its occurrence row and releases its claim entirely
+inside the suspended window would vanish from both counts at once: too late
+for the in-flight snapshot (already released) and too early for the
+persisted count (the read started before the write landed) — letting a
+bounded schedule fire one more time than `max_runs` allows. Reading
+`inflight` first means it still captures that other fire's claim before it
+can disappear, so the sum can only ever over-count, never under-count.
+
+`_tick()`'s ad-hoc task-worker pass runs single-flight: a second `_tick()`
+firing while the first pass is still in progress must not start a second
+pass, and must not await the first pass either — a slow or hung worker pass
+would otherwise stall every schedule's due-time evaluation for the whole
+tick. `_tick()` starts the pass as a background task and returns promptly
+regardless of whether it is still running.
+
+`resolve_terminal` (child-session outcome inference) does not trust a
+leader process's exit code as evidence that a still-running child session's
+own work has finished — the terminal stamp comes from the leader's stderr
+pipe closing, not from the child's work actually ending. A child session
+that has not reached any terminal status of its own is reported as
+`completed_empty` (no positive evidence) rather than being inferred as
+`completed`.
 
 ## lionagi/studio/scheduler/subprocess.py
 
@@ -1065,6 +1111,45 @@ pipe closing, not from the child's work actually ending. A child session
 that has not reached any terminal status of its own is reported as
 `completed_empty` (no positive evidence) rather than being inferred as
 `completed`.
+
+**`_recover_missed_fire_run_once`** — reserves its admission claims and then
+`next_fire_at`, synchronously, before queueing the recovery fire. The order is
+load-bearing in both directions. Claims come first because a rate or slot
+refusal has to leave the row still due, and clearing an `at` trigger's
+`next_fire_at` ahead of a refusal would strand its single run permanently. The
+reserve comes before the fire because `_tick_loop()` runs `_check_missed_fires()`
+and then `_tick()` with nothing awaited in between, so a `next_fire_at` left for
+the recovery fire's own background task to persist is still the past-due value
+when the very next `_tick()` reads it, and the schedule double-fires.
+
+The crash window this leaves was weighed and accepted. If the process dies
+between the reserve and the recovery fire landing, the run is lost for that
+cycle but the schedule is not stuck: one skipped run rather than starvation.
+The exception is an `at` trigger, where the reserve has already cleared
+`next_fire_at` and there is no later occurrence, so that crash loses the run
+permanently. That was accepted rather than reopen the duplicate-fire window,
+and a later change that closes the crash window by deferring the reserve would
+be trading this decision away rather than fixing an oversight.
+
+**`_guarded_terminal_status`** — writes a terminal `schedule_run` or
+`invocation` status guarded on the row still being `running`, because a
+concurrent writer such as the deadline reaper may have finalized it first.
+Returning `False` is the expected outcome of losing that race, not an error:
+callers get a checked no-op instead of an exception. `extra_fields` carries
+same-row columns belonging to the same finalization, `ended_at` and
+`error_detail`, and they ride the same guard and the same transaction as the
+status precisely so that a lost race leaves the winner's values intact rather
+than overwriting them with ours. Both properties are extension hazards, since
+this is the shared helper every terminal write goes through.
+
+**`_next_fire_field`** — returns the field or fields to merge into an
+`update_schedule()` call, and its two `None` behaviours are different on
+purpose. For interval, cron and `github_poll`, a `None` next fire can only come
+from a malformed row, so it returns an empty dict and leaves `next_fire_at`
+alone rather than blanking a value another write has set. For `at`, `None` is
+the terminal and correct answer, so it returns an explicit `{"next_fire_at":
+None}`: the one-shot has to be persisted as no longer due, or it reads back as
+still pending forever.
 
 ## lionagi/studio/scheduler/worker.py
 

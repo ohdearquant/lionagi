@@ -54,7 +54,42 @@ export function subscribeOverlayChange(listener: () => void): () => void {
   };
 }
 
+/**
+ * Marks an element that scrolls the page behind an overlay. The shell carries it
+ * because the routed surface scrolls in its own container, not on `body`, so
+ * locking `body` alone leaves the view moving behind a fixed dialog.
+ */
+export const SCROLL_LOCK_ATTRIBUTE = "data-overlay-scroll-lock";
+
+// Held while at least one overlay is registered, so a nested overlay closing does
+// not hand scrolling back while the one beneath is still open. Null means unheld;
+// each element's own value is restored verbatim rather than cleared, since the
+// page may have been setting its own overflow.
+let held: { element: HTMLElement; overflow: string }[] | null = null;
+
+function scrollOwners(): HTMLElement[] {
+  return [
+    document.body,
+    ...Array.from(document.querySelectorAll<HTMLElement>(`[${SCROLL_LOCK_ATTRIBUTE}]`)),
+  ];
+}
+
+function syncBackgroundIsolation(): void {
+  if (stack.length > 0) {
+    if (held === null) {
+      held = scrollOwners().map((element) => ({ element, overflow: element.style.overflow }));
+      for (const { element } of held) element.style.overflow = "hidden";
+    }
+    return;
+  }
+  if (held !== null) {
+    for (const { element, overflow } of held) element.style.overflow = overflow;
+    held = null;
+  }
+}
+
 function notifyOverlayChange(): void {
+  syncBackgroundIsolation();
   for (const listener of Array.from(listeners)) listener();
 }
 
