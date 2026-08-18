@@ -1,5 +1,6 @@
-import { useEffect } from "react";
+import { useId, useRef } from "react";
 import type { ReactNode } from "react";
+import { useOverlayFocus } from "../../lib/useOverlayFocus";
 import IconButton from "./IconButton";
 import { IconClose } from "./icons";
 
@@ -9,14 +10,12 @@ export interface ModalProps {
   closeLabel: string;
   onClose: () => void;
   children: ReactNode;
-  /** Width utility for the dialog card. Spelled out rather than left open so
-   *  every class the app can produce is literally present for Tailwind to find. */
+  /** Spelled out, not open, so every class the app can produce is present for Tailwind. */
   maxWidth?: "max-w-md" | "max-w-lg" | "max-w-xl" | "max-w-2xl" | "max-w-4xl";
   className?: string;
 }
 
-/** Overlay dialog — backdrop click and Escape both close. The overlay
- *  scrolls, not the card, so tall forms never trap inner scrollbars. */
+/** Overlay dialog; backdrop click and Escape close. The overlay scrolls, not the card. */
 export default function Modal({
   title,
   closeLabel,
@@ -25,13 +24,9 @@ export default function Modal({
   maxWidth = "max-w-lg",
   className,
 }: ModalProps) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useOverlayFocus({ description: "Modal", dialogRef, onEscape: onClose });
 
   return (
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- modal backdrop dismiss; keyboard Escape handled above
@@ -42,8 +37,11 @@ export default function Modal({
       }}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
         className={[
           "mx-4 w-full rounded-lg border border-edge bg-surface-raised shadow-card",
           maxWidth,
@@ -53,7 +51,9 @@ export default function Modal({
           .join(" ")}
       >
         <div className="flex items-center justify-between border-b border-edge px-5 py-4">
-          <h2 className="font-data text-label font-semibold text-content-primary">{title}</h2>
+          <h2 id={titleId} className="font-data text-label font-semibold text-content-primary">
+            {title}
+          </h2>
           <IconButton aria-label={closeLabel} onClick={onClose}>
             <IconClose size={12} strokeWidth={2} />
           </IconButton>
