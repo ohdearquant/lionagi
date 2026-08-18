@@ -9,7 +9,9 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import partial
@@ -294,6 +296,101 @@ def _no_stderr_reason(
     return f"{exited} and wrote nothing to stderr"
 
 
+# Enough to carry a CLI's error banner without pasting a whole session into the
+# log line; the cap is on what is logged, not on what was captured.
+_ABANDONED_STDERR_LOG_CAP = 4096
+
+# Backstop against a wedged reader draining a closed pipe to EOF, not a budget
+# for the child to keep talking, so it is shorter than the exit-code path's wait.
+_ABANDONED_STDERR_DRAIN_TIMEOUT = 0.5
+
+
+# A credential reaches a child either from the environment we build for it or
+# from its own config, so the log path strips both what we injected and what
+# merely looks like a secret.
+_SECRET_ENV_KEY_RE = re.compile(r"(?i)key|token|secret|password|passwd|credential|auth")
+_SECRET_SHAPE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"Bearer\s+\S+"
+    # To end of line: a scheme word ("Bearer x") otherwise ends the match early.
+    r"|(?:Authorization|X-Api-Key|Api-Key)\s*:\s*[^\r\n]+"
+    r"|(?:sk|rk)-[a-z0-9_-]{8,}"
+    r"|(?:ghp|gho|ghu|ghs|github_pat)_[a-z0-9_]{8,}"
+    r"|xox[abprs]-[a-z0-9-]{8,}"
+    r"|AKIA[0-9A-Z]{12,}"
+    r"|eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]+\.[a-z0-9_-]+"
+    r")"
+)
+# Short values collide with ordinary words; a real credential is never this small.
+_MIN_REDACTABLE_SECRET_LEN = 8
+
+
+def _secret_candidates(env: Mapping[str, str] | None) -> dict[str, str]:
+    """The subset of an environment a log redactor can act on."""
+    if not env:
+        return {}
+    return {
+        key: value
+        for key, value in env.items()
+        if isinstance(key, str)
+        and isinstance(value, str)
+        and len(value) >= _MIN_REDACTABLE_SECRET_LEN
+        and _SECRET_ENV_KEY_RE.search(key)
+    }
+
+
+def _escape_control_characters(text: str) -> str:
+    """Show control bytes rather than let child output forge a log record."""
+    return "".join(
+        character if character == " " or character.isprintable() else repr(character)[1:-1]
+        for character in text
+    )
+
+
+def _redact_secrets_for_log(text: str, env: Mapping[str, str] | None) -> str:
+    """Strip credentials out of child output before any of it reaches a log."""
+    if not text:
+        return text
+    if env:
+        injected = {
+            value
+            for key, value in env.items()
+            if isinstance(key, str)
+            and isinstance(value, str)
+            and len(value) >= _MIN_REDACTABLE_SECRET_LEN
+            and _SECRET_ENV_KEY_RE.search(key)
+        }
+        # Longest first, so a secret containing another is not left half-revealed.
+        for value in sorted(injected, key=len, reverse=True):
+            text = text.replace(value, "[redacted]")
+    # Escape last: the redaction patterns are written against the real text.
+    return _escape_control_characters(_SECRET_SHAPE_RE.sub("[redacted]", text))
+
+
+def _abandoned_without_output_note(
+    captured: str,
+    unavailable: str | None,
+    drain_error: str | None,
+    drain_incomplete: bool = False,
+) -> str:
+    """What to say about a child abandoned before it produced output; keeps ``_no_stderr_reason``'s three-way split so a broken capture cannot read as a quiet subprocess."""
+    if captured:
+        clipped = captured[:_ABANDONED_STDERR_LOG_CAP]
+        suffix = " [truncated]" if len(captured) > _ABANDONED_STDERR_LOG_CAP else ""
+        if drain_incomplete:
+            suffix += " [stderr drain did not finish]"
+        return f"its stderr said: {clipped}{suffix}"
+    if drain_error is not None:
+        return f"reading its stderr failed with {drain_error}, so no output was captured"
+    if drain_incomplete:
+        # An unfinished drain leaves the pipe unread, so silence here is
+        # unknown rather than a quiet child.
+        return "its stderr could not be drained in time, so whether it wrote anything is unknown"
+    if unavailable is not None:
+        return unavailable
+    return "it wrote nothing to stderr either"
+
+
 async def ndjson_from_cli(
     cmd: list[str],
     *,
@@ -317,9 +414,13 @@ async def ndjson_from_cli(
     # additive: with nothing configured this returns ``env`` unchanged, and a
     # lookup that fails leaves the child to fail the way it already failed.
     child_env = await fill_declared_secrets(env)
+    # One mapping for both the child and the redactor: with env=None the child
+    # reads os.environ at exec, later than any snapshot taken here.
+    spawn_env: dict[str, str] = dict(child_env) if child_env is not None else dict(os.environ)
+    redaction_env: Mapping[str, str] = _secret_candidates(spawn_env)
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
-        env=dict(child_env) if child_env is not None else None,
+        env=spawn_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
@@ -466,6 +567,13 @@ async def ndjson_from_cli(
                 return b""
         return await read_task
 
+    # Set before each yield, never after: GeneratorExit lands at the yield, so a
+    # later assignment never runs and a child that spoke reads as one that did not.
+    produced_output = False
+    # Whether the exit-code path below already quoted stderr to the caller, so
+    # the teardown does not repeat it into the log.
+    stderr_already_surfaced = False
+
     try:
         while True:
             chunk = await _read_next()
@@ -480,6 +588,7 @@ async def ndjson_from_cli(
                     break
                 try:
                     obj, idx = json_decoder.raw_decode(buffer)
+                    produced_output = True
                     yield obj
                     buffer = buffer[idx:]
                 except json.JSONDecodeError:
@@ -490,12 +599,14 @@ async def ndjson_from_cli(
         if buffer:
             try:
                 obj, idx = json_decoder.raw_decode(buffer)
+                produced_output = True
                 yield obj
             except json.JSONDecodeError:
                 if tail_repair is not None:
                     try:
                         repaired = tail_repair(buffer)
                         if repaired is not None:
+                            produced_output = True
                             yield repaired
                             log.warning("Repaired malformed JSON fragment at stream end")
                         else:
@@ -524,10 +635,44 @@ async def ndjson_from_cli(
                 err = _no_stderr_reason(rc, stderr_unavailable, stderr_drain_error)
             if drain_truncated:
                 err += " [stderr drain timed out]"
+            stderr_already_surfaced = True
             raise RuntimeError(err)
 
     finally:
+        # Neither stderr-quoting path covers this, and it is decided before any
+        # await, since awaiting in a finally can change sys.exc_info().
+        abandoned_silently = (
+            sys.exc_info()[1] is not None and not produced_output and not stderr_already_surfaced
+        )
+
         await end_child_group(proc)
+
+        if abandoned_silently:
+            # Drain first, or the warning reports "said nothing" about a child
+            # that spoke; shielded so a timeout cannot cancel it mid-buffer.
+            abandon_drain_incomplete = False
+            if stderr_task is not None:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(stderr_task), timeout=_ABANDONED_STDERR_DRAIN_TIMEOUT
+                    )
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    # Whatever it captured stays in the buffer, but the drain
+                    # did not finish, so an empty buffer is unknown rather than
+                    # evidence the child was quiet.
+                    abandon_drain_incomplete = True
+            log.warning(
+                "CLI subprocess produced no output before it was abandoned; %s",
+                _abandoned_without_output_note(
+                    _redact_secrets_for_log(
+                        b"".join(stderr_chunks).decode(errors="replace").strip(),
+                        redaction_env,
+                    ),
+                    stderr_unavailable,
+                    stderr_drain_error,
+                    abandon_drain_incomplete,
+                ),
+            )
 
         # Reap the helper tasks — contextlib.suppress(Exception) does NOT
         # catch CancelledError (BaseException), so we suppress it explicitly.
