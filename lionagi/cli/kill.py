@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import os
 import signal
+import socket
 import time
 from typing import Any, Literal
 
@@ -16,8 +17,10 @@ from lionagi._auto import CliDeclaration, auto_register
 from lionagi.state.db import PLAY_ACTIVE_STATUSES as _PLAY_ACTIVE_STATUSES
 
 from ._logging import log_error, warn
-from ._util import _TABLE_TO_ENTITY_TYPE, AmbiguousIdError
+from ._util import _TABLE_TO_ENTITY_TYPE, BOOT_TIME_TOLERANCE, AmbiguousIdError
 from ._util import pid_alive as _pid_alive
+from ._util import recorded_identity_mode as _recorded_identity_mode
+from ._util import recorded_pid_is_foreign as _recorded_pid_is_foreign
 from ._util import resolve_entity as _resolve_entity
 
 
@@ -45,15 +48,70 @@ def _read_pid_from_entity(entity: dict[str, Any]) -> int | None:
 
 
 def current_pid_markers() -> dict[str, Any]:
-    """PID + create_time for the current process, for kill verification (CWE-362)."""
+    """Host-scoped process identity for liveness and kill verification."""
     return {
         "pid": os.getpid(),
         "pid_create_time": psutil.Process(os.getpid()).create_time(),
+        "pid_host": socket.gethostname(),
+        "pid_boot_time": psutil.boot_time(),
+        "process_identity_mode": "local",
     }
 
 
 # Clock-tick rounding tolerance for process start time comparison (CWE-362).
 _CREATE_TIME_TOLERANCE = 0.1
+
+#: Outcomes where nothing was stopped and no cancellation was written. A caller
+#: that reports these as a kill is claiming a stop that did not happen.
+_NOT_STOPPED_SIGNALS = frozenset(
+    {"identity_mismatch", "in_process", "host_mismatch", "boot_mismatch", "foreign_mode"}
+)
+
+#: Refusals to signal. A pid only names a process together with its host and boot; when the
+#: record cannot show that, nothing is signalled or written, so the row's claim stays true.
+_REFUSED_SIGNAL_REASONS: dict[str, str] = {
+    "identity_mismatch": "did not match the expected lionagi process",
+    "host_mismatch": "was recorded on a different host",
+    "boot_mismatch": "was recorded before this machine last booted",
+    "in_process": (
+        "runs inside a shared host process, so no signal reaches it alone — "
+        "use the Studio cancel for this run"
+    ),
+    "foreign_mode": "records a process identity this CLI does not manage",
+}
+
+#: Re-exported so readers find it beside the check that uses it; defined once in ``_util``
+#: because the Studio liveness probe compares the same recorded value.
+_BOOT_TIME_TOLERANCE = BOOT_TIME_TOLERANCE
+
+
+#: Reasons a row is also unfit to sweep. ``boot_mismatch`` is excluded — the mismatch itself
+#: proves the process is gone; the other three mean this host cannot tell if it's alive.
+_NOT_JUDGEABLE_HERE = frozenset({"host_mismatch", "in_process", "foreign_mode"})
+
+#: Identity modes this CLI can signal. ``in_process`` is excluded on purpose — the run shares
+#: a host process, so no signal reaches it alone.
+_LOCALLY_SIGNALLABLE_MODES = frozenset({"local"})
+
+
+def _unaddressable_pid_reason(meta: dict[str, Any]) -> str | None:
+    """Why the recorded pid cannot be signalled from here, or None if it can — checked in order: identity mode, host, then boot time; absent markers return None, not a refusal."""
+    mode = _recorded_identity_mode(meta)
+    if mode is not None and mode not in _LOCALLY_SIGNALLABLE_MODES:
+        return "in_process" if mode == "in_process" else "foreign_mode"
+
+    if _recorded_pid_is_foreign(meta):
+        return "host_mismatch"
+
+    raw_boot = meta.get("pid_boot_time")
+    if raw_boot is not None:
+        try:
+            recorded_boot = float(raw_boot)
+        except (TypeError, ValueError):
+            return None
+        if abs(recorded_boot - psutil.boot_time()) > _BOOT_TIME_TOLERANCE:
+            return "boot_mismatch"
+    return None
 
 
 def _cmdline_is_lionagi(cmdline: list[str], expected_cmd: str) -> bool:
@@ -418,28 +476,45 @@ async def _kill_one(
     """Kill one entity: terminate process, persist cancellation."""
     from lionagi.state.reasons import RunReasons
 
+    meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
+    # Asked before the pid is read, not only when one exists — a pid-less row from another
+    # host or runtime would otherwise fall through and get cancelled for work still running.
+    unaddressable = _unaddressable_pid_reason(meta)
+    if unaddressable in _NOT_JUDGEABLE_HERE:
+        warn(f"  {entity_type} {entity_id[:12]}: {_REFUSED_SIGNAL_REASONS[unaddressable]}")
+        return {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "signal": unaddressable,
+            "pid": None,
+        }
+
     pid = _read_pid_from_entity(row)
     signal_used = "no_pid"
 
     if pid is not None:
-        meta = row.get("node_metadata") if isinstance(row.get("node_metadata"), dict) else {}
-        expected_session_id = entity_id if entity_type == "session" else None
-        raw_ct = meta.get("pid_create_time")
-        try:
-            expected_create_time = float(raw_ct) if raw_ct is not None else None
-        except (TypeError, ValueError):
-            expected_create_time = None
-        try:
-            signal_used = _terminate_pid(
-                pid,
-                grace_seconds=grace_seconds,
-                expected_cmd="lionagi",
-                expected_session_id=expected_session_id,
-                expected_create_time=expected_create_time,
-            )
-        except RuntimeError as exc:
-            warn(str(exc))
-            signal_used = "permission_denied"
+        # Only boot_mismatch can still be pending here; it stays out of the early return
+        # because the stale sweep treats it as evidence the process is gone, unlike a kill.
+        if unaddressable is not None:
+            signal_used = unaddressable
+        else:
+            expected_session_id = entity_id if entity_type == "session" else None
+            raw_ct = meta.get("pid_create_time")
+            try:
+                expected_create_time = float(raw_ct) if raw_ct is not None else None
+            except (TypeError, ValueError):
+                expected_create_time = None
+            try:
+                signal_used = _terminate_pid(
+                    pid,
+                    grace_seconds=grace_seconds,
+                    expected_cmd="lionagi",
+                    expected_session_id=expected_session_id,
+                    expected_create_time=expected_create_time,
+                )
+            except RuntimeError as exc:
+                warn(str(exc))
+                signal_used = "permission_denied"
     else:
         if verbose:
             warn(f"  {entity_type} {entity_id[:12]}: no PID found — skipping OS signal")
@@ -447,10 +522,10 @@ async def _kill_one(
     if signal_used == "sigkill":
         reason_code = RunReasons.CANCELLED_FORCE_KILL
         reason_summary = f"Force-killed (SIGKILL after grace period). {user_reason}".strip()
-    elif signal_used == "identity_mismatch":
+    elif signal_used in _REFUSED_SIGNAL_REASONS:
         warn(
-            f"  {entity_type} {entity_id[:12]}: pid {pid} did not match "
-            "expected lionagi process — kill skipped"
+            f"  {entity_type} {entity_id[:12]}: pid {pid} "
+            f"{_REFUSED_SIGNAL_REASONS[signal_used]} — kill skipped"
         )
         return {
             "entity_type": entity_type,
@@ -564,7 +639,7 @@ async def _do_kill(
                     verbose=verbose,
                 )
                 results.append(r)
-                if r["signal"] == "identity_mismatch":
+                if r["signal"] in _NOT_STOPPED_SIGNALS:
                     blocked.append(r)
                 else:
                     print(
@@ -581,7 +656,7 @@ async def _do_kill(
             verbose=verbose,
         )
         results.append(r)
-        if r["signal"] == "identity_mismatch":
+        if r["signal"] in _NOT_STOPPED_SIGNALS:
             blocked.append(r)
         else:
             print(f"killed {entity_type} {row['id'][:12]} (signal={r['signal']}, pid={r['pid']})")
@@ -641,6 +716,7 @@ async def _do_kill_all_stale(
     skipped_live = 0
     skipped_recent = 0
     skipped_unverifiable = 0
+    skipped_unjudgeable = 0
     skipped_unlinked_plays = 0
     unverifiable_tracked = 0
 
@@ -676,11 +752,26 @@ async def _do_kill_all_stale(
                         )
                     continue
 
+                row_meta_for_host = (
+                    row_dict.get("node_metadata")
+                    if isinstance(row_dict.get("node_metadata"), dict)
+                    else {}
+                )
+                unjudgeable = _unaddressable_pid_reason(row_meta_for_host)
+                if unjudgeable in _NOT_JUDGEABLE_HERE:
+                    # Recorded on another host or an unmanaged runtime — reading this host's
+                    # process table would misjudge it as dead.
+                    skipped_unjudgeable += 1
+                    if verbose:
+                        print(
+                            f"  skip {entity_type} {entity_id[:12]}: "
+                            f"{_REFUSED_SIGNAL_REASONS[unjudgeable]} — not judgeable from here"
+                        )
+                    continue
+
                 pid = _read_pid_from_entity(row_dict)
-                # A live pid alone isn't enough — the OS may have reused it.
-                # Correlate against the row's own session id/create_time (same
-                # fields the direct-kill path uses) so a recycled pid occupied
-                # by a different lionagi process doesn't pass as "still alive".
+                # A live pid alone isn't enough — the OS may have reused it. Correlate against
+                # the row's own session id/create_time, same as the direct-kill path.
                 pid_alive_now = pid is not None and _pid_alive(pid)
                 verdict: str | None = None
                 if pid_alive_now:
@@ -900,6 +991,7 @@ async def _do_kill_all_stale(
         f"\n{prefix} {killed} stale entities "
         f"[skipped_recent={skipped_recent}, skipped_live_pid={skipped_live}, "
         f"skipped_unverifiable_pid={skipped_unverifiable}, "
+        f"skipped_unjudgeable={skipped_unjudgeable}, "
         f"skipped_unlinked_plays={skipped_unlinked_plays}]"
     )
     if unverifiable_tracked:

@@ -222,7 +222,11 @@ def patched_app(tmp_path: Path, monkeypatch):
     from lionagi.studio.app import app
 
     transport = httpx.ASGITransport(app=app)
-    client = httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8765")
+    client = httpx.AsyncClient(
+        transport=transport,
+        base_url="http://127.0.0.1:8765",
+        headers={"Content-Type": "application/json"},
+    )
     return app, db_path, client
 
 

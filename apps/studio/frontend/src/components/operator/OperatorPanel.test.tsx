@@ -16,6 +16,7 @@ const api = vi.hoisted(() => ({
   forkOperatorConversation: vi.fn(),
   getOperatorConversation: vi.fn(),
   listOperatorConversations: vi.fn(),
+  reportOperatorView: vi.fn(() => Promise.resolve()),
   streamOperatorConversation: vi.fn(() => vi.fn()),
   submitOperatorTurn: vi.fn(),
   updateOperatorConversation: vi.fn(),
@@ -68,6 +69,8 @@ describe("OperatorPanel", () => {
     api.getOperatorConversation.mockReset();
     api.listOperatorConversations.mockReset();
     api.listOperatorConversations.mockResolvedValue([]);
+    api.reportOperatorView.mockReset();
+    api.reportOperatorView.mockResolvedValue(undefined);
     api.decideOperatorProposal.mockReset();
     api.decideOperatorProposal.mockResolvedValue({
       proposalId: "proposal-1",

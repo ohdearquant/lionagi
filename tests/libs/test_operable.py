@@ -32,6 +32,28 @@ class TestOperable:
         allowed = operable.allowed()
         assert allowed == {"field1", "field2"}
 
+    def test_field_names_preserve_declaration_order(self):
+        specs = (
+            Spec(str, name="delta"),
+            Spec(int),
+            Spec(float, name=Unset),
+            Spec(bool, name="alpha"),
+        )
+
+        operable = Operable(specs)
+
+        assert operable.field_names() == ("delta", "alpha")
+        assert operable.allowed() == frozenset({"alpha", "delta"})
+
+    def test_multiple_unnamed_specs_are_allowed(self):
+        first = Spec(str)
+        second = Spec(int)
+        unresolved = Spec(float, name=Unset)
+
+        operable = Operable((first, second, unresolved, Spec(bytes, name=Unset)))
+
+        assert operable.__op_fields__[:3] == (first, second, unresolved)
+
     def test_check_allowed_valid(self):
         """Test check_allowed() with valid fields."""
         spec1 = Spec(str, name="field1")
@@ -81,29 +103,53 @@ class TestOperable:
         specs = operable.get_specs()
         assert specs == (spec1, spec2)
 
-    def test_get_specs_include(self):
-        """Test get_specs() with include."""
-        spec1 = Spec(str, name="field1")
-        spec2 = Spec(int, name="field2")
-        spec3 = Spec(bool, name="field3")
-        operable = Operable((spec1, spec2, spec3))
-        specs = operable.get_specs(include={"field1", "field3"})
-        assert len(specs) == 2
-        assert spec1 in specs
-        assert spec3 in specs
-        assert spec2 not in specs
+    @pytest.mark.parametrize(
+        "include",
+        [
+            ["delta", "alpha", "gamma"],
+            ("delta", "alpha", "gamma"),
+            {"delta", "alpha", "gamma"},
+            frozenset({"delta", "alpha", "gamma"}),
+        ],
+    )
+    def test_get_specs_include_preserves_declaration_order(self, include):
+        """Include is a membership filter, never an ordering authority."""
+        specs = (
+            Spec(str, name="alpha"),
+            Spec(int, name="beta"),
+            Spec(bool, name="gamma"),
+            Spec(bytes, name="delta"),
+        )
+        operable = Operable(specs)
 
-    def test_get_specs_exclude(self):
-        """Test get_specs() with exclude."""
+        selected = operable.get_specs(include=include)
+
+        assert selected == (specs[0], specs[2], specs[3])
+
+    def test_get_specs_empty_include_selects_nothing(self):
+        spec = Spec(str, name="field1")
+
+        assert Operable((spec,)).get_specs(include=set()) == ()
+
+    @pytest.mark.parametrize(
+        "exclude",
+        [
+            ["field3", "field1"],
+            ("field3", "field1"),
+            {"field3", "field1"},
+            frozenset({"field3", "field1"}),
+        ],
+    )
+    def test_get_specs_exclude_preserves_declaration_order(self, exclude):
+        """Exclude is a membership filter, never an ordering authority."""
         spec1 = Spec(str, name="field1")
         spec2 = Spec(int, name="field2")
         spec3 = Spec(bool, name="field3")
         operable = Operable((spec1, spec2, spec3))
-        specs = operable.get_specs(exclude={"field2"})
-        assert len(specs) == 2
-        assert spec1 in specs
-        assert spec3 in specs
-        assert spec2 not in specs
+
+        specs = operable.get_specs(exclude=exclude)
+
+        assert specs == (spec2,)
 
     def test_get_specs_both_include_exclude_raises(self):
         """Test get_specs() raises when both include and exclude specified."""
@@ -116,8 +162,18 @@ class TestOperable:
         """Test get_specs() raises when include contains invalid fields."""
         spec1 = Spec(str, name="field1")
         operable = Operable((spec1,))
-        with pytest.raises(ValueError, match="not allowed"):
-            operable.get_specs(include={"field1", "invalid_field"})
+        with pytest.raises(ValueError) as exc_info:
+            operable.get_specs(include={"zeta", "field1", "alpha"})
+
+        assert str(exc_info.value) == ("Some specified fields are not allowed: ['alpha', 'zeta']")
+
+    def test_get_specs_exclude_invalid_raises_deterministically(self):
+        operable = Operable((Spec(str, name="field1"),))
+
+        with pytest.raises(ValueError) as exc_info:
+            operable.get_specs(exclude={"zeta", "alpha"})
+
+        assert str(exc_info.value) == ("Some specified fields are not allowed: ['alpha', 'zeta']")
 
     def test_field_ordering_preserved(self):
         specs = [

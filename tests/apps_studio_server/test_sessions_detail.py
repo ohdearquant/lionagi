@@ -102,14 +102,11 @@ class _RowsCursor:
 
 
 class _CountingMessageDB:
-    def __init__(self, *, type_rows=None):
+    def __init__(self):
         self.calls: list[str] = []
-        self._type_rows = type_rows or []
 
     async def execute(self, sql, _params=()):
         self.calls.append(sql)
-        if "FROM message_types" in sql:
-            return _RowsCursor(self._type_rows)
         return _RowsCursor([])
 
 
@@ -120,15 +117,6 @@ async def test_full_history_role_counts_use_one_json_table_query():
 
     assert await _fetch_role_counts(db, [f"message-{index}" for index in range(1_201)]) == {}
     assert len(db.calls) == 1
-
-
-async def test_full_history_action_scan_uses_one_message_query():
-    from lionagi.studio.services.sessions import _fetch_action_messages
-
-    db = _CountingMessageDB(type_rows=[{"type_id": 3, "lion_class": "ActionRequest"}])
-
-    assert await _fetch_action_messages(db, [f"message-{index}" for index in range(1_201)]) == []
-    assert len(db.calls) == 2  # one type lookup, one message scan
 
 
 # Test 1.1 — falsy / unparseable inputs return None
@@ -554,6 +542,7 @@ async def seed_branch(
     session_id: str,
     msg_ids: list[str] | None = None,
     name: str = "worker",
+    created_at: float = 200.0,
 ) -> str:
     """Create a progression + branch row; returns the progression id."""
     prog_id = f"{branch_id}-prog"
@@ -565,7 +554,7 @@ async def seed_branch(
         await db.create_branch(
             {
                 "id": branch_id,
-                "created_at": 200.0,
+                "created_at": created_at,
                 "name": name,
                 "session_id": session_id,
                 "progression_id": prog_id,
@@ -662,9 +651,8 @@ async def test_list_sessions_agrees_with_the_detail_route_on_terminal_absence(
 
     assert len(rows) == 1
     assert rows[0]["artifact_verification_json"] == {"status": "not_recorded"}
-    # Asserted as equality between the two routes rather than against the literal
-    # twice: the defect being closed is a disagreement, so the test fails if
-    # either side moves, not only if the list side does.
+    # Asserted as equality between the two routes, not against the literal twice, so the
+    # test fails if either side moves.
     assert detail is not None
     assert rows[0]["artifact_verification_json"] == detail["artifact_verification_json"]
 
@@ -922,9 +910,10 @@ async def test_get_session_messages_after_handles_branch_over_sqlite_variable_li
     build's default, per PRAGMA compile_options MAX_VARIABLE_NUMBER, is 32766 — 33000
     exceeds both so the test reproduces the failure regardless of build). The
     json_each-joined query has no per-message bind variable, so it must return every
-    id without error. Only the progression collection needs to be this large — the
-    corresponding message rows are irrelevant to the bind-limit failure itself, so
-    this seeds ids without materializing 33000 message rows (keeps the test fast)."""
+    materialized in-range rows without error. Only the progression collection needs
+    to be this large — the corresponding message rows are irrelevant to the
+    bind-limit failure itself, so this seeds ids without materializing 33000 message
+    rows (keeps the test fast)."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-huge")
     count = 33000
@@ -963,6 +952,7 @@ async def test_get_session_messages_after_handles_branch_over_sqlite_variable_li
             "id": "huge-1",
             "role": "assistant",
             "content": {"text": "in range"},
+            "content_withheld": False,
             "sender": "worker",
             "timestamp": 150.0,
             "lion_class": "__unknown__",
@@ -1001,6 +991,7 @@ async def test_get_session_messages_after_message_shape_matches_expected_fields(
             "id": "shape-1",
             "role": "assistant",
             "content": {"text": "hello shape"},
+            "content_withheld": False,
             "sender": "worker",
             "timestamp": 111.0,
             "lion_class": "lionagi.protocols.messages.assistant_response.AssistantResponse",
@@ -1009,6 +1000,93 @@ async def test_get_session_messages_after_message_shape_matches_expected_fields(
     ]
 
 
+async def test_session_message_stream_resumes_and_drains_before_done(monkeypatch):
+    """A terminal session must drain every bounded page before its done frame."""
+    from lionagi.studio.services import sessions as svc
+
+    calls: list[tuple[float, str | None]] = []
+
+    async def _exists(_session_id: str) -> bool:
+        return True
+
+    async def _after(
+        _session_id: str,
+        after_ts: float,
+        after_id: str | None = None,
+        after_branch: str | None = None,
+    ) -> list[dict]:
+        calls.append((after_ts, after_id))
+        if after_id == "message-a":
+            return [
+                {"id": "message-b", "timestamp": 100.0, "branch_id": "branch-1"},
+                {"id": "message-c", "timestamp": 101.0, "branch_id": "branch-1"},
+            ]
+        if after_id == "message-c":
+            return [{"id": "message-d", "timestamp": 102.0, "branch_id": "branch-1"}]
+        return []
+
+    async def _state(_session_id: str) -> dict:
+        return {"status": "completed", "updated_at": 1.0}
+
+    async def _unexpected_sleep(_delay: float) -> None:
+        pytest.fail("bounded backlog should drain and emit done without sleeping")
+
+    monkeypatch.setattr(svc, "session_exists", _exists)
+    monkeypatch.setattr(svc, "get_session_messages_after", _after)
+    monkeypatch.setattr(svc, "get_session_stream_state", _state)
+    monkeypatch.setattr(svc, "is_session_stream_done", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(svc.asyncio, "sleep", _unexpected_sleep)
+
+    cursor = svc._encode_session_stream_cursor("resume-session", 100.0, "message-a", "branch-1")
+    response = await svc.stream_session_route("resume-session", cursor=cursor)
+    frames = [frame async for frame in response.body_iterator]
+
+    data = [
+        json.loads(line[6:])
+        for frame in frames
+        for line in frame.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [event.get("id") or event.get("type") for event in data] == [
+        "message-b",
+        "message-c",
+        "message-d",
+        "done",
+    ]
+    assert calls == [(100.0, "message-a"), (101.0, "message-c"), (102.0, "message-d")]
+
+    frame_cursors = [
+        line[4:] for frame in frames for line in frame.splitlines() if line.startswith("id: ")
+    ]
+    assert [
+        svc._decode_session_stream_cursor(value, session_id="resume-session")
+        for value in frame_cursors
+    ] == [
+        (100.0, "message-b", "branch-1"),
+        (101.0, "message-c", "branch-1"),
+        (102.0, "message-d", "branch-1"),
+    ]
+
+
+async def test_session_message_stream_rejects_foreign_cursor_before_opening(monkeypatch):
+    from fastapi import HTTPException
+
+    from lionagi.studio.services import sessions as svc
+
+    async def _exists(_session_id: str) -> bool:
+        return True
+
+    monkeypatch.setattr(svc, "session_exists", _exists)
+    cursor = svc._encode_session_stream_cursor("other-session", 100.0, "message-a", "branch-1")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.stream_session_route("requested-session", cursor=cursor)
+
+    assert exc_info.value.status_code == 400
+    assert "different session" in str(exc_info.value.detail)
+
+
+# ---------------------------------------------------------------------------
 # Tests 5.1–5.3 — session_exists
 
 
@@ -1171,6 +1249,33 @@ async def test_get_session_cursor_pages_are_stable_under_concurrent_appends(patc
     )
 
 
+async def test_a_page_that_delivered_nothing_hands_back_a_cursor_that_reaches_it(
+    patched_sessions_db, monkeypatch
+):
+    """The two halves of this are written separately -- one names the window it could not deliver, the other resolves that name -- and each half passes on its own while the pair is broken."""
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=10)
+
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 0)
+    starved = await svc.get_session("sess-paged", message_limit=3)
+    assert starved["branches"][0]["messages"] == [], "the budget admitted a row; the test is inert"
+    cursor = starved["message_next_cursor"]
+    assert cursor, "a window that delivered nothing must still be reachable"
+
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 1_000)
+    resumed = await svc.get_session("sess-paged", message_limit=3, message_cursor=cursor)
+    fresh = await svc.get_session("sess-paged", message_limit=3)
+
+    assert [m["id"] for m in resumed["branches"][0]["messages"]] == [
+        "pmsg-7",
+        "pmsg-8",
+        "pmsg-9",
+    ]
+    assert [m["id"] for m in resumed["branches"][0]["messages"]] == [
+        m["id"] for m in fresh["branches"][0]["messages"]
+    ]
+
+
 async def test_get_session_rejects_invalid_message_cursor(patched_sessions_db):
     svc, db_path = patched_sessions_db
     await seed_paginated_session(db_path, count=10)
@@ -1190,16 +1295,19 @@ async def test_get_session_full_aggregates_do_not_hydrate_every_message_row(
     calls: list[list[str]] = []
     original = svc._fetch_messages_by_ids
 
-    async def spy(db, ids):
+    async def spy(db, ids, **kwargs):
         calls.append(list(ids))
-        return await original(db, ids)
+        return await original(db, ids, **kwargs)
 
     monkeypatch.setattr(svc, "_fetch_messages_by_ids", spy)
 
     result = await svc.get_session("sess-paged", message_limit=3)
 
-    assert len(calls) == 1
-    assert calls[0] == ["pmsg-47", "pmsg-48", "pmsg-49"]
+    # Asserted as "no call was handed all fifty ids" rather than a call count, since counting
+    # calls would measure how readers are wired, not whether the whole history was decoded.
+    assert calls, "the spy never fired"
+    assert all(len(ids) <= 3 for ids in calls), calls
+    assert ["pmsg-47", "pmsg-48", "pmsg-49"] in calls
     assert result["message_stats"]["message_count"] == 50
 
 
@@ -1428,9 +1536,8 @@ async def test_get_session_does_not_reconstruct_a_duration_from_an_approximate_e
 
     assert approximate is not None
     assert approximate["duration_ms"] is None
-    # Control: the same shape with a measured end still reconstructs, so the
-    # assertion above is about the flag and not about a reconstruction that
-    # stopped working.
+    # Control: the same shape with a measured end still reconstructs, so the assertion above
+    # is about the flag, not a reconstruction that stopped working.
     assert measured is not None
     assert measured["duration_ms"] == 3500.0
 
@@ -1488,6 +1595,649 @@ async def test_session_reads_work_against_a_store_from_the_previous_schema_versi
     assert listed[0]["ended_at_is_approximate"] is False
 
 
+# What one session read is allowed to decode: row count, per-payload size, and
+# the total of the two.
+
+
+async def _seed_action_requests(
+    db_path: Path,
+    *,
+    branch_id: str,
+    session_id: str,
+    count: int,
+    start: int = 0,
+    content_for=None,
+    branch_created_at: float = 200.0,
+) -> None:
+    """One ActionRequest per file, in progression order, oldest first."""
+    ids = [f"{branch_id}-act-{i}" for i in range(start, start + count)]
+    await seed_branch(
+        db_path,
+        branch_id=branch_id,
+        session_id=session_id,
+        msg_ids=ids,
+        created_at=branch_created_at,
+    )
+    async with StateDB(db_path) as db:
+        for i, msg_id in enumerate(ids, start=start):
+            content = (
+                content_for(i)
+                if content_for
+                else {"function": "Read", "arguments": {"file_path": f"/run/f{i}.py"}}
+            )
+            await db.insert_message(
+                {
+                    "id": msg_id,
+                    "created_at": 100.0 + i,
+                    "content": content,
+                    "sender": "worker",
+                    "recipient": "tool",
+                    "role": "action",
+                    "node_metadata": {
+                        "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                    },
+                }
+            )
+
+
+async def test_action_hydration_stops_at_its_bound_and_keeps_the_newest(
+    patched_sessions_db, monkeypatch
+):
+    """A session accumulates action rows for as long as it runs, so the detail read has to stop somewhere."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 3)
+    await seed_session(db_path, session_id="sess-hydration")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-hydration", count=8)
+
+    detail = await svc.get_session("sess-hydration")
+
+    assert detail is not None
+    stats = detail["message_stats"]
+    assert stats["bounded"] is True
+    assert stats["tool_call_count"] == 3
+    # The counts are floors over the newest rows; the file union is not, since a reference can
+    # resolve against a name from anywhere in the run.
+    assert set(stats["files"]) == {f"/run/f{i}.py" for i in range(8)}
+
+
+async def test_an_unbounded_session_reports_the_whole_action_surface(patched_sessions_db):
+    """Control: the flag above has to be able to read false, or a caller cannot tell a bounded read from a complete one."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-hydration-small")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-hydration-small", count=3)
+
+    detail = await svc.get_session("sess-hydration-small")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is False
+    assert detail["message_stats"]["tool_call_count"] == 3
+
+
+async def test_the_hydration_budget_is_spent_on_the_newest_branch(patched_sessions_db, monkeypatch):
+    """The budget covers the session, not each branch, so where it is spent is a real choice."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 2)
+    await seed_session(db_path, session_id="sess-two-branches")
+    await _seed_action_requests(db_path, branch_id="older", session_id="sess-two-branches", count=3)
+    await _seed_action_requests(
+        db_path, branch_id="newer", session_id="sess-two-branches", count=3, start=10
+    )
+
+    detail = await svc.get_session("sess-two-branches")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is True
+    assert detail["message_stats"]["tool_call_count"] == 2
+    async with svc._open_db(db_path) as db:
+        by_branch, _ = await svc._fetch_action_messages(
+            db,
+            {
+                "older": [f"older-act-{i}" for i in range(3)],
+                "newer": [f"newer-act-{i}" for i in range(10, 13)],
+            },
+            limit=2,
+            budget=svc._HydrationBudget(),
+        )
+    # Both branches together hold six requests and the budget is two, so the
+    # two that survive must be the two newest in the session.
+    assert by_branch["older"] == []
+    assert [m["id"] for m in by_branch["newer"]] == ["newer-act-11", "newer-act-12"]
+    # The union is unbounded by that choice and still covers both branches.
+    assert set(detail["message_stats"]["files"]) == {
+        "/run/f0.py",
+        "/run/f1.py",
+        "/run/f2.py",
+        "/run/f10.py",
+        "/run/f11.py",
+        "/run/f12.py",
+    }
+
+
+async def test_the_action_cap_follows_recent_activity_not_branch_creation_order(
+    patched_sessions_db, monkeypatch
+):
+    """Branch creation order is not a proxy for recent activity, and using it as one starves exactly the branch a reader is watching."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 3)
+    await seed_session(db_path, session_id="sess-activity-order")
+    # Created first, still working: its rows carry the newest timestamps.
+    await _seed_action_requests(
+        db_path,
+        branch_id="orchestrator",
+        session_id="sess-activity-order",
+        count=4,
+        start=100,
+        branch_created_at=100.0,
+    )
+    # Created later, finished earlier: every row of it is older than every row
+    # above.
+    await _seed_action_requests(
+        db_path,
+        branch_id="worker",
+        session_id="sess-activity-order",
+        count=4,
+        start=0,
+        branch_created_at=300.0,
+    )
+
+    detail = await svc.get_session("sess-activity-order")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is True
+    async with svc._open_db(db_path) as db:
+        by_branch, _ = await svc._fetch_action_messages(
+            db,
+            {
+                "orchestrator": [f"orchestrator-act-{i}" for i in range(100, 104)],
+                "worker": [f"worker-act-{i}" for i in range(4)],
+            },
+            limit=3,
+            budget=svc._HydrationBudget(),
+        )
+    assert [m["id"] for m in by_branch["orchestrator"]] == [
+        "orchestrator-act-101",
+        "orchestrator-act-102",
+        "orchestrator-act-103",
+    ], "the cap kept the session's newest rows, wherever they live"
+    assert by_branch["worker"] == [], "and none of them came from the branch created last"
+
+
+async def test_an_oversized_action_payload_never_reaches_the_parser(
+    patched_sessions_db, monkeypatch
+):
+    """A row count bounds how many payloads are decoded, not what one costs."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    await seed_session(db_path, session_id="sess-oversized")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-oversized",
+        count=1,
+        content_for=lambda i: {"function": "Read", "arguments": {"file_path": "/run/" + "x" * 500}},
+    )
+
+    detail = await svc.get_session("sess-oversized")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is True
+    # Withheld, not dropped: the row still counts as a tool call since its identity and timing
+    # survive; only what the payload would have told us (the file touched) is gone.
+    assert detail["message_stats"]["tool_call_count"] == 1
+    assert detail["message_stats"]["files"] == []
+
+
+async def test_a_payload_inside_the_ceiling_is_parsed_and_reported_whole(patched_sessions_db):
+    """Control for the ceiling: an ordinary payload is decoded and the read does not call itself bounded."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-normal-payload")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-normal-payload", count=1)
+
+    detail = await svc.get_session("sess-normal-payload")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is False
+    assert detail["message_stats"]["tool_call_count"] == 1
+    assert detail["message_stats"]["files"] == ["/run/f0.py"]
+
+
+async def test_the_decoded_total_is_bounded_not_just_the_row_count_and_the_row_size(
+    patched_sessions_db, monkeypatch
+):
+    """The two bounds above are bounds on different things, and two bounds on different things multiply."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_CONTENT_CHARS", 400)
+    await seed_session(db_path, session_id="sess-total")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-total",
+        count=8,
+        content_for=lambda i: {
+            "function": "Read",
+            "arguments": {"file_path": f"/run/f{i}.py", "pad": "y" * 150},
+        },
+    )
+
+    detail = await svc.get_session("sess-total")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is True
+    # The walk stopped on the total, so it held fewer than the eight rows the
+    # row bound would have allowed.
+    assert detail["message_stats"]["tool_call_count"] < 8
+
+
+async def test_a_session_inside_every_bound_reports_itself_complete(patched_sessions_db):
+    """Control for the total: with all three bounds at their real values, an ordinary session is not bounded by any of them."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-complete")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-complete", count=5)
+
+    detail = await svc.get_session("sess-complete")
+
+    assert detail is not None
+    assert detail["message_stats"]["bounded"] is False
+    assert detail["message_stats"]["tool_call_count"] == 5
+
+
+async def test_the_walk_reads_from_the_newest_end_across_more_than_one_chunk(
+    patched_sessions_db, monkeypatch
+):
+    """Which end the walk starts from is only observable past one chunk."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-chunks")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-chunks", count=600)
+    ids = [f"b1-act-{i}" for i in range(600)]
+
+    async with svc._open_db(db_path) as db:
+        by_branch, bounded = await svc._fetch_action_messages(
+            db, {"b1": ids}, limit=3, budget=svc._HydrationBudget()
+        )
+
+    assert bounded is True
+    assert [m["id"] for m in by_branch["b1"]] == ["b1-act-597", "b1-act-598", "b1-act-599"]
+
+
+async def _content_chars(svc, db_path: Path, msg_id: str) -> int:
+    """How many characters one seeded row's payload occupies in the database."""
+    async with svc._open_db(db_path) as db:
+        cur = await db.execute("SELECT length(content) AS n FROM messages WHERE id = ?", (msg_id,))
+        row = await cur.fetchone()
+    assert row is not None, msg_id
+    return int(row["n"])
+
+
+async def test_one_read_has_one_content_budget_across_all_of_its_branches(
+    patched_sessions_db, monkeypatch
+):
+    """A ceiling each reader keeps for itself is not a ceiling on the read."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-budget-branches")
+    await _seed_action_requests(
+        db_path, branch_id="b-older", session_id="sess-budget-branches", count=4
+    )
+    await _seed_action_requests(
+        db_path, branch_id="b-newer", session_id="sess-budget-branches", count=4
+    )
+    row_chars = await _content_chars(svc, db_path, "b-older-act-0")
+    monkeypatch.setattr(svc, "MAX_HYDRATED_CONTENT_CHARS", 5 * row_chars)
+
+    detail = await svc.get_session("sess-budget-branches")
+
+    assert detail is not None
+    hydrated = sum(len(branch["messages"]) for branch in detail["branches"])
+    # Eight rows exist and the request is allowed five. A budget per branch
+    # would have admitted five to each and returned all eight.
+    assert hydrated == 5, [len(b["messages"]) for b in detail["branches"]]
+
+
+async def test_a_session_under_the_ceiling_still_returns_every_branch_whole(patched_sessions_db):
+    """Control for the budget: with the real ceiling in place, a two-branch session hands back both branches complete, so the assertion above is measuring the bound and not some other reason rows go missing."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-budget-ok")
+    await _seed_action_requests(db_path, branch_id="b-one", session_id="sess-budget-ok", count=4)
+    await _seed_action_requests(db_path, branch_id="b-two", session_id="sess-budget-ok", count=4)
+
+    detail = await svc.get_session("sess-budget-ok")
+
+    assert detail is not None
+    assert sum(len(branch["messages"]) for branch in detail["branches"]) == 8
+
+
+async def test_the_display_window_spends_from_the_budget_too(patched_sessions_db, monkeypatch):
+    """The window is bounded by its row count, which says nothing about what those rows cost: a page of rows each just under the per-row ceiling is a megabyte-scale read that no row count refuses."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-window-budget")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-window-budget", count=6)
+    row_chars = await _content_chars(svc, db_path, "b1-act-0")
+    monkeypatch.setattr(svc, "MAX_HYDRATED_CONTENT_CHARS", 2 * row_chars)
+
+    detail = await svc.get_session("sess-window-budget")
+
+    assert detail is not None
+    (branch,) = detail["branches"]
+    assert len(branch["messages"]) == 2
+    assert branch["message_total"] == 6
+    assert branch["messages_truncated"] is True
+
+
+async def test_the_tail_read_is_bounded_and_defers_the_rest_to_the_next_poll(
+    patched_sessions_db, monkeypatch
+):
+    """The stream poll is the reader with the least to lose from a bound and the most to lose from not having one: its cursor starts at zero, so a first poll against a long finished run matches everything th"""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-tail-budget")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-tail-budget", count=8)
+    row_chars = await _content_chars(svc, db_path, "b1-act-0")
+    monkeypatch.setattr(svc, "MAX_HYDRATED_CONTENT_CHARS", 3 * row_chars)
+
+    first = await svc.get_session_messages_after("sess-tail-budget", 0.0)
+    assert 0 < len(first) < 8, len(first)
+
+    # Poll the way the SSE generator does, advancing the cursor to the last row
+    # it was handed, until the tail runs dry.
+    seen = list(first)
+    for _ in range(20):
+        last = seen[-1]
+        more = await svc.get_session_messages_after(
+            "sess-tail-budget", last["timestamp"], last["id"], last["branch_id"]
+        )
+        if not more:
+            break
+        seen.extend(more)
+
+    # Deferred, not dropped: polling to exhaustion yields the whole
+    # progression, once each, in order.
+    assert [m["id"] for m in seen] == [f"b1-act-{i}" for i in range(8)]
+
+
+async def test_the_action_row_limit_bounds_what_is_decoded_not_only_what_is_returned(
+    patched_sessions_db,
+):
+    """Asking for three rows and getting three back says nothing about how many were read to produce them."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-decode-limit")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-decode-limit", count=10)
+    ids = [f"b1-act-{i}" for i in range(10)]
+    row_chars = await _content_chars(svc, db_path, "b1-act-0")
+    budget = svc._HydrationBudget(total=10 * row_chars)
+
+    async with svc._open_db(db_path) as db:
+        by_branch, bounded = await svc._fetch_action_messages(
+            db, {"b1": ids}, limit=3, budget=budget
+        )
+        fetched = by_branch["b1"]
+
+    assert len(fetched) == 3
+    assert bounded is True
+    # Every row here is the same size, so what the budget lost is a row count.
+    assert (10 * row_chars - budget.remaining) == 3 * row_chars
+
+
+async def test_a_stopped_action_walk_keeps_the_newest_rows_not_the_first_ones_read(
+    patched_sessions_db,
+):
+    """Stopping the walk early is only safe if the rows it stopped on are the ones worth keeping."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-newest-kept")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-newest-kept", count=10)
+    ids = [f"b1-act-{i}" for i in range(10)]
+
+    async with svc._open_db(db_path) as db:
+        by_branch, _ = await svc._fetch_action_messages(
+            db, {"b1": ids}, limit=3, budget=svc._HydrationBudget()
+        )
+        fetched = by_branch["b1"]
+
+    assert [m["id"] for m in fetched] == ["b1-act-7", "b1-act-8", "b1-act-9"]
+
+
+async def test_rows_whose_payload_was_withheld_still_spend_the_budget(
+    patched_sessions_db, monkeypatch
+):
+    """A character budget cannot bound rows that decode to nothing."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 3)
+    await seed_session(db_path, session_id="sess-withheld-rows")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-withheld-rows",
+        count=9,
+        content_for=lambda i: {
+            "function": "Read",
+            "arguments": {"file_path": f"/run/f{i}.py", "pad": "z" * 400},
+        },
+    )
+
+    detail = await svc.get_session("sess-withheld-rows")
+
+    assert detail is not None
+    (branch,) = detail["branches"]
+    # Every payload is past the ceiling, so the character budget is untouched.
+    # Only the row allowance can be what stops this.
+    assert all(m["content_withheld"] for m in branch["messages"]), branch["messages"]
+    assert len(branch["messages"]) == 3
+    assert branch["message_total"] == 9
+    assert branch["messages_truncated"] is True
+
+
+async def test_rows_inside_both_allowances_are_all_returned(patched_sessions_db, monkeypatch):
+    """Control for the row allowance: with the payloads inside the per-row ceiling and the count inside the allowance, nothing is withheld and nothing is dropped, so the assertion above is measuring the allowance."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 3)
+    await seed_session(db_path, session_id="sess-withheld-ok")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-withheld-ok", count=3)
+
+    detail = await svc.get_session("sess-withheld-ok")
+
+    assert detail is not None
+    (branch,) = detail["branches"]
+    assert [m["content_withheld"] for m in branch["messages"]] == [False, False, False]
+    assert len(branch["messages"]) == 3
+
+
+async def test_the_tail_read_stops_on_the_row_allowance_too(patched_sessions_db, monkeypatch):
+    """The stream poll has no row bound of its own -- its cursor is what ends it -- so a progression of withheld rows is where the allowance matters most: every one of them is free under a character budget."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 4)
+    await seed_session(db_path, session_id="sess-tail-rows")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-tail-rows",
+        count=12,
+        content_for=lambda i: {
+            "function": "Read",
+            "arguments": {"file_path": f"/run/f{i}.py", "pad": "z" * 400},
+        },
+    )
+
+    first = await svc.get_session_messages_after("sess-tail-rows", 0.0)
+
+    assert 0 < len(first) < 12, len(first)
+    assert all(m["content_withheld"] for m in first)
+
+    seen = list(first)
+    for _ in range(20):
+        last = seen[-1]
+        more = await svc.get_session_messages_after(
+            "sess-tail-rows", last["timestamp"], last["id"], last["branch_id"]
+        )
+        if not more:
+            break
+        seen.extend(more)
+    # Deferred, not dropped, exactly as under the character bound.
+    assert [m["id"] for m in seen] == [f"b1-act-{i}" for i in range(12)]
+
+
+async def test_the_newest_action_rows_are_chosen_across_the_whole_progression(
+    patched_sessions_db, monkeypatch
+):
+    """Progression order and time order are not the same order."""
+    import aiosqlite as aio
+
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ACTION_MESSAGES", 3)
+    await seed_session(db_path, session_id="sess-order-disagrees")
+    await _seed_action_requests(
+        db_path, branch_id="b1", session_id="sess-order-disagrees", count=600
+    )
+
+    # The three newest rows now sit at the front of the progression, more than
+    # a chunk away from its end.
+    async with aio.connect(str(db_path)) as raw:
+        for offset, msg_id in enumerate(["b1-act-0", "b1-act-1", "b1-act-2"]):
+            await raw.execute(
+                "UPDATE messages SET created_at = ? WHERE id = ?", (9_000.0 + offset, msg_id)
+            )
+        await raw.commit()
+
+    ids = [f"b1-act-{i}" for i in range(600)]
+    async with svc._open_db(db_path) as db:
+        by_branch, bounded = await svc._fetch_action_messages(
+            db, {"b1": ids}, limit=3, budget=svc._HydrationBudget()
+        )
+
+    assert bounded is True
+    assert [m["id"] for m in by_branch["b1"]] == ["b1-act-0", "b1-act-1", "b1-act-2"]
+
+
+async def test_choosing_which_action_rows_to_keep_reads_no_payloads(patched_sessions_db):
+    """Sorting a query that also selects content makes SQLite buffer every matching row -- payloads included -- into its sorter before it yields the first, so a bound applied afterwards is applied to work already done."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-select-cost")
+    await _seed_action_requests(db_path, branch_id="b1", session_id="sess-select-cost", count=8)
+    ids = [f"b1-act-{i}" for i in range(8)]
+
+    statements: list[str] = []
+
+    async with svc._open_db(db_path) as db:
+        original = db.execute
+
+        async def spy(sql, *args, **kwargs):
+            statements.append(" ".join(sql.split()))
+            return await original(sql, *args, **kwargs)
+
+        db.execute = spy  # type: ignore[method-assign]
+        await svc._fetch_action_messages(db, {"b1": ids}, limit=3, budget=svc._HydrationBudget())
+
+    assert statements, "the spy never fired"
+    # Control: the hydration pass does select content, so "no statement selects
+    # content" would pass for the wrong reason.
+    assert any("m.content" in sql for sql in statements), statements
+    ordering = [sql for sql in statements if "ORDER BY" in sql]
+    assert not [sql for sql in ordering if "m.content" in sql], ordering
+
+
+async def test_the_tail_read_charges_its_first_row_like_every_other(
+    patched_sessions_db, monkeypatch
+):
+    """Whether a row is taken and whether it was paid for are two questions."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 1)
+    await seed_session(db_path, session_id="sess-tail-first")
+    await seed_branch(
+        db_path,
+        branch_id="b1",
+        session_id="sess-tail-first",
+        msg_ids=["t-0", "t-1", "t-2"],
+    )
+    async with StateDB(db_path) as db:
+        for i in range(3):
+            await db.insert_message(
+                {
+                    "id": f"t-{i}",
+                    "created_at": 100.0 + i,
+                    "content": {"text": f"m{i}"},
+                    "sender": "user",
+                    "recipient": "worker",
+                    "role": "assistant",
+                    "node_metadata": {},
+                }
+            )
+
+    result = await svc.get_session_messages_after("sess-tail-first", 0.0)
+
+    assert [m["id"] for m in result] == ["t-0"]
+
+
+async def test_a_group_sharing_one_timestamp_is_split_and_resumed_without_loss(
+    patched_sessions_db, monkeypatch
+):
+    """A tie is not indivisible, because the cursor names a row and not a time."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 1)
+    await seed_session(db_path, session_id="sess-tail-tied")
+    ids = ["tie-0", "tie-1", "tie-2", "later"]
+    await seed_branch(db_path, branch_id="b1", session_id="sess-tail-tied", msg_ids=ids)
+    async with StateDB(db_path) as db:
+        for msg_id in ids:
+            await db.insert_message(
+                {
+                    "id": msg_id,
+                    "created_at": 500.0 if msg_id.startswith("tie-") else 900.0,
+                    "content": {"text": msg_id},
+                    "sender": "user",
+                    "recipient": "worker",
+                    "role": "assistant",
+                    "node_metadata": {},
+                }
+            )
+
+    first = await svc.get_session_messages_after("sess-tail-tied", 0.0)
+
+    # One row over the allowance is the entire overspend, even though three
+    # rows share the timestamp it stopped inside of.
+    assert [m["id"] for m in first] == ["tie-0"]
+
+    seen = list(first)
+    for _ in range(10):
+        last = seen[-1]
+        more = await svc.get_session_messages_after(
+            "sess-tail-tied", last["timestamp"], last["id"], last["branch_id"]
+        )
+        if not more:
+            break
+        seen.extend(more)
+
+    # The rest of the tie is deferred rather than lost, and nothing is handed
+    # over twice.
+    assert [m["id"] for m in seen] == ["tie-0", "tie-1", "tie-2", "later"]
+
+
+async def test_a_short_hydration_keeps_the_newest_of_what_was_asked_for(
+    patched_sessions_db, monkeypatch
+):
+    """Which rows survive a short read is a choice, so it is made rather than left to the query planner's row order."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_HYDRATED_ROWS", 2)
+    await seed_paginated_session(db_path, count=5)
+    ids = [f"pmsg-{i}" for i in range(5)]
+
+    async with svc._open_db(db_path) as db:
+        rows = await svc._fetch_messages_by_ids(db, ids, budget=svc._HydrationBudget())
+
+    assert [row["id"] for row in rows] == ["pmsg-3", "pmsg-4"]
+
+
+async def test_a_hydration_inside_the_allowance_returns_everything_asked_for(
+    patched_sessions_db,
+):
+    """Control for the test above: the selection only drops rows when it has to, and what it returns stays in the caller's order rather than the newest-first order the charging walks in."""
+    svc, db_path = patched_sessions_db
+    await seed_paginated_session(db_path, count=5)
+    ids = [f"pmsg-{i}" for i in range(5)]
+
+    async with svc._open_db(db_path) as db:
+        rows = await svc._fetch_messages_by_ids(db, ids, budget=svc._HydrationBudget())
+
+    assert [row["id"] for row in rows] == ids
+
+
 # Durable pause state — get_session projects whether a pause gate is held
 
 
@@ -1518,12 +2268,7 @@ async def test_a_run_with_no_controls_reports_no_pause_held(patched_sessions_db)
 
 @pytest.mark.asyncio
 async def test_a_queued_pause_is_already_held_before_the_poller_applies_it(patched_sessions_db):
-    """A pause counts from the moment it is queued, not from when it drains.
-
-    The window between the two is exactly when a reader is most likely to
-    reload, and reporting "not paused" there offers a second Pause for a gate
-    already on its way in.
-    """
+    """A pause counts from the moment it is queued, not from when it drains."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path)
     await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
@@ -1565,12 +2310,7 @@ async def test_a_later_resume_releases_the_pause_before_it(patched_sessions_db):
 
 @pytest.mark.asyncio
 async def test_a_pause_after_a_resume_holds_the_gate_again(patched_sessions_db):
-    """The control arm for the ordering: newest-wins has to work both ways.
-
-    A rule that simply answered "has there ever been a resume" would pass the
-    release case above and fail here, leaving a re-paused run readable as
-    running.
-    """
+    """The control arm for the ordering: newest-wins has to work both ways."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path)
     first = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
@@ -1588,11 +2328,7 @@ async def test_a_pause_after_a_resume_holds_the_gate_again(patched_sessions_db):
 
 @pytest.mark.asyncio
 async def test_a_rejected_pause_never_held_the_gate(patched_sessions_db):
-    """A control the runner refused is not a pause, and must not read as one.
-
-    Without this the refusal would present as a paused run: Pause disabled,
-    Resume offered, and neither describing what actually happened.
-    """
+    """A control the runner refused is not a pause, and must not read as one."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path)
     control_id = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
@@ -1606,12 +2342,7 @@ async def test_a_rejected_pause_never_held_the_gate(patched_sessions_db):
 
 @pytest.mark.asyncio
 async def test_a_steering_message_is_not_a_pause(patched_sessions_db):
-    """Only pause and resume speak to the gate.
-
-    A steer queued after a resume is the newest control row on the session, so
-    a rule reading "the newest row" without filtering the verb would answer
-    from it.
-    """
+    """Only pause and resume speak to the gate."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path)
     pause_id = await _queue_control(db_path, "sess-1", "pause", created_at=10.0)
@@ -1637,3 +2368,867 @@ async def test_one_runs_pause_does_not_leak_into_another(patched_sessions_db):
     assert paused is not None and other is not None
     assert paused["pause_is_held"] is True
     assert other["pause_is_held"] is False
+
+
+async def _drain_stream(response, *, limit: int = 200) -> list[dict]:
+    """Collect the SSE frames a stream emits, stopping at done."""
+    events: list[dict] = []
+    async for chunk in response.body_iterator:
+        for line in str(chunk).splitlines():
+            if not line.startswith("data: "):
+                continue
+            payload = json.loads(line[len("data: ") :])
+            events.append(payload)
+            if payload.get("type") == "done":
+                return events
+        if len(events) >= limit:  # pragma: no cover - runaway guard
+            raise AssertionError(f"stream did not finish within {limit} events")
+    return events
+
+
+@pytest.mark.asyncio
+async def test_a_finished_stream_drains_its_deferred_pages_before_saying_done(monkeypatch):
+    """A bounded read hands back one page and defers the rest, so reaching the end of a page is not reaching the end of the session."""
+    import lionagi.studio.services.sessions as svc
+
+    pages = [
+        [{"id": "m-1", "timestamp": 1.0, "branch_id": "b-1"}],
+        [{"id": "m-2", "timestamp": 2.0, "branch_id": "b-1"}],
+        [{"id": "m-3", "timestamp": 3.0, "branch_id": "b-1"}],
+    ]
+    seen_cursors: list[tuple] = []
+
+    async def _messages_after(session_id, after_ts, after_id=None, after_branch=None):
+        seen_cursors.append((after_ts, after_id, after_branch))
+        for page in pages:
+            if page[0]["timestamp"] > after_ts:
+                return page
+        return []
+
+    async def _stream_state(session_id):
+        return {"status": "completed"}
+
+    monkeypatch.setattr(svc, "session_exists", lambda _sid: _true())
+    monkeypatch.setattr(svc, "get_session_messages_after", _messages_after)
+    monkeypatch.setattr(svc, "get_session_stream_state", _stream_state)
+    monkeypatch.setattr(svc, "is_session_stream_done", lambda _state, now=None: True)
+
+    response = await svc.stream_session_route("sess-1", cursor=None)
+    events = await _drain_stream(response)
+
+    assert [e.get("id") for e in events if "id" in e] == ["m-1", "m-2", "m-3"]
+    assert events[-1] == {"type": "done"}
+    # The resume position is a row, not a timestamp: each page picks up from
+    # the last row of the one before it.
+    assert seen_cursors == [
+        (0.0, None, None),
+        (1.0, "m-1", "b-1"),
+        (2.0, "m-2", "b-1"),
+        (3.0, "m-3", "b-1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_page_that_does_not_move_the_cursor_does_not_spin(monkeypatch):
+    """Draining is only safe while the cursor advances."""
+    import lionagi.studio.services.sessions as svc
+
+    calls = {"n": 0}
+
+    async def _messages_after(session_id, after_ts, after_id=None, after_branch=None):
+        calls["n"] += 1
+        # No id and no usable timestamp, so the cursor cannot move.
+        return [{"id": None, "timestamp": 0.0, "branch_id": None}]
+
+    async def _stream_state(session_id):
+        return {"status": "completed"}
+
+    monkeypatch.setattr(svc, "session_exists", lambda _sid: _true())
+    monkeypatch.setattr(svc, "get_session_messages_after", _messages_after)
+    monkeypatch.setattr(svc, "get_session_stream_state", _stream_state)
+    monkeypatch.setattr(svc, "is_session_stream_done", lambda _state, now=None: True)
+
+    response = await svc.stream_session_route("sess-1", cursor=None)
+    events = await _drain_stream(response)
+
+    assert events[-1] == {"type": "done"}
+    assert calls["n"] == 1, "a stuck cursor must not be re-read in a tight loop"
+
+
+async def _true() -> bool:
+    return True
+
+
+def test_a_window_the_budget_stopped_inside_resumes_at_the_oldest_row_delivered():
+    """The window is picked from the progression before anything is decoded, and the budget then admits from the newest end."""
+    import lionagi.studio.services.sessions as svc
+
+    window = ["m-1", "m-2", "m-3", "m-4"]  # oldest first, as the progression orders them
+
+    # Only the newest two fit.
+    has_older, anchor = svc._resume_anchor(
+        window,
+        ["m-3", "m-4"],
+        has_older=True,
+        next_anchor="m-1",
+        current_anchor=None,
+        budget_refused=True,
+    )
+
+    assert anchor == "m-3", "the next page has to begin where this one actually stopped"
+    assert has_older is True
+
+
+def test_a_fully_delivered_window_keeps_the_anchor_the_progression_chose():
+    """Control: with nothing refused there is nothing to resume, so the paging anchor is the one the window logic already computed."""
+    import lionagi.studio.services.sessions as svc
+
+    window = ["m-1", "m-2"]
+
+    assert svc._resume_anchor(
+        window,
+        ["m-1", "m-2"],
+        has_older=True,
+        next_anchor="m-1",
+        current_anchor="m-9",
+        budget_refused=True,
+    ) == (True, "m-1")
+    # And an exhausted branch stays exhausted rather than acquiring an anchor.
+    assert svc._resume_anchor(
+        [], [], has_older=False, next_anchor=None, current_anchor=None, budget_refused=False
+    ) == (False, None)
+
+
+def test_a_window_that_fit_nothing_is_asked_for_again_rather_than_skipped():
+    """Nothing was delivered, so the window has not been read."""
+    import lionagi.studio.services.sessions as svc
+
+    has_older, anchor = svc._resume_anchor(
+        ["m-1", "m-2"],
+        [],
+        has_older=True,
+        next_anchor="m-1",
+        current_anchor="m-3",
+        budget_refused=True,
+    )
+
+    assert anchor == "m-3", "the caller's own anchor repeats the window it did not get"
+    assert has_older is True
+
+    # A first page has no caller anchor to repeat, so it names the newest end instead --
+    # returning None would leave the branch out of the next cursor and read as exhausted.
+    assert svc._resume_anchor(
+        ["m-1", "m-2"],
+        [],
+        has_older=True,
+        next_anchor="m-1",
+        current_anchor=None,
+        budget_refused=True,
+    ) == (True, svc._NEWEST_ANCHOR)
+
+
+def test_a_window_whose_rows_are_all_absent_advances_instead_of_repeating():
+    """An empty page has two causes and only one of them is a stop."""
+    import lionagi.studio.services.sessions as svc
+
+    has_older, anchor = svc._resume_anchor(
+        ["gone-1", "gone-2"],
+        [],
+        has_older=True,
+        next_anchor="older-1",
+        current_anchor="gone-1",
+        budget_refused=False,
+    )
+
+    assert anchor == "older-1", "an absent window must not be handed back as the next page"
+    assert has_older is True
+
+    # The control that keeps this from reading as "empty pages always advance":
+    # the same shape with the budget implicated still repeats the window.
+    assert svc._resume_anchor(
+        ["gone-1", "gone-2"],
+        [],
+        has_older=True,
+        next_anchor="older-1",
+        current_anchor="gone-1",
+        budget_refused=True,
+    ) == (True, "gone-1")
+
+
+def test_the_newest_end_anchor_selects_the_window_an_anchorless_read_would():
+    """The sentinel has to mean the same window a first read picks, or the page it resumes is not the page that was missed."""
+    import lionagi.studio.services.sessions as svc
+
+    progression = ["m-1", "m-2", "m-3", "m-4", "m-5"]
+    fresh = svc._window_message_ids(
+        progression, branch_id="b", limit=2, cursor_anchors=None, legacy_offset=0
+    )
+    resumed = svc._window_message_ids(
+        progression,
+        branch_id="b",
+        limit=2,
+        cursor_anchors={"b": svc._NEWEST_ANCHOR},
+        legacy_offset=0,
+    )
+
+    assert fresh == resumed == (["m-4", "m-5"], True, "m-4")
+    # And a branch genuinely absent from the cursor still reads as exhausted,
+    # which is the meaning the sentinel exists to stop overloading.
+    assert svc._window_message_ids(
+        progression, branch_id="b", limit=2, cursor_anchors={}, legacy_offset=0
+    ) == ([], False, None)
+
+
+async def test_a_store_with_no_action_message_types_still_reads(patched_sessions_db):
+    """The file union returns a pair and its caller unpacks two names."""
+    import aiosqlite
+
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-no-action-types")
+
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "DELETE FROM message_types WHERE lion_class IN "
+            f"({','.join('?' for _ in svc._ACTION_LION_CLASSES)})",
+            svc._ACTION_LION_CLASSES,
+        )
+        await db.commit()
+        remaining = await (
+            await db.execute(
+                "SELECT COUNT(*) FROM message_types WHERE lion_class IN "
+                f"({','.join('?' for _ in svc._ACTION_LION_CLASSES)})",
+                svc._ACTION_LION_CLASSES,
+            )
+        ).fetchone()
+    assert remaining[0] == 0, "the action types are still registered; the test is inert"
+
+    detail = await svc.get_session("sess-no-action-types")
+
+    assert detail is not None
+    assert detail["message_stats"]["files"] == []
+    assert detail["message_stats"]["files_bounded"] is False
+
+
+async def test_a_withheld_action_row_still_carries_the_link_to_its_other_half(
+    patched_sessions_db, monkeypatch
+):
+    """The pairing between an action request and its response lives in the payload, which is exactly what withholding removes."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    await seed_session(db_path, session_id="sess-pairing")
+    await seed_branch(
+        db_path, branch_id="br-pairing", session_id="sess-pairing", msg_ids=["req-1", "resp-1"]
+    )
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "req-1",
+                "created_at": 110.0,
+                "content": {
+                    "function": "Read",
+                    "arguments": {"file_path": "/run/" + "x" * 500},
+                    "action_response_id": "resp-1",
+                },
+                "sender": "worker",
+                "recipient": "tool",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                },
+            }
+        )
+        await db.insert_message(
+            {
+                "id": "resp-1",
+                "created_at": 120.0,
+                "content": {"output": "y" * 500, "action_request_id": "req-1"},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+
+    result = await svc.get_session_messages_after("sess-pairing", 100.0)
+
+    by_id = {row["id"]: row for row in result}
+    assert by_id["req-1"]["content_withheld"] is True
+    assert by_id["resp-1"]["content_withheld"] is True
+    assert by_id["req-1"]["action_response_id"] == "resp-1"
+    assert by_id["resp-1"]["action_request_id"] == "req-1"
+
+
+async def test_a_row_that_kept_its_payload_does_not_grow_the_lifted_link_fields(
+    patched_sessions_db, monkeypatch
+):
+    """Control for the test above."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 20_000)
+    await seed_session(db_path, session_id="sess-pairing-ok")
+    await seed_branch(
+        db_path, branch_id="br-pairing-ok", session_id="sess-pairing-ok", msg_ids=["req-2"]
+    )
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "req-2",
+                "created_at": 110.0,
+                "content": {
+                    "function": "Read",
+                    "arguments": {"file_path": "/run/small"},
+                    "action_response_id": "resp-2",
+                },
+                "sender": "worker",
+                "recipient": "tool",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                },
+            }
+        )
+
+    [row] = await svc.get_session_messages_after("sess-pairing-ok", 100.0)
+
+    assert row["content_withheld"] is False
+    assert "action_response_id" not in row
+    assert row["content"]["action_response_id"] == "resp-2"
+
+
+async def test_the_file_union_stops_at_its_ceiling_and_says_that_it_did(
+    patched_sessions_db, monkeypatch
+):
+    """The union is over the whole run by design, and how many distinct names a run touches is decided by its own tool arguments."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATHS", 3)
+    await seed_session(db_path, session_id="sess-files-capped")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-files-capped",
+        count=10,
+        content_for=lambda i: {"function": "Read", "arguments": {"file_path": f"/run/f{i}"}},
+    )
+
+    detail = await svc.get_session("sess-files-capped")
+
+    assert detail is not None
+    assert len(detail["message_stats"]["files"]) == 3
+    assert detail["message_stats"]["files_bounded"] is True
+
+
+async def test_a_run_under_the_ceiling_returns_every_path_and_says_it_was_complete(
+    patched_sessions_db, monkeypatch
+):
+    """Control. Without it a union that always reports bounded, or one capped to nothing, satisfies the assertion above."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATHS", 50)
+    await seed_session(db_path, session_id="sess-files-whole")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-files-whole",
+        count=4,
+        content_for=lambda i: {"function": "Read", "arguments": {"file_path": f"/run/f{i}"}},
+    )
+
+    detail = await svc.get_session("sess-files-whole")
+
+    assert detail is not None
+    assert detail["message_stats"]["files"] == ["/run/f0", "/run/f1", "/run/f2", "/run/f3"]
+    assert detail["message_stats"]["files_bounded"] is False
+
+
+async def test_the_file_union_stops_on_weight_as_well_as_on_count(patched_sessions_db, monkeypatch):
+    """A count says how many names come back and nothing about how long each one is, and a path is only as short as the row it was read out of."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATHS", 5_000)
+    await seed_session(db_path, session_id="sess-files-heavy")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-files-heavy",
+        count=6,
+        content_for=lambda i: {
+            "function": "Read",
+            "arguments": {"file_path": f"/run/{'d' * 300}/f{i}"},
+        },
+    )
+
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATH_BYTES", 900)
+    cut = await svc.get_session("sess-files-heavy")
+
+    assert cut is not None
+    assert len(cut["message_stats"]["files"]) < 6
+    assert cut["message_stats"]["files_bounded"] is True
+
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_PATH_BYTES", 1_048_576)
+    whole = await svc.get_session("sess-files-heavy")
+
+    assert whole is not None
+    assert len(whole["message_stats"]["files"]) == 6
+    assert whole["message_stats"]["files_bounded"] is False
+
+
+async def test_the_file_union_stops_on_rows_read_even_when_the_answer_is_small(
+    patched_sessions_db, monkeypatch
+):
+    """The two ceilings on the answer bound what comes back."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-files-rescanned")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-files-rescanned",
+        count=12,
+        content_for=lambda i: {"function": "Read", "arguments": {"file_path": "/run/same.py"}},
+    )
+
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_ROWS_SCANNED", 5)
+    cut = await svc.get_session("sess-files-rescanned")
+
+    assert cut is not None
+    assert cut["message_stats"]["files"] == ["/run/same.py"]
+    assert cut["message_stats"]["files_bounded"] is True
+
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_ROWS_SCANNED", 200_000)
+    whole = await svc.get_session("sess-files-rescanned")
+
+    assert whole is not None
+    assert whole["message_stats"]["files"] == ["/run/same.py"]
+    assert whole["message_stats"]["files_bounded"] is False
+
+
+async def test_the_scan_ceiling_charges_for_rows_the_query_filters_out(
+    patched_sessions_db, monkeypatch
+):
+    """A ceiling that counts replies is not a ceiling on the walk."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-files-filtered")
+
+    chatter = [f"b1-chat-{i}" for i in range(40)]
+    prog = [*chatter, "b1-act-0"]
+    await seed_branch(db_path, branch_id="b1", session_id="sess-files-filtered", msg_ids=prog)
+    async with StateDB(db_path) as db:
+        for i, msg_id in enumerate(chatter):
+            await db.insert_message(
+                {
+                    "id": msg_id,
+                    "created_at": 100.0 + i,
+                    "content": {"assistant_response": "thinking out loud"},
+                    "sender": "worker",
+                    "recipient": "user",
+                    "role": "assistant",
+                    "node_metadata": {
+                        "lion_class": (
+                            "lionagi.protocols.messages.assistant_response.AssistantResponse"
+                        )
+                    },
+                }
+            )
+        await db.insert_message(
+            {
+                "id": "b1-act-0",
+                "created_at": 200.0,
+                "content": {"function": "Read", "arguments": {"file_path": "/run/only.py"}},
+                "sender": "worker",
+                "recipient": "tool",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                },
+            }
+        )
+
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_ROWS_SCANNED", 5)
+    cut = await svc.get_session("sess-files-filtered")
+
+    assert cut is not None
+    assert cut["message_stats"]["files"] == ["/run/only.py"]
+    assert cut["message_stats"]["files_bounded"] is True
+
+    # Same store, same one returned row, ceiling raised past the walk: only the
+    # ids the query never matched can be what moved the flag.
+    monkeypatch.setattr(svc, "MAX_ACTION_FILE_ROWS_SCANNED", 200_000)
+    whole = await svc.get_session("sess-files-filtered")
+
+    assert whole is not None
+    assert whole["message_stats"]["files"] == ["/run/only.py"]
+    assert whole["message_stats"]["files_bounded"] is False
+
+
+async def test_an_oversized_action_row_drops_its_path_and_says_so(patched_sessions_db, monkeypatch):
+    """The one cut with no counter behind it."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-files-oversized")
+    await _seed_action_requests(
+        db_path,
+        branch_id="b1",
+        session_id="sess-files-oversized",
+        count=2,
+        content_for=lambda i: {
+            "function": "Read",
+            "arguments": {
+                "file_path": f"/run/f{i}.py",
+                **({"bulk": "x" * 4_000} if i == 1 else {}),
+            },
+        },
+    )
+
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 500)
+    cut = await svc.get_session("sess-files-oversized")
+
+    assert cut is not None
+    assert cut["message_stats"]["files"] == ["/run/f0.py"]
+    assert cut["message_stats"]["files_bounded"] is True
+
+    # Control: the same two rows with room for both. The heavy row is the only
+    # difference between the reads, so it is the only thing the flag reported.
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 1_048_576)
+    whole = await svc.get_session("sess-files-oversized")
+
+    assert whole is not None
+    assert whole["message_stats"]["files"] == ["/run/f0.py", "/run/f1.py"]
+    assert whole["message_stats"]["files_bounded"] is False
+
+
+async def test_a_lifted_link_id_cannot_carry_the_payload_that_was_just_withheld(
+    patched_sessions_db, monkeypatch
+):
+    """The ids are a link, and nothing constrains what a writer puts under them."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    await seed_session(db_path, session_id="sess-idcap")
+    await seed_branch(db_path, branch_id="br-idcap", session_id="sess-idcap", msg_ids=["req-cap"])
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "req-cap",
+                "created_at": 110.0,
+                "content": {"output": "y" * 500, "action_request_id": "Z" * 100_000},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+
+    result = await svc.get_session_messages_after("sess-idcap", 100.0)
+
+    row = {r["id"]: r for r in result}["req-cap"]
+    assert row["content_withheld"] is True
+    assert row["content"] is None
+    lifted = row["action_request_id"]
+    assert len(lifted) == svc.MAX_ACTION_ID_CHARS, (
+        f"a withheld row emitted {len(lifted)} characters through its link id"
+    )
+
+
+async def test_lifting_a_link_id_does_not_read_a_payload_of_unbounded_size(
+    patched_sessions_db, monkeypatch
+):
+    """Capping the id that comes back does not cap the work of finding it."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    monkeypatch.setattr(svc, "MAX_ACTION_ID_SCAN_CHARS", 2_000)
+    await seed_session(db_path, session_id="sess-idscan")
+    await seed_branch(
+        db_path,
+        branch_id="br-idscan",
+        session_id="sess-idscan",
+        msg_ids=["within-scan", "past-scan"],
+    )
+    async with StateDB(db_path) as db:
+        # Withheld, and short enough that finding the link is bounded work -- the control for
+        # the row below, without which a lifted id going missing looks like extraction failing.
+        await db.insert_message(
+            {
+                "id": "within-scan",
+                "created_at": 110.0,
+                "content": {"output": "y" * 500, "action_request_id": "req-within"},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+        await db.insert_message(
+            {
+                "id": "past-scan",
+                "created_at": 120.0,
+                "content": {"output": "z" * 4_000, "action_request_id": "req-past"},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+
+    result = await svc.get_session_messages_after("sess-idscan", 100.0)
+
+    by_id = {r["id"]: r for r in result}
+    assert set(by_id) == {"within-scan", "past-scan"}, (
+        "a row past the scan ceiling has to stay listed -- it is withheld, not dropped"
+    )
+    assert by_id["within-scan"]["action_request_id"] == "req-within", (
+        "the extraction stopped working, so this says nothing about the ceiling"
+    )
+    assert by_id["past-scan"]["content_withheld"] is True
+    assert by_id["past-scan"].get("action_request_id") is None, (
+        "a payload past the scan ceiling was parsed to lift a link out of it"
+    )
+
+
+async def test_the_work_of_lifting_link_ids_is_bounded_across_rows_not_only_per_row(
+    patched_sessions_db, monkeypatch
+):
+    """A per-row ceiling still lets a run of withheld rows add up to unbounded parsing."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    monkeypatch.setattr(svc, "MAX_ACTION_ID_SCAN_CHARS", 100_000)
+    monkeypatch.setattr(svc, "MAX_SCANNED_CONTENT_CHARS", 2_500)
+    await seed_session(db_path, session_id="sess-scansum")
+    msg_ids = ["sum-a", "sum-b", "sum-c"]
+    await seed_branch(db_path, branch_id="br-scansum", session_id="sess-scansum", msg_ids=msg_ids)
+    async with StateDB(db_path) as db:
+        for offset, msg_id in enumerate(msg_ids):
+            await db.insert_message(
+                {
+                    "id": msg_id,
+                    "created_at": 110.0 + offset,
+                    # ~1040 bytes stored, so two rows fit under the 2,500 ceiling and the
+                    # third does not. Every row is far below the per-row ceiling above, so
+                    # only the total can be what stops the third.
+                    "content": {"output": "y" * 1_000, "action_request_id": f"req-{msg_id}"},
+                    "sender": "tool",
+                    "recipient": "worker",
+                    "role": "action",
+                    "node_metadata": {
+                        "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                    },
+                }
+            )
+
+    result = await svc.get_session_messages_after("sess-scansum", 100.0)
+
+    by_id = {r["id"]: r for r in result}
+    assert set(by_id) == set(msg_ids), "a row past the total ceiling is withheld, not dropped"
+    assert all(by_id[m]["content_withheld"] is True for m in msg_ids)
+    assert by_id["sum-a"]["action_request_id"] == "req-sum-a", (
+        "the extraction stopped working, so this says nothing about the ceiling"
+    )
+    assert by_id["sum-b"]["action_request_id"] == "req-sum-b"
+    assert by_id["sum-c"].get("action_request_id") is None, (
+        "the total scan ceiling did not bind, so a run of withheld rows parses without limit"
+    )
+
+
+async def test_the_scan_allowance_is_spent_across_calls_not_refreshed_by_each(
+    patched_sessions_db, monkeypatch
+):
+    """One request reads many branches and aggregates; a per-call ceiling is N ceilings."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    monkeypatch.setattr(svc, "MAX_ACTION_ID_SCAN_CHARS", 100_000)
+    await seed_session(db_path, session_id="sess-scanshared")
+    msg_ids = ["shared-a", "shared-b", "shared-c"]
+    await seed_branch(
+        db_path, branch_id="br-scanshared", session_id="sess-scanshared", msg_ids=msg_ids
+    )
+    async with StateDB(db_path) as db:
+        for offset, msg_id in enumerate(msg_ids):
+            await db.insert_message(
+                {
+                    "id": msg_id,
+                    "created_at": 110.0 + offset,
+                    "content": {"output": "y" * 1_000, "action_request_id": f"req-{msg_id}"},
+                    "sender": "tool",
+                    "recipient": "worker",
+                    "role": "action",
+                    "node_metadata": {
+                        "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                    },
+                }
+            )
+
+    sized = [(m, 1_040) for m in msg_ids]
+    budget = svc._HydrationBudget(scan=2_500)
+    async with svc._open_db(db_path) as db:
+        first = await svc._fetch_action_link_ids(db, sized, budget)
+        second = await svc._fetch_action_link_ids(db, sized, budget)
+
+    assert len(first) == 2, (
+        f"the first call should spend the allowance on two rows, got {len(first)}"
+    )
+    assert second == {}, (
+        "the allowance refreshed for the second call, so a request making N calls gets N ceilings"
+    )
+
+
+def test_the_total_scan_ceiling_is_a_real_ceiling():
+    """The arm above sets the constant, so it cannot see the shipped value change."""
+    from lionagi.studio.services import sessions as sessions_svc
+
+    assert 0 < sessions_svc.MAX_SCANNED_CONTENT_CHARS <= 256 * 1_048_576
+
+
+async def test_one_row_of_unparseable_content_does_not_take_the_whole_read_down(
+    patched_sessions_db, monkeypatch
+):
+    """json_extract raises for the statement, not for the offending row."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    await seed_session(db_path, session_id="sess-badjson")
+    await seed_branch(
+        db_path, branch_id="br-badjson", session_id="sess-badjson", msg_ids=["ok-1", "bad-1"]
+    )
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "ok-1",
+                "created_at": 110.0,
+                "content": {"output": "y" * 500, "action_request_id": "req-ok"},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+        # Written past the JSON-typed column on purpose: this is the foreign
+        # writer, and going through insert_message could not produce it.
+        await db.execute(
+            "UPDATE messages SET content = ? WHERE id = ?",
+            ("this is not json at all", "ok-1"),
+        )
+        await db.insert_message(
+            {
+                "id": "bad-1",
+                "created_at": 120.0,
+                "content": {"output": "z" * 500, "action_request_id": "req-bad"},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+
+    result = await svc.get_session_messages_after("sess-badjson", 100.0)
+
+    by_id = {r["id"]: r for r in result}
+    assert set(by_id) == {"ok-1", "bad-1"}, "the unparseable row took the read down with it"
+    assert (
+        "action_request_id" not in by_id["ok-1"] or by_id["ok-1"].get("action_request_id") is None
+    )
+    assert by_id["bad-1"]["action_request_id"] == "req-bad", (
+        "the healthy row must still get its link lifted"
+    )
+
+
+async def test_an_oversized_response_alone_does_not_report_the_file_union_as_cut(
+    patched_sessions_db, monkeypatch
+):
+    """A response withholds nothing the union wanted."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    await seed_session(db_path, session_id="sess-union")
+    await seed_branch(
+        db_path, branch_id="br-union", session_id="sess-union", msg_ids=["req-s", "resp-big"]
+    )
+    async with StateDB(db_path) as db:
+        await db.insert_message(
+            {
+                "id": "req-s",
+                "created_at": 110.0,
+                "content": {"function": "Read", "arguments": {"file_path": "/run/a"}},
+                "sender": "worker",
+                "recipient": "tool",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_request.ActionRequest"
+                },
+            }
+        )
+        await db.insert_message(
+            {
+                "id": "resp-big",
+                "created_at": 120.0,
+                "content": {"output": "y" * 5000, "action_request_id": "req-s"},
+                "sender": "tool",
+                "recipient": "worker",
+                "role": "action",
+                "node_metadata": {
+                    "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                },
+            }
+        )
+
+    detail = await svc.get_session("sess-union")
+
+    assert detail is not None
+    stats = detail["message_stats"]
+    assert stats["files"] == ["/run/a"], stats["files"]
+    assert stats["files_bounded"] is False, "an oversized response marked a complete union as cut"
+
+
+async def test_a_malformed_action_row_does_not_make_the_session_unreadable(
+    patched_sessions_db,
+):
+    """json_extract aborts the whole statement, not the row that upset it."""
+    svc, db_path = patched_sessions_db
+    await seed_session(db_path, session_id="sess-malformed")
+    await _seed_action_requests(
+        db_path, branch_id="br-malformed", session_id="sess-malformed", count=2
+    )
+    async with svc._open_db(db_path) as db:
+        await db.execute(
+            "UPDATE messages SET content = ? WHERE id = ?",
+            ("this row is not json", "br-malformed-act-0"),
+        )
+        await db.commit()
+
+    result = await svc.get_session("sess-malformed")
+
+    # Reached at all, which is the finding. And the readable row still gives up
+    # its path, so the guard skipped the bad row rather than the extraction.
+    assert result["message_stats"]["files"] == ["/run/f1.py"]
+
+
+async def test_an_oversized_row_arrives_withheld_rather_than_vanishing(
+    patched_sessions_db, monkeypatch
+):
+    """A withheld payload is decoded by nobody, so it costs no characters."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 50)
+    await seed_paginated_session(db_path, count=3)
+    async with svc._open_db(db_path) as db:
+        await db.execute(
+            "UPDATE messages SET content = ? WHERE id = ?",
+            (json.dumps({"text": "x" * 500}), "pmsg-1"),
+        )
+        await db.commit()
+
+    async with svc._open_db(db_path) as db:
+        rows = await svc._fetch_messages_by_ids(
+            db,
+            ["pmsg-0", "pmsg-1", "pmsg-2"],
+            budget=svc._HydrationBudget(total=100),
+        )
+
+    by_id = {row["id"]: row for row in rows}
+    assert sorted(by_id) == ["pmsg-0", "pmsg-1", "pmsg-2"]
+    assert by_id["pmsg-1"]["content_withheld"] is True
+    assert by_id["pmsg-1"]["content"] is None
+    # The rows that fit are untouched, so the allowance still means something.
+    assert by_id["pmsg-0"]["content_withheld"] is False
+    assert by_id["pmsg-2"]["content_withheld"] is False

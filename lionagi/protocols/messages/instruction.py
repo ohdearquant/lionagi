@@ -117,17 +117,6 @@ class InstructionContent(MessageContent):
 
         return DataClass.to_dict(self, exclude=frozenset(base_exclude))
 
-    def with_updates(self, **kwargs: Any) -> InstructionContent:
-        # to_dict can't round-trip type/BaseModel response_format/structure, so carry
-        # them forward here unless the caller explicitly overrides (None clears them).
-        if "response_format" not in kwargs and self.response_format is not None:
-            kwargs["response_format"] = self.response_format
-            if "structure" not in kwargs and self.structure is not None:
-                kwargs["structure"] = self.structure
-        dict_ = self.to_dict()
-        dict_.update(kwargs)
-        return type(self)(**dict_)
-
     @property
     def role(self) -> MessageRole:
         return MessageRole.USER

@@ -245,7 +245,7 @@
       "createWorkflow": "新規ワークフロー",
       "createAgent": "新規エージェント",
       "allSkill": "スキルが見つかりません。",
-      "allSkillHint": "~/.lionagi/skills/<name>/ に SKILL.md を追加するとここに表示されます。",
+      "allSkillHint": "~/.lionagi/skills/NAME/ に SKILL.md を追加するとここに表示されます。",
       "allPlugin": "プラグインが見つかりません。",
       "allPluginHint": "~/.claude/plugins/ にプラグインをインストールするとここに表示されます。"
     },
@@ -833,6 +833,9 @@
       "noRuns": "実行はまだありません",
       "ago": "前",
       "cancel": "キャンセル",
+      "discardWarning": "未保存の変更があります。",
+      "keepEditing": "編集を続ける",
+      "discardChanges": "変更を破棄",
       "save": "変更を保存",
       "saving": "保存中…",
       "saveFailed": "保存に失敗しました。",

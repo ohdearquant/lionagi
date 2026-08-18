@@ -50,6 +50,15 @@ def test_mode_to_dict_excludes_empty():
     assert "conflicts_with" not in d
 
 
+def test_mode_with_updates_preserves_empty_compatibility_values():
+    mode = Mode(name="", description="before")
+
+    updated = mode.with_updates(description="after")
+
+    assert updated.name == ""
+    assert updated.description == "after"
+
+
 def test_mode_kind_is_mode():
     m = Mode(name="x", description="test")
     assert m.kind == PatternKind.MODE

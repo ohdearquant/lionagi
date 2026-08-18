@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import heapq
 import json
+import math
 import time
 from typing import Any
 
@@ -102,15 +104,173 @@ def _graph_from_metadata(raw: str | None) -> dict[str, Any] | None:
     return {"nodes": nodes, "edges": edges} if nodes else None
 
 
+# What one session read is allowed to decode: three independent ceilings (rows, per-row size,
+# total decoded), since none of them bounds the others.
+
+# What one message payload may decode to, enforced in SQL before a parser runs. An oversized
+# row is withheld (not dropped), and the read reports itself as bounded.
+MAX_ACTION_CONTENT_CHARS = 1_048_576
+
+# What one session read may decode in total, across every row it holds.
+MAX_HYDRATED_CONTENT_CHARS = 64 * 1_048_576
+
+# How many rows one session read may hold, across every reader. A withheld row decodes nothing,
+# so without this a stream of withheld rows would cost nothing and run unbounded.
+MAX_HYDRATED_ROWS = 50_000
+
+# What one session read may put through a JSON parser to recover withheld rows' link ids. The
+# decode ceiling does not cover this: a withheld row decodes nothing, so a run of withheld rows
+# costs no characters and would leave the parsing work unbounded.
+MAX_SCANNED_CONTENT_CHARS = 64 * 1_048_576
+
+# How many action rows one session detail pulls, newest first, across all branches; every
+# aggregate derived from action messages reads this same set and reports when it binds.
+MAX_HYDRATED_ACTION_MESSAGES = 20_000
+
+# How many distinct file paths one session detail will collect, over the whole run. Generous
+# enough that an ordinary session never meets it; reported when it does.
+MAX_ACTION_FILE_PATHS = 5_000
+
+# What the file-path union may weigh in bytes, since a row count alone says nothing about path
+# length. Both ceilings report through the same cut flag.
+MAX_ACTION_FILE_PATH_BYTES = 1_048_576
+
+# How many action rows the file-path union will scan before stopping -- bounds the work of
+# reaching an answer, not the answer itself.
+MAX_ACTION_FILE_ROWS_SCANNED = 200_000
+
+# Max length for an extracted action_request_id/action_response_id link, cut well below any real
+# id so a writer cannot route a payload out through those keys.
+MAX_ACTION_ID_CHARS = 256
+
+# How much text SQLite may scan to recover a withheld row's link id -- separate from the decode
+# ceiling because finding a short id still means parsing the whole document.
+MAX_ACTION_ID_SCAN_CHARS = 16 * MAX_ACTION_CONTENT_CHARS
+
+# Only a withheld row needs its ids extracted this way; a kept payload already carries them.
+# json_valid guards non-JSON content, since json_extract would otherwise abort the whole query.
+# The length guard is in the WHERE rather than the column, so a row past the scan ceiling is
+# filtered before the parser sees it instead of parsed and then discarded.
+_ACTION_ID = (
+    "substr(json_extract(CASE WHEN json_valid(m.content) THEN m.content END, '$.{key}'), "
+    f"1, {MAX_ACTION_ID_CHARS})"
+)
+
+_BOUNDED_CONTENT_COLUMNS = (
+    "CASE WHEN length(m.content) > ? THEN NULL ELSE m.content END AS content, "
+    "CASE WHEN length(m.content) > ? THEN 1 ELSE 0 END AS content_oversized, "
+    "CASE WHEN length(m.content) > ? THEN 0 ELSE length(m.content) END AS content_length, "
+    # The charged length is 0 for a withheld row, so its true size is carried separately to
+    # bound what the link-id pass may parse.
+    "length(m.content) AS content_bytes"
+)
+
+
+class _HydrationBudget:
+    """Decode budget for one session read, shared across every reader instead of per-call."""
+
+    __slots__ = ("exhausted", "remaining", "rows_remaining", "scan_remaining")
+
+    def __init__(
+        self, total: int | None = None, rows: int | None = None, scan: int | None = None
+    ) -> None:
+        # Read here, not as a default argument, so it reflects the current module constant
+        # rather than freezing whatever it was when this file was imported.
+        self.remaining = MAX_HYDRATED_CONTENT_CHARS if total is None else total
+        self.rows_remaining = MAX_HYDRATED_ROWS if rows is None else rows
+        # One request reads many branches and aggregates; the parse allowance is spent
+        # across all of them, or each call would get the whole ceiling again.
+        self.scan_remaining = MAX_SCANNED_CONTENT_CHARS if scan is None else scan
+        self.exhausted = False
+
+    def admits_scan(self, chars: int) -> bool:
+        """Charge one withheld row's payload against the request-wide parse allowance."""
+        if chars > self.scan_remaining:
+            return False
+        self.scan_remaining -= chars
+        return True
+
+    def admits(self, chars: int) -> bool:
+        """Charge one row against both the character and row allowances, or refuse it."""
+        if chars > self.remaining or self.rows_remaining <= 0:
+            self.exhausted = True
+            return False
+        self.remaining -= chars
+        self.rows_remaining -= 1
+        return True
+
+
 def _format_message(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
-    return {
+    """Shape one hydrated message row; requires `_BOUNDED_CONTENT_COLUMNS` in the query."""
+    withheld = bool(row["content_oversized"])
+    formatted = {
         "id": row["id"],
         "role": row["role"],
         "content": _parse_json_col(row["content"]),
+        # The row is still listed with identity/timing intact; a reader must be able to tell
+        # a withheld payload apart from a message that carried no content.
+        "content_withheld": withheld,
         "sender": row["sender"],
         "timestamp": row["created_at"],
         "lion_class": row["lion_class_str"] or "",
     }
+    return formatted
+
+
+async def _fetch_action_link_ids(
+    db: aiosqlite.Connection, sized: list[tuple[str, int]], budget: _HydrationBudget
+) -> dict[str, dict[str, str]]:
+    """Recover action link ids for withheld rows, under the request-wide parse ceiling.
+
+    `sized` is (message id, true content length) for withheld rows only; a kept payload already
+    carries its ids. Rows are taken in order until the shared allowance is spent, so the work
+    this costs is bounded by bytes across the whole request rather than per call or per row.
+    """
+    budgeted: list[str] = []
+    for msg_id, content_bytes in sized:
+        if content_bytes > MAX_ACTION_ID_SCAN_CHARS or not budget.admits_scan(content_bytes):
+            continue
+        budgeted.append(msg_id)
+
+    links: dict[str, dict[str, str]] = {}
+    for start in range(0, len(budgeted), 500):
+        chunk = budgeted[start : start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        cur = await db.execute(
+            f"""
+            SELECT m.id,
+                   {_ACTION_ID.format(key="action_request_id")} AS action_request_id,
+                   {_ACTION_ID.format(key="action_response_id")} AS action_response_id
+            FROM messages m
+            WHERE m.id IN ({placeholders}) AND length(m.content) <= ?
+            """,  # noqa: S608
+            [*chunk, MAX_ACTION_ID_SCAN_CHARS],
+        )
+        for row in await cur.fetchall():
+            found = {
+                key: str(row[key])
+                for key in ("action_request_id", "action_response_id")
+                if row[key]
+            }
+            if found:
+                links[row["id"]] = found
+    return links
+
+
+def _withheld_sizes(messages: list[dict[str, Any]], sizes: dict[str, int]) -> list[tuple[str, int]]:
+    """(id, true length) per withheld row, in the order taken, once each.
+
+    A message reachable from several branches appears once per branch; charging its size per
+    appearance would spend the scan ceiling on a payload read a single time.
+    """
+    seen: set[str] = set()
+    out: list[tuple[str, int]] = []
+    for msg in messages:
+        msg_id = msg["id"]
+        if msg.get("content_withheld") and msg_id not in seen:
+            seen.add(msg_id)
+            out.append((msg_id, sizes.get(msg_id, 0)))
+    return out
 
 
 # A listing whose SQL carries no LIMIT examines every session, every branch and
@@ -471,6 +631,65 @@ def _decode_message_cursor(token: str, *, session_id: str, limit: int) -> dict[s
     return anchors
 
 
+class SessionStreamCursorError(ValueError):
+    """A session-message stream cursor is malformed or belongs to another session."""
+
+
+def _encode_session_stream_cursor(
+    session_id: str, created_at: float, message_id: str, branch_id: str
+) -> str:
+    """Name the exact row a reconnecting client already has.
+
+    Carries the same three parts the in-connection cursor sorts on, so a resumed
+    stream lands where the dropped one stopped rather than at the head of a group
+    sharing one timestamp.
+    """
+    raw = json.dumps(
+        {
+            "v": 1,
+            "session_id": session_id,
+            "created_at": created_at,
+            "message_id": message_id,
+            "branch_id": branch_id,
+        },
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_session_stream_cursor(token: str, *, session_id: str) -> tuple[float, str, str]:
+    if not token or len(token) > 4096:
+        raise SessionStreamCursorError("Malformed session stream cursor")
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
+    except Exception as exc:
+        raise SessionStreamCursorError("Malformed session stream cursor") from exc
+    if not isinstance(payload, dict) or payload.get("v") != 1:
+        raise SessionStreamCursorError("Unsupported session stream cursor")
+    if payload.get("session_id") != session_id:
+        raise SessionStreamCursorError("Session stream cursor belongs to a different session")
+    created_at = payload.get("created_at")
+    message_id = payload.get("message_id")
+    branch_id = payload.get("branch_id")
+    if (
+        isinstance(created_at, bool)
+        or not isinstance(created_at, (int, float))
+        or not math.isfinite(created_at)
+        or not isinstance(message_id, str)
+        or not message_id
+        or not isinstance(branch_id, str)
+        or not branch_id
+    ):
+        raise SessionStreamCursorError("Malformed session stream cursor")
+    return float(created_at), message_id, branch_id
+
+
+# Names "the newest end", so a branch whose first page can't afford a single row still stays in
+# the cursor instead of reading as exhausted and losing its messages. No UUID can collide with it.
+_NEWEST_ANCHOR = "@newest"
+
+
 def _window_message_ids(
     msg_ids: list[str],
     *,
@@ -485,11 +704,14 @@ def _window_message_ids(
         anchor = cursor_anchors.get(branch_id)
         if anchor is None:
             return [], False, None
-        if anchor not in msg_ids:
+        if anchor == _NEWEST_ANCHOR:
+            end = len(msg_ids)
+        elif anchor not in msg_ids:
             raise MessageCursorError(
                 f"message_cursor anchor not found in branch {branch_id!r} progression"
             )
-        end = msg_ids.index(anchor)
+        else:
+            end = msg_ids.index(anchor)
     elif legacy_offset:
         total = len(msg_ids)
         end = max(0, total - legacy_offset)
@@ -501,6 +723,25 @@ def _window_message_ids(
     has_older = start > 0
     next_anchor = window_ids[0] if has_older and window_ids else None
     return window_ids, has_older, next_anchor
+
+
+def _resume_anchor(
+    window_ids: list[str],
+    present_ids: list[str],
+    *,
+    has_older: bool,
+    next_anchor: str | None,
+    current_anchor: str | None,
+    budget_refused: bool,
+) -> tuple[bool, str | None]:
+    """Where the next page resumes: the oldest row actually delivered, or the same window again if the budget refused it."""
+    if len(present_ids) == len(window_ids):
+        return has_older, next_anchor
+    if present_ids:
+        return True, present_ids[0]
+    if not budget_refused:
+        return has_older, next_anchor
+    return True, current_anchor or _NEWEST_ANCHOR
 
 
 def _short_lion_class(lion_class: str) -> str:
@@ -526,32 +767,81 @@ def _init_message_stats() -> dict[str, Any]:
         "error_count": 0,
         "errors": [],
         "files": [],
+        # True when the action pass stopped at its bound, so the four fields
+        # above describe the most recent action messages, not all of them.
+        "bounded": False,
     }
 
 
 async def _fetch_messages_by_ids(
-    db: aiosqlite.Connection, msg_ids: list[str]
+    db: aiosqlite.Connection,
+    msg_ids: list[str],
+    *,
+    budget: _HydrationBudget,
 ) -> list[dict[str, Any]]:
-    """Hydrate message rows for msg_ids, chunked to stay under SQLite's bound-variable limit."""
+    """Hydrate message rows for msg_ids, chunked under SQLite's bound-variable limit, spending from the shared request budget."""
     if not msg_ids:
         return []
+    chunks = [msg_ids[start : start + 500] for start in range(0, len(msg_ids), 500)]
+
+    # Pass one decides who is paid for, reading sizes only, walked from the newest end in the
+    # caller's own order -- an IN(...) query returns rows in planner order, not request order.
+    admitted: list[str] = []
+    for chunk in reversed(chunks):
+        if budget.exhausted:
+            break
+        placeholders = ",".join("?" for _ in chunk)
+        cur = await db.execute(
+            f"SELECT m.id, length(m.content) AS content_length "  # noqa: S608
+            f"FROM messages m WHERE m.id IN ({placeholders})",
+            chunk,
+        )
+        sizes = {row["id"]: int(row["content_length"] or 0) for row in await cur.fetchall()}
+        for msg_id in reversed(chunk):
+            if msg_id not in sizes:
+                continue
+            # Charge what pass two will actually hand back, not the row's raw size: an oversized
+            # row is withheld (content NULL) and costs nothing in characters.
+            charged = 0 if sizes[msg_id] > MAX_ACTION_CONTENT_CHARS else sizes[msg_id]
+            if not budget.admits(charged):
+                break
+            admitted.append(msg_id)
+
+    # Pass two hydrates exactly what pass one paid for, so no payload crosses
+    # the boundary without a charge behind it.
     rows_by_id: dict[str, dict[str, Any]] = {}
-    for chunk_start in range(0, len(msg_ids), 500):
-        chunk = msg_ids[chunk_start : chunk_start + 500]
+    content_bytes: dict[str, int] = {}
+    for start in range(0, len(admitted), 500):
+        chunk = admitted[start : start + 500]
         placeholders = ",".join("?" for _ in chunk)
         cur = await db.execute(
             f"""
-            SELECT m.id, m.created_at, m.content, m.sender, m.role,
+            SELECT m.id, m.created_at, m.sender, m.role,
+                   {_BOUNDED_CONTENT_COLUMNS},
                    mt.lion_class AS lion_class_str
             FROM messages m
             LEFT JOIN message_types mt ON m.lion_class = mt.type_id
             WHERE m.id IN ({placeholders})
             """,  # noqa: S608
-            chunk,
+            [
+                MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_CONTENT_CHARS,
+                *chunk,
+            ],
         )
-        for row in await cur.fetchall():
-            rows_by_id[row["id"]] = _format_message(row)
-    return [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
+        async for row in cur:
+            data = dict(row)
+            data.pop("content_length", None)
+            content_bytes[data["id"]] = int(data.get("content_bytes") or 0)
+            rows_by_id[data["id"]] = _format_message(data)
+
+    ordered = [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
+    for msg_id, found in (
+        await _fetch_action_link_ids(db, _withheld_sizes(ordered, content_bytes), budget)
+    ).items():
+        rows_by_id[msg_id].update(found)
+    return ordered
 
 
 async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> dict[str, int]:
@@ -559,6 +849,7 @@ async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> di
     counts: dict[str, int] = {}
     if not msg_ids:
         return counts
+    # One statement over the whole progression rather than one per 500 ids.
     cur = await db.execute(
         """SELECT m.role, COUNT(*) AS n
            FROM json_each(?) AS ids
@@ -593,41 +884,198 @@ async def _fetch_message_bounds(
 
 
 async def _fetch_action_messages(
-    db: aiosqlite.Connection, msg_ids: list[str]
-) -> list[dict[str, Any]]:
-    """Hydrate only the ActionRequest/ActionResponse rows among msg_ids, in progression
-    order — the only kinds tool/error/file aggregates need, keeping the pass cheap."""
-    if not msg_ids:
-        return []
+    db: aiosqlite.Connection,
+    ids_by_branch: dict[str, list[str]],
+    *,
+    limit: int,
+    budget: _HydrationBudget,
+) -> tuple[dict[str, list[dict[str, Any]]], bool]:
+    """Hydrate at most *limit* action rows session-wide, newest first, in two passes so the cap applies before payloads are read."""
+    empty: dict[str, list[dict[str, Any]]] = {branch_id: [] for branch_id in ids_by_branch}
+    any_ids = any(ids_by_branch.values())
+    if not any_ids or limit <= 0:
+        return empty, any_ids
+    if budget.exhausted:
+        # The display windows already spent the total. Say so rather than
+        # reading a first row for free.
+        return empty, True
+    class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
+    cur = await db.execute(
+        f"SELECT type_id FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
+        _ACTION_LION_CLASSES,
+    )
+    type_ids = [row["type_id"] for row in await cur.fetchall()]
+    if not type_ids:
+        return empty, False
+    type_placeholders = ",".join("?" for _ in type_ids)
+
+    # A heap of the newest `limit` seen so far, so what is held is the size of the answer,
+    # not of the whole progression.
+    newest: list[tuple[float, str]] = []
+    candidates = 0
+    for msg_ids in ids_by_branch.values():
+        for chunk_start in range(0, len(msg_ids), 500):
+            chunk = msg_ids[chunk_start : chunk_start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            # `+m.lion_class` disqualifies the lion_class index so the planner probes the id primary
+            # key for the IN list instead of rescanning every action-class row per chunk.
+            cur = await db.execute(
+                f"""
+                SELECT m.id, m.created_at
+                FROM messages m
+                WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
+                """,  # noqa: S608
+                [*chunk, *type_ids],
+            )
+            async for row in cur:
+                candidates += 1
+                key = (row["created_at"] or 0.0, row["id"])
+                if len(newest) < limit:
+                    heapq.heappush(newest, key)
+                elif key > newest[0]:
+                    heapq.heapreplace(newest, key)
+
+    # Oldest to newest, so the hydration budget -- which pays from the end of the list it is
+    # handed -- pays for the newest of the selection first.
+    ordered_ids = [message_id for _, message_id in sorted(newest)]
+    messages = await _fetch_messages_by_ids(db, ordered_ids, budget=budget)
+    hydrated = {message["id"]: message for message in messages}
+    # Message ids are unique to one branch, so a selected row belongs to exactly one
+    # progression and this splits the selection without duplicating it.
+    by_branch = {
+        branch_id: [hydrated[mid] for mid in msg_ids if mid in hydrated]
+        for branch_id, msg_ids in ids_by_branch.items()
+    }
+    # Three ways this describes less than what is there: the cap dropped older rows, the budget
+    # stopped hydration short, or a payload was withheld for its size.
+    bounded = (
+        candidates > limit
+        or len(messages) < len(ordered_ids)
+        or any(message["content_withheld"] for message in messages)
+    )
+    return by_branch, bounded
+
+
+_FILE_TOOL_NAMES = frozenset(
+    {
+        "read",
+        "read_file",
+        "write",
+        "write_file",
+        "edit",
+        "edit_file",
+        "multiedit",
+        "notebookedit",
+    }
+)
+
+
+def _action_file_path(function: Any, arguments: Any) -> str | None:
+    """The file an action request touched, or None; shared so per-branch stats and the run-wide union agree on what counts."""
+    arguments = arguments if isinstance(arguments, dict) else {}
+    tool_name = str(function or "").lower().replace("-", "_").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
+    if tool_name and tool_name not in _FILE_TOOL_NAMES:
+        return None
+    file_path = arguments.get("file_path") or arguments.get("path")
+    return file_path if isinstance(file_path, str) and file_path else None
+
+
+async def _fetch_action_file_paths(
+    db: aiosqlite.Connection, ids_by_branch: dict[str, list[str]]
+) -> tuple[list[str], bool]:
+    """Every file this session's action requests touched, as a whole-run union rather than the hydrated slice, decoding nothing."""
     class_placeholders = ",".join("?" for _ in _ACTION_LION_CLASSES)
     cur = await db.execute(
         f"SELECT type_id, lion_class FROM message_types WHERE lion_class IN ({class_placeholders})",  # noqa: S608
         _ACTION_LION_CLASSES,
     )
-    lion_class_by_type_id = {row["type_id"]: row["lion_class"] for row in await cur.fetchall()}
-    if not lion_class_by_type_id:
-        return []
-
-    type_ids = list(lion_class_by_type_id)
+    type_rows = await cur.fetchall()
+    type_ids = [row["type_id"] for row in type_rows]
+    if not type_ids:
+        # No action rows to union, and nothing was cut reaching that answer.
+        return [], False
     type_placeholders = ",".join("?" for _ in type_ids)
-    # Expand the full progression once in SQLite rather than issuing one
-    # statement per 500 ids. The ids.key ordering preserves progression order.
-    cur = await db.execute(
-        f"""
-        SELECT m.id, m.created_at, m.content, m.sender, m.role, m.lion_class
-        FROM json_each(?) AS ids
-        JOIN messages m ON m.id = ids.value
-        WHERE +m.lion_class IN ({type_placeholders})
-        ORDER BY CAST(ids.key AS INTEGER)
-        """,  # noqa: S608
-        [json.dumps(msg_ids), *type_ids],
-    )
-    rows_by_id: dict[str, dict[str, Any]] = {}
-    for row in await cur.fetchall():
-        data = dict(row)
-        data["lion_class_str"] = lion_class_by_type_id.get(data.pop("lion_class"))
-        rows_by_id[data["id"]] = _format_message(data)
-    return [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
+    # Only a request carries the fields a path is read from; an oversized response withheld
+    # nothing the union wanted, so it must not count as a cut.
+    request_type_ids = {
+        row["type_id"]
+        for row in type_rows
+        if _short_lion_class(row["lion_class"]) == "ActionRequest"
+    }
+
+    paths: set[str] = set()
+    path_bytes = 0
+    rows_scanned = 0
+    omitted_oversized = False
+
+    def at_ceiling() -> bool:
+        return (
+            len(paths) >= MAX_ACTION_FILE_PATHS
+            or path_bytes >= MAX_ACTION_FILE_PATH_BYTES
+            or rows_scanned >= MAX_ACTION_FILE_ROWS_SCANNED
+        )
+
+    def union_was_cut() -> bool:
+        # An omitted oversized row is a cut with no counter behind it, so it's checked separately.
+        return at_ceiling() or omitted_oversized
+
+    for msg_ids in ids_by_branch.values():
+        if at_ceiling():
+            break
+        for chunk_start in range(0, len(msg_ids), 500):
+            if at_ceiling():
+                break
+            chunk = msg_ids[chunk_start : chunk_start + 500]
+            # Charged before the query, against the ids handed to it rather than the rows it
+            # gives back, so a progression cannot pass through free by having its rows filtered.
+            rows_scanned += len(chunk)
+            placeholders = ",".join("?" for _ in chunk)
+            cur = await db.execute(
+                f"""
+                -- json_valid beside the length check, for the reason given at
+                -- _ACTION_ID: json_extract raises on malformed content and
+                -- takes the whole read down with it, and a row that did not
+                -- come from this application is a state the store is allowed
+                -- to be in. Short-circuits, so the extraction still never runs
+                -- on oversized payloads.
+                SELECT CASE WHEN length(m.content) <= ? AND json_valid(m.content)
+                            THEN json_extract(m.content, '$.function') END AS fn,
+                       CASE WHEN length(m.content) <= ? AND json_valid(m.content)
+                            THEN json_extract(m.content, '$.arguments.file_path') END AS file_path,
+                       CASE WHEN length(m.content) <= ? AND json_valid(m.content)
+                            THEN json_extract(m.content, '$.arguments.path') END AS path,
+                       length(m.content) > ? AS oversized,
+                       m.lion_class AS type_ref
+                FROM messages m
+                WHERE m.id IN ({placeholders}) AND +m.lion_class IN ({type_placeholders})
+                """,  # noqa: S608
+                [
+                    MAX_ACTION_CONTENT_CHARS,
+                    MAX_ACTION_CONTENT_CHARS,
+                    MAX_ACTION_CONTENT_CHARS,
+                    MAX_ACTION_CONTENT_CHARS,
+                    *chunk,
+                    *type_ids,
+                ],
+            )
+            async for row in cur:
+                # Selected rather than filtered, so the row still arrives and can be reported;
+                # the CASE guards keep extraction off oversized content, only short fields cross.
+                if row["oversized"]:
+                    if row["type_ref"] in request_type_ids:
+                        omitted_oversized = True
+                    continue
+                found = _action_file_path(
+                    row["fn"], {"file_path": row["file_path"], "path": row["path"]}
+                )
+                if found and found not in paths:
+                    paths.add(found)
+                    path_bytes += len(found.encode())
+                if at_ceiling():
+                    break
+    # Equality, not the count alone: a run sitting exactly on a ceiling reports bounded, which
+    # is the safe direction for a set used to decide whether a name is a file.
+    return sorted(paths), union_was_cut()
 
 
 def _branch_message_stats(
@@ -657,20 +1105,9 @@ def _branch_message_stats(
         function = content.get("function") or ""
         arguments = content.get("arguments")
         arguments = arguments if isinstance(arguments, dict) else {}
-        tool_name = str(function).lower().replace("-", "_").rsplit("__", 1)[-1].rsplit(".", 1)[-1]
-        if not tool_name or tool_name in {
-            "read",
-            "read_file",
-            "write",
-            "write_file",
-            "edit",
-            "edit_file",
-            "multiedit",
-            "notebookedit",
-        }:
-            file_path = arguments.get("file_path") or arguments.get("path")
-            if isinstance(file_path, str) and file_path:
-                files.add(file_path)
+        file_path = _action_file_path(function, arguments)
+        if file_path:
+            files.add(file_path)
 
         response_id = content.get("action_response_id")
         response_msg = response_by_id.get(response_id) if response_id else None
@@ -799,10 +1236,10 @@ async def get_session(
         branches = []
         full_stats = _init_message_stats()
         next_branch_anchors: dict[str, str] = {}
+
+        progression_ids: dict[str, list[str]] = {}
         for br in branch_rows:
-            branch_id = br["id"]
-            full_msg_ids: list[str] = []
-            message_total = 0
+            ids: list[str] = []
             prog_id = br["progression_id"]
             if prog_id:
                 prog_cur = await db.execute(
@@ -812,30 +1249,62 @@ async def get_session(
                 prog_row = await prog_cur.fetchone()
                 if prog_row and prog_row["collection"]:
                     try:
-                        full_msg_ids = json.loads(prog_row["collection"])
+                        ids = json.loads(prog_row["collection"])
                     except (json.JSONDecodeError, TypeError):
-                        full_msg_ids = []
-                    message_total = len(full_msg_ids)
+                        ids = []
+            progression_ids[br["id"]] = ids
 
+        # One budget for the whole read, so it isn't multiplied by branch count;
+        # display windows spend first and the action aggregate takes what's left.
+        content_budget = _HydrationBudget()
+
+        window_by_branch: dict[str, tuple[list[dict[str, Any]], bool]] = {}
+        for br in branch_rows:
+            branch_id = br["id"]
             # Window from the tail: offset/cursor 0 = the newest page,
             # each page further back prepends older history.
             window_ids, has_older, next_anchor = _window_message_ids(
-                full_msg_ids,
+                progression_ids[branch_id],
                 branch_id=branch_id,
                 limit=message_limit,
                 cursor_anchors=cursor_anchors,
                 legacy_offset=message_offset if cursor_anchors is None else 0,
             )
+            window_messages = await _fetch_messages_by_ids(db, window_ids, budget=content_budget)
+            by_id = {m["id"]: m for m in window_messages}
+            present = [by_id[mid] for mid in window_ids if mid in by_id]
+            has_older, next_anchor = _resume_anchor(
+                window_ids,
+                [m["id"] for m in present],
+                has_older=has_older,
+                next_anchor=next_anchor,
+                current_anchor=cursor_anchors.get(branch_id) if cursor_anchors else None,
+                # Request-wide rather than window-specific: erring toward asking again cannot
+                # lose a row, but erring toward advancing can.
+                budget_refused=content_budget.exhausted,
+            )
             if next_anchor:
                 next_branch_anchors[branch_id] = next_anchor
+            window_by_branch[branch_id] = (present, has_older)
 
-            window_messages = await _fetch_messages_by_ids(db, window_ids)
-            by_id = {m["id"]: m for m in window_messages}
-            messages = [by_id[mid] for mid in window_ids if mid in by_id]
+        # Row count gets its own ceiling too, spent over the session rather than per branch, so
+        # which rows survive depends only on when they happened.
+        action_by_branch, action_messages_bounded = await _fetch_action_messages(
+            db,
+            progression_ids,
+            limit=MAX_HYDRATED_ACTION_MESSAGES,
+            budget=content_budget,
+        )
+
+        for br in branch_rows:
+            branch_id = br["id"]
+            full_msg_ids = progression_ids[branch_id]
+            message_total = len(full_msg_ids)
+            messages, has_older = window_by_branch[branch_id]
 
             role_counts = await _fetch_role_counts(db, full_msg_ids)
             first_message_at, last_message_at = await _fetch_message_bounds(db, full_msg_ids)
-            action_messages = await _fetch_action_messages(db, full_msg_ids)
+            action_messages = action_by_branch[branch_id]
             # message_count is the DB role-aggregate, not message_total: a
             # progression can reference ids whose row was pruned, so the two can diverge.
             message_count = sum(role_counts.values())
@@ -851,7 +1320,6 @@ async def get_session(
             full_stats["tool_call_count"] += branch_stats["tool_call_count"]
             full_stats["error_count"] += branch_stats["error_count"]
             full_stats["errors"].extend(branch_stats["errors"])
-            full_stats["files"].extend(branch_stats["files"])
 
             br_keys = br.keys()
             branches.append(
@@ -882,7 +1350,13 @@ async def get_session(
                 }
             )
 
-        full_stats["files"] = sorted(set(full_stats["files"]))
+        full_stats["bounded"] = action_messages_bounded
+        # Read over every action row, not the hydrated slice: a file union can't be an honest
+        # floor the way the counts beside it are, since it decides whether a name is a file at all.
+        full_stats["files"], files_bounded = await _fetch_action_file_paths(db, progression_ids)
+        # Its own flag rather than folding into `bounded`, so a caller resolving a file
+        # reference knows this union specifically was cut.
+        full_stats["files_bounded"] = files_bounded
         message_next_cursor = (
             _encode_message_cursor(session_id, message_limit, next_branch_anchors)
             if next_branch_anchors
@@ -991,35 +1465,85 @@ async def get_session_by_cc_id(cc_uid: str) -> dict[str, Any] | None:
     return await get_session(row["id"] if row else session_db_id(cc_uid))
 
 
-async def get_session_messages_after(session_id: str, after_ts: float) -> list[dict[str, Any]]:
-    """Poll-friendly tail read for the SSE stream/signals endpoints. Joins via
-    json_each rather than binding every message id into an IN (...) clause,
-    which would blow past SQLite's 999 bound-variable limit at scale."""
+async def get_session_messages_after(
+    session_id: str,
+    after_ts: float,
+    after_id: str | None = None,
+    after_branch: str | None = None,
+) -> list[dict[str, Any]]:
+    """Poll-friendly bounded tail read for the SSE endpoints; joins via json_each and cursors on the full sort key so it can resume mid-group."""
     if not store_exists():
         return []
 
+    # A bare timestamp keeps the old exclusive read; a full cursor resumes at the row after the
+    # one it names, letting a group sharing one timestamp be cut in the middle.
+    if after_id is None or after_branch is None:
+        cursor_sql = "m.created_at > ?"
+        cursor_params: tuple[Any, ...] = (after_ts,)
+    else:
+        cursor_sql = (
+            "(m.created_at > ?"
+            " OR (m.created_at = ? AND m.id > ?)"
+            " OR (m.created_at = ? AND m.id = ? AND b.id > ?))"
+        )
+        cursor_params = (after_ts, after_ts, after_id, after_ts, after_id, after_branch)
+
     async with _open_db(store_path()) as db:
         cur = await db.execute(
-            """
-            SELECT m.id, m.created_at, m.content, m.sender, m.role,
+            f"""
+            SELECT m.id, m.created_at, m.sender, m.role,
+                   {_BOUNDED_CONTENT_COLUMNS},
                    mt.lion_class AS lion_class_str, b.id AS branch_id
             FROM branches b
             JOIN progressions p ON p.id = b.progression_id
             JOIN json_each(p.collection) je ON 1=1
             JOIN messages m ON m.id = je.value
             LEFT JOIN message_types mt ON m.lion_class = mt.type_id
-            WHERE b.session_id = ? AND m.created_at > ?
-            ORDER BY m.created_at
-            """,
-            (session_id, after_ts),
+            WHERE b.session_id = ? AND {cursor_sql}
+            ORDER BY m.created_at, m.id, b.id
+            LIMIT ?
+            """,  # noqa: S608
+            (
+                MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_CONTENT_CHARS,
+                MAX_ACTION_CONTENT_CHARS,
+                session_id,
+                *cursor_params,
+                # The loop below stops at the row budget, so this is exactly what it could ever
+                # take. Without it ORDER BY sorts the whole remaining stream on every page.
+                MAX_HYDRATED_ROWS + 1,
+            ),
         )
-        rows = await cur.fetchall()
 
-    result = []
-    for row in rows:
-        msg = _format_message(row)
-        msg["branch_id"] = row["branch_id"]
-        result.append(msg)
+        budget = _HydrationBudget()
+        result: list[dict[str, Any]] = []
+        content_bytes: dict[str, int] = {}
+        # Iterated rather than fetchall'd: a budget can only bound what has not
+        # been read yet.
+        async for row in cur:
+            # Charged on every row including the first, so a row taken is always a row paid for.
+            admitted = budget.admits(int(row["content_length"] or 0))
+            if not admitted:
+                # The sort key is the whole cursor, so cutting here skips nothing, even inside
+                # a run of rows sharing a timestamp.
+                if result:
+                    break
+                # Nothing taken yet -- stopping now would leave the cursor unmoved and the next
+                # poll would read the same row forever, so this one row is let through anyway.
+            msg = _format_message(row)
+            msg["branch_id"] = row["branch_id"]
+            content_bytes[msg["id"]] = int(row["content_bytes"] or 0)
+            result.append(msg)
+            if not admitted:
+                break
+
+        # One message id can arrive under several branches, so every row carrying it is
+        # updated rather than the first one found.
+        links = await _fetch_action_link_ids(db, _withheld_sizes(result, content_bytes), budget)
+        for msg in result:
+            found = links.get(msg["id"])
+            if found:
+                msg.update(found)
     return result
 
 
@@ -1129,30 +1653,78 @@ async def get_session_route(
     name="stream_session",
     response_class=None,
 )
-async def stream_session_route(session_id: str):
+async def stream_session_route(
+    session_id: str,
+    cursor: str | None = Query(
+        None, description="Opaque cursor from the last delivered session-message SSE frame"
+    ),
+):
     # Pre-flight 404 guard: without it a non-existent session silently
     # returns no messages and waits 60s before "done" with no indication.
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
 
+    # A reconnecting client passes back the id of the last frame it handled, so the
+    # replay starts after that row rather than at the top of the session.
+    try:
+        resume = _decode_session_stream_cursor(cursor, session_id=session_id) if cursor else None
+    except SessionStreamCursorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     async def generate():
-        after_ts: float = 0.0
+        after_ts: float = resume[0] if resume else 0.0
+        after_id: str | None = resume[1] if resume else None
+        after_branch: str | None = resume[2] if resume else None
         last_heartbeat = time.monotonic()
 
         while True:
-            messages = await get_session_messages_after(session_id, after_ts)
+            position = (after_ts, after_id, after_branch)
+            messages = await get_session_messages_after(
+                session_id, after_ts, after_id, after_branch
+            )
 
             if messages:
                 for msg in messages:
-                    yield f"data: {json.dumps(msg)}\n\n"
-                    ts = msg.get("timestamp") or msg.get("created_at")
-                    if ts and ts > after_ts:
-                        after_ts = ts
+                    # The frame id names this row, so a reconnect resumes after it. A row
+                    # missing any part of the sort key cannot be named, and emitting it
+                    # without an id would let the client resume from an older frame and
+                    # replay everything between.
+                    ts = msg.get("timestamp")
+                    if ts is None:
+                        ts = msg.get("created_at")
+                    message_id = msg.get("id")
+                    branch_id = msg.get("branch_id")
+                    payload = json.dumps(msg)
+                    if (
+                        isinstance(ts, (int, float))
+                        and not isinstance(ts, bool)
+                        and isinstance(message_id, str)
+                        and isinstance(branch_id, str)
+                    ):
+                        frame = _encode_session_stream_cursor(
+                            session_id, float(ts), message_id, branch_id
+                        )
+                        yield f"id: {frame}\ndata: {payload}\n\n"
+                    else:
+                        yield f"data: {payload}\n\n"
+                # Rows come back in cursor order, so the last one is the resume position; the
+                # newest timestamp alone would name a whole group rather than a specific row.
+                last = messages[-1]
+                after_ts = last.get("timestamp") or last.get("created_at") or after_ts
+                after_id = last.get("id")
+                after_branch = last.get("branch_id")
                 last_heartbeat = time.monotonic()
-            elif time.monotonic() - last_heartbeat >= 5.0:
+                # A page may have left rows behind the budget; loop immediately (skipping the
+                # done check) to drain them, but only while the cursor is actually moving.
+                if (after_ts, after_id, after_branch) != position:
+                    continue
+
+            if time.monotonic() - last_heartbeat >= 5.0:
                 yield 'data: {"type":"heartbeat"}\n\n'
                 last_heartbeat = time.monotonic()
 
+            # Reached only once the cursor stopped moving, so "done" describes the whole
+            # stream rather than one page of it.
             state = await get_session_stream_state(session_id)
             if is_session_stream_done(state, now=time.time()):
                 yield 'data: {"type":"done"}\n\n'
@@ -1177,7 +1749,7 @@ async def stream_session_route(session_id: str):
     name="stream_signals",
     response_class=None,
 )
-async def stream_signals(session_id: str) -> Any:
+async def stream_signals(session_id: str, after_seq: int = 0) -> Any:
     # Pre-flight 404 guard before opening the stream (ADR-0076).
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
@@ -1185,19 +1757,21 @@ async def stream_signals(session_id: str) -> Any:
     from . import signals as signals_svc
 
     async def generate():
-        after_seq: int = 0
+        # A reconnecting client names the last seq it finished handling, so the
+        # replay starts after that one rather than at the head of the session.
+        cursor = max(0, after_seq)
         last_heartbeat = time.monotonic()
 
         while True:
-            rows = await signals_svc.get_signals_after(session_id, after_seq)
+            rows = await signals_svc.get_signals_after(session_id, cursor)
 
             if rows:
                 for row in rows:
                     # _PAYLOAD_BYTE_CAP (session/observer.py) caps the payload
                     # column only; the row envelope adds overhead so frames can exceed it.
                     yield f"data: {json.dumps(row)}\n\n"
-                    if row["seq"] > after_seq:
-                        after_seq = row["seq"]
+                    if row["seq"] > cursor:
+                        cursor = row["seq"]
                 last_heartbeat = time.monotonic()
                 # get_signals_after is itself page-limited, so a non-empty
                 # batch does not mean the client is caught up to the tip —

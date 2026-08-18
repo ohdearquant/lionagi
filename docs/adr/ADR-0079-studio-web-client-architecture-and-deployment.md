@@ -200,14 +200,14 @@ export function resolveAuthToken(): string | undefined {
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>;
 
 function sseSubscribe(
-  path: string,
+  path: string | (() => string),
   onData: (data: string) => void,
 ): () => void;
 ```
 
 `fetchJson()` attaches `Authorization: Bearer <token>` when the token exists and otherwise
-preserves caller headers. Mutation helpers explicitly set `Content-Type: application/json`
-and stringify their bodies, matching ADR-0076's body guard.
+preserves caller headers. It centrally defaults every unsafe method to
+`Content-Type: application/json`, including bodyless actions, matching ADR-0076's guard.
 
 The SSE helper uses `fetch` plus `ReadableStream`, not native `EventSource`. Exact semantics:
 
@@ -215,10 +215,12 @@ The SSE helper uses `fetch` plus `ReadableStream`, not native `EventSource`. Exa
 - It parses unnamed frames separated by `\n\n`, joins multiple `data:` lines, and passes
   the payload string to the endpoint-specific consumer.
 - The returned closer sets a closed flag and aborts the request.
-- EOF or network error reconnects after 2,000 ms unless closed.
+- EOF, network error, 5xx, 408, 425, or 429 reconnects after 2,000 ms unless closed.
+- Permanent 4xx responses close the subscription instead of retrying for the page lifetime.
 - The endpoint consumer is responsible for JSON parsing and closing on its `done` frame.
 - Parser errors thrown by the consumer are not converted into a durable cursor or replay.
 - There is no `Last-Event-ID`; reconnect starts according to the endpoint's server contract.
+  The signal endpoint advances an `after_seq` query cursor after each delivered signal.
 
 The two-second reconnect delay is a shipped inherited value. Its qualitative purpose is to
 avoid a tight retry loop while keeping local recovery responsive; no recorded measurement

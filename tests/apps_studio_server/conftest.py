@@ -25,4 +25,8 @@ def studio_client():
 
     from lionagi.studio.app import app
 
-    return TestClient(app, base_url="http://127.0.0.1:8765")
+    return TestClient(
+        app,
+        base_url="http://127.0.0.1:8765",
+        headers={"Content-Type": "application/json"},
+    )

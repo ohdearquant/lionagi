@@ -158,6 +158,7 @@ export default function GraphPlaybookEditor({ workerName }: { workerName: string
           value={description}
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Playbook description..."
+          aria-label="Playbook description"
           className="flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-body text-content-secondary placeholder:text-content-muted hover:border-edge focus:border-edge-strong focus:outline-none"
         />
 
