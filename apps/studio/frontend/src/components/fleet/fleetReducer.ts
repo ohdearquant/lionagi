@@ -43,7 +43,7 @@ export interface AgentRow {
   message_count: number;
   kind: "run" | "invocation";
   invocation_id: string | null;
-  // agent | play | flow | fanout | show-play (issue #2842) — the discriminator
+  // agent | play | flow | fanout | show-play — the discriminator
   // that says whether this row is a single agent or the root of a multi-agent
   // execution. `agentName`/label text alone never establishes that.
   invocationKind: string | null;
