@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from pydantic import BaseModel, ValidationError
 
@@ -175,6 +180,110 @@ class TestOperableModelNewModel:
         Cls = m.new_model("ScoreModel", use_fields={"score"})
         instance = Cls(score=42)
         assert instance.score == 42
+
+    @pytest.mark.parametrize(
+        "use_fields",
+        [
+            ["delta", "alpha", "gamma"],
+            ("delta", "alpha", "gamma"),
+            {"delta", "alpha", "gamma"},
+            frozenset({"delta", "alpha", "gamma"}),
+        ],
+    )
+    def test_new_model_preserves_source_field_order(self, use_fields):
+        m = OperableModel()
+        for field_name in ("alpha", "beta", "gamma", "delta"):
+            m.add_field(field_name, value=field_name, annotation=str)
+
+        model_type = m.new_model(
+            "OrderedModel",
+            use_fields=use_fields,
+            inherit_base=False,
+        )
+
+        assert tuple(model_type.model_fields) == ("alpha", "gamma", "delta")
+
+    def test_new_model_empty_selection_has_no_fields(self):
+        m = OperableModel()
+        m.add_field("alpha", value="alpha", annotation=str)
+
+        model_type = m.new_model("EmptyModel", use_fields=(), inherit_base=False)
+
+        assert model_type.model_fields == {}
+
+    def test_new_model_preserves_order_across_field_sources(self):
+        m = OperableModel()
+        m.add_field("alpha", value="alpha", annotation=str)
+        m.add_field(
+            "beta",
+            value=2,
+            field_model=FieldModel(name="beta", base_type=int),
+        )
+        m.add_field("gamma", value=True, annotation=bool)
+
+        model_type = m.new_model("MixedModel", inherit_base=False)
+
+        assert tuple(model_type.model_fields) == ("alpha", "beta", "gamma")
+
+    @pytest.mark.parametrize(
+        "field_model",
+        [
+            FieldModel(base_type=float),
+            FieldModel(name="different_name", base_type=float),
+        ],
+    )
+    def test_new_model_uses_stored_key_for_field_model(self, field_model):
+        m = OperableModel()
+        m.add_field("rate", value=1.5, field_model=field_model)
+
+        model_type = m.new_model("RateModel", inherit_base=False)
+
+        assert tuple(model_type.model_fields) == ("rate",)
+        assert field_model.name != "rate"
+
+    def test_selection_order_is_stable_across_hash_seeds(self):
+        script = """
+from lionagi.ln.types import Operable, Spec
+from lionagi.models.operable_model import OperableModel
+
+specs = tuple(Spec(str, name=name) for name in ("alpha", "beta", "gamma", "delta"))
+selected = Operable(specs).get_specs(include={"delta", "alpha", "gamma"})
+print(",".join(spec.name for spec in selected))
+
+adapter_type = Operable(specs).create_model(
+    model_name="AdapterModel",
+    include={"delta", "alpha", "gamma"},
+)
+print(",".join(adapter_type.model_fields))
+
+model = OperableModel()
+for name in ("alpha", "beta", "gamma", "delta"):
+    model.add_field(name, value=name, annotation=str)
+model_type = model.new_model(
+    "OrderedModel",
+    use_fields={"delta", "alpha", "gamma"},
+    inherit_base=False,
+)
+print(",".join(model_type.model_fields))
+"""
+        repo_root = Path(__file__).parents[2]
+
+        for seed in ("1", "7", "29", "101"):
+            env = dict(os.environ)
+            env["PYTHONHASHSEED"] = seed
+            result = subprocess.run(  # noqa: S603 - fixed interpreter and inline fixture
+                [sys.executable, "-c", script],
+                cwd=repo_root,
+                env=env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            assert result.stdout.splitlines() == [
+                "alpha,gamma,delta",
+                "alpha,gamma,delta",
+                "alpha,gamma,delta",
+            ]
 
     def test_new_model_invalid_fields_raises(self):
         m = OperableModel()

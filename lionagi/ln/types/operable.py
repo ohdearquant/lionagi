@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
-from ._sentinel import MaybeUnset, Unset
+from ._sentinel import MaybeUnset, Undefined, Unset
 
 if TYPE_CHECKING:
     from .spec import Spec
@@ -39,7 +40,11 @@ class Operable:
                     f"All specs must be Spec objects, got {type(item).__name__} at index {i}"
                 )
 
-        names = [s.name for s in specs if s.name is not None]
+        names = [
+            s.name
+            for s in specs
+            if s.name is not None and s.name is not Undefined and s.name is not Unset
+        ]
         if len(names) != len(set(names)):
             from collections import Counter
 
@@ -51,18 +56,25 @@ class Operable:
         object.__setattr__(self, "__op_fields__", specs)
         object.__setattr__(self, "name", name)
 
-    def allowed(self) -> set[str]:
-        """Return set of field names across all specs."""
-        return {i.name for i in self.__op_fields__}
+    def field_names(self) -> tuple[str, ...]:
+        """Return declared field names in declaration order."""
+        return tuple(
+            cast(str, spec.name)
+            for spec in self.__op_fields__
+            if spec.name is not None and spec.name is not Undefined and spec.name is not Unset
+        )
+
+    def allowed(self) -> frozenset[str]:
+        """Return field names as a membership-only compatibility view."""
+        return frozenset(self.field_names())
 
     def check_allowed(self, *args, as_boolean: bool = False):
         """Return True if all args are allowed field names; raise ValueError (or return False) otherwise."""
-        if not set(args).issubset(self.allowed()):
+        unknown = sorted(set(args).difference(self.allowed()))
+        if unknown:
             if as_boolean:
                 return False
-            raise ValueError(
-                f"Some specified fields are not allowed: {set(args).difference(self.allowed())}"
-            )
+            raise ValueError(f"Some specified fields are not allowed: {unknown}")
         return True
 
     def get(self, key: str, /, default=Unset) -> MaybeUnset[Spec]:
@@ -77,24 +89,22 @@ class Operable:
     def get_specs(
         self,
         *,
-        include: set[str] | None = None,
-        exclude: set[str] | None = None,
+        include: Collection[str] | None = None,
+        exclude: Collection[str] | None = None,
     ) -> tuple[Spec, ...]:
         """Return filtered specs; raises ValueError if both include and exclude are given or names are invalid."""
         if include is not None and exclude is not None:
             raise ValueError("Cannot specify both include and exclude")
 
-        if include:
-            if self.check_allowed(*include, as_boolean=True) is False:
-                raise ValueError(
-                    "Some specified fields are not allowed: "
-                    f"{set(include).difference(self.allowed())}"
-                )
-            return tuple(self.get(i) for i in include if self.get(i) is not Unset)
+        if include is not None:
+            self.check_allowed(*include)
+            included = frozenset(include)
+            return tuple(spec for spec in self.__op_fields__ if spec.name in included)
 
-        if exclude:
-            _discards = {self.get(i) for i in exclude if self.get(i) is not Unset}
-            return tuple(s for s in self.__op_fields__ if s not in _discards)
+        if exclude is not None:
+            self.check_allowed(*exclude)
+            excluded = frozenset(exclude)
+            return tuple(spec for spec in self.__op_fields__ if spec.name not in excluded)
 
         return self.__op_fields__
 
@@ -102,8 +112,8 @@ class Operable:
         self,
         adapter: Literal["pydantic"] = "pydantic",
         model_name: str | None = None,
-        include: set[str] | None = None,
-        exclude: set[str] | None = None,
+        include: Collection[str] | None = None,
+        exclude: Collection[str] | None = None,
         **kw,
     ):
         """Build and return a model class from specs via the named adapter (currently only "pydantic")."""
