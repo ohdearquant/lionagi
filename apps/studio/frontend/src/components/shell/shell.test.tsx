@@ -42,6 +42,22 @@ describe("TopBar.tsx — new-tab khive.ai link", () => {
   });
 });
 
+describe("AppShell.tsx — overlay scroll lock", () => {
+  const src = read("AppShell.tsx");
+
+  // The lock is generic and finds its targets by attribute, so a shell that never
+  // marks its scroller leaves the mechanism inert while its own tests still pass.
+  it("marks the routed scroll container so an open overlay freezes it", () => {
+    const main = src.slice(src.indexOf("<main"), src.indexOf("</main>"));
+    expect(main).toMatch(/overflow-y-auto/);
+    expect(main).toMatch(/SCROLL_LOCK_ATTRIBUTE/);
+  });
+
+  it("imports the attribute from the overlay stack rather than spelling it locally", () => {
+    expect(src).toMatch(/import \{ SCROLL_LOCK_ATTRIBUTE \} from "@\/lib\/overlayStack"/);
+  });
+});
+
 describe("AppShell.tsx — TopBar wiring", () => {
   const src = read("AppShell.tsx");
 

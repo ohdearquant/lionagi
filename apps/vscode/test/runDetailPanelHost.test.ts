@@ -183,3 +183,80 @@ describe("RunDetailPanel retarget abort-isolation (host)", () => {
     }
   });
 });
+
+function responseWithFrames(frames: string[]): Response {
+  const encoder = new TextEncoder();
+  let index = 0;
+  return {
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    body: {
+      getReader() {
+        return {
+          read: async () =>
+            index < frames.length
+              ? { done: false, value: encoder.encode(frames[index++]) }
+              : { done: true, value: undefined },
+          releaseLock() {},
+        };
+      },
+    },
+  } as unknown as Response;
+}
+
+describe("RunDetailPanel session-message reconnect", () => {
+  let realFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    vscodeMock.__resetVscodeMock();
+    realFetch = globalThis.fetch;
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("reconnects a dropped stream from the last accepted server cursor", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
+      urls.push(String(input));
+      if (urls.length === 1) {
+        return responseWithFrames([
+          'id: cursor-one\ndata: {"id":"message-one","branch_id":"branch-1"}\n\n',
+        ]);
+      }
+      return responseWithFrames(['data: {"type":"done"}\n\n']);
+    }) as unknown as typeof fetch;
+
+    const deps = {
+      client: { getRun: vi.fn(), getInvocation: vi.fn() },
+      backend: { baseUrl: "http://127.0.0.1:8765" },
+    } as unknown as OpenArgs[1];
+    const context = { extensionPath: "/ext" } as unknown as OpenArgs[0];
+
+    RunDetailPanel.open(context, deps, liveRun("resume-run"));
+    const panel = vscodeMock.__lastWebviewPanel;
+    expect(panel).toBeTruthy();
+
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(urls).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(urls).toHaveLength(2);
+      expect(new URL(urls[0]!).searchParams.get("cursor")).toBeNull();
+      expect(new URL(urls[1]!).searchParams.get("cursor")).toBe("cursor-one");
+
+      const events = panel!.webview.postMessage.mock.calls
+        .map((call) => call[0] as { type?: string; event?: { id?: string } })
+        .filter((message) => message.type === "event");
+      expect(events.map((message) => message.event?.id)).toEqual(["message-one"]);
+    } finally {
+      panel!.__fireDispose();
+    }
+  });
+});

@@ -245,7 +245,7 @@
       "createWorkflow": "新規ワークフロー",
       "createAgent": "新規エージェント",
       "allSkill": "スキルが見つかりません。",
-      "allSkillHint": "~/.lionagi/skills/<name>/ に SKILL.md を追加するとここに表示されます。",
+      "allSkillHint": "~/.lionagi/skills/NAME/ に SKILL.md を追加するとここに表示されます。",
       "allPlugin": "プラグインが見つかりません。",
       "allPluginHint": "~/.claude/plugins/ にプラグインをインストールするとここに表示されます。"
     },

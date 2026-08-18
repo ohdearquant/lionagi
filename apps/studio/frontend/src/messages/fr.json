@@ -245,7 +245,7 @@
       "createWorkflow": "Nouveau workflow",
       "createAgent": "Nouvel agent",
       "allSkill": "Aucun skill trouvé.",
-      "allSkillHint": "Ajoutez un SKILL.md sous ~/.lionagi/skills/<name>/ pour le voir ici.",
+      "allSkillHint": "Ajoutez un SKILL.md sous ~/.lionagi/skills/NAME/ pour le voir ici.",
       "allPlugin": "Aucun plugin trouvé.",
       "allPluginHint": "Installez un plugin sous ~/.claude/plugins/ pour le voir ici."
     },

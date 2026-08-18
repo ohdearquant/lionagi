@@ -78,7 +78,16 @@ const EN_LEAVES = flattenLeaves(en);
 type LooseTranslator = (key: string, values?: Record<string, unknown>) => string;
 
 function translatorFor(code: string): LooseTranslator {
-  return createTranslator({ locale: code, messages: MESSAGES[code] }) as unknown as LooseTranslator;
+  return createTranslator({
+    locale: code,
+    messages: MESSAGES[code],
+    // use-intl normally reports an ICU error and returns the source string.
+    // A test that only checks `not.toThrow()` therefore passed while printing
+    // hundreds of errors and while the same message failed in the product.
+    onError: (error) => {
+      throw error;
+    },
+  }) as unknown as LooseTranslator;
 }
 
 // Sample values covering every ICU argument name used anywhere in en.json —
@@ -97,6 +106,7 @@ const SAMPLE_VALUES = {
   delta: "3m",
   detail: "boom",
   duration: "3h",
+  efforts: "low / medium / high",
   end: "11:00",
   event: "PR merge",
   field: "payload",
@@ -110,11 +120,14 @@ const SAMPLE_VALUES = {
   message: "oops",
   minor: 5,
   minute: "05",
+  model: "gpt-5",
   n: 5,
   name: "worker",
+  node: "research",
   outcome: "completed",
   plural: "s",
   position: 1,
+  provider: "OpenAI",
   rate: "1.2",
   reported: 3,
   role: "engine",
@@ -293,12 +306,12 @@ function findIdentityLeaks(code: string): string[] {
 
 describe("messages — a locale value byte-identical to English is a missed translation", () => {
   const EXECUTION_GRAPH_KEYS = [
+    "history.detail.progressEscalated",
     "history.detail.progressTotal",
     "history.detail.progressCompleted",
     "history.detail.progressRunning",
     "history.detail.progressFailed",
     "history.detail.progressPending",
-    "history.detail.progressEscalated",
     "history.detail.progressElapsed",
     "history.detail.expandGraph",
     "history.detail.collapseGraph",

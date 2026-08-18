@@ -243,6 +243,10 @@ export async function streamSession(
   token: string | undefined,
   onEvent: (event: StudioEvent) => void,
   signal: AbortSignal,
+  resume?: {
+    cursor?: string;
+    onCursor?: (cursor: string) => void;
+  },
 ): Promise<void>;
 
 export async function streamSignals(
@@ -285,11 +289,15 @@ Exact semantics:
 - Explicit `{type:"done"}` returns normally.
 - Transport EOF before `done` throws a visible stream-closed error. An AbortSignal-driven
   close is handled by the caller and does not show a spurious error after retarget/dispose.
-- These functions do not reconnect or resume. The signals endpoint replays persisted rows
-  from seq zero on each new connection; the session message stream uses its server-local
-  timestamp cursor per connection.
-
-The missing reconnect/resume contract is a current delta, not an implied guarantee.
+- The stream functions each own one connection and do not hide transport EOF. For session
+  messages, the parser acknowledges a server-issued `id:` only after the synchronous event
+  consumer accepts that frame, and an optional cursor is sent on the next connection.
+- The run-detail caller retries a dropped session-message connection up to three times with
+  1, 2, and 4 second delays while preserving that cursor. Retarget and dispose abort both an
+  active fetch and a pending delay without surfacing an error for the abandoned run.
+- The signals endpoint and parser retain their independent `after_seq` protocol. The
+  operation-tree caller retries from sequence zero and rebuilds its projection; session
+  cursor handling does not alter that behavior.
 
 ### D5 — Native Explorer and bounded purpose-built webviews
 
@@ -350,8 +358,8 @@ models. Compatibility therefore follows ADR-0078 D5:
   manager, timeout, and health-race failure modes.
 - GET-only scope reduces application mutation risk. Reversing D2 would be a product and
   authorization expansion, not a small API addition.
-- Fetch streams support bearer auth and visible EOF failure but currently require the caller
-  to reconnect manually.
+- Fetch streams support bearer auth and visible EOF failure. Caller-owned reconnect loops
+  preserve endpoint-specific behavior instead of hiding retries inside the parsers.
 - Shared contract fixtures add release work but prevent one of two clients from silently
   drifting.
 
@@ -361,7 +369,7 @@ models. Compatibility therefore follows ADR-0078 D5:
 |---|---|---|---|
 | 1 | Add a contract test suite that runs the VS Code serializers and SSE parsers against the daemon's current OpenAPI examples and recorded stream fixtures. | M | (filled at issue-open time) |
 | 2 | Add a negative capability test proving the extension client has no methods for launch, definition, schedule, approval, maintenance, or other mutation endpoints. | S | (filled at issue-open time) |
-| 3 | Define retry, backoff, resume, and terminal behavior for dropped session and signal streams; a transport EOF must produce a visible recoverable state rather than a frozen view. | M | (filled at issue-open time) |
+| 3 | Carry a persisted signal `after_seq` through VS Code operation-tree reconnects; session-message reconnect already preserves its opaque cursor, while the signal caller still rebuilds from sequence zero. | S | (filled at issue-open time) |
 | 4 | Version or compatibility-gate daemon response and stream changes before publishing an extension release that depends on them. | S | (filled at issue-open time) |
 
 ## Alternatives considered
