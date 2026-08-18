@@ -78,7 +78,16 @@ const EN_LEAVES = flattenLeaves(en);
 type LooseTranslator = (key: string, values?: Record<string, unknown>) => string;
 
 function translatorFor(code: string): LooseTranslator {
-  return createTranslator({ locale: code, messages: MESSAGES[code] }) as unknown as LooseTranslator;
+  return createTranslator({
+    locale: code,
+    messages: MESSAGES[code],
+    // use-intl normally reports an ICU error and returns the source string.
+    // A test that only checks `not.toThrow()` therefore passed while printing
+    // hundreds of errors and while the same message failed in the product.
+    onError: (error) => {
+      throw error;
+    },
+  }) as unknown as LooseTranslator;
 }
 
 // Sample values covering every ICU argument name used anywhere in en.json —
@@ -97,6 +106,7 @@ const SAMPLE_VALUES = {
   delta: "3m",
   detail: "boom",
   duration: "3h",
+  efforts: "low / medium / high",
   end: "11:00",
   event: "PR merge",
   field: "payload",
@@ -110,11 +120,14 @@ const SAMPLE_VALUES = {
   message: "oops",
   minor: 5,
   minute: "05",
+  model: "gpt-5",
   n: 5,
   name: "worker",
+  node: "research",
   outcome: "completed",
   plural: "s",
   position: 1,
+  provider: "OpenAI",
   rate: "1.2",
   reported: 3,
   role: "engine",
@@ -226,22 +239,14 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // against. Natively translated in all 16, so unlike its two siblings it adds
   // nothing to the identity-leak baseline below.
   //
-  // 1101 = 1100 - fleet.detail.engineRuns + runCard.outputWithheld
-  // + history.detail.filesUnionBounded. The count is measured from en.json
-  // rather than carried over from either branch: one side removed a key and
-  // the other added two, so neither of their totals survives the merge.
-  //
-  // fleet.detail.engineRuns went with the session-detail link bar that was its
-  // only caller. The route it pointed at stays reachable from the System
-  // page's Data section, so nothing is stranded by the removal.
-  //
-  // runCard.outputWithheld is the badge for a tool result the server withheld
-  // past its per-row size ceiling. history.detail.filesUnionBounded is said
-  // when the run-wide file union stopped at one of its ceilings. Both are
-  // natively translated in all 16, so they add nothing to the identity-leak
-  // baseline.
-  it("en.json has 1101 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1101);
+  // 1104, measured from en.json rather than carried from either side: main
+  // dropped fleet.detail.engineRuns with the link bar that was its only caller
+  // and added runCard.outputWithheld and history.detail.filesUnionBounded,
+  // while this branch added three schedules.detail leaves for the
+  // discard-changes confirmation. All five additions are natively translated in
+  // all 16 locales, so they add nothing to the identity-leak baseline.
+  it("en.json has 1104 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1104);
   });
 
   it.each(LOCALES.map((l) => l.code))(
@@ -301,12 +306,12 @@ function findIdentityLeaks(code: string): string[] {
 
 describe("messages — a locale value byte-identical to English is a missed translation", () => {
   const EXECUTION_GRAPH_KEYS = [
+    "history.detail.progressEscalated",
     "history.detail.progressTotal",
     "history.detail.progressCompleted",
     "history.detail.progressRunning",
     "history.detail.progressFailed",
     "history.detail.progressPending",
-    "history.detail.progressEscalated",
     "history.detail.progressElapsed",
     "history.detail.expandGraph",
     "history.detail.collapseGraph",

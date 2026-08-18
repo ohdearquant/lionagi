@@ -403,6 +403,7 @@ async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
     monkeypatch.setattr(engine_mod, "_import_engine_class", lambda m, n: MockEngineClass)
 
     update_calls: list[dict] = []
+    created_sessions: list[dict] = []
 
     class MockStateDB:
         async def open(self):
@@ -418,7 +419,7 @@ async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
             pass
 
         async def create_session(self, session):
-            pass
+            created_sessions.append(session)
 
         async def update_status(self, entity_type, entity_id, *, new_status, reason_code, **kw):
             pass
@@ -439,6 +440,10 @@ async def test_export_dir_none_when_not_passed(monkeypatch, capsys):
     assert rc == 0
     completed = [c for c in update_calls if c["status"] == "completed"]
     assert completed[0]["export_dir"] is None
+    markers = created_sessions[0]["node_metadata"]
+    assert markers["pid"] > 0
+    assert markers["pid_create_time"] > 0
+    assert markers["process_identity_mode"] == "local"
 
 
 # Cancellation handling — BaseException paths

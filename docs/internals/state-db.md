@@ -70,6 +70,57 @@ fallback is marked approximate. Consumers such as Operator expose an
 approximate end but report duration as unknown rather than deriving a number or
 letting a terminal row's clock grow against the current time.
 
+### Backfills, one at a time
+
+The generic guard above says a backfill runs once. What each one decides is
+worth reading separately, because in every case the interesting choice is what
+value an old row should be given when the honest answer is "unknown".
+
+`_backfill_dispatched_at` stamps `dispatched_at` on `schedule_runs` rows that
+were already `running` before the column existed. Without it such a row is
+indistinguishable from a launch that was never confirmed, and
+`list_undispatched_schedule_runs()` would re-fire it on the next daemon startup
+even though it is still genuinely executing. The stamp uses the row's own
+`fired_at`, which the schema guarantees is `NOT NULL`, purely to exclude it from
+that scan. That is the same "no signal, so do not auto-retry" resolution
+`_backfill_action_cwd()` takes, and it does not pretend to know when the launch
+actually happened. A row that really did crash before the migration is still
+caught later by `reap_stale_schedule_runs()`'s wall-clock deadline, so nothing
+is lost by declining to guess here. The backfill is scoped to
+`schedule_id IS NOT NULL` so the ad-hoc task queue, which has its own
+dispatch and lease model and never sets `dispatched_at`, is left untouched.
+
+`_backfill_attention_dispositions` fills in the columns that fencing and
+ordering added after `attention_dispositions` and
+`attention_disposition_history` already existed. Because `metadata.create_all()`
+only creates missing tables, a store that already had them gained `revision`,
+`sequence` and `attention_disposition_revisions` as inert `DEFAULT`
+placeholders rather than real values. Three assignments follow from that.
+`sequence` is assigned in `(created_at, id)` order, so an `ORDER BY sequence`
+read sees the original append order. `revision` is raised to the item_id's count
+of history rows, or to 1 where an active row has none, so a client that already
+echoed a revision back never has its value read as a rollback. A pre-upgrade
+row with no history therefore starts at 1 rather than 0.
+`attention_disposition_revisions` is seeded at that same value for every active
+item_id, and also for item_ids that exist
+only in history with a delete-shaped latest transition. That last case is the
+one worth stating: without it, a PUT written before the upgrade and replayed
+after it would recreate a disposition that had been deleted, instead of being
+rejected by the fence. This backfill must run before `_reconcile_indexes`,
+which recreates the unique index on `attention_disposition_history.sequence`
+and would fail against the `DEFAULT 0` placeholder every pre-existing row
+shares.
+
+`_backfill_imported_role_label` nulls out `agent_name` on sessions imported
+from a desktop transcript. The mirror used to write the engine name into that
+field, which is a role field, and stopping the write only fixes imports going
+forward. Backfilling the stored rows avoids a permanent split where old
+imports render the engine name and new ones render the prompt, since
+`resolve_display_name` checks role before prompt. It is scoped by
+`source_kind` rather than by the label's value, because a live session can
+legitimately run a role literally named "codex". Branch rows are reached
+through their session, as `branches` has no `source_kind` of its own.
+
 ### The SQLite rebuild hazard: PRAGMA foreign_keys inside a transaction
 
 Rebuilding a table that other tables have a foreign key into (`schedules`,
@@ -147,6 +198,24 @@ lock (`BEGIN IMMEDIATE`) gives free serialization that PostgreSQL's
    entirely on the rare teardown: a conflicting lock aborts the attempt, and
    both callers log the failure and retry on a later sweep.
 
+Two writes assign a value inside the statement that writes it, for the same
+reason. `insert_session_signal` appends one lifecycle signal and returns the
+`seq` it assigned; `seq` is `MAX(seq)+1` for the session, computed in the same
+write, so concurrent inserts from different processes under WAL do not collide.
+Coroutines sharing one `StateDB` are serialized through the instance write lock
+so no two enter `BEGIN IMMEDIATE` on the same async engine, and PostgreSQL takes
+an advisory transaction lock keyed on `session_id`.
+
+`insert_artifact` upserts one structured artifact and returns its stable id,
+with the natural-key lookup and the write in a single statement. A separate
+`SELECT`-then-`INSERT` let two concurrent callers both observe no existing row
+and both attempt an insert, and the loser hit one of the four partial unique
+indexes as an `IntegrityError` instead of the documented upsert. The
+`ON CONFLICT` target and its `WHERE` clause must match one of
+`idx_artifacts_natural_key_*` in `schema.sql` exactly, since both SQLite and
+PostgreSQL require the conflict target to name the specific partial index;
+which one applies follows from which of `invocation_id` and `session_id` is set.
+
 ## The session-control queue: a worked example
 
 `session_controls` is a small durable queue of verbs (pause, resume, message
@@ -186,7 +255,24 @@ its full lifecycle, and they're worth reading as one sequence:
 detector can tell them apart; `claimed_at` next to it gives the age of a
 claim that hasn't resolved.
 
+`resolve_claimed_session_control` is the one thing that can end a claimed row,
+and it is deliberately not automatic. Nothing in the system can tell a consumer
+that died before delivering a message from one that died after, so the row
+waits for someone who can find out, and this method is that person's write. It
+returns None when the row is not claimed, which covers both "already terminal"
+and "never taken", so a caller cannot use it to overwrite an outcome the
+consumer itself recorded or to skip a row the ordinary teardown sweep should be
+rejecting instead. The claim it replaces is kept verbatim in the stored result,
+because the record of who held a message and what a human then decided about it
+is the whole value of leaving the row standing.
+
 ## Status transitions and the terminal-status floor
+
+`get_sessions_for_run` returns every session recorded against a CLI run,
+oldest first, as a list rather than one row: one run can persist more than one
+session, and a caller deciding whether the run is over has to see all of them.
+An empty list means no session was ever recorded under that run id, which is
+not the same answer as a session that exists and is not finished.
 
 `update_status` is the single path every entity's status write goes through.
 Two optional guards make it safe under concurrency: `expected_statuses`
@@ -241,9 +327,223 @@ merged document — which would also strip nulls that pre-date this patch and
 have nothing to do with it — the statement subtracts exactly the set of keys
 the incoming patch itself set to null.
 
-## What was deliberately left alone
+Two shapes the merge deliberately does not destroy. A malformed or non-object
+existing value, meaning an array, a scalar, or on SQLite even non-JSON text, is
+not silently discarded: it is preserved verbatim under
+`_discarded_node_metadata` and `_discarded_at` in the merged result, so the
+previous state is recoverable rather than gone. PostgreSQL's native `json`
+column can never hold non-JSON text, since the driver rejects it on write, so
+that half of the guard is SQLite-only in practice while the array-or-scalar
+half applies to both. Separately, a JSON `null` stored as the *whole*
+`node_metadata` value is treated the same as SQL NULL, as an absent object to
+merge into rather than a foreign shape to preserve. That is not a rare case:
+SQLAlchemy's JSON bind type serializes a Python `None` passed as
+`node_metadata` to the JSON null literal rather than to an actual SQL NULL, so
+it is the column's value on a large share of rows created without that field.
 
-Some large docstrings in `db.py` remain close to their original length
-because they encode invariants a caller genuinely needs and trimming further
-risked losing a fact rather than a word — the guiding rule throughout this
-pass was "when in doubt, keep the sentence."
+A null already present inside the stored document, at the top level or nested
+in a stored object or array, is data rather than noise, and the merge never
+strips it. Only keys the patch itself sets to null are removed.
+
+## Schedules: what counts as a fire, and what recovers one
+
+A `schedule_runs` row is an occurrence: the record that a schedule's cursor
+moved. Whether anything actually *ran* is a separate question, and several
+methods exist only to keep the two apart.
+
+`count_schedule_runs` answers "how much of its budget has this schedule
+spent", for `max_runs` and one-shot auto-disable. It counts `chain_depth = 0`
+rows only, since `on_success`/`on_fail` chain children do not consume the
+parent's budget, and its default status set excludes `skipped` (a missed-fire
+or overlap skip never ran) and `running` (not yet terminal). `timed_out` does
+count: a reaped run fired and consumed real work, so a bounded schedule must
+not silently re-fire because its only run timed out instead of completing.
+
+`schedule_health_evidence` reads two independent top-1-per-schedule rows, and
+each one filters to the rows that qualify *before* ranking them. Ranking an
+unfiltered window and filtering inside it, which is what it used to do, can
+push a real execution out of the window once enough non-qualifying rows pile
+up in front of it, which manufactures "never happened" out of "did not fit in
+the slice". A *recorded* row is any top-level row in any status, proving
+only that an admission decision reached the table. It does not prove the cursor
+moved: a capacity deferral records a `skipped` row and deliberately leaves
+`next_fire_at` untouched, so the occurrence is still due. An *executed* row is
+further restricted to `EXECUTED_RUN_STATUSES`, because `skipped`, `queued`,
+`waiting_dependency` and `retry_wait` are all recorded without a run happening.
+
+`schedule_run_exists_since` distinguishes "never fired" from "fired but
+crashed before follow-up bookkeeping" for missed-fire recovery. It excludes
+`skipped` rows, so a capacity-deferred skip (whose `next_fire_at` is
+deliberately left untouched) still counts as due and retries rather than
+reading as handled, and it excludes chain children, so a chain fire cannot
+mask a due top-level occurrence.
+
+Two recovery scans sit either side of the launch. `list_undispatched_schedule_runs`
+returns rows whose transaction committed but whose external process launch was
+never confirmed: the cursor has already moved, so ordinary missed-fire recovery
+will never reconsider them, so the scheduler revisits them at startup. Not all of
+them are re-fired. A chain child is tombstoned rather than retried, because a
+chain is re-entered from its root and not from the middle, and so is a run whose
+owning schedule has since been deleted or disabled, because re-firing it would
+run work the operator has already withdrawn. What is left, a top-level run of a
+still-enabled schedule, is re-fired under a fresh run id.
+`list_dispatched_running_schedule_runs` returns rows that were confirmed
+dispatched and never reached a terminal status. The scheduler that dispatched
+one of those may have crashed before recording its outcome, or the process may
+still be genuinely alive and working, so this method surfaces candidates for
+reconciliation and does not itself decide liveness.
+
+`tombstone_and_replace_schedule_run` flips an undispatched orphan to a terminal
+status and inserts its replacement in one transaction, so a crash leaves either
+both writes durable or neither. Its compare-and-set also requires
+`dispatched_at IS NULL`: if a launch confirmation lands between the recovery
+scan and this write, the row no longer qualifies and the call is a no-op rather
+than tombstoning a run that actually launched.
+
+`create_schedule_run_and_advance` inserts the occurrence and advances the
+owning schedule's cursor together, so a crash can only discard an occurrence
+that was never durably recorded. It can never leave the cursor pointing before
+one that was, which would make a restart re-fire it.
+
+`_build_update_schedule_stmt` is the single choke point for both the field
+allowlist and the SQL shape, shared by `update_schedule` and by the folded-in
+update inside `create_schedule_run_and_advance`, so the two write paths cannot
+drift. Its `guard_cursor_forward` option makes the `github_cursor` assignment
+monotonic: the column moves only if the new value sorts above the stored one.
+The scheduler passes it because a poll reads the cursor at tick start and
+writes it back much later, so its value is a snapshot that an operator's
+deliberate cursor move can outrun; without the guard the stale write silently
+undoes that move and a backlog the operator had declined becomes eligible
+again. It is a per-column condition rather than a row predicate on purpose,
+since the same statement carries `last_fired_at` and `next_fire_at` and those
+must land whether or not the cursor is allowed to advance.
+
+## Spend and metrics: unreported is not zero
+
+`total_cost_usd` is NULL when the engine that ran a session does not price
+itself, not when the session was free. Every read that aggregates it has to
+decide what to do about that, and the answer differs by what the caller does
+with the number. A panel can render "unreported" and let a human judge it, so
+the panel reads never coerce. A budget gate and a threshold alarm have to
+compare against a limit, so they take `COALESCE(..., 0)` and carry the gap in a
+companion count instead. What no read does is coerce silently: wherever a zero
+could mean "unmeasured", the unmeasured rows are counted too, in the same row
+for the gate and by a companion method for the metric.
+
+`spend_stats` leaves `reported_usd` as None whenever no row in the window
+reported a cost, so an entirely unreported window does not read as a genuine
+$0. It anchors on the same `COALESCE(ended_at, started_at, created_at)`
+timestamp as `activity_stats`, so the spend panel and the activity panel
+describe the same population for the same window. `spend_rollup` carries the
+same window anchor and the same never-coerce rule at session grain, one row
+per distinct dimension value, with unreported-only groups sorted last. Both
+express this as `SUM(CASE WHEN total_cost_usd IS NOT NULL THEN total_cost_usd
+END)`, which is NULL rather than 0 for a window nothing reported in.
+
+`sum_schedule_spend` backs the pre-fire budget gate, so it does sum with
+`COALESCE(..., 0)`, joining `schedule_runs` to sessions through
+`invocation_id`, and exposes
+`unreported_sessions` beside the total. That count covers terminal sessions
+only: a still-running session's cost is expected to be unknown and is not a
+gap. `metric_unreported_sessions` is the same companion for the
+`total_cost_usd` threshold metric, and it is the only metric with a
+NULL-versus-reported distinction to expose.
+
+`metric_value` aggregates a threshold-alert metric from `window_start` onward.
+The predicate is a lower bound only, so a row timestamped in the future is
+included rather than held back until its time arrives. Three of its members do
+not fit even that shape. `p95_latency_ms` needs a sorted
+sample, which SQLite has no percentile function for, so it fetches raw
+invocation durations and computes the percentile in Python.
+`github_poll_healthy_age_minutes` is a point-in-time gauge rather than a
+windowed aggregate, so it accepts `window_start` for signature parity and
+ignores it, reading "now" fresh inside the method.
+`github_poll_consecutive_401` is point-in-time for the same reason: it reports
+the longest consecutive-401 streak across enabled `github_poll` schedules, so a
+payload can tell a token problem from a network blip. A streak is a property of
+now rather than of a window, so this one leaves `:window_start` unused. The invariant to
+preserve
+is that every member of the studio's `VALID_METRICS` is answered somewhere in
+`metric_value`, not that it is answered by the shared aggregate query.
+
+The `failed_sessions` metric counts distinct *causes* rather than rows, and
+the reason is worth keeping. A fan-out spawns one session per worker, so a
+single wall, such as a provider refusing every worker of one invocation, lands
+as many rows carrying one cause, and a fan-out wider than the threshold would
+breach it on that single cause by construction. Grouping by
+`(invocation, reason)` makes the observed value the number of distinct things
+that went wrong. Both columns fall back to the session id rather than grouping
+on NULL, and that is the whole correctness of the query: NULL is not a shared
+value, rows without an invocation are rows whose grouping is unknown, and
+letting SQL treat them as equal merges unrelated failures into one. Most
+failed sessions carry no invocation id, so the naive form collapses nearly the
+whole population to one row per reason and the alarm stops being able to fire.
+The fallback is namespace-tagged rather than bare, because a bare one puts two
+different namespaces in one column: a session with no invocation whose id
+happened to equal some other session's `invocation_id` would share a grouping
+key with it, and two distinct causes carrying the same reason would then count
+once. That is the direction that suppresses an alert, so the prefix is worth
+spending.
+
+## Writes that fail closed
+
+`update_session` takes a `set_if_null` set naming fields to write as
+`COALESCE(col, :col)` rather than as a plain assignment. The write lands only
+while the column is still NULL, so two callers racing to stamp the same field
+converge on whichever value committed first instead of the later one silently
+winning. It is a single atomic UPDATE rather than a read-then-write, so the
+guarantee holds under concurrency and not merely under interleaving that
+happens to be lucky.
+
+`set_session_provenance` writes attribution fields without touching
+`updated_at`. Where a session came from is not evidence that it is live, so
+these writes must not move the clock `reconcile_session_status` and the phantom
+reaper read. `project` and `project_source` are written together, since the
+source is meaningless alone, and the session update and the projects-registry
+upsert run as one locked write so neither commits without the other.
+`artifacts_path` is written with `COALESCE` rather than a plain assignment: a
+mirrored CLI session's artifact root is a weaker signal than a launcher-set one,
+so a later and more precise write is never clobbered by an earlier guess.
+
+`delete_imported_session` refuses on ownership twice. The row's `source_kind`
+must equal the caller's `require_source_kind` exactly, and that value must
+itself start with `imported_`. The first check stops one importer reaching
+another importer's rows; the second stops any caller reaching a live run's
+session at all, since a live session's `source_kind` never carries that prefix.
+A progression or message still referenced by a surviving session or branch is
+retained rather than deleted.
+
+`read_only_open_supported` answers a narrower question than its name suggests:
+whether the configured store resolves to a SQLite file path at all. It is
+exactly `state_db_file() is not None`, so it does not check that the file
+exists, and it returns True for a path that is absent while
+`StateDB(readonly=True)` raises `FileNotFoundError` there — a read-only open
+never creates the file. Read-only is SQLite-only: it is a `mode=ro` URI open,
+and the read-only branch of `StateDB.open()` is not dialect-gated, so an
+unconditional `readonly=True` fails at open on a server-backed store rather
+than degrading to a writable connection. Callers use this as a cheap
+pre-filter and still handle the open failing. It is not a safety check: it says
+nothing about whether the connection you get back can write.
+
+`state_db_known_absent` answers the neighbouring question: whether the store a
+default `StateDB()` would open is known absent, which separates "no store, so no
+record of anything" from "the store is there and reading it went wrong". Callers
+act differently on each. It checks the store that will actually be opened,
+honouring `LIONAGI_STATE_DB_URL` rather than the default path, and only a True
+is confident: where existence is not a filesystem question it returns False and
+leaves the open attempt to give the real answer.
+
+## Where the reasoning lives
+
+Docstrings in `db.py` are one line: what the method does, and the single
+condition a caller most needs to know. Everything else, meaning the dialect
+differences, the concurrency arguments, the migration order and the reasons a
+value is computed one way rather than another, lives in this document. A
+comment survives at a call site only when it explains a line that would
+otherwise read as arbitrary, and it is kept to a sentence or two.
+
+That split is deliberate. Reasoning kept beside the code is read once, by
+whoever is already editing that method; reasoning kept here is read by anyone
+asking how the store behaves. When a change makes a paragraph here wrong, the
+paragraph is what to fix, not a docstring somewhere in a seven-thousand-line
+module.

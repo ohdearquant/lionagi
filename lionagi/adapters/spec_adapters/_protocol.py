@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -29,8 +30,8 @@ class SpecAdapter(ABC):
         cls,
         operable: Operable,
         model_name: str,
-        include: set[str] | None = None,
-        exclude: set[str] | None = None,
+        include: Collection[str] | None = None,
+        exclude: Collection[str] | None = None,
         **kwargs: Any,
     ) -> type:
         """Generate model class from Operable."""
