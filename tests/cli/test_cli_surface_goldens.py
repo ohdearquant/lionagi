@@ -195,6 +195,7 @@ ORCHESTRATE_FLOW_FLAGS = [
     "--reactive",
     "--resume",
     "--resume-on-timeout",
+    "--retry-failed",
     "--save",
     "--show-graph",
     "--team-attach",

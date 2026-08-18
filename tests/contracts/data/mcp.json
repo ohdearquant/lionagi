@@ -683,6 +683,11 @@
             "description": "Associate this engine run with an existing session in StateDB (written to engine_runs.session_id).",
             "x-flag": "--session-id"
           },
+          "invocation_id": {
+            "type": "string",
+            "description": "Parent Studio invocation id. Defaults to LIONAGI_INVOCATION_ID; an explicit value takes precedence.",
+            "x-flag": "--invocation"
+          },
           "no_persist": {
             "type": "boolean",
             "description": "Skip writing the engine run record to StateDB.",
@@ -1582,6 +1587,12 @@
             "type": "string",
             "description": "Resume a checkpointed flow from a prior process (by run id, or any session/invocation/play id backed by one). Replays the persisted plan verbatim \u2014 no planner call, no other flow flags read (model/prompt/playbook/etc. all come from the checkpoint). Distinct from `li o ctl resume`, which un-pauses a still-running session.",
             "x-flag": "--resume"
+          },
+          "retry_failed": {
+            "type": "boolean",
+            "description": "With `resume`: run the ops the checkpoint recorded as failed again, instead of refusing. Their reactive children from the superseded attempt are dropped so the re-run decides its own. Without this flag a checkpoint holding any failed op refuses loudly, naming them, because replaying one as terminal skips it and everything downstream. Re-running re-executes whatever side effects the first attempt already had.",
+            "default": false,
+            "x-flag": "--retry-failed"
           },
           "allow_degraded_context": {
             "type": "boolean",

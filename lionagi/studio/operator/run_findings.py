@@ -7,10 +7,10 @@ tool-level and branch/session status failures), and declared artifacts with
 their verification state. Bounded and redacted on the same rules as
 ``run_progress``/the existing read tools — see ``redact.py`` and
 docs/internals/studio.md ("Bounded read projections"). Tool-call outcomes
-are inferred from message content via the same ``_detect_status`` heuristic
-``lionagi.studio.services.runs`` already uses to build the run-detail step
-list, since a plain session's ActionRequest/ActionResponse messages carry
-no structured ``ok: bool``.
+are inferred from message content via the shared ``_detect_status`` heuristic
+in ``lionagi.studio.services.runs``. The helper is also used by Session-backed
+operator projections; a plain session's ActionRequest/ActionResponse messages
+carry no structured ``ok: bool``.
 """
 
 from __future__ import annotations

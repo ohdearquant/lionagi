@@ -755,6 +755,19 @@ def add_orchestrate_subparser(
         ),
     )
     fl.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help=(
+            "With --resume: run the ops the checkpoint recorded as failed "
+            "again, instead of refusing. Their reactive children from the "
+            "superseded attempt are dropped so the re-run decides its own. "
+            "Without this flag a checkpoint holding any failed op refuses "
+            "loudly, naming them, because replaying one as terminal skips it "
+            "and everything downstream. Re-running re-executes whatever side "
+            "effects the first attempt already had."
+        ),
+    )
+    fl.add_argument(
         "--allow-degraded-context",
         action="store_true",
         help=(
@@ -1038,6 +1051,7 @@ def run_orchestrate(args: argparse.Namespace) -> int:
                 _resume_flow(
                     resume_target,
                     allow_degraded_context=getattr(args, "allow_degraded_context", False),
+                    retry_failed=getattr(args, "retry_failed", False),
                     dry_run=args.dry_run,
                     show_graph=getattr(args, "show_graph", False),
                     notify=getattr(args, "notify", None),

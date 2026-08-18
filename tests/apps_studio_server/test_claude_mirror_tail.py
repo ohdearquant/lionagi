@@ -20,7 +20,14 @@ from lionagi.state.db import StateDB  # noqa: E402
 from ._helpers import run_async  # noqa: E402
 
 
-def _write_transcript(root: Path, uid: str, *, cwd: str, base_ts: float) -> Path:
+def _write_transcript(
+    root: Path,
+    uid: str,
+    *,
+    cwd: str,
+    base_ts: float,
+    prompt: str = "hello from the mirror tail test",
+) -> Path:
     """Write a minimal two-event Claude transcript under root/<proj>/<uid>.jsonl."""
     proj_dir = root / "-Users-someone-proj"
     proj_dir.mkdir(parents=True, exist_ok=True)
@@ -34,7 +41,7 @@ def _write_transcript(root: Path, uid: str, *, cwd: str, base_ts: float) -> Path
             "uuid": "u1",
             "timestamp": t0,
             "cwd": cwd,
-            "message": {"role": "user", "content": "hello from the mirror tail test"},
+            "message": {"role": "user", "content": prompt},
         },
         {
             "type": "assistant",
@@ -50,6 +57,54 @@ def _write_transcript(root: Path, uid: str, *, cwd: str, base_ts: float) -> Path
     ]
     path.write_text("".join(json.dumps(e) + "\n" for e in events))
     return path
+
+
+def _write_codex_transcript(
+    root: Path,
+    uid: str,
+    *,
+    cwd: str,
+    prompt: str = "codex mirror isolation decoy",
+) -> Path:
+    """Write one interactive Codex rollout under the sessions root."""
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / f"rollout-{uid}.jsonl"
+    records = [
+        {
+            "type": "session_meta",
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "payload": {
+                "id": uid,
+                "session_id": uid,
+                "cwd": cwd,
+                "originator": "Codex Desktop",
+            },
+        },
+        {
+            "type": "response_item",
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "id": "m1",
+                "content": [{"text": prompt}],
+            },
+        },
+    ]
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    return path
+
+
+async def _wait_for_session_count(db_path: Path, expected: int) -> list[dict]:
+    """Poll a fresh mirror DB until it reaches ``expected`` rows or settles."""
+    async with StateDB(db_path) as db:
+        rows: list[dict] = []
+        for _ in range(300):
+            rows = await db.list_sessions(limit=20)
+            if len(rows) >= expected:
+                break
+            await asyncio.sleep(0.01)
+        return rows
 
 
 def test_mirror_forever_writes_session_then_stops(tmp_path, monkeypatch):
@@ -226,6 +281,7 @@ def test_start_claude_mirror_respects_flag(monkeypatch):
 
     monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", True)
     monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_SINCE", "12h")
+    monkeypatch.setattr(config_mod, "MIRROR_IMPORT_AMBIENT", True)
     seen: dict[str, object] = {}
 
     async def _fake_forever(stop, **kwargs):
@@ -242,3 +298,169 @@ def test_start_claude_mirror_respects_flag(monkeypatch):
 
     run_async(_on())
     assert seen.get("since") == "12h"
+
+
+def test_studio_autostart_isolated_profile_does_not_import_ambient_home(tmp_path, monkeypatch):
+    """A selected LIONAGI_HOME must not make Studio ingest the real-home trees.
+
+    This drives ``_start_claude_mirror`` itself. Reverting only its root wiring
+    makes both decoys land in the fresh profile DB, even though the lower-level
+    mirror already supports scoped roots.
+    """
+    import lionagi.cli.mirror as mirror_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.app as app_mod
+    import lionagi.studio.config as config_mod
+
+    isolated_home = tmp_path / "isolated-profile"
+    db_path = isolated_home / "state.db"
+    ambient_claude = tmp_path / "real-home" / ".claude" / "projects"
+    ambient_codex = tmp_path / "real-home" / ".codex" / "sessions"
+    _write_transcript(
+        ambient_claude,
+        "aaaaaaaa-1111-2222-3333-444444444444",
+        cwd=str(tmp_path),
+        base_ts=time.time(),
+    )
+    _write_codex_transcript(
+        ambient_codex,
+        "019c1111-2222-7333-8444-555555555555",
+        cwd=str(tmp_path),
+    )
+
+    monkeypatch.setenv("LIONAGI_HOME", str(isolated_home))
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", isolated_home / "mirror" / "offsets.json")
+    monkeypatch.setattr(mirror_mod, "CLAUDE_PROJECTS_DIR", ambient_claude)
+    monkeypatch.setattr(mirror_mod, "CODEX_SESSIONS_DIR", ambient_codex)
+    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", True)
+    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_SINCE", None)
+    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_INTERVAL", 0.01)
+    monkeypatch.setattr(config_mod, "MIRROR_SOURCE", "both")
+    assert config_mod._mirror_import_ambient_default() is False
+    monkeypatch.setattr(config_mod, "MIRROR_IMPORT_AMBIENT", False, raising=False)
+    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ROOT", None, raising=False)
+    monkeypatch.setattr(config_mod, "MIRROR_CODEX_ROOT", None, raising=False)
+
+    async def _body() -> tuple[object, object, list[dict]]:
+        stop, task = app_mod._start_claude_mirror()
+        rows: list[dict] = []
+        try:
+            if task is not None:
+                rows = await _wait_for_session_count(db_path, 2)
+        finally:
+            await app_mod._stop_claude_mirror(stop, task)
+        return stop, task, rows
+
+    stop, task, rows = run_async(_body())
+    assert stop is None and task is None
+    assert rows == []
+
+
+def test_studio_autostart_uses_explicit_custom_roots(tmp_path, monkeypatch):
+    """Custom Claude and Codex roots remain an explicit isolated-profile opt-in."""
+    import lionagi.cli.mirror as mirror_mod
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.app as app_mod
+    import lionagi.studio.config as config_mod
+
+    isolated_home = tmp_path / "isolated-profile"
+    db_path = isolated_home / "state.db"
+    custom_claude = tmp_path / "fixtures" / "claude"
+    custom_codex = tmp_path / "fixtures" / "codex"
+    ambient_claude = tmp_path / "real-home" / ".claude" / "projects"
+    ambient_codex = tmp_path / "real-home" / ".codex" / "sessions"
+    custom_claude_uid = "bbbbbbbb-1111-2222-3333-444444444444"
+    custom_codex_uid = "019c2222-2222-7333-8444-555555555555"
+    _write_transcript(
+        custom_claude,
+        custom_claude_uid,
+        cwd=str(tmp_path),
+        base_ts=time.time(),
+        prompt="custom claude root",
+    )
+    _write_codex_transcript(
+        custom_codex,
+        custom_codex_uid,
+        cwd=str(tmp_path),
+        prompt="custom codex root",
+    )
+    _write_transcript(
+        ambient_claude,
+        "cccccccc-1111-2222-3333-444444444444",
+        cwd=str(tmp_path),
+        base_ts=time.time(),
+        prompt="ambient claude decoy",
+    )
+    _write_codex_transcript(
+        ambient_codex,
+        "019c3333-2222-7333-8444-555555555555",
+        cwd=str(tmp_path),
+        prompt="ambient codex decoy",
+    )
+
+    monkeypatch.setenv("LIONAGI_HOME", str(isolated_home))
+    monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_CLAUDE_ROOT", str(custom_claude))
+    monkeypatch.setenv("LIONAGI_STUDIO_MIRROR_CODEX_ROOT", str(custom_codex))
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    monkeypatch.setattr(mirror_mod, "_OFFSETS_PATH", isolated_home / "mirror" / "offsets.json")
+    monkeypatch.setattr(mirror_mod, "CLAUDE_PROJECTS_DIR", ambient_claude)
+    monkeypatch.setattr(mirror_mod, "CODEX_SESSIONS_DIR", ambient_codex)
+    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", True)
+    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_SINCE", None)
+    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_INTERVAL", 0.01)
+    monkeypatch.setattr(config_mod, "MIRROR_SOURCE", "both")
+    monkeypatch.setattr(config_mod, "MIRROR_IMPORT_AMBIENT", False, raising=False)
+    claude_root = config_mod._optional_mirror_root("LIONAGI_STUDIO_MIRROR_CLAUDE_ROOT")
+    codex_root = config_mod._optional_mirror_root("LIONAGI_STUDIO_MIRROR_CODEX_ROOT")
+    assert claude_root == custom_claude.resolve()
+    assert codex_root == custom_codex.resolve()
+    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ROOT", claude_root, raising=False)
+    monkeypatch.setattr(config_mod, "MIRROR_CODEX_ROOT", codex_root, raising=False)
+
+    async def _body() -> list[dict]:
+        stop, task = app_mod._start_claude_mirror()
+        assert stop is not None and task is not None
+        try:
+            return await _wait_for_session_count(db_path, 2)
+        finally:
+            await app_mod._stop_claude_mirror(stop, task)
+
+    rows = run_async(_body())
+    names = {row["name"] for row in rows}
+    assert len(rows) == 2
+    assert names == {"custom claude root", "custom codex root"}
+
+
+def test_studio_mirror_startup_error_does_not_expose_transcript_data(tmp_path, monkeypatch, caplog):
+    """Unexpected autostart failures stay useful without echoing paths/content."""
+    import lionagi.studio.app as app_mod
+    import lionagi.studio.config as config_mod
+
+    secret_path = tmp_path / "private" / "rollout-secret.jsonl"
+    secret_content = "interview transcript content"
+
+    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ENABLED", True)
+    monkeypatch.setattr(config_mod, "MIRROR_IMPORT_AMBIENT", False, raising=False)
+    monkeypatch.setattr(config_mod, "MIRROR_CLAUDE_ROOT", secret_path.parent, raising=False)
+    monkeypatch.setattr(config_mod, "MIRROR_CODEX_ROOT", None, raising=False)
+    monkeypatch.setattr(config_mod, "MIRROR_SOURCE", "claude")
+
+    async def _boom(stop, **kwargs):
+        raise RuntimeError(f"{secret_path}: {secret_content}")
+
+    monkeypatch.setattr("lionagi.cli.mirror.mirror_forever", _boom)
+
+    async def _body() -> None:
+        stop, task = app_mod._start_claude_mirror()
+        assert stop is not None and task is not None
+        try:
+            await asyncio.wait_for(task, timeout=2)
+        except RuntimeError:
+            pass
+
+    with caplog.at_level("ERROR", logger="lionagi.studio.app"):
+        run_async(_body())
+
+    assert secret_path.as_posix() not in caplog.text
+    assert secret_content not in caplog.text

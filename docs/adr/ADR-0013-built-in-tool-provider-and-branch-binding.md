@@ -548,9 +548,11 @@ class SandboxRequest(BaseModel):
     action: SandboxAction                    # create | diff | commit | merge | discard
     message: str | None = None
 
+_SubagentPermissionPreset = Literal["read_only", "safe", "allow_all", "deny_all"]
+
 class SubagentRequest(BaseModel):
     instruction: str
-    permissions: str = "read_only"
+    permissions: _SubagentPermissionPreset = "read_only"
     max_turns: int = 20
     cwd: str | None = None
 ```

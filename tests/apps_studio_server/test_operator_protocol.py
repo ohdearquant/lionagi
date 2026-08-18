@@ -1192,6 +1192,7 @@ async def test_application_mcp_resume_run_delegates_flow_kind_to_checkpoint_repl
                     "invocation_kind": "flow",
                     "resume": True,
                     "allow_degraded_context": False,
+                    "retry_failed": False,
                     "checkpoint_run_id": cli_run_id,
                 },
             },

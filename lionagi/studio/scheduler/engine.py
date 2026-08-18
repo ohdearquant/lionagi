@@ -441,6 +441,17 @@ class SchedulerEngine:
         self._fire_tasks: set[asyncio.Task] = set()
         self._last_reaper_run: float = 0.0
         self._last_checkpoint_run: float = 0.0
+        # Unlike the two above, this starts unresolved rather than at 0.0, which
+        # would make a prune due on the first tick. It is resolved from when a
+        # prune last committed, so that restarting the daemon neither triggers
+        # a pass nor postpones one that is already overdue. It is a cheap gate
+        # on the tick, not the decision: see _run_prune.
+        self._last_retention_run: float | None = None
+        # Single-flight tracked task for the retention prune, for the same
+        # reason as _worker_task: the sweep's cost scales with whatever has
+        # accumulated, so awaiting it on the tick would hold up dispatch
+        # delivery and schedule evaluation for the whole pass.
+        self._retention_task: asyncio.Task | None = None
         # max_runs budget reservation (single-process; see _reserve_max_runs_budget).
         self._max_runs_lock = asyncio.Lock()
         self._max_runs_inflight: dict[
@@ -707,6 +718,14 @@ class SchedulerEngine:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._worker_task
             self._worker_task = None
+        if self._retention_task is not None:
+            # Cancelling mid-prune keeps whichever chunks already committed and
+            # writes no prune event, so the next process reads the older
+            # recorded prune and is due straight away rather than skipping one.
+            self._retention_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._retention_task
+            self._retention_task = None
         if self._fire_tasks:
             for ft in list(self._fire_tasks):
                 ft.cancel()
@@ -788,6 +807,95 @@ class SchedulerEngine:
             except Exception:
                 _log.exception("Scheduler tick error")
             await asyncio.sleep(_TICK_INTERVAL)
+
+    def _maybe_start_prune(self, now: float) -> None:
+        """Kick off the retention prune as a tracked, single-flight background
+        task instead of awaiting it inline.
+
+        How much the sweep has to do is set by however much eligible data has
+        accumulated, which nothing here bounds, so awaiting it on the tick
+        would hold dispatch delivery and schedule evaluation for the whole
+        pass. A pass still in flight from an earlier tick starts no second
+        one, so this does not raise the prune rate, only the tick's latency
+        floor for reaching one.
+
+        The check here is only the cheap gate: an unresolved anchor starts a
+        pass because resolving it is a database read, and the decision itself
+        is made in ``_run_prune`` against the recorded prune.
+
+        Only the prune runs here. ``VACUUM`` takes an exclusive lock for as
+        long as it takes to rewrite the file, so it stays on the admin route
+        where a person chooses the moment.
+        """
+        from lionagi.studio.config import RETENTION_INTERVAL_SECONDS
+
+        if RETENTION_INTERVAL_SECONDS <= 0:
+            return
+        if self._retention_task is not None and not self._retention_task.done():
+            return
+        if (
+            self._last_retention_run is not None
+            and now - self._last_retention_run < RETENTION_INTERVAL_SECONDS
+        ):
+            return
+        self._retention_task = asyncio.create_task(self._run_prune_guarded(now))
+
+    async def _run_prune_guarded(self, now: float) -> None:
+        try:
+            await self._run_prune(now)
+        except Exception:
+            _log.exception("Periodic retention prune error")
+
+    async def _run_prune(self, now: float) -> None:
+        """Prune once, if a full interval has passed since a prune last committed.
+
+        The recorded prune is re-read every time the gate opens rather than
+        resolved once, because a prune from the admin route commits an event
+        this process would otherwise never see: without the re-read an
+        automatic pass could follow a manual one immediately, having measured
+        its interval from a prune two intervals ago.
+
+        The anchor only ever moves forward. The recorded event is written
+        after the prune's transactions commit, so it is a completion time like
+        the stamp below, and taking the later of the two keeps a long prune
+        from leaving the next one due sooner by however long it ran.
+        """
+        from lionagi.studio.config import RETENTION_INTERVAL_SECONDS
+        from lionagi.studio.services.db_maintenance import get_last_prune_at, prune_old_data
+
+        try:
+            recorded = await get_last_prune_at()
+        except Exception:
+            # Leave the anchor as it was so the next tick tries again.
+            # Anchoring on a failed read would either silence the pass or run
+            # it early, depending on which way the failure was read.
+            _log.exception("Could not read the last prune time; retrying next tick")
+            return
+
+        if recorded is None and self._last_retention_run is None:
+            # Nothing has ever been pruned. Start the clock now rather than
+            # firing immediately, so adopting this on an installation with a
+            # large backlog gets a predictable first pass one interval out
+            # instead of one during daemon startup.
+            self._last_retention_run = now
+            return
+
+        # Judged against the tick's own reading, the one the gate used. The
+        # completion stamp below is the only place a fresh reading belongs,
+        # because that is the value the tick cannot know.
+        anchor = max(recorded or 0.0, self._last_retention_run or 0.0)
+        self._last_retention_run = anchor
+        if now - anchor < RETENTION_INTERVAL_SECONDS:
+            return
+
+        try:
+            await prune_old_data(actor="scheduler_tick")
+        finally:
+            # Stamped from completion rather than from the tick that started
+            # this, and stamped on failure too, matching the reaper and
+            # checkpoint passes: a prune that keeps failing must not be
+            # retried on every tick.
+            self._last_retention_run = time.time()
 
     async def _mark_dispatched(self, run_id: str) -> None:
         """Stamp ``dispatched_at`` the instant spawn_and_wait confirms the
@@ -1202,6 +1310,8 @@ class SchedulerEngine:
             except Exception:
                 _log.exception("Periodic checkpoint error")
             self._last_checkpoint_run = now
+
+        self._maybe_start_prune(now)
 
         try:
             await self._deliver_due_dispatches(now)

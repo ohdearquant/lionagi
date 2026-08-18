@@ -72,6 +72,84 @@ async def test_invoke_no_hooks_core_error_propagates():
 
 
 @pytest.mark.asyncio
+async def test_public_invoke_signals_precreated_completion_event_on_success():
+    event = SimpleHooked()
+    done = event.completion_event
+
+    await event.invoke()
+
+    assert event.status is EventStatus.COMPLETED
+    assert done.is_set()
+
+
+@pytest.mark.asyncio
+async def test_public_invoke_late_completion_event_access_is_already_signalled():
+    event = SimpleHooked()
+
+    await event.invoke()
+
+    assert event.status is EventStatus.COMPLETED
+    assert event.completion_event.is_set()
+
+
+@pytest.mark.parametrize(
+    ("status", "signals_completion"),
+    (
+        (EventStatus.PENDING, False),
+        (EventStatus.PROCESSING, False),
+        (EventStatus.COMPLETED, True),
+        (EventStatus.FAILED, True),
+        (EventStatus.SKIPPED, True),
+        (EventStatus.CANCELLED, True),
+        (EventStatus.ABORTED, True),
+    ),
+)
+def test_completion_event_terminal_status_vocabulary_is_exact(status, signals_completion):
+    event = SimpleHooked()
+    done = event.completion_event
+
+    event.status = status
+
+    assert done.is_set() is signals_completion
+
+
+@pytest.mark.asyncio
+async def test_public_invoke_signals_precreated_completion_event_on_failure():
+    event = FailingHooked()
+    done = event.completion_event
+
+    await event.invoke()
+
+    assert event.status is EventStatus.FAILED
+    assert done.is_set()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_public_stream_signals_precreated_completion_event():
+    event = SimpleHooked()
+    done = event.completion_event
+
+    chunks = [chunk async for chunk in event.stream()]
+
+    assert chunks == ["chunk1", "chunk2"]
+    assert event.status is EventStatus.COMPLETED
+    assert done.is_set()
+
+
+@pytest.mark.asyncio
+async def test_closed_public_stream_signals_precreated_completion_event():
+    event = SlowStream()
+    done = event.completion_event
+    stream = event.stream()
+
+    assert await anext(stream) == "chunk1"
+    await stream.aclose()
+
+    assert event.status is EventStatus.CANCELLED
+    assert done.is_set()
+
+
+@pytest.mark.asyncio
 async def test_invoke_pre_hook_completed_runs_core():
     """COMPLETED pre-hook runs; core result is returned."""
     h = SimpleHooked()

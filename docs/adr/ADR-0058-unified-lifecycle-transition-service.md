@@ -1,10 +1,24 @@
 # ADR-0058: Unified lifecycle transition service
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Kind**: Aspirational
+- **Implementation-status**: partial — contract/result types, seven current policies, guarded
+  transition service, and facade-preserving wrappers are shipped; production creation-path
+  initialization, canonical Run policy/integration, and remaining migration/deletion phases are open
 - **Area**: persistence-state
 - **Date**: 2026-07-09
-- **Relations**: supersedes v0-0033; extends ADR-0057
+- **Relations**: supersedes v0-0033; extends ADR-0057; extended prospectively by ADR-0123
+  (canonical Run)
+
+## Proposed ADR-0123 boundary
+
+ADR-0123 adds canonical Run as an intentional managed entity but retains this ADR's one-policy,
+one-service mutation authority. `RunRepository.transition()`/`finalize()` are façades that delegate
+one typed command to `LifecycleService` in the owner transaction; they may not evaluate a second
+policy or write status directly. ADR-0124 also amends the post-commit projection seam: a typed
+participant stages the exact callback decision beside terminal audit, without making callback
+delivery part of lifecycle authority. Current behavior remains until both records are
+accepted/migrated.
 
 ## Context
 
@@ -116,6 +130,11 @@ class InitialStateCommand:
     actor: ActorRecord
 
 @dataclass(frozen=True)
+class TerminalProjectionBindingRef:
+    binding_id: str
+    binding_version: int
+
+@dataclass(frozen=True)
 class TransitionCommand:
     entity_type: str
     entity_id: str
@@ -126,6 +145,7 @@ class TransitionCommand:
     expected_version: float | None = None
     patch: Mapping[str, JsonValue] = field(default_factory=dict)
     override: OverrideRecord | None = None
+    terminal_projection_binding: TerminalProjectionBindingRef | None = None
 
 @dataclass(frozen=True)
 class TransitionOutcome:
@@ -133,6 +153,52 @@ class TransitionOutcome:
     previous_status: str | None
     current_status: str
     transition_id: str | None
+    terminal_projection_decision_id: str | None = None
+
+@dataclass(frozen=True)
+class TerminalProjectionEmitDecision:
+    kind: Literal["emit"]
+    decision_id: str
+    transition_id: str
+    terminal_fact_id: str
+    wire_profile: Literal["legacy_v1", "canonical_run_v2"]
+    canonical_run_id: str | None
+    reason_code: str
+
+@dataclass(frozen=True)
+class TerminalProjectionSuppressDecision:
+    kind: Literal["suppress"]
+    decision_id: str
+    transition_id: str
+    binding_id: str
+    canonical_run_ids: tuple[str, ...]
+    reason_code: str
+
+@dataclass(frozen=True)
+class TerminalProjectionAttention:
+    kind: Literal["attention"]
+    decision_id: str
+    transition_id: str
+    candidate_binding_ids: tuple[str, ...]
+    candidate_terminal_fact_ids: tuple[str, ...]
+    reason_code: str
+
+TerminalProjectionDecision = (
+    TerminalProjectionEmitDecision
+    | TerminalProjectionSuppressDecision
+    | TerminalProjectionAttention
+)
+
+class TerminalProjectionParticipant(Protocol):
+    async def stage_in_transaction(
+        self,
+        connection: AsyncConnection,
+        *,
+        command: TransitionCommand,
+        transition_id: str,
+        previous_status: str,
+        current_status: str,
+    ) -> TerminalProjectionDecision | None: ...
 
 class LifecycleService(Protocol):
     async def initialize_in_transaction(
@@ -143,6 +209,28 @@ class LifecycleService(Protocol):
 
     async def transition(self, command: TransitionCommand) -> TransitionOutcome: ...
 ```
+
+The participant is injected; LifecycleService does not import RunRepository or inspect Session
+relationships. For pre-cutover standalone legacy commands, an absent binding retains the current
+ADR-0095 v1 decision. A canonical dual-write composition root must supply the exact durable binding
+created by ADR-0123; the participant validates it and stages one decision in the same transaction
+as transition audit. It never derives a Run from `sessions.run_id`, a most-recent query, a route
+alias, or filesystem state.
+
+The participant always probes the durable callback-binding ledger by the exact transitioning
+`EntityRef`. If no active **or historical** binding/marker exists, an absent command binding is
+standalone legacy. If an active binding exists, the command must name its exact ID and version;
+omission, stale version, or mismatch stages attention/no emit. More than one active binding is an
+integrity error that also stages attention/no emit. If only a closed/historical marker exists, an
+absent binding still stages attention unless a separately audited `StandaloneLegacyRelease`
+explicitly reclassifies that entity generation. Closing a Run never deletes its binding marker.
+This exact ledger lookup is validation of authored correlation, not inference from a many-to-many
+relation.
+
+Only `TerminalProjectionEmitDecision` carries one required `terminal_fact_id` and enters delivery
+reconciliation. Suppression may represent an aggregate Invocation with several Run IDs and has no
+deliverable fact. Attention may have zero, one, or many candidates and therefore records candidate
+IDs rather than fabricating a unique fact ID.
 
 Target modules are:
 
@@ -384,7 +472,10 @@ algorithm.
     WHERE id, previous status, optional expected version, and edge-required guards still match.
 11. Zero rows -> return conflict; append nothing.
 12. INSERT status_transitions with the same transition id returned to the caller.
-13. COMMIT -> return applied.
+13. For a terminal execution transition, call the injected TerminalProjectionParticipant and stage
+    its immutable decision/attention row in the same transaction; nonterminal transitions skip it.
+14. COMMIT -> return applied, then offer only a `TerminalProjectionEmitDecision` to the
+    post-commit registry.
 ```
 
 The service publishes these exceptions:
@@ -412,6 +503,11 @@ class LifecycleStorageError(LifecycleError): ...
 - Evidence and metadata must be JSON-serializable. Serialization failure is validation when
   detected before `BEGIN`, otherwise storage failure; either way no partial transition commits.
 - A history insertion failure rolls back the entity update and override audit.
+- Terminal projection never decides or vetoes status. A participant storage failure rolls back
+  while still inside the owner transaction like any required audit-participant failure; after a
+  committed decision, callback delivery failure cannot rewrite status. A canonical-cohort missing,
+  stale, or ambiguous binding stages `attention` and emits nothing rather than guessing. A
+  standalone pre-cutover legacy transition remains the only absent-binding compatibility default.
 - The service does not catch database cancellation, connection loss, constraint failure, or disk
   errors and report them as `rejected`; callers receive a storage exception with the transaction
   rolled back according to the backend.
@@ -627,6 +723,14 @@ This is a target-state ADR, partially implemented. The first two phases shipped 
 module layout (`lionagi/state/lifecycle/{models,policy,service,adapters}.py`): the contract types,
 the policy registry covering all seven entity types, the guarded algorithm, and the
 facade-preserving wrappers — both `StateDB.update_status()` and the guarded transition adapter now
-route through the service. Still open: creation-path initialization (`initialize_in_transaction`
-has no call sites outside the package) and the remaining migration phases. Implementation is
-complete only when the phase gates pass; the record stays Proposed until then.
+route through the service. Creation-path initialization is further along than an earlier revision
+of this note recorded. `initialize_in_transaction` is reached through
+`StateDB._initialize_managed_entity_in_tx` (`lionagi/state/db.py:695`), and that helper has seven
+call sites in `lionagi/state/db.py` covering `session`, `schedule_run`, `invocation`, `show`, and
+`play`. Two policies are outside it: `team`, which has no creation path in `lionagi/state/db.py`
+at all, and `dispatch`, whose rows are inserted by a raw statement in
+`lionagi/dispatch/outbox.py:221` that never reaches the lifecycle service. Those two, plus the
+remaining migration phases, are what is still open. Implementation is complete only when the
+phase gates pass. `Status: Accepted` records that the one-policy/one-service
+decision already has dependent implementation on main; `Implementation-status: partial` records
+the remaining work without violating the corpus status lifecycle.

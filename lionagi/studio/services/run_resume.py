@@ -80,6 +80,7 @@ class RunResumeRequest(BaseModel):
     # Only meaningful for the checkpoint-replay kinds; never defaulted to
     # true automatically. See _resume_flow_run.
     allow_degraded_context: bool = False
+    retry_failed: bool = False
 
 
 # invocation_kind values that replay a checkpointed flow instead of
@@ -443,17 +444,21 @@ def _build_flow_resume_argv(
     *,
     target: str,
     allow_degraded_context: bool,
+    retry_failed: bool,
 ) -> list[str]:
     """Build the checkpoint-replay resume command.
 
     No instruction, no branch, no model: the checkpoint owns the plan.
-    --allow-degraded-context is appended only on explicit opt-in — it is
-    never the default, since its whole purpose is to proceed past a refusal
-    that exists to protect conversational context.
+    --allow-degraded-context and --retry-failed are appended only on explicit
+    opt-in — neither is ever the default, since the whole purpose of each is
+    to proceed past a refusal: one protects conversational context, the other
+    protects against re-executing the side effects of a failed attempt.
     """
     argv = [*executable_prefix, "orchestrate", "flow", "--resume", target]
     if allow_degraded_context:
         argv.append("--allow-degraded-context")
+    if retry_failed:
+        argv.append("--retry-failed")
     return argv
 
 
@@ -485,6 +490,7 @@ async def _resume_flow_run(
     *,
     invocation_kind: str,
     allow_degraded_context: bool,
+    retry_failed: bool,
 ) -> dict[str, Any]:
     """Launch a checkpointed flow/play/show-play resume.
 
@@ -513,7 +519,10 @@ async def _resume_flow_run(
         active = await _active_flow_resume(run_id)
         if active is not None:
             metadata = active["node_metadata"]
-            if metadata.get("allow_degraded_context") == allow_degraded_context:
+            if (
+                metadata.get("allow_degraded_context") == allow_degraded_context
+                and bool(metadata.get("retry_failed")) == retry_failed
+            ):
                 return {
                     "run_id": run_id,
                     "invocation_kind": invocation_kind,
@@ -526,6 +535,7 @@ async def _resume_flow_run(
             executable_prefix,
             target=run_id,
             allow_degraded_context=allow_degraded_context,
+            retry_failed=retry_failed,
         )
         invocation_id = await _launches.launch_detached_argv(
             argv,
@@ -539,6 +549,7 @@ async def _resume_flow_run(
                 "invocation_kind": invocation_kind,
                 "resume": True,
                 "allow_degraded_context": allow_degraded_context,
+                "retry_failed": retry_failed,
                 "checkpoint_run_id": run_dir.run_id,
             },
         )
@@ -558,6 +569,7 @@ async def _dispatch_resume_by_kind(
     branch_id: str | None,
     model: str | None,
     allow_degraded_context: bool,
+    retry_failed: bool,
 ) -> dict[str, Any]:
     """Route an already-fetched session row to its resume path by invocation_kind.
 
@@ -592,7 +604,10 @@ async def _dispatch_resume_by_kind(
                 "model is not accepted"
             )
         return await _resume_flow_run(
-            run_id, invocation_kind=kind, allow_degraded_context=allow_degraded_context
+            run_id,
+            invocation_kind=kind,
+            allow_degraded_context=allow_degraded_context,
+            retry_failed=retry_failed,
         )
 
     raise RunResumeUnsupportedKindError(
@@ -685,6 +700,7 @@ async def resume_run(
     branch_id: str | None = None,
     model: str | None = None,
     allow_degraded_context: bool = False,
+    retry_failed: bool = False,
 ) -> dict[str, Any]:
     """Dispatch a resume request by the run's recorded invocation_kind.
 
@@ -711,6 +727,7 @@ async def resume_run(
         branch_id=branch_id,
         model=model,
         allow_degraded_context=allow_degraded_context,
+        retry_failed=retry_failed,
     )
 
 
@@ -749,6 +766,7 @@ async def resume_run_route(run_id: str, body: RunResumeRequest) -> dict[str, Any
             branch_id=body.branch_id,
             model=body.model,
             allow_degraded_context=body.allow_degraded_context,
+            retry_failed=body.retry_failed,
         )
     except RunNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

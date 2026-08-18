@@ -263,6 +263,7 @@ one that must win is the registry's.
 Directly-held MCP clients are unaffected, because they never consult the registry.
 `lionagi/tools/khive_injection.py` calls `client.call_tool("request", ...)` against a
 client object; that is a wire name on a wire call and D2 leaves it exactly as it is.
+
 - Two servers advertising the same tool name no longer collide, because their qualified
   names differ.
 - A collision after qualification means either two servers configured under one name
