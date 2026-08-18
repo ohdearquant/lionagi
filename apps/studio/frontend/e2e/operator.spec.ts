@@ -35,6 +35,17 @@ async function selectFreshConversation(page: Page): Promise<void> {
   await expect(page.getByLabel("Instruction")).toBeEnabled();
 }
 
+test.beforeEach(async ({ page }) => {
+  await page.route("https://analytics.khive.ai/**", (route) =>
+    route.fulfill({ status: 200, contentType: "application/javascript", body: "" }),
+  );
+});
+
+/** What the operator typed, as the transcript shows it back rather than as the composer still holds it. */
+function userSaid(page: Page, text: string) {
+  return page.getByLabel("You").getByText(text, { exact: true });
+}
+
 test("Operator streams, persists, stops, records a run, and resumes it", async ({ page }) => {
   test.setTimeout(45_000);
   const discovery = page.waitForResponse(
@@ -54,7 +65,10 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
   await instruction.fill("Show me the fleet readiness.");
   await page.getByRole("button", { name: "Send", exact: true }).click();
 
-  await expect(page.getByText("Show me the fleet readiness.", { exact: true })).toBeVisible();
+  // The composer keeps what was typed until the submit resolves, so an
+  // unscoped match on the echoed text sees the textarea as well as the bubble
+  // and fails on strict mode whenever the assertion wins that race.
+  await expect(userSaid(page, "Show me the fleet readiness.")).toBeVisible();
   await expect(page.getByText("Fleet ready.", { exact: true })).toBeVisible({
     timeout: 20_000,
   });
@@ -66,7 +80,7 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
   expect(runHref).toMatch(/^\/fleet\?s=.+/);
 
   await page.reload();
-  await expect(page.getByText("Show me the fleet readiness.", { exact: true })).toBeVisible();
+  await expect(userSaid(page, "Show me the fleet readiness.")).toBeVisible();
   await expect(page.getByText("Fleet ready.", { exact: true })).toBeVisible();
 
   await instruction.fill("wait until I stop you");
