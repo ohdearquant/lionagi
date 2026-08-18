@@ -10,7 +10,8 @@ if TYPE_CHECKING:
     from lionagi.models.field_model import FieldModel
 
 from lionagi.ln import extract_json, to_dict, to_list
-from lionagi.ln.types import Unset, not_sentinel
+from lionagi.ln.types import Unset
+from lionagi.ln.types._sentinel import _compat_not_sentinel
 from lionagi.models import HashableModel
 
 logger = logging.getLogger(__name__)
@@ -131,7 +132,12 @@ class Instruct(HashableModel):
             {
                 k: v
                 for k, v in overrides.items()
-                if not_sentinel(v, none_as_sentinel=True, empty_as_sentinel=True)
+                if _compat_not_sentinel(
+                    v,
+                    site="lionagi.operations.fields.Instruct.handle",
+                    none_as_sentinel=True,
+                    empty_as_sentinel=True,
+                )
             }
         )
         return cls.from_dict(instruct)

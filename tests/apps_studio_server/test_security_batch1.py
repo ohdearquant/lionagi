@@ -274,7 +274,12 @@ class TestBearerTokenAuth:
             monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", fake_db)
 
         app = app_mod.create_app()
-        return TestClient(app, raise_server_exceptions=False, base_url="http://127.0.0.1:8765")
+        return TestClient(
+            app,
+            raise_server_exceptions=False,
+            base_url="http://127.0.0.1:8765",
+            headers={"Content-Type": "application/json"},
+        )
 
     def test_mutating_route_requires_bearer_when_token_set(self, monkeypatch):
         """POST to /api/* must return 401 when token is set and auth is missing/wrong."""

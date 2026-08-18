@@ -7,8 +7,9 @@
   discovery, exclude `ClassVar` declarations, serialize in declaration order, and preserve full
   declared public-field state across updates; `Operable` selection and legacy `OperableModel`
   materialization retain declaration order, and multiple unnamed specs are accepted; legacy
-  sentinel-collapse isolation, nested JSON adaptation, structural equality/hash, production
-  adapter migration, registry snapshots, and canonical durable serialization remain open
+  sentinel collapse is isolated behind a closed compatibility inventory; nested JSON adaptation,
+  `Spec` absence migration, structural equality/hash, production adapter migration, registry
+  snapshots, and canonical durable serialization remain open
 - **Area**: utilities
 - **Date**: 2026-08-16
 - **Relations**: extends ADR-0050 (foundational utility and typed adaptation strata); required
@@ -138,6 +139,16 @@ identifiers; a call site absent from it raises rather than collapsing, and the D
 diff that sets either flag from a site the list does not name. Adding a site is an edit to that
 constant, reviewed as a contract change. Otherwise the carve-out grows by usage and the
 three-state rule becomes advisory in exactly the places that already had the loosest contracts.
+
+The supported public helpers implement identity semantics only and reject either legacy flag.
+`Params` and `DataClass` resolve the first class that declares their `ModelConfig` and validate
+each enabled axis against the inventory before applying it. Named direct adapters use the same
+private gateway. A static repository gate binds each private call's literal identifier to its
+lexical owner and requires the discovered inventory to equal the constant. The identifier is an
+architectural compatibility control, not a security credential: importing a private function and
+spoofing its string is unsupported, and frame inspection is deliberately avoided. The gate covers
+supported direct imports, declarations, re-exports, and assignments; reflective dynamic import,
+`eval` / `exec`, and deliberate runtime metadata forgery are outside this non-security contract.
 
 The wire rule is explicit:
 

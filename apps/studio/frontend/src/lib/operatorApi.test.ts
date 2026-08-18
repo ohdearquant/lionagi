@@ -8,6 +8,7 @@ import {
   getOperatorConversation,
   isOperatorFrame,
   listOperatorConversations,
+  streamOperatorConversation,
   submitOperatorTurn,
   updateOperatorConversation,
 } from "./api";
@@ -363,6 +364,50 @@ describe("Operator API v1", () => {
       status: "applied",
       clientRoute: "/fleet?s=run-1",
     });
+  });
+});
+
+describe("Operator stream cursor", () => {
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("holds the cursor over a handler that threw, then advances past one that did not", async () => {
+    vi.useFakeTimers();
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        urls.push(url);
+        return Promise.resolve(
+          new Response(`data: ${JSON.stringify(frame(4))}\n\n`, {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          }),
+        );
+      }),
+    );
+
+    let deliveries = 0;
+    const close = streamOperatorConversation("conversation-1", 0, {
+      onFrame: () => {
+        deliveries += 1;
+        if (deliveries === 1) throw new Error("frame handler failed on this frame");
+      },
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(750);
+    await vi.advanceTimersByTimeAsync(750);
+    close();
+
+    // Frame 4 is offered twice because the first handler never took it, and the
+    // third attempt has moved past it, which is what says the cursor advances
+    // at all — a cursor that simply never moved would satisfy the repeat alone.
+    expect(
+      urls.map((url) => new URL(url, "http://studio.test").searchParams.get("after_sequence")),
+    ).toEqual(["0", "0", "4"]);
   });
 });
 
