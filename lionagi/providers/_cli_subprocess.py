@@ -9,6 +9,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -304,6 +305,44 @@ _ABANDONED_STDERR_LOG_CAP = 4096
 _ABANDONED_STDERR_DRAIN_TIMEOUT = 0.5
 
 
+# A credential reaches a child either from the environment we build for it or
+# from its own config, so the log path strips both what we injected and what
+# merely looks like a secret.
+_SECRET_ENV_KEY_RE = re.compile(r"(?i)key|token|secret|password|passwd|credential|auth")
+_SECRET_SHAPE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"Bearer\s+\S+"
+    r"|(?:Authorization|X-Api-Key|Api-Key)\s*:\s*\S+"
+    r"|(?:sk|rk)-[a-z0-9_-]{8,}"
+    r"|(?:ghp|gho|ghu|ghs|github_pat)_[a-z0-9_]{8,}"
+    r"|xox[abprs]-[a-z0-9-]{8,}"
+    r"|AKIA[0-9A-Z]{12,}"
+    r"|eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]+\.[a-z0-9_-]+"
+    r")"
+)
+# Short values collide with ordinary words; a real credential is never this small.
+_MIN_REDACTABLE_SECRET_LEN = 8
+
+
+def _redact_secrets_for_log(text: str, env: Mapping[str, str] | None) -> str:
+    """Strip credentials out of child output before any of it reaches a log."""
+    if not text:
+        return text
+    if env:
+        injected = {
+            value
+            for key, value in env.items()
+            if isinstance(key, str)
+            and isinstance(value, str)
+            and len(value) >= _MIN_REDACTABLE_SECRET_LEN
+            and _SECRET_ENV_KEY_RE.search(key)
+        }
+        # Longest first, so a secret containing another is not left half-revealed.
+        for value in sorted(injected, key=len, reverse=True):
+            text = text.replace(value, "[redacted]")
+    return _SECRET_SHAPE_RE.sub("[redacted]", text)
+
+
 def _abandoned_without_output_note(
     captured: str,
     unavailable: str | None,
@@ -588,7 +627,10 @@ async def ndjson_from_cli(
             log.warning(
                 "CLI subprocess produced no output before it was abandoned; %s",
                 _abandoned_without_output_note(
-                    b"".join(stderr_chunks).decode(errors="replace").strip(),
+                    _redact_secrets_for_log(
+                        b"".join(stderr_chunks).decode(errors="replace").strip(),
+                        child_env,
+                    ),
                     stderr_unavailable,
                     stderr_drain_error,
                 ),

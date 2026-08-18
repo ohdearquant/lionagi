@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import sys
 
 import pytest
@@ -157,4 +158,52 @@ class TestAChildAbandonedBeforeProducingAnything:
         assert "ordinary progress chatter" not in caplog.text, (
             "a cancelled child that had already produced output was reported as silent: "
             + caplog.text
+        )
+
+
+# Reads a credential out of its own environment and puts it on stderr, which is
+# how a real CLI reports an auth failure.
+_LEAKS_ENV_SECRET_THEN_HANGS = (
+    "import os, sys, time; "
+    "sys.stderr.write('auth failed for ' + os.environ['LIONAGI_TEST_API_KEY']); "
+    "sys.stderr.flush(); "
+    "time.sleep(300)"
+)
+# A credential the child got from its own config, so nothing we injected matches it.
+_LEAKS_TOKEN_SHAPE_THEN_HANGS = (
+    "import sys, time; "
+    "sys.stderr.write('refused: Authorization: Bearer sk-abcdefghijklmnopqrst'); "
+    "sys.stderr.flush(); "
+    "time.sleep(300)"
+)
+
+_INJECTED_SECRET = "supersecretvalue1234"
+
+
+class TestTheQuotedStderrCarriesNoCredential:
+    """Quoting the child's stderr is the point of this path, so the credential has to be removed rather than the quoting withheld."""
+
+    @pytest.mark.asyncio
+    async def test_a_secret_we_injected_does_not_reach_the_log(self, caplog):
+        env = {**os.environ, "LIONAGI_TEST_API_KEY": _INJECTED_SECRET}
+        with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
+            await _abandon(ndjson_from_cli(_cmd(_LEAKS_ENV_SECRET_THEN_HANGS), env=env))
+
+        assert _INJECTED_SECRET not in caplog.text, (
+            "a credential this process handed the child came back out in a log line: " + caplog.text
+        )
+        assert "[redacted]" in caplog.text, (
+            "the stderr was dropped rather than redacted, losing the diagnostic: " + caplog.text
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_credential_shape_the_child_sourced_itself_does_not_reach_the_log(self, caplog):
+        with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
+            await _abandon(ndjson_from_cli(_cmd(_LEAKS_TOKEN_SHAPE_THEN_HANGS)))
+
+        assert "sk-abcdefghijklmnopqrst" not in caplog.text, (
+            "a credential-shaped token in child output reached a log line: " + caplog.text
+        )
+        assert "[redacted]" in caplog.text, (
+            "the stderr was dropped rather than redacted, losing the diagnostic: " + caplog.text
         )
