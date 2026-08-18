@@ -2916,6 +2916,48 @@ async def test_the_work_of_lifting_link_ids_is_bounded_across_rows_not_only_per_
     )
 
 
+async def test_the_scan_allowance_is_spent_across_calls_not_refreshed_by_each(
+    patched_sessions_db, monkeypatch
+):
+    """One request reads many branches and aggregates; a per-call ceiling is N ceilings."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    monkeypatch.setattr(svc, "MAX_ACTION_ID_SCAN_CHARS", 100_000)
+    await seed_session(db_path, session_id="sess-scanshared")
+    msg_ids = ["shared-a", "shared-b", "shared-c"]
+    await seed_branch(
+        db_path, branch_id="br-scanshared", session_id="sess-scanshared", msg_ids=msg_ids
+    )
+    async with StateDB(db_path) as db:
+        for offset, msg_id in enumerate(msg_ids):
+            await db.insert_message(
+                {
+                    "id": msg_id,
+                    "created_at": 110.0 + offset,
+                    "content": {"output": "y" * 1_000, "action_request_id": f"req-{msg_id}"},
+                    "sender": "tool",
+                    "recipient": "worker",
+                    "role": "action",
+                    "node_metadata": {
+                        "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                    },
+                }
+            )
+
+    sized = [(m, 1_040) for m in msg_ids]
+    budget = svc._HydrationBudget(scan=2_500)
+    async with svc._open_db(db_path) as db:
+        first = await svc._fetch_action_link_ids(db, sized, budget)
+        second = await svc._fetch_action_link_ids(db, sized, budget)
+
+    assert len(first) == 2, (
+        f"the first call should spend the allowance on two rows, got {len(first)}"
+    )
+    assert second == {}, (
+        "the allowance refreshed for the second call, so a request making N calls gets N ceilings"
+    )
+
+
 def test_the_total_scan_ceiling_is_a_real_ceiling():
     """The arm above sets the constant, so it cannot see the shipped value change."""
     from lionagi.studio.services import sessions as sessions_svc

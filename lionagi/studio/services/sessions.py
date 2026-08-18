@@ -168,14 +168,26 @@ _BOUNDED_CONTENT_COLUMNS = (
 class _HydrationBudget:
     """Decode budget for one session read, shared across every reader instead of per-call."""
 
-    __slots__ = ("exhausted", "remaining", "rows_remaining")
+    __slots__ = ("exhausted", "remaining", "rows_remaining", "scan_remaining")
 
-    def __init__(self, total: int | None = None, rows: int | None = None) -> None:
+    def __init__(
+        self, total: int | None = None, rows: int | None = None, scan: int | None = None
+    ) -> None:
         # Read here, not as a default argument, so it reflects the current module constant
         # rather than freezing whatever it was when this file was imported.
         self.remaining = MAX_HYDRATED_CONTENT_CHARS if total is None else total
         self.rows_remaining = MAX_HYDRATED_ROWS if rows is None else rows
+        # One request reads many branches and aggregates; the parse allowance is spent
+        # across all of them, or each call would get the whole ceiling again.
+        self.scan_remaining = MAX_SCANNED_CONTENT_CHARS if scan is None else scan
         self.exhausted = False
+
+    def admits_scan(self, chars: int) -> bool:
+        """Charge one withheld row's payload against the request-wide parse allowance."""
+        if chars > self.scan_remaining:
+            return False
+        self.scan_remaining -= chars
+        return True
 
     def admits(self, chars: int) -> bool:
         """Charge one row against both the character and row allowances, or refuse it."""
@@ -205,20 +217,18 @@ def _format_message(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
 
 
 async def _fetch_action_link_ids(
-    db: aiosqlite.Connection, sized: list[tuple[str, int]]
+    db: aiosqlite.Connection, sized: list[tuple[str, int]], budget: _HydrationBudget
 ) -> dict[str, dict[str, str]]:
-    """Recover action link ids for withheld rows, under a total parse ceiling.
+    """Recover action link ids for withheld rows, under the request-wide parse ceiling.
 
     `sized` is (message id, true content length) for withheld rows only; a kept payload already
-    carries its ids. Rows are taken in order until MAX_SCANNED_CONTENT_CHARS is spent, so the
-    work this costs is bounded by bytes rather than by row count.
+    carries its ids. Rows are taken in order until the shared allowance is spent, so the work
+    this costs is bounded by bytes across the whole request rather than per call or per row.
     """
     budgeted: list[str] = []
-    scan_remaining = MAX_SCANNED_CONTENT_CHARS
     for msg_id, content_bytes in sized:
-        if content_bytes > MAX_ACTION_ID_SCAN_CHARS or content_bytes > scan_remaining:
+        if content_bytes > MAX_ACTION_ID_SCAN_CHARS or not budget.admits_scan(content_bytes):
             continue
-        scan_remaining -= content_bytes
         budgeted.append(msg_id)
 
     links: dict[str, dict[str, str]] = {}
@@ -773,7 +783,7 @@ async def _fetch_messages_by_ids(
 
     ordered = [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
     for msg_id, found in (
-        await _fetch_action_link_ids(db, _withheld_sizes(ordered, content_bytes))
+        await _fetch_action_link_ids(db, _withheld_sizes(ordered, content_bytes), budget)
     ).items():
         rows_by_id[msg_id].update(found)
     return ordered
@@ -1473,7 +1483,7 @@ async def get_session_messages_after(
 
         # One message id can arrive under several branches, so every row carrying it is
         # updated rather than the first one found.
-        links = await _fetch_action_link_ids(db, _withheld_sizes(result, content_bytes))
+        links = await _fetch_action_link_ids(db, _withheld_sizes(result, content_bytes), budget)
         for msg in result:
             found = links.get(msg["id"])
             if found:
