@@ -10,7 +10,9 @@ import pytest
 from lionagi.engines.review import (
     DimensionClean,
     IssueFound,
+    ProposedVerdict,
     ReviewEngine,
+    ReviewVerdict,
     VerifyResult,
     _clean_ref,
     _verdict_instruction,
@@ -120,8 +122,250 @@ async def test_verdict_reads_issues_from_store():
 
     run.make_agent = fake_make
     out = await eng._verdict(run, "ART", ("security",))
-    assert out == "REQUEST-CHANGES"
+    # The text also carries the withheld note, so assert the decision is carried.
+    assert out.startswith("REQUEST-CHANGES")
     assert "X-issue" in captured["instruction"]
+
+
+# -- the evidence gate --------------------------------------------------------
+
+
+def _synth_proposing(verdict: str):
+    """A synthesis stand-in that proposes *verdict* the way the real one does."""
+
+    class _Synth:
+        name = "verdict"
+
+        def __init__(self, run):
+            self._run = run
+
+        async def operate(self, *, instruction):
+            await self._run.emit(ProposedVerdict(verdict=verdict, rationale="looked fine to me"))
+            return verdict
+
+    return _Synth
+
+
+async def _verdict_with(eng, run, dimensions, verdict="APPROVE"):
+    synth_cls = _synth_proposing(verdict)
+
+    async def fake_make(role, **kw):
+        return synth_cls(run)
+
+    run.make_agent = fake_make
+    return await eng._verdict(run, "ART", dimensions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("emit", "reported"),
+    [
+        (lambda: IssueFound(dimension="security", severity="minor", description="d"), True),
+        (lambda: DimensionClean(dimension="security", rationale="read it"), True),
+        (None, False),
+    ],
+    ids=["issue", "clean", "nothing"],
+)
+async def test_repair_and_the_coverage_gate_read_one_definition_of_reported(emit, reported):
+    """Repair and the gate read one predicate; asserting both on one emission pins them."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+    if emit is not None:
+        await run.emit(emit())
+
+    # The repair path's arrival question and the gate's coverage question.
+    arrived = "security" in eng._reported_dimensions(run)
+    unevidenced = eng._unevidenced_dimensions(run, ("security",))
+
+    assert arrived is reported
+    assert ("security" not in unevidenced) is reported
+
+
+@pytest.mark.asyncio
+async def test_a_dimension_whose_reviewer_died_withholds_the_approval():
+    """One dimension reported, one produced nothing: every signal but the missing one looks healthy."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+    await run.emit(DimensionClean(dimension="correctness", rationale="read it, fine"))
+    # security's reviewer died: nothing from it at all.
+
+    out = await _verdict_with(eng, run, ("correctness", "security"))
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES"
+    assert "security" in final[0].rationale
+    assert "security" in out
+
+
+@pytest.mark.asyncio
+async def test_a_dimension_that_never_started_withholds_it_too():
+    """A dimension that never launched must not leave the denominator on its way out."""
+    eng = ReviewEngine(dimensions=("correctness", "security", "performance"))
+    run = eng.new_run()
+    await run.emit(IssueFound(dimension="correctness", description="c", severity="minor"))
+    await run.emit(DimensionClean(dimension="security", rationale="fine"))
+    # performance never spawned.
+
+    out = await _verdict_with(eng, run, eng.dimensions)
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES"
+    assert "performance" in out
+
+
+@pytest.mark.asyncio
+async def test_an_issue_whose_verifier_died_withholds_the_approval():
+    """Covered and still open underneath: coverage cannot see a lost verifier, since the dimension did report."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+    await run.emit(DimensionClean(dimension="correctness", rationale="read it, fine"))
+    await run.emit(
+        IssueFound(dimension="security", severity="critical", description="sqli", location="a.py:1")
+    )
+    # The verifier for that issue died: no VerifyResult was ever emitted.
+
+    out = await _verdict_with(eng, run, ("correctness", "security"))
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict != "APPROVE", (
+        f"approved over a critical finding that was never verified: {final[0].rationale}"
+    )
+    assert "sqli" in out or "sqli" in final[0].rationale
+
+
+@pytest.mark.asyncio
+async def test_a_verified_issue_does_not_withhold_it():
+    """The other side of the rule: without it, a gate that never approves passes too."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+    issue = IssueFound(
+        dimension="security", severity="critical", description="sqli", location="a.py:1"
+    )
+    await run.emit(DimensionClean(dimension="correctness", rationale="read it, fine"))
+    await run.emit(issue)
+    await run.emit(
+        VerifyResult(issue="sqli", ref=_verify_ref(issue), holds=False, rationale="refuted")
+    )
+
+    await _verdict_with(eng, run, ("correctness", "security"))
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "APPROVE", final[0].rationale
+
+
+@pytest.mark.asyncio
+async def test_a_dimension_that_reported_only_minor_issues_still_approves():
+    """Minors draw no verifier, so requiring one would make every minor-only review unapprovable."""
+    eng = ReviewEngine(dimensions=("correctness",))
+    run = eng.new_run()
+    await run.emit(IssueFound(dimension="correctness", description="nit", severity="minor"))
+    # No issue draws a verifier here, so the clean audit is what this run executed.
+    await run.emit(
+        VerifyResult(issue="clean", ref=_clean_ref(eng.dimensions), holds=True, rationale="read it")
+    )
+
+    await _verdict_with(eng, run, eng.dimensions)
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "APPROVE"
+
+
+@pytest.mark.asyncio
+async def test_a_clean_review_whose_audit_never_came_back_withholds_the_approval():
+    """Every dimension reported and nothing is owed, so only the missing audit distinguishes this."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+    await run.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await run.emit(DimensionClean(dimension="security", rationale="fine"))
+    # The clean audit was required and spawned; its verifier died before emitting.
+
+    out = await _verdict_with(eng, run, ("correctness", "security"))
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES", final[0].rationale
+    assert "nothing executed" in out
+
+
+@pytest.mark.asyncio
+async def test_an_engine_asked_for_no_clean_audit_still_approves():
+    """The gate keys on the requirement, not on the count, or opting out would be unapprovable."""
+    eng = ReviewEngine(verify_clean=False)
+    run = eng.new_run()
+    await run.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await run.emit(DimensionClean(dimension="security", rationale="fine"))
+
+    await _verdict_with(eng, run, ("correctness", "security"))
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "APPROVE", final[0].rationale
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_stands_even_when_coverage_was_partial():
+    """Refuses in one direction only: a silent dimension could only have added findings."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+    await run.emit(IssueFound(dimension="correctness", description="real bug", severity="major"))
+
+    await _verdict_with(eng, run, ("correctness", "security"), verdict="REQUEST-CHANGES")
+
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES"
+
+
+@pytest.mark.asyncio
+async def test_a_previous_runs_evidence_does_not_cover_this_runs_dimension():
+    """A second run over an injected Session must not inherit the first one's coverage."""
+    from lionagi.session.session import Session
+
+    session = Session()
+    eng = ReviewEngine()
+
+    first = eng.new_run(session=session)
+    await first.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await first.emit(DimensionClean(dimension="security", rationale="fine"))
+
+    second = eng.new_run(session=session)
+    await second.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    # security did not report in THIS run; the first run's clean must not count.
+
+    assert eng._unevidenced_dimensions(second, ("correctness", "security")) == ("security",)
+
+    await _verdict_with(eng, second, ("correctness", "security"))
+    final = second.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES"
+
+
+@pytest.mark.asyncio
+async def test_no_approval_is_observable_on_the_stream_before_the_gate_rules():
+    """Asserted over the sequence: the end state cannot see an APPROVE that went out and was corrected."""
+    seen: list[dict] = []
+    eng = ReviewEngine()
+    run = eng.new_run(on_event=seen.append)
+    await run.emit(DimensionClean(dimension="correctness", rationale="fine"))
+
+    await _verdict_with(eng, run, ("correctness", "security"))
+
+    terminal = [e for e in seen if e.get("type") == "ReviewVerdict"]
+    assert len(terminal) == 1, f"exactly one terminal decision, saw {len(terminal)}"
+    assert not terminal[0].get("verdict", "").upper().startswith("APPROVE")
+
+    decisions = [
+        e.get("type") for e in seen if e.get("type") in ("ProposedVerdict", "ReviewVerdict")
+    ]
+    assert decisions.index("ReviewVerdict") > decisions.index("ProposedVerdict"), (
+        "the proposal must precede the ruling; a ruling emitted first is the "
+        "un-recallable publication this exists to prevent"
+    )
 
 
 # -- emission repair (ADR-0034 §3) -------------------------------------------
@@ -432,3 +676,168 @@ def test_verdict_instruction_inverts_polarity_for_refuted_clean_audit():
     without_audit = _verdict_instruction("ART", dims, [issue], [ordinary], [])
     assert "Clean-verdict audit" not in without_audit
     assert "weigh that AGAINST approval" not in without_audit
+
+
+@pytest.mark.asyncio
+async def test_runs_started_side_by_side_on_one_session_cannot_approve():
+    """Neither run is in the other's snapshot, so a dimension nobody reviewed looks covered."""
+    from lionagi.session.session import Session
+
+    session = Session()
+    eng = ReviewEngine()
+
+    first = eng.new_run(session=session)
+    second = eng.new_run(session=session)
+
+    # Mutual: the earlier run is contaminated too.
+    assert first.shares_session is True
+    assert second.shares_session is True
+
+    # Complete to `second` only because `first` supplied it.
+    await first.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await first.emit(DimensionClean(dimension="security", rationale="fine"))
+    assert eng._unevidenced_dimensions(second, ("correctness", "security")) == ()
+
+    await _verdict_with(eng, second, ("correctness", "security"))
+    final = second.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES"
+    assert "another review run" in final[0].rationale
+
+
+@pytest.mark.asyncio
+async def test_reusing_one_session_for_a_second_run_also_cannot_approve():
+    """Starting later does not make a run separable: the earlier run is still alive and still emitting into the later one's window, and no event records which run produced it."""
+    from lionagi.session.session import Session
+
+    session = Session()
+    eng = ReviewEngine()
+
+    first = eng.new_run(session=session)
+    await first.emit(DimensionClean(dimension="correctness", rationale="fine"))
+
+    second = eng.new_run(session=session)
+    assert second.shares_session is True
+    assert first.shares_session is True
+
+    await second.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await second.emit(DimensionClean(dimension="security", rationale="fine"))
+    await second.emit(
+        VerifyResult(
+            issue="clean",
+            ref=_clean_ref(("correctness", "security")),
+            holds=True,
+            rationale="read it",
+        )
+    )
+
+    await _verdict_with(eng, second, ("correctness", "security"))
+    final = second.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES"
+    assert "another review run" in final[0].rationale
+
+
+@pytest.mark.asyncio
+async def test_a_shared_session_never_reaches_synthesis():
+    """Withholding after synthesis is too late: the prompt is built from a window holding the other run's findings."""
+    from lionagi.session.session import Session
+
+    session = Session()
+    eng = ReviewEngine()
+    first = eng.new_run(session=session)
+    second = eng.new_run(session=session)
+
+    await first.emit(
+        IssueFound(dimension="security", description="the other run's", severity="critical")
+    )
+
+    made: list[str] = []
+
+    async def recording_make(role, **kw):
+        made.append(kw.get("name", role))
+        raise AssertionError("synthesis read a window it cannot divide")
+
+    second.make_agent = recording_make
+    out = await eng._verdict(second, "ART", ("correctness", "security"))
+
+    assert made == [], "an agent was constructed on a contaminated window"
+    assert "another review run" in out
+    assert "the other run's" not in out, "a peer run's finding reached this verdict"
+    final = second.by_type(ReviewVerdict)
+    assert [v.verdict for v in final] == ["REQUEST-CHANGES"]
+    assert final[0].blocking == []
+
+
+@pytest.mark.asyncio
+async def test_an_unshared_session_does_reach_synthesis():
+    """The control: without it, refusing every run would pass the arm above."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+
+    await run.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await run.emit(DimensionClean(dimension="security", rationale="fine"))
+
+    made: list[str] = []
+    synth_cls = _synth_proposing("APPROVE")
+
+    async def recording_make(role, **kw):
+        made.append(kw.get("name", role))
+        return synth_cls(run)
+
+    run.make_agent = recording_make
+    await eng._verdict(run, "ART", ("correctness", "security"))
+    assert made == ["verdict"]
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_its_own_session_still_approves():
+    """The control. Without it the detector could refuse every run and still pass the arms above."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+    assert run.shares_session is False
+
+    await run.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await run.emit(DimensionClean(dimension="security", rationale="fine"))
+    await run.emit(
+        VerifyResult(
+            issue="clean",
+            ref=_clean_ref(("correctness", "security")),
+            holds=True,
+            rationale="read it",
+        )
+    )
+
+    await _verdict_with(eng, run, ("correctness", "security"))
+    final = run.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "APPROVE"
+
+
+@pytest.mark.asyncio
+async def test_a_shared_session_does_not_export_a_peers_verdict_on_exhaustion():
+    """Exhaustion reads the same window the verdict path refuses to read."""
+    from lionagi.session.session import Session
+
+    session = Session()
+    eng = ReviewEngine()
+    first = eng.new_run(session=session)
+    second = eng.new_run(session=session)
+
+    await first.emit(ReviewVerdict(verdict="APPROVE", rationale="the other run's", blocking=[]))
+
+    out = await eng._partial_export(second, "ART", dimensions=("correctness",))
+    assert "the other run's" not in out, "a peer run's verdict was exported as this run's result"
+    assert "APPROVE" not in out
+
+
+@pytest.mark.asyncio
+async def test_an_unshared_run_still_exports_its_own_verdict_on_exhaustion():
+    """The control: refusing every export would pass the arm above."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+
+    await run.emit(ReviewVerdict(verdict="APPROVE", rationale="this run's own", blocking=[]))
+
+    out = await eng._partial_export(run, "ART", dimensions=("correctness",))
+    assert "this run's own" in out

@@ -55,6 +55,8 @@ export interface RunStepCardProps {
    * so a bare filename this step didn't itself touch can still resolve
    * against a sibling agent's output — the run's save-root fallback. */
   runFiles?: string[];
+  /** runFiles was cut upstream, so an unmatched reference is unknown. */
+  runFilesBounded?: boolean;
   /** Requests the next older server page when overview navigation reaches
    * the beginning of the currently loaded message window. */
   onLoadOlder?: () => void;
@@ -343,6 +345,7 @@ function RunStepCard({
   runId,
   artifactRoot,
   runFiles,
+  runFilesBounded,
   onLoadOlder,
   olderMessagesRemaining = 0,
   loadingOlder = false,
@@ -482,8 +485,8 @@ function RunStepCard({
     const knownFiles = Array.from(
       new Set([...summary.files.map((f) => f.path), ...(runFiles ?? [])]),
     );
-    return { runId, knownFiles, agentDir };
-  }, [runId, artifactRoot, runFiles, result.agent, step.step, summary.files]);
+    return { runId, knownFiles, agentDir, knownFilesBounded: runFilesBounded };
+  }, [runId, artifactRoot, runFiles, runFilesBounded, result.agent, step.step, summary.files]);
 
   const tone = STATUS_TONE[step.status] ?? "pending";
 
@@ -807,6 +810,7 @@ export function stepPropsEqual(prev: RunStepCardProps, next: RunStepCardProps): 
     prev.runId === next.runId &&
     prev.artifactRoot === next.artifactRoot &&
     prev.runFiles === next.runFiles &&
+    prev.runFilesBounded === next.runFilesBounded &&
     prev.onLoadOlder === next.onLoadOlder &&
     prev.olderMessagesRemaining === next.olderMessagesRemaining &&
     prev.loadingOlder === next.loadingOlder &&

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+from collections.abc import Collection
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -330,7 +331,7 @@ class OperableModel(HashableModel):
     def new_model(
         self,
         name: str | None = None,
-        use_fields: set[str] | None = None,
+        use_fields: Collection[str] | None = None,
         base_type: type[BaseModel] | None = None,
         exclude_fields: list | None = None,
         inherit_base: bool = True,
@@ -340,18 +341,23 @@ class OperableModel(HashableModel):
         update_forward_refs: bool = True,
     ) -> type[BaseModel]:
         """Create a new Pydantic model type from this model's fields."""
-        use_fields = set(use_fields) if use_fields else set(self.all_fields.keys())
-        if not use_fields.issubset(self.all_fields.keys()):
+        all_fields = self.all_fields
+        selected_fields = frozenset(use_fields) if use_fields is not None else frozenset(all_fields)
+        if not selected_fields.issubset(all_fields):
             raise ValueError("Invalid field names in use_fields")
 
         field_models = []
         parameter_fields = {}
 
-        for field_name in use_fields:
+        for field_name, field_info in all_fields.items():
+            if field_name not in selected_fields:
+                continue
+            parameter_fields[field_name] = field_info
             if field_name in self.extra_field_models:
-                field_models.append(self.extra_field_models[field_name])
-            elif field_name in self.all_fields:
-                parameter_fields[field_name] = self.all_fields[field_name]
+                field_model = self.extra_field_models[field_name]
+                if field_model.name != field_name:
+                    field_model = field_model.with_metadata("name", field_name)
+                field_models.append(field_model)
 
         model_cls = build_model_type(
             name=name,
