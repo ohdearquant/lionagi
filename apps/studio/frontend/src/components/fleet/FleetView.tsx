@@ -34,7 +34,7 @@ export function formatCompactCount(n: number): string {
 // ─── Agent row ────────────────────────────────────────────────────────────────
 
 // invocation_kind values that mean "this row is the root of a multi-agent
-// execution, not a single agent" (issue #2842) — the closed vocabulary lives
+// execution, not a single agent" — the closed vocabulary lives
 // in lionagi/state/db.py's sessions.invocation_kind CHECK constraint.
 const PLAY_ROOT_KINDS = new Set(["play", "flow", "fanout", "show-play"]);
 

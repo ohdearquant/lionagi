@@ -323,6 +323,24 @@ describe("RunDetail older-message wiring", () => {
   });
 });
 
+describe("RunStepCard file-resolution context", () => {
+  const src = fs.readFileSync(path.resolve(__dirname, "RunStepCard.tsx"), "utf-8");
+
+  // The card is the last hop: the flag can be threaded correctly all the way
+  // here and still be dropped on the way into the context the resolver reads.
+  it("carries the union's boundedness into the context it builds", () => {
+    const start = src.indexOf("const fileContext = useMemo");
+    expect(start).toBeGreaterThan(-1);
+    const block = src.slice(start, src.indexOf("]);", start));
+    expect(block).toMatch(/knownFilesBounded:\s*runFilesBounded/);
+    expect(block).toMatch(/runFilesBounded/);
+  });
+
+  it("re-renders when only the boundedness changed", () => {
+    expect(src).toMatch(/prev\.runFilesBounded === next\.runFilesBounded/);
+  });
+});
+
 describe("pathFromArgs — shell-derived file paths", () => {
   it("strips shell separators and dedupes the normalized file path", () => {
     expect(

@@ -18,7 +18,6 @@ import type {
   OperatorTurnAccepted,
   OperatorTurnRequest,
   ResumeAvailability,
-  RunDetail,
   RunResumeRequest,
   RunResumeResponse,
   RunSummary,
@@ -63,9 +62,11 @@ export function resolveApiBase(): string {
   if (viteEnv) return viteEnv;
   if (typeof window !== "undefined") {
     const port = window.location.port;
-    // Vite dev-server ports: forward to the backend on the same hostname.
+    // Vite dev-server ports use the configured same-origin proxy. Keeping the
+    // browser on /api makes STUDIO_API_URL and the isolated E2E daemon target
+    // effective without requiring CORS on the backend.
     if (port === "3000" || port === "5173") {
-      return `${window.location.protocol}//${window.location.hostname}:8765`;
+      return "";
     }
     // Every other browser origin — including HTTPS on a non-local hostname —
     // is treated as a same-origin deployment (Docker/reverse-proxy serving
@@ -103,6 +104,8 @@ export class ApiError extends Error {
 // fails validation on a dozen fields is still one mistake to the person reading
 // it, and a dozen clauses is harder to act on than three plus a number.
 const MAX_VALIDATION_ERRORS_SHOWN = 3;
+const SAFE_HTTP_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const RETRYABLE_SSE_CLIENT_STATUSES = new Set([408, 425, 429]);
 
 /**
  * Render a FastAPI/Pydantic validation body into one readable sentence.
@@ -135,11 +138,30 @@ function formatValidationErrors(detail: unknown[]): string | undefined {
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
 
+  // Preserve object-shaped headers for existing callers/tests, while making
+  // Headers and tuple-list inputs mutable too.
+  const initialHeaders = init?.headers;
+  const headers: HeadersInit =
+    initialHeaders instanceof Headers || Array.isArray(initialHeaders)
+      ? new Headers(initialHeaders)
+      : { ...(initialHeaders ?? {}) };
+  const setHeader = (name: string, value: string) => {
+    if (headers instanceof Headers) headers.set(name, value);
+    else (headers as Record<string, string>)[name] = value;
+  };
+
+  // Every unsafe API call declares JSON, including bodyless POST/DELETE
+  // actions. Besides matching the backend contract, this makes browser calls
+  // non-simple requests so cross-site forms cannot invoke mutating routes.
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (!SAFE_HTTP_METHODS.has(method) && !new Headers(headers).has("content-type")) {
+    setHeader("Content-Type", "application/json");
+  }
+
   // Attach the desktop-shell bearer token when present.
   const token = resolveAuthToken();
-  const headers: HeadersInit = { ...(init?.headers ?? {}) };
   if (token) {
-    (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
+    setHeader("Authorization", `Bearer ${token}`);
   }
 
   let response: Response;
@@ -212,7 +234,10 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 // studio endpoints: unnamed `data: <json>\n\n` frames, auto-reconnect after
 // 2s unless closed. Callers parse the JSON and call the returned closer on
 // their terminal "done" frame.
-function sseSubscribe(path: string, onData: (data: string) => void): () => void {
+function sseSubscribe(
+  path: string | (() => string),
+  onData: (data: string, eventId?: string) => void,
+): () => void {
   const controller = new AbortController();
   let closed = false;
   const close = () => {
@@ -226,11 +251,26 @@ function sseSubscribe(path: string, onData: (data: string) => void): () => void 
         const token = resolveAuthToken();
         const headers: Record<string, string> = { Accept: "text/event-stream" };
         if (token) headers["Authorization"] = `Bearer ${token}`;
-        const response = await fetch(`${API_BASE}${path}`, {
+        const requestPath = typeof path === "function" ? path() : path;
+        const response = await fetch(`${API_BASE}${requestPath}`, {
           headers,
           signal: controller.signal,
         });
-        if (!response.ok || !response.body) {
+        if (!response.ok) {
+          const permanentClientError =
+            response.status >= 400 &&
+            response.status < 500 &&
+            !RETRYABLE_SSE_CLIENT_STATUSES.has(response.status);
+          if (permanentClientError) {
+            // Authentication, authorization, validation, and missing-resource
+            // failures cannot heal on a timer. Stop instead of hammering the
+            // daemon every two seconds for the lifetime of the page.
+            closed = true;
+            break;
+          }
+          throw new Error(`SSE request failed: ${response.status}`);
+        }
+        if (!response.body) {
           throw new Error(`SSE request failed: ${response.status}`);
         }
         const reader = response.body.getReader();
@@ -249,7 +289,12 @@ function sseSubscribe(path: string, onData: (data: string) => void): () => void 
               .filter((line) => line.startsWith("data:"))
               .map((line) => line.slice(5).replace(/^ /, ""))
               .join("\n");
-            if (data && !closed) onData(data);
+            const eventId = frame
+              .split("\n")
+              .filter((line) => line.startsWith("id:"))
+              .map((line) => line.slice(3).replace(/^ /, ""))
+              .at(-1);
+            if (data && !closed) onData(data, eventId || undefined);
           }
         }
       } catch {
@@ -711,8 +756,12 @@ export function streamOperatorConversation(
               controller.abort();
               break;
             }
-            cursor = Math.max(cursor, candidate.sequence);
             handlers.onFrame(candidate);
+            // Advanced after the handler, for the reason the signal stream
+            // advances after its consumer: a throwing handler is caught below
+            // and reconnects from this cursor, so advancing first drops the
+            // frame it never handled.
+            cursor = Math.max(cursor, candidate.sequence);
           }
         }
       } catch (error) {
@@ -799,10 +848,6 @@ export interface RunProjectsResponse {
  * filter's option list without requiring a full unfiltered run scan. */
 export async function listRunProjects(): Promise<RunProjectsResponse> {
   return fetchJson<RunProjectsResponse>("/api/runs/projects");
-}
-
-export async function getRun(runId: string): Promise<RunDetail> {
-  return fetchJson<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`);
 }
 
 export async function resumeRun(
@@ -1193,7 +1238,26 @@ export interface SessionSummary {
 export interface SessionMessage {
   id: string;
   role: string;
-  content: Record<string, unknown>;
+  /**
+   * Null when the server refused to decode this payload, which it does above a
+   * size ceiling. Nullable rather than optional on purpose: the withholding is
+   * a state a renderer has to handle, and an optional field reads as one a
+   * caller may ignore.
+   */
+  content: Record<string, unknown> | null;
+  /**
+   * True when `content` is null because it was refused, as opposed to a message
+   * that carried none. This endpoint returns no per-session bounds beside the
+   * rows, so this flag is the only place that distinction is available.
+   */
+  content_withheld?: boolean;
+  /**
+   * Present only on a withheld row, where the payload that normally carries the
+   * pairing is gone. An action request and its response are one call, and
+   * without these a withheld pair renders as two unrelated rows.
+   */
+  action_request_id?: string;
+  action_response_id?: string;
   sender: string | null;
   timestamp: number;
   lion_class: string;
@@ -1288,6 +1352,17 @@ export interface SessionDetail {
     tool_call_count: number;
     error_count: number;
     files: string[];
+    // The server hydrates the newest slice of a long session's action rows and
+    // stops at a bound. When it stopped, every field above derived from those
+    // rows is a floor rather than a total, and the reader has to say so —
+    // a lower bound presented as a count is read as a count.
+    bounded?: boolean;
+    // `files` has its own ceilings (distinct names, total bytes, rows
+    // scanned), separate from `bounded` above: the union is computed over the
+    // whole run rather than the hydrated slice, so it can be cut when nothing
+    // else was. A file union that was cut answers "is this name a file?" with
+    // a no it has not earned, so it is never presented as complete.
+    files_bounded?: boolean;
   };
 }
 
@@ -1317,19 +1392,33 @@ export function streamSession(
   id: string,
   onEvent: (event: Record<string, unknown>) => void,
 ): () => void {
-  const close = sseSubscribe(`/api/sessions/${encodeURIComponent(id)}/stream`, (data) => {
-    let event: Record<string, unknown>;
-    try {
-      event = JSON.parse(data) as Record<string, unknown>;
-    } catch {
-      /* malformed chunk */
-      return;
-    }
-    if (event.type === "done") {
-      close();
-    }
-    onEvent(event);
-  });
+  let cursor: string | undefined;
+  const close = sseSubscribe(
+    () => {
+      const query = new URLSearchParams();
+      if (cursor) query.set("cursor", cursor);
+      const suffix = query.toString();
+      return `/api/sessions/${encodeURIComponent(id)}/stream${suffix ? `?${suffix}` : ""}`;
+    },
+    (data, eventId) => {
+      let event: Record<string, unknown>;
+      try {
+        event = JSON.parse(data) as Record<string, unknown>;
+      } catch {
+        /* malformed chunk */
+        return;
+      }
+      if (event.type === "done") {
+        close();
+      }
+      onEvent(event);
+      // Advance only after the consumer accepted this frame. If the callback
+      // throws, reconnecting from the prior cursor repeats rather than skips it.
+      if (eventId && event.type !== "heartbeat" && event.type !== "done") {
+        cursor = eventId;
+      }
+    },
+  );
   return close;
 }
 
@@ -1362,19 +1451,34 @@ export function streamSignals(
   id: string,
   onEvent: (event: SignalEvent | { type: string }) => void,
 ): () => void {
-  const close = sseSubscribe(`/api/sessions/${encodeURIComponent(id)}/signals`, (data) => {
-    let event: SignalEvent | { type: string };
-    try {
-      event = JSON.parse(data) as SignalEvent | { type: string };
-    } catch {
-      /* malformed chunk */
-      return;
-    }
-    if ("type" in event && event.type === "done") {
-      close();
-    }
-    onEvent("type" in event ? event : normalizeSignalEvent(event));
-  });
+  let afterSeq = 0;
+  const close = sseSubscribe(
+    () => {
+      const query = new URLSearchParams({ after_seq: String(afterSeq) });
+      return `/api/sessions/${encodeURIComponent(id)}/signals?${query}`;
+    },
+    (data) => {
+      let event: SignalEvent | { type: string };
+      try {
+        event = JSON.parse(data) as SignalEvent | { type: string };
+      } catch {
+        /* malformed chunk */
+        return;
+      }
+      if ("type" in event) {
+        if (event.type === "done") close();
+        onEvent(event);
+        return;
+      }
+      onEvent(normalizeSignalEvent(event));
+      // Advanced only after the consumer has taken the event. Advancing first
+      // left a throwing consumer with the cursor already past a signal it
+      // never handled, and the reconnect resumes from that cursor, so the
+      // signal was skipped for good. Redelivering one the consumer already
+      // processed is the cheaper failure of the two.
+      afterSeq = Math.max(afterSeq, event.seq);
+    },
+  );
   return close;
 }
 
@@ -1398,7 +1502,7 @@ export interface InvocationSummary {
   project_source?: string | null;
   // ADR-0057 health verdict (worst-of across child sessions) + the real
   // last-activity timestamp behind it, "unknown" when the invocation has
-  // no child sessions yet (issue #2851) — same vocabulary runs use, plus
+  // no child sessions yet — same vocabulary runs use, plus
   // "unknown" for a case runs never hit (a run always has itself).
   health?: "healthy" | "idle" | "unresponsive" | "stale" | "orphaned" | "zombie" | "unknown" | null;
   last_activity_at?: number | null;
@@ -2311,13 +2415,30 @@ export async function getAttentionDispositionHistory(
 export interface EngineRunSummary {
   id: string;
   kind: string;
-  spec_json: Record<string, unknown>;
   status: string;
   started_at: number;
   ended_at: number | null;
   session_id: string | null;
+  invocation_id: string | null;
+  signal_session_id: string | null;
+  parent_session_id: string | null;
+  outcome: Record<string, unknown> | null;
+  has_output: boolean;
+  error_code: string | null;
+}
+
+export interface EngineRunDetail extends Omit<EngineRunSummary, "outcome"> {
+  spec_json: Record<string, unknown> | null;
+  spec_preview: Record<string, unknown>;
+  outcome_json: Record<string, unknown> | null;
   export_dir: string | null;
   error: string | null;
+}
+
+export interface EngineRunPage {
+  version: 1;
+  items: EngineRunSummary[];
+  next_cursor: string | null;
 }
 
 export interface EngineRunListParams {
@@ -2325,22 +2446,26 @@ export interface EngineRunListParams {
   status?: string;
   session_id?: string;
   limit?: number;
-  offset?: number;
+  cursor?: string;
 }
 
-export async function listEngineRuns(params?: EngineRunListParams): Promise<EngineRunSummary[]> {
+export async function listEngineRuns(params?: EngineRunListParams): Promise<EngineRunPage> {
   const query = new URLSearchParams();
   if (params?.kind) query.set("kind", params.kind);
   if (params?.status) query.set("status", params.status);
   if (params?.session_id) query.set("session_id", params.session_id);
   if (params?.limit != null) query.set("limit", String(params.limit));
-  if (params?.offset != null) query.set("offset", String(params.offset));
+  if (params?.cursor) query.set("cursor", params.cursor);
   const qs = query.toString();
-  return fetchJson<EngineRunSummary[]>(`/api/engine-runs${qs ? `?${qs}` : ""}`);
+  return fetchJson<EngineRunPage>(`/api/engine-runs/${qs ? `?${qs}` : ""}`);
 }
 
-export async function getEngineRun(runId: string): Promise<EngineRunSummary> {
-  return fetchJson<EngineRunSummary>(`/api/engine-runs/${encodeURIComponent(runId)}`);
+export async function getEngineRun(
+  runId: string,
+  options?: { includeSpec?: boolean },
+): Promise<EngineRunDetail> {
+  const query = options?.includeSpec ? "?include_spec=true" : "";
+  return fetchJson<EngineRunDetail>(`/api/engine-runs/${encodeURIComponent(runId)}${query}`);
 }
 
 // ─── Shows / plays ──────────────────────────────────────────────────────────

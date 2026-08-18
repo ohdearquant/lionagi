@@ -245,7 +245,7 @@
       "createWorkflow": "Neuer Workflow",
       "createAgent": "Neuer Agent",
       "allSkill": "Keine Skills gefunden.",
-      "allSkillHint": "Füge eine SKILL.md unter ~/.lionagi/skills/<name>/ hinzu, um sie hier zu sehen.",
+      "allSkillHint": "Füge eine SKILL.md unter ~/.lionagi/skills/NAME/ hinzu, um sie hier zu sehen.",
       "allPlugin": "Keine Plugins gefunden.",
       "allPluginHint": "Installiere ein Plugin unter ~/.claude/plugins/, um es hier zu sehen."
     },
@@ -508,6 +508,7 @@
       "statErrorsRecent": "Fehler (aktuell)",
       "noBranchErrorsPartial": "Keine Fehler in den geladenen Nachrichten.",
       "noFilesPartial": "Keine Dateioperationen in den geladenen Nachrichten erkannt.",
+      "filesUnionBounded": "Einige Dateioperationen fehlen in der Liste: Dieser Lauf hat mehr Dateien berührt, als eine Ansicht erfasst.",
       "olderUnavailable": "Ältere Verlaufsdaten konnten nicht geladen werden — diese Unterhaltung ist weitergegangen, bevor die Anfrage abgeschlossen wurde.",
       "reloadConversation": "Unterhaltung neu laden",
       "graphEdgeCount": "{count} Kanten",
@@ -832,6 +833,9 @@
       "noRuns": "Noch keine Ausführungen",
       "ago": " zuvor",
       "cancel": "Abbrechen",
+      "discardWarning": "Es gibt ungespeicherte Änderungen.",
+      "keepEditing": "Weiter bearbeiten",
+      "discardChanges": "Änderungen verwerfen",
       "save": "Änderungen speichern",
       "saving": "Wird gespeichert…",
       "saveFailed": "Speichern fehlgeschlagen.",
@@ -911,7 +915,7 @@
     "stale": {
       "error": "Fehler · {message}",
       "unreachable": "API nicht erreichbar",
-      "lastUpdated": "veraltet · zuletzt vor {age}s aktualisiert"
+      "lastUpdated": "zuletzt vor {age}s aktualisiert"
     },
     "detail": {
       "hint": "Wähle eine Session aus, um sie zu untersuchen",
@@ -927,8 +931,7 @@
       "updated": "Aktualisiert",
       "branchesTitle": "{count, plural, one {Zweig (#)} other {Zweige (#)}}",
       "noBranches": "Keine Branches.",
-      "msgs": " Nachrichten",
-      "engineRuns": "Engine-Läufe"
+      "msgs": " Nachrichten"
     },
     "split": {
       "master": "Sessionliste",
@@ -1074,7 +1077,7 @@
     "stale": {
       "error": "Fehler · {message}",
       "unreachable": "API nicht erreichbar",
-      "lastUpdated": "veraltet · zuletzt vor {age}s aktualisiert"
+      "lastUpdated": "zuletzt vor {age}s aktualisiert"
     },
     "zeroState": {
       "heading": "Loslegen",
@@ -1163,6 +1166,7 @@
     "showEarlier": "{count, plural, one {{count, number} frühere Nachricht anzeigen} other {{count, number} frühere Nachrichten anzeigen}}",
     "noArgs": "(keine Args)",
     "noOutput": "(keine Ausgabe)",
+    "outputWithheld": "nicht gelesen",
     "roleUser": "Benutzer",
     "roleThinking": "Denkprozess",
     "roleResponse": "Antwort",

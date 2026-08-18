@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import sqlite3
 import subprocess
 import threading
@@ -23,7 +24,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import JSON, bindparam, text
 from sqlalchemy.exc import OperationalError as _SAOperationalError
 
-from lionagi.cli._util import pid_alive as _pid_is_live
+from lionagi.cli._util import (
+    BOOT_TIME_TOLERANCE,
+    recorded_identity_mode,
+    recorded_pid_is_foreign,
+)
+from lionagi.cli._util import (
+    pid_alive as _pid_is_live,
+)
 from lionagi.ln import now_utc
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import state_db_known_absent
@@ -394,15 +402,37 @@ _PID_CREATE_TIME_TOLERANCE = 1.0
 HEALTH_SCAN_LIMIT = 500
 
 
+def process_identity_is_foreign(session: dict[str, Any]) -> bool:
+    """True if this machine can't observe the run's process at all — foreign host or unknown identity mode — since the staleness grace only protects momentary, not permanent, blind spots."""
+    meta = session.get("node_metadata")
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            return False
+    if not isinstance(meta, dict):
+        return False
+
+    mode = recorded_identity_mode(meta)
+    if mode is not None and mode not in ("local", "in_process"):
+        return True
+
+    # Checked on host alone, not "host + readable pid" — a row from another machine is that
+    # machine's business even with an unparseable pid, and the pid-less fallback would misread it.
+    return recorded_pid_is_foreign(meta)
+
+
 def process_liveness(
     session: dict[str, Any],
     artifacts_path: Path | None,
     ps_snapshot: str | None = None,
 ) -> bool | None:
-    """Tri-state process liveness: True = observed alive, False = confirmed
-    dead, None = unknown (no recorded pid/no process match)."""
+    """Tri-state process liveness: True = observed alive, False = confirmed dead, None = unknown (no recorded pid/no process match)."""
     pid: int | None = None
     create_time: float | None = None
+    pid_host: str | None = None
+    pid_boot_time: float | None = None
+    identity_mode: str | None = None
 
     meta = session.get("node_metadata")
     if isinstance(meta, str):
@@ -411,15 +441,44 @@ def process_liveness(
         except ValueError:
             meta = None
     if isinstance(meta, dict):
-        raw_pid = meta.get("pid")
+        identity_mode = recorded_identity_mode(meta)
+        # An in-process run stores its host's pid under separate keys, not "pid", so the kill
+        # path can't mistake the host for the run itself — but the host still bounds its liveness.
+        in_process = identity_mode == "in_process"
+        raw_pid = meta.get("host_pid" if in_process else "pid")
         if raw_pid is not None:
             try:
                 pid = int(raw_pid)
             except (TypeError, ValueError):
                 pid = None
-        raw_ct = meta.get("pid_create_time")
+        raw_ct = meta.get("host_pid_create_time" if in_process else "pid_create_time")
         if isinstance(raw_ct, int | float):
             create_time = float(raw_ct)
+        raw_host = meta.get("pid_host")
+        if isinstance(raw_host, str):
+            pid_host = raw_host
+        raw_boot = meta.get("pid_boot_time")
+        if isinstance(raw_boot, int | float):
+            pid_boot_time = float(raw_boot)
+
+    if identity_mode not in (None, "local", "in_process"):
+        return None
+    if pid is not None and pid_host is not None and pid_host != socket.gethostname():
+        return None
+    if pid is not None and pid_boot_time is not None:
+        rebooted_since = False
+        try:
+            import psutil
+
+            # Boot time is re-derived from the clock each read, so NTP steps or suspend/resume
+            # can drift it more than the create-time tolerance allows; it needs its own tolerance.
+            rebooted_since = abs(psutil.boot_time() - pid_boot_time) > BOOT_TIME_TOLERANCE
+        except Exception:
+            # A failed boot-time read leaves this one check unevaluated, not the run unknowable
+            # — answering "unknown" would let reapers treat every live session here as stale.
+            _log.debug("boot-time comparison for pid %s failed", pid, exc_info=True)
+        if rebooted_since:
+            return False
 
     if pid is None and artifacts_path is not None and artifacts_path.exists():
         pid = _find_pid_file(artifacts_path)
@@ -693,6 +752,10 @@ def _classify_phantom(
     # A running session is never a phantom while its process is observably alive.
     if process_liveness(session, ap, ps_snapshot) is True:
         return None
+    # Nor when the process isn't this machine's to observe — the staleness grace can't
+    # rescue a row whose liveness is permanently invisible here.
+    if process_identity_is_foreign(session):
+        return None
     # Not yet stale: it may simply not have written artifacts yet, so give it
     # the benefit of the doubt rather than reap a fresh/quiet session.
     updated_at = row["updated_at"] or 0.0
@@ -709,12 +772,8 @@ def _classify_phantom(
         is not None
     ):
         return "stale_lock"
-    # A truncated scan lands here too, and that is deliberate rather than an
-    # oversight: every path to this point has already established the session is
-    # a phantom, so the unfinished walk costs the *reason* its precision, not the
-    # verdict its safety. Where truncation would change a verdict -- the health
-    # classifier, where "no stale lock" is what keeps a session out of ZOMBIE --
-    # it is reported instead of absorbed.
+    # A truncated scan lands here too, deliberately: the session is already established as a
+    # phantom, so truncation costs the reason's precision, not the verdict's safety.
     return "process_dead"
 
 

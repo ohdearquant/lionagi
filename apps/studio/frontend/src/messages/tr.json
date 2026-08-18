@@ -245,7 +245,7 @@
       "createWorkflow": "yeni iş akışı",
       "createAgent": "yeni ajan",
       "allSkill": "Skill bulunamadı.",
-      "allSkillHint": "Burada görmek için ~/.lionagi/skills/<name>/ altına bir SKILL.md ekleyin.",
+      "allSkillHint": "Burada görmek için ~/.lionagi/skills/NAME/ altına bir SKILL.md ekleyin.",
       "allPlugin": "Eklenti bulunamadı.",
       "allPluginHint": "Burada görmek için ~/.claude/plugins/ altına bir eklenti kurun."
     },
@@ -508,6 +508,7 @@
       "statErrorsRecent": "hatalar (son)",
       "noBranchErrorsPartial": "yüklenen mesajlarda hata yok.",
       "noFilesPartial": "yüklenen mesajlarda dosya işlemi algılanmadı.",
+      "filesUnionBounded": "Bazı dosya işlemleri listelenmiyor: bu çalışma, bir görünümün topladığından daha fazla dosyaya dokundu.",
       "olderUnavailable": "Daha eski geçmiş yüklenemedi — bu konuşma istek tamamlanmadan önce ilerledi.",
       "reloadConversation": "Konuşmayı yeniden yükle",
       "graphEdgeCount": "{count} kenar",
@@ -832,6 +833,9 @@
       "noRuns": "henüz çalıştırma yok",
       "ago": " önce",
       "cancel": "iptal",
+      "discardWarning": "Kaydedilmemiş değişiklikleriniz var.",
+      "keepEditing": "Düzenlemeye devam et",
+      "discardChanges": "Değişiklikleri at",
       "save": "değişiklikleri kaydet",
       "saving": "kaydediliyor…",
       "saveFailed": "kaydetme başarısız.",
@@ -911,7 +915,7 @@
     "stale": {
       "error": "hata · {message}",
       "unreachable": "API erişilemiyor",
-      "lastUpdated": "güncel değil · son güncelleme {age} sn önce"
+      "lastUpdated": "son güncelleme {age} sn önce"
     },
     "detail": {
       "hint": "incelemek için bir oturum seç",
@@ -927,8 +931,7 @@
       "updated": "güncellendi",
       "branchesTitle": "dallar ({count})",
       "noBranches": "dal yok.",
-      "msgs": " mesaj",
-      "engineRuns": "Motor çalıştırmaları"
+      "msgs": " mesaj"
     },
     "split": {
       "master": "oturum listesi",
@@ -1074,7 +1077,7 @@
     "stale": {
       "error": "hata · {message}",
       "unreachable": "API erişilemiyor",
-      "lastUpdated": "güncel değil · son güncelleme {age} sn önce"
+      "lastUpdated": "son güncelleme {age} sn önce"
     },
     "zeroState": {
       "heading": "başla",
@@ -1163,6 +1166,7 @@
     "showEarlier": "önceki {count, number} mesajı göster",
     "noArgs": "(argüman yok)",
     "noOutput": "(çıktı yok)",
+    "outputWithheld": "okunmadı",
     "roleUser": "kullanıcı",
     "roleThinking": "düşünüyor",
     "roleResponse": "yanıt",

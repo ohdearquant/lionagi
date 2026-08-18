@@ -245,7 +245,7 @@
       "createWorkflow": "नया वर्कफ़्लो",
       "createAgent": "नया एजेंट",
       "allSkill": "कोई स्किल नहीं मिली।",
-      "allSkillHint": "यहाँ देखने के लिए ~/.lionagi/skills/<name>/ के अंतर्गत एक SKILL.md जोड़ें।",
+      "allSkillHint": "यहाँ देखने के लिए ~/.lionagi/skills/NAME/ के अंतर्गत एक SKILL.md जोड़ें।",
       "allPlugin": "कोई प्लगइन नहीं मिला।",
       "allPluginHint": "यहाँ देखने के लिए ~/.claude/plugins/ के अंतर्गत एक प्लगइन इंस्टॉल करें।"
     },
@@ -508,6 +508,7 @@
       "statErrorsRecent": "त्रुटियाँ (हाल की)",
       "noBranchErrorsPartial": "लोड किए गए मैसेज में कोई त्रुटि नहीं।",
       "noFilesPartial": "लोड किए गए मैसेज में कोई फ़ाइल ऑपरेशन नहीं मिला।",
+      "filesUnionBounded": "कुछ फ़ाइल संचालन सूचीबद्ध नहीं हैं: इस रन ने एक दृश्य में संकलित होने वाली फ़ाइलों से अधिक फ़ाइलें छुईं।",
       "olderUnavailable": "पुराना इतिहास लोड नहीं किया जा सका — अनुरोध पूरा होने से पहले यह बातचीत आगे बढ़ गई।",
       "reloadConversation": "बातचीत फिर से लोड करें",
       "graphEdgeCount": "{count} किनारे",
@@ -832,6 +833,9 @@
       "noRuns": "अभी कोई रन नहीं",
       "ago": " पहले",
       "cancel": "रद्द करें",
+      "discardWarning": "आपके परिवर्तन सहेजे नहीं गए हैं।",
+      "keepEditing": "संपादन जारी रखें",
+      "discardChanges": "परिवर्तन छोड़ें",
       "save": "बदलाव सेव करें",
       "saving": "सेव हो रहा है…",
       "saveFailed": "सेव विफल।",
@@ -911,7 +915,7 @@
     "stale": {
       "error": "त्रुटि · {message}",
       "unreachable": "API पहुँच से बाहर है",
-      "lastUpdated": "स्टेल · आखिरी अपडेट {age} सेकंड पहले"
+      "lastUpdated": "आखिरी अपडेट {age} सेकंड पहले"
     },
     "detail": {
       "hint": "जाँचने के लिए सेशन चुनें",
@@ -927,8 +931,7 @@
       "updated": "अपडेट हुआ",
       "branchesTitle": "ब्रांच ({count})",
       "noBranches": "कोई ब्रांच नहीं।",
-      "msgs": " मैसेज",
-      "engineRuns": "इंजन रन"
+      "msgs": " मैसेज"
     },
     "split": {
       "master": "सेशन सूची",
@@ -1074,7 +1077,7 @@
     "stale": {
       "error": "त्रुटि · {message}",
       "unreachable": "API पहुँच से बाहर है",
-      "lastUpdated": "स्टेल · आखिरी अपडेट {age} सेकंड पहले"
+      "lastUpdated": "आखिरी अपडेट {age} सेकंड पहले"
     },
     "zeroState": {
       "heading": "शुरू करें",
@@ -1163,6 +1166,7 @@
     "showEarlier": "{count, plural, one {# पुराना मैसेज दिखाएँ} other {# पुराने मैसेज दिखाएँ}}",
     "noArgs": "(कोई args नहीं)",
     "noOutput": "(कोई आउटपुट नहीं)",
+    "outputWithheld": "पढ़ा नहीं गया",
     "roleUser": "यूज़र",
     "roleThinking": "सोच रहा है",
     "roleResponse": "रिस्पॉन्स",

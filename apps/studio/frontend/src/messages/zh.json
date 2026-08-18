@@ -245,7 +245,7 @@
       "createWorkflow": "新建工作流",
       "createAgent": "新建智能体",
       "allSkill": "未找到技能。",
-      "allSkillHint": "在 ~/.lionagi/skills/<name>/ 下添加 SKILL.md 即可在此显示。",
+      "allSkillHint": "在 ~/.lionagi/skills/NAME/ 下添加 SKILL.md 即可在此显示。",
       "allPlugin": "未找到插件。",
       "allPluginHint": "在 ~/.claude/plugins/ 下安装插件即可在此显示。"
     },
@@ -508,6 +508,7 @@
       "statErrorsRecent": "错误（近期）",
       "noBranchErrorsPartial": "已加载的消息中没有错误。",
       "noFilesPartial": "已加载的消息中未检测到文件操作。",
+      "filesUnionBounded": "部分文件操作未列出：本次运行涉及的文件数量超过单个视图的收集上限。",
       "olderUnavailable": "无法加载更早的历史记录 — 此对话在请求完成前已继续。",
       "reloadConversation": "重新加载对话",
       "graphEdgeCount": "{count} 条边",
@@ -832,6 +833,9 @@
       "noRuns": "暂无执行记录",
       "ago": " 前",
       "cancel": "取消",
+      "discardWarning": "有未保存的更改。",
+      "keepEditing": "继续编辑",
+      "discardChanges": "放弃更改",
       "save": "保存更改",
       "saving": "保存中…",
       "saveFailed": "保存失败。",
@@ -911,7 +915,7 @@
     "stale": {
       "error": "错误 · {message}",
       "unreachable": "API 不可达",
-      "lastUpdated": "数据过期 · {age} 秒前更新"
+      "lastUpdated": "{age} 秒前更新"
     },
     "detail": {
       "hint": "选择一个会话查看详情",
@@ -927,8 +931,7 @@
       "updated": "更新时间",
       "branchesTitle": "分支（{count}）",
       "noBranches": "暂无分支。",
-      "msgs": " 条消息",
-      "engineRuns": "引擎运行"
+      "msgs": " 条消息"
     },
     "split": {
       "master": "会话列表",
@@ -1074,7 +1077,7 @@
     "stale": {
       "error": "错误 · {message}",
       "unreachable": "API 不可达",
-      "lastUpdated": "数据过期 · {age} 秒前更新"
+      "lastUpdated": "{age} 秒前更新"
     },
     "zeroState": {
       "heading": "开始使用",
@@ -1163,6 +1166,7 @@
     "showEarlier": "显示更早的 {count, number} 条消息",
     "noArgs": "(无参数)",
     "noOutput": "(无输出)",
+    "outputWithheld": "未读取",
     "roleUser": "用户",
     "roleThinking": "思考",
     "roleResponse": "回复",
