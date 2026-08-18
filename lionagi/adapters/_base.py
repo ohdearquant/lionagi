@@ -12,6 +12,8 @@ import urllib.parse
 from collections.abc import Callable
 from typing import Any, ClassVar, Protocol, TypeVar, runtime_checkable
 
+from lionagi.libs.credential_fields import fold_field_name, is_secret_field_name
+
 T = TypeVar("T")
 
 _CREDENTIAL_SCHEMES = frozenset(
@@ -108,7 +110,10 @@ def _redact_url(value: str) -> str:
     if parsed.query:
         params = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
         redacted_params = [
-            (k, "***") if k.lower() in _SENSITIVE_QUERY_PARAMS else (k, v) for k, v in params
+            (k, "***")
+            if fold_field_name(k) in _SENSITIVE_QUERY_PARAMS or is_secret_field_name(k)
+            else (k, v)
+            for k, v in params
         ]
         new_query = urllib.parse.urlencode(redacted_params, quote_via=urllib.parse.quote, safe="*")
         if new_query != parsed.query:
@@ -122,7 +127,11 @@ def _redact_url(value: str) -> str:
 
 def _redact_value(key: str, value: Any) -> Any:
     key_lower = key.lower()
-    if key_lower in _SENSITIVE_KEYS:
+    # The legacy exact-match set stays for the names the shared predicate does
+    # not classify (url/uri/dsn and friends); the predicate carries the
+    # credential vocabulary and separator folds, so a field Studio's richer
+    # projections withhold is withheld on this error path too.
+    if key_lower in _SENSITIVE_KEYS or is_secret_field_name(key):
         if isinstance(value, str):
             return _redact_url(value) if "://" in value else "***"
         if isinstance(value, dict):

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import threading
 from collections.abc import Sequence
 from pathlib import Path
@@ -142,6 +143,34 @@ def pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def recorded_pid_is_foreign(metadata: dict[str, Any] | None) -> bool:
+    """True if the recorded pid belongs to another host; a missing ``pid_host`` is unknown origin, not foreign — it is not treated as evidence the row belongs elsewhere."""
+    if not isinstance(metadata, dict):
+        return False
+    host = metadata.get("pid_host")
+    return isinstance(host, str) and bool(host) and host != socket.gethostname()
+
+
+# Sentinel for a recorded identity mode that is present but not a string; kept as a string so
+# every caller's "is this a mode I know" check keeps working, and chosen so no writer produces it.
+UNRECOGNIZED_IDENTITY_MODE = "<unrecognized>"
+
+
+def recorded_identity_mode(metadata: dict[str, Any] | None) -> str | None:
+    """The run's recorded process identity mode; None only if the key is absent — a present non-string value, including an explicit null, returns `UNRECOGNIZED_IDENTITY_MODE` instead."""
+    if not isinstance(metadata, dict):
+        return None
+    if "process_identity_mode" not in metadata:
+        return None
+    mode = metadata["process_identity_mode"]
+    return mode if isinstance(mode, str) else UNRECOGNIZED_IDENTITY_MODE
+
+
+# Tolerance for OS boot-time clock drift (suspend/resume, clock adjustments); a real reboot
+# moves it far more. Lives here, not beside either caller, so both agree on one copy.
+BOOT_TIME_TOLERANCE = 5.0
 
 
 _SEARCH_ORDER = ("sessions", "invocations", "plays", "shows")

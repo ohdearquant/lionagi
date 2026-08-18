@@ -245,9 +245,10 @@ class TestHostHeaderValidation:
 
 @pytest.mark.integration
 class TestJsonContentTypeEnforcement:
-    """State-changing /api requests must declare application/json when they
-    carry a body -- closes the simple-request (no-preflight) JSON CSRF gap
-    that FastAPI's own body parsing (which ignores Content-Type) leaves open.
+    """Every state-changing /api request must declare application/json.
+
+    The rule covers JSON-shaped bodies and empty action routes alike, closing
+    both forms of simple-request (no-preflight) CSRF.
     """
 
     def test_text_plain_body_on_bodyless_route_is_rejected(
@@ -305,15 +306,30 @@ class TestJsonContentTypeEnforcement:
         )
         assert resp.status_code != 415
 
-    def test_empty_body_post_from_spa_shape_still_works(self, monkeypatch, tmp_path, make_client):
-        """The SPA sends several POSTs with no body and no Content-Type at all
-        (e.g. schedule trigger/enable/disable, invocation cancel). These must
-        stay reachable -- the middleware only gates requests that *carry* a
-        body, so a genuinely empty POST must pass through to the handler
-        (here surfacing as 404 for a nonexistent id, not 415)."""
+    def test_empty_body_post_without_json_content_type_is_rejected(
+        self, monkeypatch, tmp_path, make_client
+    ):
+        """Bodyless mutators are still cross-site form-submit targets.
+
+        Require the same non-simple JSON content type as body-carrying writes;
+        otherwise enable/disable/trigger/cancel endpoints bypass the preflight
+        that protects an unauthenticated hosted Studio.
+        """
         client = make_client()
 
         resp = client.post("/api/schedules/some-id/trigger")
+        assert resp.status_code == 415
+        assert resp.json()["detail"] == "Content-Type must be application/json"
+
+    def test_empty_body_post_with_json_content_type_reaches_handler(
+        self, monkeypatch, tmp_path, make_client
+    ):
+        client = make_client()
+
+        resp = client.post(
+            "/api/schedules/some-id/trigger",
+            headers={"Content-Type": "application/json"},
+        )
         assert resp.status_code != 415
 
     def test_get_requests_are_never_gated_by_content_type(self, monkeypatch, tmp_path, make_client):
@@ -321,3 +337,54 @@ class TestJsonContentTypeEnforcement:
 
         resp = client.get("/api/sessions/", headers={"Content-Type": "text/plain"})
         assert resp.status_code != 415
+
+
+@pytest.mark.integration
+class TestAuthenticatedIdentity:
+    def test_identity_requires_bearer_and_returns_only_identity_and_version(
+        self, monkeypatch, tmp_path, make_client
+    ):
+        monkeypatch.setenv("LIONAGI_STUDIO_AUTH_TOKEN", "desktop-launch-token")
+        client = make_client()
+
+        assert client.get("/api/identity").status_code == 401
+        assert (
+            client.get(
+                "/api/identity",
+                headers={"Authorization": "Bearer wrong-token"},
+            ).status_code
+            == 401
+        )
+
+        response = client.get(
+            "/api/identity",
+            headers={"Authorization": "Bearer desktop-launch-token"},
+        )
+
+        from lionagi.version import __version__
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "identity": "lionagi-studio",
+            "version": __version__,
+        }
+
+    def test_identity_refuses_on_a_daemon_that_configured_no_token(
+        self, monkeypatch, tmp_path, make_client
+    ):
+        """A 200 here must mean the caller authenticated, not merely that
+        something on the port answers to the name. The bearer middleware
+        skips entirely when no token is set, so without a route-level refusal
+        a stale unauthenticated daemon holding the port passes the handshake.
+        """
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        client = make_client()
+
+        assert client.get("/api/identity").status_code == 401
+        assert (
+            client.get(
+                "/api/identity",
+                headers={"Authorization": "Bearer any-token-at-all"},
+            ).status_code
+            == 401
+        )

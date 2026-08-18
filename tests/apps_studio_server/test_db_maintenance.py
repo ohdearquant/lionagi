@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 import uuid
 from pathlib import Path
@@ -234,6 +235,87 @@ def test_size_alert_at_threshold(monkeypatch):
     alert, threshold = maint.get_db_size_alert(100 * 1024 * 1024)
     assert alert is True
     assert threshold == 100 * 1024 * 1024
+
+
+def test_the_size_threshold_tracks_the_retention_window():
+    """Doubling the retention window doubles the size the store may reach, so the two cannot disagree."""
+    import lionagi.studio.config as cfg
+
+    thirty = cfg._derive_db_size_alert_bytes(30)
+    sixty = cfg._derive_db_size_alert_bytes(60)
+
+    assert sixty == 2 * thirty
+    assert thirty > cfg._DB_SIZE_ALERT_FLOOR_BYTES
+
+
+def test_the_configured_threshold_is_the_one_derived_from_the_configured_window(
+    monkeypatch,
+):
+    """The module constant is the derivation, not a value that merely resembles it."""
+    import os
+
+    import lionagi.studio.config as cfg
+
+    if os.environ.get("LIONAGI_STUDIO_DB_SIZE_ALERT_BYTES"):
+        pytest.skip("explicit threshold override in env; derivation deliberately bypassed")
+
+    assert cfg.DB_SIZE_ALERT_BYTES == cfg._derive_db_size_alert_bytes(cfg.PRUNE_KEEP_DAYS)
+
+
+def test_a_store_within_its_retention_steady_state_does_not_alert(monkeypatch):
+    """A store sitting at the steady state its own policy produces must stay quiet."""
+    import lionagi.studio.config as cfg
+    from lionagi.studio.services import db_maintenance as maint
+
+    keep_days = 30
+    steady_state = keep_days * cfg._DB_BYTES_PER_RETAINED_DAY
+    monkeypatch.setattr(cfg, "DB_SIZE_ALERT_BYTES", cfg._derive_db_size_alert_bytes(keep_days))
+
+    at_steady_state, _ = maint.get_db_size_alert(steady_state)
+    assert at_steady_state is False
+
+    # Just inside the headroom is still explained by the policy.
+    inside_headroom, _ = maint.get_db_size_alert(int(steady_state * 1.4))
+    assert inside_headroom is False
+
+    # Past it, the store is bigger than the policy accounts for.
+    beyond_headroom, _ = maint.get_db_size_alert(int(steady_state * 1.6))
+    assert beyond_headroom is True
+
+
+def test_a_zero_retention_window_cannot_derive_a_threshold_that_alerts_always():
+    """Without the floor a keep window of 0 derives a threshold of 0 and alerts unconditionally."""
+    import lionagi.studio.config as cfg
+
+    assert cfg._derive_db_size_alert_bytes(0) == cfg._DB_SIZE_ALERT_FLOOR_BYTES
+    assert cfg._derive_db_size_alert_bytes(0) > 0
+
+
+def test_the_per_day_measurement_can_be_recalibrated_without_a_release(monkeypatch):
+    """The one empirical input must be settable, or a differing deployment can only override the threshold outright."""
+    import importlib
+
+    import lionagi.studio.config as cfg
+
+    baseline = cfg._DB_BYTES_PER_RETAINED_DAY
+    assert baseline > 0, "no baseline measurement to recalibrate from"
+
+    monkeypatch.setenv("LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY", str(baseline * 2))
+    try:
+        importlib.reload(cfg)
+
+        assert cfg._DB_BYTES_PER_RETAINED_DAY == baseline * 2
+        # The recalibration has to reach the threshold, not just the constant.
+        assert cfg._derive_db_size_alert_bytes(30) == int(
+            30 * baseline * 2 * cfg._DB_SIZE_ALERT_HEADROOM
+        )
+    finally:
+        monkeypatch.delenv("LIONAGI_STUDIO_DB_BYTES_PER_RETAINED_DAY", raising=False)
+        importlib.reload(cfg)
+
+    # Restoring matters as much as the override: a module left reloaded with a
+    # doubled constant would quietly change what every later test measures.
+    assert cfg._DB_BYTES_PER_RETAINED_DAY == baseline
 
 
 def test_stats_endpoint_exposes_checkpoint_and_size_fields(tmp_path, monkeypatch):
@@ -883,10 +965,7 @@ def test_schedule_run_retention_is_chunked_and_archived(tmp_path, monkeypatch):
 
 
 def test_session_prune_archives_preimages_of_nullified_soft_fk_rows(tmp_path, monkeypatch):
-    """artifacts/dispatch_outbox rows whose session_id gets NULLIFIED by a
-    session prune must have their pre-nullify state captured as a
-    ``preimages/<table>.jsonl`` member -- otherwise a restore permanently
-    orphans them (round-1 critic MAJ finding)."""
+    """Rows whose session_id a prune nullifies get their pre-nullify state captured, or a restore orphans them permanently."""
     from lionagi.dispatch import enqueue_dispatch
     from lionagi.studio.services import db_maintenance as maint
     from lionagi.studio.services.retention_archive import read_archive_chunk
@@ -1045,3 +1124,137 @@ def test_run_chunk_archive_failure_aborts_dispatch_and_keeps_session_deletes(tmp
     assert list(archive_dir.glob("run-*.zip")) == []
     assert list(archive_dir.glob("dispatch-*.zip")) == []
     assert len(list(archive_dir.glob("prune-*.zip"))) == 1
+
+
+# ── candidate paging keeps a forward seek ─────────────────────────────────────
+
+
+def _captured_chunk_sql(
+    tmp_path, monkeypatch, dialect: str | None = None
+) -> tuple[Path, str, tuple]:
+    """Drive `_candidate_chunks` and return the SQL it actually built.
+
+    The statement is taken from the running code rather than restated here, so
+    the plan assertions below fail if the source stops asking for the index.
+
+    `dialect` overrides what the scan believes it is talking to. The store
+    underneath stays SQLite either way, which is what makes the Postgres case
+    observable at all: the point is which SQL gets built, and a statement built
+    without the hint still runs here.
+    """
+    from lionagi.studio.services import db_maintenance as maint
+
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    seen: list[tuple[str, tuple]] = []
+    real_q = maint._q
+
+    def capture(sql, params):
+        seen.append((sql, tuple(params)))
+        return real_q(sql, params)
+
+    monkeypatch.setattr(maint, "_q", capture)
+
+    old = time.time() - 90 * 86400
+
+    async def drive() -> None:
+        async with StateDB() as db:
+            for _ in range(3):
+                await _make_session(db, status="completed", started_at=old)
+            if dialect is not None:
+                assert db.dialect != dialect, (
+                    f"the override is a no-op: the store already reports {dialect}"
+                )
+                db.dialect = dialect
+            where_sql, params = maint._session_retention_predicate(time.time() - 30 * 86400)
+            async for _chunk in maint._candidate_chunks(
+                db, table="sessions", where_sql=where_sql, params=params, size=2
+            ):
+                pass
+
+    run_async(drive())
+
+    selects = [(s, p) for s, p in seen if s.lstrip().upper().startswith("SELECT ID FROM SESSIONS")]
+    assert selects, f"no candidate SELECT captured; saw {[s[:60] for s, _ in seen]}"
+    sql, params = selects[0]
+    return db_path, sql, params
+
+
+def test_the_candidate_paging_query_seeks_rather_than_sorting(tmp_path, monkeypatch):
+    """Each page must be a forward seek on the primary key, not a re-sort.
+
+    Left to the planner with no collected statistics, SQLite prefers the
+    status/time index and adds a temporary sort for ORDER BY id, which makes
+    every page re-read and re-sort the whole remaining backlog. That is
+    invisible to a correctness test -- the ids come out identical either way --
+    so the plan itself is what has to be asserted.
+    """
+    db_path, sql, params = _captured_chunk_sql(tmp_path, monkeypatch)
+
+    con = sqlite3.connect(db_path)
+    try:
+        plan = [row[-1] for row in con.execute("EXPLAIN QUERY PLAN " + sql, params)]
+    finally:
+        con.close()
+
+    rendered = " | ".join(plan)
+    assert "TEMP B-TREE" not in rendered.upper(), (
+        f"the paging query sorts instead of seeking, which is the quadratic plan: {rendered}"
+    )
+    assert "sqlite_autoindex_sessions_1" in rendered, (
+        f"the paging query is not walking the primary key: {rendered}"
+    )
+
+
+def test_the_paging_query_does_not_carry_sqlite_syntax_to_postgres(tmp_path, monkeypatch):
+    """`INDEXED BY` is SQLite-only, and the prune also runs on Postgres.
+
+    Nothing gates `prune_old_data` by dialect: the scheduler tick and the admin
+    route both call it against whatever `StateDB` resolves to. PostgreSQL has
+    no `INDEXED BY` clause, so emitting one unconditionally would fail every
+    pass at prepare time rather than merely planning it badly. It also does not
+    need the hint, keeping its own statistics.
+
+    The failure this guards is invisible to the SQLite suite by construction,
+    which is why it is asserted on the built statement rather than on a result.
+    """
+    _, sql, _ = _captured_chunk_sql(tmp_path, monkeypatch, dialect="postgresql")
+
+    assert "INDEXED BY" not in sql.upper(), (
+        f"the paging query carries SQLite-only syntax to Postgres: {sql}"
+    )
+    assert "sqlite_autoindex" not in sql, f"SQLite index name leaked into a Postgres query: {sql}"
+    # Still the same scan, not a differently-shaped one.
+    assert "ORDER BY id" in sql and "id > ?" in sql, (
+        f"the Postgres form is not a forward seek: {sql}"
+    )
+
+
+def test_every_paged_table_has_the_primary_key_index_the_query_names(tmp_path, monkeypatch):
+    """The paging query names `sqlite_autoindex_<table>_1` for three tables.
+
+    That name exists because each table declares `id TEXT PRIMARY KEY`. If a
+    schema change removes or renames it the prune fails at prepare time, so
+    this pins the assumption where it is cheap to read rather than leaving it
+    to be discovered during a retention pass.
+    """
+    db_path = tmp_path / "state.db"
+    _patch_db(monkeypatch, db_path)
+
+    async def touch() -> None:
+        async with StateDB() as db:
+            await _make_session(db, status="completed", started_at=time.time())
+
+    run_async(touch())
+
+    con = sqlite3.connect(db_path)
+    try:
+        for table in ("sessions", "schedule_runs", "dispatch_outbox"):
+            name = f"sqlite_autoindex_{table}_1"
+            indexes = {row[1] for row in con.execute(f"PRAGMA index_list({table})")}
+            assert name in indexes, f"{table} has no {name}; found {sorted(indexes)}"
+            columns = [row[2] for row in con.execute(f"PRAGMA index_info({name})")]
+            assert columns == ["id"], f"{name} covers {columns}, not the id the query seeks on"
+    finally:
+        con.close()

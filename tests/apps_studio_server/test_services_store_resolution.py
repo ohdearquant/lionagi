@@ -218,7 +218,12 @@ def test_the_routes_that_are_only_history_refuse_rather_than_report_absence(tmp_
 
     from lionagi.studio.app import app
 
-    with TestClient(app, base_url="http://127.0.0.1:8765", raise_server_exceptions=False) as client:
+    with TestClient(
+        app,
+        base_url="http://127.0.0.1:8765",
+        raise_server_exceptions=False,
+        headers={"Content-Type": "application/json"},
+    ) as client:
         version_read = client.get("/api/definitions/agent/demo/versions/1")
         rollback = client.post("/api/definitions/agent/demo/rollback?version=1")
 

@@ -95,16 +95,21 @@ def _write_codex_transcript(
     return path
 
 
+async def _poll_session_count(db, expected: int) -> list[dict]:
+    """Poll an already-open mirror DB until it reaches ``expected`` rows or settles."""
+    rows: list[dict] = []
+    for _ in range(300):
+        rows = await db.list_sessions(limit=20)
+        if len(rows) >= expected:
+            break
+        await asyncio.sleep(0.01)
+    return rows
+
+
 async def _wait_for_session_count(db_path: Path, expected: int) -> list[dict]:
     """Poll a fresh mirror DB until it reaches ``expected`` rows or settles."""
     async with StateDB(db_path) as db:
-        rows: list[dict] = []
-        for _ in range(300):
-            rows = await db.list_sessions(limit=20)
-            if len(rows) >= expected:
-                break
-            await asyncio.sleep(0.01)
-        return rows
+        return await _poll_session_count(db, expected)
 
 
 def test_mirror_forever_writes_session_then_stops(tmp_path, monkeypatch):
@@ -419,12 +424,16 @@ def test_studio_autostart_uses_explicit_custom_roots(tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod, "MIRROR_CODEX_ROOT", codex_root, raising=False)
 
     async def _body() -> list[dict]:
-        stop, task = app_mod._start_claude_mirror()
-        assert stop is not None and task is not None
-        try:
-            return await _wait_for_session_count(db_path, 2)
-        finally:
-            await app_mod._stop_claude_mirror(stop, task)
+        # Open the poll connection before the tail, so it does the one-time WAL
+        # and schema init alone. A cold open racing the tail's writes is what
+        # locks the store up under load.
+        async with StateDB(db_path) as db:
+            stop, task = app_mod._start_claude_mirror()
+            assert stop is not None and task is not None
+            try:
+                return await _poll_session_count(db, 2)
+            finally:
+                await app_mod._stop_claude_mirror(stop, task)
 
     rows = run_async(_body())
     names = {row["name"] for row in rows}

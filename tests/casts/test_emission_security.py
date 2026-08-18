@@ -54,12 +54,6 @@ class TestSpawnRequestOperationAllowlist:
         with pytest.raises(ValidationError):
             SpawnRequest.model_validate({"instruction": "x", "operation": "not_registered"})
 
-    def test_operation_none_falls_back_to_default(self):
-        """Explicit None uses the field default ('operate')."""
-        # None is not in the Literal, so it gets the default
-        req = SpawnRequest(instruction="x")
-        assert req.operation == "operate"
-
 
 class TestEmissionModelExtraForbid:
     """Emission models reject unknown keys via extra='forbid'."""

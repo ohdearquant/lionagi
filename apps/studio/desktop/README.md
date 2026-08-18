@@ -97,7 +97,8 @@ this global at module-evaluation time.
 Navigation sequence:
 1. Window opens on `index.html` with `visible: false`
 2. Shell writes the loading screen HTML via `document.write()` and shows window
-3. Backend launches; health poll waits up to 30 s
+3. Backend launches; health poll waits up to 30 s, then the shell verifies the
+   authenticated, store-free `/api/identity` response
 4. On success: `win.navigate("tauri://localhost/index.html#port=N")` — INIT_SCRIPT
    fires again in the new document, sets `__STUDIO_API_BASE__` before SPA loads
 5. On failure: shell evals `window.__showSetupScreen()` — error + Retry button appear
@@ -185,10 +186,12 @@ checks during launch:
    backend has exited, the launch fails with `ProcessExited` instead of treating
    replies from an unrelated process as progress.  (A squatter that answers
    before the child's exit is observed can still pass this check.)
-2. After health 2xx, an authenticated `GET /api/stats` — an *accidental* squatter
-   (a stale studio instance, some other dev server) does not enforce bearer auth
-   against this launch's token and returns 401/404/non-2xx, failing the launch
-   with `IdentityCheckFailed`.
+2. After health 2xx, an authenticated `GET /api/identity` whose JSON must name
+   `lionagi-studio` and carry a non-empty version. The endpoint does not inspect
+   the state store, so a large or locked database cannot delay launch verification.
+   An *accidental* squatter (a stale studio instance, some other dev server)
+   returns 401/404/non-2xx or the wrong payload, failing the launch with
+   `IdentityCheckFailed`.
 
 Be precise about what this proves: the bearer is **sent to** the candidate
 server, so it does not authenticate the server.  A *malicious* local process that
@@ -209,8 +212,10 @@ cd apps/studio/desktop/src-tauri
 cargo test
 ```
 
-Tests cover free-port finding and CLI location logic (`port.rs`).  The backend
-lifecycle state machine in `lib.rs` is not unit-tested yet — its transitions
-require a running Tauri `AppHandle`, so they are exercised by the windowed app
-and verified in review; extracting the state machine behind a testable trait is
-future work.
+Tests cover free-port finding and CLI location logic (`port.rs`), fail-closed
+authentication-token generation, and the authenticated `/api/identity`
+handshake (including rejection of an unrelated successful HTTP response) in
+`backend.rs`. The backend lifecycle state machine in `lib.rs` is not unit-tested
+yet — its transitions require a running Tauri `AppHandle`, so they are exercised
+by the windowed app and verified in review; extracting the state machine behind
+a testable trait is future work.

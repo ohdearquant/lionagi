@@ -19,6 +19,13 @@ import re
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from lionagi.libs.credential_fields import (
+    EXACT_SECRET_FIELD_NAMES,
+    SECRET_KEY_MARKERS,
+    fold_field_name,
+    is_secret_field_name,
+)
+
 __all__ = (
     "MAX_CANDIDATES",
     "PER_KIND_ITEM_CAP",
@@ -52,6 +59,11 @@ MESSAGE_BYTE_CAP = 2 * 1024 * 1024
 # after redaction — a single field is never allowed to exceed the same
 # aggregate bound the other findings sections use.
 ARTIFACT_BYTE_CAP = 2 * 1024 * 1024
+
+# Backward-compatible private aliases used by the cross-layer agreement test.
+# The source of truth lives in libs.credential_fields.
+_EXACT_SECRET_FIELD_NAMES = EXACT_SECRET_FIELD_NAMES
+_SECRET_KEY_MARKERS = SECRET_KEY_MARKERS
 
 
 def public_project(value: Any) -> str | None:
@@ -89,46 +101,83 @@ _SECRET_TOKEN_RE = re.compile(
     r"(?<![\w])((?:sk|ghp|gho|ghu|ghs|xox[baprs]|AKIA)[A-Za-z0-9_\-]{10,}"
     r"|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})"
 )
-# Generic "Header: value"/"Header: Bearer value" forms — catches an ordinary
-# Authorization header regardless of the specific token shape it carries,
-# which _SECRET_TOKEN_RE's fixed-prefix list cannot.
-_HEADER_SECRET_RE = re.compile(r"(?i)\b(Authorization|X-Api-Key|Api-Key)\s*:\s*\S+(?:\s+\S+)?")
-# A bare "Bearer <token>" outside of a "Header:" line (e.g. embedded in a
-# free-text tool-call argument or command string).
+# A bare "Bearer <token>" with no field name in front of it (e.g. embedded in
+# a free-text tool-call argument or command string).
 _BEARER_TOKEN_RE = re.compile(r"(?i)\bBearer\s+\S+")
-# Shell/env-style secret assignments ("API_KEY=...", "token: ...") embedded
-# in free text such as a command argument — the key marker is descriptive and
-# kept; only the assigned value is redacted.
-_ASSIGNMENT_SECRET_RE = re.compile(
-    r"(?i)\b((?:api[_-]?key|secret[_-]?key|client[_-]?secret|access[_-]?key"
-    r"|private[_-]?key|password|passwd|secret|token)\w*)\s*[:=]\s*(\S+)"
+# Names whose value is an RFC 7235 "<scheme> <credentials>" pair rather than a
+# bare secret. The scheme names a mechanism and is not itself a credential, so
+# it survives; what follows it does not.
+_AUTH_PAIR_FIELD_NAMES = frozenset(
+    {"authorization", "proxy_authorization", "www_authenticate", "proxy_authenticate"}
 )
-_SECRET_KEY_MARKERS = (
-    "secret",
-    "token",
-    "password",
-    "passwd",
-    "api_key",
-    "apikey",
-    "credential",
-    "authorization",
-    "auth_token",
-    "access_key",
-    "accesskey",
-    "private_key",
-    "privatekey",
-    "client_secret",
-    "bearer",
+_AUTH_SCHEME = (
+    r"(?:Bearer|Basic|Digest|Token|ApiKey|Negotiate|Mutual|HOBA|OAuth|vapid"
+    r"|SCRAM-SHA-1|SCRAM-SHA-256)"
 )
-# Multi-word markers are listed in both their separated and their run-together
-# spelling, because field names are folded to a single separator before the
-# comparison and a name written `accessKey` or `access-key` folds to
-# `accesskey`, which the separated spelling does not match. `api_key`/`apikey`
-# already worked this way; the other two names now follow it, and the
-# assignment pattern above already treats the same separators as optional.
-# Marker names whose folded form contains a shorter marker -- `authToken`
-# holds `token`, `clientSecret` holds `secret` -- are covered without a second
-# spelling.
+# The gap between a recognized scheme and its credential. A header folded
+# across lines, or one pasted into free text, puts a line break here; matching
+# horizontal whitespace alone consumed the scheme and left the credential
+# behind on the next line, which is worse than not matching at all. Bounded to
+# a single break so a blank line ends the value rather than reaching further
+# down the text.
+_AUTH_PAIR_GAP = r"(?:[ \t]+|[ \t]*\r?\n[ \t]*)"
+# The same gap for a scheme this list does not recognize, where the break has
+# to look like an actual fold. A recognized scheme is its own evidence that
+# what follows it is a credential, so that branch accepts any break. Here there
+# is no such evidence and the second token is taken on trust, so requiring the
+# continuation to begin with a space or tab -- which is what a folded header
+# is, per RFC 7230 obs-fold -- separates one from an ordinary next line of
+# prose, whose first word would otherwise be taken. Leaving it on one line
+# instead left the credential of every unrecognized scheme sitting in the text
+# one line below the marker that announced it.
+_AUTH_PAIR_FOLD = r"(?:[ \t]+|[ \t]*\r?\n[ \t]+)"
+# An auth header in free text. An unrecognized scheme falls to the second
+# branch, which takes both tokens rather than leaving the credential behind
+# the word in front of it.
+_AUTH_PAIR_RE = re.compile(
+    r"(?i)(?<![\w.\-])((?:proxy[_\-]?)?authorization|(?:www|proxy)[_\-]?authenticate)"
+    r"(\s*[:=]\s*)"
+    r"(?:(" + _AUTH_SCHEME + r")(" + _AUTH_PAIR_GAP + r")\S+|\S+(?:" + _AUTH_PAIR_FOLD + r"\S+)?)"
+)
+# Shell/env-style assignments ("API_KEY=...", "token: ...") embedded in free
+# text such as a command argument. The name is matched generically and then
+# judged by is_secret_field_name, the same rule the field-name layer applies
+# to a mapping key, so the two layers cannot drift apart over which names mean
+# a credential — the free-text half used to carry its own shorter list and
+# passed "Authorization=", "auth_token=", "credential=" and "MY_API_KEY="
+# through untouched while the field-name half redacted every one of them.
+# The name marker is descriptive and kept; only the assigned value goes.
+_ASSIGNMENT_SECRET_RE = re.compile(r"(?<![\w.\-])([A-Za-z][\w.\-]{0,63})(\s*[:=]\s*)(\S+)")
+# Punctuation that ends a sentence or a list item rather than belonging to the
+# value, stripped before the value is judged and put back afterwards.
+_VALUE_TRAILING_PUNCT = ",;.)]}\"'"
+_NUMERIC_VALUE_RE = re.compile(r"^[-+]?\d+(?:[._]\d+)*$")
+
+
+def _redact_auth_pair(match: re.Match[str]) -> str:
+    name, separator, scheme, gap = match.group(1), match.group(2), match.group(3), match.group(4)
+    if scheme:
+        return f"{name}{separator}{scheme}{gap}[redacted]"
+    return f"{name}{separator}[redacted]"
+
+
+def _redact_assignment(match: re.Match[str]) -> str:
+    name, separator, value = match.group(1), match.group(2), match.group(3)
+    folded = fold_field_name(name)
+    # Already handled with its scheme kept, by the pass above.
+    if folded in _AUTH_PAIR_FIELD_NAMES or not is_secret_field_name(name):
+        return match.group(0)
+    core = value.rstrip(_VALUE_TRAILING_PUNCT)
+    if _NUMERIC_VALUE_RE.match(core):
+        # A count is not a credential, and the marker test matches by
+        # substring, so "max_tokens" and "prompt_tokens" reach here. The
+        # field-name layer already lets those through: redact_scalar only
+        # redacts strings, so `"max_tokens": 4096` survives it, and the same
+        # reading written out in free text has to survive this.
+        return match.group(0)
+    return f"{name}{separator}[redacted]{value[len(core) :]}"
+
+
 _SECRET_VALUE_PREFIXES = ("sk-", "ghp_", "gho_", "ghu_", "ghs_", "xox", "AKIA", "eyJ")
 
 
@@ -172,6 +221,13 @@ def scrub_text(text: str, *, known_values: frozenset[str] | None = None) -> str:
     embedded in free text. A leaf filename survives; the directory layout and
     the token itself do not.
 
+    A ``name=value`` or ``name: value`` assignment is redacted whenever
+    ``is_secret_field_name`` calls the name a credential, so free text and a
+    mapping key are judged by one rule. An auth header keeps its scheme
+    (``Authorization: Bearer [redacted]``) and a purely numeric value is left
+    alone, since the marker test matches by substring and a token count is
+    not a token.
+
     Also strips any literal value from ``known_values`` (default:
     `known_secret_values()`, this process's own env-derived secret values) --
     the complement to the shape-based patterns above, catching a genuine
@@ -179,9 +235,9 @@ def scrub_text(text: str, *, known_values: frozenset[str] | None = None) -> str:
     """
     if not text:
         return text
-    text = _HEADER_SECRET_RE.sub(lambda m: f"{m.group(1)}: [redacted]", text)
+    text = _AUTH_PAIR_RE.sub(_redact_auth_pair, text)
+    text = _ASSIGNMENT_SECRET_RE.sub(_redact_assignment, text)
     text = _BEARER_TOKEN_RE.sub("Bearer [redacted]", text)
-    text = _ASSIGNMENT_SECRET_RE.sub(lambda m: f"{m.group(1)}=[redacted]", text)
     text = _ABS_POSIX_RE.sub(_leaf, text)
     text = _ABS_WIN_RE.sub(_leaf, text)
     text = _SECRET_TOKEN_RE.sub("[redacted]", text)
@@ -189,37 +245,6 @@ def scrub_text(text: str, *, known_values: frozenset[str] | None = None) -> str:
         text, known_secret_values() if known_values is None else known_values
     )
     return text
-
-
-_FIELD_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
-
-
-def fold_field_name(key: str) -> str:
-    """Reduce a field name to the spelling the secret markers are written in.
-
-    Separators do not change which field a name refers to (``X-API-Key``,
-    ``api.key``, ``api_key`` all fold to the same spelling), so every marker
-    only needs one spelling. Shared by both redaction layers -- see
-    docs/internals/studio.md ("Redaction").
-    """
-    return _FIELD_SEPARATOR_RE.sub("_", key.lower())
-
-
-# Names that mean a credential on their own but must not match as substrings.
-# "auth" inside "author" or "authorized_keys_count" is a different word, and
-# redacting those would delete data a caller legitimately reads, so these are
-# compared for equality against the folded name rather than searched for.
-_EXACT_SECRET_FIELD_NAMES = frozenset({"auth", "authentication", "bearer"})
-
-
-def is_secret_field_name(key: str) -> bool:
-    """Say whether a field name names a credential. The single shared rule
-    every redaction path in this module uses -- see
-    docs/internals/studio.md ("Redaction")."""
-    folded = fold_field_name(key)
-    return folded in _EXACT_SECRET_FIELD_NAMES or any(
-        marker in folded for marker in _SECRET_KEY_MARKERS
-    )
 
 
 def _is_secret_key(key: str) -> bool:
@@ -267,14 +292,32 @@ def redact_arguments(value: Any, *, parent_key: str = "") -> Any:
     if isinstance(value, (dict, list)) and is_secret_field_name(parent_key):
         return "[redacted]"
     if isinstance(value, dict):
-        return {
-            key: (
-                redact_arguments(val, parent_key=key)
+        projected: dict[str, Any] = {}
+        for raw_key, val in value.items():
+            key_name = str(raw_key)
+            # Classification reads the key as the caller wrote it: scrubbing
+            # first rewrites a path-shaped key down to its leaf, and a leaf
+            # that no longer carries the credential marker would serve a value
+            # the raw key withheld.
+            redacted_val = (
+                redact_arguments(val, parent_key=key_name)
                 if isinstance(val, (dict, list))
-                else redact_scalar(key, val)
+                else redact_scalar(key_name, val)
             )
-            for key, val in value.items()
-        }
+            # Keys are observable content too: a token or absolute host path
+            # used as a JSON key must not escape merely because it is not in a
+            # value position. Match _safe_content's mapping projection.
+            safe_key = scrub_text(key_name)
+            # scrub_text is not injective — distinct path-shaped keys can share
+            # a leaf. Suffix instead of overwriting, so no entry silently
+            # disappears from the projection.
+            if safe_key in projected:
+                ordinal = 2
+                while f"{safe_key} [{ordinal}]" in projected:
+                    ordinal += 1
+                safe_key = f"{safe_key} [{ordinal}]"
+            projected[safe_key] = redacted_val
+        return projected
     if isinstance(value, list):
         return [
             redact_arguments(item) if isinstance(item, (dict, list)) else redact_scalar("", item)
