@@ -259,4 +259,46 @@ describe("ScheduleDetailModal interactions", () => {
     expect(closeOverlay).toHaveBeenCalledOnce();
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it("does not take focus from a dialog above it when its data arrives", async () => {
+    let resolveDetail: (value: ScheduleDetail) => void = () => {};
+    api.getSchedule.mockReturnValueOnce(
+      new Promise<ScheduleDetail>((resolve) => {
+        resolveDetail = resolve;
+      }),
+    );
+
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <ToastProvider>
+            <ScheduleDetailModal
+              key="beneath"
+              scheduleId="schedule-1"
+              onClose={onClose}
+              onChanged={vi.fn<() => void>()}
+            />
+            <Modal title="On top" closeLabel="Close overlay" onClose={vi.fn<() => void>()}>
+              <button type="button">Overlay action</button>
+            </Modal>
+          </ToastProvider>
+        </IntlProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    const above = Array.from(container.querySelectorAll<HTMLElement>("button"))
+      .find((button) => button.textContent === "Overlay action")
+      ?.closest<HTMLElement>('[role="dialog"]');
+    // Premise: the dialog above holds the keyboard before the load resolves.
+    expect(above).toBeTruthy();
+    expect(above?.contains(document.activeElement)).toBe(true);
+
+    await act(async () => {
+      resolveDetail(detail);
+      await Promise.resolve();
+    });
+
+    expect(above?.contains(document.activeElement)).toBe(true);
+  });
 });

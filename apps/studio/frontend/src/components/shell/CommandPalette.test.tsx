@@ -205,4 +205,61 @@ describe("CommandPalette keyboard behavior", () => {
     expect(onClose).toHaveBeenCalledOnce();
     expect(closeDialog).not.toHaveBeenCalled();
   });
+
+  it("hands focus to the dialog beneath once the palette closes", async () => {
+    const dialog = (
+      <Modal
+        key="routed"
+        title="Underneath"
+        closeLabel="Close dialog"
+        onClose={vi.fn<() => void>()}
+      >
+        <button type="button">Dialog first</button>
+      </Modal>
+    );
+    const palette = (
+      <CommandPalette
+        key="palette"
+        open
+        onClose={onClose}
+        toggleTheme={vi.fn<() => void>()}
+        toggleOperator={vi.fn<() => void>()}
+      />
+    );
+
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          {palette}
+        </IntlProvider>,
+      );
+    });
+    const input = container.querySelector<HTMLInputElement>('[role="combobox"]');
+    expect(document.activeElement).toBe(input);
+
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          {dialog}
+          {palette}
+        </IntlProvider>,
+      );
+    });
+    const dialogEl = Array.from(container.querySelectorAll<HTMLElement>("button"))
+      .find((button) => button.textContent === "Dialog first")
+      ?.closest<HTMLElement>('[role="dialog"]');
+    // Premises: it mounted beneath, and declined the claim while the palette held it.
+    expect(dialogEl).toBeTruthy();
+    expect(document.activeElement).toBe(input);
+
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          {dialog}
+        </IntlProvider>,
+      );
+    });
+    expect(container.querySelector('[role="combobox"]')).toBeNull();
+    expect(dialogEl?.contains(document.activeElement)).toBe(true);
+  });
 });

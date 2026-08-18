@@ -1,6 +1,11 @@
 import { useEffect, useId, useRef } from "react";
 import type { ReactNode } from "react";
-import { isTopmostOverlay, popOverlay, pushOverlay } from "../../lib/overlayStack";
+import {
+  isTopmostOverlay,
+  popOverlay,
+  pushOverlay,
+  subscribeOverlayChange,
+} from "../../lib/overlayStack";
 import IconButton from "./IconButton";
 import { IconClose } from "./icons";
 
@@ -79,10 +84,10 @@ export default function Modal({
 
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if (
-        e.shiftKey &&
-        (document.activeElement === first || !dialog.contains(document.activeElement))
-      ) {
+      if (!dialog.contains(document.activeElement)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && document.activeElement === first) {
         e.preventDefault();
         last.focus();
       } else if (!e.shiftKey && document.activeElement === last) {
@@ -93,13 +98,21 @@ export default function Modal({
 
     // A dialog painted underneath must not pull the caret out, and a child may hold it already.
     const holdsFocus = () => dialog?.contains(document.activeElement) ?? false;
-    if (isTopmostOverlay(overlay) && !holdsFocus()) {
+    const claimFocus = () => {
+      if (!isTopmostOverlay(overlay) || holdsFocus()) return;
       (focusableElements()[0] ?? dialog)?.focus();
-    }
+    };
+    claimFocus();
     // Read after the claim, so a self-focusing child counts as holding it.
-    const tookFocus = holdsFocus();
+    let tookFocus = holdsFocus();
+    // Mounting beneath an overlay means the claim above was declined; take it when that one closes.
+    const unsubscribe = subscribeOverlayChange(() => {
+      claimFocus();
+      tookFocus = tookFocus || holdsFocus();
+    });
     document.addEventListener("keydown", onKey);
     return () => {
+      unsubscribe();
       document.removeEventListener("keydown", onKey);
       // Restore only while this dialog still owns focus.
       const restoresFocus = tookFocus && isTopmostOverlay(overlay);

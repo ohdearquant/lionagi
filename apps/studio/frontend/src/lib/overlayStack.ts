@@ -30,6 +30,7 @@ export function pushOverlay(
 ): symbol {
   const token = Symbol(description);
   stack.push({ token, layer });
+  notifyOverlayChange();
   return token;
 }
 
@@ -37,9 +38,24 @@ export function popOverlay(token: symbol): void {
   for (let i = stack.length - 1; i >= 0; i -= 1) {
     if (stack[i].token === token) {
       stack.splice(i, 1);
+      notifyOverlayChange();
       return;
     }
   }
+}
+
+const listeners = new Set<() => void>();
+
+/** Ownership changes without the overlay beneath re-rendering, so it has to be told. */
+export function subscribeOverlayChange(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function notifyOverlayChange(): void {
+  for (const listener of Array.from(listeners)) listener();
 }
 
 /** True when nothing paints above this overlay. An unregistered one is not topmost, which leaves the key alone. */

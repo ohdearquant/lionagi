@@ -10,7 +10,12 @@ import StatusPill from "@/components/ui/StatusPill";
 import { IconArrowUpRight, IconClose } from "@/components/ui/icons";
 import { useToast } from "@/components/ui/Toast";
 import ErrorBanner from "@/components/ui/ErrorBanner";
-import { isTopmostOverlay, popOverlay, pushOverlay } from "@/lib/overlayStack";
+import {
+  isTopmostOverlay,
+  popOverlay,
+  pushOverlay,
+  subscribeOverlayChange,
+} from "@/lib/overlayStack";
 import EnabledToggle from "./EnabledToggle";
 import TemplateVarChips from "./TemplateVarChips";
 import { classifyError } from "./errorClassify";
@@ -256,23 +261,8 @@ export default function ScheduleDetailModal({
     };
   }, [scheduleId]);
 
-  // Focus name input once loaded
-  useEffect(() => {
-    if (form) nameInputRef.current?.focus();
-  }, [form != null]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Trap focus and restore the launcher; this split-pane editor keeps its own shell rather than ui/Modal.
-  useEffect(() => {
-    const previouslyFocused =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    dialogRef.current?.focus();
-    return () => {
-      if (previouslyFocused?.isConnected) previouslyFocused.focus();
-    };
-  }, []);
-
-  // Registered apart from the key handler, which re-subscribes on `requestClose`;
-  // re-pushing mid-life would steal the keyboard from an overlay opened over this.
+  // Registered before anything claims focus, so ownership is knowable when it does.
+  // Re-pushing mid-life would steal the keyboard from an overlay opened over this.
   const overlayRef = useRef<symbol | null>(null);
   useEffect(() => {
     const overlay = pushOverlay("ScheduleDetailModal");
@@ -280,6 +270,35 @@ export default function ScheduleDetailModal({
     return () => {
       popOverlay(overlay);
       overlayRef.current = null;
+    };
+  }, []);
+
+  const ownsKeyboard = () => overlayRef.current !== null && isTopmostOverlay(overlayRef.current);
+
+  // Focus name input once loaded, unless something is painted above by then.
+  useEffect(() => {
+    if (form && ownsKeyboard()) nameInputRef.current?.focus();
+  }, [form != null]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Trap focus and restore the launcher; this split-pane editor keeps its own shell rather than ui/Modal.
+  useEffect(() => {
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const holdsFocus = () => dialogRef.current?.contains(document.activeElement) ?? false;
+    const claimFocus = () => {
+      if (!ownsKeyboard() || holdsFocus()) return;
+      dialogRef.current?.focus();
+    };
+    claimFocus();
+    let tookFocus = holdsFocus();
+    // Mounting beneath an overlay means the claim above was declined; take it when that one closes.
+    const unsubscribe = subscribeOverlayChange(() => {
+      claimFocus();
+      tookFocus = tookFocus || holdsFocus();
+    });
+    return () => {
+      unsubscribe();
+      if (tookFocus && previouslyFocused?.isConnected) previouslyFocused.focus();
     };
   }, []);
 
