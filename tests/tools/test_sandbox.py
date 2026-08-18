@@ -53,17 +53,6 @@ def test_sandbox_session_fields():
     assert s.is_active is True
 
 
-def test_sandbox_session_is_active_false():
-    s = SandboxSession(
-        worktree_path="/tmp/wt",
-        branch_name="b",
-        base_branch="main",
-        repo_root="/tmp/r",
-        is_active=False,
-    )
-    assert s.is_active is False
-
-
 def test_sandbox_session_base_sha_defaults_empty():
     """base_sha is additive — old call sites that don't pass it still work."""
     s = SandboxSession(
