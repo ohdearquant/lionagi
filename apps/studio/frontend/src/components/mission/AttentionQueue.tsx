@@ -333,7 +333,14 @@ function DispositionControls({ item }: { item: AttentionItem }) {
     setPending(true);
     setError(null);
     try {
-      await deleteAttentionDisposition(item.id);
+      // The reducer joins a disposition stored under the pre-session-identity
+      // key onto the current id, so clearing only the current one leaves the
+      // legacy row to be re-joined on the next poll and the undo reads as a
+      // no-op. Deleting an absent key is a no-op server-side.
+      await Promise.all([
+        deleteAttentionDisposition(item.id),
+        ...(item.legacyId ? [deleteAttentionDisposition(item.legacyId)] : []),
+      ]);
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : t("attention.action.saveFailed", { message: "" }),
