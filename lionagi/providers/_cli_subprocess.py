@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from lionagi.libs.path_safety import contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
@@ -27,7 +28,7 @@ from lionagi.ln._proc import (
 )
 from lionagi.ln.concurrency.utils import maybe_await
 
-from ._secret_resolution import declared_secret_names, fill_declared_secrets
+from ._secret_resolution import fill_declared_secrets_and_names
 
 log = logging.getLogger(__name__)
 
@@ -365,7 +366,9 @@ def _secret_candidates(
 def _redact_query_value(match: re.Match[str]) -> str:
     """Replace a query parameter's value when its name reads as a credential."""
     separator, name, value = match.groups()
-    if not _SECRET_ENV_KEY_RE.search(name):
+    # Decoded before the name test: `p%61ssword` is the same parameter to the
+    # server that reads it, and would otherwise carry its value past the rule.
+    if not _SECRET_ENV_KEY_RE.search(unquote(name)):
         return match.group(0)
     return f"{separator}{name}=[redacted]"
 
@@ -444,11 +447,14 @@ async def ndjson_from_cli(
     # from its own environment is filled in one place rather than four. Purely
     # additive: with nothing configured this returns ``env`` unchanged, and a
     # lookup that fails leaves the child to fail the way it already failed.
-    child_env = await fill_declared_secrets(env)
+    # One config read for both: re-resolving after the fill's await would let a
+    # settings edit in that window hand the child a value the redactor is not
+    # told to remove.
+    child_env, declared = await fill_declared_secrets_and_names(env)
     # One mapping for both the child and the redactor: with env=None the child
     # reads os.environ at exec, later than any snapshot taken here.
     spawn_env: dict[str, str] = dict(child_env) if child_env is not None else dict(os.environ)
-    redaction_env: Mapping[str, str] = _secret_candidates(spawn_env, declared_secret_names())
+    redaction_env: Mapping[str, str] = _secret_candidates(spawn_env, declared)
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
         env=spawn_env,

@@ -302,6 +302,14 @@ class TestWhatCountsAsASecretToRemove:
         assert "hunter2pass" not in out, out
         assert "sslmode=require" in out, "the rest of the query went with it: " + out
 
+    def test_a_percent_encoded_parameter_name_is_still_recognised(self):
+        """`p%61ssword` names the same parameter to the server that reads it."""
+        out = cs._redact_secrets_for_log(
+            "GET https://api.example.com/v1?p%61ssword=hunter2pass&limit=10", {}
+        )
+        assert "hunter2pass" not in out, out
+        assert "limit=10" in out, out
+
     def test_a_query_carrying_no_credential_is_left_alone(self):
         """The control: the rule keys on the parameter name, not on the query."""
         text = "connected to postgres://db.internal/app?sslmode=require&timeout=30 in 4ms"
