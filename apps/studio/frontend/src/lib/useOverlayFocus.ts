@@ -82,9 +82,20 @@ export function useOverlayFocus({
       );
     const holdsFocus = () => dialog?.contains(document.activeElement) ?? false;
 
+    // Where this hook last put the caret. A shell whose fields arrive later
+    // lands its first claim on a fallback, and the re-offer afterwards has to
+    // be able to correct that without stomping focus a child or the operator
+    // moved deliberately.
+    let placed: HTMLElement | null = null;
+
     const claimFocus = () => {
-      if (!isTopmostOverlay(overlay) || holdsFocus()) return;
-      (initialRef.current?.current ?? focusable()[0] ?? dialog)?.focus();
+      if (!isTopmostOverlay(overlay)) return;
+      const preferred = initialRef.current?.current ?? null;
+      if (holdsFocus() && (!preferred || preferred === placed || document.activeElement !== placed))
+        return;
+      const target = preferred ?? focusable()[0] ?? dialog ?? null;
+      target?.focus();
+      placed = target;
     };
     claimRef.current = claimFocus;
 

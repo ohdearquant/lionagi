@@ -1,4 +1,4 @@
-import { act, useRef } from "react";
+import { act, useEffect, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useOverlayFocus } from "./useOverlayFocus";
@@ -17,6 +17,27 @@ function Dialog({
   return (
     <div ref={dialogRef} role="dialog" aria-label={label} tabIndex={-1}>
       {children}
+    </div>
+  );
+}
+
+/** A shell whose fields arrive after its chrome, which is every modal that loads. */
+function LateFieldsDialog({ loaded, label = "late" }: { loaded: boolean; label?: string }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const { claimFocus } = useOverlayFocus({
+    description: label,
+    dialogRef,
+    onEscape: () => {},
+    initialFocusRef: nameRef,
+  });
+  useEffect(() => {
+    if (loaded) claimFocus();
+  }, [loaded, claimFocus]);
+  return (
+    <div ref={dialogRef} role="dialog" aria-label={label} tabIndex={-1}>
+      {loaded && <input ref={nameRef} aria-label="name" />}
+      <button>Cancel</button>
     </div>
   );
 }
@@ -168,6 +189,27 @@ describe("useOverlayFocus", () => {
       ),
     );
     expect(dialogEl("under")?.contains(document.activeElement)).toBe(true);
+  });
+
+  it("moves the caret onto a field that only exists after the load", async () => {
+    await act(async () => root.render(<LateFieldsDialog loaded={false} />));
+    // Premise: with no field yet, the claim can only land on the chrome.
+    expect(document.activeElement).toBe(dialogEl("late")?.querySelector("button"));
+
+    await act(async () => root.render(<LateFieldsDialog loaded={true} />));
+    expect(document.activeElement).toBe(dialogEl("late")?.querySelector("input"));
+  });
+
+  it("leaves a caret the operator moved themselves where they put it", async () => {
+    await act(async () => root.render(<LateFieldsDialog loaded={false} />));
+    const cancel = dialogEl("late")?.querySelector("button");
+    const elsewhere = document.createElement("button");
+    dialogEl("late")?.appendChild(elsewhere);
+    act(() => elsewhere.focus());
+    expect(document.activeElement).not.toBe(cancel);
+
+    await act(async () => root.render(<LateFieldsDialog loaded={true} />));
+    expect(document.activeElement).toBe(elsewhere);
   });
 
   it("routes Escape to the topmost overlay only", async () => {
