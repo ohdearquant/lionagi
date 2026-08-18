@@ -28,6 +28,8 @@ export function stripTrailingPunctuation(text: string): string {
 
 export type FileMatch =
   | { type: "none" }
+  /** No match, but the known set was cut, so absence is not evidence. */
+  | { type: "unresolvable" }
   | { type: "single"; path: string }
   | { type: "ambiguous"; candidates: string[] };
 
@@ -41,6 +43,8 @@ export interface ResolveFileRefOptions {
   knownFiles: string[];
   /** The emitting agent's own artifact subdir, absolute path, checked first. */
   agentDir?: string | null;
+  /** knownFiles was truncated upstream, so a ref matching nothing is unknown. */
+  knownFilesBounded?: boolean;
 }
 
 /**
@@ -56,15 +60,17 @@ export function resolveFileRef(rawRef: string, opts: ResolveFileRefOptions): Fil
 
   const knownFiles = opts.knownFiles ?? [];
   const isAbsolute = ref.startsWith("/");
+  // A cut list cannot answer "not a file of this run", only "not one I hold".
+  const noMatch: FileMatch = opts.knownFilesBounded ? { type: "unresolvable" } : { type: "none" };
 
   if (isAbsolute) {
-    return knownFiles.includes(ref) ? { type: "single", path: ref } : { type: "none" };
+    return knownFiles.includes(ref) ? { type: "single", path: ref } : noMatch;
   }
 
   // file:// URLs — normalize to a bare absolute path before matching.
   if (ref.startsWith("file://")) {
     const stripped = ref.slice("file://".length);
-    return knownFiles.includes(stripped) ? { type: "single", path: stripped } : { type: "none" };
+    return knownFiles.includes(stripped) ? { type: "single", path: stripped } : noMatch;
   }
 
   const refBase = basename(ref);
@@ -74,7 +80,7 @@ export function resolveFileRef(rawRef: string, opts: ResolveFileRefOptions): Fil
     return basename(f) === refBase;
   });
 
-  if (candidates.length === 0) return { type: "none" };
+  if (candidates.length === 0) return noMatch;
   if (candidates.length === 1) return { type: "single", path: candidates[0] };
 
   if (opts.agentDir) {

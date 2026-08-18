@@ -19,6 +19,8 @@ export interface FileResolutionContext {
   knownFiles: string[];
   /** The emitting agent's own artifact subdir, checked first on ambiguity. */
   agentDir?: string | null;
+  /** knownFiles was cut upstream, so a ref matching nothing is unknown. */
+  knownFilesBounded?: boolean;
 }
 
 export interface MarkdownProps {
@@ -127,11 +129,23 @@ function FileRef({
   const match = resolveFileRef(raw, {
     knownFiles: fileContext.knownFiles,
     agentDir: fileContext.agentDir,
+    knownFilesBounded: fileContext.knownFilesBounded,
   });
   if (match.type === "single")
     return <FileRefLink label={label} path={match.path} onOpen={onOpen} />;
   if (match.type === "ambiguous")
     return <FileRefLink label={label} candidates={match.candidates} onOpen={onOpen} />;
+  // Keep the fallback rather than replace it: for a Markdown link it is a working
+  // anchor, and dropping it trades an unchecked reference for a dead one.
+  if (match.type === "unresolvable")
+    return (
+      <span
+        className="underline decoration-dotted"
+        title="This run touched more files than one view collects, so this reference could not be checked"
+      >
+        {fallback}
+      </span>
+    );
   return <>{fallback}</>;
 }
 

@@ -643,6 +643,23 @@ describe("history/RunDetail.tsx — runFiles seeds from session.message_stats.fi
     const block = src.slice(start, end);
     expect(block).toMatch(/\[steps, session\]/);
   });
+
+  // A file union the server cut cannot answer "not a file of this run". The
+  // flag reaches the note already; it has to reach resolution too, at every
+  // site, since one unflagged card renders omitted paths as ordinary prose.
+  it("hands every step card the boundedness of the union it hands it", () => {
+    const blocks = src.split("<RunStepCard").slice(1);
+    expect(blocks.length).toBeGreaterThan(1);
+    for (const block of blocks) {
+      const props = block.slice(0, block.indexOf("/>"));
+      if (!/runFiles=/.test(props)) continue;
+      expect(props).toMatch(/runFilesBounded=/);
+    }
+  });
+
+  it("sources that boundedness from the server flag, not from a local guess", () => {
+    expect(src).toMatch(/runFilesBounded=\{session\.message_stats\?\.files_bounded\}/);
+  });
 });
 
 describe("runFiles union logic (mirrors the useMemo body) — file outside the loaded window resolves", () => {
@@ -2044,9 +2061,14 @@ describe("history/RunDetail.tsx — computeReconciledNodeStatuses / computeProgr
 describe("history/RunDetail.tsx — execution-graph expand/close wiring", () => {
   const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
 
-  it("Escape closes the expanded graph overlay", () => {
-    expect(src).toMatch(/event\.key === "Escape"/);
-    expect(src).toMatch(/setGraphExpanded\(false\)/);
+  // Escape behaviour itself is covered in useOverlayFocus.test.tsx; this asserts the wiring,
+  // since a window-level listener here would fire even while a higher surface owns the keyboard.
+  it("the expanded graph registers on the overlay stack rather than listening on window", () => {
+    expect(src).toMatch(
+      /useOverlayFocus\(\{ description: "ExpandedGraph", dialogRef, onEscape: onClose \}\)/,
+    );
+    expect(src).toMatch(/onClose={\(\) => setGraphExpanded\(false\)}/);
+    expect(src).not.toMatch(/window\.addEventListener\("keydown"/);
   });
 
   it("an explicit close button also closes the overlay", () => {
