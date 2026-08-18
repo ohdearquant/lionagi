@@ -326,9 +326,16 @@ _SECRET_SHAPE_RE = re.compile(
 # A credential inside a connection string is invisible to both the name rule and
 # the token shapes. Only the password is replaced, so the host stays diagnostic.
 _URL_CREDENTIAL_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/?#@]*:)[^\s/?#@]+(@)")
+# The same credential passed as a query parameter has no "@" and so is invisible
+# to the rule above. Only the value is replaced, so the parameter stays readable.
+_URL_QUERY_CREDENTIAL_RE = re.compile(
+    r"(?i)([?&][a-z0-9_.-]*(?:key|token|secret|password|passwd|credential|auth)"
+    r"[a-z0-9_.-]*=)[^&\s]+"
+)
 
-# Short values collide with ordinary words; a real credential is never this small.
-_MIN_REDACTABLE_SECRET_LEN = 8
+# Short values collide with ordinary words, so the name guess needs a floor. A
+# declared name does not: the operator said it holds a secret.
+_MIN_GUESSED_SECRET_LEN = 8
 
 
 def _secret_candidates(
@@ -348,8 +355,12 @@ def _secret_candidates(
         for key, value in env.items()
         if isinstance(key, str)
         and isinstance(value, str)
-        and len(value) >= _MIN_REDACTABLE_SECRET_LEN
-        and (key in named or _SECRET_ENV_KEY_RE.search(key))
+        # Empty would splice "[redacted]" between every character of the log.
+        and value
+        and (
+            key in named
+            or (len(value) >= _MIN_GUESSED_SECRET_LEN and _SECRET_ENV_KEY_RE.search(key))
+        )
     }
 
 
@@ -376,6 +387,7 @@ def _redact_secrets_for_log(text: str, secrets: Mapping[str, str] | None) -> str
         ):
             text = text.replace(value, "[redacted]")
     text = _URL_CREDENTIAL_RE.sub(r"\1[redacted]\2", text)
+    text = _URL_QUERY_CREDENTIAL_RE.sub(r"\1[redacted]", text)
     # Escape last: the redaction patterns are written against the real text.
     return _escape_control_characters(_SECRET_SHAPE_RE.sub("[redacted]", text))
 

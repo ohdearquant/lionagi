@@ -278,6 +278,30 @@ class TestWhatCountsAsASecretToRemove:
         out = cs._redact_secrets_for_log("wrote /Users/someone/app.log", selected)
         assert "/Users/someone/app.log" in out, out
 
+    def test_a_short_declared_secret_is_removed_because_length_only_qualifies_the_guess(self):
+        selected = cs._secret_candidates({"LIONAGI_TEST_VALUE": "abc"}, ["LIONAGI_TEST_VALUE"])
+        out = cs._redact_secrets_for_log("auth failed for abc", selected)
+        assert "abc" not in out, out
+
+    def test_a_short_value_the_pattern_only_guessed_at_is_left_alone(self):
+        """The control: without a declaration the floor still holds, or every "key" mangles the log."""
+        selected = cs._secret_candidates({"LIONAGI_API_KEY": "shortie"}, [])
+        assert cs._redact_secrets_for_log("auth failed for shortie", selected) == (
+            "auth failed for shortie"
+        )
+
+    def test_a_declared_name_holding_nothing_does_not_redact_every_character(self):
+        selected = cs._secret_candidates({"LIONAGI_TEST_VALUE": ""}, ["LIONAGI_TEST_VALUE"])
+        assert cs._redact_secrets_for_log("connected in 4ms", selected) == "connected in 4ms"
+
+    def test_a_password_passed_as_a_query_parameter_is_removed(self):
+        out = cs._redact_secrets_for_log(
+            "could not connect: postgres://db.internal/app?password=hunter2pass&sslmode=require",
+            {},
+        )
+        assert "hunter2pass" not in out, out
+        assert "sslmode=require" in out, "the rest of the query went with it: " + out
+
 
 class TestTheQuotedStderrCarriesNoCredential:
     """Quoting the child's stderr is the point of this path, so the credential has to be removed rather than the quoting withheld."""
