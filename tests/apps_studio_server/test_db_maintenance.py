@@ -884,10 +884,7 @@ def test_schedule_run_retention_is_chunked_and_archived(tmp_path, monkeypatch):
 
 
 def test_session_prune_archives_preimages_of_nullified_soft_fk_rows(tmp_path, monkeypatch):
-    """artifacts/dispatch_outbox rows whose session_id gets NULLIFIED by a
-    session prune must have their pre-nullify state captured as a
-    ``preimages/<table>.jsonl`` member -- otherwise a restore permanently
-    orphans them (round-1 critic MAJ finding)."""
+    """Rows whose session_id a prune nullifies get their pre-nullify state captured, or a restore orphans them permanently."""
     from lionagi.dispatch import enqueue_dispatch
     from lionagi.studio.services import db_maintenance as maint
     from lionagi.studio.services.retention_archive import read_archive_chunk
