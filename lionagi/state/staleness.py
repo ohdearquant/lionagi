@@ -14,6 +14,7 @@ STALE_THRESHOLDS: dict[str, int] = {
     "flow": 12 * 3600,
     "fanout": 12 * 3600,
     "show-play": 12 * 3600,
+    "engine": 12 * 3600,
 }
 DEFAULT_STALE_THRESHOLD: int = 6 * 3600
 

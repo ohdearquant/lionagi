@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Kind**: Aspirational
-- **Implementation-status**: not-started
+- **Implementation-status**: partial — Phase 0 compatibility profiles characterized
 - **Area**: hooks
 - **Date**: 2026-08-16
 - **Relations**: extends ADR-0047 (hook mechanism scopes), ADR-0048 (external hooks),
@@ -608,7 +608,14 @@ uses it as migration evidence.
 
 ### Phase 0 — truth and behavior matrix
 
-Amend ADR-0047/0048 and add one matrix covering every current dispatcher:
+Amend ADR-0047/0048 and add one matrix covering every current dispatcher except the service
+HookRegistry/HookedEvent profile, whose invoke and stream-teardown matrix Phase 1 freezes
+separately for the reason given in D2: it is an interceptor with one handler per hook or chunk
+key, and the fan-out rows below — registration and invocation order across several handlers,
+single-versus-grouped error surfaces, sequential versus concurrent completion — have no subject
+there. Characterizing it under this matrix would produce rows describing a shape it does not
+have. Phase 1's merge gate covers it, so it is deferred rather than exempt, and the deferral is
+stated here so that "every current dispatcher" is not read as a claim this phase does not make:
 
 - registration and invocation order;
 - sync and async handlers;

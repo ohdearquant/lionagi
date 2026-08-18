@@ -582,17 +582,21 @@ def make_engine_operation(
         result = await engine.run(
             spec_input, session=session, on_branch_created=on_branch_created, **run_kwargs
         )
+        engine_span_id = getattr(getattr(result, "run", None), "run_id", None) or getattr(
+            engine, "_last_run_id", None
+        )
 
         if getattr(engine, "_total_agent_failure", False):
             agent_errors = getattr(engine, "_agent_errors", [])
             return {
-                "error": f"all {len(agent_errors)} sub-agent(s) failed: {'; '.join(agent_errors)}"
+                "error": f"all {len(agent_errors)} sub-agent(s) failed: {'; '.join(agent_errors)}",
+                "engine_span_id": engine_span_id,
             }
 
         if hasattr(result, "model_dump"):
-            return result.model_dump(mode="json")
+            return {**result.model_dump(mode="json"), "engine_span_id": engine_span_id}
         if isinstance(result, str):
-            return {"result": result}
-        return {"result": str(result)}
+            return {"result": result, "engine_span_id": engine_span_id}
+        return {"result": str(result), "engine_span_id": engine_span_id}
 
     return _engine_op

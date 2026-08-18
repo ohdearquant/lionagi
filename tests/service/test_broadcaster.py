@@ -1,6 +1,7 @@
 """Tests for lionagi.service.broadcaster module."""
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -143,7 +144,7 @@ class TestBroadcaster:
         callback.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_broadcast_handles_callback_exception(self):
+    async def test_broadcast_handles_callback_exception(self, caplog):
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
@@ -154,14 +155,18 @@ class TestBroadcaster:
         TestBroadcaster.subscribe(failing_callback)
         TestBroadcaster.subscribe(successful_callback)
 
-        await TestBroadcaster.broadcast(event)
+        with caplog.at_level(logging.ERROR, logger="lionagi.service.broadcaster"):
+            await TestBroadcaster.broadcast(event)
 
         # Both callbacks should be attempted
         failing_callback.assert_called_once_with(event)
         successful_callback.assert_called_once_with(event)
+        record = next(item for item in caplog.records if item.name == "lionagi.service.broadcaster")
+        assert record.getMessage() == "Error in subscriber callback: Callback error"
+        assert record.exc_info is not None
 
     @pytest.mark.asyncio
-    async def test_broadcast_handles_async_callback_exception(self):
+    async def test_broadcast_handles_async_callback_exception(self, caplog):
         class TestBroadcaster(Broadcaster):
             _event_type = SampleEvent
 
@@ -172,11 +177,15 @@ class TestBroadcaster:
         TestBroadcaster.subscribe(failing_callback)
         TestBroadcaster.subscribe(successful_callback)
 
-        await TestBroadcaster.broadcast(event)
+        with caplog.at_level(logging.ERROR, logger="lionagi.service.broadcaster"):
+            await TestBroadcaster.broadcast(event)
 
         # Both callbacks should be attempted
         assert failing_callback.await_count == 1
         successful_callback.assert_awaited_once_with(event)
+        record = next(item for item in caplog.records if item.name == "lionagi.service.broadcaster")
+        assert record.getMessage() == "Error in subscriber callback: Async callback error"
+        assert record.exc_info is not None
 
     @pytest.mark.asyncio
     async def test_broadcast_with_no_subscribers(self):
@@ -304,6 +313,28 @@ class TestBroadcasterCoroutineOnlyRegression:
         assert task_completed == [True]
 
     @pytest.mark.asyncio
+    async def test_sync_subscriber_returning_bare_coroutine_is_awaited(self):
+        calls: list[str] = []
+        returned: list = []
+
+        async def inner():
+            calls.append("awaited")
+
+        def sync_callback(_event):
+            coroutine = inner()
+            returned.append(coroutine)
+            return coroutine
+
+        self.TaskBroadcaster.subscribe(sync_callback)
+        try:
+            await self.TaskBroadcaster.broadcast(SampleEvent())
+            assert calls == ["awaited"]
+        finally:
+            for coroutine in returned:
+                if coroutine.cr_frame is not None:
+                    coroutine.close()
+
+    @pytest.mark.asyncio
     async def test_async_subscriber_coroutine_is_still_awaited(self):
         """Async subscriber's coroutine must still be awaited (regression safety net)."""
         results = []
@@ -316,3 +347,59 @@ class TestBroadcasterCoroutineOnlyRegression:
         await self.TaskBroadcaster.broadcast(event)
 
         assert results == ["done"], "async subscriber coroutine was not awaited"
+
+    @pytest.mark.asyncio
+    async def test_handler_cancellation_propagates_and_stops_sequential_dispatch(self):
+        later_calls: list[str] = []
+
+        def cancel(_event):
+            raise asyncio.CancelledError("subscriber cancelled")
+
+        def later(_event):  # pragma: no cover - cancellation stops the chain
+            later_calls.append("later")
+
+        self.TaskBroadcaster.subscribe(cancel)
+        self.TaskBroadcaster.subscribe(later)
+
+        with pytest.raises(asyncio.CancelledError, match="subscriber cancelled"):
+            await self.TaskBroadcaster.broadcast(SampleEvent())
+        assert later_calls == []
+
+    @pytest.mark.asyncio
+    async def test_async_handler_cancellation_propagates_and_stops_dispatch(self):
+        later_calls: list[str] = []
+
+        async def cancel(_event):
+            raise asyncio.CancelledError("async subscriber cancelled")
+
+        def later(_event):  # pragma: no cover - cancellation stops the chain
+            later_calls.append("later")
+
+        self.TaskBroadcaster.subscribe(cancel)
+        self.TaskBroadcaster.subscribe(later)
+
+        with pytest.raises(asyncio.CancelledError, match="async subscriber cancelled"):
+            await self.TaskBroadcaster.broadcast(SampleEvent())
+        assert later_calls == []
+
+    @pytest.mark.asyncio
+    async def test_emitter_cancellation_propagates_and_stops_sequential_dispatch(self):
+        started = asyncio.Event()
+        later_calls: list[str] = []
+
+        async def slow(_event):
+            started.set()
+            await asyncio.Event().wait()
+
+        def later(_event):  # pragma: no cover - cancellation stops the chain
+            later_calls.append("later")
+
+        self.TaskBroadcaster.subscribe(slow)
+        self.TaskBroadcaster.subscribe(later)
+        task = asyncio.create_task(self.TaskBroadcaster.broadcast(SampleEvent()))
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert later_calls == []

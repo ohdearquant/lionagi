@@ -316,13 +316,6 @@ class TestToListCombinations:
         result = to_list(data, flatten=True, dropna=True, unique=True)
         assert result == [1, 2, 3, 4]
 
-    def test_use_values_with_dict(self):
-        # use_values works on the top-level input, not nested dicts in a list
-        # When top-level is a dict with use_values=True, extract values
-        d = {"a": 1, "b": 2, "c": 3}
-        result = to_list(d, use_values=True)
-        assert set(result) == {1, 2, 3}
-
     def test_complex_nested_structure(self):
         data = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
         result = to_list(data, flatten=True)

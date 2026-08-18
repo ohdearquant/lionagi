@@ -140,6 +140,12 @@ export interface RunMessage {
   output?: string;
   status?: string;
   exit_code?: number | null;
+  /**
+   * The server refused this row's payload for being past its size ceiling. The
+   * turn still happened, so the row is kept and rendered as unread rather than
+   * dropped, blank, or serialized from the empty object left behind.
+   */
+  withheld?: boolean;
 }
 
 export interface RunStep {
