@@ -29,7 +29,7 @@ from lionagi.session.signal import (
     build_run_end,
 )
 
-# #1539 — schema_version on every signal
+# schema_version on every signal
 
 
 def test_schema_version_constant():
@@ -56,7 +56,7 @@ def test_schema_version_on_run_failed():
     assert RunFailed().schema_version == SIGNAL_SCHEMA_VERSION
 
 
-# #1538 — RunEnd carries usage fields
+# RunEnd carries usage fields
 
 
 def test_run_end_default_usage_fields():
@@ -140,7 +140,7 @@ def test_collect_branch_usage_anthropic_convention():
     assert usage["output_tokens"] == 30
 
 
-# #2889 — cache-token dimensions (Anthropic cache_read/cache_creation,
+# cache-token dimensions (Anthropic cache_read/cache_creation,
 # OpenAI prompt_tokens_details.cached_tokens)
 
 
@@ -239,7 +239,7 @@ def test_collect_multi_branch_usage_sums_cache_dimensions():
     assert usage["cache_write_tokens"] == 10
 
 
-# #2379 — claude_code whole-agent-tree usage: a per-model modelUsage
+# claude_code whole-agent-tree usage: a per-model modelUsage
 # breakdown (subagent spend included) must be preferred over the flat,
 # top-level-loop-only usage dict when both are present on the same message.
 
@@ -629,7 +629,7 @@ def test_collect_multi_branch_usage_skips_branches_that_raise():
     assert usage["output_tokens"] == 5
 
 
-# #1537 — NodeSpawned exists and carries expected fields
+# NodeSpawned exists and carries expected fields
 
 
 def test_node_spawned_defaults():
@@ -676,7 +676,7 @@ def test_node_lifecycle_signals_parent_defaults_none():
         assert sig.depends_on == []
 
 
-# #1540 — HookSignal suppressed for MESSAGE_ADD; other points still recorded
+# HookSignal suppressed for MESSAGE_ADD; other points still recorded
 
 
 @pytest.mark.asyncio

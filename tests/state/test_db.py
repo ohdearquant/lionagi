@@ -408,6 +408,72 @@ async def test_open_upgrades_an_older_recorded_schema_version(tmp_path):
     assert _read_version(path) == SCHEMA_VERSION
 
 
+async def test_column_inspection_failure_does_not_advance_schema_version(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    import logging
+
+    import lionagi.state.db as db_mod
+
+    path = tmp_path / "inspection_failure.db"
+    async with StateDB(path=path):
+        pass
+    _stamp_version(path, "1")
+
+    real_inspect = db_mod.inspect
+    failure = RuntimeError("column inspection failed")
+    failed = False
+
+    class FailingInspector:
+        def __init__(self, inspector):
+            self._inspector = inspector
+
+        def has_table(self, name):
+            return self._inspector.has_table(name)
+
+        def get_columns(self, name):
+            nonlocal failed
+            if name == "sessions" and not failed:
+                failed = True
+                raise failure
+            return self._inspector.get_columns(name)
+
+    def inspect_once(bind):
+        inspector = real_inspect(bind)
+        return inspector if failed else FailingInspector(inspector)
+
+    monkeypatch.setattr(db_mod, "inspect", inspect_once)
+    state = StateDB(path=path)
+    state._MIGRATION_COLUMNS = {"sessions": [("inspection_probe", "TEXT")]}
+
+    with caplog.at_level(logging.ERROR, logger="lionagi.state.db"):
+        with pytest.raises(RuntimeError, match="column inspection failed") as excinfo:
+            async with state:
+                pass
+
+    assert excinfo.value is failure
+    assert failed is True
+    assert _read_version(path) == "1"
+    assert state._engine is None
+    records = [item for item in caplog.records if item.name == "lionagi.state.db"]
+    assert len(records) == 1
+    record = records[0]
+    assert record.getMessage() == (
+        "failed to inspect migration columns for table 'sessions': "
+        "RuntimeError('column inspection failed')"
+    )
+    assert record.exc_info is not None
+
+    await state.open()
+    try:
+        assert await state.schema_version() == SCHEMA_VERSION
+    finally:
+        await state.close()
+    assert _read_version(path) == SCHEMA_VERSION
+
+
 async def test_open_refuses_a_newer_recorded_schema_version(tmp_path):
     """A database stamped above SCHEMA_VERSION is refused, not downgraded.
 
