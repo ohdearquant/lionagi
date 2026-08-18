@@ -421,7 +421,14 @@ def _make_patched_client(tmp_path, monkeypatch):
 
     from lionagi.studio.app import app
 
-    return TestClient(app, base_url="http://127.0.0.1:8765"), root
+    return (
+        TestClient(
+            app,
+            base_url="http://127.0.0.1:8765",
+            headers={"Content-Type": "application/json"},
+        ),
+        root,
+    )
 
 
 def test_route_create_then_duplicate_conflicts(tmp_path, monkeypatch):

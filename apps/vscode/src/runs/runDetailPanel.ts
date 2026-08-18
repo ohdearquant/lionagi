@@ -170,32 +170,66 @@ export class RunDetailPanel {
     // abort-induced throw from the old run would read the new run's live signal
     // as not-aborted and post a spurious error onto the freshly targeted run.
     const ac = this.ac;
-    try {
-      await streamSession(
-        this.deps.backend.baseUrl,
-        id,
-        getAuthToken() || undefined,
-        (e: StudioEvent) => {
-          if (e.type === "heartbeat") {
-            return;
-          }
-          if (e.type === "done") {
-            this.postMessage({ type: "done" });
-            return;
-          }
-          this.postMessage({ type: "event", event: e });
-        },
-        ac.signal
-      );
-    } catch (err) {
-      if (ac.signal.aborted) {
+    const MAX_RETRIES = 3;
+    let cursor: string | undefined;
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await streamSession(
+          this.deps.backend.baseUrl,
+          id,
+          getAuthToken() || undefined,
+          (e: StudioEvent) => {
+            if (e.type === "heartbeat") {
+              return;
+            }
+            if (e.type === "done") {
+              this.postMessage({ type: "done" });
+              return;
+            }
+            this.postMessage({ type: "event", event: e });
+          },
+          ac.signal,
+          { cursor, onCursor: (next) => (cursor = next) }
+        );
+        return;
+      } catch (err) {
+        if (ac.signal.aborted) {
+          return;
+        }
+        if (attempt >= MAX_RETRIES) {
+          this.postMessage({
+            type: "error",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
+        const delayMs = Math.min(4000, 1000 * 2 ** attempt);
+        if (!(await this.abortableDelay(delayMs, ac.signal))) {
+          return;
+        }
+      }
+    }
+  }
+
+  /** Resolve true after ms, or false immediately if the signal aborts first. */
+  private abortableDelay(ms: number, signal: AbortSignal): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (signal.aborted) {
+        resolve(false);
         return;
       }
-      this.postMessage({
-        type: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
+      let timer: ReturnType<typeof setTimeout>;
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        resolve(false);
+      };
+      timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(true);
+      }, ms);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   private postMessage(msg: unknown): void {

@@ -21,6 +21,7 @@ import { useTranslations } from "use-intl";
 import InvocationSection from "@/components/history/InvocationDetail";
 import OperationGraphSection from "@/components/history/OperationGraphSection";
 import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
+import { useOverlayFocus } from "@/lib/useOverlayFocus";
 import ExpectedArtifacts from "@/components/runs/ExpectedArtifacts";
 import ResumeRun from "@/components/history/ResumeRun";
 import RunStepCard, { extractFilePaths } from "@/components/RunStepCard";
@@ -28,12 +29,7 @@ import { IconChevronDown, IconChevronRight } from "@/components/ui/icons";
 import { ApiError, getInvocationStatus, getSession, streamSession, streamSignals } from "@/lib/api";
 import type { SessionDetail, SessionBranch, SessionMessage, SignalEvent } from "@/lib/api";
 import type { StreamConnectionState } from "@/lib/api";
-import {
-  buildNodeStatusesByName,
-  buildOperationGraph,
-  laneFor,
-  transitiveReduceDisplay,
-} from "@/lib/operationGraph";
+import { laneFor, transitiveReduceDisplay } from "@/lib/operationGraph";
 import type { LaneSignal, OperationStatus } from "@/lib/operationGraph";
 import type { NodeActivitySnapshot } from "@/lib/nodeActivity";
 import { gateOutcomeFromEvent, SignalProjection } from "@/lib/signalProjection";
@@ -749,6 +745,41 @@ export function buildRunSteps(
 
 // ── Section shared header ─────────────────────────────────────────────────────
 
+function ExpandedGraphDialog({
+  label,
+  onClose,
+  children,
+}: {
+  label: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useOverlayFocus({ description: "ExpandedGraph", dialogRef, onEscape: onClose });
+  return (
+    <>
+      {/* The dialog is inset, so without this the rest of the viewport keeps taking
+          clicks and the view behind an aria-modal dialog stays operable. Hidden from
+          assistive tech because the header already carries a labelled close control. */}
+      <div
+        aria-hidden="true"
+        onClick={onClose}
+        className="fixed inset-0 z-40 cursor-default bg-black/50"
+      />
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={label}
+        tabIndex={-1}
+        className="fixed inset-4 z-50 flex flex-col rounded border border-edge bg-surface-raised shadow-card"
+      >
+        {children}
+      </div>
+    </>
+  );
+}
+
 function SectionHeader({
   label,
   count,
@@ -1003,6 +1034,7 @@ function BranchesSection({
   runId,
   artifactRoot,
   runFiles,
+  runFilesBounded,
   onLoadOlder,
   olderMessagesRemaining,
   loadingOlder,
@@ -1015,6 +1047,7 @@ function BranchesSection({
   runId?: string;
   artifactRoot?: string | null;
   runFiles?: string[];
+  runFilesBounded?: boolean;
   onLoadOlder?: () => void;
   olderMessagesRemaining?: number;
   loadingOlder?: boolean;
@@ -1061,6 +1094,7 @@ function BranchesSection({
                 runId={runId}
                 artifactRoot={artifactRoot}
                 runFiles={runFiles}
+                runFilesBounded={runFilesBounded}
                 onLoadOlder={onLoadOlder}
                 olderMessagesRemaining={olderMessagesRemaining}
                 loadingOlder={loadingOlder}
@@ -2324,15 +2358,6 @@ export default function RunDetail({ id }: RunDetailProps) {
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [selectedStepKey]);
 
-  useEffect(() => {
-    if (!graphExpanded) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setGraphExpanded(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [graphExpanded]);
-
   const hiddenOlderCount = useMemo(() => {
     // The cursor gates the arithmetic instead of sitting beside it. The
     // per-branch subtraction counts every message not loaded, which is older
@@ -2643,6 +2668,13 @@ export default function RunDetail({ id }: RunDetailProps) {
     return () => clearInterval(interval);
   }, [live, done]);
 
+  // Navigating to another run reuses this component instance, so a graphExpanded
+  // left set would reopen the overlay over the incoming run. Must stay above the
+  // early returns below to keep hook order stable.
+  useEffect(() => {
+    return () => setGraphExpanded(false);
+  }, [id]);
+
   if (error) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -2918,11 +2950,9 @@ export default function RunDetail({ id }: RunDetailProps) {
             </Suspense>
           </div>
           {graphExpanded && (
-            <div
-              role="dialog"
-              aria-modal="true"
-              aria-label={t("sectionExecutionGraph")}
-              className="fixed inset-4 z-50 flex flex-col rounded border border-edge bg-surface-raised shadow-card"
+            <ExpandedGraphDialog
+              label={t("sectionExecutionGraph")}
+              onClose={() => setGraphExpanded(false)}
             >
               <div className="flex items-center justify-between gap-2 border-b border-edge px-3 py-2">
                 <SectionHeader
@@ -2963,7 +2993,7 @@ export default function RunDetail({ id }: RunDetailProps) {
                   />
                 </Suspense>
               </div>
-            </div>
+            </ExpandedGraphDialog>
           )}
         </div>
       ) : (
@@ -3003,6 +3033,7 @@ export default function RunDetail({ id }: RunDetailProps) {
             runId={session.id}
             artifactRoot={session.artifacts_path}
             runFiles={runFiles}
+            runFilesBounded={session.message_stats?.files_bounded}
             onLoadOlder={handleLoadOlder}
             olderMessagesRemaining={hiddenOlderCount}
             loadingOlder={loadingOlder}
@@ -3052,6 +3083,7 @@ export default function RunDetail({ id }: RunDetailProps) {
             runId={session.id}
             artifactRoot={session.artifacts_path}
             runFiles={runFiles}
+            runFilesBounded={session.message_stats?.files_bounded}
             onLoadOlder={handleLoadOlder}
             olderMessagesRemaining={hiddenOlderCount}
             loadingOlder={loadingOlder}

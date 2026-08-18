@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import weakref
 from functools import lru_cache
 from typing import Any
 
@@ -33,8 +34,10 @@ __all__ = (
     "IssueFound",
     "DimensionClean",
     "VerifyResult",
+    "ProposedVerdict",
     "ReviewVerdict",
     "ReviewEngine",
+    "ReviewRun",
     "DEFAULT_DIMENSIONS",
 )
 
@@ -56,29 +59,8 @@ _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
 
 _ISOLATED_ERRORS: tuple[type[BaseException], ...] = (ProviderError, *_TRANSPORT_ERRORS)
 
-# Refusals that describe the run rather than one attempt. The credentials, the
-# quota, the model and the safety policy are the same for every dimension, so a
-# refusal on any of those grounds recurs identically on the next dimension and
-# on any retry. They are ProviderError subclasses, so the isolated set above
-# already covers them, and covering them is wrong: isolating one records a
-# skipped dimension and lets the run reach a verdict, which turns a run-wide
-# misconfiguration into a quietly degraded pass over an artifact whose
-# dimensions were never actually read. A safety refusal is the sharpest case,
-# because the reason the content was not reviewed is the finding.
-#
-# Context overflow is deliberately not here. That is a property of the single
-# prompt that overflowed rather than of the run -- one verifier's oversized
-# prompt says nothing about the next one's, which is why the engine repairs it
-# instead of failing.
-#
-# A quota refusal belongs here despite being marked retryable, which looks like
-# a contradiction and is not. Retryability is about time: the same request may
-# well succeed once the limit resets. This tuple is about scope: at the moment
-# it is raised, the limit applies to every dimension alike. A run in flight has
-# no later, so isolating the quota failure would let the remaining dimensions
-# report and the run publish a verdict over an artifact one dimension never
-# read. Failing the whole run is the louder and more accurate outcome, and it
-# is the same principle the coverage check enforces downstream.
+# Refusals that describe the run, not one attempt, so isolating one would
+# publish a decision over an artifact nothing read.
 _RUN_WIDE_REFUSALS: tuple[type[BaseException], ...] = (
     ProviderAuthError,
     ProviderQuotaError,
@@ -255,12 +237,59 @@ class VerifyResult(EngineEvent):
     rationale: str = Field(default="", description="Why it holds, or how it was refuted.")
 
 
+class ProposedVerdict(EngineEvent):
+    """What synthesis concluded, before the evidence gate has ruled on it; not a ``Verdict``, which is how consumers find the decision."""
+
+    verdict: str = Field(
+        description="The proposed decision, e.g. APPROVE | APPROVE-WITH-FIXES | REQUEST-CHANGES | REJECT."
+    )
+    rationale: str = Field(default="", description="Why this decision, grounded in the findings.")
+    blocking: list[str] = Field(
+        default_factory=list, description="Issues that must be fixed before approval."
+    )
+
+
 class ReviewVerdict(Verdict):
     """Terminal review decision; extends Verdict with the list of blocking issues."""
 
     blocking: list[str] = Field(
         default_factory=list, description="Issues that must be fixed before approval."
     )
+
+
+# Runs per session, weak both ways, so a run can see whether it started beside another.
+_SESSION_RUNS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+class ReviewRun(EngineRun):
+    """Evidence scoped to this run; ``shares_session`` flags a Session this scoping cannot divide."""
+
+    def __init__(self, engine: Engine, **kwargs: Any) -> None:
+        super().__init__(engine, **kwargs)
+        self._inherited: set[Any] = {e.id for e in self.session.observer.flow.items}
+        # A run's window is everything emitted after it started, so any other run
+        # alive on this Session emits into it. Which run produced a given event is
+        # not recorded anywhere -- agent emissions reach the shared observer
+        # through the branch, not through this run -- so the start snapshot cannot
+        # divide them, whether the runs started together or one after the other.
+        # Flagged both ways and on sight of any peer: a start-order test would
+        # only ever be right about the emissions that had already happened.
+        self.shares_session: bool = False
+        peers = _SESSION_RUNS.setdefault(self.session, [])
+        live = []
+        for ref in peers:
+            peer = ref()
+            if peer is None:
+                continue
+            live.append(ref)
+            peer.shares_session = True
+            self.shares_session = True
+        live.append(weakref.ref(self))
+        _SESSION_RUNS[self.session] = live
+
+    @property
+    def events(self) -> list[Any]:
+        return [e for e in self.session.observer.flow.items if e.id not in self._inherited]
 
 
 DEFAULT_DIMENSIONS: tuple[str, ...] = (
@@ -281,6 +310,51 @@ _DIM_MODE: dict[str, str] = {
 
 
 _LOC_PAT = re.compile(r"^(?P<file>[\w./\\-]+?)[:@](?P<line>\d+)")
+
+
+def _withheld_note(unevidenced: tuple[str, ...]) -> str:
+    """Name the uncovered dimensions: "review incomplete" sends the reader back to the logs."""
+    names = ", ".join(unevidenced)
+    return (
+        "Approval withheld: no reviewer output was recorded for "
+        f"{names}. A pass cannot rest on dimensions that produced nothing, "
+        "whether their reviewer failed or never started."
+    )
+
+
+def _unverified_note(unverified: tuple[IssueFound, ...]) -> str:
+    """Name the unresolved findings rather than counting them, as the coverage note does."""
+    named = "; ".join(f"{i.dimension}: {i.description}" for i in unverified)
+    return (
+        "Approval withheld: these findings were never verified and were not "
+        f"withdrawn — {named}. A pass cannot rest on a finding whose "
+        "verification did not come back, whether the verifier failed or never "
+        "returned a result."
+    )
+
+
+def _unaudited_note() -> str:
+    """The audit was required and attempted; only its result is missing."""
+    return (
+        "Approval withheld: this run requires one adversarial audit of what it "
+        "read and no verification came back, so the pass rests on nothing "
+        "executed."
+    )
+
+
+def _cannot_attribute(run: EngineRun) -> bool:
+    """True when the run's window holds another run's emissions and nothing records which is which."""
+    return bool(getattr(run, "shares_session", False))
+
+
+def _shared_session_note() -> str:
+    """Unlike the coverage note, nothing on the stream is known to belong to this run."""
+    return (
+        "Approval withheld: another review run was alive on this session, and "
+        "which run produced a given event is not recorded, so this run's "
+        "evidence cannot be told apart from that run's. Give each run its own "
+        "Session."
+    )
 
 
 def _verify_key(issue: IssueFound) -> str:
@@ -364,7 +438,7 @@ def _verdict_instruction(
     clean: list[str] | None = None,
 ) -> str:
     parts = [
-        "Issue a single ReviewVerdict over the artifact from the issues below.\n",
+        "Issue a single ProposedVerdict over the artifact from the issues below.\n",
         f"Dimensions reviewed: {', '.join(dimensions)}\n",
     ]
     if clean:
@@ -406,6 +480,8 @@ def _verdict_instruction(
 class ReviewEngine(Engine):
     """Dimensional review engine (stateless config). See docs/reference/engines.md for parameter details."""
 
+    run_context_cls: type[EngineRun] = ReviewRun
+
     def __init__(
         self,
         *,
@@ -436,6 +512,12 @@ class ReviewEngine(Engine):
 
         See docs/internals/providers.md#review-engine-partial-export-on-deadline.
         """
+        # The window this reads is the one _verdict refuses to read, and the newest
+        # verdict in it may be a peer's, so exhaustion must not export it as this
+        # run's result.
+        if _cannot_attribute(run):
+            run.notify("verdict", shared_session=True)
+            return _shared_session_note()
         verdicts = run.by_type(ReviewVerdict)
         if not verdicts:
             return ""
@@ -474,15 +556,8 @@ class ReviewEngine(Engine):
         # the drain stays clean; anything the wrapper does not claim still
         # reaches here and ends the run.
         await run.wait_quiescence()
-        # A clean or minor-only review spawns no issue verifiers, so it would
-        # reach the verdict with zero VerifyResult and ship an APPROVE backed
-        # by nothing executed. A consumer may well refuse that as
-        # evidence-empty, but whether any given one does is a property of that
-        # consumer's code and is not observable from this package, so it is not
-        # a guard this engine gets to count on. Gate on zero VerifyResult (not
-        # zero issues) so both shapes instead carry one adversarial audit of
-        # the clean verdict itself: positive executed evidence rather than
-        # absence, decided here where it can be seen.
+        # A clean or minor-only review spawns no verifiers, so gate on zero
+        # VerifyResult to make both shapes carry one adversarial audit.
         if self.verify_clean and not run.by_type(VerifyResult):
             await self._verify_clean_isolated(run, artifact, dims)
         return await self._verdict(run, artifact, dims)
@@ -527,22 +602,7 @@ class ReviewEngine(Engine):
     def _isolate_verification_failure(
         self, run: EngineRun, exc: BaseException, *, stage: str
     ) -> bool:
-        """Record an isolated verification failure; False means the caller must re-raise.
-
-        Verification is discretionary work performed on evidence that already
-        exists: by the time a verifier runs, its dimension has reported and its
-        findings are on the run. A provider or transport failure here says the
-        worker died, not that the review is unsound, so it degrades the audit of
-        one finding rather than the run that produced it. The drain already
-        treats one failure this way — ``EngineBudgetError`` is swallowed as
-        discretionary work declined — and this extends the same reading to the
-        transport failures the dimension stage isolates.
-
-        The failure stays visible: the marker reaches the caller through
-        ``_emission_failures`` and is reported alongside the result, so a run
-        that verified less than it intended says so instead of presenting a
-        verdict as fully audited.
-        """
+        """Record an isolated verification failure; False means the caller must re-raise."""
         if not _is_all_isolated_failure(exc):
             return False
         error_type = _failure_label(exc)
@@ -589,10 +649,7 @@ class ReviewEngine(Engine):
             await run.operate_with_repair(
                 agent,
                 _dimension_instruction(artifact, dimension),
-                arrived=lambda: (
-                    any(i.dimension == dimension for i in run.by_type(IssueFound))
-                    or any(c.dimension == dimension for c in run.by_type(DimensionClean))
-                ),
+                arrived=lambda: dimension in self._reported_dimensions(run),
                 emits=emits,
                 retries=self.repair_retries,
             )
@@ -614,9 +671,7 @@ class ReviewEngine(Engine):
             await run.operate_with_repair(
                 verifier,
                 _verify_instruction(issue, ref),
-                arrived=lambda: any(
-                    v.ref == ref or v.issue == issue.description for v in run.by_type(VerifyResult)
-                ),
+                arrived=lambda: self._verification_arrived(run, issue),
                 emits=emits,
                 retries=self.repair_retries,
             )
@@ -644,6 +699,18 @@ class ReviewEngine(Engine):
             )
 
     async def _verdict(self, run: EngineRun, artifact: str, dimensions: tuple[str, ...]) -> str:
+        # Base runs carry no attribution, so they cannot report the condition.
+        if _cannot_attribute(run):
+            # The window holds another run's emissions and nothing records which
+            # run produced what, so synthesising from it would put a different
+            # artifact's findings in this verdict and could credit a dimension
+            # this run never covered. Refuse before the prompt is built.
+            note = _shared_session_note()
+            final = ReviewVerdict(verdict="REQUEST-CHANGES", rationale=note, blocking=[])
+            run.notify("verdict", shared_session=True)
+            await run.emit(final)
+            return note
+
         issues = run.by_type(IssueFound)
         verifications = run.by_type(VerifyResult)
         clean = [c.dimension for c in run.by_type(DimensionClean)]
@@ -654,10 +721,96 @@ class ReviewEngine(Engine):
             self.synthesis_role,
             name="verdict",
             model=self.model_for("verdict"),
-            emits=(ReviewVerdict,),
+            emits=(ProposedVerdict,),
             exempt=True,
         )
         res = await synth.operate(
             instruction=_verdict_instruction(artifact, dimensions, issues, verifications, clean)
         )
-        return str(res) if res is not None else ""
+        text = str(res) if res is not None else ""
+
+        unevidenced = self._unevidenced_dimensions(run, dimensions)
+        unverified = self._unverified_findings(run)
+        # The condition that spawned the audit, re-asked now: still true = it produced nothing.
+        unaudited = bool(self.verify_clean) and not verifications
+        proposals = run.by_type(ProposedVerdict)
+        proposed = proposals[-1] if proposals else None
+        final = self._rule(proposed, unevidenced, unverified, text, unaudited=unaudited)
+        await run.emit(final)
+
+        notes = []
+        if unevidenced:
+            notes.append(_withheld_note(unevidenced))
+        if unverified:
+            notes.append(_unverified_note(unverified))
+        if unaudited:
+            notes.append(_unaudited_note())
+        if notes:
+            joined = " ".join(notes)
+            return f"{text}\n\n{joined}" if text else joined
+        return text
+
+    def _unevidenced_dimensions(
+        self, run: EngineRun, dimensions: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        """Configured dimensions with no issue and no all-clear; reporters would drop the failed ones."""
+        reported = self._reported_dimensions(run)
+        return tuple(d for d in dimensions if d not in reported)
+
+    def _verification_arrived(self, run: EngineRun, issue: IssueFound) -> bool:
+        """Keyed on the echoed ref, description as fallback; one definition so repair and the gate cannot drift."""
+        ref = _verify_ref(issue)
+        return any(v.ref == ref or v.issue == issue.description for v in run.by_type(VerifyResult))
+
+    def _unverified_findings(self, run: EngineRun) -> tuple[IssueFound, ...]:
+        """Owed an outcome by the same severity set that spawns verifiers, and lacking one."""
+        return tuple(
+            issue
+            for issue in run.by_type(IssueFound)
+            if issue.severity in self.verify_severities
+            and not self._verification_arrived(run, issue)
+        )
+
+    def _reported_dimensions(self, run: EngineRun) -> set[str]:
+        """Dimensions that produced something this run can point at; repair and the coverage gate share it."""
+        reported = {i.dimension for i in run.by_type(IssueFound)}
+        reported |= {c.dimension for c in run.by_type(DimensionClean)}
+        return reported
+
+    def _rule(
+        self,
+        proposed: ProposedVerdict | None,
+        unevidenced: tuple[str, ...],
+        unverified: tuple[IssueFound, ...],
+        text: str,
+        *,
+        unaudited: bool = False,
+    ) -> ReviewVerdict:
+        """The one verdict this run publishes; coverage and verification refuse approval only. Attribution refuses earlier, before synthesis reads a window it cannot divide."""
+        verdict = (proposed.verdict if proposed else "").strip()
+        rationale = (proposed.rationale if proposed else "") or text
+        blocking = list(proposed.blocking) if proposed else []
+
+        if proposed is None:
+            return ReviewVerdict(
+                verdict="REQUEST-CHANGES",
+                rationale=(
+                    "Synthesis produced no decision, so there is nothing to approve on. "
+                    f"{text}".strip()
+                ),
+                blocking=blocking,
+            )
+        if verdict.upper().startswith("APPROVE") and (unevidenced or unverified or unaudited):
+            notes = []
+            if unevidenced:
+                notes.append(_withheld_note(unevidenced))
+            if unverified:
+                notes.append(_unverified_note(unverified))
+            if unaudited:
+                notes.append(_unaudited_note())
+            return ReviewVerdict(
+                verdict="REQUEST-CHANGES",
+                rationale=" ".join(notes) + (f" {rationale}" if rationale else ""),
+                blocking=blocking + [i.description for i in unverified],
+            )
+        return ReviewVerdict(verdict=verdict, rationale=rationale, blocking=blocking)

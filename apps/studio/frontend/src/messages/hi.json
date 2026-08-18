@@ -245,7 +245,7 @@
       "createWorkflow": "नया वर्कफ़्लो",
       "createAgent": "नया एजेंट",
       "allSkill": "कोई स्किल नहीं मिली।",
-      "allSkillHint": "यहाँ देखने के लिए ~/.lionagi/skills/<name>/ के अंतर्गत एक SKILL.md जोड़ें।",
+      "allSkillHint": "यहाँ देखने के लिए ~/.lionagi/skills/NAME/ के अंतर्गत एक SKILL.md जोड़ें।",
       "allPlugin": "कोई प्लगइन नहीं मिला।",
       "allPluginHint": "यहाँ देखने के लिए ~/.claude/plugins/ के अंतर्गत एक प्लगइन इंस्टॉल करें।"
     },
@@ -833,6 +833,9 @@
       "noRuns": "अभी कोई रन नहीं",
       "ago": " पहले",
       "cancel": "रद्द करें",
+      "discardWarning": "आपके परिवर्तन सहेजे नहीं गए हैं।",
+      "keepEditing": "संपादन जारी रखें",
+      "discardChanges": "परिवर्तन छोड़ें",
       "save": "बदलाव सेव करें",
       "saving": "सेव हो रहा है…",
       "saveFailed": "सेव विफल।",

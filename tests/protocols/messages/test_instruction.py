@@ -295,15 +295,6 @@ def test_from_dict_response_format_overrides_auto_derive():
     assert content.response_format == rf  # Should use explicit, not auto-derived
 
 
-def test_from_dict_invalid_response_schema_type():
-    """from_dict silently ignores invalid response_format type (fuzzy handling)"""
-    data = {"instruction": "Test", "response_format": "invalid"}
-
-    # Fuzzy handling: invalid types are silently ignored
-    content = InstructionContent.from_dict(data)
-    assert content.response_format is None
-
-
 def test_from_dict_invalid_response_format_type():
     """from_dict silently ignores invalid response_format type (fuzzy handling)"""
     data = {"instruction": "Test", "response_format": "invalid"}
@@ -725,7 +716,7 @@ def test_instruction_model_fields_immutable_slots():
 
 
 def test_with_updates_preserves_response_schema():
-    """Regression: with_updates() must preserve response_format, _structure_instance, and tool_schemas through the to_dict→constructor cycle."""
+    """Full-state updates preserve response schema, rendered structure, and tools."""
     content = InstructionContent.from_dict(
         {
             "instruction": "do it",

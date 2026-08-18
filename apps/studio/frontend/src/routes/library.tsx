@@ -280,7 +280,9 @@ function LibraryPage() {
         replace: true,
       });
     }
-  }, [tab, loading, filtered, search, sel, navigate]);
+    // `items` rather than only `filtered`: the hidden-workflow check reads rows
+    // that `filtered` drops, so `filtered` changing does not track them.
+  }, [tab, loading, items, filtered, optimisticWorkflow?.name, search, sel, navigate]);
 
   const selectItem = useCallback(
     (item: LibraryItem) => {
@@ -336,6 +338,7 @@ function LibraryPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder={t("searchPlaceholder")}
+          aria-label={t("searchPlaceholder")}
           className="min-w-0 flex-1 rounded border border-edge bg-surface-overlay px-2 py-1 font-ui text-[length:var(--t-sm)] text-content-primary focus:outline-none"
         />
         {!NO_CREATE_KINDS.has(kindFilter as LibraryKind) && (

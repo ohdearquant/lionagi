@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- ADR-0070 now records the shipped one-shot `at` schedule trigger alongside
+  `cron`, `interval`, and `github_poll`; a schema-parity guard keeps that
+  persisted vocabulary and the documented trigger set aligned. It also records
+  a gap it previously claimed was closed: `max_runs = 1` only guards a re-apply
+  once the single fire has run, so an `at` schedule whose fire was skipped as
+  missed can be resurrected by a later edit or re-enable.
 - Public-surface differential capture now crosses one shared clock boundary for
   the full CLI case batch, and terminal-callback offload tests release their
   worker explicitly instead of leaving a 30-second sleeper behind.
@@ -39,7 +45,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
-  from each `default_factory`, instead of replacing every omitted field with `Unset`.
+  from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
+  and `DataClass` now discover inherited instance fields through one ordered dataclass path,
+  exclude `ClassVar` declarations, expose immutable `allowed()` membership views, and preserve
+  `Unset`/explicit-null in-memory state across `with_updates()` instead of round-tripping it
+  through the omission-oriented wire projection.
+- `Operable` selection and legacy `OperableModel` materialization now retain declaration order
+  for every supported membership collection and across hash seeds. Multiple unnamed `Spec`
+  values no longer collide; concrete duplicate names still fail, and name-required Pydantic
+  materialization now rejects unnamed fields instead of silently dropping them. Legacy
+  `FieldModel` materialization uses the owning field key rather than emitting a second field.
+  An explicit empty `include` or `use_fields` collection now selects no fields, unknown
+  exclusions fail instead of being ignored, and `Operable.allowed()` returns an immutable
+  membership view.
 - Writable StateDB migration now fails closed when a table's columns cannot be
   inspected, preserving the prior schema-version stamp instead of recording an
   upgrade whose additive column reconciliation did not complete.

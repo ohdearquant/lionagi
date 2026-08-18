@@ -223,11 +223,14 @@ async def list_runs(
     for s in sessions:
         alive: bool | None = None
         if s.get("status") == "running":
-            from .admin import resolve_process_liveness_probe
+            from .admin import process_identity_is_foreign, resolve_process_liveness_probe
 
-            alive = await resolve_process_liveness_probe(
-                lambda snapshot, row=s: _session_liveness(row, snapshot)
-            )
+            # A foreign-host row is left unknown without paying for the scan — the scan reads
+            # this machine's process table, so skipping it changes only the cost, not the verdict.
+            if not process_identity_is_foreign(s):
+                alive = await resolve_process_liveness_probe(
+                    lambda snapshot, row=s: _session_liveness(row, snapshot)
+                )
         out.append(_run_row(s, now, process_alive=alive))
 
     tagmap = await run_tags.tags_for_sessions([r["id"] for r in out])

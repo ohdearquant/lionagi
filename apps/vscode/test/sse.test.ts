@@ -93,3 +93,49 @@ describe.each(clients)("%s SSE EOF contract", (_name, stream) => {
     ).rejects.toThrow(/SSE connect failed/);
   });
 });
+
+describe("streamSession resume cursor", () => {
+  it("reports the server cursor and sends it on the next connection", async () => {
+    const urls: string[] = [];
+    const requests: RequestInit[] = [];
+    globalThis.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      urls.push(String(input));
+      requests.push(init ?? {});
+      return fetchYielding([
+        `id: cursor-one\ndata: {"id":"message-one","branch_id":"branch-1"}\n\n`,
+      ])(input, init);
+    }) as unknown as typeof fetch;
+
+    let cursor: string | undefined;
+    await expect(
+      streamSession(
+        "http://x",
+        "s1",
+        "stream-token",
+        () => {},
+        new AbortController().signal,
+        { cursor, onCursor: (next) => (cursor = next) }
+      )
+    ).rejects.toThrow(/closed before completion/);
+
+    expect(cursor).toBe("cursor-one");
+
+    await expect(
+      streamSession(
+        "http://x",
+        "s1",
+        "stream-token",
+        () => {},
+        new AbortController().signal,
+        { cursor, onCursor: (next) => (cursor = next) }
+      )
+    ).rejects.toThrow(/closed before completion/);
+
+    expect(new URL(urls[0]!).searchParams.get("cursor")).toBeNull();
+    expect(new URL(urls[1]!).searchParams.get("cursor")).toBe("cursor-one");
+    expect(requests.map((request) => new Headers(request.headers).get("authorization"))).toEqual([
+      "Bearer stream-token",
+      "Bearer stream-token",
+    ]);
+  });
+});

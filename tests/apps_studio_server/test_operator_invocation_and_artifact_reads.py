@@ -470,6 +470,23 @@ async def test_a_textual_secret_under_a_counter_shaped_name_is_still_redacted():
     assert projected == {"token_count": "[redacted]"}
 
 
+async def test_token_shaped_mapping_keys_are_scrubbed_on_both_read_paths():
+    """A credential can appear as a JSON key, not only as its value.
+
+    The session/artifact projector already scrubs mapping keys as free text;
+    tool arguments and manifests must apply the same rule or the latter path
+    leaks the token verbatim.
+    """
+    from lionagi.studio.operator import application_mcp, redact
+
+    secret_key = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+    expected = {"[redacted]": "visible value"}
+
+    assert redact.scrub_text(secret_key) == "[redacted]"
+    assert application_mcp._safe_content({secret_key: "visible value"}) == expected
+    assert redact.redact_arguments({secret_key: "visible value"}) == expected
+
+
 def _spellings(name: str) -> list[str]:
     """The separator and case variants one field name arrives in.
 

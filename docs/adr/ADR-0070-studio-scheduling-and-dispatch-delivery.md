@@ -13,9 +13,10 @@ evaluation, fire-time admission, immediate child-process launch, run finalizatio
 follow-ups, outbound dispatch scans, and one host task-worker tick. These concerns share a timer,
 but they do not share one state machine.
 
-Schedules persist `cron`, `interval`, or `github_poll` triggers. Cron and interval schedules may
-also carry a metric threshold; in that form the cadence evaluates a condition and fires only on a
-breach. A manual fire is an operation over an existing schedule, not a fourth trigger type.
+Schedules persist `cron`, `interval`, `github_poll`, or `at` triggers. Cron and interval schedules
+may also carry a metric threshold; in that form the cadence evaluates a condition and fires only
+on a breach. `at` is a one-shot trigger for one resolved instant. A manual fire is an operation
+over an existing schedule, not a fifth trigger type.
 
 Scheduled actions are launched immediately and awaited by the scheduler task. They enter
 `schedule_runs` as `running`, never as `queued`, and do not acquire worker leases. The generalized
@@ -29,8 +30,8 @@ This ADR answers five problems:
 
 - **P1 — Trigger evaluation needs a host lifecycle.** Studio needs one loop with defined startup,
   missed-fire, maintenance, and shutdown behavior.
-- **P2 — A due fire needs explicit admission.** Overlap, cumulative budget, run count, threshold
-  cooldown, and global concurrency must be decided before launch.
+- **P2 — A due fire needs explicit admission.** Overlap, cumulative budget, rolling rate limit,
+  run count, threshold cooldown, and global concurrency must be decided before launch.
 - **P3 — Subprocess construction crosses a trust boundary.** Stored schedule fields become argv,
   cwd, environment, and process-group state and must be validated without a shell.
 - **P4 — Follow-up recursion can become unbounded or unobservable.** Success/failure continuations
@@ -41,7 +42,7 @@ This ADR answers five problems:
 | Concern | Decision |
 |---|---|
 | Engine lifecycle and tick order | D1: Run one 30-second in-process scheduler loop under Studio lifespan. |
-| Trigger and fire admission | D2: Persist three trigger types and apply missed-fire, overlap, threshold, budget, run-count, and global-slot gates before launch. |
+| Trigger and fire admission | D2: Persist four trigger types and apply missed-fire, overlap, threshold, budget, rate-limit, run-count, and global-slot gates before launch. |
 | Invocation and subprocess execution | D3: Record invocation/run facts, construct argv from a closed vocabulary, launch a new process group, and terminalize from exit outcome. |
 | Follow-up behavior | D4: Execute inline `on_success`/`on_fail` actions recursively with parent linkage and depth 10. |
 | Dispatch delivery | D5: Keep a separate at-least-once outbox with guarded delivery attempts and bounded acknowledgement. |
@@ -148,7 +149,7 @@ outage suspends triggers and the large engine class coordinates several policies
 Code anchors: `lionagi/studio/app.py` (`lifespan`); `lionagi/studio/scheduler/engine.py`
 (`SchedulerEngine.start`, `_tick_loop`, `_tick`, `stop`); `lionagi/studio/config.py`.
 
-### D2 — Three trigger types pass explicit fire gates
+### D2 — Four trigger types pass explicit fire gates
 
 The persisted schedule contract is:
 
@@ -159,7 +160,7 @@ CREATE TABLE schedules (
   name                TEXT NOT NULL UNIQUE,
   enabled             INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
   trigger_type        TEXT NOT NULL
-                      CHECK(trigger_type IN ('cron', 'interval', 'github_poll')),
+                      CHECK(trigger_type IN ('cron', 'interval', 'github_poll', 'at')),
   cron_expr           TEXT,
   interval_sec        INTEGER,
   github_repo         TEXT,
@@ -189,6 +190,7 @@ CREATE TABLE schedules (
   max_runs            INTEGER,
   budget_usd          REAL,
   budget_tokens       INTEGER,
+  rate_limit          JSON,
   project             TEXT,
   threshold_config    JSON,
   last_alert_at       REAL,
@@ -227,14 +229,38 @@ class CreateScheduleRequest(BaseModel):
     max_runs: int | None = None
     budget_usd: float | None = None
     budget_tokens: int | None = None
+    rate_limit: dict | None = None
     project: str | None = None
     threshold_config: dict | None = None
 ```
 
 Creation requires the trigger and action kind. Cron requires a valid `cron_expr`; interval requires
 a positive integer `interval_sec`; GitHub polling requires `github_repo`; `flow_yaml` requires
-non-empty inline YAML. `max_runs`, `budget_usd`, and `budget_tokens` must be positive when supplied.
-Cron expressions are interpreted in `SCHEDULER_TZ`, while `next_fire_at` remains a UTC epoch.
+non-empty inline YAML. `max_runs`, `budget_usd`, and `budget_tokens` must be positive when supplied;
+`rate_limit` must contain positive `max_fires` and `window_sec` integers. Cron expressions are
+interpreted in `SCHEDULER_TZ`, while `next_fire_at` remains a UTC epoch.
+
+The declarative ScheduleSet path resolves an `at` trigger's RFC 3339 timestamp before persistence.
+It stores its resolved due instant in `next_fire_at` and forces `max_runs = 1`. After the due fire,
+the scheduler persists `next_fire_at = NULL`: an `at` trigger has no subsequent occurrence after
+firing.
+
+The max-run reservation counts only runs that reached `running` or a terminal status, so on its own
+it guards a later re-apply only when the single fire actually executed. A missed fire recorded under
+`missed_fire_policy=skip` writes a `skipped` row, and `skipped` is not a counted status, so the
+budget stays unspent.
+
+The rule that closes it lives in the re-apply rather than in fire-time accounting: a ScheduleSet
+UPDATE of an `at` member writes `next_fire_at` only when the declared instant is still in the
+future. An instant that has passed is not written back, so a one-shot that fired, or was skipped,
+stays not-due however many times the set is re-applied for unrelated reasons — an edited sibling, or
+a member re-enabled after being disabled by omission. Moving the instant forward is a genuine
+reschedule and still takes effect.
+
+Counting `skipped` rows would not have worked: capacity-deferred and overlap skips are written
+through the same path and are meant to be retried, so counting them would consume the budget of
+schedules that never ran. The distinction the rule needs is that an `at` instant cannot recur, which
+is knowable at apply time and not at fire time.
 
 The management CLI currently exposes creation choices `agent`, `playbook`, and `flow_yaml`, while
 the table admits `agent`, `flow`, `fanout`, `play`, and `flow_yaml`. Creation stores the literal CLI
@@ -242,12 +268,13 @@ value; it does not map `playbook` to `play`. The only alias mapping exists later
 `subprocess.build_argv()`. Consequently `playbook` can fail the table constraint before fire time.
 This mismatch is current behavior, not an intended alias contract.
 
-Top-level fire admission order for cron/interval is:
+Top-level fire admission order for cron/interval/at is:
 
 ```text
 threshold evaluation/cooldown, when configured
   → overlap gate
   → cumulative token/cost gate
+  → rolling rate-limit reservation
   → max_runs reservation
   → daemon-wide concurrency-slot reservation
   → tracked fire task
@@ -257,9 +284,12 @@ Exact gate semantics:
 
 - **Missed fire `skip`:** startup writes a skipped run with evidence and advances
   `next_fire_at`.
-- **Missed fire `run_once`:** startup reserves a future `next_fire_at` before creating one recovery
-  task. If reservation fails, it does not also queue recovery; the immediately following normal
-  tick may own the due fire.
+- **Missed fire `run_once`:** startup reserves the trigger's next-fire state before creating one
+  recovery task: a future instant for recurring triggers, or terminal `NULL` for `at`. If the
+  reservation fails, it does not also queue recovery; the immediately following normal tick may
+  own the due fire. For `at`, a process crash after the terminal reservation but before the
+  recovery row lands loses the single fire; this is accepted over reopening the duplicate-fire
+  window.
 - **Overlap `skip`:** if the schedule id is already in the engine's in-memory `_running` map, write
   a skipped run and advance cadence. `allow` bypasses this check.
 - **Threshold within bounds:** advance cadence without creating a run.
@@ -268,12 +298,16 @@ Exact gate semantics:
   `last_alert_at` persists.
 - **Budget exhausted:** cumulative prior session cost or tokens disables the schedule before a new
   fire. It does not interrupt a run already in flight and can overshoot by one run.
+- **Rolling rate limit exhausted:** automatic fires remain due without advancing cadence or
+  disabling the schedule. A manual fire is rejected and tells the caller to retry after the
+  configured window advances.
 - **`max_runs` exhausted:** top-level terminal run count plus in-process claims refuses the fire and
   disables the schedule. Inline chain children do not consume the count.
 - **Global capacity exhausted:** automatic fires remain due and retry next tick. A skipped/deferred
   record is written on the first deferral and every tenth deferral thereafter to avoid row spam.
-- **Manual fire:** applies budget, max-run, and global-slot checks; capacity is rejected to the
-  caller rather than deferred. It returns a generated 12-hex run id once the task is scheduled.
+- **Manual fire:** applies budget, rate-limit, max-run, and global-slot checks; rate or capacity is
+  rejected to the caller rather than deferred. It returns a generated 12-hex run id once the task
+  is scheduled.
 - **GitHub polling:** uses its stored cursor and polling interval (default fallback 300 seconds) and
   reserves capacity before advancing cursor for an event that will fire.
 
@@ -281,9 +315,9 @@ The max-run and global-slot handles release idempotently from `_fire()`'s `final
 cancellation or failure before a run row is written. This closes in-process reservation leaks; it
 does not provide multi-process coordination.
 
-Why this way: the gates make refusal/defer reasons explicit and prevent a due fire from being
-silently dropped. The cost is policy concentration in one engine and single-process correctness
-for reservations.
+Why this way: outside the accepted `at` recovery crash window above, the ordinary refusal and
+defer paths make their reasons explicit instead of silently dropping a due fire. The cost is policy
+concentration in one engine and single-process correctness for reservations.
 
 Code anchors: `lionagi/studio/services/schedules.py`; `lionagi/studio/scheduler/engine.py`
 (`_check_missed_fires`, `_maybe_fire`, `_reserve_max_runs_budget`, `_reserve_global_slot`,

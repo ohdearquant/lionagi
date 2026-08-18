@@ -7,6 +7,7 @@ import StatusFooter from "./StatusFooter";
 import TopBar from "./TopBar";
 import OperatorPanel from "@/components/operator/OperatorPanel";
 import { applyTheme, getTheme, THEME_CHANGE_EVENT } from "@/lib/theme";
+import { SCROLL_LOCK_ATTRIBUTE } from "@/lib/overlayStack";
 
 interface Props {
   children: ReactNode;
@@ -110,6 +111,9 @@ export default function AppShell({ children, onLocaleChange }: Props) {
           <main
             id="main-content"
             tabIndex={-1}
+            // The routed surface scrolls here rather than on body, so an open overlay
+            // has to freeze this container or the view moves behind it.
+            {...{ [SCROLL_LOCK_ATTRIBUTE]: "" }}
             className="flex-1 overflow-y-auto"
             aria-label={t("main.ariaLabel")}
           >

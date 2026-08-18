@@ -62,9 +62,11 @@ export function resolveApiBase(): string {
   if (viteEnv) return viteEnv;
   if (typeof window !== "undefined") {
     const port = window.location.port;
-    // Vite dev-server ports: forward to the backend on the same hostname.
+    // Vite dev-server ports use the configured same-origin proxy. Keeping the
+    // browser on /api makes STUDIO_API_URL and the isolated E2E daemon target
+    // effective without requiring CORS on the backend.
     if (port === "3000" || port === "5173") {
-      return `${window.location.protocol}//${window.location.hostname}:8765`;
+      return "";
     }
     // Every other browser origin — including HTTPS on a non-local hostname —
     // is treated as a same-origin deployment (Docker/reverse-proxy serving
@@ -102,6 +104,8 @@ export class ApiError extends Error {
 // fails validation on a dozen fields is still one mistake to the person reading
 // it, and a dozen clauses is harder to act on than three plus a number.
 const MAX_VALIDATION_ERRORS_SHOWN = 3;
+const SAFE_HTTP_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const RETRYABLE_SSE_CLIENT_STATUSES = new Set([408, 425, 429]);
 
 /**
  * Render a FastAPI/Pydantic validation body into one readable sentence.
@@ -134,11 +138,30 @@ function formatValidationErrors(detail: unknown[]): string | undefined {
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
 
+  // Preserve object-shaped headers for existing callers/tests, while making
+  // Headers and tuple-list inputs mutable too.
+  const initialHeaders = init?.headers;
+  const headers: HeadersInit =
+    initialHeaders instanceof Headers || Array.isArray(initialHeaders)
+      ? new Headers(initialHeaders)
+      : { ...(initialHeaders ?? {}) };
+  const setHeader = (name: string, value: string) => {
+    if (headers instanceof Headers) headers.set(name, value);
+    else (headers as Record<string, string>)[name] = value;
+  };
+
+  // Every unsafe API call declares JSON, including bodyless POST/DELETE
+  // actions. Besides matching the backend contract, this makes browser calls
+  // non-simple requests so cross-site forms cannot invoke mutating routes.
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (!SAFE_HTTP_METHODS.has(method) && !new Headers(headers).has("content-type")) {
+    setHeader("Content-Type", "application/json");
+  }
+
   // Attach the desktop-shell bearer token when present.
   const token = resolveAuthToken();
-  const headers: HeadersInit = { ...(init?.headers ?? {}) };
   if (token) {
-    (headers as Record<string, string>)["Authorization"] = `Bearer ${token}`;
+    setHeader("Authorization", `Bearer ${token}`);
   }
 
   let response: Response;
@@ -214,8 +237,8 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 export type StreamConnectionState = "connecting" | "open" | "disconnected";
 
 function sseSubscribe(
-  path: string,
-  onData: (data: string) => void,
+  path: string | (() => string),
+  onData: (data: string, eventId?: string) => void,
   onConnectionState?: (state: StreamConnectionState) => void,
 ): () => void {
   const controller = new AbortController();
@@ -232,11 +255,26 @@ function sseSubscribe(
         const token = resolveAuthToken();
         const headers: Record<string, string> = { Accept: "text/event-stream" };
         if (token) headers["Authorization"] = `Bearer ${token}`;
-        const response = await fetch(`${API_BASE}${path}`, {
+        const requestPath = typeof path === "function" ? path() : path;
+        const response = await fetch(`${API_BASE}${requestPath}`, {
           headers,
           signal: controller.signal,
         });
-        if (!response.ok || !response.body) {
+        if (!response.ok) {
+          const permanentClientError =
+            response.status >= 400 &&
+            response.status < 500 &&
+            !RETRYABLE_SSE_CLIENT_STATUSES.has(response.status);
+          if (permanentClientError) {
+            // Authentication, authorization, validation, and missing-resource
+            // failures cannot heal on a timer. Stop instead of hammering the
+            // daemon every two seconds for the lifetime of the page.
+            closed = true;
+            break;
+          }
+          throw new Error(`SSE request failed: ${response.status}`);
+        }
+        if (!response.body) {
           throw new Error(`SSE request failed: ${response.status}`);
         }
         if (!closed) onConnectionState?.("open");
@@ -256,7 +294,12 @@ function sseSubscribe(
               .filter((line) => line.startsWith("data:"))
               .map((line) => line.slice(5).replace(/^ /, ""))
               .join("\n");
-            if (data && !closed) onData(data);
+            const eventId = frame
+              .split("\n")
+              .filter((line) => line.startsWith("id:"))
+              .map((line) => line.slice(3).replace(/^ /, ""))
+              .at(-1);
+            if (data && !closed) onData(data, eventId || undefined);
           }
         }
       } catch {
@@ -719,8 +762,12 @@ export function streamOperatorConversation(
               controller.abort();
               break;
             }
-            cursor = Math.max(cursor, candidate.sequence);
             handlers.onFrame(candidate);
+            // Advanced after the handler, for the reason the signal stream
+            // advances after its consumer: a throwing handler is caught below
+            // and reconnects from this cursor, so advancing first drops the
+            // frame it never handled.
+            cursor = Math.max(cursor, candidate.sequence);
           }
         }
       } catch (error) {
@@ -1352,9 +1399,15 @@ export function streamSession(
   onEvent: (event: Record<string, unknown>) => void,
   onConnectionState?: (state: StreamConnectionState) => void,
 ): () => void {
+  let cursor: string | undefined;
   const close = sseSubscribe(
-    `/api/sessions/${encodeURIComponent(id)}/stream`,
-    (data) => {
+    () => {
+      const query = new URLSearchParams();
+      if (cursor) query.set("cursor", cursor);
+      const suffix = query.toString();
+      return `/api/sessions/${encodeURIComponent(id)}/stream${suffix ? `?${suffix}` : ""}`;
+    },
+    (data, eventId) => {
       let event: Record<string, unknown>;
       try {
         event = JSON.parse(data) as Record<string, unknown>;
@@ -1366,6 +1419,11 @@ export function streamSession(
         close();
       }
       onEvent(event);
+      // Advance only after the consumer accepted this frame. If the callback
+      // throws, reconnecting from the prior cursor repeats rather than skips it.
+      if (eventId && event.type !== "heartbeat" && event.type !== "done") {
+        cursor = eventId;
+      }
     },
     onConnectionState,
   );
@@ -1402,8 +1460,12 @@ export function streamSignals(
   onEvent: (event: SignalEvent | { type: string }) => void,
   onConnectionState?: (state: StreamConnectionState) => void,
 ): () => void {
+  let afterSeq = 0;
   const close = sseSubscribe(
-    `/api/sessions/${encodeURIComponent(id)}/signals`,
+    () => {
+      const query = new URLSearchParams({ after_seq: String(afterSeq) });
+      return `/api/sessions/${encodeURIComponent(id)}/signals?${query}`;
+    },
     (data) => {
       let event: SignalEvent | { type: string };
       try {
@@ -1412,10 +1474,18 @@ export function streamSignals(
         /* malformed chunk */
         return;
       }
-      if ("type" in event && event.type === "done") {
-        close();
+      if ("type" in event) {
+        if (event.type === "done") close();
+        onEvent(event);
+        return;
       }
-      onEvent("type" in event ? event : normalizeSignalEvent(event));
+      onEvent(normalizeSignalEvent(event));
+      // Advanced only after the consumer has taken the event. Advancing first
+      // left a throwing consumer with the cursor already past a signal it
+      // never handled, and the reconnect resumes from that cursor, so the
+      // signal was skipped for good. Redelivering one the consumer already
+      // processed is the cheaper failure of the two.
+      afterSeq = Math.max(afterSeq, event.seq);
     },
     onConnectionState,
   );

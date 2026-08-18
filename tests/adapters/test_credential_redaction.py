@@ -27,6 +27,33 @@ class TestRedactUrlQueryCredentials:
         assert "my-private-key" not in result
         assert "api_key=***" in result
 
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "access_key",
+            "access-key",
+            "access.key",
+            "accessKey",
+            "private_key",
+            "private-key",
+            "private.key",
+            "privateKey",
+        ],
+    )
+    def test_access_and_private_key_spellings_are_redacted(self, field_name):
+        url = f"https://api.example.com/v1?{field_name}=credential-value-3005&safe=visible"
+
+        result = _redact_url(url)
+
+        assert "credential-value-3005" not in result
+        assert "safe=visible" in result
+
+    @pytest.mark.parametrize("field_name", ["accessibility", "private_mode"])
+    def test_noncredential_access_and_private_words_are_preserved(self, field_name):
+        url = f"https://api.example.com/v1?{field_name}=visible"
+
+        assert _redact_url(url) == url
+
     def test_multiple_secrets_in_query_all_redacted(self):
         url = "https://example.com/cb?token=secret&api_key=k&safe=value"
         result = _redact_url(url)
@@ -200,3 +227,41 @@ class TestListLeakRegression:
         assert "SECRETPW" not in err_str, (
             f"netloc password leaked from list of URL strings under non-sensitive key: {err_str!r}"
         )
+
+
+class TestDetailKeyClassifierParity:
+    """The detail-key classifier must withhold every field name the shared
+    credential predicate classifies as secret — an adapter error string is the
+    one projection of these values that reaches logs and API error bodies."""
+
+    @pytest.mark.parametrize(
+        "field_name",
+        [
+            "access_token",
+            "accessKey",
+            "Authorization",
+            "private_key",
+            "client_secret",
+            "api-key",
+            "auth_token",
+            "credential",
+            "bearer",
+        ],
+    )
+    def test_predicate_classified_detail_keys_masked_in_error_str(self, field_name):
+        err = AdapterError("boom", **{field_name: "credential-value-3005"})
+        assert "credential-value-3005" not in str(err)
+
+    def test_nested_dict_under_nonsensitive_key_masks_predicate_names(self):
+        err = AdapterError("boom", config={"accessKey": "AKIA-credential-3005"})
+        assert "AKIA-credential-3005" not in str(err)
+
+    def test_header_dict_inside_list_masks_authorization(self):
+        err = AdapterError("boom", headers=[{"Authorization": "Bearer credential-3005"}])
+        assert "credential-3005" not in str(err)
+
+    def test_nonsecret_details_still_visible(self):
+        err = AdapterError("boom", adapter="pg", table="users")
+        rendered = str(err)
+        assert "pg" in rendered
+        assert "users" in rendered
