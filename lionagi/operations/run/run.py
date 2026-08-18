@@ -115,6 +115,17 @@ async def _stream_with_deadline(model, api_call, deadline: float | None):
             )
 
 
+def _stalled_worker_context(api_call) -> str:
+    """Identify a stalled worker using only generated values.
+
+    Model and provider are caller-configured and stay out of this line; the
+    API hooks already report them per branch. Read defensively: this runs on
+    the failure path, where raising would replace the stall report.
+    """
+    call_id = getattr(api_call, "id", None)
+    return f"call={call_id}" if call_id else "worker unidentified"
+
+
 async def _stream_with_liveness(
     model,
     kw: dict,
@@ -210,18 +221,21 @@ async def _stream_with_liveness(
                 )
             if liveness_timeout is None or not is_liveness_boundary:
                 raise
+            stalled = _stalled_worker_context(api_call)
             if attempt == attempts - 1:
                 raise WorkerLivenessError(
                     f"worker produced no first stream output within "
-                    f"{liveness_timeout:.0f}s across {attempts} attempt(s)",
+                    f"{liveness_timeout:.0f}s across {attempts} attempt(s) "
+                    f"[{stalled}]",
                     reason="worker.no_first_output",
                 ) from exc
             logger.warning(
-                "run: no first stream output within %.0fs (attempt %d/%d); "
+                "run: no first stream output within %.0fs (attempt %d/%d) [%s]; "
                 "retrying worker subprocess",
                 liveness_timeout,
                 attempt + 1,
                 attempts,
+                stalled,
             )
             continue
         except BaseException:

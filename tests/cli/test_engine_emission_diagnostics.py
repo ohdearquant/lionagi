@@ -38,6 +38,7 @@ class MockStateDB:
     def __init__(self):
         self.insert_calls: list[dict] = []
         self.update_calls: list[dict] = []
+        self.outcome_calls: list[dict] = []
 
     async def open(self):
         pass
@@ -53,12 +54,15 @@ class MockStateDB:
     ):
         self.update_calls.append({"run_id": run_id, "status": status, "error": error})
 
+    async def record_engine_run_outcome(self, run_id, outcome):
+        self.outcome_calls.append({"run_id": run_id, "outcome": outcome})
+
 
 # Engine CLI: emission_missing events → error column on completed row
 
 
-async def test_emission_failures_written_to_db_error_on_completed(monkeypatch):
-    """Completed run with emission failures must have status='completed' and error containing 'emission_missing'."""
+async def test_emission_failures_written_to_degraded_outcome_on_completed(monkeypatch):
+    """Emission loss is a completed degradation, not a terminal error."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
@@ -88,13 +92,12 @@ async def test_emission_failures_written_to_db_error_on_completed(monkeypatch):
     completed = [c for c in mock_db.update_calls if c["status"] == "completed"]
     assert completed, f"no completed update; calls={mock_db.update_calls}"
     error_val = completed[0]["error"]
-    assert error_val is not None, "emission failures must be written to error column"
-    assert "emission_missing" in error_val, (
-        f"error column must contain 'emission_missing'; got: {error_val!r}"
-    )
-    assert "planner" in error_val or "summariser" in error_val, (
-        f"error column must name the failing agents; got: {error_val!r}"
-    )
+    assert error_val is None
+    assert len(mock_db.outcome_calls) == 1
+    outcome = mock_db.outcome_calls[0]["outcome"]
+    assert outcome["degraded"] is True
+    assert outcome["degrade_reason"] == "emission_failure"
+    assert outcome["skipped"] == ["planner x2", "summariser x1"]
 
 
 async def test_no_emission_failures_error_column_stays_null(monkeypatch):
@@ -354,7 +357,7 @@ async def _build_zero_emission_engine():
 
 
 async def test_real_engine_emission_failure_propagates_to_cli(monkeypatch):
-    """Integration: real Engine subclass with a never-emitting branch → _do_engine_run writes error='emission_missing: ...' with status='completed'."""
+    """A real missing emission survives in the typed degradation envelope."""
     import lionagi.cli._logging as log_mod
     import lionagi.cli.engine as engine_mod
     import lionagi.state.db as db_mod
@@ -376,14 +379,11 @@ async def test_real_engine_emission_failure_propagates_to_cli(monkeypatch):
     completed = [c for c in mock_db.update_calls if c["status"] == "completed"]
     assert completed, f"no completed update; all calls: {mock_db.update_calls}"
     error_val = completed[0]["error"]
-    assert error_val is not None, (
-        "emission_missing fired but engine_runs.error stayed NULL — "
-        "Engine.run() → engine._emission_failures handoff is broken"
-    )
-    assert "emission_missing" in error_val, (
-        f"error column must contain 'emission_missing'; got: {error_val!r}"
-    )
-    assert "planner" in error_val, f"agent name must appear in error column; got: {error_val!r}"
+    assert error_val is None
+    assert len(mock_db.outcome_calls) == 1
+    outcome = mock_db.outcome_calls[0]["outcome"]
+    assert outcome["degraded"] is True
+    assert any("planner" in item for item in outcome["skipped"])
 
 
 async def test_real_engine_clean_run_leaves_error_null(monkeypatch):
@@ -498,3 +498,109 @@ async def test_engine_reuse_second_run_resets_emission_failures(monkeypatch):
     assert real_engine._emission_failures == [], (
         f"second clean run must reset _emission_failures; got: {real_engine._emission_failures}"
     )
+
+
+# Engine CLI: a degraded run must not be indistinguishable from a complete one
+
+
+class _DegradedResult(str):
+    """Stands in for EngineResult, which subclasses str for back-compatibility.
+
+    The subclassing is the whole difficulty: the CLI's ``isinstance(result, str)``
+    branch catches it, so the structured outcome travels on the object and every
+    plain-string path drops it silently.
+    """
+
+    def __new__(cls, text, *, degraded, degrade_reason, skipped):
+        obj = super().__new__(cls, text)
+        obj.degraded = degraded
+        obj.degrade_reason = degrade_reason
+        obj.skipped = skipped
+        return obj
+
+
+async def _run_engine_returning(monkeypatch, capsys, result):
+    import lionagi.cli._logging as log_mod
+    import lionagi.cli.engine as engine_mod
+    import lionagi.state.db as db_mod
+
+    warnings: list[str] = []
+    monkeypatch.setattr(log_mod, "progress", lambda *a, **kw: None)
+    monkeypatch.setattr(log_mod, "warn", lambda msg, *a, **kw: warnings.append(str(msg)))
+    monkeypatch.setattr(engine_mod, "warn", lambda msg, *a, **kw: warnings.append(str(msg)))
+
+    mock_engine = MagicMock()
+    mock_engine._emission_failures = []
+    mock_engine._total_agent_failure = False
+
+    async def _mock_run(spec, *, on_event=None, **kwargs):
+        return result
+
+    mock_engine.run = _mock_run
+    monkeypatch.setattr(
+        engine_mod, "_import_engine_class", lambda m, n: MagicMock(return_value=mock_engine)
+    )
+    mock_db = MockStateDB()
+    monkeypatch.setattr(db_mod, "StateDB", lambda: mock_db)
+
+    rc = await engine_mod._do_engine_run(_build_args(kind="review", spec="ART"))
+    return rc, mock_db, warnings, capsys.readouterr().out
+
+
+async def test_a_degraded_run_says_so_in_its_output_and_its_row(monkeypatch, capsys):
+    """A caller must be able to tell a full run from one that skipped work.
+
+    The run reaches a result, so it is persisted completed and exits zero, and
+    on the plain-string path that was the entire visible outcome: a review whose
+    security dimension was never verified read exactly like one that was. The
+    degradation now reaches all three places a caller might look — the JSON, the
+    stored row, and the terminal.
+    """
+    import json as _json
+
+    result = _DegradedResult(
+        "verdict reached",
+        degraded=True,
+        degrade_reason="verify-clean (ProviderAuthError)",
+        skipped=["security"],
+    )
+    rc, mock_db, warnings, out = await _run_engine_returning(monkeypatch, capsys, result)
+
+    payload = _json.loads(out)
+    assert payload["degraded"] is True
+    assert "ProviderAuthError" in payload["degrade_reason"]
+    assert payload["skipped"] == ["security"]
+
+    completed = [c for c in mock_db.update_calls if c["status"] == "completed"]
+    assert completed, f"no completed update; calls={mock_db.update_calls}"
+    # Degradation is not a terminal error, so it rides the outcome envelope and
+    # the completed row's error stays NULL.
+    assert completed[0]["error"] is None
+    assert len(mock_db.outcome_calls) == 1
+    outcome = mock_db.outcome_calls[0]["outcome"]
+    assert outcome["degraded"] is True
+    assert "ProviderAuthError" in outcome["degrade_reason"]
+    assert outcome["skipped"] == ["security"]
+
+    assert any("degraded" in w for w in warnings), f"no warning emitted; warnings={warnings}"
+    assert rc == 0  # it did produce a result; the caller decides what that is worth
+
+
+async def test_an_undegraded_run_gains_no_degradation_fields(monkeypatch, capsys):
+    """The must-not-fire side, so the arm above cannot pass by always reporting.
+
+    A clean run's JSON keeps the shape callers already parse, and its row keeps
+    a null error column.
+    """
+    import json as _json
+
+    result = _DegradedResult("verdict reached", degraded=False, degrade_reason="", skipped=[])
+    rc, mock_db, warnings, out = await _run_engine_returning(monkeypatch, capsys, result)
+
+    payload = _json.loads(out)
+    assert "degraded" not in payload
+    assert "skipped" not in payload
+    completed = [c for c in mock_db.update_calls if c["status"] == "completed"]
+    assert completed and completed[0]["error"] is None
+    assert not any("degraded" in w for w in warnings)
+    assert rc == 0

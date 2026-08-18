@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from enum import Enum as _Enum
 from typing import Any, ClassVar
 
@@ -64,6 +64,14 @@ class Params:
                 object.__setattr__(self, k, v)
             else:
                 raise ValueError(f"Invalid parameter: {k}")
+
+        for field_info in fields(self):
+            if field_info.name in kwargs or field_info.name.startswith("_"):
+                continue
+            if field_info.default is not MISSING:
+                object.__setattr__(self, field_info.name, field_info.default)
+            elif field_info.default_factory is not MISSING:
+                object.__setattr__(self, field_info.name, field_info.default_factory())
 
         self._validate()
 

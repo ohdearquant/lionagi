@@ -419,7 +419,10 @@ def test_candidate_selection_is_read_one_chunk_at_a_time(tmp_path, monkeypatch):
     # The pass still prunes everything; only how it reads changed.
     assert result["sessions_pruned"] == len(ids) == 5
 
-    candidate_reads = [(s, p) for s, p in issued if s.startswith("SELECT id FROM sessions WHERE")]
+    # Matched up to the table name only: the paged read carries an INDEXED BY
+    # clause between the table and the WHERE, so a prefix reaching as far as
+    # WHERE silently selects the per-chunk rechecks and none of the pages.
+    candidate_reads = [(s, p) for s, p in issued if s.startswith("SELECT id FROM sessions")]
     assert candidate_reads, "the pass issued no candidate selection at all"
     paged = [(s, p) for s, p in candidate_reads if s.endswith("ORDER BY id LIMIT ?")]
     # Five candidates at two per read cannot be covered by one read, so this

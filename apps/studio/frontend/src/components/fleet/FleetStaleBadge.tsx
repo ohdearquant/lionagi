@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTranslations } from "use-intl";
 import { IconClose } from "@/components/ui/icons";
+import StatusDot from "@/components/ui/StatusDot";
 import type { DataState } from "./fleetReducer";
 
 interface Props {
@@ -41,13 +42,16 @@ export default function FleetStaleBadge({ dataState, lastUpdatedMs, errorMessage
     );
   }
 
+  // Ambient status, not an alert: a quiet timestamp in muted type, with the
+  // shared dot carrying the state. The warning treatment is reserved for the
+  // error branch above, where something is actually wrong.
   return (
     <div
       role="status"
       aria-live="polite"
-      className="flex items-center gap-2 rounded border border-status-pending bg-status-warning-bg px-3 py-1 font-data text-[length:var(--t-xs)] font-medium text-status-pending"
+      className="flex items-center gap-1.5 font-data text-[length:var(--t-xs)] text-content-muted"
     >
-      <span aria-hidden="true">◴</span>
+      <StatusDot status="stale" />
       <span>{t("stale.lastUpdated", { age })}</span>
     </div>
   );
