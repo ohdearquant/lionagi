@@ -97,10 +97,12 @@ only creates missing tables, a store that already had them gained `revision`,
 `sequence` and `attention_disposition_revisions` as inert `DEFAULT`
 placeholders rather than real values. Three assignments follow from that.
 `sequence` is assigned in `(created_at, id)` order, so an `ORDER BY sequence`
-read sees the original append order. `revision` is raised to the item_id's true
-count of history rows, so a client that already echoed a revision back never
-has its value read as a rollback. `attention_disposition_revisions` is seeded
-at that same count for every active item_id, and also for item_ids that exist
+read sees the original append order. `revision` is raised to the item_id's count
+of history rows, or to 1 where an active row has none, so a client that already
+echoed a revision back never has its value read as a rollback. A pre-upgrade
+row with no history therefore starts at 1 rather than 0.
+`attention_disposition_revisions` is seeded at that same value for every active
+item_id, and also for item_ids that exist
 only in history with a delete-shaped latest transition. That last case is the
 one worth stating: without it, a PUT written before the upgrade and replayed
 after it would recreate a disposition that had been deleted, instead of being
@@ -196,6 +198,24 @@ lock (`BEGIN IMMEDIATE`) gives free serialization that PostgreSQL's
    entirely on the rare teardown: a conflicting lock aborts the attempt, and
    both callers log the failure and retry on a later sweep.
 
+Two writes assign a value inside the statement that writes it, for the same
+reason. `insert_session_signal` appends one lifecycle signal and returns the
+`seq` it assigned; `seq` is `MAX(seq)+1` for the session, computed in the same
+write, so concurrent inserts from different processes under WAL do not collide.
+Coroutines sharing one `StateDB` are serialized through the instance write lock
+so no two enter `BEGIN IMMEDIATE` on the same async engine, and PostgreSQL takes
+an advisory transaction lock keyed on `session_id`.
+
+`insert_artifact` upserts one structured artifact and returns its stable id,
+with the natural-key lookup and the write in a single statement. A separate
+`SELECT`-then-`INSERT` let two concurrent callers both observe no existing row
+and both attempt an insert, and the loser hit one of the four partial unique
+indexes as an `IntegrityError` instead of the documented upsert. The
+`ON CONFLICT` target and its `WHERE` clause must match one of
+`idx_artifacts_natural_key_*` in `schema.sql` exactly, since both SQLite and
+PostgreSQL require the conflict target to name the specific partial index;
+which one applies follows from which of `invocation_id` and `session_id` is set.
+
 ## The session-control queue: a worked example
 
 `session_controls` is a small durable queue of verbs (pause, resume, message
@@ -247,6 +267,12 @@ because the record of who held a message and what a human then decided about it
 is the whole value of leaving the row standing.
 
 ## Status transitions and the terminal-status floor
+
+`get_sessions_for_run` returns every session recorded against a CLI run,
+oldest first, as a list rather than one row: one run can persist more than one
+session, and a caller deciding whether the run is over has to see all of them.
+An empty list means no session was ever recorded under that run id, which is
+not the same answer as a session that exists and is not finished.
 
 `update_status` is the single path every entity's status write goes through.
 Two optional guards make it safe under concurrency: `expected_statuses`
@@ -338,10 +364,12 @@ each one filters to the rows that qualify *before* ranking them. Ranking an
 unfiltered window and filtering inside it, which is what it used to do, can
 push a real execution out of the window once enough non-qualifying rows pile
 up in front of it, which manufactures "never happened" out of "did not fit in
-the slice". A *recorded* row is any top-level row in any status, proving only
-that the cursor moved. An *executed* row is further restricted to
-`EXECUTED_RUN_STATUSES`, because `skipped`, `queued`, `waiting_dependency` and
-`retry_wait` all move the cursor, or sit waiting to, without a run happening.
+the slice". A *recorded* row is any top-level row in any status, proving
+only that an admission decision reached the table. It does not prove the cursor
+moved: a capacity deferral records a `skipped` row and deliberately leaves
+`next_fire_at` untouched, so the occurrence is still due. An *executed* row is
+further restricted to `EXECUTED_RUN_STATUSES`, because `skipped`, `queued`,
+`waiting_dependency` and `retry_wait` are all recorded without a run happening.
 
 `schedule_run_exists_since` distinguishes "never fired" from "fired but
 crashed before follow-up bookkeeping" for missed-fire recovery. It excludes
@@ -421,8 +449,10 @@ gap. `metric_unreported_sessions` is the same companion for the
 `total_cost_usd` threshold metric, and it is the only metric with a
 NULL-versus-reported distinction to expose.
 
-`metric_value` aggregates a threshold-alert metric over `[window_start, now)`,
-and three of its members do not fit that shape. `p95_latency_ms` needs a sorted
+`metric_value` aggregates a threshold-alert metric from `window_start` onward.
+The predicate is a lower bound only, so a row timestamped in the future is
+included rather than held back until its time arrives. Three of its members do
+not fit even that shape. `p95_latency_ms` needs a sorted
 sample, which SQLite has no percentile function for, so it fetches raw
 invocation durations and computes the percentile in Python.
 `github_poll_healthy_age_minutes` is a point-in-time gauge rather than a
@@ -465,6 +495,16 @@ winning. It is a single atomic UPDATE rather than a read-then-write, so the
 guarantee holds under concurrency and not merely under interleaving that
 happens to be lucky.
 
+`set_session_provenance` writes attribution fields without touching
+`updated_at`. Where a session came from is not evidence that it is live, so
+these writes must not move the clock `reconcile_session_status` and the phantom
+reaper read. `project` and `project_source` are written together, since the
+source is meaningless alone, and the session update and the projects-registry
+upsert run as one locked write so neither commits without the other.
+`artifacts_path` is written with `COALESCE` rather than a plain assignment: a
+mirrored CLI session's artifact root is a weaker signal than a launcher-set one,
+so a later and more precise write is never clobbered by an earlier guess.
+
 `delete_imported_session` refuses on ownership twice. The row's `source_kind`
 must equal the caller's `require_source_kind` exactly, and that value must
 itself start with `imported_`. The first check stops one importer reaching
@@ -473,18 +513,25 @@ session at all, since a live session's `source_kind` never carries that prefix.
 A progression or message still referenced by a surviving session or branch is
 retained rather than deleted.
 
-`read_only_open_supported` answers whether `StateDB(readonly=True)` can open the
-configured store, which is SQLite-only: it is a `mode=ro` URI open of an
-existing file. The read-only branch of `StateDB.open()` is not dialect-gated, so
-an unconditional `readonly=True` fails at open on a server-backed store rather
-than degrading to a writable connection. Callers wanting read-only as an
-optimisation check this first and fall back to an ordinary open. Callers wanting
-read-only for safety must not use it, because on every store it returns False
-for it hands back a writable connection. Its True set is not exactly the set
-`state_db_file()` returns a path for: an unrecognised sync driver spelling such
-as `sqlite+pysqlite:///` also fails the ordinary open, since a sync driver
-cannot back an async engine, so that case is broken either way and only the
-exception differs.
+`read_only_open_supported` answers a narrower question than its name suggests:
+whether the configured store resolves to a SQLite file path at all. It is
+exactly `state_db_file() is not None`, so it does not check that the file
+exists, and it returns True for a path that is absent while
+`StateDB(readonly=True)` raises `FileNotFoundError` there — a read-only open
+never creates the file. Read-only is SQLite-only: it is a `mode=ro` URI open,
+and the read-only branch of `StateDB.open()` is not dialect-gated, so an
+unconditional `readonly=True` fails at open on a server-backed store rather
+than degrading to a writable connection. Callers use this as a cheap
+pre-filter and still handle the open failing. It is not a safety check: it says
+nothing about whether the connection you get back can write.
+
+`state_db_known_absent` answers the neighbouring question: whether the store a
+default `StateDB()` would open is known absent, which separates "no store, so no
+record of anything" from "the store is there and reading it went wrong". Callers
+act differently on each. It checks the store that will actually be opened,
+honouring `LIONAGI_STATE_DB_URL` rather than the default path, and only a True
+is confident: where existence is not a filesystem question it returns False and
+leaves the open attempt to give the real answer.
 
 ## Where the reasoning lives
 
