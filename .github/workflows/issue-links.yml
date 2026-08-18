@@ -26,105 +26,11 @@ jobs:
   closing-keywords:
     runs-on: ubuntu-latest
     steps:
+    - uses: actions/checkout@v4
     - name: Require a closing keyword for every referenced phase issue
       env:
         GH_TOKEN: ${{ github.token }}
         REPO: ${{ github.repository }}
         PR_BODY: ${{ github.event.pull_request.body }}
         PR_BRANCH: ${{ github.event.pull_request.head.ref }}
-      run: |
-        python - <<'PY'
-        import json
-        import os
-        import re
-        import subprocess
-        import sys
-
-        body = os.environ.get("PR_BODY") or ""
-        branch = os.environ.get("PR_BRANCH") or ""
-        repo = os.environ["REPO"]
-
-        # A number in the branch that is not an issue, or is an issue this gate
-        # does not govern, is dropped by the phase-tracking test below, so a
-        # loose match here costs nothing.
-        refs = {int(n) for n in re.findall(r"#(\d{2,6})\b", body)}
-        refs |= {int(n) for n in re.findall(r"(?<!\d)(\d{3,6})(?!\d)", branch)}
-
-        def issue(number: int) -> dict | None:
-            """The issue, or None when it does not exist or is a pull request."""
-            proc = subprocess.run(
-                ["gh", "api", f"repos/{repo}/issues/{number}"],
-                capture_output=True,
-                text=True,
-            )
-            if proc.returncode != 0:
-                stderr = proc.stderr.strip()
-                # A reference to something that was never an issue is ordinary.
-                # Any other failure is a failed read, and a failed read must not
-                # be reported as nothing to do.
-                if "Not Found" in stderr or "HTTP 404" in stderr:
-                    return None
-                print(f"could not read issue #{number}: {stderr}")
-                sys.exit(1)
-            data = json.loads(proc.stdout)
-            return None if "pull_request" in data else data
-
-        def is_phase_tracking(title: str) -> bool:
-            """Whether an issue title marks it as one phase of an ADR rollout.
-
-            Keyed on the ADR number rather than on the word "phase": the same
-            issues are titled "Phase 1", "P3", "G0-P1" and "P5b". The epic that
-            umbrellas a rollout is excluded; it closes when its last phase does,
-            not when any one PR lands.
-            """
-            return bool(re.search(r"ADR-\d{3,4}", title, re.I)) and not title.lower().startswith("epic(")
-
-        def closed_by_body(number: int) -> bool:
-            pattern = rf"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:{re.escape(repo)})?#{number}\b"
-            return bool(re.search(pattern, body, re.I))
-
-        def declared_reference_only(number: int) -> bool:
-            """An author's explicit statement that this PR does not finish the phase.
-
-            The ADR document PR is the case this exists for: it names every phase
-            it plans and finishes none of them. Without an opt-out the gate would
-            force a wrong closing keyword onto exactly the PR that opened the
-            issues.
-            """
-            for line in body.splitlines():
-                if re.match(r"\s*refs-only\s*:", line, re.I) and re.search(rf"#{number}\b", line):
-                    return True
-            return False
-
-        missing = []
-        governed = []
-        for number in sorted(refs):
-            data = issue(number)
-            if data is None or not is_phase_tracking(data["title"]):
-                continue
-            governed.append((number, data["title"]))
-            if not closed_by_body(number) and not declared_reference_only(number):
-                missing.append((number, data["title"]))
-
-        if missing:
-            print("This PR references phase-tracking issues without saying what happens to them.\n")
-            for number, title in missing:
-                print(f"  #{number}  {title}")
-            print(
-                "\nAdd a closing keyword to the PR body for each one it finishes, "
-                '"Closes #NNNN".'
-                "\nFor a phase this PR only mentions, add a line naming it instead:"
-                "\n\n    Refs-only: #NNNN"
-                "\n\nA closing keyword on a PR stacked under another branch is not a "
-                "problem: GitHub fires it when the stack drains and the tail retargets "
-                "main, so write it when the work lands, not when the base does."
-            )
-            sys.exit(1)
-
-        if governed:
-            print(f"{len(governed)} referenced phase issue(s), each closed or declared reference-only:")
-            for number, title in governed:
-                print(f"  #{number}  {title}")
-        else:
-            print("No phase-tracking issues referenced.")
-        PY
+      run: python3 scripts/check_issue_links.py

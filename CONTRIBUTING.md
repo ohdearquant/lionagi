@@ -56,6 +56,12 @@ guidelines and instructions for contributing to this project.
    it once the stack drains and the last PR retargets `main`. Write the keyword
    when the work lands, not when the base does.
 
+   Write the keyword plainly. "Does not close #NNNN" is read here as no
+   closure at all, because GitHub's own parser ignores the negation and would
+   close the issue anyway, and the check will not let that difference through
+   quietly. A body naming more than 40 issue numbers is refused rather than
+   partly checked.
+
 ## Testing
 
 1. **Writing Tests**: Include unit and integration tests for your code. Tests
