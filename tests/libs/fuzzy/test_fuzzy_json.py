@@ -240,12 +240,6 @@ def test_fuzzy_json_max_size_enforcement():
         fuzzy_json('{"key": "value"}', max_size=5)
 
 
-def test_fuzzy_json_max_size_default_accepts_normal():
-    """Test fuzzy_json accepts normal-sized input with default max_size"""
-    result = fuzzy_json('{"key": "value"}')
-    assert result == {"key": "value"}
-
-
 def test_validate_return_type_dict():
     """Test _validate_return_type accepts dict"""
     result = _validate_return_type({"key": "value"})

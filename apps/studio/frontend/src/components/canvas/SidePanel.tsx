@@ -1,6 +1,5 @@
-// TODO(#1020 follow-up): SidePanel form labels need htmlFor/id wiring.
-// Tracked as a Track 1 a11y follow-up — substantial refactor of label+input
-// pairs across this file.
+// TODO: SidePanel form labels need htmlFor/id wiring. Deferred because it is a
+// substantial refactor of label+input pairs across this file.
 
 "use client";
 

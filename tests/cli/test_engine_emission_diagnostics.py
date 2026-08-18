@@ -573,8 +573,14 @@ async def test_a_degraded_run_says_so_in_its_output_and_its_row(monkeypatch, cap
 
     completed = [c for c in mock_db.update_calls if c["status"] == "completed"]
     assert completed, f"no completed update; calls={mock_db.update_calls}"
-    assert "degraded" in (completed[0]["error"] or "")
-    assert "security" in (completed[0]["error"] or "")
+    # Degradation is not a terminal error, so it rides the outcome envelope and
+    # the completed row's error stays NULL.
+    assert completed[0]["error"] is None
+    assert len(mock_db.outcome_calls) == 1
+    outcome = mock_db.outcome_calls[0]["outcome"]
+    assert outcome["degraded"] is True
+    assert "ProviderAuthError" in outcome["degrade_reason"]
+    assert outcome["skipped"] == ["security"]
 
     assert any("degraded" in w for w in warnings), f"no warning emitted; warnings={warnings}"
     assert rc == 0  # it did produce a result; the caller decides what that is worth
