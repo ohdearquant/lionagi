@@ -135,7 +135,7 @@ function FileRef({
   return <>{fallback}</>;
 }
 
-// issue #2848: get_run_file 404s for two different reasons -- the run never
+// get_run_file 404s for two different reasons -- the run never
 // recorded an artifact root, or a file inside a recorded root is genuinely
 // gone -- and the detail string is the only thing that tells them apart.
 // Matches both `get_run_file` 404 details ("has no artifact root" and
