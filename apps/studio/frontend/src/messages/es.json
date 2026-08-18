@@ -245,7 +245,7 @@
       "createWorkflow": "Nuevo flujo de trabajo",
       "createAgent": "Nuevo agente",
       "allSkill": "No se encontraron skills.",
-      "allSkillHint": "Agrega un SKILL.md en ~/.lionagi/skills/<name>/ para verlo aquí.",
+      "allSkillHint": "Agrega un SKILL.md en ~/.lionagi/skills/NAME/ para verlo aquí.",
       "allPlugin": "No se encontraron plugins.",
       "allPluginHint": "Instala un plugin en ~/.claude/plugins/ para verlo aquí."
     },

@@ -173,10 +173,37 @@ describe("history/RunDetail.tsx — bounded incremental signal projection", () =
 });
 
 describe("fleet/SessionDetail.tsx — renders RunDetail without fullPage", () => {
+  const sessionDetailSrc = fs.readFileSync(
+    path.resolve(HISTORY_DIR, "../fleet/SessionDetail.tsx"),
+    "utf-8",
+  );
+
   it("passes only id to RunDetail", () => {
-    const src = fs.readFileSync(path.resolve(HISTORY_DIR, "../fleet/SessionDetail.tsx"), "utf-8");
-    expect(src).toMatch(/<RunDetail id={runId} \/>/);
-    expect(src).not.toMatch(/fullPage/);
+    expect(sessionDetailSrc).toMatch(/<RunDetail id={runId} \/>/);
+    expect(sessionDetailSrc).not.toMatch(/fullPage/);
+  });
+
+  it("does not link away to Engine runs from the run-detail header", () => {
+    expect(sessionDetailSrc).not.toMatch(/to="\/engine-runs"/);
+    expect(sessionDetailSrc).not.toMatch(/detail\.engineRuns/);
+  });
+
+  it("keeps Engine runs reachable from the System view", () => {
+    const systemSrc = fs.readFileSync(
+      path.resolve(HISTORY_DIR, "../../routes/system.tsx"),
+      "utf-8",
+    );
+    expect(systemSrc).toMatch(/to="\/engine-runs"/);
+  });
+
+  it("leaves no run-detail-only Engine runs translation behind in any locale", () => {
+    const messagesDir = path.resolve(HISTORY_DIR, "../../messages");
+    for (const filename of fs.readdirSync(messagesDir).filter((name) => name.endsWith(".json"))) {
+      const messages = JSON.parse(fs.readFileSync(path.join(messagesDir, filename), "utf-8")) as {
+        fleet?: { detail?: Record<string, unknown> };
+      };
+      expect(messages.fleet?.detail, filename).not.toHaveProperty("engineRuns");
+    }
   });
 });
 
@@ -2091,7 +2118,7 @@ describe("history/RunDetail.tsx — execution-graph expand/close wiring", () => 
   });
 
   it("the progress summary bar renders from the same progressCounts used by both graph embeds", () => {
-    const occurrences = src.match(/<ProgressSummaryBar counts={progressCounts}/g) ?? [];
+    const occurrences = src.match(/<ProgressSummaryBar[^>]*counts={progressCounts}/g) ?? [];
     expect(occurrences.length).toBe(2);
   });
 });
@@ -2450,12 +2477,215 @@ describe("history/RunDetail.tsx — graph/list view toggle and cross-view select
     });
     return {
       container,
+      // Re-render the SAME React tree under a different run id, which is what
+      // navigating between runs does: the RunDetail instance is reused rather
+      // than remounted, so per-run state has to be reset rather than dropped.
+      rerenderWithRun: async (nextId: string, nextSession: unknown) => {
+        const { getSession } = await import("@/lib/api");
+        vi.mocked(getSession).mockResolvedValue(nextSession as never);
+        await act(async () => {
+          root.render(
+            <IntlProvider locale="en" messages={enMessages}>
+              <RunDetail id={nextId} />
+            </IntlProvider>,
+          );
+        });
+        await act(async () => {
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+      },
       unmount: () => {
         act(() => root.unmount());
         container.remove();
       },
     };
   }
+
+  async function openExpandedGraph(container: HTMLDivElement) {
+    const expand = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Expand execution graph"]',
+    );
+    expect(expand).not.toBeNull();
+    expand?.focus();
+    await act(async () => {
+      expand?.click();
+    });
+    const dialog = document.body.querySelector<HTMLElement>(
+      '[role="dialog"][aria-label="Execution graph"]',
+    );
+    expect(dialog).not.toBeNull();
+    return { dialog: dialog!, expand: expand! };
+  }
+
+  it("opening the expanded graph moves focus inside and names it", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      const { dialog } = await openExpandedGraph(container);
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      expect(dialog.getAttribute("aria-label")).toBe("Execution graph");
+    } finally {
+      unmount();
+    }
+  });
+
+  // Navigating to another run reuses this RunDetail instance, so an overlay flag
+  // that survives the navigation reopens the dialog over the incoming run.
+  it("switching to another run closes the overlay the outgoing run opened", async () => {
+    const { container, rerenderWithRun, unmount } = await mountRunDetail(
+      sessionWithBranches(edgedGraph),
+    );
+    try {
+      await openExpandedGraph(container);
+
+      // The next run also has a resolvable graph, so the section itself stays
+      // rendered. Only the run identity changed.
+      await rerenderWithRun("run-next", {
+        ...(sessionWithBranches(edgedGraph) as Record<string, unknown>),
+        id: "run-next",
+        name: "run-next",
+      });
+
+      expect(
+        document.body.querySelector('[role="dialog"][aria-label="Execution graph"]'),
+      ).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  // Overdetermined, and deliberately kept as a case rather than a guard: the graph
+  // section unmounts with the graphless run, so this stays green even without the
+  // flag reset that the test above pins.
+  it("moving to a run with no resolvable graph also closes it", async () => {
+    const { container, rerenderWithRun, unmount } = await mountRunDetail(
+      sessionWithBranches(edgedGraph),
+    );
+    try {
+      await openExpandedGraph(container);
+
+      await rerenderWithRun("run-graphless", {
+        ...(sessionWithBranches(null) as Record<string, unknown>),
+        id: "run-graphless",
+        name: "run-graphless",
+      });
+
+      expect(
+        document.body.querySelector('[role="dialog"][aria-label="Execution graph"]'),
+      ).toBeNull();
+    } finally {
+      unmount();
+    }
+  });
+
+  it("traps forward and reverse Tab traversal when focus starts outside the graph dialog", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    try {
+      const { dialog } = await openExpandedGraph(container);
+      const last = document.createElement("button");
+      last.textContent = "Last graph action";
+      dialog.appendChild(last);
+      const first = dialog.querySelector<HTMLButtonElement>("button");
+      expect(first).not.toBeNull();
+
+      outside.focus();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+      expect(document.activeElement).toBe(first);
+      expect(dialog.contains(document.activeElement)).toBe(true);
+
+      outside.focus();
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }),
+      );
+      expect(document.activeElement).toBe(last);
+      expect(dialog.contains(document.activeElement)).toBe(true);
+
+      last.focus();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+      expect(document.activeElement).toBe(first);
+
+      first?.focus();
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }),
+      );
+      expect(document.activeElement).toBe(last);
+    } finally {
+      outside.remove();
+      unmount();
+    }
+  });
+
+  it("Escape closes the expanded graph and restores focus to its launcher", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      const { dialog, expand } = await openExpandedGraph(container);
+      dialog.querySelector<HTMLButtonElement>("button")?.focus();
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      });
+      expect(
+        document.body.querySelector('[role="dialog"][aria-label="Execution graph"]'),
+      ).toBeNull();
+      expect(document.activeElement).toBe(expand);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("the explicit close control restores focus to the Expand graph launcher", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      const { dialog, expand } = await openExpandedGraph(container);
+      const close = dialog.querySelector<HTMLButtonElement>(
+        'button[aria-label="Collapse execution graph"]',
+      );
+      expect(close).not.toBeNull();
+      close?.focus();
+      await act(async () => {
+        close?.click();
+      });
+      expect(
+        document.body.querySelector('[role="dialog"][aria-label="Execution graph"]'),
+      ).toBeNull();
+      expect(document.activeElement).toBe(expand);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("closing preserves the selected graph node and the mounted inline canvas viewport", async () => {
+    const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));
+    try {
+      const inlineCanvas = container.querySelector('[data-testid="worker-canvas"]');
+      const { dialog } = await openExpandedGraph(container);
+      const expandedCanvas = dialog.querySelector('[data-testid="worker-canvas"]');
+      const expandedPanel = expandedCanvas?.parentElement;
+      expect(expandedPanel).not.toBeNull();
+      const fakeNode = document.createElement("div");
+      fakeNode.className = "react-flow__node";
+      fakeNode.dataset.id = "A";
+      expandedPanel?.appendChild(fakeNode);
+      await act(async () => {
+        fakeNode.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      await act(async () => {
+        dialog
+          .querySelector<HTMLButtonElement>('button[aria-label="Collapse execution graph"]')
+          ?.click();
+      });
+
+      expect(container.querySelector('[data-testid="worker-canvas"]')).toBe(inlineCanvas);
+      expect(
+        container.querySelector('[data-testid="run-detail-selected-node"]')?.textContent,
+      ).toContain("A");
+      expect(document.getElementById("step-A")).not.toBeNull();
+    } finally {
+      unmount();
+    }
+  });
 
   it("row 3: a run with edges opens on the graph", async () => {
     const { container, unmount } = await mountRunDetail(sessionWithBranches(edgedGraph));

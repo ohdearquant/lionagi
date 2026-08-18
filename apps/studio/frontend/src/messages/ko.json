@@ -245,7 +245,7 @@
       "createWorkflow": "새 워크플로",
       "createAgent": "새 에이전트",
       "allSkill": "스킬을 찾을 수 없습니다.",
-      "allSkillHint": "여기에 표시하려면 ~/.lionagi/skills/<name>/ 아래에 SKILL.md를 추가하세요.",
+      "allSkillHint": "여기에 표시하려면 ~/.lionagi/skills/NAME/ 아래에 SKILL.md를 추가하세요.",
       "allPlugin": "플러그인을 찾을 수 없습니다.",
       "allPluginHint": "여기에 표시하려면 ~/.claude/plugins/ 아래에 플러그인을 설치하세요."
     },
