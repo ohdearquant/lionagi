@@ -688,6 +688,18 @@ class ReviewEngine(Engine):
             )
 
     async def _verdict(self, run: EngineRun, artifact: str, dimensions: tuple[str, ...]) -> str:
+        # Base runs carry no attribution, so they cannot report the condition.
+        if bool(getattr(run, "shares_session", False)):
+            # The window holds another run's emissions and nothing records which
+            # run produced what, so synthesising from it would put a different
+            # artifact's findings in this verdict and could credit a dimension
+            # this run never covered. Refuse before the prompt is built.
+            note = _shared_session_note()
+            final = ReviewVerdict(verdict="REQUEST-CHANGES", rationale=note, blocking=[])
+            run.notify("verdict", shared_session=True)
+            await run.emit(final)
+            return note
+
         issues = run.by_type(IssueFound)
         verifications = run.by_type(VerifyResult)
         clean = [c.dimension for c in run.by_type(DimensionClean)]
@@ -710,18 +722,12 @@ class ReviewEngine(Engine):
         unverified = self._unverified_findings(run)
         # The condition that spawned the audit, re-asked now: still true = it produced nothing.
         unaudited = bool(self.verify_clean) and not verifications
-        # Base runs carry no attribution, so they cannot report the condition.
-        shared = bool(getattr(run, "shares_session", False))
         proposals = run.by_type(ProposedVerdict)
         proposed = proposals[-1] if proposals else None
-        final = self._rule(
-            proposed, unevidenced, unverified, text, shared=shared, unaudited=unaudited
-        )
+        final = self._rule(proposed, unevidenced, unverified, text, unaudited=unaudited)
         await run.emit(final)
 
         notes = []
-        if shared:
-            notes.append(_shared_session_note())
         if unevidenced:
             notes.append(_withheld_note(unevidenced))
         if unverified:
@@ -767,10 +773,9 @@ class ReviewEngine(Engine):
         unverified: tuple[IssueFound, ...],
         text: str,
         *,
-        shared: bool = False,
         unaudited: bool = False,
     ) -> ReviewVerdict:
-        """The one verdict this run publishes; coverage, verification and attribution refuse approval only."""
+        """The one verdict this run publishes; coverage and verification refuse approval only. Attribution refuses earlier, before synthesis reads a window it cannot divide."""
         verdict = (proposed.verdict if proposed else "").strip()
         rationale = (proposed.rationale if proposed else "") or text
         blocking = list(proposed.blocking) if proposed else []
@@ -784,12 +789,8 @@ class ReviewEngine(Engine):
                 ),
                 blocking=blocking,
             )
-        if verdict.upper().startswith("APPROVE") and (
-            shared or unevidenced or unverified or unaudited
-        ):
+        if verdict.upper().startswith("APPROVE") and (unevidenced or unverified or unaudited):
             notes = []
-            if shared:
-                notes.append(_shared_session_note())
             if unevidenced:
                 notes.append(_withheld_note(unevidenced))
             if unverified:

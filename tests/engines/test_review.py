@@ -739,6 +739,58 @@ async def test_reusing_one_session_for_a_second_run_also_cannot_approve():
 
 
 @pytest.mark.asyncio
+async def test_a_shared_session_never_reaches_synthesis():
+    """Withholding after synthesis is too late: the prompt is built from a window holding the other run's findings."""
+    from lionagi.session.session import Session
+
+    session = Session()
+    eng = ReviewEngine()
+    first = eng.new_run(session=session)
+    second = eng.new_run(session=session)
+
+    await first.emit(
+        IssueFound(dimension="security", description="the other run's", severity="critical")
+    )
+
+    made: list[str] = []
+
+    async def recording_make(role, **kw):
+        made.append(kw.get("name", role))
+        raise AssertionError("synthesis read a window it cannot divide")
+
+    second.make_agent = recording_make
+    out = await eng._verdict(second, "ART", ("correctness", "security"))
+
+    assert made == [], "an agent was constructed on a contaminated window"
+    assert "another review run" in out
+    assert "the other run's" not in out, "a peer run's finding reached this verdict"
+    final = second.by_type(ReviewVerdict)
+    assert [v.verdict for v in final] == ["REQUEST-CHANGES"]
+    assert final[0].blocking == []
+
+
+@pytest.mark.asyncio
+async def test_an_unshared_session_does_reach_synthesis():
+    """The control: without it, refusing every run would pass the arm above."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+
+    await run.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await run.emit(DimensionClean(dimension="security", rationale="fine"))
+
+    made: list[str] = []
+    synth_cls = _synth_proposing("APPROVE")
+
+    async def recording_make(role, **kw):
+        made.append(kw.get("name", role))
+        return synth_cls(run)
+
+    run.make_agent = recording_make
+    await eng._verdict(run, "ART", ("correctness", "security"))
+    assert made == ["verdict"]
+
+
+@pytest.mark.asyncio
 async def test_a_run_with_its_own_session_still_approves():
     """The control. Without it the detector could refuse every run and still pass the arms above."""
     eng = ReviewEngine()
