@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable, Collection
 from dataclasses import MISSING, dataclass, fields
 from enum import Enum as _Enum
-from functools import lru_cache
 from typing import Any, ClassVar
 
 from typing_extensions import Self, TypedDict, override
@@ -59,21 +58,33 @@ class _FieldLayout:
     allowed: frozenset[str]
 
 
-@lru_cache(maxsize=256)
+_LAYOUT_ATTR = "_field_layout_cache"
+
+
 def _field_layout(model_type: type[Any]) -> _FieldLayout:
-    """Discover and cache one immutable public-field layout per model type."""
+    """One immutable public-field layout per model type, cached on the type itself.
+
+    Held in the type's own ``__dict__`` rather than a shared fixed-size cache: a
+    subclass must not read its parent's layout, and a process holding more model
+    types than any cap would evict on every access and recompute forever.
+    """
+    cached = model_type.__dict__.get(_LAYOUT_ATTR)
+    if cached is not None:
+        return cached
     declared = tuple(
         field_info for field_info in fields(model_type) if not field_info.name.startswith("_")
     )
     names = tuple(field_info.name for field_info in declared)
-    return _FieldLayout(declared=declared, names=names, allowed=frozenset(names))
+    layout = _FieldLayout(declared=declared, names=names, allowed=frozenset(names))
+    setattr(model_type, _LAYOUT_ATTR, layout)
+    return layout
 
 
 def _validate_declared_fields(
     instance: Any,
     set_field: Callable[[Any, str, Any], None],
 ) -> None:
-    for name in type(instance).field_names():
+    for name in _field_layout(type(instance)).names:
         _validate_declared_field(instance, name, set_field)
 
 
@@ -95,7 +106,7 @@ def _declared_fields_to_dict(
 ) -> dict[str, Any]:
     excluded = frozenset(exclude or ())
     data: dict[str, Any] = {}
-    for name in type(instance).field_names():
+    for name in _field_layout(type(instance)).names:
         if name in excluded:
             continue
         value = getattr(instance, name, Undefined)
@@ -106,7 +117,9 @@ def _declared_fields_to_dict(
 
 def _declared_field_state(instance: Any) -> dict[str, Any]:
     """Copy the complete in-memory field state without wire omission."""
-    return {name: getattr(instance, name, Undefined) for name in type(instance).field_names()}
+    return {
+        name: getattr(instance, name, Undefined) for name in _field_layout(type(instance)).names
+    }
 
 
 @dataclass(slots=True, frozen=True, init=False)
