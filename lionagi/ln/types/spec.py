@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Annotated, Any
 
-from ._sentinel import MaybeUndefined, Undefined, is_sentinel, not_sentinel
+from ._sentinel import (
+    MaybeUndefined,
+    Undefined,
+    _compat_is_sentinel,
+    _compat_not_sentinel,
+    not_sentinel,
+)
 from .base import Meta
 
 # Global cache for annotated types with bounded size
@@ -103,7 +109,11 @@ class Spec:
     ) -> None:
         metas = CommonMeta.prepare(*args, metadata=metadata, **kw)
 
-        if not_sentinel(base_type, True):
+        if _compat_not_sentinel(
+            base_type,
+            site="lionagi.ln.types.spec.Spec.__init__",
+            none_as_sentinel=True,
+        ):
             import types
             import typing
 
@@ -220,7 +230,11 @@ class Spec:
 
     @property
     def annotation(self) -> type[Any]:
-        if is_sentinel(self.base_type, none_as_sentinel=True):
+        if _compat_is_sentinel(
+            self.base_type,
+            site="lionagi.ln.types.spec.Spec.annotation",
+            none_as_sentinel=True,
+        ):
             return Any
         t_ = self.base_type
         if self.is_listable:
@@ -239,11 +253,15 @@ class Spec:
                 return _annotated_cache[cache_key]
 
             actual_type = (
-                Any if is_sentinel(self.base_type, none_as_sentinel=True) else self.base_type
+                Any
+                if _compat_is_sentinel(
+                    self.base_type,
+                    site="lionagi.ln.types.spec.Spec.annotated",
+                    none_as_sentinel=True,
+                )
+                else self.base_type
             )
-            current_metadata = (
-                () if is_sentinel(self.metadata, none_as_sentinel=True) else self.metadata
-            )
+            current_metadata = self.metadata
 
             if any(m.key == "nullable" and m.value for m in current_metadata):
                 actual_type = actual_type | None  # type: ignore

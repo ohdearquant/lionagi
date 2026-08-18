@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lionagi.ln.types import Enum, ModelConfig, Params
+from lionagi.ln.types._sentinel import _compat_is_sentinel
 from lionagi.protocols._concepts import Composable
 
 if TYPE_CHECKING:
@@ -125,10 +126,14 @@ class Role(Pattern):
     def emission_operable(self) -> Operable | None:
         """Build the Operable for this role's emission contract; None if no emits; always includes EscalationRequest."""
         from lionagi.casts.emission import build_emission_operable
-        from lionagi.ln.types import is_sentinel
 
         emits = getattr(self, "emits", ())
-        if is_sentinel(emits, none_as_sentinel=True, empty_as_sentinel=True):
+        if _compat_is_sentinel(
+            emits,
+            site="lionagi.casts.pattern.Role.emission_operable",
+            none_as_sentinel=True,
+            empty_as_sentinel=True,
+        ):
             return None
         return build_emission_operable(tuple(emits), name=f"{self.name}_emissions")
 

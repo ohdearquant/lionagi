@@ -102,7 +102,6 @@ class MorphParam(Params):
 class ChatParam(MorphParam):
     """Parameters for the chat/communicate morphism (guidance, context, response format, tool schemas)."""
 
-    _config: ClassVar[ModelConfig] = ModelConfig(none_as_sentinel=True)
     guidance: JsonValue = None
     context: JsonValue = None
     sender: SenderRecipient = None
@@ -149,7 +148,6 @@ class RunParam(ChatParam):
 class InterpretParam(MorphParam):
     """Parameters for the interpret morphism (style, domain, sample writing)."""
 
-    _config: ClassVar[ModelConfig] = ModelConfig(none_as_sentinel=True)
     domain: str = None
     style: str = None
     sample_writing: str = None
@@ -161,7 +159,6 @@ class InterpretParam(MorphParam):
 class ParseParam(MorphParam):
     """Parameters for the parse morphism (response format, fuzzy matching, error handling)."""
 
-    _config: ClassVar[ModelConfig] = ModelConfig(none_as_sentinel=True)
     response_format: type[BaseModel] | dict = None
     structure: Structure | None = None
     fuzzy_match_params: FuzzyMatchKeysParams | dict = None
@@ -175,7 +172,6 @@ class ParseParam(MorphParam):
 class ActionParam(MorphParam):
     """Parameters for the action/tool execution morphism (strategy, error handling, verbosity)."""
 
-    _config: ClassVar[ModelConfig] = ModelConfig(none_as_sentinel=True)
     action_call_params: AlcallParams = None
     tools: ToolRef = None
     strategy: Literal["concurrent", "sequential"] = "concurrent"
