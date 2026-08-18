@@ -325,6 +325,23 @@ async def _version(db: StateDB, entity_type: str, entity_id: str) -> float:
     return row["updated_at"]
 
 
+async def _persisted_status(db: StateDB, entity_type: str, entity_id: str) -> str:
+    row = await db.fetch_one(
+        f"SELECT status FROM {_TABLES[entity_type]} WHERE id = ?",
+        (entity_id,),
+    )
+    assert row is not None
+    return row["status"]
+
+
+async def _transition_ids(db: StateDB, entity_type: str, entity_id: str) -> list[str]:
+    rows = await db.fetch_all(
+        "SELECT id FROM status_transitions WHERE entity_type = ? AND entity_id = ?",
+        (entity_type, entity_id),
+    )
+    return [row["id"] for row in rows]
+
+
 def _command(
     entity_type: str,
     entity_id: str,
@@ -380,6 +397,7 @@ async def test_every_allowed_edge_applies(
     expected_version = (
         await _version(db, entity_type, entity_id) if edge.required_guard_fields else None
     )
+    history_before = await _transition_ids(db, entity_type, entity_id)
 
     outcome = await SQLAlchemyLifecycleService(db).transition(
         _command(entity_type, entity_id, edge, expected_version=expected_version)
@@ -389,6 +407,12 @@ async def test_every_allowed_edge_applies(
     assert outcome.previous_status == edge.source
     assert outcome.current_status == edge.target
     assert outcome.transition_id is not None
+    # The outcome is the service's report; these read the rows it claims to have written.
+    assert await _persisted_status(db, entity_type, entity_id) == edge.target
+    assert await _transition_ids(db, entity_type, entity_id) == [
+        *history_before,
+        outcome.transition_id,
+    ]
 
 
 _TERMINAL_EXIT_CASES = tuple(
@@ -421,6 +445,7 @@ async def test_every_undeclared_terminal_exit_fails_closed(
 ) -> None:
     entity_id = await _make_entity(db, entity_type, terminal_status)
     edge = _ExpectedEdge(terminal_status, target)
+    history_before = await _transition_ids(db, entity_type, entity_id)
 
     outcome = await SQLAlchemyLifecycleService(db).transition(
         _command(entity_type, entity_id, edge)
@@ -430,6 +455,9 @@ async def test_every_undeclared_terminal_exit_fails_closed(
     assert outcome.previous_status == terminal_status
     assert outcome.current_status == terminal_status
     assert outcome.transition_id is None
+    # A rejection that still wrote is the failure this case exists to catch.
+    assert await _persisted_status(db, entity_type, entity_id) == terminal_status
+    assert await _transition_ids(db, entity_type, entity_id) == history_before
 
 
 @pytest.mark.asyncio
