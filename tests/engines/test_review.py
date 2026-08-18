@@ -706,8 +706,8 @@ async def test_runs_started_side_by_side_on_one_session_cannot_approve():
 
 
 @pytest.mark.asyncio
-async def test_sequential_reuse_of_one_session_still_approves():
-    """Without this arm the detector could refuse every reused session and still look correct."""
+async def test_reusing_one_session_for_a_second_run_also_cannot_approve():
+    """Starting later does not make a run separable: the earlier run is still alive and still emitting into the later one's window, and no event records which run produced it."""
     from lionagi.session.session import Session
 
     session = Session()
@@ -717,8 +717,8 @@ async def test_sequential_reuse_of_one_session_still_approves():
     await first.emit(DimensionClean(dimension="correctness", rationale="fine"))
 
     second = eng.new_run(session=session)
-    assert second.shares_session is False
-    assert first.shares_session is False
+    assert second.shares_session is True
+    assert first.shares_session is True
 
     await second.emit(DimensionClean(dimension="correctness", rationale="fine"))
     await second.emit(DimensionClean(dimension="security", rationale="fine"))
@@ -733,5 +733,30 @@ async def test_sequential_reuse_of_one_session_still_approves():
 
     await _verdict_with(eng, second, ("correctness", "security"))
     final = second.by_type(ReviewVerdict)
+    assert len(final) == 1
+    assert final[0].verdict == "REQUEST-CHANGES"
+    assert "another review run" in final[0].rationale
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_its_own_session_still_approves():
+    """The control. Without it the detector could refuse every run and still pass the arms above."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+    assert run.shares_session is False
+
+    await run.emit(DimensionClean(dimension="correctness", rationale="fine"))
+    await run.emit(DimensionClean(dimension="security", rationale="fine"))
+    await run.emit(
+        VerifyResult(
+            issue="clean",
+            ref=_clean_ref(("correctness", "security")),
+            holds=True,
+            rationale="read it",
+        )
+    )
+
+    await _verdict_with(eng, run, ("correctness", "security"))
+    final = run.by_type(ReviewVerdict)
     assert len(final) == 1
     assert final[0].verdict == "APPROVE"

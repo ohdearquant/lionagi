@@ -262,13 +262,18 @@ _SESSION_RUNS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 class ReviewRun(EngineRun):
-    """Evidence scoped to this run; ``shares_session`` flags the overlap this scoping cannot resolve."""
+    """Evidence scoped to this run; ``shares_session`` flags a Session this scoping cannot divide."""
 
     def __init__(self, engine: Engine, **kwargs: Any) -> None:
         super().__init__(engine, **kwargs)
         self._inherited: set[Any] = {e.id for e in self.session.observer.flow.items}
-        # Equal snapshots = nothing emitted in between = overlap; sequential reuse
-        # always leaves the later run a strictly larger one. Contamination is mutual.
+        # A run's window is everything emitted after it started, so any other run
+        # alive on this Session emits into it. Which run produced a given event is
+        # not recorded anywhere -- agent emissions reach the shared observer
+        # through the branch, not through this run -- so the start snapshot cannot
+        # divide them, whether the runs started together or one after the other.
+        # Flagged both ways and on sight of any peer: a start-order test would
+        # only ever be right about the emissions that had already happened.
         self.shares_session: bool = False
         peers = _SESSION_RUNS.setdefault(self.session, [])
         live = []
@@ -277,9 +282,8 @@ class ReviewRun(EngineRun):
             if peer is None:
                 continue
             live.append(ref)
-            if peer._inherited == self._inherited:
-                peer.shares_session = True
-                self.shares_session = True
+            peer.shares_session = True
+            self.shares_session = True
         live.append(weakref.ref(self))
         _SESSION_RUNS[self.session] = live
 
@@ -341,9 +345,10 @@ def _unaudited_note() -> str:
 def _shared_session_note() -> str:
     """Unlike the coverage note, nothing on the stream is known to belong to this run."""
     return (
-        "Approval withheld: another review run started against this session "
-        "before either had emitted, so this run's evidence cannot be told "
-        "apart from that run's. Give each run its own Session."
+        "Approval withheld: another review run was alive on this session, and "
+        "which run produced a given event is not recorded, so this run's "
+        "evidence cannot be told apart from that run's. Give each run its own "
+        "Session."
     )
 
 
