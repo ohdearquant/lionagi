@@ -2387,7 +2387,7 @@ async def test_a_finished_stream_drains_its_deferred_pages_before_saying_done(mo
     monkeypatch.setattr(svc, "get_session_stream_state", _stream_state)
     monkeypatch.setattr(svc, "is_session_stream_done", lambda _state, now=None: True)
 
-    response = await svc.stream_session_route("sess-1")
+    response = await svc.stream_session_route("sess-1", cursor=None)
     events = await _drain_stream(response)
 
     assert [e.get("id") for e in events if "id" in e] == ["m-1", "m-2", "m-3"]
@@ -2422,7 +2422,7 @@ async def test_a_page_that_does_not_move_the_cursor_does_not_spin(monkeypatch):
     monkeypatch.setattr(svc, "get_session_stream_state", _stream_state)
     monkeypatch.setattr(svc, "is_session_stream_done", lambda _state, now=None: True)
 
-    response = await svc.stream_session_route("sess-1")
+    response = await svc.stream_session_route("sess-1", cursor=None)
     events = await _drain_stream(response)
 
     assert events[-1] == {"type": "done"}

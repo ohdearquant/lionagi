@@ -1652,7 +1652,12 @@ async def get_session_route(
     name="stream_session",
     response_class=None,
 )
-async def stream_session_route(session_id: str, cursor: str | None = None):
+async def stream_session_route(
+    session_id: str,
+    cursor: str | None = Query(
+        None, description="Opaque cursor from the last delivered session-message SSE frame"
+    ),
+):
     # Pre-flight 404 guard: without it a non-existent session silently
     # returns no messages and waits 60s before "done" with no indication.
     if not await session_exists(session_id):
