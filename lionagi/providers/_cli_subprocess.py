@@ -312,7 +312,8 @@ _SECRET_ENV_KEY_RE = re.compile(r"(?i)key|token|secret|password|passwd|credentia
 _SECRET_SHAPE_RE = re.compile(
     r"(?i)\b(?:"
     r"Bearer\s+\S+"
-    r"|(?:Authorization|X-Api-Key|Api-Key)\s*:\s*\S+"
+    # To end of line: a scheme word ("Bearer x") otherwise ends the match early.
+    r"|(?:Authorization|X-Api-Key|Api-Key)\s*:\s*[^\r\n]+"
     r"|(?:sk|rk)-[a-z0-9_-]{8,}"
     r"|(?:ghp|gho|ghu|ghs|github_pat)_[a-z0-9_]{8,}"
     r"|xox[abprs]-[a-z0-9-]{8,}"
@@ -322,6 +323,28 @@ _SECRET_SHAPE_RE = re.compile(
 )
 # Short values collide with ordinary words; a real credential is never this small.
 _MIN_REDACTABLE_SECRET_LEN = 8
+
+
+def _secret_candidates(env: Mapping[str, str] | None) -> dict[str, str]:
+    """The subset of an environment a log redactor can act on."""
+    if not env:
+        return {}
+    return {
+        key: value
+        for key, value in env.items()
+        if isinstance(key, str)
+        and isinstance(value, str)
+        and len(value) >= _MIN_REDACTABLE_SECRET_LEN
+        and _SECRET_ENV_KEY_RE.search(key)
+    }
+
+
+def _escape_control_characters(text: str) -> str:
+    """Show control bytes rather than let child output forge a log record."""
+    return "".join(
+        character if character == " " or character.isprintable() else repr(character)[1:-1]
+        for character in text
+    )
 
 
 def _redact_secrets_for_log(text: str, env: Mapping[str, str] | None) -> str:
@@ -340,7 +363,8 @@ def _redact_secrets_for_log(text: str, env: Mapping[str, str] | None) -> str:
         # Longest first, so a secret containing another is not left half-revealed.
         for value in sorted(injected, key=len, reverse=True):
             text = text.replace(value, "[redacted]")
-    return _SECRET_SHAPE_RE.sub("[redacted]", text)
+    # Escape last: the redaction patterns are written against the real text.
+    return _escape_control_characters(_SECRET_SHAPE_RE.sub("[redacted]", text))
 
 
 def _abandoned_without_output_note(
@@ -390,15 +414,13 @@ async def ndjson_from_cli(
     # additive: with nothing configured this returns ``env`` unchanged, and a
     # lookup that fails leaves the child to fail the way it already failed.
     child_env = await fill_declared_secrets(env)
-    # Snapshot rather than read os.environ again when the log line is written:
-    # the child keeps the values it was handed, so a variable this process
-    # rotates or unsets after the spawn would go unredacted on a live read.
-    redaction_env: Mapping[str, str] = (
-        dict(child_env) if child_env is not None else dict(os.environ)
-    )
+    # One mapping for both the child and the redactor: with env=None the child
+    # reads os.environ at exec, later than any snapshot taken here.
+    spawn_env: dict[str, str] = dict(child_env) if child_env is not None else dict(os.environ)
+    redaction_env: Mapping[str, str] = _secret_candidates(spawn_env)
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
-        env=dict(child_env) if child_env is not None else None,
+        env=spawn_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,

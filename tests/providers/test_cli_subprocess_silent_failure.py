@@ -221,6 +221,22 @@ _INJECTED_SECRET = "supersecretvalue1234"
 # Long enough to be redactable and deliberately unlike any credential shape, so
 # only the environment lookup can catch it.
 _INHERITED_SECRET = "inherited-value-9d1c"
+# What another task rotates the variable to while the spawn is in flight.
+_ROTATED_SECRET = "rotated-value-4a7f"
+# Matches no known token shape, so only the header rule can remove it.
+_OPAQUE_HEADER_SECRET = "OPAQUE-ffb31a9c4d2e"
+_LEAKS_OPAQUE_HEADER_THEN_HANGS = (
+    "import sys, time; "
+    f"sys.stderr.write('refused: Authorization: Bearer {_OPAQUE_HEADER_SECRET}'); "
+    "sys.stderr.flush(); "
+    "time.sleep(300)"
+)
+_FORGES_A_LOG_RECORD_THEN_HANGS = (
+    "import sys, time; "
+    r"sys.stderr.write('first line\nWARNING forged second record\x1b[31m'); "
+    "sys.stderr.flush(); "
+    "time.sleep(300)"
+)
 
 
 class TestTheQuotedStderrCarriesNoCredential:
@@ -280,6 +296,76 @@ class TestTheQuotedStderrCarriesNoCredential:
         assert _INHERITED_SECRET not in caplog.text, (
             "a credential the child still held reached a log line after this process dropped it: "
             + caplog.text
+        )
+        assert "[redacted]" in caplog.text, (
+            "the stderr was dropped rather than redacted, losing the diagnostic: " + caplog.text
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_opaque_header_credential_does_not_reach_the_log(self, caplog):
+        """The header rule must consume the whole value, not stop at the scheme word."""
+        with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
+            await _abandon(ndjson_from_cli(_cmd(_LEAKS_OPAQUE_HEADER_THEN_HANGS)))
+
+        assert _OPAQUE_HEADER_SECRET not in caplog.text, (
+            "a bearer token reached a log line because only its scheme word was removed: "
+            + caplog.text
+        )
+        assert "[redacted]" in caplog.text, (
+            "the stderr was dropped rather than redacted, losing the diagnostic: " + caplog.text
+        )
+
+    @pytest.mark.asyncio
+    async def test_child_output_cannot_forge_a_second_log_record(self, caplog):
+        """Child output is data; a newline in it must not read as the start of another record."""
+        with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
+            await _abandon(ndjson_from_cli(_cmd(_FORGES_A_LOG_RECORD_THEN_HANGS)))
+
+        assert "first line" in caplog.text, (
+            "the diagnostic was lost rather than escaped: " + caplog.text
+        )
+        assert "\nWARNING forged second record" not in caplog.text, (
+            "child output opened a second log record: " + caplog.text
+        )
+        assert "\x1b[31m" not in caplog.text, (
+            "a terminal control sequence reached the log unescaped: " + caplog.text
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_child_and_the_redactor_are_handed_one_environment_snapshot(
+        self, caplog, monkeypatch
+    ):
+        """A child left to read os.environ at exec can get a credential no snapshot saw."""
+        monkeypatch.setattr(
+            _secret_resolution,
+            "resolve_secret_lookup_config",
+            lambda **_: _secret_resolution._NOT_CONFIGURED,
+        )
+        assert await fill_declared_secrets(None) is None, "the child must actually be inheriting"
+        monkeypatch.setenv("LIONAGI_TEST_API_KEY", _INHERITED_SECRET)
+
+        real_spawn = cs.asyncio.create_subprocess_exec
+        handed_env: list[object] = []
+
+        async def rotating_spawn(*cmd, **kwargs):
+            # Another task rotating the credential between snapshot and exec.
+            os.environ["LIONAGI_TEST_API_KEY"] = _ROTATED_SECRET
+            handed_env.append(kwargs.get("env"))
+            return await real_spawn(*cmd, **kwargs)
+
+        monkeypatch.setattr(cs.asyncio, "create_subprocess_exec", rotating_spawn)
+        with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
+            await _abandon(ndjson_from_cli(_cmd(_LEAKS_ENV_SECRET_THEN_HANGS)))
+
+        assert handed_env, "the spawn never ran, so this proves nothing"
+        assert handed_env[0] is not None, (
+            "the child was left to read os.environ at exec, which no earlier snapshot can describe"
+        )
+        assert _ROTATED_SECRET not in caplog.text, (
+            "the child was handed a credential the redactor never saw: " + caplog.text
+        )
+        assert _INHERITED_SECRET not in caplog.text, (
+            "the credential the child actually received reached a log line: " + caplog.text
         )
         assert "[redacted]" in caplog.text, (
             "the stderr was dropped rather than redacted, losing the diagnostic: " + caplog.text
