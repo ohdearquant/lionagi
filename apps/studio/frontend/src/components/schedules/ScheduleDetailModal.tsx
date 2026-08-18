@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useBlocker, useNavigate } from "@tanstack/react-router";
 import { useLocale, useTranslations } from "use-intl";
 import Button from "@/components/ui/Button";
 import ConfirmButton from "@/components/ui/ConfirmButton";
@@ -10,6 +10,7 @@ import StatusPill from "@/components/ui/StatusPill";
 import { IconArrowUpRight, IconClose } from "@/components/ui/icons";
 import { useToast } from "@/components/ui/Toast";
 import ErrorBanner from "@/components/ui/ErrorBanner";
+import { useOverlayFocus } from "@/lib/useOverlayFocus";
 import EnabledToggle from "./EnabledToggle";
 import TemplateVarChips from "./TemplateVarChips";
 import { classifyError } from "./errorClassify";
@@ -164,6 +165,7 @@ export default function ScheduleDetailModal({
   onChanged: () => void;
 }) {
   const t = useTranslations("schedules.detail");
+  const tCreate = useTranslations("schedules.create");
   const tc = useTranslations("schedules.card");
   const tError = useTranslations("schedules.error");
   const tRun = useTranslations("schedules.run");
@@ -171,7 +173,11 @@ export default function ScheduleDetailModal({
   const locale = useLocale();
   const { toast } = useToast();
   const navigate = useNavigate();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const discardPromptRef = useRef<HTMLDivElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const allowNavigationRef = useRef(false);
+  const titleId = useId();
 
   const [detail, setDetail] = useState<ScheduleDetail | null>(null);
   const [loadErr, setLoadErr] = useState(false);
@@ -184,6 +190,41 @@ export default function ScheduleDetailModal({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [triggering, setTriggering] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+
+  const dirty = form && baseline ? isDirty(form, baseline) : false;
+  const shouldBlockNavigation = useCallback(
+    () => Boolean(dirty && !allowNavigationRef.current),
+    [dirty],
+  );
+  const blocker = useBlocker({
+    shouldBlockFn: shouldBlockNavigation,
+    enableBeforeUnload: shouldBlockNavigation,
+    withResolver: true,
+  });
+  const requestClose = useCallback(() => {
+    if (dirty) {
+      setConfirmDiscard(true);
+      return;
+    }
+    onClose();
+  }, [dirty, onClose]);
+
+  const keepEditing = useCallback(() => {
+    if (blocker.status === "blocked") blocker.reset();
+    setConfirmDiscard(false);
+  }, [blocker]);
+
+  const discardChanges = useCallback(() => {
+    setConfirmDiscard(false);
+    if (blocker.status === "blocked") {
+      blocker.proceed();
+      return;
+    }
+    allowNavigationRef.current = true;
+    onClose();
+  }, [blocker, onClose]);
+  const showDiscardConfirmation = confirmDiscard || blocker.status === "blocked";
 
   // Load detail + recent runs on mount
   useEffect(() => {
@@ -209,21 +250,27 @@ export default function ScheduleDetailModal({
     };
   }, [scheduleId]);
 
-  // Focus name input once loaded
-  useEffect(() => {
-    if (form) nameInputRef.current?.focus();
-  }, [form != null]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { claimFocus, ownsKeyboard } = useOverlayFocus({
+    description: "ScheduleDetailModal",
+    dialogRef,
+    onEscape: requestClose,
+    initialFocusRef: nameInputRef,
+  });
 
-  // Escape closes
+  // The caret was offered before the fields existed; offer it again now they do.
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+    if (form) claimFocus();
+  }, [form != null, claimFocus]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Moving the caret to the prompt is only ours to do while nothing is painted above.
+  useEffect(() => {
+    if (showDiscardConfirmation && ownsKeyboard()) {
+      discardPromptRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [showDiscardConfirmation, ownsKeyboard]);
 
   function set(key: keyof DetailForm, value: string) {
+    keepEditing();
     setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
   }
 
@@ -261,6 +308,7 @@ export default function ScheduleDetailModal({
     try {
       await updateSchedule(detail.id, payload);
       onChanged();
+      allowNavigationRef.current = true;
       onClose();
     } catch {
       setSaveError(t("saveFailed"));
@@ -288,6 +336,7 @@ export default function ScheduleDetailModal({
     try {
       await deleteSchedule(detail.id);
       onChanged();
+      allowNavigationRef.current = true;
       onClose();
     } catch {
       toast(t("deleteFailed"), "error");
@@ -314,7 +363,6 @@ export default function ScheduleDetailModal({
     }
   }
 
-  const dirty = form && baseline ? isDirty(form, baseline) : false;
   const enabled = detail ? Boolean(detail.enabled) : false;
   // Snapshot once on mount — good enough for relative time display in the runs list
   const [nowMs] = useState(() => Date.now());
@@ -324,14 +372,20 @@ export default function ScheduleDetailModal({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
         className="flex max-h-[88vh] w-full max-w-3xl flex-col rounded-lg border border-edge bg-surface-raised shadow-card"
       >
+        <h2 id={titleId} className="sr-only">
+          {detail?.name ?? t("loading")}
+        </h2>
         {/* ── Header ── */}
         <div className="shrink-0 border-b border-edge px-5 py-3">
           {!detail ? (
@@ -344,6 +398,7 @@ export default function ScheduleDetailModal({
                 {/* Trello-style inline name edit */}
                 <input
                   ref={nameInputRef}
+                  aria-label={tCreate("name")}
                   value={form?.name ?? detail.name}
                   onChange={(e) => set("name", e.target.value)}
                   className="min-w-0 flex-1 border-b border-transparent bg-transparent font-data text-[length:var(--t-lg)] font-semibold text-content-primary focus:border-interactive-primary focus:outline-none"
@@ -357,7 +412,7 @@ export default function ScheduleDetailModal({
                     setDetail((prev) => (prev ? { ...prev, enabled: prev.enabled ? 0 : 1 } : prev));
                   }}
                 />
-                <IconButton aria-label={t("close")} onClick={onClose}>
+                <IconButton aria-label={t("close")} onClick={requestClose}>
                   <IconClose size={12} strokeWidth={2} />
                 </IconButton>
               </div>
@@ -710,6 +765,7 @@ export default function ScheduleDetailModal({
                 <div className="flex flex-col gap-2">
                   <FieldLabel label={t("missedFire")}>
                     <Select
+                      aria-label={t("missedFire")}
                       value={form.missed_fire_policy}
                       onChange={(e) => set("missed_fire_policy", e.target.value)}
                     >
@@ -721,6 +777,7 @@ export default function ScheduleDetailModal({
 
                   <FieldLabel label={t("overlap")}>
                     <Select
+                      aria-label={t("overlap")}
                       value={form.overlap_policy}
                       onChange={(e) => set("overlap_policy", e.target.value)}
                     >
@@ -742,14 +799,34 @@ export default function ScheduleDetailModal({
               {saveError}
             </ErrorBanner>
           )}
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" onClick={onClose}>
-              {t("cancel")}
-            </Button>
-            <Button variant="primary" disabled={!dirty || saving} onClick={() => void handleSave()}>
-              {saving ? t("saving") : t("save")}
-            </Button>
-          </div>
+          {showDiscardConfirmation ? (
+            <div
+              ref={discardPromptRef}
+              role="alert"
+              className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2"
+            >
+              <span className="mr-auto text-meta text-status-warning">{t("discardWarning")}</span>
+              <Button variant="ghost" onClick={keepEditing}>
+                {t("keepEditing")}
+              </Button>
+              <Button variant="danger" onClick={discardChanges}>
+                {t("discardChanges")}
+              </Button>
+            </div>
+          ) : (
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={requestClose}>
+                {t("cancel")}
+              </Button>
+              <Button
+                variant="primary"
+                disabled={!dirty || saving}
+                onClick={() => void handleSave()}
+              >
+                {saving ? t("saving") : t("save")}
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     </div>
