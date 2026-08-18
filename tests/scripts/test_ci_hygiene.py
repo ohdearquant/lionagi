@@ -168,8 +168,8 @@ def test_python_lambda_without_space_in_python_source_is_accepted(
 @pytest.mark.parametrize(
     "source",
     [
-        "# assigned per lambda:leo direction\ndef f():\n    return 1\n",
-        'def send():\n    return dict(to="lambda:leo", subject="hi")\n',
+        "# assigned per lambda:sample-unit direction\ndef f():\n    return 1\n",
+        'def send():\n    return dict(to="lambda:sample-unit", subject="hi")\n',
         '"""Docstring narrating work owned by lambda:sample-unit."""\n',
     ],
 )

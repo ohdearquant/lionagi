@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Public-surface differential capture now crosses one shared clock boundary for
+  the full CLI case batch, and terminal-callback offload tests release their
+  worker explicitly instead of leaving a 30-second sleeper behind.
+- ADR-0120 Phase 0 now freezes the distinct HookBus, Broadcaster,
+  SessionObserver, message-callback, scheduler-signal, and terminal-callback
+  dispatch profiles before any shared-kernel migration. Service-hook invocation
+  and streaming are characterized alongside them, but that profile's matrix is
+  frozen in Phase 1, not here.
 - Studio, Operator, and VS Code run navigation now prefer the session `id`
   over the legacy `run_id` compatibility field, while preserving fallback for
   older rows that do not expose `id`.
@@ -30,6 +38,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Delivery descendants are terminated through the shared process-group helper
   on POSIX. Cross-platform descendant containment remains out of scope and is
   tracked in #2576.
+
+### Fixed
+
+- `Params` subclasses now receive their declared dataclass defaults, including a fresh value
+  from each `default_factory`, instead of replacing every omitted field with `Unset`.
+- Writable StateDB migration now fails closed when a table's columns cannot be
+  inspected, preserving the prior schema-version stamp instead of recording an
+  upgrade whose additive column reconciliation did not complete.
 
 ### Deprecated
 

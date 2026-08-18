@@ -19,7 +19,13 @@ from lionagi.ln.concurrency._compat import (
     get_exception_group_exceptions,
     is_exception_group,
 )
-from lionagi.providers._provider_errors import ProviderError
+from lionagi.providers._provider_errors import (
+    ProviderAuthError,
+    ProviderError,
+    ProviderQuotaError,
+    ProviderSafetyError,
+    ProviderUnsupportedModelError,
+)
 
 from .engine import Engine, EngineEvent, EngineRun
 
@@ -49,6 +55,36 @@ _TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 _ISOLATED_ERRORS: tuple[type[BaseException], ...] = (ProviderError, *_TRANSPORT_ERRORS)
+
+# Refusals that describe the run rather than one attempt. The credentials, the
+# quota, the model and the safety policy are the same for every dimension, so a
+# refusal on any of those grounds recurs identically on the next dimension and
+# on any retry. They are ProviderError subclasses, so the isolated set above
+# already covers them, and covering them is wrong: isolating one records a
+# skipped dimension and lets the run reach a verdict, which turns a run-wide
+# misconfiguration into a quietly degraded pass over an artifact whose
+# dimensions were never actually read. A safety refusal is the sharpest case,
+# because the reason the content was not reviewed is the finding.
+#
+# Context overflow is deliberately not here. That is a property of the single
+# prompt that overflowed rather than of the run -- one verifier's oversized
+# prompt says nothing about the next one's, which is why the engine repairs it
+# instead of failing.
+#
+# A quota refusal belongs here despite being marked retryable, which looks like
+# a contradiction and is not. Retryability is about time: the same request may
+# well succeed once the limit resets. This tuple is about scope: at the moment
+# it is raised, the limit applies to every dimension alike. A run in flight has
+# no later, so isolating the quota failure would let the remaining dimensions
+# report and the run publish a verdict over an artifact one dimension never
+# read. Failing the whole run is the louder and more accurate outcome, and it
+# is the same principle the coverage check enforces downstream.
+_RUN_WIDE_REFUSALS: tuple[type[BaseException], ...] = (
+    ProviderAuthError,
+    ProviderQuotaError,
+    ProviderSafetyError,
+    ProviderUnsupportedModelError,
+)
 
 
 @lru_cache(maxsize=1)
@@ -156,6 +192,11 @@ def _is_transport_mcp_error(exc: BaseException) -> bool:
 
 def _is_all_isolated_failure(exc: BaseException) -> bool:
     """True iff every leaf is a per-dimension provider/transport failure, recursing into nested groups."""
+    if isinstance(exc, _RUN_WIDE_REFUSALS):
+        # Asked before the isolated set, not after. These derive from
+        # ProviderError, so the wider test answers True for all of them and
+        # this branch would never be reached from below it.
+        return False
     if isinstance(exc, _ISOLATED_ERRORS):
         return True
     if _is_transport_mcp_error(exc):
@@ -428,23 +469,29 @@ class ReviewEngine(Engine):
             # background work mutates shared run state after _run exits.
             await run.cancel_active()
             raise
-        # Drain any adversarial verifiers spawned by high-severity issues.
+        # Drain any adversarial verifiers spawned by high-severity issues. Each
+        # was spawned already wrapped, so a dead verifier worker is recorded and
+        # the drain stays clean; anything the wrapper does not claim still
+        # reaches here and ends the run.
         await run.wait_quiescence()
         # A clean or minor-only review spawns no issue verifiers, so it would
-        # reach the verdict with zero VerifyResult — and a downstream evidence
-        # floor then refuses the APPROVE as evidence-empty, structurally.
-        # Gate on zero VerifyResult (not zero issues) so both shapes instead
-        # carry one adversarial audit of the clean verdict itself: positive
-        # executed evidence rather than absence.
+        # reach the verdict with zero VerifyResult and ship an APPROVE backed
+        # by nothing executed. A consumer may well refuse that as
+        # evidence-empty, but whether any given one does is a property of that
+        # consumer's code and is not observable from this package, so it is not
+        # a guard this engine gets to count on. Gate on zero VerifyResult (not
+        # zero issues) so both shapes instead carry one adversarial audit of
+        # the clean verdict itself: positive executed evidence rather than
+        # absence, decided here where it can be seen.
         if self.verify_clean and not run.by_type(VerifyResult):
-            await self._verify_clean(run, artifact, dims)
+            await self._verify_clean_isolated(run, artifact, dims)
         return await self._verdict(run, artifact, dims)
 
     # -- reactions ------------------------------------------------------------
 
     def _on_issue(self, run: EngineRun, issue: IssueFound) -> None:
         if issue.severity in self.verify_severities and not run.seen(_verify_key(issue)):
-            run.spawn(self._verify(run, issue))
+            run.spawn(self._verify_isolated(run, issue))
 
     # -- stages ---------------------------------------------------------------
 
@@ -476,6 +523,53 @@ class ReviewEngine(Engine):
             marker = f"review-{dimension} ({error_type})"
             if marker not in run._emission_failures:
                 run._emission_failures.append(marker)
+
+    def _isolate_verification_failure(
+        self, run: EngineRun, exc: BaseException, *, stage: str
+    ) -> bool:
+        """Record an isolated verification failure; False means the caller must re-raise.
+
+        Verification is discretionary work performed on evidence that already
+        exists: by the time a verifier runs, its dimension has reported and its
+        findings are on the run. A provider or transport failure here says the
+        worker died, not that the review is unsound, so it degrades the audit of
+        one finding rather than the run that produced it. The drain already
+        treats one failure this way — ``EngineBudgetError`` is swallowed as
+        discretionary work declined — and this extends the same reading to the
+        transport failures the dimension stage isolates.
+
+        The failure stays visible: the marker reaches the caller through
+        ``_emission_failures`` and is reported alongside the result, so a run
+        that verified less than it intended says so instead of presenting a
+        verdict as fully audited.
+        """
+        if not _is_all_isolated_failure(exc):
+            return False
+        error_type = _failure_label(exc)
+        run.notify("verification_failed", stage=stage, error_type=error_type)
+        marker = f"{stage} ({error_type})"
+        if marker not in run._emission_failures:
+            run._emission_failures.append(marker)
+        return True
+
+    async def _verify_isolated(self, run: EngineRun, issue: IssueFound) -> None:
+        try:
+            await self._verify(run, issue)
+        except Exception as exc:
+            # Spawned into the run's background set, so an escape does not fail
+            # this verifier alone: the drain collects it and re-raises, which
+            # discards a review whose dimensions have already succeeded.
+            if not self._isolate_verification_failure(run, exc, stage=f"verify-{issue.dimension}"):
+                raise
+
+    async def _verify_clean_isolated(
+        self, run: EngineRun, artifact: str, dimensions: tuple[str, ...]
+    ) -> None:
+        try:
+            await self._verify_clean(run, artifact, dimensions)
+        except Exception as exc:
+            if not self._isolate_verification_failure(run, exc, stage="verify-clean"):
+                raise
 
     async def _review_dimension(self, run: EngineRun, artifact: str, dimension: str) -> None:
         emits = (IssueFound, DimensionClean)
