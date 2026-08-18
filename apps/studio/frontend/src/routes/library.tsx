@@ -279,12 +279,18 @@ function LibraryPage() {
       const parsed = parseSel(sel);
       const isOptimisticWorkflow =
         parsed?.kind === "workflow" && optimisticWorkflow?.name === parsed.name;
-      // A workflow never appears in `items`, so this asks the resolve instead:
-      // hold the link while it is in flight, and keep it if the name exists.
+      // A workflow never appears in `items`, so this asks the resolve instead.
+      // Stated as "drop only once we know it is missing", because both effects
+      // run in one commit and this one reads the resolve state from before the
+      // sibling set it: requiring a positive pending would discard the link on
+      // the very render the deep link arrives.
       const isHiddenWorkflow =
         parsed?.kind === "workflow" &&
-        linkedWorkflow?.name === parsed.name &&
-        (linkedWorkflow.state === "pending" || linkedWorkflow.id !== null);
+        !(
+          linkedWorkflow?.name === parsed.name &&
+          linkedWorkflow.state === "settled" &&
+          linkedWorkflow.id === null
+        );
       if (
         isOptimisticWorkflow ||
         isHiddenWorkflow ||

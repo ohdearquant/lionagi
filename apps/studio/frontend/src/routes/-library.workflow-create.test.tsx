@@ -233,6 +233,36 @@ describe("Library workflow creation identity", () => {
     ).toBe(createdWorkflow.id);
   });
 
+  it("holds a workflow link selected after the catalog has already loaded", async () => {
+    // Selecting on a loaded catalog is the case the mount path cannot reach:
+    // there, the resolve has already settled by the time the selection effect
+    // stops being short-circuited by `loading`. Here both effects run in one
+    // commit, and the selection effect reads the resolve state from before its
+    // sibling set it, so requiring a positive pending discards the link.
+    const inFlight = deferred<unknown[]>();
+    // The catalog never requests workflows, so this mock answers only the
+    // resolve effect; a `mockResolvedValueOnce` here would be eaten by it.
+    api.listWorkflowDefs.mockReturnValue(inFlight.promise);
+
+    router.search = {};
+    await act(async () => {
+      root.render(<LibraryPage />);
+    });
+    await flush();
+
+    router.search = { sel: `workflow:${createdWorkflow.name}` };
+    await act(async () => {
+      root.render(<LibraryPage />);
+    });
+    await flush();
+
+    expect(router.search.sel).toBe(`workflow:${createdWorkflow.name}`);
+
+    inFlight.resolve([{ id: createdWorkflow.id, name: createdWorkflow.name }]);
+    await flush();
+    expect(router.search.sel).toBe(`workflow:${createdWorkflow.name}`);
+  });
+
   it("drops a workflow deep link whose name no longer exists", async () => {
     router.search = { sel: "workflow:deleted" };
     api.listWorkflowDefs.mockResolvedValue([

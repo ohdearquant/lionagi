@@ -267,4 +267,41 @@ describe("EngineRunsSpace", () => {
     expect(container.textContent).toContain("engine-2");
     expect(container.textContent).not.toContain("engine-1");
   });
+
+  it("leaves the Spec button usable on the run opened during a pending reveal", async () => {
+    // The abandoned reveal's own completion is guarded on still being current,
+    // so it can never re-enable the button it disabled. Switching runs has to.
+    const detail = (index: number) => ({
+      ...run(index),
+      spec_json: null,
+      spec_preview: { of: `run-${index}` },
+      outcome_json: null,
+      export_dir: null,
+      error: null,
+    });
+
+    api.listEngineRuns.mockResolvedValue(page([]));
+    api.getEngineRun.mockImplementation((id: string, options?: { includeSpec?: boolean }) => {
+      if (options?.includeSpec) return new Promise(() => {}); // never settles
+      return Promise.resolve(detail(Number(id.slice("run-".length))));
+    });
+
+    const specButton = () =>
+      Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent === "Spec",
+      );
+
+    router.search = { s: "run-1" };
+    await mount();
+    await act(async () => {
+      specButton()?.click();
+      await Promise.resolve();
+    });
+    expect(specButton()?.disabled, "the reveal did not disable its own button").toBe(true);
+
+    router.search = { s: "run-2" };
+    await mount();
+    expect(container.textContent).toContain("engine-2");
+    expect(specButton()?.disabled).toBe(false);
+  });
 });

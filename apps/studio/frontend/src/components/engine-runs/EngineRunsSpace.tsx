@@ -315,6 +315,10 @@ function EngineRunDetailModal({ runId, onClose }: { runId: string; onClose: () =
     /* eslint-disable react-hooks/set-state-in-effect -- synchronous resets clear stale state before the async fetch resolves */
     setLoading(true);
     setError(false);
+    // A reveal still in flight belongs to the run we just left, and its own
+    // completion is guarded on still being current, so it will never clear
+    // this. Without the reset the button stays disabled for every later run.
+    setRevealing(false);
     /* eslint-enable react-hooks/set-state-in-effect */
     getEngineRun(runId)
       .then((d) => {
