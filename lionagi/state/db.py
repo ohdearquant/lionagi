@@ -4112,8 +4112,8 @@ class StateDB:
             "SELECT COALESCE(SUM(total_cost_usd), 0) AS n FROM sessions "
             "WHERE COALESCE(ended_at, started_at, created_at) >= :window_start"
         ),
-        # Attribution metric rather than an alarm on its own: counts consecutive 401s across enabled
-        # github_poll schedules so a payload can tell a token problem from a network blip. Point-in-
+        # Attribution metric rather than an alarm on its own: longest 401 streak across enabled
+        # github_poll schedules, so a payload can tell a token problem from a network blip. Point-in-
         # time like the age gauge below, so :window_start is unused.
         "github_poll_consecutive_401": (
             "SELECT COALESCE(MAX(poller_consecutive_401), 0) AS n FROM schedules "

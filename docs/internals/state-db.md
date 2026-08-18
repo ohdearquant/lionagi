@@ -353,7 +353,12 @@ mask a due top-level occurrence.
 Two recovery scans sit either side of the launch. `list_undispatched_schedule_runs`
 returns rows whose transaction committed but whose external process launch was
 never confirmed: the cursor has already moved, so ordinary missed-fire recovery
-will never reconsider them, and the scheduler re-fires each one at startup.
+will never reconsider them, so the scheduler revisits them at startup. Not all of
+them are re-fired. A chain child is tombstoned rather than retried, because a
+chain is re-entered from its root and not from the middle, and so is a run whose
+owning schedule has since been deleted or disabled, because re-firing it would
+run work the operator has already withdrawn. What is left, a top-level run of a
+still-enabled schedule, is re-fired under a fresh run id.
 `list_dispatched_running_schedule_runs` returns rows that were confirmed
 dispatched and never reached a terminal status. The scheduler that dispatched
 one of those may have crashed before recording its outcome, or the process may
@@ -389,9 +394,13 @@ must land whether or not the cursor is allowed to advance.
 
 `total_cost_usd` is NULL when the engine that ran a session does not price
 itself, not when the session was free. Every read that aggregates it has to
-decide what to do about that, and they all decide the same way: sum the
-reported values, and report the gap separately rather than letting a
-`COALESCE(..., 0)` turn "unmeasured" into "cheap".
+decide what to do about that, and the answer differs by what the caller does
+with the number. A panel can render "unreported" and let a human judge it, so
+the panel reads never coerce. A budget gate and a threshold alarm have to
+compare against a limit, so they take `COALESCE(..., 0)` and carry the gap in a
+companion count instead. What no read does is coerce silently: wherever a zero
+could mean "unmeasured", the unmeasured rows are counted too, in the same row
+for the gate and by a companion method for the metric.
 
 `spend_stats` leaves `reported_usd` as None whenever no row in the window
 reported a cost, so an entirely unreported window does not read as a genuine
@@ -399,9 +408,13 @@ $0. It anchors on the same `COALESCE(ended_at, started_at, created_at)`
 timestamp as `activity_stats`, so the spend panel and the activity panel
 describe the same population for the same window. `spend_rollup` carries the
 same window anchor and the same never-coerce rule at session grain, one row
-per distinct dimension value, with unreported-only groups sorted last.
-`sum_schedule_spend` applies it to the pre-fire budget gate, joining
-`schedule_runs` to sessions through `invocation_id`, and exposes
+per distinct dimension value, with unreported-only groups sorted last. Both
+express this as `SUM(CASE WHEN total_cost_usd IS NOT NULL THEN total_cost_usd
+END)`, which is NULL rather than 0 for a window nothing reported in.
+
+`sum_schedule_spend` backs the pre-fire budget gate, so it does sum with
+`COALESCE(..., 0)`, joining `schedule_runs` to sessions through
+`invocation_id`, and exposes
 `unreported_sessions` beside the total. That count covers terminal sessions
 only: a still-running session's cost is expected to be unknown and is not a
 gap. `metric_unreported_sessions` is the same companion for the
@@ -409,12 +422,17 @@ gap. `metric_unreported_sessions` is the same companion for the
 NULL-versus-reported distinction to expose.
 
 `metric_value` aggregates a threshold-alert metric over `[window_start, now)`,
-and two of its members do not fit that shape. `p95_latency_ms` needs a sorted
+and three of its members do not fit that shape. `p95_latency_ms` needs a sorted
 sample, which SQLite has no percentile function for, so it fetches raw
 invocation durations and computes the percentile in Python.
 `github_poll_healthy_age_minutes` is a point-in-time gauge rather than a
 windowed aggregate, so it accepts `window_start` for signature parity and
-ignores it, reading "now" fresh inside the method. The invariant to preserve
+ignores it, reading "now" fresh inside the method.
+`github_poll_consecutive_401` is point-in-time for the same reason: it reports
+the longest consecutive-401 streak across enabled `github_poll` schedules, so a
+payload can tell a token problem from a network blip. A streak is a property of
+now rather than of a window, so this one leaves `:window_start` unused. The invariant to
+preserve
 is that every member of the studio's `VALID_METRICS` is answered somewhere in
 `metric_value`, not that it is answered by the shared aggregate query.
 
@@ -436,6 +454,37 @@ happened to equal some other session's `invocation_id` would share a grouping
 key with it, and two distinct causes carrying the same reason would then count
 once. That is the direction that suppresses an alert, so the prefix is worth
 spending.
+
+## Writes that fail closed
+
+`update_session` takes a `set_if_null` set naming fields to write as
+`COALESCE(col, :col)` rather than as a plain assignment. The write lands only
+while the column is still NULL, so two callers racing to stamp the same field
+converge on whichever value committed first instead of the later one silently
+winning. It is a single atomic UPDATE rather than a read-then-write, so the
+guarantee holds under concurrency and not merely under interleaving that
+happens to be lucky.
+
+`delete_imported_session` refuses on ownership twice. The row's `source_kind`
+must equal the caller's `require_source_kind` exactly, and that value must
+itself start with `imported_`. The first check stops one importer reaching
+another importer's rows; the second stops any caller reaching a live run's
+session at all, since a live session's `source_kind` never carries that prefix.
+A progression or message still referenced by a surviving session or branch is
+retained rather than deleted.
+
+`read_only_open_supported` answers whether `StateDB(readonly=True)` can open the
+configured store, which is SQLite-only: it is a `mode=ro` URI open of an
+existing file. The read-only branch of `StateDB.open()` is not dialect-gated, so
+an unconditional `readonly=True` fails at open on a server-backed store rather
+than degrading to a writable connection. Callers wanting read-only as an
+optimisation check this first and fall back to an ordinary open. Callers wanting
+read-only for safety must not use it, because on every store it returns False
+for it hands back a writable connection. Its True set is not exactly the set
+`state_db_file()` returns a path for: an unrecognised sync driver spelling such
+as `sqlite+pysqlite:///` also fails the ordinary open, since a sync driver
+cannot back an async engine, so that case is broken either way and only the
+exception differs.
 
 ## Where the reasoning lives
 
