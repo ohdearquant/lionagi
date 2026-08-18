@@ -17,6 +17,7 @@ import pytest
 
 from lionagi.state.reasons import RunReasons
 from lionagi.studio.scheduler.signals import (
+    SchedulerHandlerCancelled,
     SchedulerSignalBus,
     ScheduleRunCancelled,
     ScheduleRunFailed,
@@ -145,6 +146,90 @@ async def test_bus_sync_and_async_handlers_both_run():
 
     assert sync_calls == [sig]
     assert async_calls == [sig]
+
+
+@pytest.mark.asyncio
+async def test_bus_starts_matching_handlers_concurrently_and_keeps_registration_order():
+    bus = SchedulerSignalBus()
+    first_started = asyncio.Event()
+    second_started = asyncio.Event()
+
+    async def first(_signal):
+        first_started.set()
+        await second_started.wait()
+        return "first"
+
+    async def second(_signal):
+        second_started.set()
+        await first_started.wait()
+        return "second"
+
+    bus.observe(ScheduleRunSucceeded, handler=first)
+    bus.observe(ScheduleRunSucceeded, handler=second)
+    signal = ScheduleRunSucceeded(
+        run_id="r-concurrent",
+        schedule_id="s1",
+        reason_code=RunReasons.COMPLETED_OK,
+    )
+
+    results = await asyncio.wait_for(bus.emit(signal), timeout=1.0)
+
+    assert first_started.is_set()
+    assert second_started.is_set()
+    assert results == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_bus_awaits_custom_awaitable_returned_by_sync_handler():
+    bus = SchedulerSignalBus()
+
+    class TrackingAwaitable:
+        def __init__(self):
+            self.awaited = False
+
+        def __await__(self):
+            self.awaited = True
+            if False:  # pragma: no cover - makes this a generator-based awaitable
+                yield None
+            return "awaited"
+
+    returned = TrackingAwaitable()
+    bus.observe(ScheduleRunSucceeded, handler=lambda _signal: returned)
+    signal = ScheduleRunSucceeded(
+        run_id="r-awaitable",
+        schedule_id="s1",
+        reason_code=RunReasons.COMPLETED_OK,
+    )
+
+    assert await bus.emit(signal) == ["awaited"]
+    assert returned.awaited is True
+
+
+@pytest.mark.asyncio
+async def test_bus_groups_failure_raised_by_returned_custom_awaitable():
+    from lionagi.ln.concurrency import ExceptionGroup
+
+    bus = SchedulerSignalBus()
+
+    class FailingAwaitable:
+        def __await__(self):
+            if False:  # pragma: no cover - makes this a generator-based awaitable
+                yield None
+            raise RuntimeError("returned awaitable failed")
+
+    bus.observe(ScheduleRunSucceeded, handler=lambda _signal: FailingAwaitable())
+    signal = ScheduleRunSucceeded(
+        run_id="r-failing-awaitable",
+        schedule_id="s1",
+        reason_code=RunReasons.COMPLETED_OK,
+    )
+
+    with pytest.raises(ExceptionGroup) as excinfo:
+        await bus.emit(signal)
+
+    assert len(excinfo.value.exceptions) == 1
+    assert type(excinfo.value.exceptions[0]) is RuntimeError
+    assert str(excinfo.value.exceptions[0]) == "returned awaitable failed"
 
 
 def test_bus_has_no_topic_or_route_stream_machinery():
@@ -453,8 +538,8 @@ async def test_emit_predicate_exception_does_not_abort_sibling_dispatch():
 async def test_emit_reraises_cancellation_without_nesting_baseexception():
     """gather(return_exceptions=True) can return a raw CancelledError.
     Folding that into ExceptionGroup would raise TypeError ("cannot nest
-    BaseExceptions") -- cancellation must propagate as itself instead of
-    being wrapped or swallowed, and sibling handlers must still run."""
+    BaseExceptions") -- handler cancellation must become the named scheduler
+    cancellation rather than an ordinary failure, and siblings still run."""
     bus = SchedulerSignalBus()
     ran: list = []
 
@@ -468,7 +553,7 @@ async def test_emit_reraises_cancellation_without_nesting_baseexception():
     bus.observe(ScheduleRunSucceeded, handler=_good)
 
     sig = ScheduleRunSucceeded(run_id="r1", schedule_id="s1", reason_code=RunReasons.COMPLETED_OK)
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(SchedulerHandlerCancelled):
         await bus.emit(sig)
 
     assert ran == [sig]
@@ -478,8 +563,8 @@ async def test_emit_reraises_cancellation_without_nesting_baseexception():
 async def test_emit_reraises_cancellation_even_with_other_handler_failures():
     """A genuine handler bug alongside a cancellation must not turn into a
     TypeError from ExceptionGroup nesting a BaseException -- cancellation
-    still wins and propagates, with the handler failure chained for
-    visibility rather than silently dropped."""
+    still wins as the named scheduler cancellation, with the handler failure
+    chained for visibility rather than silently dropped."""
     from lionagi.ln.concurrency import ExceptionGroup
 
     bus = SchedulerSignalBus()
@@ -494,7 +579,7 @@ async def test_emit_reraises_cancellation_even_with_other_handler_failures():
     bus.observe(ScheduleRunSucceeded, handler=_boom)
 
     sig = ScheduleRunSucceeded(run_id="r1", schedule_id="s1", reason_code=RunReasons.COMPLETED_OK)
-    with pytest.raises(asyncio.CancelledError) as exc_info:
+    with pytest.raises(SchedulerHandlerCancelled) as exc_info:
         await bus.emit(sig)
 
     assert isinstance(exc_info.value.__cause__, ExceptionGroup)

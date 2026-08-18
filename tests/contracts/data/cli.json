@@ -704,6 +704,17 @@
           },
           {
             "option_strings": [
+              "--retry-failed"
+            ],
+            "dest": "retry_failed",
+            "required": false,
+            "nargs": 0,
+            "default": false,
+            "choices": null,
+            "help": "With --resume: run the ops the checkpoint recorded as failed again, instead of refusing. Their reactive children from the superseded attempt are dropped so the re-run decides its own. Without this flag a checkpoint holding any failed op refuses loudly, naming them, because replaying one as terminal skips it and everything downstream. Re-running re-executes whatever side effects the first attempt already had."
+          },
+          {
+            "option_strings": [
               "--allow-degraded-context"
             ],
             "dest": "allow_degraded_context",
@@ -2217,6 +2228,17 @@
                   "default": null,
                   "choices": null,
                   "help": "Associate this engine run with an existing session in StateDB (written to engine_runs.session_id)."
+                },
+                {
+                  "option_strings": [
+                    "--invocation"
+                  ],
+                  "dest": "invocation_id",
+                  "required": false,
+                  "nargs": null,
+                  "default": null,
+                  "choices": null,
+                  "help": "Parent Studio invocation id. Defaults to LIONAGI_INVOCATION_ID; an explicit value takes precedence."
                 },
                 {
                   "option_strings": [

@@ -234,6 +234,47 @@ describe("resolveAuthToken", () => {
   });
 });
 
+describe("engine run summary transport", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses the canonical list route and carries the opaque cursor", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(
+        new Response(JSON.stringify({ version: 1, items: [], next_cursor: null }), {
+          status: 200,
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { listEngineRuns } = await import("./api");
+
+    const page = await listEngineRuns({ limit: 20, cursor: "opaque-cursor" });
+
+    expect(page).toEqual({ version: 1, items: [], next_cursor: null });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toMatch(
+      /\/api\/engine-runs\/\?limit=20&cursor=opaque-cursor$/,
+    );
+  });
+
+  it("reveals a redacted spec only when explicitly requested", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response(JSON.stringify({ id: "run-1" }), { status: 200 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { getEngineRun } = await import("./api");
+
+    await getEngineRun("run-1");
+    await getEngineRun("run-1", { includeSpec: true });
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toMatch(/\/api\/engine-runs\/run-1$/);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toMatch(
+      /\/api\/engine-runs\/run-1\?include_spec=true$/,
+    );
+  });
+});
+
 describe("fetchJson Authorization header", () => {
   beforeEach(() => {
     delete (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__;

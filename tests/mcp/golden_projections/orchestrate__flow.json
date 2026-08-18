@@ -154,6 +154,12 @@
         "type": "boolean",
         "x-flag": "--resume-on-timeout"
       },
+      "retry_failed": {
+        "default": false,
+        "description": "With `resume`: run the ops the checkpoint recorded as failed again, instead of refusing. Their reactive children from the superseded attempt are dropped so the re-run decides its own. Without this flag a checkpoint holding any failed op refuses loudly, naming them, because replaying one as terminal skips it and everything downstream. Re-running re-executes whatever side effects the first attempt already had.",
+        "type": "boolean",
+        "x-flag": "--retry-failed"
+      },
       "save": {
         "description": "Directory to write each agent's output and the run's artifacts into. Required by `background`, which has nowhere else to report.",
         "type": "string",

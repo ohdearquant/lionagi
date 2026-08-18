@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
@@ -155,6 +156,32 @@ async def test_service_get_returns_none_for_missing(patched_engine_runs_svc):
     assert result is None
 
 
+async def test_service_get_redacts_a_free_text_credential_in_both_projections(
+    patched_engine_runs_svc,
+):
+    """A spec carries prose, not just structured fields, and a credential
+    written into that prose has no dict key to be recognized by.
+
+    Both projections are asserted because they are two calls with two
+    different caps, and a fix applied to one of them reads as a fix.
+    """
+    svc, db_path = patched_engine_runs_svc
+    secret = "s3cr3t-value-abc123def456"
+    rid = await _seed_engine_run(
+        db_path,
+        kind="research",
+        spec_json={"topic": "reach the API", "notes": f"send Authorization=Token {secret}"},
+    )
+
+    row = await svc.get_engine_run(rid, include_spec=True)
+    assert row is not None
+    assert secret not in json.dumps(row["spec_preview"])
+    assert secret not in json.dumps(row["spec_json"])
+    # The scheme names a mechanism and is not a credential, so it survives
+    # and the reader can still see what kind of auth the spec asked for.
+    assert "Authorization=Token [redacted]" in row["spec_json"]["notes"]
+
+
 async def test_service_spec_json_round_trips(patched_engine_runs_svc):
     """spec_json stored as TEXT is deserialized back to a dict by the service."""
     svc, db_path = patched_engine_runs_svc
@@ -192,7 +219,20 @@ async def test_list_endpoint_returns_empty(patched_app):
     async with client as ac:
         resp = await ac.get("/api/engine-runs/")
     assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.json() == {"version": 1, "items": [], "next_cursor": None}
+
+
+async def test_canonical_list_endpoint_does_not_redirect(patched_app):
+    """Hosted clients reach the canonical list route without a redirect hop."""
+    _, _, client = patched_app
+    async with client as ac:
+        resp = await ac.get(
+            "/api/engine-runs/",
+            headers={"Origin": "https://studio.example.com"},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 200
+    assert "location" not in resp.headers
 
 
 async def test_list_endpoint_returns_seeded_rows(patched_app):
@@ -203,7 +243,7 @@ async def test_list_endpoint_returns_seeded_rows(patched_app):
     async with client as ac:
         resp = await ac.get("/api/engine-runs/")
     assert resp.status_code == 200
-    data = resp.json()
+    data = resp.json()["items"]
     ids = [r["id"] for r in data]
     assert rid1 in ids
     assert rid2 in ids
@@ -217,7 +257,7 @@ async def test_list_endpoint_filter_kind(patched_app):
     async with client as ac:
         resp = await ac.get("/api/engine-runs/?kind=planning")
     assert resp.status_code == 200
-    ids = [r["id"] for r in resp.json()]
+    ids = [r["id"] for r in resp.json()["items"]]
     assert rid_p in ids
     assert rid_r not in ids
 
@@ -230,7 +270,7 @@ async def test_list_endpoint_filter_status(patched_app):
     async with client as ac:
         resp = await ac.get("/api/engine-runs/?status=completed")
     assert resp.status_code == 200
-    ids = [r["id"] for r in resp.json()]
+    ids = [r["id"] for r in resp.json()["items"]]
     assert rid_done in ids
     assert rid_running not in ids
 
@@ -243,7 +283,7 @@ async def test_list_endpoint_newest_first(patched_app):
     async with client as ac:
         resp = await ac.get("/api/engine-runs/")
     assert resp.status_code == 200
-    rows = resp.json()
+    rows = resp.json()["items"]
     ids = [r["id"] for r in rows]
     assert ids.index(rid_new) < ids.index(rid_old)
 
@@ -258,7 +298,7 @@ async def test_get_endpoint_returns_row(patched_app):
     )
 
     async with client as ac:
-        resp = await ac.get(f"/api/engine-runs/{rid}")
+        resp = await ac.get(f"/api/engine-runs/{rid}?include_spec=true")
     assert resp.status_code == 200
     data = resp.json()
     assert data["id"] == rid

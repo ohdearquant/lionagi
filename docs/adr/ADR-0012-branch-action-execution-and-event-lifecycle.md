@@ -4,7 +4,20 @@
 - **Kind**: Retrospective
 - **Area**: actions-tools
 - **Date**: 2026-07-09
-- **Relations**: extends ADR-0011
+- **Relations**: extends ADR-0011; revisited by ADR-0121 (authoritative action execution and
+  native-agent harness)
+
+## Amendment (2026-08-16)
+
+The captured-failure half of P3/D3/current-delta row 1 is fixed on main. `_act()` now inspects a
+returned `FunctionCalling.status`, routes `FAILED` through `TOOL_ERROR`, persists an error-bearing
+linked ActionResponse, and re-raises when suppression is disabled; regression tests cover both
+suppression arms. Historical text below saying `_act()` is status-blind is superseded.
+
+The acceptance requirement for an intentionally successful `None` remains open: no focused test
+proves that its linked history is distinct from captured failure. Direct manager/callable routes
+also remain non-governed equivalents. ADR-0121 owns the authoritative executor and normalized
+phase model; this ADR remains the compatibility record for the Branch transaction during migration.
 
 ## Context
 
@@ -568,7 +581,7 @@ delta rather than presented as an ideal contract.
 
 | # | Delta | Size | Issue |
 |---|-------|------|-------|
-| 1 | Make the branch action transaction inspect `FunctionCalling.status`, emit `TOOL_ERROR` for captured failures, persist an error-bearing `ActionResponse`, and reserve `TOOL_POST` for completed calls; acceptance must define and persist a linked response for successful `None` and distinguish it from failure in sequential and concurrent regression tests. | M | #2014 |
+| 1 | Captured-failure status inspection, `TOOL_ERROR`, error-bearing linked response, and suppression behavior are delivered. Remaining acceptance: define and test a linked response for successful `None` and distinguish it from failure in sequential and concurrent paths. | S | #2014 (rescope) |
 | 2 | Publish one authoritative branch action executor and reduce `ActionManager` to registry and resolution responsibilities; acceptance requires Branch, operate, iterative reasoning, and LNDL paths to use the executor, any no-history invocation to be explicitly named, and observer/message-callback failures to have a tested policy that cannot silently split event logging from action history. | M | (filled at issue-open time) |
 | 3 | Define one normalized call context and explicit authorization, intrinsic-policy, agent-policy, transform, and revalidation phases; acceptance requires every phase to receive the same normalized arguments and security revalidation not to depend on whether a user preprocessor exists. | M | (filled at issue-open time) |
 | 4 | Define and enforce a sync-tool execution policy; acceptance requires blocking sync work either to be offloaded by the executor or to require an explicit inline opt-in, with returned awaitables handled consistently. | S | (filled at issue-open time) |

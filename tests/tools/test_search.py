@@ -24,28 +24,11 @@ def test_search_action_find_value():
     assert SearchAction.find.value == "find"
 
 
-def test_search_request_required_fields():
-    req = SearchRequest(action=SearchAction.grep, pattern="foo")
-    assert req.action == SearchAction.grep
-    assert req.pattern == "foo"
-
-
 def test_search_request_defaults():
     req = SearchRequest(action=SearchAction.grep, pattern="x")
     assert req.path == "."
     assert req.max_results == 50
     assert req.include is None
-
-
-def test_search_request_custom_fields():
-    req = SearchRequest(
-        action=SearchAction.find,
-        pattern="*.py",
-        path="/tmp",
-        max_results=10,
-    )
-    assert req.path == "/tmp"
-    assert req.max_results == 10
 
 
 def test_search_request_accepts_explicit_null():

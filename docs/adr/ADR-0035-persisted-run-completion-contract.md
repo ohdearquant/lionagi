@@ -4,7 +4,14 @@
 - **Kind**: Retrospective
 - **Area**: orchestration
 - **Date**: 2026-07-09
-- **Relations**: supersedes v0-0094
+- **Relations**: supersedes v0-0094; prospectively amended by ADR-0123 (canonical Run)
+
+## Proposed ADR-0123 boundary
+
+Until ADR-0123 is accepted and migrated, the kind-specific terminal/success table below remains the
+shipped completion contract. ADR-0123 preserves it as a versioned compatibility projection, adds a
+distinct canonical Run lifecycle/acceptance record, and forbids inferring a Run from an
+uncorrelated Session, play, schedule occurrence, engine row, or manifest.
 
 ## Context
 

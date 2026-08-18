@@ -30,7 +30,10 @@ export interface MarkdownProps {
   fileContext?: FileResolutionContext;
 }
 
-const RemoteImageContext = createContext(false);
+// Markdown content comes from agents, tools, plugins, and artifact files. A
+// remote image URL can beacon the viewer's IP and encode run data in its path,
+// so blocking is the safe default for every surface, not only the file viewer.
+const RemoteImageContext = createContext(true);
 
 export function RemoteImageGuard({ children }: { children: ReactNode }) {
   return <RemoteImageContext.Provider value>{children}</RemoteImageContext.Provider>;
@@ -132,7 +135,7 @@ function FileRef({
   return <>{fallback}</>;
 }
 
-// issue #2848: get_run_file 404s for two different reasons -- the run never
+// get_run_file 404s for two different reasons -- the run never
 // recorded an artifact root, or a file inside a recorded root is genuinely
 // gone -- and the detail string is the only thing that tells them apart.
 // Matches both `get_run_file` 404 details ("has no artifact root" and

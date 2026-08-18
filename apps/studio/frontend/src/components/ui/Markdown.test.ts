@@ -77,7 +77,7 @@ describe("Markdown.tsx — file-link resolution wiring", () => {
     expect(SRC).toMatch(/knownFiles: fileContext\.knownFiles/);
   });
 
-  it("renders a distinct no-artifact-root state, not the generic missing-file message (issue #2848)", () => {
+  it("renders a distinct no-artifact-root state, not the generic missing-file message", () => {
     expect(SRC).toMatch(/status === "no_artifact_root"/);
     expect(SRC).toMatch(/isNoArtifactRootDetail\(result\.detail\)/);
   });
@@ -156,11 +156,14 @@ describe("Markdown.tsx — the file viewer renders markdown as markdown", () => 
     }
 
     const remoteUrl = remoteUrls[0];
+    // Operator messages, run output, and library content are untrusted too;
+    // the guard is the default rather than an opt-in viewer policy.
     const ordinaryHtml = renderToStaticMarkup(
       createElement(MarkdownRenderer, null, `![remote tracker](${remoteUrl})`),
     );
-    expect(ordinaryHtml).toContain("<img");
-    expect(ordinaryHtml).toContain(remoteUrl);
+    expect(ordinaryHtml).not.toContain("<img");
+    expect(ordinaryHtml).not.toContain(remoteUrl);
+    expect(ordinaryHtml).toContain("Remote image blocked");
   });
 
   it("gives a rendered document more width than raw source, since tables need it", () => {
