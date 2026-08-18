@@ -368,3 +368,23 @@ class TestAuthenticatedIdentity:
             "identity": "lionagi-studio",
             "version": __version__,
         }
+
+    def test_identity_refuses_on_a_daemon_that_configured_no_token(
+        self, monkeypatch, tmp_path, make_client
+    ):
+        """A 200 here must mean the caller authenticated, not merely that
+        something on the port answers to the name. The bearer middleware
+        skips entirely when no token is set, so without a route-level refusal
+        a stale unauthenticated daemon holding the port passes the handshake.
+        """
+        monkeypatch.delenv("LIONAGI_STUDIO_AUTH_TOKEN", raising=False)
+        client = make_client()
+
+        assert client.get("/api/identity").status_code == 401
+        assert (
+            client.get(
+                "/api/identity",
+                headers={"Authorization": "Bearer any-token-at-all"},
+            ).status_code
+            == 401
+        )
