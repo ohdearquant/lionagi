@@ -7,13 +7,25 @@ from __future__ import annotations
 
 import hashlib
 import re
+from functools import lru_cache
 from typing import Any
 
+import anyio
 from pydantic import Field
 
 from lionagi.casts.emission import Finding, Verdict
 from lionagi.ln import gather as ln_gather
-from lionagi.providers._provider_errors import ProviderError
+from lionagi.ln.concurrency._compat import (
+    get_exception_group_exceptions,
+    is_exception_group,
+)
+from lionagi.providers._provider_errors import (
+    ProviderAuthError,
+    ProviderError,
+    ProviderQuotaError,
+    ProviderSafetyError,
+    ProviderUnsupportedModelError,
+)
 
 from .engine import Engine, EngineEvent, EngineRun
 
@@ -25,6 +37,185 @@ __all__ = (
     "ReviewEngine",
     "DEFAULT_DIMENSIONS",
 )
+
+
+# Transport failures that kill one dimension's worker without saying anything
+# about the run. A dropped MCP connection surfaces as the MCP SDK's own
+# McpError, which derives from Exception rather than from ProviderError, and a
+# dropped stream surfaces as anyio's — so neither is reachable by a
+# ProviderError-only except clause even though both are exactly the
+# "ordinary provider/transport failure" this stage means to isolate.
+_TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (
+    anyio.ClosedResourceError,
+    anyio.BrokenResourceError,
+    # A closed MCP response stream surfaces here: the SDK reads replies with
+    # `await response_stream_reader.receive()`, which raises EndOfStream rather
+    # than ClosedResourceError once the peer is gone.
+    anyio.EndOfStream,
+)
+
+_ISOLATED_ERRORS: tuple[type[BaseException], ...] = (ProviderError, *_TRANSPORT_ERRORS)
+
+# Refusals that describe the run rather than one attempt. The credentials, the
+# quota, the model and the safety policy are the same for every dimension, so a
+# refusal on any of those grounds recurs identically on the next dimension and
+# on any retry. They are ProviderError subclasses, so the isolated set above
+# already covers them, and covering them is wrong: isolating one records a
+# skipped dimension and lets the run reach a verdict, which turns a run-wide
+# misconfiguration into a quietly degraded pass over an artifact whose
+# dimensions were never actually read. A safety refusal is the sharpest case,
+# because the reason the content was not reviewed is the finding.
+#
+# Context overflow is deliberately not here. That is a property of the single
+# prompt that overflowed rather than of the run -- one verifier's oversized
+# prompt says nothing about the next one's, which is why the engine repairs it
+# instead of failing.
+#
+# A quota refusal belongs here despite being marked retryable, which looks like
+# a contradiction and is not. Retryability is about time: the same request may
+# well succeed once the limit resets. This tuple is about scope: at the moment
+# it is raised, the limit applies to every dimension alike. A run in flight has
+# no later, so isolating the quota failure would let the remaining dimensions
+# report and the run publish a verdict over an artifact one dimension never
+# read. Failing the whole run is the louder and more accurate outcome, and it
+# is the same principle the coverage check enforces downstream.
+_RUN_WIDE_REFUSALS: tuple[type[BaseException], ...] = (
+    ProviderAuthError,
+    ProviderQuotaError,
+    ProviderSafetyError,
+    ProviderUnsupportedModelError,
+)
+
+
+@lru_cache(maxsize=1)
+def _mcp_error_type() -> type[BaseException] | None:
+    """Return mcp's ``McpError``, or ``None`` when the optional extra is absent.
+
+    Resolved on first use rather than at module import. ``mcp`` is an optional
+    extra, importing it pulls the whole package in, and every process that
+    touches the engines package would pay that cost to obtain a type only a
+    transport failure ever consults.
+
+    A missing ``mcp`` is a normal configuration and yields ``None``. An ``mcp``
+    that is present but fails to import is a broken installation and raises, so
+    it cannot masquerade as "the extra is not installed" and silently disable
+    the isolation this module depends on.
+    """
+    try:
+        from mcp.shared.exceptions import McpError
+    except ModuleNotFoundError as exc:
+        if exc.name != "mcp":
+            # The top-level package resolved but a submodule or dependency is
+            # missing — a broken install, not an uninstalled extra.
+            raise
+        return None
+    return McpError
+
+
+# The MCP SDK raises McpError for two conditions of its own — a closed
+# connection and a request timeout — and also for every error object a server
+# sends back. A server's error says something about the request, not the
+# transport, and must not be swallowed as if the wire had dropped.
+#
+# The error code alone cannot tell those apart, because the code travels in the
+# server's payload. A server is free to answer with the SDK's own numbers, and
+# a buggy one reusing -32000 for its internal failures would have each of them
+# recorded as a dropped connection.
+_MCP_CONNECTION_CLOSED = -32000  # mcp.types.CONNECTION_CLOSED
+_MCP_REQUEST_TIMEOUT = 408  # httpx.codes.REQUEST_TIMEOUT, the SDK's timeout code
+
+# The SDK builds this one itself, verbatim, when the read loop ends with
+# requests still waiting. It is matched exactly rather than by code alone
+# because the peer-closed path and a server's own reply are raised from the
+# same line and are otherwise identical. Should the SDK ever reword it, this
+# stops recognising a dropped connection and the run fails loudly instead of
+# degrading, which is the safe direction to be wrong in.
+_MCP_CONNECTION_CLOSED_MESSAGE = "Connection closed"
+
+
+def _carries_only_the_sdks_own_fields(error: object) -> bool:
+    """True while the error object holds nothing the SDK would not have put there.
+
+    The closed-connection signal is not raised as a distinct condition: the read
+    loop synthesises an ordinary error reply and pushes it onto the same
+    response stream a server's reply arrives on, so both surface from one line
+    with an empty ``__context__``. Code and message are therefore the whole of
+    what separates them, and both travel in the payload.
+
+    The SDK constructs that reply with two fields and no others. ``ErrorData``
+    permits a third and accepts unknown ones besides, so anything populated
+    there came from a server and could not have come from the SDK. That does
+    not close the ambiguity -- a server sending exactly the two fields with
+    exactly the SDK's values is still indistinguishable here -- but it removes
+    every server reply carrying detail alongside its code, which is what a
+    server relaying an upstream failure typically sends.
+    """
+    if getattr(error, "data", None) is not None:
+        return False
+    return not getattr(error, "model_extra", None)
+
+
+def _is_transport_mcp_error(exc: BaseException) -> bool:
+    mcp_error = _mcp_error_type()
+    if mcp_error is None or not isinstance(exc, mcp_error):
+        return False
+    error = getattr(exc, "error", None)
+    code = getattr(error, "code", None)
+    if code == _MCP_REQUEST_TIMEOUT:
+        # The SDK raises its timeout from inside `except TimeoutError`, so the
+        # chained context is set. A server answering 408 of its own is raised
+        # outside any handler and carries no context, which separates the two
+        # without reading the message.
+        return isinstance(exc.__context__, TimeoutError)
+    if code == _MCP_CONNECTION_CLOSED:
+        # Known residual, stated here because this is where the call is made.
+        # A server that answers with exactly this code, exactly this message
+        # and no other field is indistinguishable from a real drop, and no
+        # further check closes it: the SDK builds its closed-connection reply
+        # with those two fields and pushes it onto the same response stream a
+        # server's reply arrives on, so both surface from one raise with an
+        # empty context. Code and message are the whole of the difference and
+        # both travel in the server's payload.
+        #
+        # What bounds it is where the answer is used rather than how good the
+        # answer is. A dimension classified either way is recorded as skipped
+        # and forces a degraded result, so getting this wrong mislabels the
+        # cause of a failure that is reported either way. It cannot turn a
+        # failure into a pass. Closing the residual needs something outside
+        # the exception -- whether the session survived, or whether the other
+        # dimensions died with it -- which this signature cannot see.
+        return getattr(
+            error, "message", None
+        ) == _MCP_CONNECTION_CLOSED_MESSAGE and _carries_only_the_sdks_own_fields(error)
+    return False
+
+
+def _is_all_isolated_failure(exc: BaseException) -> bool:
+    """True iff every leaf is a per-dimension provider/transport failure, recursing into nested groups."""
+    if isinstance(exc, _RUN_WIDE_REFUSALS):
+        # Asked before the isolated set, not after. These derive from
+        # ProviderError, so the wider test answers True for all of them and
+        # this branch would never be reached from below it.
+        return False
+    if isinstance(exc, _ISOLATED_ERRORS):
+        return True
+    if _is_transport_mcp_error(exc):
+        return True
+    if is_exception_group(exc):
+        return all(_is_all_isolated_failure(e) for e in get_exception_group_exceptions(exc))
+    return False
+
+
+def _failure_label(exc: BaseException) -> str:
+    """Name the leaf cause(s), so a group reports what actually failed rather than 'ExceptionGroup'."""
+    if not is_exception_group(exc):
+        return type(exc).__name__
+    seen: list[str] = []
+    for leaf in get_exception_group_exceptions(exc):
+        name = _failure_label(leaf)
+        if name not in seen:
+            seen.append(name)
+    return "+".join(seen) if seen else type(exc).__name__
 
 
 class IssueFound(Finding):
@@ -278,23 +469,29 @@ class ReviewEngine(Engine):
             # background work mutates shared run state after _run exits.
             await run.cancel_active()
             raise
-        # Drain any adversarial verifiers spawned by high-severity issues.
+        # Drain any adversarial verifiers spawned by high-severity issues. Each
+        # was spawned already wrapped, so a dead verifier worker is recorded and
+        # the drain stays clean; anything the wrapper does not claim still
+        # reaches here and ends the run.
         await run.wait_quiescence()
         # A clean or minor-only review spawns no issue verifiers, so it would
-        # reach the verdict with zero VerifyResult — and a downstream evidence
-        # floor then refuses the APPROVE as evidence-empty, structurally.
-        # Gate on zero VerifyResult (not zero issues) so both shapes instead
-        # carry one adversarial audit of the clean verdict itself: positive
-        # executed evidence rather than absence.
+        # reach the verdict with zero VerifyResult and ship an APPROVE backed
+        # by nothing executed. A consumer may well refuse that as
+        # evidence-empty, but whether any given one does is a property of that
+        # consumer's code and is not observable from this package, so it is not
+        # a guard this engine gets to count on. Gate on zero VerifyResult (not
+        # zero issues) so both shapes instead carry one adversarial audit of
+        # the clean verdict itself: positive executed evidence rather than
+        # absence, decided here where it can be seen.
         if self.verify_clean and not run.by_type(VerifyResult):
-            await self._verify_clean(run, artifact, dims)
+            await self._verify_clean_isolated(run, artifact, dims)
         return await self._verdict(run, artifact, dims)
 
     # -- reactions ------------------------------------------------------------
 
     def _on_issue(self, run: EngineRun, issue: IssueFound) -> None:
         if issue.severity in self.verify_severities and not run.seen(_verify_key(issue)):
-            run.spawn(self._verify(run, issue))
+            run.spawn(self._verify_isolated(run, issue))
 
     # -- stages ---------------------------------------------------------------
 
@@ -303,8 +500,21 @@ class ReviewEngine(Engine):
     ) -> None:
         try:
             await self._review_dimension(run, artifact, dimension)
-        except ProviderError as exc:
-            error_type = type(exc).__name__
+        except Exception as exc:
+            # Catch broadly and let the predicate decide, rather than naming the
+            # isolated types in the clause: McpError is resolved lazily and so
+            # cannot appear in a static tuple here. Anything the predicate does
+            # not claim is re-raised unchanged. Cancellation derives from
+            # BaseException and is therefore never caught.
+            #
+            # A group reaches here when the dimension's own task group collects
+            # several transport failures at once. Isolate only when every leaf
+            # is one: a mixed group carries something this stage has no claim
+            # to swallow (budget exhaustion, a genuine defect), and laundering
+            # it into a per-dimension degrade would hide it behind a verdict.
+            if not _is_all_isolated_failure(exc):
+                raise
+            error_type = _failure_label(exc)
             run.notify(
                 "dimension_failed",
                 dimension=dimension,
@@ -313,6 +523,53 @@ class ReviewEngine(Engine):
             marker = f"review-{dimension} ({error_type})"
             if marker not in run._emission_failures:
                 run._emission_failures.append(marker)
+
+    def _isolate_verification_failure(
+        self, run: EngineRun, exc: BaseException, *, stage: str
+    ) -> bool:
+        """Record an isolated verification failure; False means the caller must re-raise.
+
+        Verification is discretionary work performed on evidence that already
+        exists: by the time a verifier runs, its dimension has reported and its
+        findings are on the run. A provider or transport failure here says the
+        worker died, not that the review is unsound, so it degrades the audit of
+        one finding rather than the run that produced it. The drain already
+        treats one failure this way — ``EngineBudgetError`` is swallowed as
+        discretionary work declined — and this extends the same reading to the
+        transport failures the dimension stage isolates.
+
+        The failure stays visible: the marker reaches the caller through
+        ``_emission_failures`` and is reported alongside the result, so a run
+        that verified less than it intended says so instead of presenting a
+        verdict as fully audited.
+        """
+        if not _is_all_isolated_failure(exc):
+            return False
+        error_type = _failure_label(exc)
+        run.notify("verification_failed", stage=stage, error_type=error_type)
+        marker = f"{stage} ({error_type})"
+        if marker not in run._emission_failures:
+            run._emission_failures.append(marker)
+        return True
+
+    async def _verify_isolated(self, run: EngineRun, issue: IssueFound) -> None:
+        try:
+            await self._verify(run, issue)
+        except Exception as exc:
+            # Spawned into the run's background set, so an escape does not fail
+            # this verifier alone: the drain collects it and re-raises, which
+            # discards a review whose dimensions have already succeeded.
+            if not self._isolate_verification_failure(run, exc, stage=f"verify-{issue.dimension}"):
+                raise
+
+    async def _verify_clean_isolated(
+        self, run: EngineRun, artifact: str, dimensions: tuple[str, ...]
+    ) -> None:
+        try:
+            await self._verify_clean(run, artifact, dimensions)
+        except Exception as exc:
+            if not self._isolate_verification_failure(run, exc, stage="verify-clean"):
+                raise
 
     async def _review_dimension(self, run: EngineRun, artifact: str, dimension: str) -> None:
         emits = (IssueFound, DimensionClean)

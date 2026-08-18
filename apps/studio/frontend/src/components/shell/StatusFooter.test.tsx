@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
-import StatusFooter from "./StatusFooter";
+import StatusFooter, { HEALTH_PROBE_TIMEOUT_MS, STATS_INITIAL_DELAY_MS } from "./StatusFooter";
 import enMessages from "@/messages/en.json";
 
 const getStats = vi.fn();
@@ -56,11 +56,21 @@ async function mountFooter(container: HTMLElement): Promise<Root> {
       </IntlProvider>,
     );
   });
-  // let the health probe and the stats read settle
+  // Health is immediate; heavyweight diagnostics deliberately wait until
+  // after first paint.
   await act(async () => {
-    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(STATS_INITIAL_DELAY_MS);
   });
   return root;
+}
+
+/** The health dot, found by the label it carries in either state. */
+function healthDot(container: HTMLElement): HTMLElement {
+  const match = container.querySelector<HTMLElement>(
+    '[aria-label="Backend healthy"], [aria-label="Backend unreachable"]',
+  );
+  if (!match) throw new Error("no health dot rendered");
+  return match;
 }
 
 /** The span carrying the DB reading, found by its rendered text. */
@@ -77,6 +87,8 @@ describe("StatusFooter DB reading", () => {
   let root: Root | null = null;
 
   beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.useFakeTimers();
     container = document.createElement("div");
     document.body.appendChild(container);
     vi.stubGlobal(
@@ -91,6 +103,7 @@ describe("StatusFooter DB reading", () => {
     container.remove();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
   it("marks the reading when the backend says the store is over its threshold", async () => {
@@ -134,5 +147,91 @@ describe("StatusFooter DB reading", () => {
     const span = dbSpan(container);
     expect(span.className).not.toContain("text-status-warning");
     expect(span.getAttribute("title")).toBeNull();
+  });
+
+  it("holds the diagnostics read back until after first paint", async () => {
+    getStats.mockResolvedValue(statsWith({ size_bytes: 120 * MB, size_alert: false }));
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <StatusFooter />
+        </IntlProvider>,
+      );
+    });
+    expect(getStats).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(STATS_INITIAL_DELAY_MS);
+    });
+    expect(getStats).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps reporting the backend healthy when only the diagnostics read fails", async () => {
+    getStats.mockRejectedValue(new Error("stats unavailable"));
+    root = await mountFooter(container);
+
+    expect(healthDot(container).getAttribute("aria-label")).toBe("Backend healthy");
+    expect(() => dbSpan(container)).toThrow();
+  });
+
+  it("reports the backend unreachable when the health probe itself fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject(new Error("connection refused"))),
+    );
+    getStats.mockResolvedValue(statsWith({ size_bytes: 120 * MB, size_alert: false }));
+    root = await mountFooter(container);
+
+    expect(healthDot(container).getAttribute("aria-label")).toBe("Backend unreachable");
+  });
+
+  it("does not repeat heavyweight stats reads on the 30-second health cadence", async () => {
+    getStats.mockResolvedValue(statsWith({ size_bytes: 120 * MB, size_alert: false }));
+    root = await mountFooter(container);
+    expect(getStats).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+    });
+    expect(getStats).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(getStats).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up on a health probe that never answers and keeps polling", async () => {
+    // A daemon that accepts the connection and then says nothing. Without a
+    // deadline the in-flight guard stays latched, the dot keeps reporting the
+    // reading it had, and no later probe ever runs.
+    const settled: Array<(value: Response) => void> = [];
+    const fetchMock = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((resolve, reject) => {
+          settled.push(resolve);
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    getStats.mockResolvedValue(statsWith({ size_bytes: 120 * MB, size_alert: false }));
+    root = await mountFooter(container);
+
+    // Still hanging: nothing has decided the reading yet.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[aria-label="Backend unreachable"]')).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(HEALTH_PROBE_TIMEOUT_MS);
+    });
+    expect(healthDot(container).getAttribute("aria-label")).toBe("Backend unreachable");
+
+    // The guard released, so the next cadence actually probes again rather
+    // than returning at a latch left set by the abandoned request.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
