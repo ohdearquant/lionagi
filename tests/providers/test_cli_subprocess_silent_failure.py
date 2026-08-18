@@ -23,7 +23,9 @@ import sys
 
 import pytest
 
+from lionagi.providers import _secret_resolution
 from lionagi.providers._cli_subprocess import _no_stderr_reason, ndjson_from_cli
+from lionagi.providers._secret_resolution import fill_declared_secrets
 
 
 def _cmd(script: str) -> list[str]:
@@ -178,6 +180,9 @@ _LEAKS_TOKEN_SHAPE_THEN_HANGS = (
 )
 
 _INJECTED_SECRET = "supersecretvalue1234"
+# Long enough to be redactable and deliberately unlike any credential shape, so
+# only the environment lookup can catch it.
+_INHERITED_SECRET = "inherited-value-9d1c"
 
 
 class TestTheQuotedStderrCarriesNoCredential:
@@ -191,6 +196,29 @@ class TestTheQuotedStderrCarriesNoCredential:
 
         assert _INJECTED_SECRET not in caplog.text, (
             "a credential this process handed the child came back out in a log line: " + caplog.text
+        )
+        assert "[redacted]" in caplog.text, (
+            "the stderr was dropped rather than redacted, losing the diagnostic: " + caplog.text
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_secret_the_child_inherited_does_not_reach_the_log(self, caplog, monkeypatch):
+        """Spawning without an ``env`` hands the child this process's environment, so that is the one its output can echo."""
+        # With a secrets lookup configured, the spawn path materialises a full
+        # env dict and the inheriting case never arises, so the machine running
+        # the suite would decide whether this test can fail.
+        monkeypatch.setattr(
+            _secret_resolution,
+            "resolve_secret_lookup_config",
+            lambda **_: _secret_resolution._NOT_CONFIGURED,
+        )
+        assert await fill_declared_secrets(None) is None, "the child must actually be inheriting"
+        monkeypatch.setenv("LIONAGI_TEST_API_KEY", _INHERITED_SECRET)
+        with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
+            await _abandon(ndjson_from_cli(_cmd(_LEAKS_ENV_SECRET_THEN_HANGS)))
+
+        assert _INHERITED_SECRET not in caplog.text, (
+            "a credential the child inherited from this process reached a log line: " + caplog.text
         )
         assert "[redacted]" in caplog.text, (
             "the stderr was dropped rather than redacted, losing the diagnostic: " + caplog.text

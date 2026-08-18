@@ -328,6 +328,9 @@ def _redact_secrets_for_log(text: str, env: Mapping[str, str] | None) -> str:
     """Strip credentials out of child output before any of it reaches a log."""
     if not text:
         return text
+    # None means the child inherited this process's environment, so that is the
+    # environment whose values its output could be echoing back.
+    env = os.environ if env is None else env
     if env:
         injected = {
             value
