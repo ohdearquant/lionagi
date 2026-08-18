@@ -1,14 +1,14 @@
 """Publication-hygiene gate over every committed instance/rejection JSON.
 
-A round-1 review of the first three harvested instances found local worktree
-paths, an internal actor identifier, an internal issue-tracker comment, and a
-test-generated session UUID leaking into fields outside ``task_text`` —
-``provenance.nominated_by``, ``validation.gold_output``/``null_output``, and
-``oracle.test_patch``. ``save_instance`` now redacts the first two at write
-time (see ``schema._redact_for_publication``), but this repo is public and a
-future harvest run (or a hand-edited fixture) could reintroduce any of these —
-so every scalar field of every committed JSON under ``data/`` is walked here
-and checked against the concrete leak patterns from that review.
+Early harvested instances leaked local worktree paths, an actor identifier, a
+tracker comment, and a test-generated session UUID into fields outside
+``task_text`` — ``provenance.nominated_by``,
+``validation.gold_output``/``null_output``, and ``oracle.test_patch``.
+``save_instance`` now redacts the first two at write time (see
+``schema._redact_for_publication``), but this repo is public and a future
+harvest run (or a hand-edited fixture) could reintroduce any of these — so
+every scalar field of every committed JSON under ``data/`` is walked here and
+checked against those leak patterns.
 """
 
 from __future__ import annotations

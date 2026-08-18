@@ -77,7 +77,7 @@ describe("Markdown.tsx — file-link resolution wiring", () => {
     expect(SRC).toMatch(/knownFiles: fileContext\.knownFiles/);
   });
 
-  it("renders a distinct no-artifact-root state, not the generic missing-file message (issue #2848)", () => {
+  it("renders a distinct no-artifact-root state, not the generic missing-file message", () => {
     expect(SRC).toMatch(/status === "no_artifact_root"/);
     expect(SRC).toMatch(/isNoArtifactRootDetail\(result\.detail\)/);
   });
