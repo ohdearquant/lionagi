@@ -1004,6 +1004,7 @@ function BranchesSection({
   runId,
   artifactRoot,
   runFiles,
+  runFilesBounded,
   onLoadOlder,
   olderMessagesRemaining,
   loadingOlder,
@@ -1016,6 +1017,7 @@ function BranchesSection({
   runId?: string;
   artifactRoot?: string | null;
   runFiles?: string[];
+  runFilesBounded?: boolean;
   onLoadOlder?: () => void;
   olderMessagesRemaining?: number;
   loadingOlder?: boolean;
@@ -1062,6 +1064,7 @@ function BranchesSection({
                 runId={runId}
                 artifactRoot={artifactRoot}
                 runFiles={runFiles}
+                runFilesBounded={runFilesBounded}
                 onLoadOlder={onLoadOlder}
                 olderMessagesRemaining={olderMessagesRemaining}
                 loadingOlder={loadingOlder}
@@ -2953,6 +2956,7 @@ export default function RunDetail({ id }: RunDetailProps) {
             runId={session.id}
             artifactRoot={session.artifacts_path}
             runFiles={runFiles}
+            runFilesBounded={session.message_stats?.files_bounded}
             onLoadOlder={handleLoadOlder}
             olderMessagesRemaining={hiddenOlderCount}
             loadingOlder={loadingOlder}
@@ -3002,6 +3006,7 @@ export default function RunDetail({ id }: RunDetailProps) {
             runId={session.id}
             artifactRoot={session.artifacts_path}
             runFiles={runFiles}
+            runFilesBounded={session.message_stats?.files_bounded}
             onLoadOlder={handleLoadOlder}
             olderMessagesRemaining={hiddenOlderCount}
             loadingOlder={loadingOlder}
