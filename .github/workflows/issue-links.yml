@@ -31,7 +31,7 @@ jobs:
     # revision and runs that script rather than the one the PR proposes. The
     # credential is also kept out of .git/config, so nothing left in the
     # workspace carries it.
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       with:
         ref: ${{ github.event.pull_request.base.sha }}
         persist-credentials: false

@@ -56,11 +56,12 @@ guidelines and instructions for contributing to this project.
    it once the stack drains and the last PR retargets `main`. Write the keyword
    when the work lands, not when the base does.
 
-   Write the keyword plainly. "Does not close #NNNN" is read here as no closure
-   at all, because GitHub's own parser ignores the negation and would close the
-   issue anyway. The check says so and still passes, since telling a negation
-   from ordinary prose is not reliable enough to block a PR on. A body naming
-   more than 40 issue numbers is refused rather than partly checked.
+   Write the keyword plainly. "Does not close #NNNN" is refused rather than
+   read as a non-closure, because GitHub's own parser ignores the negation and
+   closes the issue on merge regardless. Rewrite the sentence without the
+   keyword: a `Refs-only:` line satisfies this check but not GitHub, so the
+   issue would still close. A body naming more than 40 issue numbers is refused
+   rather than partly checked.
 
 ## Testing
 

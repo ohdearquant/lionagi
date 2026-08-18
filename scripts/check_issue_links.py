@@ -172,27 +172,18 @@ def main() -> int:
         if negated_closure(body, repo, number):
             negated.append(number)
 
-    # A negated keyword warns rather than refuses. The negation's scope is a
-    # whole clause, so ordinary prose carrying a negative word ahead of the
-    # reference reads as a refusal; measured against ten real bodies, three
-    # disagreed and every one of them toward a false refusal. No syntactic
-    # boundary fixes that, so the failure direction is what changes.
-    blocking = [(number, title) for number, title in missing if number not in negated]
-
-    if negated:
-        print(
-            "A closing keyword for "
-            + ", ".join(f"#{n}" for n in negated)
-            + " appears inside a negation. GitHub's own parser does not read negation and will "
-            "close the issue on merge, so it is counted as closing here too. Rewrite the sentence "
-            "if you meant the issue to stay open. This is a warning: telling a negation from "
-            "ordinary prose is not reliable enough to fail a PR on.\n"
-        )
-
-    if blocking:
+    if missing:
         print("This PR references phase-tracking issues without saying what happens to them.\n")
-        for number, title in blocking:
+        for number, title in missing:
             print(f"  #{number}  {title}")
+        if negated:
+            print(
+                "\nA closing keyword for "
+                + ", ".join(f"#{n}" for n in negated)
+                + " appears inside a negation, so it is not read as a closure here. GitHub's own "
+                "parser does not read negation and would close the issue on merge, so rewrite the "
+                "sentence rather than relying on the word 'not'."
+            )
         print(
             "\nAdd a closing keyword to the PR body for each one it finishes, "
             '"Closes #NNNN".'
