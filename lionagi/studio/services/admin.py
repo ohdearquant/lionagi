@@ -24,7 +24,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import JSON, bindparam, text
 from sqlalchemy.exc import OperationalError as _SAOperationalError
 
-from lionagi.cli._util import pid_alive as _pid_is_live
+from lionagi.cli._util import (
+    BOOT_TIME_TOLERANCE,
+    recorded_identity_mode,
+    recorded_pid_is_foreign,
+)
+from lionagi.cli._util import (
+    pid_alive as _pid_is_live,
+)
 from lionagi.ln import now_utc
 from lionagi.state.db import ADMIN_TRANSITION_TARGETS as _ADMIN_TRANSITION_TARGETS
 from lionagi.state.db import state_db_known_absent
@@ -397,8 +404,6 @@ HEALTH_SCAN_LIMIT = 500
 
 def process_identity_is_foreign(session: dict[str, Any]) -> bool:
     """True if this machine can't observe the run's process at all — foreign host or unknown identity mode — since the staleness grace only protects momentary, not permanent, blind spots."""
-    from lionagi.cli._util import recorded_identity_mode, recorded_pid_is_foreign
-
     meta = session.get("node_metadata")
     if isinstance(meta, str):
         try:
@@ -436,8 +441,6 @@ def process_liveness(
         except ValueError:
             meta = None
     if isinstance(meta, dict):
-        from lionagi.cli._util import recorded_identity_mode
-
         identity_mode = recorded_identity_mode(meta)
         # An in-process run stores its host's pid under separate keys, not "pid", so the kill
         # path can't mistake the host for the run itself — but the host still bounds its liveness.
@@ -466,8 +469,6 @@ def process_liveness(
         rebooted_since = False
         try:
             import psutil
-
-            from lionagi.cli._util import BOOT_TIME_TOLERANCE
 
             # Boot time is re-derived from the clock each read, so NTP steps or suspend/resume
             # can drift it more than the create-time tolerance allows; it needs its own tolerance.
