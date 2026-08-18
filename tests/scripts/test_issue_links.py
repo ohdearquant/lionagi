@@ -43,6 +43,31 @@ class TestNegatedProseIsNotAClosure:
         assert gate.closed_by_body("This is not a revert. Closes #1234.", REPO, 1234)
         assert gate.closed_by_body("Nothing here is broken; closes #1234.", REPO, 1234)
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "This PR is not a revert, but closes #1234.",
+            "This is not a rewrite, however it closes #1234.",
+            "It does not revert anything, though it closes #1234.",
+        ],
+    )
+    def test_a_contrastive_coordinator_ends_the_negated_clause(self, body):
+        """The negation belongs to what came before "but"; refusing here demands a keyword the author already wrote."""
+        assert gate.closed_by_body(body, REPO, 1234)
+        assert not gate.negated_closure(body, REPO, 1234)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            # "and" and "or" carry the negation forward.
+            "This will not fix #1234 and close #1234.",
+            # "yet" here is the adverb, sitting inside the negation rather than ending it.
+            "Landing this does not yet close #1234.",
+        ],
+    )
+    def test_a_word_that_does_not_end_the_negation_is_not_a_boundary(self, body):
+        assert not gate.closed_by_body(body, REPO, 1234)
+
     def test_a_negation_after_the_keyword_is_not_a_negation_of_it(self):
         assert gate.closed_by_body("Closes #1234, which is not a duplicate.", REPO, 1234)
 
