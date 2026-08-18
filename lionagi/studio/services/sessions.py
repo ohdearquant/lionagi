@@ -117,6 +117,11 @@ MAX_HYDRATED_CONTENT_CHARS = 64 * 1_048_576
 # so without this a stream of withheld rows would cost nothing and run unbounded.
 MAX_HYDRATED_ROWS = 50_000
 
+# What one session read may put through a JSON parser to recover withheld rows' link ids. The
+# decode ceiling does not cover this: a withheld row decodes nothing, so a run of withheld rows
+# costs no characters and would leave the parsing work unbounded.
+MAX_SCANNED_CONTENT_CHARS = 64 * 1_048_576
+
 # How many action rows one session detail pulls, newest first, across all branches; every
 # aggregate derived from action messages reads this same set and reports when it binds.
 MAX_HYDRATED_ACTION_MESSAGES = 20_000
@@ -143,20 +148,20 @@ MAX_ACTION_ID_SCAN_CHARS = 16 * MAX_ACTION_CONTENT_CHARS
 
 # Only a withheld row needs its ids extracted this way; a kept payload already carries them.
 # json_valid guards non-JSON content, since json_extract would otherwise abort the whole query.
+# The length guard is in the WHERE rather than the column, so a row past the scan ceiling is
+# filtered before the parser sees it instead of parsed and then discarded.
 _ACTION_ID = (
-    "CASE WHEN length(m.content) > ? AND length(m.content) <= ? THEN "
     "substr(json_extract(CASE WHEN json_valid(m.content) THEN m.content END, '$.{key}'), "
-    f"1, {MAX_ACTION_ID_CHARS}) END"
+    f"1, {MAX_ACTION_ID_CHARS})"
 )
 
 _BOUNDED_CONTENT_COLUMNS = (
     "CASE WHEN length(m.content) > ? THEN NULL ELSE m.content END AS content, "
     "CASE WHEN length(m.content) > ? THEN 1 ELSE 0 END AS content_oversized, "
     "CASE WHEN length(m.content) > ? THEN 0 ELSE length(m.content) END AS content_length, "
-    # A withheld row still needs to be pairable, so its link ids are extracted here without
-    # decoding the payload -- bounded, or an unbounded slice would give back what was withheld.
-    f"{_ACTION_ID.format(key='action_request_id')} AS action_request_id, "
-    f"{_ACTION_ID.format(key='action_response_id')} AS action_response_id"
+    # The charged length is 0 for a withheld row, so its true size is carried separately to
+    # bound what the link-id pass may parse.
+    "length(m.content) AS content_bytes"
 )
 
 
@@ -196,14 +201,65 @@ def _format_message(row: aiosqlite.Row | dict[str, Any]) -> dict[str, Any]:
         "timestamp": row["created_at"],
         "lion_class": row["lion_class_str"] or "",
     }
-    if withheld:
-        # Only on a withheld row: a kept payload already carries these ids, so lifting them
-        # out there would widen the shape every reader sees for no reason.
-        for key in ("action_request_id", "action_response_id"):
-            value = row[key]
-            if value:
-                formatted[key] = str(value)
     return formatted
+
+
+async def _fetch_action_link_ids(
+    db: aiosqlite.Connection, sized: list[tuple[str, int]]
+) -> dict[str, dict[str, str]]:
+    """Recover action link ids for withheld rows, under a total parse ceiling.
+
+    `sized` is (message id, true content length) for withheld rows only; a kept payload already
+    carries its ids. Rows are taken in order until MAX_SCANNED_CONTENT_CHARS is spent, so the
+    work this costs is bounded by bytes rather than by row count.
+    """
+    budgeted: list[str] = []
+    scan_remaining = MAX_SCANNED_CONTENT_CHARS
+    for msg_id, content_bytes in sized:
+        if content_bytes > MAX_ACTION_ID_SCAN_CHARS or content_bytes > scan_remaining:
+            continue
+        scan_remaining -= content_bytes
+        budgeted.append(msg_id)
+
+    links: dict[str, dict[str, str]] = {}
+    for start in range(0, len(budgeted), 500):
+        chunk = budgeted[start : start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        cur = await db.execute(
+            f"""
+            SELECT m.id,
+                   {_ACTION_ID.format(key="action_request_id")} AS action_request_id,
+                   {_ACTION_ID.format(key="action_response_id")} AS action_response_id
+            FROM messages m
+            WHERE m.id IN ({placeholders}) AND length(m.content) <= ?
+            """,  # noqa: S608
+            [*chunk, MAX_ACTION_ID_SCAN_CHARS],
+        )
+        for row in await cur.fetchall():
+            found = {
+                key: str(row[key])
+                for key in ("action_request_id", "action_response_id")
+                if row[key]
+            }
+            if found:
+                links[row["id"]] = found
+    return links
+
+
+def _withheld_sizes(messages: list[dict[str, Any]], sizes: dict[str, int]) -> list[tuple[str, int]]:
+    """(id, true length) per withheld row, in the order taken, once each.
+
+    A message reachable from several branches appears once per branch; charging its size per
+    appearance would spend the scan ceiling on a payload read a single time.
+    """
+    seen: set[str] = set()
+    out: list[tuple[str, int]] = []
+    for msg in messages:
+        msg_id = msg["id"]
+        if msg.get("content_withheld") and msg_id not in seen:
+            seen.add(msg_id)
+            out.append((msg_id, sizes.get(msg_id, 0)))
+    return out
 
 
 # A listing whose SQL carries no LIMIT examines every session, every branch and
@@ -689,6 +745,7 @@ async def _fetch_messages_by_ids(
     # Pass two hydrates exactly what pass one paid for, so no payload crosses
     # the boundary without a charge behind it.
     rows_by_id: dict[str, dict[str, Any]] = {}
+    content_bytes: dict[str, int] = {}
     for start in range(0, len(admitted), 500):
         chunk = admitted[start : start + 500]
         placeholders = ",".join("?" for _ in chunk)
@@ -705,18 +762,21 @@ async def _fetch_messages_by_ids(
                 MAX_ACTION_CONTENT_CHARS,
                 MAX_ACTION_CONTENT_CHARS,
                 MAX_ACTION_CONTENT_CHARS,
-                MAX_ACTION_CONTENT_CHARS,
-                MAX_ACTION_ID_SCAN_CHARS,
-                MAX_ACTION_CONTENT_CHARS,
-                MAX_ACTION_ID_SCAN_CHARS,
                 *chunk,
             ],
         )
         async for row in cur:
             data = dict(row)
             data.pop("content_length", None)
+            content_bytes[data["id"]] = int(data.get("content_bytes") or 0)
             rows_by_id[data["id"]] = _format_message(data)
-    return [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
+
+    ordered = [rows_by_id[mid] for mid in msg_ids if mid in rows_by_id]
+    for msg_id, found in (
+        await _fetch_action_link_ids(db, _withheld_sizes(ordered, content_bytes))
+    ).items():
+        rows_by_id[msg_id].update(found)
+    return ordered
 
 
 async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> dict[str, int]:
@@ -1381,10 +1441,6 @@ async def get_session_messages_after(
                 MAX_ACTION_CONTENT_CHARS,
                 MAX_ACTION_CONTENT_CHARS,
                 MAX_ACTION_CONTENT_CHARS,
-                MAX_ACTION_CONTENT_CHARS,
-                MAX_ACTION_ID_SCAN_CHARS,
-                MAX_ACTION_CONTENT_CHARS,
-                MAX_ACTION_ID_SCAN_CHARS,
                 session_id,
                 *cursor_params,
                 # The loop below stops at the row budget, so this is exactly what it could ever
@@ -1395,6 +1451,7 @@ async def get_session_messages_after(
 
         budget = _HydrationBudget()
         result: list[dict[str, Any]] = []
+        content_bytes: dict[str, int] = {}
         # Iterated rather than fetchall'd: a budget can only bound what has not
         # been read yet.
         async for row in cur:
@@ -1409,9 +1466,18 @@ async def get_session_messages_after(
                 # poll would read the same row forever, so this one row is let through anyway.
             msg = _format_message(row)
             msg["branch_id"] = row["branch_id"]
+            content_bytes[msg["id"]] = int(row["content_bytes"] or 0)
             result.append(msg)
             if not admitted:
                 break
+
+        # One message id can arrive under several branches, so every row carrying it is
+        # updated rather than the first one found.
+        links = await _fetch_action_link_ids(db, _withheld_sizes(result, content_bytes))
+        for msg in result:
+            found = links.get(msg["id"])
+            if found:
+                msg.update(found)
     return result
 
 

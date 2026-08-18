@@ -13,6 +13,7 @@ import { createElement } from "react";
 import type { ComponentType, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import Markdown, { isNoArtifactRootDetail } from "./Markdown";
+import type { FileResolutionContext } from "./Markdown";
 import * as MarkdownModule from "./Markdown";
 
 const SRC = fs.readFileSync(path.resolve(__dirname, "Markdown.tsx"), "utf-8");
@@ -172,15 +173,13 @@ describe("Markdown.tsx — the file viewer renders markdown as markdown", () => 
 });
 
 describe("Markdown.tsx — a reference against a truncated file surface", () => {
+  // fileContext is typed off the component so a prop-contract change fails here
+  // rather than leaving the test exercising a stale shape.
   const MarkdownRenderer = Markdown as unknown as ComponentType<{
     children?: ReactNode;
-    fileContext?: {
-      runId: string;
-      knownFiles: string[];
-      knownFilesBounded?: boolean;
-    };
+    fileContext?: FileResolutionContext;
   }>;
-  const ctx = (bounded: boolean) => ({
+  const ctx = (bounded: boolean): FileResolutionContext => ({
     runId: "r1",
     knownFiles: ["/runs/r1/kept.md"],
     knownFilesBounded: bounded,
@@ -209,5 +208,13 @@ describe("Markdown.tsx — a reference against a truncated file surface", () => 
     );
     expect(html).toContain("<button");
     expect(html).not.toContain("could not be checked");
+  });
+
+  it("keeps an unmatched markdown link navigable, since a cut surface is not evidence it is dead", () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownRenderer, { fileContext: ctx(true) }, "see [guide](guide.md)"),
+    );
+    expect(html).toContain('href="guide.md"');
+    expect(html).toContain("could not be checked");
   });
 });

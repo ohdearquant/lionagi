@@ -2872,6 +2872,57 @@ async def test_lifting_a_link_id_does_not_read_a_payload_of_unbounded_size(
     )
 
 
+async def test_the_work_of_lifting_link_ids_is_bounded_across_rows_not_only_per_row(
+    patched_sessions_db, monkeypatch
+):
+    """A per-row ceiling still lets a run of withheld rows add up to unbounded parsing."""
+    svc, db_path = patched_sessions_db
+    monkeypatch.setattr(svc, "MAX_ACTION_CONTENT_CHARS", 200)
+    monkeypatch.setattr(svc, "MAX_ACTION_ID_SCAN_CHARS", 100_000)
+    monkeypatch.setattr(svc, "MAX_SCANNED_CONTENT_CHARS", 2_500)
+    await seed_session(db_path, session_id="sess-scansum")
+    msg_ids = ["sum-a", "sum-b", "sum-c"]
+    await seed_branch(db_path, branch_id="br-scansum", session_id="sess-scansum", msg_ids=msg_ids)
+    async with StateDB(db_path) as db:
+        for offset, msg_id in enumerate(msg_ids):
+            await db.insert_message(
+                {
+                    "id": msg_id,
+                    "created_at": 110.0 + offset,
+                    # ~1040 bytes stored, so two rows fit under the 2,500 ceiling and the
+                    # third does not. Every row is far below the per-row ceiling above, so
+                    # only the total can be what stops the third.
+                    "content": {"output": "y" * 1_000, "action_request_id": f"req-{msg_id}"},
+                    "sender": "tool",
+                    "recipient": "worker",
+                    "role": "action",
+                    "node_metadata": {
+                        "lion_class": "lionagi.protocols.messages.action_response.ActionResponse"
+                    },
+                }
+            )
+
+    result = await svc.get_session_messages_after("sess-scansum", 100.0)
+
+    by_id = {r["id"]: r for r in result}
+    assert set(by_id) == set(msg_ids), "a row past the total ceiling is withheld, not dropped"
+    assert all(by_id[m]["content_withheld"] is True for m in msg_ids)
+    assert by_id["sum-a"]["action_request_id"] == "req-sum-a", (
+        "the extraction stopped working, so this says nothing about the ceiling"
+    )
+    assert by_id["sum-b"]["action_request_id"] == "req-sum-b"
+    assert by_id["sum-c"].get("action_request_id") is None, (
+        "the total scan ceiling did not bind, so a run of withheld rows parses without limit"
+    )
+
+
+def test_the_total_scan_ceiling_is_a_real_ceiling():
+    """The arm above sets the constant, so it cannot see the shipped value change."""
+    from lionagi.studio.services import sessions as sessions_svc
+
+    assert 0 < sessions_svc.MAX_SCANNED_CONTENT_CHARS <= 256 * 1_048_576
+
+
 async def test_one_row_of_unparseable_content_does_not_take_the_whole_read_down(
     patched_sessions_db, monkeypatch
 ):
