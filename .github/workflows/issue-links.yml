@@ -27,12 +27,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     # A fork's PR code is attacker-controlled and this job runs a script out of
-    # the tree with a token in its environment, so it runs the base revision and
-    # leaves no credentials in .git/config. The body and branch it reads come
-    # from the event payload, not the checkout.
+    # the tree, so the checkout leaves no credentials behind in .git/config for
+    # that script to read. Running the base revision instead would be stronger
+    # and cannot be done until the script exists there. What is left reachable
+    # is GH_TOKEN below, which on a pull_request event from a fork is read-only
+    # and, on a public repository, reaches only what is already public.
     - uses: actions/checkout@v4
       with:
-        ref: ${{ github.event.pull_request.base.sha }}
         persist-credentials: false
     - name: Require a closing keyword for every referenced phase issue
       env:
