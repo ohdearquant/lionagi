@@ -668,6 +668,65 @@ async def test_payload_sanitizer_hook_signal_non_json_kwargs(tmp_path):
     assert len(rows) == 1, "HookSignal with non-JSON kwargs was dropped"
 
 
+async def test_hook_signal_full_payload_is_preserved_through_persistence_and_sse(
+    patched_signals_db,
+):
+    pytest.importorskip("fastapi", reason="studio extra not installed")
+    from lionagi.hooks.bus import HookPoint, HookSignal
+    from lionagi.session.session import Session
+    from lionagi.studio.services.sessions import stream_signals
+
+    _svc, db_path = patched_signals_db
+    session_id = "hook-sse-contract"
+    signal = HookSignal(
+        point=HookPoint.SESSION_START,
+        kwargs={"session_id": session_id, "status": "running"},
+        created_at=1234.5,
+        metadata={"source": "profile-freeze"},
+    )
+    expected_payload = {
+        "created_at": signal.created_at,
+        "metadata": {"source": "profile-freeze"},
+        "schema_version": 1,
+        "point": HookPoint.SESSION_START.value,
+        "kwargs": {"session_id": session_id, "status": "running"},
+    }
+
+    async with StateDB(db_path) as db:
+        progression_id = f"{session_id}-prog"
+        await db.create_progression(progression_id)
+        await db.create_session(
+            {
+                "id": session_id,
+                "created_at": 100.0,
+                "progression_id": progression_id,
+                "name": "hook-sse-contract",
+                "status": "running",
+                "invocation_kind": "agent",
+            }
+        )
+        observer = Session(name="hook-sse-contract").observer
+        observer.bind_db_persistence(session_id, db=db)
+        await observer.emit(signal)
+        rows = await db.get_session_signals_after(session_id, 0)
+
+    assert len(rows) == 1
+    persisted = rows[0]
+    assert persisted["kind"] == "HookSignal"
+    assert persisted["op_id"] == ""
+    assert persisted["payload"] == expected_payload
+
+    response = await stream_signals(session_id)
+    iterator = response.body_iterator
+    try:
+        frame = await asyncio.wait_for(anext(iterator), timeout=2.0)
+        streamed = json.loads(frame.removeprefix("data: ").strip())
+    finally:
+        await iterator.aclose()
+
+    assert streamed == persisted
+
+
 async def test_payload_sanitizer_large_payload_truncated(tmp_path):
     """A payload exceeding _PAYLOAD_BYTE_CAP is stored with truncated=true marker."""
     from lionagi.session.observer import _PAYLOAD_BYTE_CAP, _sanitize_signal_payload

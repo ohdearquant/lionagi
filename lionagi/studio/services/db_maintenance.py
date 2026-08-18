@@ -270,10 +270,34 @@ async def _candidate_chunks(
     a chunk can legitimately delete nothing: `_prune_session_chunk` re-checks
     each row under the write lock and skips one that stopped being terminal.
     Re-asking the same question would hand that row back forever.
+
+    The primary key index is named explicitly because leaving the choice to the
+    planner makes this loop quadratic. Left alone, and with no collected
+    statistics -- which is the permanent state here, since nothing runs ANALYZE
+    -- SQLite prefers the narrower status/time index and then sorts for the
+    ORDER BY, so every page re-reads and re-sorts the whole remaining eligible
+    backlog instead of seeking past the ids it already returned. Measured on a
+    240k-row store, walking the backlog took 43.8s that way against 0.12s
+    seeking the primary key. Naming the index turns each page back into a
+    forward seek, and asking for one that does not exist is a prepare-time
+    error, so a schema change that removes it fails loudly rather than
+    silently restoring the quadratic plan.
+
+    The hint is SQLite's syntax and SQLite's problem, so it is only emitted for
+    that dialect. PostgreSQL keeps its own table statistics and plans this as a
+    forward seek without being told, and it has no `INDEXED BY` clause at all --
+    emitting one unconditionally would turn every prune pass on a Postgres-backed
+    store into a syntax error at prepare time.
     """
+    # Built once rather than per page: `table` and the dialect are both fixed
+    # for the life of the scan.
+    indexed_by = f" INDEXED BY sqlite_autoindex_{table}_1" if db.dialect == "sqlite" else ""
     after = ""
     while True:
-        sql = f"SELECT id FROM {table} WHERE ({where_sql}) AND id > ? ORDER BY id LIMIT ?"  # noqa: S608
+        sql = (
+            f"SELECT id FROM {table}{indexed_by} "  # noqa: S608
+            f"WHERE ({where_sql}) AND id > ? ORDER BY id LIMIT ?"
+        )
         async with db.transaction() as conn:
             rows = (await conn.execute(*_q(sql, (*params, after, size)))).fetchall()
         ids = sorted({r[0] for r in rows})
