@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 
 import pytest
@@ -194,6 +195,44 @@ def test_one_failing_sync_hook_does_not_prevent_others(mm: MessageManager):
     assert len(fired_b) == 1
 
 
+def test_sync_path_delays_callback_cancellation_until_later_callbacks_drain(
+    mm: MessageManager,
+):
+    later_calls: list[str] = []
+
+    def cancel(_message):
+        raise asyncio.CancelledError("callback cancelled")
+
+    def later(_message):
+        later_calls.append("later")
+
+    mm._on_message_added.extend((cancel, later))
+
+    with pytest.raises(asyncio.CancelledError, match="callback cancelled"):
+        mm.add_message(instruction="cancel", sender="u", recipient="x")
+    assert later_calls == ["later"]
+
+
+def test_sync_path_groups_callback_cancellation_with_ordinary_failure(
+    mm: MessageManager,
+):
+    def cancel(_message):
+        raise asyncio.CancelledError("callback cancelled")
+
+    def fail(_message):
+        raise RuntimeError("callback failed")
+
+    mm._on_message_added.extend((cancel, fail))
+
+    with pytest.raises(_ExcGroup) as excinfo:
+        mm.add_message(instruction="mixed", sender="u", recipient="x")
+
+    assert [type(exc) for exc in excinfo.value.exceptions] == [
+        asyncio.CancelledError,
+        RuntimeError,
+    ]
+
+
 def test_sync_preflight_rejects_async_hook_before_pile_mutation(
     mm: MessageManager,
 ):
@@ -248,3 +287,119 @@ async def test_a_add_message_safe_when_hook_calls_a_add_message(
     contents = [m.content.instruction for _, m in fired]
     assert "trigger" in contents
     assert "echo" in contents
+
+
+class _TrackingAwaitable:
+    def __init__(self):
+        self.awaited = False
+
+    def __await__(self):
+        self.awaited = True
+        if False:  # pragma: no cover - makes this a generator-based awaitable
+            yield None
+        return None
+
+
+@pytest.mark.parametrize("async_path", (False, True))
+async def test_sync_callback_returned_awaitable_is_discarded(
+    mm: MessageManager,
+    async_path: bool,
+):
+    returned = _TrackingAwaitable()
+    mm._on_message_added.append(lambda _message: returned)
+
+    kwargs = {"instruction": "discard", "sender": "u", "recipient": "x"}
+    if async_path:
+        await mm.a_add_message(**kwargs)
+    else:
+        mm.add_message(**kwargs)
+
+    assert returned.awaited is False
+
+
+async def test_async_path_delays_callback_cancellation_until_later_callbacks_drain(
+    mm: MessageManager,
+):
+    later_calls: list[str] = []
+
+    async def cancel(_message):
+        raise asyncio.CancelledError("callback cancelled")
+
+    async def later(_message):
+        later_calls.append("later")
+
+    mm._on_message_added.extend((cancel, later))
+
+    with pytest.raises(asyncio.CancelledError, match="callback cancelled"):
+        await mm.a_add_message(instruction="cancel", sender="u", recipient="x")
+    assert later_calls == ["later"]
+
+
+async def test_async_path_groups_callback_cancellation_with_ordinary_failure(
+    mm: MessageManager,
+):
+    async def cancel(_message):
+        raise asyncio.CancelledError("callback cancelled")
+
+    async def fail(_message):
+        raise RuntimeError("callback failed")
+
+    mm._on_message_added.extend((cancel, fail))
+
+    with pytest.raises(_ExcGroup) as excinfo:
+        await mm.a_add_message(instruction="mixed", sender="u", recipient="x")
+
+    assert [type(exc) for exc in excinfo.value.exceptions] == [
+        asyncio.CancelledError,
+        RuntimeError,
+    ]
+
+
+async def test_async_path_drains_and_groups_failures_from_sync_callbacks(
+    mm: MessageManager,
+):
+    calls: list[str] = []
+
+    def cancel(_message):
+        calls.append("cancel")
+        raise asyncio.CancelledError("sync callback cancelled")
+
+    def fail(_message):
+        calls.append("fail")
+        raise RuntimeError("sync callback failed")
+
+    mm._on_message_added.extend((cancel, fail))
+
+    with pytest.raises(_ExcGroup) as excinfo:
+        await mm.a_add_message(instruction="mixed-sync", sender="u", recipient="x")
+
+    assert calls == ["cancel", "fail"]
+    assert [type(exc) for exc in excinfo.value.exceptions] == [
+        asyncio.CancelledError,
+        RuntimeError,
+    ]
+
+
+async def test_async_path_delays_emitter_cancellation_until_callbacks_drain(
+    mm: MessageManager,
+):
+    started = asyncio.Event()
+    later_calls: list[str] = []
+
+    async def slow(_message):
+        started.set()
+        await asyncio.Event().wait()
+
+    def later(_message):
+        later_calls.append("later")
+
+    mm._on_message_added.extend((slow, later))
+    task = asyncio.create_task(
+        mm.a_add_message(instruction="emitter-cancel", sender="u", recipient="x")
+    )
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert later_calls == ["later"]
