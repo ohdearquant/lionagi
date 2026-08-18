@@ -342,6 +342,11 @@ def _unaudited_note() -> str:
     )
 
 
+def _cannot_attribute(run: EngineRun) -> bool:
+    """True when the run's window holds another run's emissions and nothing records which is which."""
+    return bool(getattr(run, "shares_session", False))
+
+
 def _shared_session_note() -> str:
     """Unlike the coverage note, nothing on the stream is known to belong to this run."""
     return (
@@ -507,6 +512,12 @@ class ReviewEngine(Engine):
 
         See docs/internals/providers.md#review-engine-partial-export-on-deadline.
         """
+        # The window this reads is the one _verdict refuses to read, and the newest
+        # verdict in it may be a peer's, so exhaustion must not export it as this
+        # run's result.
+        if _cannot_attribute(run):
+            run.notify("verdict", shared_session=True)
+            return _shared_session_note()
         verdicts = run.by_type(ReviewVerdict)
         if not verdicts:
             return ""
@@ -689,7 +700,7 @@ class ReviewEngine(Engine):
 
     async def _verdict(self, run: EngineRun, artifact: str, dimensions: tuple[str, ...]) -> str:
         # Base runs carry no attribution, so they cannot report the condition.
-        if bool(getattr(run, "shares_session", False)):
+        if _cannot_attribute(run):
             # The window holds another run's emissions and nothing records which
             # run produced what, so synthesising from it would put a different
             # artifact's findings in this verdict and could credit a dimension

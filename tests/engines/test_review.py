@@ -812,3 +812,32 @@ async def test_a_run_with_its_own_session_still_approves():
     final = run.by_type(ReviewVerdict)
     assert len(final) == 1
     assert final[0].verdict == "APPROVE"
+
+
+@pytest.mark.asyncio
+async def test_a_shared_session_does_not_export_a_peers_verdict_on_exhaustion():
+    """Exhaustion reads the same window the verdict path refuses to read."""
+    from lionagi.session.session import Session
+
+    session = Session()
+    eng = ReviewEngine()
+    first = eng.new_run(session=session)
+    second = eng.new_run(session=session)
+
+    await first.emit(ReviewVerdict(verdict="APPROVE", rationale="the other run's", blocking=[]))
+
+    out = await eng._partial_export(second, "ART", dimensions=("correctness",))
+    assert "the other run's" not in out, "a peer run's verdict was exported as this run's result"
+    assert "APPROVE" not in out
+
+
+@pytest.mark.asyncio
+async def test_an_unshared_run_still_exports_its_own_verdict_on_exhaustion():
+    """The control: refusing every export would pass the arm above."""
+    eng = ReviewEngine()
+    run = eng.new_run()
+
+    await run.emit(ReviewVerdict(verdict="APPROVE", rationale="this run's own", blocking=[]))
+
+    out = await eng._partial_export(run, "ART", dimensions=("correctness",))
+    assert "this run's own" in out
