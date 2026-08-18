@@ -847,6 +847,37 @@ describe("boardReducer — disposition join and active/discharged split", () => 
     expect(s.dischargedAttentionItems[0].disposition?.state).toBe("resolved");
   });
 
+  it("a legacy key shared by two sessions is claimed by neither", () => {
+    const nowSec = 1_000_000;
+    // One stored disposition, two rows that would both read it. Joining it to
+    // either would let one session's discharge answer for the other, and an
+    // undo from one would clear the other's.
+    const runs = [
+      makeRun({ run_id: "shared-run", id: "sess-a", status: "failed", started_at: nowSec - 600 }),
+      makeRun({ run_id: "shared-run", id: "sess-b", status: "failed", started_at: nowSec - 600 }),
+    ];
+    const dispositions = {
+      "run:shared-run": makeDisposition({ item_id: "run:shared-run", state: "resolved" }),
+    };
+    const s = dispatchOk(initialBoardState(), runs, [], nowSec, null, dispositions);
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+    expect(s.attentionItems.map((i) => i.id).sort()).toEqual(["run:sess-a", "run:sess-b"]);
+    expect(s.attentionItems.every((i) => i.legacyId === undefined)).toBe(true);
+  });
+
+  it("an unshared legacy key is still claimed, so the collision guard is not a blanket refusal", () => {
+    const nowSec = 1_000_000;
+    const runs = [
+      makeRun({ run_id: "solo-run", id: "sess-c", status: "failed", started_at: nowSec - 600 }),
+      makeRun({ run_id: "other-run", id: "sess-d", status: "failed", started_at: nowSec - 600 }),
+    ];
+    const dispositions = {
+      "run:solo-run": makeDisposition({ item_id: "run:solo-run", state: "resolved" }),
+    };
+    const s = dispatchOk(initialBoardState(), runs, [], nowSec, null, dispositions);
+    expect(s.dischargedAttentionItems.map((i) => i.id)).toEqual(["run:sess-c"]);
+  });
+
   it("a resolved disposition on an old run never suppresses a different, later run with a new id", () => {
     const nowSec = 1_000_000;
     const s = dispatchOk(

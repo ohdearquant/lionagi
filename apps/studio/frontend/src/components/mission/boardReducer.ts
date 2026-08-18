@@ -210,6 +210,17 @@ function buildAttentionItems(
     });
   }
 
+  // A legacy key only stands in for a row when it names exactly one. Today the
+  // runs projection reports run_id as the session id, so no row has a legacy
+  // key at all; once those are distinct values, nothing guarantees run_id is
+  // unique across sessions, and a shared one would join two rows to a single
+  // stored disposition — one row's undo would then clear the other's.
+  const legacyKeyCounts = new Map<string, number>();
+  for (const run of runs) {
+    const legacy = legacyRunId(run);
+    if (legacy) legacyKeyCounts.set(legacy, (legacyKeyCounts.get(legacy) ?? 0) + 1);
+  }
+
   for (const run of runs) {
     // DESIGN-BRIEF §0: a daemon-restart reap is housekeeping, never attention
     // — it must not surface here as "failed" or under any other reason.
@@ -240,7 +251,8 @@ function buildAttentionItems(
       reason = "stale";
     }
     if (reason == null) continue;
-    const runLegacyId = legacyRunId(run);
+    const legacy = legacyRunId(run);
+    const runLegacyId = legacy && legacyKeyCounts.get(legacy) === 1 ? legacy : null;
     items.push({
       id: `run:${runSessionId(run)}`,
       ...(runLegacyId ? { legacyId: `run:${runLegacyId}` } : {}),
