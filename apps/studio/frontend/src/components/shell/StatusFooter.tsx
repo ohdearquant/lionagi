@@ -2,6 +2,13 @@ import { useEffect, useState } from "react";
 import { useTranslations } from "use-intl";
 import { getStats, resolveApiBase, type StudioStats } from "@/lib/api";
 
+const HEALTH_POLL_MS = 30_000;
+const STATS_POLL_MS = 5 * 60_000;
+/** Deadline on one health probe. Must stay under HEALTH_POLL_MS so a probe that
+ *  hangs is abandoned before the next one is due. */
+export const HEALTH_PROBE_TIMEOUT_MS = 10_000;
+export const STATS_INITIAL_DELAY_MS = 2_000;
+
 function formatBytes(b: number): string {
   if (b === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -17,30 +24,63 @@ export default function StatusFooter() {
 
   useEffect(() => {
     let active = true;
+    let healthInFlight = false;
+    let statsInFlight = false;
+    let hasStats = false;
 
-    async function poll() {
+    async function pollHealth() {
+      if (healthInFlight) return;
+      healthInFlight = true;
+      // A probe that never settles never reaches the reset below, and every
+      // later poll then returns at the guard above, so the dot keeps showing
+      // whatever it last said for as long as the page is open. A daemon that
+      // accepts the connection and then answers nothing is exactly the case
+      // this footer exists to report, so the probe carries its own deadline.
+      const controller = new AbortController();
+      const deadline = setTimeout(() => controller.abort(), HEALTH_PROBE_TIMEOUT_MS);
       try {
-        const [s] = await Promise.all([
-          getStats(),
-          fetch(`${apiBase}/health`)
-            .then((r) => {
-              if (active) setHealthy(r.ok);
-            })
-            .catch(() => {
-              if (active) setHealthy(false);
-            }),
-        ]);
-        if (active) setStats(s);
+        const response = await fetch(`${apiBase}/health`, { signal: controller.signal });
+        if (active) setHealthy(response.ok);
       } catch {
         if (active) setHealthy(false);
+      } finally {
+        clearTimeout(deadline);
+        healthInFlight = false;
       }
     }
 
-    void poll();
-    const id = setInterval(poll, 30_000);
+    async function pollStats() {
+      if (statsInFlight || document.visibilityState === "hidden") return;
+      statsInFlight = true;
+      try {
+        const next = await getStats();
+        if (active) {
+          hasStats = true;
+          setStats(next);
+        }
+      } catch {
+        // Diagnostics are optional footer context. Their failure must not
+        // override the independent /health reading or make the daemon look
+        // unavailable.
+      } finally {
+        statsInFlight = false;
+      }
+    }
+
+    void pollHealth();
+    const healthId = setInterval(() => void pollHealth(), HEALTH_POLL_MS);
+    const initialStatsId = window.setTimeout(() => void pollStats(), STATS_INITIAL_DELAY_MS);
+    const statsId = setInterval(() => void pollStats(), STATS_POLL_MS);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible" && !hasStats) void pollStats();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       active = false;
-      clearInterval(id);
+      clearInterval(healthId);
+      clearTimeout(initialStatsId);
+      clearInterval(statsId);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [apiBase]);
 

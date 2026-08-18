@@ -121,7 +121,7 @@ function InvocationCard({ inv, nowSec }: { inv: InvocationSummary; nowSec: numbe
   const t = useTranslations("mission");
   const elapsed = elapsedSec(inv.started_at, nowSec);
   // Health axis, same as RunCard: never an unconditional "running" dot
-  // regardless of whether there's evidence behind it (issue #2851).
+  // regardless of whether there's evidence behind it.
   const dead = isDeadHealth(inv.health);
   const unknown = isUnknownHealth(inv.health);
   // last_activity_at is the real worst-of child-session heartbeat now that

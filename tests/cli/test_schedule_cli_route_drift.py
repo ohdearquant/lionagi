@@ -60,22 +60,29 @@ class _FakeResponse:
         return self._body
 
 
-def _run_and_capture(monkeypatch, args: argparse.Namespace) -> tuple[str, str]:
-    """Run a real `li schedule` dispatch, capturing the (method, path) the
+def _run_and_capture(
+    monkeypatch, args: argparse.Namespace
+) -> tuple[str, str, str | None]:
+    """Run a real `li schedule` dispatch, capturing the request the
     CLI's _api() helper would have sent — without any real network I/O."""
     from lionagi.studio.cli import run_schedule
 
-    captured: dict[str, str] = {}
+    captured: dict[str, str | None] = {}
 
     def _fake_urlopen(req, timeout=10):  # noqa: ARG001
         captured["method"] = req.get_method()
         captured["path"] = urlsplit(req.full_url).path
+        captured["content_type"] = req.get_header("Content-type")
         return _FakeResponse(b"{}")
 
     monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
     result = run_schedule(args)
     assert result == 0, f"dispatch failed unexpectedly: action={args.schedule_action}"
-    return captured["method"], captured["path"]
+    method = captured["method"]
+    path = captured["path"]
+    assert method is not None
+    assert path is not None
+    return method, path, captured["content_type"]
 
 
 def _parse(argv: list[str]) -> argparse.Namespace:
@@ -105,8 +112,13 @@ def test_schedule_cli_paths_are_served(monkeypatch, argv):
     """Every `li schedule` subcommand's request must resolve against a real
     Studio route (method + path), not just look plausible."""
     args = _parse(argv)
-    method, path = _run_and_capture(monkeypatch, args)
+    method, path, content_type = _run_and_capture(monkeypatch, args)
     assert _is_served(method, path), (
         f"li schedule {argv[1]} builds {method} {path}, which is not served "
         f"by the live Studio app — client/server route drift"
     )
+    if method not in {"GET", "HEAD", "OPTIONS"}:
+        assert content_type == "application/json", (
+            f"li schedule {argv[1]} sends unsafe {method} without declaring "
+            "application/json"
+        )

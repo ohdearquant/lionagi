@@ -72,7 +72,8 @@ fn build_init_script(auth_token: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let auth_token = backend::generate_auth_token();
+    let auth_token = backend::generate_auth_token()
+        .unwrap_or_else(|error| panic!("LionAGI Studio cannot start securely: {error}"));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -241,7 +242,7 @@ pub async fn do_launch(app: &AppHandle<tauri::Wry>) -> Result<u16, LaunchError> 
         tokio::time::sleep(backend::HEALTH_POLL_INTERVAL).await;
     }
 
-    // --- Authenticated identity check: GET /api/stats with bearer token ---
+    // --- Authenticated identity check: cheap, store-free /api/identity ---
     if let Err(e) = backend::verify_identity(port, &auth_token).await {
         take_and_terminate_launching(&app_state);
         return Err(e);

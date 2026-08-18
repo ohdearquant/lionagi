@@ -608,7 +608,7 @@ CodexSession = CLISession
 # --------------------------------------------------------------------------- NDJSON stream
 
 
-# TODO(#1043 Phase 2): migrate create_subprocess_exec + wait_for to anyio
+# TODO: migrate create_subprocess_exec + wait_for to anyio
 async def _ndjson_from_cli(request: CodexCodeRequest):
     if CODEX_CLI is None:
         raise RuntimeError("Codex CLI not found. Install with: npm i -g @openai/codex")

@@ -245,7 +245,7 @@
       "createWorkflow": "新規ワークフロー",
       "createAgent": "新規エージェント",
       "allSkill": "スキルが見つかりません。",
-      "allSkillHint": "~/.lionagi/skills/<name>/ に SKILL.md を追加するとここに表示されます。",
+      "allSkillHint": "~/.lionagi/skills/NAME/ に SKILL.md を追加するとここに表示されます。",
       "allPlugin": "プラグインが見つかりません。",
       "allPluginHint": "~/.claude/plugins/ にプラグインをインストールするとここに表示されます。"
     },
@@ -508,6 +508,7 @@
       "statErrorsRecent": "エラー (最近)",
       "noBranchErrorsPartial": "読み込まれたメッセージにエラーはありません。",
       "noFilesPartial": "読み込まれたメッセージにファイル操作は検出されていません。",
+      "filesUnionBounded": "一部のファイル操作は表示されていません。この実行は 1 つのビューが収集できる数を超えるファイルに触れました。",
       "olderUnavailable": "過去の履歴を読み込めませんでした — リクエストが完了する前に会話が進みました。",
       "reloadConversation": "会話を再読み込み",
       "graphEdgeCount": "{count} 本のエッジ",
@@ -832,6 +833,9 @@
       "noRuns": "実行はまだありません",
       "ago": "前",
       "cancel": "キャンセル",
+      "discardWarning": "未保存の変更があります。",
+      "keepEditing": "編集を続ける",
+      "discardChanges": "変更を破棄",
       "save": "変更を保存",
       "saving": "保存中…",
       "saveFailed": "保存に失敗しました。",
@@ -911,7 +915,7 @@
     "stale": {
       "error": "エラー · {message}",
       "unreachable": "APIに接続できません",
-      "lastUpdated": "古い状態 · 最終更新は{age}秒前"
+      "lastUpdated": "最終更新は{age}秒前"
     },
     "detail": {
       "hint": "調査するセッションを選択",
@@ -927,8 +931,7 @@
       "updated": "更新",
       "branchesTitle": "ブランチ ({count})",
       "noBranches": "ブランチはありません。",
-      "msgs": " 件のメッセージ",
-      "engineRuns": "エンジン実行"
+      "msgs": " 件のメッセージ"
     },
     "split": {
       "master": "セッション一覧",
@@ -1074,7 +1077,7 @@
     "stale": {
       "error": "エラー · {message}",
       "unreachable": "APIに接続できません",
-      "lastUpdated": "古い状態 · 最終更新は{age}秒前"
+      "lastUpdated": "最終更新は{age}秒前"
     },
     "zeroState": {
       "heading": "はじめる",
@@ -1163,6 +1166,7 @@
     "showEarlier": "{count, plural, other {# 件の古いメッセージを表示}}",
     "noArgs": "(引数なし)",
     "noOutput": "(出力なし)",
+    "outputWithheld": "未読み込み",
     "roleUser": "ユーザー",
     "roleThinking": "思考",
     "roleResponse": "応答",

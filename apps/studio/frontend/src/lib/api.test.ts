@@ -49,7 +49,7 @@ describe("resolveApiBase", () => {
     expect(result).toBe("");
   });
 
-  it("returns hostname:8765 for Vite dev port 3000", () => {
+  it("uses the same-origin Vite proxy on dev port 3000", () => {
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
@@ -61,10 +61,10 @@ describe("resolveApiBase", () => {
       },
     });
     const result = resolveApiBase();
-    expect(result).toBe("http://localhost:8765");
+    expect(result).toBe("");
   });
 
-  it("returns hostname:8765 for Vite dev port 5173", () => {
+  it("uses the same-origin Vite proxy on dev port 5173", () => {
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
@@ -76,11 +76,10 @@ describe("resolveApiBase", () => {
       },
     });
     const result = resolveApiBase();
-    expect(result).toBe("http://localhost:8765");
+    expect(result).toBe("");
   });
 
-  it("uses actual hostname (not hardcoded localhost) for dev port with remote host", () => {
-    // Dev server accessed from a different machine or container
+  it("keeps a remotely accessed dev server on its same-origin proxy", () => {
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
@@ -92,7 +91,7 @@ describe("resolveApiBase", () => {
       },
     });
     const result = resolveApiBase();
-    expect(result).toBe("http://dev.example.com:8765");
+    expect(result).toBe("");
   });
 
   it("same-origin for non-localhost host on port 8765", () => {
@@ -234,6 +233,47 @@ describe("resolveAuthToken", () => {
   });
 });
 
+describe("engine run summary transport", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("uses the canonical list route and carries the opaque cursor", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(
+        new Response(JSON.stringify({ version: 1, items: [], next_cursor: null }), {
+          status: 200,
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { listEngineRuns } = await import("./api");
+
+    const page = await listEngineRuns({ limit: 20, cursor: "opaque-cursor" });
+
+    expect(page).toEqual({ version: 1, items: [], next_cursor: null });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toMatch(
+      /\/api\/engine-runs\/\?limit=20&cursor=opaque-cursor$/,
+    );
+  });
+
+  it("reveals a redacted spec only when explicitly requested", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response(JSON.stringify({ id: "run-1" }), { status: 200 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { getEngineRun } = await import("./api");
+
+    await getEngineRun("run-1");
+    await getEngineRun("run-1", { includeSpec: true });
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toMatch(/\/api\/engine-runs\/run-1$/);
+    expect(String(fetchMock.mock.calls[1]?.[0])).toMatch(
+      /\/api\/engine-runs\/run-1\?include_spec=true$/,
+    );
+  });
+});
+
 describe("fetchJson Authorization header", () => {
   beforeEach(() => {
     delete (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__;
@@ -278,6 +318,194 @@ describe("fetchJson Authorization header", () => {
     expect(captured.length).toBeGreaterThan(0);
     const headers = captured[0]?.headers as Record<string, string> | undefined;
     expect(headers?.["Authorization"]).toBeUndefined();
+  });
+});
+
+describe("fetchJson unsafe-request content type", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  function captureFetch(): RequestInit[] {
+    const captured: RequestInit[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        captured.push(init ?? {});
+        return Promise.resolve(
+          new Response(JSON.stringify({ run_id: "run-1" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+    return captured;
+  }
+
+  it("marks a bodyless POST as JSON so the CSRF guard accepts the SPA call", async () => {
+    const captured = captureFetch();
+    const { triggerSchedule } = await import("./api");
+
+    await triggerSchedule("schedule-1");
+
+    expect(new Headers(captured[0]?.headers).get("content-type")).toBe("application/json");
+  });
+
+  it("marks a bodyless DELETE as JSON too", async () => {
+    const captured = captureFetch();
+    const { deleteSchedule } = await import("./api");
+
+    await deleteSchedule("schedule-1");
+
+    expect(new Headers(captured[0]?.headers).get("content-type")).toBe("application/json");
+  });
+
+  it("does not add a content type to safe GET requests", async () => {
+    const captured = captureFetch();
+    const { getStats } = await import("./api");
+
+    await getStats();
+
+    expect(new Headers(captured[0]?.headers).has("content-type")).toBe(false);
+  });
+});
+
+describe("generic SSE retry policy", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    delete (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__;
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it("does not reconnect forever after a permanent 4xx response", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 404 })));
+    vi.stubGlobal("fetch", fetchMock);
+    const { streamSession } = await import("./api");
+
+    const close = streamSession("missing-session", vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    close();
+  });
+
+  it("still reconnects after a transient 5xx response", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 503 })));
+    vi.stubGlobal("fetch", fetchMock);
+    const { streamSession } = await import("./api");
+
+    const close = streamSession("busy-session", vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    close();
+  });
+
+  it("reconnects a signal stream from the highest delivered sequence", async () => {
+    const urls: string[] = [];
+    const fetchMock = vi.fn((url: string) => {
+      urls.push(url);
+      return Promise.resolve(
+        new Response(
+          'data: {"id":"sig-7","session_id":"session-1","seq":7,"kind":"NodeStarted","op_id":"op-1","ts":1,"payload":{}}\n\n',
+          { status: 200, headers: { "Content-Type": "text/event-stream" } },
+        ),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { streamSignals } = await import("./api");
+
+    const close = streamSignals("session-1", vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(urls[0]!, "http://studio.test").searchParams.get("after_seq")).toBe("0");
+    expect(new URL(urls[1]!, "http://studio.test").searchParams.get("after_seq")).toBe("7");
+    close();
+  });
+
+  it("holds the signal cursor over a consumer that threw, then advances past one that did not", async () => {
+    const urls: string[] = [];
+    const fetchMock = vi.fn((url: string) => {
+      urls.push(url);
+      return Promise.resolve(
+        new Response(
+          'data: {"id":"sig-7","session_id":"session-1","seq":7,"kind":"NodeStarted","op_id":"op-1","ts":1,"payload":{}}\n\n',
+          { status: 200, headers: { "Content-Type": "text/event-stream" } },
+        ),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { streamSignals } = await import("./api");
+
+    let deliveries = 0;
+    const close = streamSignals("session-1", () => {
+      deliveries += 1;
+      if (deliveries === 1) throw new Error("consumer failed on this signal");
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    // The second request repeats the signal the consumer never took. The third
+    // has moved past it, which is what says the cursor advances at all — a
+    // cursor that simply never moved would satisfy the first half alone.
+    expect(
+      urls.map((url) => new URL(url, "http://studio.test").searchParams.get("after_seq")),
+    ).toEqual(["0", "0", "7"]);
+    close();
+  });
+
+  it("reconnects a session-message stream from the last server-issued cursor", async () => {
+    const urls: string[] = [];
+    const requests: RequestInit[] = [];
+    (window as Window & { __STUDIO_AUTH_TOKEN__?: string }).__STUDIO_AUTH_TOKEN__ = "stream-token";
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      urls.push(url);
+      requests.push(init ?? {});
+      const cursor = urls.length === 1 ? "cursor-one" : "cursor-two";
+      const messageId = urls.length === 1 ? "message-one" : "message-two";
+      return Promise.resolve(
+        new Response(`id: ${cursor}\ndata: {"id":"${messageId}","branch_id":"branch-1"}\n\n`, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { streamSession } = await import("./api");
+
+    const events: Array<Record<string, unknown>> = [];
+    const close = streamSession("session-1", (event) => events.push(event));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL(urls[0]!, "http://studio.test").searchParams.get("cursor")).toBeNull();
+    expect(new URL(urls[1]!, "http://studio.test").searchParams.get("cursor")).toBe("cursor-one");
+    expect(requests.map((request) => new Headers(request.headers).get("authorization"))).toEqual([
+      "Bearer stream-token",
+      "Bearer stream-token",
+    ]);
+    expect(events.map((event) => event.id)).toEqual(["message-one", "message-two"]);
+    close();
   });
 });
 

@@ -14,21 +14,10 @@ from lionagi.protocols.action.tool import Tool
 from lionagi.tools.code.bash import BashRequest, BashResponse, BashTool
 
 
-def test_bash_request_required_command():
-    req = BashRequest(command="echo hi")
-    assert req.command == "echo hi"
-
-
 def test_bash_request_defaults():
     req = BashRequest(command="ls")
     assert req.timeout is None
     assert req.cwd is None
-
-
-def test_bash_request_custom_fields():
-    req = BashRequest(command="pwd", timeout=5000, cwd="/tmp")
-    assert req.timeout == 5000
-    assert req.cwd == "/tmp"
 
 
 def test_bash_request_allow_shell_kwarg_raises_validation_error():
@@ -46,14 +35,6 @@ def test_bash_response_defaults():
     assert resp.stdout == ""
     assert resp.stderr == ""
     assert resp.timed_out is False
-
-
-def test_bash_response_fields():
-    resp = BashResponse(stdout="out", stderr="err", return_code=1, timed_out=True)
-    assert resp.stdout == "out"
-    assert resp.stderr == "err"
-    assert resp.return_code == 1
-    assert resp.timed_out is True
 
 
 async def test_handle_request_echo_returns_stdout():

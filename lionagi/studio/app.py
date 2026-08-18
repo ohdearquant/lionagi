@@ -414,26 +414,24 @@ def create_app() -> FastAPI:
 
     @application.middleware("http")
     async def require_json_content_type(request: Request, call_next):
-        """Reject state-changing /api requests that don't declare a JSON
-        body — closes the form-based JSON CSRF vector where a cross-site
-        "simple request" carries a JSON-shaped body with no CORS preflight.
-        See docs/internals/studio.md.
+        """Require JSON media type on every state-changing /api request.
+
+        This includes bodyless action routes: without the header, a cross-site
+        simple POST can trigger them without a CORS preflight. See
+        docs/internals/studio.md.
         """
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return await call_next(request)
         path = request.url.path
         if not (path == "/api" or path.startswith("/api/")):
             return await call_next(request)
-        content_length = request.headers.get("content-length")
-        has_body = content_length not in (None, "0") or "transfer-encoding" in request.headers
-        if has_body:
-            content_type = request.headers.get("content-type", "")
-            media_type = content_type.split(";", 1)[0].strip().lower()
-            if media_type != "application/json":
-                return JSONResponse(
-                    {"detail": "Content-Type must be application/json"},
-                    status_code=415,
-                )
+        content_type = request.headers.get("content-type", "")
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        if media_type != "application/json":
+            return JSONResponse(
+                {"detail": "Content-Type must be application/json"},
+                status_code=415,
+            )
         return await call_next(request)
 
     _mount_studio_routes(application)

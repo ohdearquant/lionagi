@@ -4,11 +4,13 @@
 """Tests for CodingToolkit: bind, reader, editor, bash, search."""
 
 import asyncio
+import inspect
 
 import pytest
+from pydantic import ValidationError
 
 from lionagi.session.branch import Branch
-from lionagi.tools.coding import CodingToolkit
+from lionagi.tools.coding import CodingToolkit, SubagentRequest
 
 
 def _make_toolkit(tmp_path, notify=False):
@@ -67,6 +69,43 @@ def test_bind_tool_names_opt_in_extras(tmp_path):
 
     with pytest.raises(ValueError, match="unknown coding tool"):
         CodingToolkit(workspace_root=str(tmp_path), tools=["reader", "nope"])
+
+
+def test_subagent_request_exposes_only_resolvable_permission_presets():
+    permissions = SubagentRequest.model_json_schema()["properties"]["permissions"]
+
+    assert permissions["enum"] == ["read_only", "safe", "allow_all", "deny_all"]
+    assert permissions["default"] == "read_only"
+
+
+@pytest.mark.parametrize("preset", ["read_only", "safe", "allow_all", "deny_all"])
+def test_subagent_request_accepts_each_resolvable_permission_preset(preset):
+    request = SubagentRequest(instruction="inspect the repository", permissions=preset)
+
+    assert request.permissions == preset
+
+
+def test_subagent_request_rejects_unimplemented_permission_inheritance():
+    with pytest.raises(ValidationError, match="permissions"):
+        SubagentRequest(instruction="inspect the repository", permissions="inherit")
+
+
+def test_bound_subagent_rejects_inheritance_before_callable_execution(tmp_path):
+    branch = Branch()
+    [tool] = CodingToolkit(workspace_root=str(tmp_path), tools=["subagent"]).bind(branch)
+    branch.acts.register_tool(tool)
+
+    assert inspect.signature(tool.func_callable).parameters["permissions"].default == "read_only"
+    with pytest.raises(ValidationError, match="permissions"):
+        branch.acts.match_tool(
+            {
+                "function": "subagent",
+                "arguments": {
+                    "instruction": "inspect the repository",
+                    "permissions": "inherit",
+                },
+            }
+        )
 
 
 async def test_reader_read_returns_numbered_lines(tmp_path):

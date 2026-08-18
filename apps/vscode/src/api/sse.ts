@@ -1,5 +1,10 @@
 import type { StudioEvent } from "./types.js";
 
+export interface SessionStreamResume {
+  cursor?: string;
+  onCursor?: (cursor: string) => void;
+}
+
 /**
  * Connects to GET /api/sessions/{sessionId}/stream (SSE) and dispatches
  * events to onEvent until {type:"done"} is received or the abort signal fires.
@@ -11,7 +16,8 @@ export async function streamSession(
   sessionId: string,
   token: string | undefined,
   onEvent: (e: StudioEvent) => void,
-  signal: AbortSignal
+  signal: AbortSignal,
+  resume?: SessionStreamResume
 ): Promise<void> {
   const headers: Record<string, string> = {
     Accept: "text/event-stream",
@@ -21,8 +27,15 @@ export async function streamSession(
     headers["Authorization"] = `Bearer ${token}`;
   }
 
+  const query = new URLSearchParams();
+  if (resume?.cursor) {
+    query.set("cursor", resume.cursor);
+  }
+  const suffix = query.toString();
   const res = await fetch(
-    `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/stream`,
+    `${baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/stream${
+      suffix ? `?${suffix}` : ""
+    }`,
     { method: "GET", headers, signal }
   );
 
@@ -70,6 +83,12 @@ export async function streamSession(
           continue;
         }
 
+        const eventId = frame
+          .split("\n")
+          .filter((line) => line.startsWith("id:"))
+          .map((line) => line.slice(3).trim())
+          .at(-1);
+
         const raw = dataLines.join("\n");
         let event: StudioEvent;
         try {
@@ -79,6 +98,13 @@ export async function streamSession(
         }
 
         onEvent(event);
+
+        // Only acknowledge a message after its synchronous consumer accepted
+        // it. A callback failure then reconnects from the prior cursor and
+        // repeats the frame instead of silently skipping it.
+        if (eventId && event.type !== "heartbeat" && event.type !== "done") {
+          resume?.onCursor?.(eventId);
+        }
 
         if (event.type === "done") {
           return;

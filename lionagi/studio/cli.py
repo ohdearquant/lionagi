@@ -802,11 +802,12 @@ def _api(path: str, method: str = "GET", body: dict | None = None) -> Any:
 
     url = f"{_base_url()}/api/schedules{path}"
     data = json.dumps(body).encode() if body is not None else None
+    declares_json = data is not None or method.upper() not in {"GET", "HEAD", "OPTIONS"}
     req = urllib.request.Request(  # noqa: S310
         url,
         data=data,
         method=method,
-        headers={"Content-Type": "application/json"} if data else {},
+        headers={"Content-Type": "application/json"} if declares_json else {},
     )
     started_at = time.monotonic()
     try:
