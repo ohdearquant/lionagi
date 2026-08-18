@@ -1117,7 +1117,12 @@ async def _doctor(
     from sqlalchemy import text
 
     from lionagi.cli._util import pid_alive
-    from lionagi.cli.kill import _check_pid_identity, _read_pid_from_entity
+    from lionagi.cli.kill import (
+        _NOT_JUDGEABLE_HERE,
+        _check_pid_identity,
+        _read_pid_from_entity,
+        _unaddressable_pid_reason,
+    )
 
     async with StateDB() as db:
         async with db._read() as conn:
@@ -1152,11 +1157,15 @@ async def _doctor(
                 except ValueError:
                     meta = None
             entity["node_metadata"] = meta if isinstance(meta, dict) else None
+            if _unaddressable_pid_reason(entity["node_metadata"] or {}) in _NOT_JUDGEABLE_HERE:
+                # Recorded on another machine or an unmanaged runtime — every check below
+                # asks this host's process table about a pid that means something else here.
+                skipped += 1
+                continue
             pid = _read_pid_from_entity(entity)
             if pid is not None and pid_alive(pid):
-                # A live PID alone isn't proof: the OS can hand a dead session's
-                # number to an unrelated process. Reuse the same identity check
-                # the stale-kill sweep uses rather than write a second, weaker rule.
+                # A live PID alone isn't proof — the OS can hand a dead session's number to an
+                # unrelated process, so reuse the same identity check as the stale-kill sweep.
                 raw_ct = (entity["node_metadata"] or {}).get("pid_create_time")
                 try:
                     expected_create_time = float(raw_ct) if raw_ct is not None else None

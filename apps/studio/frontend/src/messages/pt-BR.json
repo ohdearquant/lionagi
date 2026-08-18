@@ -245,7 +245,7 @@
       "createWorkflow": "Novo fluxo de trabalho",
       "createAgent": "Novo agente",
       "allSkill": "Nenhuma skill encontrada.",
-      "allSkillHint": "Adicione um SKILL.md em ~/.lionagi/skills/<name>/ para vê-la aqui.",
+      "allSkillHint": "Adicione um SKILL.md em ~/.lionagi/skills/NAME/ para vê-la aqui.",
       "allPlugin": "Nenhum plugin encontrado.",
       "allPluginHint": "Instale um plugin em ~/.claude/plugins/ para vê-lo aqui."
     },
@@ -508,6 +508,7 @@
       "statErrorsRecent": "Erros (recentes)",
       "noBranchErrorsPartial": "Nenhum erro nas mensagens carregadas.",
       "noFilesPartial": "Nenhuma operação de arquivo detectada nas mensagens carregadas.",
+      "filesUnionBounded": "Algumas operações de arquivo não estão listadas: esta execução tocou mais arquivos do que uma visualização coleta.",
       "olderUnavailable": "Não foi possível carregar o histórico anterior — esta conversa avançou antes que a solicitação fosse concluída.",
       "reloadConversation": "Recarregar conversa",
       "graphEdgeCount": "{count} arestas",
@@ -832,6 +833,9 @@
       "noRuns": "Ainda não há execuções",
       "ago": " atrás",
       "cancel": "Cancelar",
+      "discardWarning": "Há alterações não salvas.",
+      "keepEditing": "Continuar editando",
+      "discardChanges": "Descartar alterações",
       "save": "Salvar alterações",
       "saving": "Salvando…",
       "saveFailed": "Falha ao salvar.",
@@ -911,7 +915,7 @@
     "stale": {
       "error": "erro · {message}",
       "unreachable": "API inacessível",
-      "lastUpdated": "desatualizado · última atualização há {age}s"
+      "lastUpdated": "última atualização há {age}s"
     },
     "detail": {
       "hint": "Selecione uma sessão para visualizá-la",
@@ -927,8 +931,7 @@
       "updated": "Atualizado",
       "branchesTitle": "{count, plural, one {Ramificação (#)} other {Ramificações (#)}}",
       "noBranches": "Nenhum branch.",
-      "msgs": " msgs",
-      "engineRuns": "Execuções de engine"
+      "msgs": " msgs"
     },
     "split": {
       "master": "Lista de sessões",
@@ -1074,7 +1077,7 @@
     "stale": {
       "error": "erro · {message}",
       "unreachable": "API inacessível",
-      "lastUpdated": "desatualizado · última atualização há {age}s"
+      "lastUpdated": "última atualização há {age}s"
     },
     "zeroState": {
       "heading": "Começar",
@@ -1163,6 +1166,7 @@
     "showEarlier": "Mostrar {count, plural, one {{count, number} mensagem anterior} other {{count, number} mensagens anteriores}}",
     "noArgs": "(sem args)",
     "noOutput": "(sem saída)",
+    "outputWithheld": "não lido",
     "roleUser": "usuário",
     "roleThinking": "pensando",
     "roleResponse": "resposta",

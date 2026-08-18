@@ -734,3 +734,91 @@ def test_not_sentinel():
     assert not_sentinel(None) is True
     assert not_sentinel("value") is True
     assert not_sentinel(42) is True
+
+
+def test_a_public_field_called_field_names_does_not_break_its_own_class():
+    """`field_names` is an ordinary name; slots turns a field of that name into a
+    descriptor that shadows the classmethod, so internals must not route through it."""
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class ShadowingParams(Params):
+        field_names: str = "shadow"
+        other: int = 1
+
+    @dataclass(slots=True)
+    class ShadowingDataClass(DataClass):
+        field_names: str = "shadow"
+        other: int = 1
+
+    assert ShadowingParams(field_names="a", other=2).to_dict() == {
+        "field_names": "a",
+        "other": 2,
+    }
+    assert ShadowingDataClass(field_names="a", other=2).to_dict() == {
+        "field_names": "a",
+        "other": 2,
+    }
+
+
+def test_the_layout_cache_does_not_evict_under_a_fixed_cap():
+    """It was an lru_cache(maxsize=256): past the cap every access recomputed."""
+    from lionagi.ln.types import base as _base
+
+    classes = []
+    for i in range(300):
+        classes.append(
+            dataclass(slots=True, frozen=True, init=False)(
+                type(f"CapParams{i}", (Params,), {"__annotations__": {"value": int}})
+            )
+        )
+
+    first = [_base._field_layout(cls) for cls in classes]
+    again = [_base._field_layout(cls) for cls in classes]
+    recomputed = sum(1 for a, b in zip(first, again) if a is not b)
+    assert recomputed == 0, f"{recomputed} of {len(classes)} layouts were recomputed"
+
+
+def test_a_subclass_does_not_inherit_its_parents_cached_layout():
+    """The cache lives on the type, so it must be read from that type's own __dict__."""
+    from lionagi.ln.types import base as _base
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class BaseLayout(Params):
+        a: int = 1
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class ChildLayout(BaseLayout):
+        b: int = 2
+
+    assert _base._field_layout(BaseLayout).names == ("a",)
+    assert _base._field_layout(ChildLayout).names == ("a", "b")
+
+
+def test_no_private_field_name_can_be_mistaken_for_the_layout_cache():
+    """A field named like the cache became a slot descriptor that read back as a layout."""
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class CacheNameParams(Params):
+        _field_layout_cache: int = 0
+        value: int = 1
+
+    assert CacheNameParams(value=2).to_dict() == {"value": 2}
+    assert CacheNameParams.field_names() == ("value",)
+
+
+def test_the_layout_is_not_stored_in_the_class_namespace():
+    """Closes the class, not the one name: any attribute the cache used could be declared as a field."""
+    from lionagi.ln.types import base as _base
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class NamespaceParams(Params):
+        value: int = 1
+
+    layout = _base._field_layout(NamespaceParams)
+    stored = [
+        name
+        for name, value in vars(NamespaceParams).items()
+        if isinstance(value, _base._FieldLayout)
+    ]
+    assert stored == [], f"layout reachable in the class namespace as {stored}"
+    assert _base._field_layout(NamespaceParams) is layout

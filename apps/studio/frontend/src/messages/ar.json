@@ -245,7 +245,7 @@
       "createWorkflow": "سير عمل جديد",
       "createAgent": "وكيل جديد",
       "allSkill": "لم يتم العثور على مهارات.",
-      "allSkillHint": "أضف ملف SKILL.md ضمن ~/.lionagi/skills/<name>/ لتظهر هنا.",
+      "allSkillHint": "أضف ملف SKILL.md ضمن ~/.lionagi/skills/NAME/ لتظهر هنا.",
       "allPlugin": "لم يتم العثور على إضافات.",
       "allPluginHint": "ثبّت إضافة ضمن ~/.claude/plugins/ لتظهر هنا."
     },
@@ -508,6 +508,7 @@
       "statErrorsRecent": "الأخطاء (الأخيرة)",
       "noBranchErrorsPartial": "لا توجد أخطاء في الرسائل المحمّلة.",
       "noFilesPartial": "لم تُكتشف عمليات على الملفات في الرسائل المحمّلة.",
+      "filesUnionBounded": "بعض عمليات الملفات غير مدرجة: لمس هذا التشغيل ملفات أكثر مما يجمعه عرض واحد.",
       "olderUnavailable": "تعذر تحميل السجل الأقدم — تقدمت هذه المحادثة قبل اكتمال الطلب.",
       "reloadConversation": "إعادة تحميل المحادثة",
       "graphEdgeCount": "{count} حافة",
@@ -832,6 +833,9 @@
       "noRuns": "لا توجد تشغيلات بعد",
       "ago": " مضت",
       "cancel": "إلغاء",
+      "discardWarning": "لديك تغييرات غير محفوظة.",
+      "keepEditing": "متابعة التحرير",
+      "discardChanges": "تجاهل التغييرات",
       "save": "حفظ التغييرات",
       "saving": "جارٍ الحفظ…",
       "saveFailed": "فشل الحفظ.",
@@ -911,7 +915,7 @@
     "stale": {
       "error": "خطأ · {message}",
       "unreachable": "تعذّر الوصول إلى API",
-      "lastUpdated": "قديم · آخر تحديث منذ {age}ث"
+      "lastUpdated": "آخر تحديث منذ {age}ث"
     },
     "detail": {
       "hint": "حدّد جلسة لفحصها",
@@ -927,8 +931,7 @@
       "updated": "آخر تحديث",
       "branchesTitle": "الفروع ({count})",
       "noBranches": "لا توجد فروع.",
-      "msgs": " رسائل",
-      "engineRuns": "عمليات تشغيل المحرك"
+      "msgs": " رسائل"
     },
     "split": {
       "master": "قائمة الجلسات",
@@ -1074,7 +1077,7 @@
     "stale": {
       "error": "خطأ · {message}",
       "unreachable": "تعذّر الوصول إلى API",
-      "lastUpdated": "قديم · آخر تحديث منذ {age}ث"
+      "lastUpdated": "آخر تحديث منذ {age}ث"
     },
     "zeroState": {
       "heading": "ابدأ",
@@ -1163,6 +1166,7 @@
     "showEarlier": "{count, plural, zero {لا رسائل أقدم} one {عرض رسالة أقدم واحدة} two {عرض رسالتين أقدم} few {عرض # رسائل أقدم} many {عرض # رسالة أقدم} other {عرض # رسالة أقدم}}",
     "noArgs": "(لا وسائط)",
     "noOutput": "(لا مخرجات)",
+    "outputWithheld": "لم تتم القراءة",
     "roleUser": "المستخدم",
     "roleThinking": "يفكّر",
     "roleResponse": "رد",

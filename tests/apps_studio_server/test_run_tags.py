@@ -36,7 +36,11 @@ def _make_client(db_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     _patch_db(monkeypatch, db_path)
     from lionagi.studio.app import app
 
-    return TestClient(app, base_url="http://127.0.0.1:8765")
+    return TestClient(
+        app,
+        base_url="http://127.0.0.1:8765",
+        headers={"Content-Type": "application/json"},
+    )
 
 
 async def _init_db(db_path: Path) -> None:
