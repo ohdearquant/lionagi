@@ -71,6 +71,9 @@ test("expanded run graph keeps the keyboard inside it and hands it back", async 
   const dialog = page.getByRole("dialog", { name: "Execution graph", exact: true });
   await expect(dialog).toBeVisible();
   await expect(dialog.locator(":focus")).toHaveCount(1);
+  // The dialog is inset, so the view behind it stays on screen. This says the page
+  // under it cannot be scrolled while it is up.
+  await expect(page.locator("body")).toHaveCSS("overflow", "hidden");
 
   for (let step = 0; step < 12; step += 1) {
     await page.keyboard.press("Tab");
@@ -84,10 +87,18 @@ test("expanded run graph keeps the keyboard inside it and hands it back", async 
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(expand).toBeFocused();
+  await expect(page.locator("body")).not.toHaveCSS("overflow", "hidden");
   await expect(inlineViewport).toHaveAttribute("style", inlineTransform ?? "");
 
   await expand.click();
   await dialog.getByRole("button", { name: "Collapse execution graph", exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(expand).toBeFocused();
+
+  // A click in the corner outside the inset dialog lands on the backdrop rather
+  // than on whatever the view had painted there, which is what says it is covered.
+  await expand.click();
+  await expect(dialog).toBeVisible();
+  await page.mouse.click(4, 4);
+  await expect(dialog).toBeHidden();
 });

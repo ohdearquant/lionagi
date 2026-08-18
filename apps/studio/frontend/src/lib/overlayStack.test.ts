@@ -82,4 +82,44 @@ describe("overlayStack", () => {
   it("has no owner at all when nothing is open", () => {
     expect(isTopmostOverlay(Symbol("anything"))).toBe(false);
   });
+
+  describe("background isolation", () => {
+    it("locks page scrolling while an overlay is open and releases it after the last one", () => {
+      expect(document.body.style.overflow).toBe("");
+
+      const token = open("only");
+      expect(document.body.style.overflow).toBe("hidden");
+
+      popOverlay(token);
+      opened.splice(opened.indexOf(token), 1);
+      expect(document.body.style.overflow).toBe("");
+    });
+
+    it("keeps scrolling locked when a nested overlay closes above an open one", () => {
+      const below = open("below");
+      const above = open("above");
+
+      popOverlay(above);
+      opened.splice(opened.indexOf(above), 1);
+      expect(document.body.style.overflow).toBe("hidden");
+
+      popOverlay(below);
+      opened.splice(opened.indexOf(below), 1);
+      expect(document.body.style.overflow).toBe("");
+    });
+
+    it("restores the page's own overflow rather than clearing it", () => {
+      document.body.style.overflow = "scroll";
+      try {
+        const token = open("only");
+        expect(document.body.style.overflow).toBe("hidden");
+
+        popOverlay(token);
+        opened.splice(opened.indexOf(token), 1);
+        expect(document.body.style.overflow).toBe("scroll");
+      } finally {
+        document.body.style.overflow = "";
+      }
+    });
+  });
 });

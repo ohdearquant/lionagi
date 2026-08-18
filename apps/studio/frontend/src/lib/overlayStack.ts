@@ -54,7 +54,28 @@ export function subscribeOverlayChange(listener: () => void): () => void {
   };
 }
 
+// Held while at least one overlay is registered, so a nested overlay closing does
+// not hand scrolling back while the one beneath is still open. Null means unheld;
+// the saved value is restored verbatim rather than cleared, since the page may
+// have been setting its own overflow.
+let heldBodyOverflow: string | null = null;
+
+function syncBackgroundIsolation(): void {
+  if (stack.length > 0) {
+    if (heldBodyOverflow === null) {
+      heldBodyOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+    }
+    return;
+  }
+  if (heldBodyOverflow !== null) {
+    document.body.style.overflow = heldBodyOverflow;
+    heldBodyOverflow = null;
+  }
+}
+
 function notifyOverlayChange(): void {
+  syncBackgroundIsolation();
   for (const listener of Array.from(listeners)) listener();
 }
 
