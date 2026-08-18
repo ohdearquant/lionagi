@@ -798,3 +798,33 @@ def test_a_subclass_does_not_inherit_its_parents_cached_layout():
 
     assert _base._field_layout(BaseLayout).names == ("a",)
     assert _base._field_layout(ChildLayout).names == ("a", "b")
+
+
+def test_no_private_field_name_can_be_mistaken_for_the_layout_cache():
+    """A field named like the cache became a slot descriptor that read back as a layout."""
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class CacheNameParams(Params):
+        _field_layout_cache: int = 0
+        value: int = 1
+
+    assert CacheNameParams(value=2).to_dict() == {"value": 2}
+    assert CacheNameParams.field_names() == ("value",)
+
+
+def test_the_layout_is_not_stored_in_the_class_namespace():
+    """Closes the class, not the one name: any attribute the cache used could be declared as a field."""
+    from lionagi.ln.types import base as _base
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class NamespaceParams(Params):
+        value: int = 1
+
+    layout = _base._field_layout(NamespaceParams)
+    stored = [
+        name
+        for name, value in vars(NamespaceParams).items()
+        if isinstance(value, _base._FieldLayout)
+    ]
+    assert stored == [], f"layout reachable in the class namespace as {stored}"
+    assert _base._field_layout(NamespaceParams) is layout

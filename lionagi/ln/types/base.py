@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, MutableMapping
 from dataclasses import MISSING, dataclass, fields
 from enum import Enum as _Enum
 from typing import Any, ClassVar
+from weakref import WeakKeyDictionary
 
 from typing_extensions import Self, TypedDict, override
 
@@ -58,17 +59,16 @@ class _FieldLayout:
     allowed: frozenset[str]
 
 
-_LAYOUT_ATTR = "_field_layout_cache"
+# Keyed off the type rather than stored on it: any attribute name this could use is
+# also a name a subclass may declare as a field, and under slots that field becomes a
+# descriptor in the class namespace which reads back as a cached layout. Weak keys so
+# a type stays collectable, and one entry per type so nothing evicts under a cap.
+_LAYOUTS: MutableMapping[type[Any], _FieldLayout] = WeakKeyDictionary()
 
 
 def _field_layout(model_type: type[Any]) -> _FieldLayout:
-    """One immutable public-field layout per model type, cached on the type itself.
-
-    Held in the type's own ``__dict__`` rather than a shared fixed-size cache: a
-    subclass must not read its parent's layout, and a process holding more model
-    types than any cap would evict on every access and recompute forever.
-    """
-    cached = model_type.__dict__.get(_LAYOUT_ATTR)
+    """One immutable public-field layout per model type, keyed on the type itself."""
+    cached = _LAYOUTS.get(model_type)
     if cached is not None:
         return cached
     declared = tuple(
@@ -76,7 +76,7 @@ def _field_layout(model_type: type[Any]) -> _FieldLayout:
     )
     names = tuple(field_info.name for field_info in declared)
     layout = _FieldLayout(declared=declared, names=names, allowed=frozenset(names))
-    setattr(model_type, _LAYOUT_ATTR, layout)
+    _LAYOUTS[model_type] = layout
     return layout
 
 
