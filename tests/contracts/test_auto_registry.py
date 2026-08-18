@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import importlib.util
 import sys
 import types
 
@@ -408,6 +409,12 @@ def test_isolated_registry_for_tests_restores_previous_state():
 
 
 # --- import isolation boundary -------------------------------------------------
+
+
+def test_retired_casts_cli_module_is_not_shipped():
+    assert "lionagi.cli.casts" not in sys.modules
+    assert importlib.util.find_spec("lionagi.cli.casts") is None
+    assert importlib.util.find_spec("lionagi.casts.surfaces") is not None
 
 
 def test_auto_module_is_not_exported_from_root():

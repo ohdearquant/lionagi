@@ -86,3 +86,43 @@ describe("resolveFileRef", () => {
     expect(result).toEqual({ type: "single", path: "/runs/r1/synthesis.md" });
   });
 });
+
+describe("resolveFileRef with a truncated known set", () => {
+  const knownFiles = ["/runs/r1/agentA/review.md", "/runs/r1/synthesis.md"];
+
+  it("reports an unmatched absolute path as unresolvable, not absent", () => {
+    const result = resolveFileRef("/runs/r1/omitted.md", { knownFiles, knownFilesBounded: true });
+    expect(result).toEqual({ type: "unresolvable" });
+  });
+
+  it("reports an unmatched bare filename as unresolvable", () => {
+    const result = resolveFileRef("omitted.md", { knownFiles, knownFilesBounded: true });
+    expect(result).toEqual({ type: "unresolvable" });
+  });
+
+  it("reports an unmatched file:// URL as unresolvable", () => {
+    const result = resolveFileRef("file:///runs/r1/omitted.md", {
+      knownFiles,
+      knownFilesBounded: true,
+    });
+    expect(result).toEqual({ type: "unresolvable" });
+  });
+
+  it("still resolves a ref the truncated set does hold", () => {
+    const result = resolveFileRef("synthesis.md", { knownFiles, knownFilesBounded: true });
+    expect(result).toEqual({ type: "single", path: "/runs/r1/synthesis.md" });
+  });
+
+  it("keeps 'none' when the set was complete, so the two answers stay distinct", () => {
+    expect(resolveFileRef("omitted.md", { knownFiles })).toEqual({ type: "none" });
+    expect(resolveFileRef("omitted.md", { knownFiles, knownFilesBounded: false })).toEqual({
+      type: "none",
+    });
+  });
+
+  it("keeps an empty ref 'none': nothing was asked, so nothing is unknown", () => {
+    expect(resolveFileRef("   ", { knownFiles, knownFilesBounded: true })).toEqual({
+      type: "none",
+    });
+  });
+});

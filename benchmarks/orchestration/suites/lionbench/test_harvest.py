@@ -92,7 +92,7 @@ def test_infer_held_out_paths_dedupes_in_order():
 
 def test_default_oracle_command_joins_paths():
     # --all-extras: held-out tests can import extra-gated modules (e.g. studio's
-    # fastapi) that a plain `uv run pytest` won't have installed (PR #1643).
+    # fastapi) that a plain `uv run pytest` won't have installed.
     assert default_oracle_command(["a.py", "b.py"]) == "uv run --all-extras pytest a.py b.py -q"
 
 
@@ -158,7 +158,7 @@ Something broke. Two coupled fixes:
 def test_scrub_task_text_preserves_markdown_bullet_lists():
     """A bare '- ' prefix is an ordinary markdown bullet, not a diff line — the
     scrub must not treat every dash-prefixed line as diff noise (real
-    regression: this nuked PR #1665's bulleted fix summary before the fix)."""
+    regression: this nuked a real PR body's bulleted fix summary before the fix)."""
     scrubbed = scrub_task_text(_PR_BODY_WITH_MARKDOWN_BULLETS)
     assert "did the first thing" in scrubbed
     assert "did the second thing" in scrubbed

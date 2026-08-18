@@ -275,7 +275,7 @@ def test_failing_threshold_contract_is_exactly_one():
 
 
 async def test_overdue_when_no_execution_within_expected_cadence(temp_db_path):
-    """The #2845 shape: enabled interval schedule, cadence known, but no
+    """Enabled interval schedule, cadence known, but no
     execution evidence in a long time -- overdue regardless of a rosy
     next_fire_at."""
     sid = await _make_schedule(interval_sec=300)

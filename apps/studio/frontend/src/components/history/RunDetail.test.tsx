@@ -130,7 +130,7 @@ describe("history/ — no Drawer overlay import (master-detail doctrine §4)", (
   }
 });
 
-// ─── SSE done-refetch stale-write race guard (MAJ-3) ─────────────────────────
+// ─── SSE done-refetch stale-write race guard ────────────────────────────────
 // The 'done' handler refetches status/reason fields after streamSession
 // reports completion. Without a same-session guard, navigating A→B before
 // A's refetch resolves lets A's data clobber B's freshly-fetched state.
@@ -643,6 +643,23 @@ describe("history/RunDetail.tsx — runFiles seeds from session.message_stats.fi
     const block = src.slice(start, end);
     expect(block).toMatch(/\[steps, session\]/);
   });
+
+  // A file union the server cut cannot answer "not a file of this run". The
+  // flag reaches the note already; it has to reach resolution too, at every
+  // site, since one unflagged card renders omitted paths as ordinary prose.
+  it("hands every step card the boundedness of the union it hands it", () => {
+    const blocks = src.split("<RunStepCard").slice(1);
+    expect(blocks.length).toBeGreaterThan(1);
+    for (const block of blocks) {
+      const props = block.slice(0, block.indexOf("/>"));
+      if (!/runFiles=/.test(props)) continue;
+      expect(props).toMatch(/runFilesBounded=/);
+    }
+  });
+
+  it("sources that boundedness from the server flag, not from a local guess", () => {
+    expect(src).toMatch(/runFilesBounded=\{session\.message_stats\?\.files_bounded\}/);
+  });
 });
 
 describe("runFiles union logic (mirrors the useMemo body) — file outside the loaded window resolves", () => {
@@ -1003,15 +1020,206 @@ describe("history/RunDetail.tsx — overview aggregates are lifetime totals", ()
         },
         { toolCallCount: 2, errorCount: 1 },
       ),
-    ).toEqual({ toolCallCount: 21_741, errorCount: 42 });
+    ).toEqual({ toolCallCount: 21_741, errorCount: 42, countsAreFloors: false });
   });
 
-  it("does not select recent-qualified labels for partial message windows", () => {
-    const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
-    const start = src.indexOf("function OverviewSection");
-    const end = src.indexOf("// ── Branches section", start);
-    const overview = src.slice(start, end);
-    expect(overview).not.toMatch(/statToolCallsRecent|statErrorsRecent/);
+  it("reports the counts as floors when the server says its pass was bounded", async () => {
+    const { resolveOverviewCounts } = await import("./RunDetail");
+    expect(
+      resolveOverviewCounts(
+        {
+          message_count: 30_525,
+          roles: {},
+          tool_call_count: 21_741,
+          error_count: 42,
+          files: [],
+          bounded: true,
+        },
+        { toolCallCount: 2, errorCount: 1 },
+      ),
+    ).toEqual({ toolCallCount: 21_741, errorCount: 42, countsAreFloors: true });
+  });
+
+  async function mountOverview(messageStats: Record<string, unknown>) {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockResolvedValue({
+      id: "run-overview-labels",
+      name: "run-overview-labels",
+      created_at: 0,
+      updated_at: 0,
+      status: "completed",
+      branches: [],
+      message_stats: messageStats,
+    } as never);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <RunDetail id="run-overview-labels" />
+        </IntlProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return {
+      container,
+      unmount: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  const FULL_STATS = {
+    message_count: 30_525,
+    roles: {},
+    tool_call_count: 21_741,
+    error_count: 0,
+    files: [],
+  };
+
+  it("labels the count tiles as totals when the server read the whole surface", async () => {
+    const { container, unmount } = await mountOverview(FULL_STATS);
+    try {
+      // Control for the assertion below: the unqualified labels have to be
+      // reachable, or finding the qualified ones proves nothing.
+      expect(container.textContent).toContain("Tool calls");
+      expect(container.textContent).not.toContain("Tool calls (recent)");
+      expect(container.textContent).not.toContain("Errors (recent)");
+    } finally {
+      unmount();
+    }
+  });
+
+  it("qualifies the count tiles as recent when the server's pass was bounded", async () => {
+    const { container, unmount } = await mountOverview({ ...FULL_STATS, bounded: true });
+    try {
+      // The counts came from the newest slice of a long session's action rows,
+      // so they are floors. Under the plain label a floor reads as a total,
+      // and a zero error count reads as a clean run.
+      expect(container.textContent).toContain("Tool calls (recent)");
+      expect(container.textContent).toContain("Errors (recent)");
+    } finally {
+      unmount();
+    }
+  });
+});
+
+// ─── Files section: a cut union says so ───────────────────────────────────────
+// The server stops the run-wide file union at a ceiling and reports that it
+// did. A cut union reaches this section in two shapes -- a short list and an
+// empty one -- and both of them read as a complete answer unless the note is
+// rendered, so each shape gets its own arm and its own control.
+
+describe("history/RunDetail.tsx — the files section discloses a cut union", () => {
+  async function mountFiles(messageStats: Record<string, unknown>) {
+    const [{ getSession }, { default: RunDetail }] = await Promise.all([
+      import("@/lib/api"),
+      import("./RunDetail"),
+    ]);
+    vi.mocked(getSession).mockResolvedValue({
+      id: "run-files-note",
+      name: "run-files-note",
+      created_at: 0,
+      updated_at: 0,
+      status: "completed",
+      branches: [],
+      message_stats: messageStats,
+    } as never);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <IntlProvider locale="en" messages={enMessages}>
+          <RunDetail id="run-files-note" />
+        </IntlProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    return {
+      container,
+      unmount: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  const CUT_NOTE = "this run touched more files than one view collects";
+  const STATS = {
+    message_count: 4,
+    roles: {},
+    tool_call_count: 4,
+    error_count: 0,
+  };
+
+  it("says the list is short when the union was cut with names in it", async () => {
+    const { container, unmount } = await mountFiles({
+      ...STATS,
+      files: ["/run/a.py", "/run/b.py"],
+      files_bounded: true,
+    });
+    try {
+      expect(container.textContent).toContain("/run/b.py");
+      expect(container.textContent).toContain(CUT_NOTE);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("leaves the same list unqualified when the union was complete", async () => {
+    const { container, unmount } = await mountFiles({
+      ...STATS,
+      files: ["/run/a.py", "/run/b.py"],
+      files_bounded: false,
+    });
+    try {
+      expect(container.textContent).toContain("/run/b.py");
+      expect(container.textContent).not.toContain(CUT_NOTE);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("says the same about an empty list, where a complete answer means no files", async () => {
+    const { container, unmount } = await mountFiles({
+      ...STATS,
+      files: [],
+      files_bounded: true,
+    });
+    try {
+      expect(container.textContent).toContain("No file operations detected");
+      expect(container.textContent).toContain(CUT_NOTE);
+    } finally {
+      unmount();
+    }
+  });
+
+  it("leaves an empty list unqualified when the union was complete", async () => {
+    const { container, unmount } = await mountFiles({
+      ...STATS,
+      files: [],
+      files_bounded: false,
+    });
+    try {
+      expect(container.textContent).toContain("No file operations detected");
+      expect(container.textContent).not.toContain(CUT_NOTE);
+    } finally {
+      unmount();
+    }
   });
 });
 
@@ -1125,7 +1333,7 @@ describe("history/RunDetail.tsx — operation lane escalation presentation", () 
   });
 });
 
-// ─── visibleEventPayloadEntries / summarizeHookEvent — #2862 ─────────────────
+// ─── visibleEventPayloadEntries / summarizeHookEvent ───────────────────────
 // Element/Signal attach created_at/metadata/schema_version to every signal
 // row; the events panel must not dump them into the one-line summary, and a
 // HookSignal row must read as a human summary, not a struct.
@@ -1248,7 +1456,7 @@ describe("history/RunDetail.tsx — summarizeHookEvent", () => {
   });
 });
 
-// ─── deriveGateOutcome — #2863 ────────────────────────────────────────────────
+// ─── deriveGateOutcome ───────────────────────────────────────────────────────
 // A gate/review step's structured verdict is a different population from
 // runtime tool errors; deriveGateOutcome scans the signal stream for it so
 // the page can surface "Gate: approve-with-fixes · 1 major, 5 minor" beside
@@ -1853,9 +2061,14 @@ describe("history/RunDetail.tsx — computeReconciledNodeStatuses / computeProgr
 describe("history/RunDetail.tsx — execution-graph expand/close wiring", () => {
   const src = fs.readFileSync(path.join(HISTORY_DIR, "RunDetail.tsx"), "utf-8");
 
-  it("Escape closes the expanded graph overlay", () => {
-    expect(src).toMatch(/event\.key === "Escape"/);
-    expect(src).toMatch(/setGraphExpanded\(false\)/);
+  // Escape behaviour itself is covered in useOverlayFocus.test.tsx; this asserts the wiring,
+  // since a window-level listener here would fire even while a higher surface owns the keyboard.
+  it("the expanded graph registers on the overlay stack rather than listening on window", () => {
+    expect(src).toMatch(
+      /useOverlayFocus\(\{ description: "ExpandedGraph", dialogRef, onEscape: onClose \}\)/,
+    );
+    expect(src).toMatch(/onClose={\(\) => setGraphExpanded\(false\)}/);
+    expect(src).not.toMatch(/window\.addEventListener\("keydown"/);
   });
 
   it("an explicit close button also closes the overlay", () => {
@@ -2865,5 +3078,435 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
       act(() => root.unmount());
       container.remove();
     }
+  });
+});
+
+function openConversationTab(container: HTMLElement): void {
+  const tab = container.querySelector<HTMLButtonElement>('[id$="-tab-conversation"]');
+  if (!tab) throw new Error("conversation tab not rendered");
+  act(() => {
+    tab.click();
+  });
+}
+
+describe("history/RunDetail.tsx — a tool result nobody read is not a tool call that worked", () => {
+  // The server withholds a message payload past its per-row size ceiling and
+  // marks the row `content_withheld`. Every consumer here decides success by
+  // reading the output, and a withheld output is an empty string, so without
+  // the flag a call whose result nobody has seen renders with a green check.
+  const withheldBranch = (contentWithheld: boolean) => ({
+    id: "branch-withheld",
+    name: "worker",
+    created_at: 10,
+    message_total: 2,
+    messages: [
+      {
+        id: "req-1",
+        role: "action",
+        content: {
+          function: "Bash",
+          arguments: { command: "ls" },
+          action_response_id: "resp-1",
+        },
+        sender: "worker",
+        timestamp: 11,
+        lion_class: "ActionRequest",
+      },
+      {
+        id: "resp-1",
+        role: "action",
+        content: contentWithheld ? null : { function: "Bash", output: "a.txt" },
+        content_withheld: contentWithheld,
+        sender: "tool",
+        timestamp: 12,
+        lion_class: "ActionResponse",
+      },
+    ],
+  });
+
+  it("marks a paired call whose response payload was withheld", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldBranch(true) as never, "completed");
+    const [call] = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(call.status).toBe("withheld");
+  });
+
+  it("still reports an ordinary call as ok", async () => {
+    // Control: "withheld" has to be reachable only through the flag, or the
+    // assertion above is satisfied by a status that is always withheld.
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldBranch(false) as never, "completed");
+    const [call] = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(call.status).toBe("ok");
+  });
+
+  // A withheld REQUEST is the harder half. Its payload is what carries the
+  // function name, the arguments and the forward link to its response, so a
+  // consumer reading only the response's flag sees an ordinary call with a
+  // blank name, and the response it could no longer point at renders as a
+  // second one. Two green checks, for one call nobody could read.
+  // `error` is omitted rather than set to null when a call succeeds, which is
+  // what the server stores and therefore what the client receives.
+  const withheldRequestBranch = (output = "a.txt", error?: string) => ({
+    id: "branch-withheld-req",
+    name: "worker",
+    created_at: 10,
+    message_total: 2,
+    messages: [
+      {
+        id: "req-1",
+        role: "action",
+        content: null,
+        content_withheld: true,
+        sender: "worker",
+        timestamp: 11,
+        lion_class: "ActionRequest",
+      },
+      {
+        id: "resp-1",
+        role: "action",
+        content: {
+          function: "Bash",
+          output,
+          action_request_id: "req-1",
+          ...(error === undefined ? {} : { error }),
+        },
+        sender: "tool",
+        timestamp: 12,
+        lion_class: "ActionResponse",
+      },
+    ],
+  });
+
+  it("marks a call whose own request payload was withheld", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldRequestBranch() as never, "completed");
+    const calls = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(calls.map((c) => c.status)).toEqual(["withheld"]);
+  });
+
+  it("reports the failure when a withheld request's response came back and recorded an error", async () => {
+    // The two halves are withheld independently, so the request can be past
+    // the ceiling while the reply is decoded and readable. "not read" is then
+    // the one thing the row is not: somebody did read this, and it failed.
+    // Answering with the badge would hide a failure the response states.
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldRequestBranch("", "boom: exit 1") as never, "completed");
+    const calls = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(calls.map((c) => c.status)).toEqual(["error"]);
+  });
+
+  it("keeps the withheld badge when that same response records no error", async () => {
+    // Control, and the reason the fixtures differ by one field: the recorded
+    // error must be what produces "error" above, not the withheld request.
+    // The request is still unread here, which is what the blank function name
+    // on the row needs explained, so the badge stays.
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldRequestBranch("a.txt") as never, "completed");
+    const calls = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(calls.map((c) => c.status)).toEqual(["withheld"]);
+  });
+
+  it("does not call a withheld request failed because its output mentions an error", async () => {
+    // Prose is not a statement of outcome. A successful call says "No errors found",
+    // and reading the word out of the text would turn an honest "not read"
+    // into a wrong one -- worse than the vagueness it replaces, because the
+    // reader has no way to see that it is wrong. Only the response's own
+    // error field outranks the badge, and this response records none.
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldRequestBranch("No errors found") as never, "completed");
+    const calls = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(calls.map((c) => c.status)).toEqual(["withheld"]);
+  });
+
+  // An ordinary call with nothing withheld, so the text is the only thing left
+  // deciding the outcome. Sessions mirrored from the Codex CLI arrive this way
+  // and carry no error field, which is why the text is read at all.
+  //
+  // Built here rather than derived from the withheld fixture by deleting a
+  // field. These cases are about what the text says, and deriving them would
+  // tie them to the shape of a fixture that exists to test something else.
+  const plainCallBranch = (output: string) => ({
+    id: "branch-plain-call",
+    name: "worker",
+    created_at: 10,
+    message_total: 2,
+    messages: [
+      {
+        id: "req-1",
+        role: "action",
+        content: { function: "Bash", arguments: {}, action_response_id: "resp-1" },
+        sender: "worker",
+        timestamp: 11,
+        lion_class: "ActionRequest",
+      },
+      {
+        id: "resp-1",
+        role: "action",
+        content: { function: "Bash", output, action_request_id: "req-1" },
+        sender: "tool",
+        timestamp: 12,
+        lion_class: "ActionResponse",
+      },
+    ],
+  });
+
+  const statusOf = async (output: string) => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(plainCallBranch(output) as never, "completed");
+    return (step.messages ?? []).filter((m) => m.role === "tool_call").map((c) => c.status);
+  };
+
+  it("still reads a failure out of the text when nothing was withheld", async () => {
+    // The text is the only signal some tools leave. Demoting it below the badge
+    // must not silently delete it: a failure recorded only in prose still has
+    // to show as one.
+    expect(await statusOf("Error: command not found")).toEqual(["error"]);
+  });
+
+  it.each([
+    ["a sentence mentioning one", "No errors found"],
+    ["a count of them", "Errors: 0"],
+    ["one inside ordinary prose", "Retrying after a transient error was handled"],
+  ])("does not call an ordinary call failed for %s", async (_label, output) => {
+    // The case the badge already covered for withheld rows, on the rows where
+    // nothing was withheld and so nothing outranks the text. Reading the word
+    // anywhere in the output marked every one of these failed, and each is a
+    // successful call: two report zero errors, the third reports handling one.
+    expect(await statusOf(output)).toEqual(["ok"]);
+  });
+
+  it.each([
+    ["one", "Errors: 1"],
+    ["several", "Errors: 12"],
+    ["exceptions instead", "Exceptions: 2"],
+    ["a count after other output", "ran 3 steps\nErrors: 1\n"],
+  ])("reads a nonzero count as the failure it is, for %s", async (_label, output) => {
+    // A count label was excluded wholesale to keep "Errors: 0" from reading as
+    // a failure. That also excluded every nonzero count, so a call reporting
+    // real failures came back ok and rendered a success badge. Zero and
+    // nonzero differ only in the number, so the number is what has to be read.
+    expect(await statusOf(output)).toEqual(["error"]);
+  });
+
+  it("reads a failure announced further down the output", async () => {
+    // Anchoring is per line, not to the start of the payload, or a tool that
+    // prints progress before it fails would come back green.
+    expect(await statusOf("running checks\nTraceback (most recent call last):")).toEqual(["error"]);
+  });
+
+  it("reads an exception class name as the announcement it is", async () => {
+    expect(await statusOf("ValueError: bad input")).toEqual(["error"]);
+  });
+
+  it("pairs a withheld request with its response from the response's own end", async () => {
+    // One row, not two: the response names its request in a payload the
+    // request's withholding cannot reach, so the pairing survives it.
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(withheldRequestBranch() as never, "completed");
+    expect((step.messages ?? []).filter((m) => m.role === "tool_call")).toHaveLength(1);
+  });
+
+  it("marks an unpaired response whose own payload was withheld", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const branch = withheldBranch(true) as never as { messages: unknown[] };
+    const step = branchToRunStep(
+      { ...branch, messages: [branch.messages[1]] } as never,
+      "completed",
+    );
+    const [call] = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(call.status).toBe("withheld");
+  });
+
+  it("renders the withheld badge instead of the success check", () => {
+    const withheld = {
+      step: "s1",
+      status: "completed",
+      timestamp: 1,
+      messages: [
+        {
+          role: "tool_call",
+          function: "Bash",
+          summary: "ls",
+          output: "",
+          status: "withheld",
+          timestamp: 1,
+        },
+      ],
+    };
+    const { container } = renderRunStepCards([withheld as never], true);
+    openConversationTab(container);
+    expect(container.textContent).toContain("not read");
+  });
+
+  it("does not render the withheld badge for an ordinary call", () => {
+    // Control for the render: "not read" must be absent when the status is ok,
+    // or its presence above says nothing about the status.
+    const ok = {
+      step: "s1",
+      status: "completed",
+      timestamp: 1,
+      messages: [
+        {
+          role: "tool_call",
+          function: "Bash",
+          summary: "ls",
+          output: "a.txt",
+          status: "ok",
+          timestamp: 1,
+        },
+      ],
+    };
+    const { container } = renderRunStepCards([ok as never], true);
+    openConversationTab(container);
+    // The tool call is on screen -- this is the same panel the assertion above
+    // reads, so its silence is about the status and not about the tab.
+    expect(container.textContent).toContain("ls");
+    expect(container.textContent).not.toContain("not read");
+  });
+});
+
+describe("history/RunDetail.tsx — a withheld row is still a row", () => {
+  // Both halves of one call refused. The request has no function name, no
+  // arguments and no forward link; the response has no back link. Every
+  // pairing the transcript knows about lives in a payload neither of them
+  // still has, so without the ids the server lifts out of the row itself,
+  // one call arrives as two unrelated rows.
+  const bothWithheldBranch = (liftIds: boolean) => ({
+    id: "branch-both-withheld",
+    name: "worker",
+    created_at: 10,
+    message_total: 2,
+    messages: [
+      {
+        id: "req-1",
+        role: "action",
+        content: null,
+        content_withheld: true,
+        ...(liftIds ? { action_response_id: "resp-1" } : {}),
+        sender: "worker",
+        timestamp: 11,
+        lion_class: "ActionRequest",
+      },
+      {
+        id: "resp-1",
+        role: "action",
+        content: null,
+        content_withheld: true,
+        ...(liftIds ? { action_request_id: "req-1" } : {}),
+        sender: "tool",
+        timestamp: 12,
+        lion_class: "ActionResponse",
+      },
+    ],
+  });
+
+  it("renders one row when a call has both halves withheld", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(bothWithheldBranch(true) as never, "completed");
+    const calls = (step.messages ?? []).filter((m) => m.role === "tool_call");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].status).toBe("withheld");
+  });
+
+  // The two lifted ids are two independent routes to the same pairing, so a
+  // fixture carrying both cannot say whether either one works. These strip one
+  // route each. A row can be withheld on one side and hydrated on the other,
+  // which is why both routes exist rather than one.
+  const oneSidedBranch = (side: "request" | "response") => {
+    const branch = bothWithheldBranch(true);
+    const [request, response] = branch.messages as Record<string, unknown>[];
+    if (side === "request") delete response.action_request_id;
+    else delete request.action_response_id;
+    return branch;
+  };
+
+  it("pairs a both-withheld call from the request's lifted forward link alone", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(oneSidedBranch("request") as never, "completed");
+    expect((step.messages ?? []).filter((m) => m.role === "tool_call")).toHaveLength(1);
+  });
+
+  it("pairs a both-withheld call from the response's lifted back link alone", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(oneSidedBranch("response") as never, "completed");
+    expect((step.messages ?? []).filter((m) => m.role === "tool_call")).toHaveLength(1);
+  });
+
+  it("splits the same call into two rows without the lifted ids", async () => {
+    // Control: the single row above has to come from the ids and not from
+    // some other collapse, or the assertion passes for the wrong reason.
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(bothWithheldBranch(false) as never, "completed");
+    expect((step.messages ?? []).filter((m) => m.role === "tool_call")).toHaveLength(2);
+  });
+
+  // Withholding is decided by payload size, not by message kind, so a system,
+  // user or assistant message hits it too. Each of the three readers fails
+  // differently on an empty payload and all three fail silently.
+  const nonActionBranch = (withheld: boolean) => ({
+    id: "branch-non-action",
+    name: "worker",
+    created_at: 10,
+    message_total: 3,
+    messages: [
+      {
+        id: "sys-1",
+        role: "system",
+        content: withheld ? null : { system_message: "you are a worker" },
+        content_withheld: withheld,
+        sender: "system",
+        timestamp: 11,
+        lion_class: "System",
+      },
+      {
+        id: "usr-1",
+        role: "user",
+        content: withheld ? null : { instruction: "do the thing" },
+        content_withheld: withheld,
+        sender: "user",
+        timestamp: 12,
+        lion_class: "Instruction",
+      },
+      {
+        id: "asst-1",
+        role: "assistant",
+        content: withheld ? null : { assistant_response: "done" },
+        content_withheld: withheld,
+        sender: "worker",
+        timestamp: 13,
+        lion_class: "AssistantResponse",
+      },
+    ],
+  });
+
+  it("keeps a withheld system, user and assistant message as one marked row each", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(nonActionBranch(true) as never, "completed");
+    const messages = step.messages ?? [];
+    expect(messages.map((m) => m.role)).toEqual(["system", "user", "assistant"]);
+    expect(messages.every((m) => m.withheld === true)).toBe(true);
+    // The literal "{}" is what a serialized empty payload used to render as.
+    expect(messages.some((m) => m.content === "{}")).toBe(false);
+  });
+
+  it("leaves ordinary system, user and assistant messages unmarked", async () => {
+    const { branchToRunStep } = await import("./RunDetail");
+    const step = branchToRunStep(nonActionBranch(false) as never, "completed");
+    const messages = step.messages ?? [];
+    expect(messages.map((m) => m.content)).toEqual(["you are a worker", "do the thing", "done"]);
+    expect(messages.some((m) => m.withheld)).toBe(false);
+  });
+
+  it("renders a withheld assistant turn as unread rather than as a blank one", () => {
+    const step = {
+      step: "s1",
+      status: "completed",
+      timestamp: 1,
+      messages: [{ role: "assistant", content: "", withheld: true, timestamp: 1 }],
+    };
+    const { container } = renderRunStepCards([step as never], true);
+    openConversationTab(container);
+    expect(container.textContent).toContain("not read");
   });
 });

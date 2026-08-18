@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, MutableMapping
 from dataclasses import MISSING, dataclass, fields
 from enum import Enum as _Enum
 from functools import lru_cache
 from typing import Any, ClassVar, Literal
+from weakref import WeakKeyDictionary
 
 from typing_extensions import Self, TypedDict, override
 
@@ -59,14 +60,25 @@ class _FieldLayout:
     allowed: frozenset[str]
 
 
-@lru_cache(maxsize=256)
+# Keyed off the type rather than stored on it: any attribute name this could use is
+# also a name a subclass may declare as a field, and under slots that field becomes a
+# descriptor in the class namespace which reads back as a cached layout. Weak keys so
+# a type stays collectable, and one entry per type so nothing evicts under a cap.
+_LAYOUTS: MutableMapping[type[Any], _FieldLayout] = WeakKeyDictionary()
+
+
 def _field_layout(model_type: type[Any]) -> _FieldLayout:
-    """Discover and cache one immutable public-field layout per model type."""
+    """One immutable public-field layout per model type, keyed on the type itself."""
+    cached = _LAYOUTS.get(model_type)
+    if cached is not None:
+        return cached
     declared = tuple(
         field_info for field_info in fields(model_type) if not field_info.name.startswith("_")
     )
     names = tuple(field_info.name for field_info in declared)
-    return _FieldLayout(declared=declared, names=names, allowed=frozenset(names))
+    layout = _FieldLayout(declared=declared, names=names, allowed=frozenset(names))
+    _LAYOUTS[model_type] = layout
+    return layout
 
 
 def _validate_declared_fields(
@@ -74,7 +86,7 @@ def _validate_declared_fields(
     set_field: Callable[[Any, str, Any], None],
 ) -> None:
     sentinel_predicate = _sentinel_predicate(instance)
-    for name in type(instance).field_names():
+    for name in _field_layout(type(instance)).names:
         _validate_declared_field(
             instance,
             name,
@@ -105,7 +117,7 @@ def _declared_fields_to_dict(
     excluded = frozenset(exclude or ())
     sentinel_predicate = _sentinel_predicate(instance)
     data: dict[str, Any] = {}
-    for name in type(instance).field_names():
+    for name in _field_layout(type(instance)).names:
         if name in excluded:
             continue
         value = getattr(instance, name, Undefined)
@@ -116,7 +128,9 @@ def _declared_fields_to_dict(
 
 def _declared_field_state(instance: Any) -> dict[str, Any]:
     """Copy the complete in-memory field state without wire omission."""
-    return {name: getattr(instance, name, Undefined) for name in type(instance).field_names()}
+    return {
+        name: getattr(instance, name, Undefined) for name in _field_layout(type(instance)).names
+    }
 
 
 def _apply_serialization_mode(
