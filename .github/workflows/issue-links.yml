@@ -26,7 +26,14 @@ jobs:
   closing-keywords:
     runs-on: ubuntu-latest
     steps:
+    # A fork's PR code is attacker-controlled and this job runs a script out of
+    # the tree with a token in its environment, so it runs the base revision and
+    # leaves no credentials in .git/config. The body and branch it reads come
+    # from the event payload, not the checkout.
     - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.base.sha }}
+        persist-credentials: false
     - name: Require a closing keyword for every referenced phase issue
       env:
         GH_TOKEN: ${{ github.token }}

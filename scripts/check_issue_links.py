@@ -11,6 +11,7 @@ PR_BRANCH and REPO from the environment.
 
 from __future__ import annotations
 
+import bisect
 import json
 import os
 import re
@@ -42,7 +43,12 @@ _NEGATION_RE = re.compile(r"\bnot\b|n['’]t\b|\bnever\b|\bwithout\b|\bno\b", re
 # ("Although it does not revert, it closes #1") still reads as negated, since
 # ending that one needs the comma and a comma is what "not, in any way, close
 # #1" hides behind.
-_CLAUSE_SPLIT_RE = re.compile(r"[.;:!?\n]|\bbut\b|\bhowever\b|\b(?:al)?though\b", re.I)
+# One vocabulary, two readings, so the pair cannot drift apart.
+_CONTRASTIVE = r"but|however|(?:al)?though"
+_CLAUSE_SPLIT_RE = re.compile(rf"[.;:!?\n]|\b(?:{_CONTRASTIVE})\b", re.I)
+# Comma-delimited on both sides the same word interrupts a clause instead of
+# ending one: "does not, however, close #1" is one clause and stays negated.
+_PARENTHETICAL_RE = re.compile(rf",\s*(?:{_CONTRASTIVE})\s*,", re.I)
 
 
 def refs_from(body: str, branch: str) -> set[int]:
@@ -69,23 +75,40 @@ def _closure_pattern(repo: str, number: int) -> re.Pattern[str]:
     )
 
 
-def _is_negated(body: str, start: int) -> bool:
+def _scannable(body: str) -> str:
+    """Blank out interrupters, preserving length so match offsets still line up."""
+    return _PARENTHETICAL_RE.sub(lambda m: " " * len(m.group()), body)
+
+
+def _clause_starts(body: str) -> list[int]:
+    """Offset just past each clause boundary, ascending. Computed once per body."""
+    return [m.end() for m in _CLAUSE_SPLIT_RE.finditer(body)]
+
+
+def _is_negated(body: str, starts: list[int], start: int) -> bool:
     """Whether the clause leading up to *start* negates what follows it."""
-    clause = _CLAUSE_SPLIT_RE.split(body[:start])[-1]
+    i = bisect.bisect_right(starts, start)
+    clause = body[starts[i - 1] : start] if i else body[:start]
     return bool(_NEGATION_RE.search(clause))
+
+
+def _unnegated_closures(body: str, repo: str, number: int) -> tuple[int, int]:
+    """(total closing keywords for *number*, how many of them are not negated)."""
+    scan = _scannable(body)
+    starts = _clause_starts(scan)
+    matches = list(_closure_pattern(repo, number).finditer(body))
+    return len(matches), sum(1 for m in matches if not _is_negated(scan, starts, m.start()))
 
 
 def closed_by_body(body: str, repo: str, number: int) -> bool:
     """Whether the body states this PR closes *number*, ignoring negated prose."""
-    return any(
-        not _is_negated(body, m.start()) for m in _closure_pattern(repo, number).finditer(body)
-    )
+    return _unnegated_closures(body, repo, number)[1] > 0
 
 
 def negated_closure(body: str, repo: str, number: int) -> bool:
     """Whether the only closing keyword for *number* sits inside a negation."""
-    matches = list(_closure_pattern(repo, number).finditer(body))
-    return bool(matches) and all(_is_negated(body, m.start()) for m in matches)
+    total, unnegated = _unnegated_closures(body, repo, number)
+    return bool(total) and unnegated == 0
 
 
 def declared_reference_only(body: str, number: int) -> bool:

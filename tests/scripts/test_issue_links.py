@@ -68,6 +68,24 @@ class TestNegatedProseIsNotAClosure:
     def test_a_word_that_does_not_end_the_negation_is_not_a_boundary(self, body):
         assert not gate.closed_by_body(body, REPO, 1234)
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "This PR does not, however, close #1234.",
+            "It does not, though, close #1234.",
+            "This does not, but, resolve #1234.",
+        ],
+    )
+    def test_a_comma_delimited_interrupter_does_not_end_the_negation(self, body):
+        """Commas on both sides make it parenthetical: it sits inside the negation, not after it."""
+        assert not gate.closed_by_body(body, REPO, 1234)
+        assert gate.negated_closure(body, REPO, 1234)
+
+    def test_blanking_interrupters_preserves_every_offset(self):
+        """Match offsets are taken on the raw body and used against the blanked one."""
+        body = "This PR does not, however, close #1234 and does not, though, fix #99."
+        assert len(gate._scannable(body)) == len(body)
+
     def test_a_negation_after_the_keyword_is_not_a_negation_of_it(self):
         assert gate.closed_by_body("Closes #1234, which is not a duplicate.", REPO, 1234)
 
