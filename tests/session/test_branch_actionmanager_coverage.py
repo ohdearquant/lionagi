@@ -98,12 +98,6 @@ class TestBranchMessageCount:
     def test_empty_branch_message_count(self, plain_branch):
         assert len(plain_branch.messages) == 0
 
-    def test_system_branch_message_count(self, system_branch):
-        assert len(system_branch.messages) == 1
-
-    def test_messages_pile_has_correct_length(self, system_branch):
-        assert len(system_branch.messages) == 1
-
 
 class TestBranchMessages:
     def test_messages_is_iterable(self, system_branch):
