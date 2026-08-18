@@ -327,11 +327,9 @@ _SECRET_SHAPE_RE = re.compile(
 # the token shapes. Only the password is replaced, so the host stays diagnostic.
 _URL_CREDENTIAL_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/?#@]*:)[^\s/?#@]+(@)")
 # The same credential passed as a query parameter has no "@" and so is invisible
-# to the rule above. Only the value is replaced, so the parameter stays readable.
-_URL_QUERY_CREDENTIAL_RE = re.compile(
-    r"(?i)([?&][a-z0-9_.-]*(?:key|token|secret|password|passwd|credential|auth)"
-    r"[a-z0-9_.-]*=)[^&\s]+"
-)
+# to the rule above. Every parameter is matched and the name decides, so this
+# reads the name vocabulary above rather than restating it.
+_URL_QUERY_PARAM_RE = re.compile(r"([?&])([^=&\s]+)=([^&\s]+)")
 
 # Short values collide with ordinary words, so the name guess needs a floor. A
 # declared name does not: the operator said it holds a secret.
@@ -364,6 +362,14 @@ def _secret_candidates(
     }
 
 
+def _redact_query_value(match: re.Match[str]) -> str:
+    """Replace a query parameter's value when its name reads as a credential."""
+    separator, name, value = match.groups()
+    if not _SECRET_ENV_KEY_RE.search(name):
+        return match.group(0)
+    return f"{separator}{name}=[redacted]"
+
+
 def _escape_control_characters(text: str) -> str:
     """Show control bytes rather than let child output forge a log record."""
     return "".join(
@@ -387,7 +393,7 @@ def _redact_secrets_for_log(text: str, secrets: Mapping[str, str] | None) -> str
         ):
             text = text.replace(value, "[redacted]")
     text = _URL_CREDENTIAL_RE.sub(r"\1[redacted]\2", text)
-    text = _URL_QUERY_CREDENTIAL_RE.sub(r"\1[redacted]", text)
+    text = _URL_QUERY_PARAM_RE.sub(_redact_query_value, text)
     # Escape last: the redaction patterns are written against the real text.
     return _escape_control_characters(_SECRET_SHAPE_RE.sub("[redacted]", text))
 

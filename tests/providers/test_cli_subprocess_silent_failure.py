@@ -302,6 +302,11 @@ class TestWhatCountsAsASecretToRemove:
         assert "hunter2pass" not in out, out
         assert "sslmode=require" in out, "the rest of the query went with it: " + out
 
+    def test_a_query_carrying_no_credential_is_left_alone(self):
+        """The control: the rule keys on the parameter name, not on the query."""
+        text = "connected to postgres://db.internal/app?sslmode=require&timeout=30 in 4ms"
+        assert cs._redact_secrets_for_log(text, {}) == text
+
 
 class TestTheQuotedStderrCarriesNoCredential:
     """Quoting the child's stderr is the point of this path, so the credential has to be removed rather than the quoting withheld."""
