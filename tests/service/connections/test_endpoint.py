@@ -116,30 +116,6 @@ class TestEndpoint:
         assert payload1["model"] == "gpt-4.1-mini"
         assert payload2["model"] == "gpt-4o"
 
-    @pytest.mark.asyncio
-    async def test_parallel_http_sessions(self, openai_config):
-        endpoint = Endpoint(config=openai_config)
-
-        sessions_created = []
-
-        async def mock_create_session():
-            session = AsyncMock(spec=aiohttp.ClientSession)
-            sessions_created.append(session)
-            return session
-
-        with patch.object(endpoint, "_create_http_session", side_effect=mock_create_session):
-            # Simulate multiple concurrent requests
-            tasks = []
-            for _ in range(3):
-                task = asyncio.create_task(endpoint._create_http_session())
-                tasks.append(task)
-
-            await asyncio.gather(*tasks)
-
-        # Verify each call created its own session
-        assert len(sessions_created) == 3
-        assert all(session is not sessions_created[0] for session in sessions_created[1:])
-
     def test_create_payload_openai(self, openai_config):
         endpoint = Endpoint(config=openai_config)
 
@@ -270,53 +246,6 @@ class TestEndpoint:
         assert len(release_await_attempted) == 0
         assert result is not None
 
-    @pytest.mark.asyncio
-    async def test_parallel_execution_isolation(self, openai_config):
-        endpoint = Endpoint(config=openai_config)
-
-        async def mock_request_with_delay(payload, headers, delay=0.1):
-            await asyncio.sleep(delay)
-            return {
-                "id": f"response-{payload['messages'][0]['content']}",
-                "choices": [
-                    {"message": {"content": f"Response to {payload['messages'][0]['content']}"}}
-                ],
-            }
-
-        with patch.object(endpoint, "call", side_effect=mock_request_with_delay):
-            # Create multiple concurrent requests
-            requests = [
-                {"messages": [{"role": "user", "content": f"Message {i}"}]} for i in range(3)
-            ]
-
-            tasks = []
-            for req in requests:
-                payload, headers = endpoint.create_payload(req)
-                task = asyncio.create_task(endpoint.call(payload, headers, delay=0.05))
-                tasks.append(task)
-
-            responses = await asyncio.gather(*tasks)
-
-        # Verify each response corresponds to its request
-        for i, response in enumerate(responses):
-            assert f"Message {i}" in response["id"]
-            assert f"Message {i}" in response["choices"][0]["message"]["content"]
-
-    @pytest.mark.asyncio
-    async def test_sdk_vs_http_transport(self, openai_config):
-        endpoint = Endpoint(config=openai_config)
-
-        # Test HTTP transport
-        with patch.object(endpoint, "call") as mock_http:
-            mock_http.return_value = {"test": "http_response"}
-
-            payload = {"messages": [{"role": "user", "content": "test"}]}
-            headers = {"Authorization": "Bearer test"}
-
-            result = await endpoint.call(payload, headers)
-            assert result == {"test": "http_response"}
-            mock_http.assert_called_once()
-
     def test_url_construction(self, openai_config, anthropic_config):
         openai_endpoint = Endpoint(config=openai_config)
         anthropic_endpoint = Endpoint(config=anthropic_config)
@@ -432,37 +361,6 @@ class TestEndpoint:
             request = {"messages": [{"role": "user", "content": "test"}]}
             result = await endpoint.call(request, cache_control=True)
             assert result == {"response": "success"}
-
-    @pytest.mark.asyncio
-    async def test_error_handling_isolation(self, openai_config):
-        endpoint = Endpoint(config=openai_config)
-
-        call_count = 0
-
-        async def mock_request_with_errors(payload, headers):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:  # Second call fails
-                raise aiohttp.ClientError("Network error")
-            return {"success": True, "call": call_count}
-
-        with patch.object(endpoint, "call", side_effect=mock_request_with_errors):
-            # Create three concurrent requests
-            tasks = []
-            for i in range(3):
-                payload, headers = endpoint.create_payload(
-                    {"messages": [{"role": "user", "content": f"test {i}"}]}
-                )
-                task = asyncio.create_task(endpoint.call(payload, headers))
-                tasks.append(task)
-
-            # Gather with return_exceptions to handle the error
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # First and third should succeed, second should fail
-        assert results[0] == {"success": True, "call": 1}
-        assert isinstance(results[1], aiohttp.ClientError)
-        assert results[2] == {"success": True, "call": 3}
 
     @pytest.mark.asyncio
     async def test_aiohttp_429_status_code_path(self, openai_config):

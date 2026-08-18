@@ -444,12 +444,9 @@ async def _do_engine_run(args: argparse.Namespace) -> int:
     if _emission_failures:
         emission_error = "emission_missing: " + "; ".join(_emission_failures)
 
-    # A degraded run reached a result without all of its work. The engine says
-    # so on the result object, and nothing downstream was reading it: the row
-    # persisted as "completed" with no trace of what was skipped, which is the
-    # same shape as a run that did everything. Joined to the same field the
-    # emission diagnostics use, which already carries this kind of non-fatal
-    # detail on a completed row.
+    # A degraded run reached a result without all of its work. The outcome
+    # envelope carries it on a completed row; this text is for the terminal and
+    # for the error column a total agent failure does write.
     _degraded: bool = bool(getattr(result, "degraded", False))
     _degrade_reason: str = str(getattr(result, "degrade_reason", "") or "")
     _skipped: list[str] = list(getattr(result, "skipped", []) or [])

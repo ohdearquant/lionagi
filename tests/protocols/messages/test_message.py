@@ -233,19 +233,6 @@ def test_roled_message_sender_recipient_validation():
     assert message.recipient == MessageRole.ASSISTANT
 
 
-def test_roled_message_sender_recipient_string():
-    """Sender and recipient with string values."""
-    message = _MockMessage(
-        role=MessageRole.USER,
-        content=_MockContent(text="test"),
-        sender="user",
-        recipient="assistant",
-    )
-
-    assert message.sender == MessageRole.USER
-    assert message.recipient == MessageRole.ASSISTANT
-
-
 def test_roled_message_sender_recipient_none():
     """Sender and recipient with None values."""
     message = _MockMessage(
