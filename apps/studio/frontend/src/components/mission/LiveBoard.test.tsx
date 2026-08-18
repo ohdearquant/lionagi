@@ -161,7 +161,7 @@ describe("isUnknownHealth", () => {
   });
 });
 
-describe("LiveBoard — InvocationCard health rendering (issue #2851)", () => {
+describe("LiveBoard — InvocationCard health rendering", () => {
   let container: HTMLDivElement;
   let root: Root;
 
