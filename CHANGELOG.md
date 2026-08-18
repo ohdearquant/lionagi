@@ -22,6 +22,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   dispatch profiles before any shared-kernel migration. Service-hook invocation
   and streaming are characterized alongside them, but that profile's matrix is
   frozen in Phase 1, not here.
+- Sentinel identity is now three-state by default: the public `is_sentinel` and
+  `not_sentinel` helpers reject legacy `None`/empty collapse flags, and
+  `Params`/`DataClass` subclasses may enable those flags only through the
+  closed ADR-0119 compatibility inventory. Existing built-in compatibility
+  adapters keep their prior omission behavior. Third-party callers that set
+  either flag must replace it with an explicit domain adapter.
 - Studio, Operator, and VS Code run navigation now prefer the session `id`
   over the legacy `run_id` compatibility field, while preserving fallback for
   older rows that do not expose `id`.

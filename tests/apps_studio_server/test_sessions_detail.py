@@ -884,9 +884,10 @@ async def test_get_session_messages_after_handles_branch_over_sqlite_variable_li
     build's default, per PRAGMA compile_options MAX_VARIABLE_NUMBER, is 32766 — 33000
     exceeds both so the test reproduces the failure regardless of build). The
     json_each-joined query has no per-message bind variable, so it must return every
-    id without error. Only the progression collection needs to be this large — the
-    corresponding message rows are irrelevant to the bind-limit failure itself, so
-    this seeds ids without materializing 33000 message rows (keeps the test fast)."""
+    materialized in-range rows without error. Only the progression collection needs
+    to be this large — the corresponding message rows are irrelevant to the
+    bind-limit failure itself, so this seeds ids without materializing 33000 message
+    rows (keeps the test fast)."""
     svc, db_path = patched_sessions_db
     await seed_session(db_path, session_id="sess-huge")
     count = 33000
@@ -973,6 +974,93 @@ async def test_get_session_messages_after_message_shape_matches_expected_fields(
     ]
 
 
+async def test_session_message_stream_resumes_and_drains_before_done(monkeypatch):
+    """A terminal session must drain every bounded page before its done frame."""
+    from lionagi.studio.services import sessions as svc
+
+    calls: list[tuple[float, str | None]] = []
+
+    async def _exists(_session_id: str) -> bool:
+        return True
+
+    async def _after(
+        _session_id: str,
+        after_ts: float,
+        after_id: str | None = None,
+        after_branch: str | None = None,
+    ) -> list[dict]:
+        calls.append((after_ts, after_id))
+        if after_id == "message-a":
+            return [
+                {"id": "message-b", "timestamp": 100.0, "branch_id": "branch-1"},
+                {"id": "message-c", "timestamp": 101.0, "branch_id": "branch-1"},
+            ]
+        if after_id == "message-c":
+            return [{"id": "message-d", "timestamp": 102.0, "branch_id": "branch-1"}]
+        return []
+
+    async def _state(_session_id: str) -> dict:
+        return {"status": "completed", "updated_at": 1.0}
+
+    async def _unexpected_sleep(_delay: float) -> None:
+        pytest.fail("bounded backlog should drain and emit done without sleeping")
+
+    monkeypatch.setattr(svc, "session_exists", _exists)
+    monkeypatch.setattr(svc, "get_session_messages_after", _after)
+    monkeypatch.setattr(svc, "get_session_stream_state", _state)
+    monkeypatch.setattr(svc, "is_session_stream_done", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(svc.asyncio, "sleep", _unexpected_sleep)
+
+    cursor = svc._encode_session_stream_cursor("resume-session", 100.0, "message-a", "branch-1")
+    response = await svc.stream_session_route("resume-session", cursor=cursor)
+    frames = [frame async for frame in response.body_iterator]
+
+    data = [
+        json.loads(line[6:])
+        for frame in frames
+        for line in frame.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert [event.get("id") or event.get("type") for event in data] == [
+        "message-b",
+        "message-c",
+        "message-d",
+        "done",
+    ]
+    assert calls == [(100.0, "message-a"), (101.0, "message-c"), (102.0, "message-d")]
+
+    frame_cursors = [
+        line[4:] for frame in frames for line in frame.splitlines() if line.startswith("id: ")
+    ]
+    assert [
+        svc._decode_session_stream_cursor(value, session_id="resume-session")
+        for value in frame_cursors
+    ] == [
+        (100.0, "message-b", "branch-1"),
+        (101.0, "message-c", "branch-1"),
+        (102.0, "message-d", "branch-1"),
+    ]
+
+
+async def test_session_message_stream_rejects_foreign_cursor_before_opening(monkeypatch):
+    from fastapi import HTTPException
+
+    from lionagi.studio.services import sessions as svc
+
+    async def _exists(_session_id: str) -> bool:
+        return True
+
+    monkeypatch.setattr(svc, "session_exists", _exists)
+    cursor = svc._encode_session_stream_cursor("other-session", 100.0, "message-a", "branch-1")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.stream_session_route("requested-session", cursor=cursor)
+
+    assert exc_info.value.status_code == 400
+    assert "different session" in str(exc_info.value.detail)
+
+
+# ---------------------------------------------------------------------------
 # Tests 5.1–5.3 — session_exists
 
 
@@ -2299,7 +2387,7 @@ async def test_a_finished_stream_drains_its_deferred_pages_before_saying_done(mo
     monkeypatch.setattr(svc, "get_session_stream_state", _stream_state)
     monkeypatch.setattr(svc, "is_session_stream_done", lambda _state, now=None: True)
 
-    response = await svc.stream_session_route("sess-1")
+    response = await svc.stream_session_route("sess-1", cursor=None)
     events = await _drain_stream(response)
 
     assert [e.get("id") for e in events if "id" in e] == ["m-1", "m-2", "m-3"]
@@ -2334,7 +2422,7 @@ async def test_a_page_that_does_not_move_the_cursor_does_not_spin(monkeypatch):
     monkeypatch.setattr(svc, "get_session_stream_state", _stream_state)
     monkeypatch.setattr(svc, "is_session_stream_done", lambda _state, now=None: True)
 
-    response = await svc.stream_session_route("sess-1")
+    response = await svc.stream_session_route("sess-1", cursor=None)
     events = await _drain_stream(response)
 
     assert events[-1] == {"type": "done"}
