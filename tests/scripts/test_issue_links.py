@@ -24,6 +24,10 @@ class TestNegatedProseIsNotAClosure:
             "It won't fix #1234 either.",
             "This never resolves #1234.",
             "Landing this does not yet close #1234.",
+            # A fixed window of N words is defeated by N+1, so the clause is
+            # searched end to end rather than a few words back.
+            "This does not in any way intend to close #1234.",
+            "We will not, under any circumstance anyone has raised so far, close #1234.",
         ],
     )
     def test_a_negated_keyword_does_not_count(self, body):
@@ -37,6 +41,10 @@ class TestNegatedProseIsNotAClosure:
 
     def test_a_negation_in_an_earlier_clause_does_not_reach_a_later_closure(self):
         assert gate.closed_by_body("This is not a revert. Closes #1234.", REPO, 1234)
+        assert gate.closed_by_body("Nothing here is broken; closes #1234.", REPO, 1234)
+
+    def test_a_negation_after_the_keyword_is_not_a_negation_of_it(self):
+        assert gate.closed_by_body("Closes #1234, which is not a duplicate.", REPO, 1234)
 
     def test_one_real_closure_beside_a_negated_one_counts(self):
         body = "Closes #1234 and does not close #5678."

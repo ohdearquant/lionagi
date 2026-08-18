@@ -29,9 +29,10 @@ _ADR_RE = re.compile(r"ADR-\d{3,4}", re.I)
 # "does not close", "won't fix", "never resolves". GitHub's own parser ignores
 # negation and would close the issue anyway, so a negated keyword is read here
 # as not-a-closure and reported, rather than being taken at face value.
-_NEGATION_TAIL_RE = re.compile(
-    r"(?:\bnot\b|n['’]t\b|\bnever\b|\bwithout\b|\bno\b)(?:\s+\w+){0,3}\s*$", re.I
-)
+# Anywhere earlier in the same clause counts, with no distance limit: a window
+# of N words is defeated by N+1 ("does not in any way intend to close #1"), and
+# the wrong answer there is the one that lets a non-closure through.
+_NEGATION_RE = re.compile(r"\bnot\b|n['’]t\b|\bnever\b|\bwithout\b|\bno\b", re.I)
 _SENTENCE_SPLIT_RE = re.compile(r"[.;:!?\n]")
 
 
@@ -62,7 +63,7 @@ def _closure_pattern(repo: str, number: int) -> re.Pattern[str]:
 def _is_negated(body: str, start: int) -> bool:
     """Whether the clause leading up to *start* negates what follows it."""
     clause = _SENTENCE_SPLIT_RE.split(body[:start])[-1]
-    return bool(_NEGATION_TAIL_RE.search(clause))
+    return bool(_NEGATION_RE.search(clause))
 
 
 def closed_by_body(body: str, repo: str, number: int) -> bool:
