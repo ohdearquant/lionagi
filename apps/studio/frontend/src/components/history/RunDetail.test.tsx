@@ -142,7 +142,7 @@ describe("history/ — no Drawer overlay import (master-detail doctrine §4)", (
   }
 });
 
-// ─── SSE done-refetch stale-write race guard ─────────────────────────────────
+// ─── SSE done-refetch stale-write race guard ────────────────────────────────
 // The 'done' handler refetches status/reason fields after streamSession
 // reports completion. Without a same-session guard, navigating A→B before
 // A's refetch resolves lets A's data clobber B's freshly-fetched state. The
@@ -1782,7 +1782,7 @@ describe("history/RunDetail.tsx — operation lane escalation presentation", () 
   });
 });
 
-// ─── visibleEventPayloadEntries / summarizeHookEvent — #2862 ─────────────────
+// ─── visibleEventPayloadEntries / summarizeHookEvent ───────────────────────
 // Element/Signal attach created_at/metadata/schema_version to every signal
 // row; the events panel must not dump them into the one-line summary, and a
 // HookSignal row must read as a human summary, not a struct.
@@ -1905,7 +1905,7 @@ describe("history/RunDetail.tsx — summarizeHookEvent", () => {
   });
 });
 
-// ─── deriveGateOutcome — #2863 ────────────────────────────────────────────────
+// ─── deriveGateOutcome ───────────────────────────────────────────────────────
 // A gate/review step's structured verdict is a different population from
 // runtime tool errors; deriveGateOutcome scans the signal stream for it so
 // the page can surface "Gate: approve-with-fixes · 1 major, 5 minor" beside
