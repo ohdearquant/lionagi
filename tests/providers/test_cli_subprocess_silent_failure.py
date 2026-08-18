@@ -23,8 +23,13 @@ import sys
 
 import pytest
 
+from lionagi.providers import _cli_subprocess as cs
 from lionagi.providers import _secret_resolution
-from lionagi.providers._cli_subprocess import _no_stderr_reason, ndjson_from_cli
+from lionagi.providers._cli_subprocess import (
+    _abandoned_without_output_note,
+    _no_stderr_reason,
+    ndjson_from_cli,
+)
 from lionagi.providers._secret_resolution import fill_declared_secrets
 
 
@@ -131,6 +136,39 @@ _EMITS_THEN_HANGS = (
 _MODULE_LOGGER = "lionagi.providers._cli_subprocess"
 
 
+async def _abandon_then(agen, between) -> None:
+    """Abandon, running *between* while the child is up and before teardown logs.
+
+    ``asyncio.wait_for`` cancels the pending step, which runs the generator's
+    teardown then and there, so anything sequenced after it lands too late.
+    """
+    step = asyncio.create_task(agen.__anext__())
+    await asyncio.sleep(1)
+    assert not step.done(), "the child exited early, so nothing was live when between() ran"
+    between()
+    step.cancel()
+    # CancelledError is not an Exception, and cancelling the pending step is how
+    # this helper abandons the child at all.
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await step
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await agen.aclose()
+
+
+# Writes nothing anywhere and stays up, so the buffer is empty on teardown.
+_SILENT_THEN_HANGS = "import time; time.sleep(300)"
+
+# Leaves a grandchild outside the child's process group holding the stderr pipe,
+# so killing the child does not produce EOF and the drain cannot finish. The
+# grandchild outlives the test by seconds, not minutes.
+_ESCAPES_WITH_THE_PIPE = (
+    "import subprocess, sys, time; "
+    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)'], "
+    "start_new_session=True, stderr=sys.stderr); "
+    "time.sleep(300)"
+)
+
+
 async def _abandon(agen) -> None:
     """Close *agen* the way a liveness watchdog does: give up, then close."""
     with contextlib.suppress(asyncio.TimeoutError, TimeoutError):
@@ -225,6 +263,29 @@ class TestTheQuotedStderrCarriesNoCredential:
         )
 
     @pytest.mark.asyncio
+    async def test_a_secret_unset_after_the_spawn_is_still_redacted(self, caplog, monkeypatch):
+        """The child keeps what it was handed, so redaction reads the environment as of the spawn rather than as of the log line."""
+        monkeypatch.setattr(
+            _secret_resolution,
+            "resolve_secret_lookup_config",
+            lambda **_: _secret_resolution._NOT_CONFIGURED,
+        )
+        monkeypatch.setenv("LIONAGI_TEST_API_KEY", _INHERITED_SECRET)
+        with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
+            await _abandon_then(
+                ndjson_from_cli(_cmd(_LEAKS_ENV_SECRET_THEN_HANGS)),
+                between=lambda: os.environ.pop("LIONAGI_TEST_API_KEY", None),
+            )
+
+        assert _INHERITED_SECRET not in caplog.text, (
+            "a credential the child still held reached a log line after this process dropped it: "
+            + caplog.text
+        )
+        assert "[redacted]" in caplog.text, (
+            "the stderr was dropped rather than redacted, losing the diagnostic: " + caplog.text
+        )
+
+    @pytest.mark.asyncio
     async def test_a_credential_shape_the_child_sourced_itself_does_not_reach_the_log(self, caplog):
         with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
             await _abandon(ndjson_from_cli(_cmd(_LEAKS_TOKEN_SHAPE_THEN_HANGS)))
@@ -235,3 +296,30 @@ class TestTheQuotedStderrCarriesNoCredential:
         assert "[redacted]" in caplog.text, (
             "the stderr was dropped rather than redacted, losing the diagnostic: " + caplog.text
         )
+
+
+class TestADrainThatDidNotFinishIsNotSilence:
+    """An unread pipe is unknown. Reporting it as a quiet child is the failure this whole path exists to prevent."""
+
+    @pytest.mark.asyncio
+    async def test_an_unfinished_drain_is_not_reported_as_a_quiet_child(self, caplog):
+        with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
+            await _abandon(ndjson_from_cli(_cmd(_ESCAPES_WITH_THE_PIPE)))
+
+        assert "it wrote nothing to stderr either" not in caplog.text, (
+            "an undrained pipe was reported as a child that said nothing: " + caplog.text
+        )
+        assert "could not be drained in time" in caplog.text, caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_drain_that_finishes_still_reports_a_quiet_child_plainly(self, caplog):
+        """The control: without it the arm above passes on a note that never says anything definite."""
+        with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
+            await _abandon(ndjson_from_cli(_cmd(_SILENT_THEN_HANGS)))
+
+        assert "it wrote nothing to stderr either" in caplog.text, caplog.text
+
+    def test_a_partial_capture_says_the_drain_was_cut_short(self):
+        note = _abandoned_without_output_note("half a line", None, None, True)
+        assert "half a line" in note
+        assert "[stderr drain did not finish]" in note

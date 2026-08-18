@@ -328,9 +328,6 @@ def _redact_secrets_for_log(text: str, env: Mapping[str, str] | None) -> str:
     """Strip credentials out of child output before any of it reaches a log."""
     if not text:
         return text
-    # None means the child inherited this process's environment, so that is the
-    # environment whose values its output could be echoing back.
-    env = os.environ if env is None else env
     if env:
         injected = {
             value
@@ -350,14 +347,21 @@ def _abandoned_without_output_note(
     captured: str,
     unavailable: str | None,
     drain_error: str | None,
+    drain_incomplete: bool = False,
 ) -> str:
     """What to say about a child abandoned before it produced output; keeps ``_no_stderr_reason``'s three-way split so a broken capture cannot read as a quiet subprocess."""
     if captured:
         clipped = captured[:_ABANDONED_STDERR_LOG_CAP]
         suffix = " [truncated]" if len(captured) > _ABANDONED_STDERR_LOG_CAP else ""
+        if drain_incomplete:
+            suffix += " [stderr drain did not finish]"
         return f"its stderr said: {clipped}{suffix}"
     if drain_error is not None:
         return f"reading its stderr failed with {drain_error}, so no output was captured"
+    if drain_incomplete:
+        # An unfinished drain leaves the pipe unread, so silence here is
+        # unknown rather than a quiet child.
+        return "its stderr could not be drained in time, so whether it wrote anything is unknown"
     if unavailable is not None:
         return unavailable
     return "it wrote nothing to stderr either"
@@ -386,6 +390,12 @@ async def ndjson_from_cli(
     # additive: with nothing configured this returns ``env`` unchanged, and a
     # lookup that fails leaves the child to fail the way it already failed.
     child_env = await fill_declared_secrets(env)
+    # Snapshot rather than read os.environ again when the log line is written:
+    # the child keeps the values it was handed, so a variable this process
+    # rotates or unsets after the spawn would go unredacted on a live read.
+    redaction_env: Mapping[str, str] = (
+        dict(child_env) if child_env is not None else dict(os.environ)
+    )
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
         env=dict(child_env) if child_env is not None else None,
@@ -618,24 +628,27 @@ async def ndjson_from_cli(
         if abandoned_silently:
             # Drain first, or the warning reports "said nothing" about a child
             # that spoke; shielded so a timeout cannot cancel it mid-buffer.
+            abandon_drain_incomplete = False
             if stderr_task is not None:
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(stderr_task), timeout=_ABANDONED_STDERR_DRAIN_TIMEOUT
                     )
-                except (asyncio.CancelledError, Exception):  # noqa: S110, BLE001
-                    # Whatever it captured stays in the buffer, and the note
-                    # below reports the failure itself.
-                    pass
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    # Whatever it captured stays in the buffer, but the drain
+                    # did not finish, so an empty buffer is unknown rather than
+                    # evidence the child was quiet.
+                    abandon_drain_incomplete = True
             log.warning(
                 "CLI subprocess produced no output before it was abandoned; %s",
                 _abandoned_without_output_note(
                     _redact_secrets_for_log(
                         b"".join(stderr_chunks).decode(errors="replace").strip(),
-                        child_env,
+                        redaction_env,
                     ),
                     stderr_unavailable,
                     stderr_drain_error,
+                    abandon_drain_incomplete,
                 ),
             )
 
