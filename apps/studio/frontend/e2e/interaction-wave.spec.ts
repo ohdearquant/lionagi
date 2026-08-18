@@ -71,9 +71,10 @@ test("expanded run graph keeps the keyboard inside it and hands it back", async 
   const dialog = page.getByRole("dialog", { name: "Execution graph", exact: true });
   await expect(dialog).toBeVisible();
   await expect(dialog.locator(":focus")).toHaveCount(1);
-  // The dialog is inset, so the view behind it stays on screen. This says the page
-  // under it cannot be scrolled while it is up.
-  await expect(page.locator("body")).toHaveCSS("overflow", "hidden");
+  // The dialog is inset, so the view behind it stays on screen. The routed surface
+  // scrolls in its own container rather than on body, so that container is the one
+  // that has to be frozen for the view to actually hold still.
+  await expect(page.locator("#main-content")).toHaveCSS("overflow-y", "hidden");
 
   for (let step = 0; step < 12; step += 1) {
     await page.keyboard.press("Tab");
@@ -87,7 +88,7 @@ test("expanded run graph keeps the keyboard inside it and hands it back", async 
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(expand).toBeFocused();
-  await expect(page.locator("body")).not.toHaveCSS("overflow", "hidden");
+  await expect(page.locator("#main-content")).toHaveCSS("overflow-y", "auto");
   await expect(inlineViewport).toHaveAttribute("style", inlineTransform ?? "");
 
   await expand.click();

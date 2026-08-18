@@ -1,5 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { isTopmostOverlay, OverlayLayer, popOverlay, pushOverlay } from "./overlayStack";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  isTopmostOverlay,
+  OverlayLayer,
+  popOverlay,
+  pushOverlay,
+  SCROLL_LOCK_ATTRIBUTE,
+} from "./overlayStack";
 
 /** The stack is module state, so anything a test pushes it also releases. */
 const opened: symbol[] = [];
@@ -84,42 +90,69 @@ describe("overlayStack", () => {
   });
 
   describe("background isolation", () => {
-    it("locks page scrolling while an overlay is open and releases it after the last one", () => {
-      expect(document.body.style.overflow).toBe("");
+    /**
+     * The routed surface scrolls in its own container, so a lock on `body` alone
+     * reads as held while the view still moves. Every arm below is written against
+     * a marked container for that reason.
+     */
+    let scroller: HTMLElement;
 
+    beforeEach(() => {
+      scroller = document.createElement("div");
+      scroller.setAttribute(SCROLL_LOCK_ATTRIBUTE, "");
+      document.body.appendChild(scroller);
+    });
+
+    afterEach(() => {
+      scroller.remove();
+      document.body.style.overflow = "";
+    });
+
+    function release(token: symbol) {
+      popOverlay(token);
+      opened.splice(opened.indexOf(token), 1);
+    }
+
+    it("locks the marked scroll container while an overlay is open and releases it after the last one", () => {
+      expect(scroller.style.overflow).toBe("");
+
+      const token = open("only");
+      expect(scroller.style.overflow).toBe("hidden");
+
+      release(token);
+      expect(scroller.style.overflow).toBe("");
+    });
+
+    it("locks body as well, for a route that scrolls there instead", () => {
       const token = open("only");
       expect(document.body.style.overflow).toBe("hidden");
 
-      popOverlay(token);
-      opened.splice(opened.indexOf(token), 1);
+      release(token);
       expect(document.body.style.overflow).toBe("");
     });
 
-    it("keeps scrolling locked when a nested overlay closes above an open one", () => {
+    it("keeps the container locked when a nested overlay closes above an open one", () => {
       const below = open("below");
       const above = open("above");
 
-      popOverlay(above);
-      opened.splice(opened.indexOf(above), 1);
-      expect(document.body.style.overflow).toBe("hidden");
+      release(above);
+      expect(scroller.style.overflow).toBe("hidden");
 
-      popOverlay(below);
-      opened.splice(opened.indexOf(below), 1);
-      expect(document.body.style.overflow).toBe("");
+      release(below);
+      expect(scroller.style.overflow).toBe("");
     });
 
-    it("restores the page's own overflow rather than clearing it", () => {
-      document.body.style.overflow = "scroll";
-      try {
-        const token = open("only");
-        expect(document.body.style.overflow).toBe("hidden");
+    it("restores each element's own overflow rather than clearing it", () => {
+      scroller.style.overflow = "scroll";
+      document.body.style.overflow = "auto";
 
-        popOverlay(token);
-        opened.splice(opened.indexOf(token), 1);
-        expect(document.body.style.overflow).toBe("scroll");
-      } finally {
-        document.body.style.overflow = "";
-      }
+      const token = open("only");
+      expect(scroller.style.overflow).toBe("hidden");
+      expect(document.body.style.overflow).toBe("hidden");
+
+      release(token);
+      expect(scroller.style.overflow).toBe("scroll");
+      expect(document.body.style.overflow).toBe("auto");
     });
   });
 });
