@@ -11,7 +11,7 @@ import type { RunSummary, ScheduleSummary } from "@/lib/types";
 import type { AttentionDisposition, GatedPlaySummary, InvocationSummary } from "@/lib/api";
 import { deriveDisplayStatus, isOrphanedReason } from "@/lib/runStatus";
 import { resolveRunLabel } from "@/lib/runLabel";
-import { runSessionId } from "@/lib/runIdentity";
+import { legacyRunId, runSessionId } from "@/lib/runIdentity";
 
 // ─── State shape ─────────────────────────────────────────────────────────────
 
@@ -90,6 +90,12 @@ export interface AttentionItem {
    * landing on the bare fleet list.
    */
   sessionId?: string | null;
+  /**
+   * The id this item was keyed on before routing moved to the session `id`.
+   * Only set when the two differ; read when joining persisted dispositions so
+   * an item discharged under the old key stays discharged.
+   */
+  legacyId?: string;
 }
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
@@ -234,8 +240,10 @@ function buildAttentionItems(
       reason = "stale";
     }
     if (reason == null) continue;
+    const runLegacyId = legacyRunId(run);
     items.push({
       id: `run:${runSessionId(run)}`,
+      ...(runLegacyId ? { legacyId: `run:${runLegacyId}` } : {}),
       kind: "run",
       name: resolveRunLabel(run),
       reason,
@@ -313,7 +321,8 @@ function buildAttentionItems(
   const active: AttentionItem[] = [];
   const discharged: AttentionItem[] = [];
   for (const item of deduped) {
-    const disposition = dispositions[item.id];
+    const disposition =
+      dispositions[item.id] ?? (item.legacyId ? dispositions[item.legacyId] : undefined);
     const joined = disposition ? { ...item, disposition } : item;
     // "A gated item only ever discharges via acknowledged" (see the comment
     // above) — this is that arm. Without it, acknowledged isn't in

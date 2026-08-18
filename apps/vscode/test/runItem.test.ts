@@ -49,6 +49,10 @@ describe("runId", () => {
   it("falls back to run_id for legacy rows without id", () => {
     expect(runId(run({ id: undefined, run_id: "legacy-run" }))).toBe("legacy-run");
   });
+
+  it("treats an empty id as absent rather than letting it erase a usable run_id", () => {
+    expect(runId(run({ id: "", run_id: "legacy-run" }))).toBe("legacy-run");
+  });
 });
 
 describe("hasRunTree", () => {

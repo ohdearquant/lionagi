@@ -809,6 +809,44 @@ describe("boardReducer — disposition join and active/discharged split", () => 
     expect(s.dischargedAttentionItems).toHaveLength(2);
   });
 
+  it("a disposition stored under the legacy run_id still discharges a row now keyed by session id", () => {
+    const nowSec = 1_000_000;
+    const runs = [
+      makeRun({
+        run_id: "legacy-run-1",
+        id: "sess-1",
+        status: "failed",
+        started_at: nowSec - 600,
+      }),
+    ];
+    // Written when the queue emitted `run:<run_id>`, before routing moved to
+    // the session id. The operator resolved it; it must stay resolved.
+    const dispositions = {
+      "run:legacy-run-1": makeDisposition({
+        item_id: "run:legacy-run-1",
+        state: "resolved",
+      }),
+    };
+    const s = dispatchOk(initialBoardState(), runs, [], nowSec, null, dispositions);
+    expect(s.attentionItems).toHaveLength(0);
+    expect(s.dischargedAttentionItems).toHaveLength(1);
+    expect(s.dischargedAttentionItems[0].id).toBe("run:sess-1");
+  });
+
+  it("a disposition under the current key still wins when a legacy key is also present", () => {
+    const nowSec = 1_000_000;
+    const runs = [
+      makeRun({ run_id: "legacy-run-2", id: "sess-2", status: "failed", started_at: nowSec - 600 }),
+    ];
+    const dispositions = {
+      "run:legacy-run-2": makeDisposition({ item_id: "run:legacy-run-2", state: "snoozed" }),
+      "run:sess-2": makeDisposition({ item_id: "run:sess-2", state: "resolved" }),
+    };
+    const s = dispatchOk(initialBoardState(), runs, [], nowSec, null, dispositions);
+    expect(s.dischargedAttentionItems).toHaveLength(1);
+    expect(s.dischargedAttentionItems[0].disposition?.state).toBe("resolved");
+  });
+
   it("a resolved disposition on an old run never suppresses a different, later run with a new id", () => {
     const nowSec = 1_000_000;
     const s = dispatchOk(

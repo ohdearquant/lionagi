@@ -9,7 +9,10 @@ export const NO_PROJECT = "(no project)";
  * for older rows, so resolve through both while preferring `id` when present.
  */
 export function runId(run: Run): string {
-  return run.id ?? run.run_id ?? "";
+  // Empty counts as absent, matching the Studio helper: `??` alone would let
+  // an empty `id` suppress a usable legacy `run_id` and send the empty string
+  // on as a detail/stream identifier.
+  return run.id || run.run_id || "";
 }
 
 const TERMINAL_STATUSES = new Set([
