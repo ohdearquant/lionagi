@@ -40,6 +40,28 @@ guidelines and instructions for contributing to this project.
 4. **Merging**: After approval, one of the maintainers will merge your pull
    request. No direct merges into the main branch are allowed without approval.
 
+5. **Phase issues**: when an ADR is accepted, one issue is opened per phase of
+   its rollout. If your PR finishes one, say so with a closing keyword in the
+   body, `Closes #NNNN`, so the issue closes when the work lands rather than
+   waiting for someone to notice. If your PR only mentions a phase, name it on
+   its own line instead:
+
+   ```text
+   Refs-only: #NNNN
+   ```
+
+   The `Issue links` check enforces this, and one of the two is always
+   available, so it never asks you to claim work you did not do. A closing
+   keyword on a PR stacked under another branch is still correct: GitHub fires
+   it once the stack drains and the last PR retargets `main`. Write the keyword
+   when the work lands, not when the base does.
+
+   Write the keyword plainly. "Does not close #NNNN" is read here as no closure
+   at all, because GitHub's own parser ignores the negation and would close the
+   issue anyway. The check says so and still passes, since telling a negation
+   from ordinary prose is not reliable enough to block a PR on. A body naming
+   more than 40 issue numbers is refused rather than partly checked.
+
 ## Testing
 
 1. **Writing Tests**: Include unit and integration tests for your code. Tests

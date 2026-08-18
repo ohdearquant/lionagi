@@ -14,6 +14,7 @@ gate = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(gate)
 
 REPO = "owner/repo"
+PHASE_TITLE = "ADR-0119 Phase 3: structural keys"
 
 
 class TestNegatedProseIsNotAClosure:
@@ -128,6 +129,48 @@ class TestTheReferenceCountIsBounded:
         assert gate.main() == 0
         assert len(calls) == gate.MAX_REFS
         assert "No phase-tracking issues referenced" in capsys.readouterr().out
+
+
+class TestANegatedKeywordWarnsRatherThanRefuses:
+    """The negation's scope is a clause, so ordinary prose reads as a refusal often
+    enough that blocking on it costs more than the miss it prevents."""
+
+    @staticmethod
+    def _run(monkeypatch, body, titles):
+        monkeypatch.setattr(
+            gate, "fetch_issue", lambda repo, n: {"title": titles[n]} if n in titles else None
+        )
+        monkeypatch.setenv("REPO", REPO)
+        monkeypatch.setenv("PR_BRANCH", "")
+        monkeypatch.setenv("PR_BODY", body)
+        return gate.main()
+
+    def test_a_negated_closure_passes_and_says_why(self, monkeypatch, capsys):
+        rc = self._run(monkeypatch, "This does not close #1234.", {1234: PHASE_TITLE})
+        out = capsys.readouterr().out
+        assert rc == 0, "a negated keyword refused the PR: " + out
+        assert "#1234" in out and "negation" in out, out
+
+    def test_a_body_with_no_keyword_at_all_still_refuses(self, monkeypatch, capsys):
+        """The control: passing above is about negation, not about passing everything."""
+        rc = self._run(monkeypatch, "Touches #1234 in passing.", {1234: PHASE_TITLE})
+        assert rc == 1, "a body with no closing keyword passed: " + capsys.readouterr().out
+
+    def test_a_real_miss_beside_a_negated_one_refuses_and_names_only_the_miss(
+        self, monkeypatch, capsys
+    ):
+        rc = self._run(
+            monkeypatch,
+            "This does not close #1234. It also touches #5678.",
+            {1234: PHASE_TITLE, 5678: PHASE_TITLE},
+        )
+        out = capsys.readouterr().out
+        assert rc == 1, out
+        listed = [line for line in out.splitlines() if line.startswith("  #")]
+        assert any("#5678" in line for line in listed), out
+        assert not any("#1234" in line for line in listed), (
+            "the warned issue was listed as blocking: " + out
+        )
 
 
 class TestWhatCountsAsAReference:
