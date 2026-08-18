@@ -17,6 +17,7 @@ from lionagi.state.db import StateDB
 
 from .fixtures import (
     SESSION_STATUSES,
+    SMOKE_EXECUTION_GRAPH,
     SMOKE_FAILING_SCHEDULE_NAME,
     SMOKE_SCHEDULE_NAME,
     SMOKE_SESSION_NAME,
@@ -43,6 +44,7 @@ async def test_seed_state_db_covers_every_session_status(db):
 
     completed = await db.get_session(manifest["sessions"]["completed"])
     assert completed["name"] == SMOKE_SESSION_NAME
+    assert completed["node_metadata"] == {"early_graph": SMOKE_EXECUTION_GRAPH}
 
 
 async def test_seed_state_db_phantom_session_is_stale_running(db):

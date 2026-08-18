@@ -189,7 +189,7 @@ class MessageContent(DataClass):
         object.__setattr__(self, "_revision", 0)
 
     def _track_render_inputs(self) -> None:
-        for name in self.allowed():
+        for name in self.field_names():
             object.__setattr__(
                 self,
                 name,
@@ -468,13 +468,15 @@ def _has_untracked_mutable(root: Any) -> bool:
 def _content_has_untracked_mutable(content: Any) -> bool:
     """True if any render input on `content` carries a value the revision
     tracker cannot observe mutation of. Only `MessageContent` enumerates its
-    render inputs through `allowed()`; an arbitrary non-`MessageContent`
+    render inputs through `field_names()`; an arbitrary non-`MessageContent`
     payload (`Message.content` is typed `Any`) is instead walked directly,
     since calling `allowed()` on it could invoke an unrelated method of the
     same name."""
     if not isinstance(content, MessageContent):
         return _has_untracked_mutable(content)
-    return any(_has_untracked_mutable(getattr(content, name, None)) for name in content.allowed())
+    return any(
+        _has_untracked_mutable(getattr(content, name, None)) for name in content.field_names()
+    )
 
 
 def _copy_rendered(rendered: Any) -> Any:

@@ -159,6 +159,26 @@ class TestFieldModel:
         field_info = field.create_field()
         assert field_info.description == "Test description"
 
+    def test_with_updates_preserves_unset_metadata(self):
+        field = FieldModel(base_type=int)
+
+        updated = field.with_updates(base_type=str)
+
+        assert updated.base_type is str
+        assert updated._is_sentinel(updated.metadata)
+
+    def test_init_delegation_validates_exactly_once(self):
+        class CountingFieldModel(FieldModel):
+            validation_calls = 0
+
+            def _validate(self):
+                type(self).validation_calls += 1
+                super()._validate()
+
+        CountingFieldModel(base_type=int)
+
+        assert CountingFieldModel.validation_calls == 1
+
 
 def test_both_default_and_default_factory():
     """Both default and default_factory at the same time must raise ValueError."""

@@ -49,7 +49,7 @@ describe("resolveApiBase", () => {
     expect(result).toBe("");
   });
 
-  it("returns hostname:8765 for Vite dev port 3000", () => {
+  it("uses the same-origin Vite proxy on dev port 3000", () => {
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
@@ -61,10 +61,10 @@ describe("resolveApiBase", () => {
       },
     });
     const result = resolveApiBase();
-    expect(result).toBe("http://localhost:8765");
+    expect(result).toBe("");
   });
 
-  it("returns hostname:8765 for Vite dev port 5173", () => {
+  it("uses the same-origin Vite proxy on dev port 5173", () => {
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
@@ -76,11 +76,10 @@ describe("resolveApiBase", () => {
       },
     });
     const result = resolveApiBase();
-    expect(result).toBe("http://localhost:8765");
+    expect(result).toBe("");
   });
 
-  it("uses actual hostname (not hardcoded localhost) for dev port with remote host", () => {
-    // Dev server accessed from a different machine or container
+  it("keeps a remotely accessed dev server on its same-origin proxy", () => {
     vi.stubGlobal("window", {
       ...window,
       __STUDIO_API_BASE__: undefined,
@@ -92,7 +91,7 @@ describe("resolveApiBase", () => {
       },
     });
     const result = resolveApiBase();
-    expect(result).toBe("http://dev.example.com:8765");
+    expect(result).toBe("");
   });
 
   it("same-origin for non-localhost host on port 8765", () => {

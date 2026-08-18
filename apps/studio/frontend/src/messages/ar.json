@@ -245,7 +245,7 @@
       "createWorkflow": "سير عمل جديد",
       "createAgent": "وكيل جديد",
       "allSkill": "لم يتم العثور على مهارات.",
-      "allSkillHint": "أضف ملف SKILL.md ضمن ~/.lionagi/skills/<name>/ لتظهر هنا.",
+      "allSkillHint": "أضف ملف SKILL.md ضمن ~/.lionagi/skills/NAME/ لتظهر هنا.",
       "allPlugin": "لم يتم العثور على إضافات.",
       "allPluginHint": "ثبّت إضافة ضمن ~/.claude/plugins/ لتظهر هنا."
     },
@@ -833,6 +833,9 @@
       "noRuns": "لا توجد تشغيلات بعد",
       "ago": " مضت",
       "cancel": "إلغاء",
+      "discardWarning": "لديك تغييرات غير محفوظة.",
+      "keepEditing": "متابعة التحرير",
+      "discardChanges": "تجاهل التغييرات",
       "save": "حفظ التغييرات",
       "saving": "جارٍ الحفظ…",
       "saveFailed": "فشل الحفظ.",

@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from types import FunctionType, GenericAlias, UnionType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from lionagi.ln._cache import BoundedLRUCache
 from lionagi.ln.types import is_sentinel
@@ -47,8 +48,8 @@ def _model_type_cache_key(
     base_type: type[BaseModel] | None,
     model_name: str,
     specs: tuple[Spec, ...],
-    include: set[str] | None,
-    exclude: set[str] | None,
+    include: Collection[str] | None,
+    exclude: Collection[str] | None,
     doc: str | None,
 ) -> tuple[type[BaseModel], tuple] | None:
     """Build an identity-safe cache key, or opt out for mutable field metadata."""
@@ -99,7 +100,7 @@ class PydanticSpecAdapter(SpecAdapter):
 
         from pydantic import field_validator
 
-        field_name = spec.name or "field"
+        field_name = spec.name if isinstance(spec.name, str) else "field"
         return {f"{field_name}_validator": field_validator(field_name)(v)}
 
     @classmethod
@@ -107,8 +108,8 @@ class PydanticSpecAdapter(SpecAdapter):
         cls,
         op: Operable,
         model_name: str,
-        include: set[str] | None = None,
-        exclude: set[str] | None = None,
+        include: Collection[str] | None = None,
+        exclude: Collection[str] | None = None,
         base_type: type[BaseModel] | None = None,
         doc: str | None = None,
     ) -> type[BaseModel]:
@@ -116,6 +117,12 @@ class PydanticSpecAdapter(SpecAdapter):
         from lionagi.models._build_model import build_model_type
 
         use_specs = op.get_specs(include=include, exclude=exclude)
+        for index, spec in enumerate(use_specs):
+            if is_sentinel(spec.name, none_as_sentinel=True) or not isinstance(spec.name, str):
+                raise ValueError(
+                    "Pydantic model fields require a string name; "
+                    f"unnamed or non-string Spec found at index {index}"
+                )
         cache_key = _model_type_cache_key(
             base_type=base_type,
             model_name=model_name,
@@ -131,15 +138,14 @@ class PydanticSpecAdapter(SpecAdapter):
                     cached.model_rebuild()
                 return cached
 
-        use_fields = {i.name: cls.create_field(i) for i in use_specs if i.name}
+        use_fields = {cast(str, i.name): cls.create_field(i) for i in use_specs}
 
         # Collect validators from specs
         validators = {}
         for spec in use_specs:
-            if spec.name:
-                v = cls.create_validator(spec)
-                if v:
-                    validators.update(v)
+            v = cls.create_validator(spec)
+            if v:
+                validators.update(v)
 
         model_cls = build_model_type(
             name=model_name,
