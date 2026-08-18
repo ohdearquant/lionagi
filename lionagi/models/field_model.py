@@ -12,7 +12,7 @@ from typing_extensions import Self, override
 from .._errors import ValidationError
 from ..ln._cache import BoundedLRUCache
 from ..ln._lazy_init import LazyInit
-from ..ln.types import Meta, ModelConfig, Params, Spec
+from ..ln.types import Meta, ModelConfig, Params, Spec, Undefined, Unset
 
 # Cache of valid Pydantic Field parameters
 _lazy_field_params = LazyInit()
@@ -54,13 +54,7 @@ class FieldModel(Params):
         if base_type is not None:
             kwargs["base_type"] = base_type
         converted = self._convert_kwargs_to_params(**kwargs)
-        for k, v in converted.items():
-            if k in self.allowed():
-                object.__setattr__(self, k, v)
-            else:
-                raise ValueError(f"Invalid parameter: {k}")
-
-        self._validate()
+        Params.__init__(self, **converted)
 
     def _validate(self) -> None:
         Params._validate(self)
@@ -106,9 +100,19 @@ class FieldModel(Params):
         if "base_type" in kwargs:
             params["base_type"] = kwargs.pop("base_type")
         if "metadata" in kwargs:
-            params["metadata"] = tuple(kwargs.pop("metadata"))
+            raw_metadata = kwargs.pop("metadata")
+            params["metadata"] = (
+                raw_metadata
+                if raw_metadata is Undefined or raw_metadata is Unset
+                else tuple(raw_metadata)
+            )
 
-        metadata = list(params.get("metadata", ()))
+        current_metadata = params.get("metadata", ())
+        metadata = (
+            []
+            if current_metadata is Undefined or current_metadata is Unset
+            else list(current_metadata)
+        )
 
         if "name" in kwargs:
             name = kwargs.pop("name")

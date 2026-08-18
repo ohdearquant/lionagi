@@ -45,10 +45,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
-  from each `default_factory`, instead of replacing every omitted field with `Unset`.
-- Writable StateDB migration now fails closed when a table's columns cannot be
-  inspected, preserving the prior schema-version stamp instead of recording an
-  upgrade whose additive column reconciliation did not complete.
+  from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
+  and `DataClass` now discover inherited instance fields through one ordered dataclass path,
+  exclude `ClassVar` declarations, expose immutable `allowed()` membership views, and preserve
+  `Unset`/explicit-null in-memory state across `with_updates()` instead of round-tripping it
+  through the omission-oriented wire projection.
 - `Operable` selection and legacy `OperableModel` materialization now retain declaration order
   for every supported membership collection and across hash seeds. Multiple unnamed `Spec`
   values no longer collide; concrete duplicate names still fail, and name-required Pydantic
@@ -57,6 +58,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   An explicit empty `include` or `use_fields` collection now selects no fields, unknown
   exclusions fail instead of being ignored, and `Operable.allowed()` returns an immutable
   membership view.
+- Writable StateDB migration now fails closed when a table's columns cannot be
+  inspected, preserving the prior schema-version stamp instead of recording an
+  upgrade whose additive column reconciliation did not complete.
 
 ### Deprecated
 
