@@ -19,6 +19,8 @@ export interface FileResolutionContext {
   knownFiles: string[];
   /** The emitting agent's own artifact subdir, checked first on ambiguity. */
   agentDir?: string | null;
+  /** knownFiles was cut upstream, so a ref matching nothing is unknown. */
+  knownFilesBounded?: boolean;
 }
 
 export interface MarkdownProps {
@@ -127,11 +129,23 @@ function FileRef({
   const match = resolveFileRef(raw, {
     knownFiles: fileContext.knownFiles,
     agentDir: fileContext.agentDir,
+    knownFilesBounded: fileContext.knownFilesBounded,
   });
   if (match.type === "single")
     return <FileRefLink label={label} path={match.path} onOpen={onOpen} />;
   if (match.type === "ambiguous")
     return <FileRefLink label={label} candidates={match.candidates} onOpen={onOpen} />;
+  // Rendering this as prose would say "not a file of this run", which the cut
+  // list cannot support.
+  if (match.type === "unresolvable")
+    return (
+      <span
+        className="font-mono text-[0.9em] text-content-muted underline decoration-dotted"
+        title="This run touched more files than one view collects, so this reference could not be checked"
+      >
+        {label}
+      </span>
+    );
   return <>{fallback}</>;
 }
 

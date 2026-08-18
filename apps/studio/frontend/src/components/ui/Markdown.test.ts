@@ -170,3 +170,44 @@ describe("Markdown.tsx — the file viewer renders markdown as markdown", () => 
     expect(SRC).toMatch(/maxWidth=\{isMarkdown \? "max-w-4xl" : "max-w-2xl"\}/);
   });
 });
+
+describe("Markdown.tsx — a reference against a truncated file surface", () => {
+  const MarkdownRenderer = Markdown as unknown as ComponentType<{
+    children?: ReactNode;
+    fileContext?: {
+      runId: string;
+      knownFiles: string[];
+      knownFilesBounded?: boolean;
+    };
+  }>;
+  const ctx = (bounded: boolean) => ({
+    runId: "r1",
+    knownFiles: ["/runs/r1/kept.md"],
+    knownFilesBounded: bounded,
+  });
+
+  it("does not present an unmatched ref as ordinary prose when the surface was cut", () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownRenderer, { fileContext: ctx(true) }, "see `omitted.md` for detail"),
+    );
+    expect(html).toContain("omitted.md");
+    expect(html).toContain("could not be checked");
+    // Marking it must not promote it to a link: the file was never resolved.
+    expect(html).not.toContain("<button");
+  });
+
+  it("leaves an unmatched ref as prose when the surface was complete", () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownRenderer, { fileContext: ctx(false) }, "see `omitted.md` for detail"),
+    );
+    expect(html).not.toContain("could not be checked");
+  });
+
+  it("still links a ref the truncated surface holds", () => {
+    const html = renderToStaticMarkup(
+      createElement(MarkdownRenderer, { fileContext: ctx(true) }, "see `kept.md` for detail"),
+    );
+    expect(html).toContain("<button");
+    expect(html).not.toContain("could not be checked");
+  });
+});
