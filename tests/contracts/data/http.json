@@ -3926,7 +3926,7 @@
       "status_code": null,
       "tags": [],
       "summary": null,
-      "description": "Identify this daemon without touching its state store.",
+      "description": "Identify this daemon only to a caller that proved it holds the token.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi.studio.services.identity",
@@ -8447,7 +8447,7 @@
       "/api/identity": {
         "get": {
           "summary": "Get Identity",
-          "description": "Identify this daemon without touching its state store.",
+          "description": "Identify this daemon only to a caller that proved it holds the token.",
           "responses": {
             "200": {
               "description": "Successful Response",

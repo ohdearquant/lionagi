@@ -24,14 +24,10 @@ def _presented_bearer_matches(presented: str, token: str) -> bool:
 
 @studio_route("/identity", method="GET", area="identity", tags=[], name="get_identity")
 async def get_identity_route(request: Request) -> dict[str, str]:
-    """Identify this daemon only to a caller that proved it holds the token.
-
-    The check is repeated here rather than left to the bearer middleware
-    because that middleware skips entirely when no token is configured. A
-    launch handshake that answers on an unconfigured daemon proves only that
-    something on the port calls itself lionagi-studio, which is the case this
-    probe exists to rule out.
-    """
+    """Identify this daemon only to a caller that proved it holds the token."""
+    # Repeated here rather than left to the bearer middleware, which skips
+    # entirely when no token is configured: answering then would prove only
+    # that something on the port calls itself lionagi-studio.
     token = os.getenv("LIONAGI_STUDIO_AUTH_TOKEN")
     if not token:
         raise HTTPException(
