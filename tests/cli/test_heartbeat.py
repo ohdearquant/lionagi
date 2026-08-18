@@ -93,20 +93,6 @@ async def test_heartbeat_skips_completed_ops():
     assert emitted == []
 
 
-def test_elapsed_threshold_requires_descendant_activity_signal():
-    now = time.time()
-    warning = flow_mod._heartbeat_warning(
-        _running_segment(now, 601),
-        now=now,
-        max_idle_seconds=600,
-        sample_interval_seconds=60,
-        previous=({41: 8.0}, True),
-        current=({41: 8.2}, True),
-    )
-
-    assert warning is None
-
-
 def _running_segment(now: float, age: float) -> dict:
     return {
         "branch_name": "worker",

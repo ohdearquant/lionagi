@@ -24,7 +24,7 @@ def lionbench_image(
     ``uv`` is in ``extra_pip`` (not just ``pytest``) because harvested oracle
     commands are ``uv run --all-extras pytest ...`` (see harvest.py's
     ``default_oracle_command`` — extras like studio's fastapi aren't in the
-    base dependency tree, confirmed live against PR #1643); the swebench
+    base dependency tree, confirmed live on a harvested instance); the swebench
     suite's own snapshot never needed `uv` since its runner drives tests via
     bare `pip install -e .`, but lionbench's harvested oracle commands do."""
     from lionagi.tools.daytona import _require_daytona
