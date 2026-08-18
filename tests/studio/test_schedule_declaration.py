@@ -1108,12 +1108,12 @@ async def test_apply_omitted_member_disables_only_that_member(
 async def test_apply_at_trigger_reapply_after_fire_resets_gate_not_the_history(
     temp_db_path, tmp_path, monkeypatch
 ):
-    """Re-applying an 'at' member after it already fired (simulated here by
-    the row reaching the auto-disabled, budget-exhausted state the engine's
-    max_runs=1 gate leaves it in) must not error and must not resurrect a
-    second run: the apply layer is free to re-arm next_fire_at/enabled --
-    the fire-time claim-before-fire gate is what actually prevents a second
-    fire (see tests/studio/test_scheduler_engine.py's max_runs gate test)."""
+    """Re-applying an 'at' member after it already fired must not error, must
+    not resurrect a second run, and must leave next_fire_at cleared: the
+    declared instant has passed, and the apply layer is what declines to write
+    it back. The fire-time max_runs gate also covers this particular case, but
+    only because the run reached a counted status -- see the skipped case
+    below, which it does not cover."""
     monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
     doc = parse_schedule_set(_at_manifest("2026-07-15T09:00:00Z", tmp_path))
     async with StateDB() as db:
@@ -1145,10 +1145,66 @@ async def test_apply_at_trigger_reapply_after_fire_resets_gate_not_the_history(
         row2 = await db.get_schedule_by_name("demo/once")
         assert row2["id"] == row1["id"]
         assert row2["max_runs"] == 1
-        assert row2["next_fire_at"] == row1["next_fire_at"]  # same deterministic epoch
+        assert row2["next_fire_at"] is None  # a past instant is not written back
         # The run history from the first fire is untouched -- apply never
         # deletes or rewrites schedule_runs.
         assert await db.count_schedule_runs(row1["id"], chain_depth=0) == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_does_not_resurrect_a_one_shot_that_was_skipped(
+    temp_db_path, tmp_path, monkeypatch
+):
+    """A missed fire under skip is not a counted status, so the max_runs gate
+    never spends its budget. The instant has still passed, and a re-apply for
+    any unrelated reason must not make it due again."""
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    doc = parse_schedule_set(_at_manifest("2026-07-15T09:00:00Z", tmp_path))
+    async with StateDB() as db:
+        await apply_schedule_set(db, doc, tmp_path)
+        row1 = await db.get_schedule_by_name("demo/once")
+
+        # What the engine leaves behind on missed_fire_policy=skip.
+        await db.create_schedule_run(
+            {
+                "id": "skipped1",
+                "schedule_id": row1["id"],
+                "trigger_context": {},
+                "action_kind": "command",
+                "action_args": [],
+                "status": "skipped",
+                "chain_depth": 0,
+                "fired_at": time.time(),
+            }
+        )
+        await db.update_schedule(row1["id"], next_fire_at=None, enabled=0)
+        # Premise: the budget really is unspent, so nothing downstream is
+        # standing in for the rule under test.
+        assert await db.count_schedule_runs(row1["id"], chain_depth=0) == 0
+
+        result = await apply_schedule_set(db, doc, tmp_path)
+        assert result.updated == 1
+        row2 = await db.get_schedule_by_name("demo/once")
+        assert row2["next_fire_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_apply_still_arms_a_one_shot_whose_instant_is_ahead(
+    temp_db_path, tmp_path, monkeypatch
+):
+    """The control: the rule declines past instants, not every re-apply."""
+    monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
+    doc = parse_schedule_set(_at_manifest("2099-07-15T09:00:00Z", tmp_path))
+    async with StateDB() as db:
+        await apply_schedule_set(db, doc, tmp_path)
+        row1 = await db.get_schedule_by_name("demo/once")
+        assert row1["next_fire_at"] > time.time()
+
+        await db.update_schedule(row1["id"], next_fire_at=None, enabled=0)
+        result = await apply_schedule_set(db, doc, tmp_path)
+        assert result.updated == 1
+        row2 = await db.get_schedule_by_name("demo/once")
+        assert row2["next_fire_at"] == row1["next_fire_at"]
 
 
 @pytest.mark.asyncio

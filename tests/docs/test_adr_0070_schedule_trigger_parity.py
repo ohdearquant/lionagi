@@ -26,6 +26,7 @@ def test_adr_trigger_vocabulary_matches_the_persisted_schema() -> None:
 
 
 _D2_HEADING = "### D2 — Four trigger types pass explicit fire gates"
+_HEADING = re.compile(r"#{1,6} ")
 
 
 def _d2_section(adr: str) -> str:
@@ -41,7 +42,21 @@ def _d2_section(adr: str) -> str:
         "the contract documented beneath it, so a renamed section needs the "
         "heading updated here rather than the assertions dropped."
     )
-    return " ".join(parts[1].split())
+    # Stop at the next section: unbounded, an assertion meant for D2 passes on
+    # text from D3 or later, and the section could be empty without failing.
+    # Fenced blocks are skipped, since D2 quotes SQL and Python whose comment
+    # lines start with a hash in column one and read as headings otherwise.
+    kept: list[str] = []
+    fenced = False
+    for line in parts[1].splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+        elif not fenced and _HEADING.match(line):
+            break
+        kept.append(line)
+    body = "\n".join(kept)
+    assert body.strip(), "D2 is empty; the assertions below would pass on nothing."
+    return " ".join(body.split())
 
 
 def test_adr_documents_the_at_trigger_one_shot_contract() -> None:
@@ -66,22 +81,32 @@ def test_adr_documents_the_at_trigger_one_shot_contract() -> None:
     assert "outside the accepted `at` recovery crash window above" in d2
 
 
-def test_adr_records_that_a_skipped_one_shot_can_be_resurrected() -> None:
-    """The max-run gate is documented with its gap, not as a complete guard.
+def test_the_d2_reader_stops_at_the_next_section() -> None:
+    """Without a bound, every assertion below could be satisfied by another section."""
+    adr = ADR_PATH.read_text(encoding="utf-8")
+    d2 = _d2_section(adr)
 
-    The ADR previously said the max-run reservation was the guard against a
-    re-apply resurrecting a one-shot. It only guards a fire that actually ran:
-    a missed fire is recorded as `skipped`, which the reservation does not
-    count, so the budget stays unspent and the instant comes back. Pinning the
-    limit here keeps the stronger claim from returning as a tidy-up.
+    d3_only = "The run and invocation rows are created by"
+    assert d3_only in " ".join(adr.split()), "the control text moved; pick another D3 line"
+    assert d3_only not in d2
+
+
+def test_adr_documents_where_a_skipped_one_shot_is_stopped() -> None:
+    """The max-run gate is documented with its limit, and with what covers it.
+
+    The reservation only guards a fire that actually ran: a missed fire is
+    recorded as `skipped`, which it does not count, so the budget stays
+    unspent. What stops the instant coming back is the re-apply rule, not the
+    reservation, and the two must not be conflated back together.
     """
     d2 = _d2_section(ADR_PATH.read_text(encoding="utf-8"))
 
     assert "`skipped` is not a counted status" in d2
-    assert "This is current behavior, not an intended contract." in d2
-    # And that the obvious remedy is ruled out, since the same status carries
+    assert "writes `next_fire_at` only when the declared instant is still in the future" in d2
+    assert "Moving the instant forward is a genuine reschedule" in d2
+    # And that the obvious remedy stays ruled out, since the same status carries
     # capacity and overlap skips that are supposed to be retried.
-    assert "counting `skipped` rows" in d2
+    assert "Counting `skipped` rows would not have worked" in d2
 
 
 def test_adr_fire_gate_order_includes_the_shipped_rate_limit() -> None:

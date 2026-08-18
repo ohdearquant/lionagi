@@ -245,18 +245,22 @@ It stores its resolved due instant in `next_fire_at` and forces `max_runs = 1`. 
 the scheduler persists `next_fire_at = NULL`: an `at` trigger has no subsequent occurrence after
 firing.
 
-The max-run reservation counts only runs that reached `running` or a terminal status, so it guards a
-later re-apply only when the single fire actually executed. A missed fire recorded under
+The max-run reservation counts only runs that reached `running` or a terminal status, so on its own
+it guards a later re-apply only when the single fire actually executed. A missed fire recorded under
 `missed_fire_policy=skip` writes a `skipped` row, and `skipped` is not a counted status, so the
-budget stays unspent. A later re-apply that resets `next_fire_at` — an edited member, or one
-re-enabled after being disabled by omission — is therefore admitted, and the one-shot executes after
-its declared instant has passed. This is current behavior, not an intended contract.
+budget stays unspent.
 
-Closing it is not a matter of counting `skipped` rows: capacity-deferred and overlap skips are
-written through the same path and are meant to be retried, so counting them would consume the budget
-of schedules that never ran. It needs a rule specific to `at`, whose declared instant cannot recur —
-either durable suppression of a skipped one-shot, or a re-apply that declines to resurrect an
-instant already in the past.
+The rule that closes it lives in the re-apply rather than in fire-time accounting: a ScheduleSet
+UPDATE of an `at` member writes `next_fire_at` only when the declared instant is still in the
+future. An instant that has passed is not written back, so a one-shot that fired, or was skipped,
+stays not-due however many times the set is re-applied for unrelated reasons — an edited sibling, or
+a member re-enabled after being disabled by omission. Moving the instant forward is a genuine
+reschedule and still takes effect.
+
+Counting `skipped` rows would not have worked: capacity-deferred and overlap skips are written
+through the same path and are meant to be retried, so counting them would consume the budget of
+schedules that never ran. The distinction the rule needs is that an `at` instant cannot recur, which
+is knowable at apply time and not at fire time.
 
 The management CLI currently exposes creation choices `agent`, `playbook`, and `flow_yaml`, while
 the table admits `agent`, `flow`, `fanout`, `play`, and `flow_yaml`. Creation stores the literal CLI
