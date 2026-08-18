@@ -1108,12 +1108,7 @@ async def test_apply_omitted_member_disables_only_that_member(
 async def test_apply_at_trigger_reapply_after_fire_resets_gate_not_the_history(
     temp_db_path, tmp_path, monkeypatch
 ):
-    """Re-applying an 'at' member after it already fired must not error, must
-    not resurrect a second run, and must leave next_fire_at cleared: the
-    declared instant has passed, and the apply layer is what declines to write
-    it back. The fire-time max_runs gate also covers this particular case, but
-    only because the run reached a counted status -- see the skipped case
-    below, which it does not cover."""
+    """A re-apply after the fire leaves next_fire_at cleared; the max_runs gate also covers this one, but only because the run reached a counted status."""
     monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
     doc = parse_schedule_set(_at_manifest("2026-07-15T09:00:00Z", tmp_path))
     async with StateDB() as db:
@@ -1155,9 +1150,7 @@ async def test_apply_at_trigger_reapply_after_fire_resets_gate_not_the_history(
 async def test_apply_does_not_resurrect_a_one_shot_that_was_skipped(
     temp_db_path, tmp_path, monkeypatch
 ):
-    """A missed fire under skip is not a counted status, so the max_runs gate
-    never spends its budget. The instant has still passed, and a re-apply for
-    any unrelated reason must not make it due again."""
+    """A skip never spends the max_runs budget, and the instant has still passed, so a re-apply must not make it due again."""
     monkeypatch.setenv("LIONAGI_SCHEDULER_COMMAND_ALLOWLIST", "refresh-index")
     doc = parse_schedule_set(_at_manifest("2026-07-15T09:00:00Z", tmp_path))
     async with StateDB() as db:

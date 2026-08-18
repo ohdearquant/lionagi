@@ -42,10 +42,9 @@ def _d2_section(adr: str) -> str:
         "the contract documented beneath it, so a renamed section needs the "
         "heading updated here rather than the assertions dropped."
     )
-    # Stop at the next section: unbounded, an assertion meant for D2 passes on
-    # text from D3 or later, and the section could be empty without failing.
-    # Fenced blocks are skipped, since D2 quotes SQL and Python whose comment
-    # lines start with a hash in column one and read as headings otherwise.
+    # Stop at the next section, or an assertion meant for D2 passes on D3 text.
+    # Skip fenced blocks: D2 quotes SQL and Python whose comments start with a
+    # hash in column one and would read as headings.
     kept: list[str] = []
     fenced = False
     for line in parts[1].splitlines():
@@ -92,13 +91,7 @@ def test_the_d2_reader_stops_at_the_next_section() -> None:
 
 
 def test_adr_documents_where_a_skipped_one_shot_is_stopped() -> None:
-    """The max-run gate is documented with its limit, and with what covers it.
-
-    The reservation only guards a fire that actually ran: a missed fire is
-    recorded as `skipped`, which it does not count, so the budget stays
-    unspent. What stops the instant coming back is the re-apply rule, not the
-    reservation, and the two must not be conflated back together.
-    """
+    """The gate is documented with its limit and with what covers it: the re-apply rule, not the reservation, is what stops a skipped instant coming back."""
     d2 = _d2_section(ADR_PATH.read_text(encoding="utf-8"))
 
     assert "`skipped` is not a counted status" in d2

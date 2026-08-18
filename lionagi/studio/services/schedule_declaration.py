@@ -605,12 +605,11 @@ def _to_db_fields(
         # (SchedulerEngine._reserve_max_runs_budget) refuses a second fire
         # after the first one runs.
         #
-        # That gate does not cover a single fire that never ran: a missed fire
-        # under missed_fire_policy=skip is recorded as "skipped", which is
-        # neither status, so the budget stays unspent. apply_schedule_set is
-        # what closes that, by declining to write a past instant back on a
-        # re-apply. Counting "skipped" would not, because capacity and overlap
-        # skips share the status and are meant to retry. See ADR-0070 D2.
+        # It does not cover a fire that never ran: a miss under
+        # missed_fire_policy=skip records "skipped", which is neither status.
+        # apply_schedule_set closes that by declining to write a past instant
+        # back. Counting "skipped" would not: capacity and overlap skips share
+        # the status and are meant to retry. See ADR-0070 D2.
         fields["next_fire_at"] = resolved_trigger["epoch"]
         fields["max_runs"] = 1
     elif trigger_kind == "github":
@@ -889,16 +888,10 @@ async def apply_schedule_set(
         elif entry.action == "UPDATE":
             resolved = entry.resolved
             fields = dict(resolved.db_fields)
-            # A one-shot names an instant, and an instant that has passed
-            # cannot recur. Firing it, or missing it under skip, clears
-            # next_fire_at; writing the declared epoch back would make it due
-            # again and run the schedule after the moment it named. Re-applies
-            # happen for unrelated reasons -- an edited sibling, a member
-            # re-enabled after being disabled by omission -- so this has to be
-            # declined here rather than counted at fire time, where the skipped
-            # rows are indistinguishable from capacity and overlap skips that
-            # are meant to retry. Moving the instant into the future is a real
-            # reschedule and still lands.
+            # An instant that has passed cannot recur, so writing the declared
+            # epoch back would run the schedule after the moment it named. A
+            # re-apply happens for unrelated reasons: an edited sibling, a
+            # member re-enabled after omission. Moving it forward still lands.
             if fields.get("trigger_type") == "at" and (fields.get("next_fire_at") or 0.0) <= now:
                 fields.pop("next_fire_at", None)
             updates.append(
