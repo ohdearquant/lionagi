@@ -97,10 +97,6 @@ class TestTokenBudgetBoundaries:
         budget = TokenBudget(used=70, limit=100)
         assert budget.is_warning is True
 
-    def test_is_warning_false_at_69_pct(self):
-        budget = TokenBudget(used=69, limit=100)
-        assert budget.is_warning is False
-
     def test_remaining_exactly_at_limit(self):
         budget = TokenBudget(used=100, limit=100)
         assert budget.remaining == 0

@@ -378,7 +378,7 @@ def test_flow_yaml_db_roundtrip():
                     f"action_flow_yaml lost on INSERT: got {row['action_flow_yaml']!r}"
                 )
 
-                # UPDATE path (CRIT-2)
+                # UPDATE path
                 updated_spec = "prompt: updated spec\nworkers: 2\n"
                 await db.update_schedule(schedule_id, action_flow_yaml=updated_spec)
                 row2 = await db.get_schedule(schedule_id)
