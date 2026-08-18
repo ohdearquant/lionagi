@@ -4,6 +4,7 @@ import asyncio
 import base64
 import heapq
 import json
+import math
 import time
 from typing import Any
 
@@ -628,6 +629,60 @@ def _decode_message_cursor(token: str, *, session_id: str, limit: int) -> dict[s
     if not isinstance(anchors, dict):
         raise MessageCursorError("message_cursor is missing branch_anchors")
     return anchors
+
+
+class SessionStreamCursorError(ValueError):
+    """A session-message stream cursor is malformed or belongs to another session."""
+
+
+def _encode_session_stream_cursor(
+    session_id: str, created_at: float, message_id: str, branch_id: str
+) -> str:
+    """Name the exact row a reconnecting client already has.
+
+    Carries the same three parts the in-connection cursor sorts on, so a resumed
+    stream lands where the dropped one stopped rather than at the head of a group
+    sharing one timestamp.
+    """
+    raw = json.dumps(
+        {
+            "v": 1,
+            "session_id": session_id,
+            "created_at": created_at,
+            "message_id": message_id,
+            "branch_id": branch_id,
+        },
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_session_stream_cursor(token: str, *, session_id: str) -> tuple[float, str, str]:
+    if not token or len(token) > 4096:
+        raise SessionStreamCursorError("Malformed session stream cursor")
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
+    except Exception as exc:
+        raise SessionStreamCursorError("Malformed session stream cursor") from exc
+    if not isinstance(payload, dict) or payload.get("v") != 1:
+        raise SessionStreamCursorError("Unsupported session stream cursor")
+    if payload.get("session_id") != session_id:
+        raise SessionStreamCursorError("Session stream cursor belongs to a different session")
+    created_at = payload.get("created_at")
+    message_id = payload.get("message_id")
+    branch_id = payload.get("branch_id")
+    if (
+        isinstance(created_at, bool)
+        or not isinstance(created_at, (int, float))
+        or not math.isfinite(created_at)
+        or not isinstance(message_id, str)
+        or not message_id
+        or not isinstance(branch_id, str)
+        or not branch_id
+    ):
+        raise SessionStreamCursorError("Malformed session stream cursor")
+    return float(created_at), message_id, branch_id
 
 
 # Names "the newest end", so a branch whose first page can't afford a single row still stays in
@@ -1597,27 +1652,60 @@ async def get_session_route(
     name="stream_session",
     response_class=None,
 )
-async def stream_session_route(session_id: str):
+async def stream_session_route(
+    session_id: str,
+    cursor: str | None = Query(
+        None, description="Opaque cursor from the last delivered session-message SSE frame"
+    ),
+):
     # Pre-flight 404 guard: without it a non-existent session silently
     # returns no messages and waits 60s before "done" with no indication.
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
 
+    # A reconnecting client passes back the id of the last frame it handled, so the
+    # replay starts after that row rather than at the top of the session.
+    try:
+        resume = _decode_session_stream_cursor(cursor, session_id=session_id) if cursor else None
+    except SessionStreamCursorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     async def generate():
-        after_ts: float = 0.0
-        after_id: str | None = None
-        after_branch: str | None = None
+        after_ts: float = resume[0] if resume else 0.0
+        after_id: str | None = resume[1] if resume else None
+        after_branch: str | None = resume[2] if resume else None
         last_heartbeat = time.monotonic()
 
         while True:
-            cursor = (after_ts, after_id, after_branch)
+            position = (after_ts, after_id, after_branch)
             messages = await get_session_messages_after(
                 session_id, after_ts, after_id, after_branch
             )
 
             if messages:
                 for msg in messages:
-                    yield f"data: {json.dumps(msg)}\n\n"
+                    # The frame id names this row, so a reconnect resumes after it. A row
+                    # missing any part of the sort key cannot be named, and emitting it
+                    # without an id would let the client resume from an older frame and
+                    # replay everything between.
+                    ts = msg.get("timestamp")
+                    if ts is None:
+                        ts = msg.get("created_at")
+                    message_id = msg.get("id")
+                    branch_id = msg.get("branch_id")
+                    payload = json.dumps(msg)
+                    if (
+                        isinstance(ts, (int, float))
+                        and not isinstance(ts, bool)
+                        and isinstance(message_id, str)
+                        and isinstance(branch_id, str)
+                    ):
+                        frame = _encode_session_stream_cursor(
+                            session_id, float(ts), message_id, branch_id
+                        )
+                        yield f"id: {frame}\ndata: {payload}\n\n"
+                    else:
+                        yield f"data: {payload}\n\n"
                 # Rows come back in cursor order, so the last one is the resume position; the
                 # newest timestamp alone would name a whole group rather than a specific row.
                 last = messages[-1]
@@ -1627,7 +1715,7 @@ async def stream_session_route(session_id: str):
                 last_heartbeat = time.monotonic()
                 # A page may have left rows behind the budget; loop immediately (skipping the
                 # done check) to drain them, but only while the cursor is actually moving.
-                if (after_ts, after_id, after_branch) != cursor:
+                if (after_ts, after_id, after_branch) != position:
                     continue
 
             if time.monotonic() - last_heartbeat >= 5.0:
@@ -1660,7 +1748,7 @@ async def stream_session_route(session_id: str):
     name="stream_signals",
     response_class=None,
 )
-async def stream_signals(session_id: str) -> Any:
+async def stream_signals(session_id: str, after_seq: int = 0) -> Any:
     # Pre-flight 404 guard before opening the stream (ADR-0076).
     if not await session_exists(session_id):
         raise NotFoundError(f"Session '{session_id}' not found")
@@ -1668,19 +1756,21 @@ async def stream_signals(session_id: str) -> Any:
     from . import signals as signals_svc
 
     async def generate():
-        after_seq: int = 0
+        # A reconnecting client names the last seq it finished handling, so the
+        # replay starts after that one rather than at the head of the session.
+        cursor = max(0, after_seq)
         last_heartbeat = time.monotonic()
 
         while True:
-            rows = await signals_svc.get_signals_after(session_id, after_seq)
+            rows = await signals_svc.get_signals_after(session_id, cursor)
 
             if rows:
                 for row in rows:
                     # _PAYLOAD_BYTE_CAP (session/observer.py) caps the payload
                     # column only; the row envelope adds overhead so frames can exceed it.
                     yield f"data: {json.dumps(row)}\n\n"
-                    if row["seq"] > after_seq:
-                        after_seq = row["seq"]
+                    if row["seq"] > cursor:
+                        cursor = row["seq"]
                 last_heartbeat = time.monotonic()
                 # get_signals_after is itself page-limited, so a non-empty
                 # batch does not mean the client is caught up to the tip —
