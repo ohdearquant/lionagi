@@ -12,7 +12,7 @@ import os
 import re
 import shutil
 import sys
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -27,7 +27,7 @@ from lionagi.ln._proc import (
 )
 from lionagi.ln.concurrency.utils import maybe_await
 
-from ._secret_resolution import fill_declared_secrets
+from ._secret_resolution import declared_secret_names, fill_declared_secrets
 
 log = logging.getLogger(__name__)
 
@@ -312,8 +312,10 @@ _SECRET_ENV_KEY_RE = re.compile(r"(?i)key|token|secret|password|passwd|credentia
 _SECRET_SHAPE_RE = re.compile(
     r"(?i)\b(?:"
     r"Bearer\s+\S+"
-    # To end of line: a scheme word ("Bearer x") otherwise ends the match early.
-    r"|(?:Authorization|X-Api-Key|Api-Key)\s*:\s*[^\r\n]+"
+    # To end of line, plus folded continuations: a scheme word ("Bearer x")
+    # otherwise ends the match early, and a value wrapped onto an indented
+    # continuation line leaves its tail behind.
+    r"|(?:Authorization|X-Api-Key|Api-Key)\s*:[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*"
     r"|(?:sk|rk)-[a-z0-9_-]{8,}"
     r"|(?:ghp|gho|ghu|ghs|github_pat)_[a-z0-9_]{8,}"
     r"|xox[abprs]-[a-z0-9-]{8,}"
@@ -321,21 +323,33 @@ _SECRET_SHAPE_RE = re.compile(
     r"|eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]+\.[a-z0-9_-]+"
     r")"
 )
+# A credential inside a connection string is invisible to both the name rule and
+# the token shapes. Only the password is replaced, so the host stays diagnostic.
+_URL_CREDENTIAL_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/?#@]*:)[^\s/?#@]+(@)")
+
 # Short values collide with ordinary words; a real credential is never this small.
 _MIN_REDACTABLE_SECRET_LEN = 8
 
 
-def _secret_candidates(env: Mapping[str, str] | None) -> dict[str, str]:
-    """The subset of an environment a log redactor can act on."""
+def _secret_candidates(
+    env: Mapping[str, str] | None, declared: Iterable[str] = ()
+) -> dict[str, str]:
+    """The environment values a log redactor must remove.
+
+    Declared names come first because the operator saying a variable holds a
+    secret is authority; the name pattern is only a guess, and it is what let a
+    secret named for its purpose rather than its kind through.
+    """
     if not env:
         return {}
+    named = frozenset(declared)
     return {
         key: value
         for key, value in env.items()
         if isinstance(key, str)
         and isinstance(value, str)
         and len(value) >= _MIN_REDACTABLE_SECRET_LEN
-        and _SECRET_ENV_KEY_RE.search(key)
+        and (key in named or _SECRET_ENV_KEY_RE.search(key))
     }
 
 
@@ -347,22 +361,21 @@ def _escape_control_characters(text: str) -> str:
     )
 
 
-def _redact_secrets_for_log(text: str, env: Mapping[str, str] | None) -> str:
-    """Strip credentials out of child output before any of it reaches a log."""
+def _redact_secrets_for_log(text: str, secrets: Mapping[str, str] | None) -> str:
+    """Strip credentials out of child output before any of it reaches a log.
+
+    ``secrets`` is already the set to remove, not an environment to filter: one
+    selection site, so the spawn path and the log path cannot drift apart.
+    """
     if not text:
         return text
-    if env:
-        injected = {
-            value
-            for key, value in env.items()
-            if isinstance(key, str)
-            and isinstance(value, str)
-            and len(value) >= _MIN_REDACTABLE_SECRET_LEN
-            and _SECRET_ENV_KEY_RE.search(key)
-        }
+    if secrets:
         # Longest first, so a secret containing another is not left half-revealed.
-        for value in sorted(injected, key=len, reverse=True):
+        for value in sorted(
+            {v for v in secrets.values() if isinstance(v, str)}, key=len, reverse=True
+        ):
             text = text.replace(value, "[redacted]")
+    text = _URL_CREDENTIAL_RE.sub(r"\1[redacted]\2", text)
     # Escape last: the redaction patterns are written against the real text.
     return _escape_control_characters(_SECRET_SHAPE_RE.sub("[redacted]", text))
 
@@ -417,7 +430,7 @@ async def ndjson_from_cli(
     # One mapping for both the child and the redactor: with env=None the child
     # reads os.environ at exec, later than any snapshot taken here.
     spawn_env: dict[str, str] = dict(child_env) if child_env is not None else dict(os.environ)
-    redaction_env: Mapping[str, str] = _secret_candidates(spawn_env)
+    redaction_env: Mapping[str, str] = _secret_candidates(spawn_env, declared_secret_names())
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
         env=spawn_env,

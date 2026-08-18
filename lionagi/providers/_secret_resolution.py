@@ -231,6 +231,17 @@ async def _run_lookup(lookup: ResolvedSecretLookup, name: str) -> str | None:
     return value
 
 
+def declared_secret_names(*, settings: dict[str, Any] | None = None) -> tuple[str, ...]:
+    """The variable names configured as secrets, whatever they are called.
+
+    The operator's declaration is what makes a value a secret; a name that reads
+    like one is only a guess, so redaction is keyed off this rather than off the
+    spelling.
+    """
+    lookup = resolve_secret_lookup_config(settings=settings).lookup
+    return () if lookup is None else lookup.names
+
+
 async def fill_declared_secrets(
     env: Mapping[str, str] | None,
     *,

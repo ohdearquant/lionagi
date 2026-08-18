@@ -239,6 +239,46 @@ _FORGES_A_LOG_RECORD_THEN_HANGS = (
 )
 
 
+class TestWhatCountsAsASecretToRemove:
+    """Direct on the redactor, because each arm is one credential shape and a
+    real child adds five seconds of teardown without adding evidence."""
+
+    def test_a_secret_named_for_its_purpose_is_removed_because_it_was_declared(self):
+        """The name pattern is a guess about spelling; the declaration is the operator's word."""
+        env = {"LIONAGI_TEST_VALUE": "arbitrary-secret-123"}
+        selected = cs._secret_candidates(env, ["LIONAGI_TEST_VALUE"])
+        out = cs._redact_secrets_for_log("auth failed for arbitrary-secret-123", selected)
+        assert "arbitrary-secret-123" not in out, out
+
+    def test_a_name_the_pattern_recognises_still_works_undeclared(self):
+        """The control: declaration widens the set, it does not replace it."""
+        selected = cs._secret_candidates({"LIONAGI_API_KEY": "known-secret-123"}, [])
+        out = cs._redact_secrets_for_log("auth failed for known-secret-123", selected)
+        assert "known-secret-123" not in out, out
+
+    def test_a_password_inside_a_connection_string_is_removed(self):
+        out = cs._redact_secrets_for_log(
+            "could not connect: postgres://admin:hunter2pass@db.internal/app", {}
+        )
+        assert "hunter2pass" not in out, out
+        assert "db.internal/app" in out, "the host was redacted too, losing the diagnostic: " + out
+
+    def test_a_url_without_a_credential_is_left_alone(self):
+        """The control: the rule keys on userinfo, not on the scheme."""
+        text = "connected to postgres://db.internal/app in 4ms"
+        assert cs._redact_secrets_for_log(text, {}) == text
+
+    def test_a_header_value_wrapped_onto_a_continuation_line_is_removed_whole(self):
+        out = cs._redact_secrets_for_log("refused:\nAuthorization: OPAQUE\n PART9876\n", {})
+        assert "PART9876" not in out, "the folded tail survived: " + out
+
+    def test_an_ordinary_environment_value_is_not_redacted(self):
+        """Redacting every long value would cost the diagnostic the log exists for."""
+        selected = cs._secret_candidates({"HOME": "/Users/someone"}, [])
+        out = cs._redact_secrets_for_log("wrote /Users/someone/app.log", selected)
+        assert "/Users/someone/app.log" in out, out
+
+
 class TestTheQuotedStderrCarriesNoCredential:
     """Quoting the child's stderr is the point of this path, so the credential has to be removed rather than the quoting withheld."""
 
