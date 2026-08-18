@@ -737,16 +737,26 @@ function ExpandedGraphDialog({
   const dialogRef = useRef<HTMLDivElement>(null);
   useOverlayFocus({ description: "ExpandedGraph", dialogRef, onEscape: onClose });
   return (
-    <div
-      ref={dialogRef}
-      role="dialog"
-      aria-modal="true"
-      aria-label={label}
-      tabIndex={-1}
-      className="fixed inset-4 z-50 flex flex-col rounded border border-edge bg-surface-raised shadow-card"
-    >
-      {children}
-    </div>
+    <>
+      {/* The dialog is inset, so without this the rest of the viewport keeps taking
+          clicks and the view behind an aria-modal dialog stays operable. Hidden from
+          assistive tech because the header already carries a labelled close control. */}
+      <div
+        aria-hidden="true"
+        onClick={onClose}
+        className="fixed inset-0 z-40 cursor-default bg-black/50"
+      />
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={label}
+        tabIndex={-1}
+        className="fixed inset-4 z-50 flex flex-col rounded border border-edge bg-surface-raised shadow-card"
+      >
+        {children}
+      </div>
+    </>
   );
 }
 
@@ -2597,6 +2607,13 @@ export default function RunDetail({ id }: RunDetailProps) {
     const interval = setInterval(() => setElapsedNow(Date.now() / 1000), 1000);
     return () => clearInterval(interval);
   }, [live, done]);
+
+  // Navigating to another run reuses this component instance, so a graphExpanded
+  // left set would reopen the overlay over the incoming run. Must stay above the
+  // early returns below to keep hook order stable.
+  useEffect(() => {
+    return () => setGraphExpanded(false);
+  }, [id]);
 
   if (error) {
     return (

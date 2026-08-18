@@ -245,7 +245,7 @@
       "createWorkflow": "quy trình làm việc mới",
       "createAgent": "tác nhân mới",
       "allSkill": "Không tìm thấy skill nào.",
-      "allSkillHint": "Thêm SKILL.md vào ~/.lionagi/skills/<name>/ để hiển thị ở đây.",
+      "allSkillHint": "Thêm SKILL.md vào ~/.lionagi/skills/NAME/ để hiển thị ở đây.",
       "allPlugin": "Không tìm thấy plugin nào.",
       "allPluginHint": "Cài đặt plugin vào ~/.claude/plugins/ để hiển thị ở đây."
     },

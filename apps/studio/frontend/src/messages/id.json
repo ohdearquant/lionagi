@@ -245,7 +245,7 @@
       "createWorkflow": "Alur kerja baru",
       "createAgent": "Agen baru",
       "allSkill": "Tidak ada skill ditemukan.",
-      "allSkillHint": "Tambahkan SKILL.md di ~/.lionagi/skills/<name>/ agar muncul di sini.",
+      "allSkillHint": "Tambahkan SKILL.md di ~/.lionagi/skills/NAME/ agar muncul di sini.",
       "allPlugin": "Tidak ada plugin ditemukan.",
       "allPluginHint": "Instal plugin di ~/.claude/plugins/ agar muncul di sini."
     },

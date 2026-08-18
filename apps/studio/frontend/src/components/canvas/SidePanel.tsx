@@ -121,10 +121,11 @@ function NodePanel({
         {editable && onDelete && (
           <button
             type="button"
+            aria-label={`Delete ${data.label}`}
             onClick={() => onDelete("node", id)}
-            className="text-xs text-content-muted hover:text-status-error"
+            className="focus-ring rounded px-1 text-xs text-content-muted hover:text-status-error"
           >
-            delete
+            Delete
           </button>
         )}
       </div>
@@ -291,10 +292,11 @@ function EdgePanel({
         {editable && onDelete && (
           <button
             type="button"
+            aria-label="Delete link"
             onClick={() => onDelete("edge", id)}
-            className="text-xs text-content-muted hover:text-status-error"
+            className="focus-ring rounded px-1 text-xs text-content-muted hover:text-status-error"
           >
-            delete
+            Delete
           </button>
         )}
       </div>
@@ -303,19 +305,20 @@ function EdgePanel({
       <div>
         <p className={LABEL_CLS}>Mode</p>
         {editable ? (
-          <div className="flex gap-1">
+          <div role="group" aria-label="Link mode" className="flex gap-1">
             {(["simple", "code"] as const).map((m) => (
               <button
                 type="button"
                 key={m}
+                aria-pressed={data.mode === m}
                 onClick={() => update("mode", m)}
-                className={`rounded px-3 py-1 text-xs font-medium ${
+                className={`focus-ring rounded px-3 py-1 text-xs font-medium ${
                   data.mode === m
                     ? "bg-interactive-secondary text-content-primary"
                     : "bg-surface-input text-content-muted hover:text-content-primary"
                 }`}
               >
-                {m}
+                {m === "simple" ? "Simple" : "Code"}
               </button>
             ))}
           </div>
