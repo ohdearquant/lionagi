@@ -43,6 +43,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Writable StateDB migration now fails closed when a table's columns cannot be
   inspected, preserving the prior schema-version stamp instead of recording an
   upgrade whose additive column reconciliation did not complete.
+- `Operable` selection and legacy `OperableModel` materialization now retain declaration order
+  for every supported membership collection and across hash seeds. Multiple unnamed `Spec`
+  values no longer collide; concrete duplicate names still fail, and name-required Pydantic
+  materialization now rejects unnamed fields instead of silently dropping them. Legacy
+  `FieldModel` materialization uses the owning field key rather than emitting a second field.
+  An explicit empty `include` or `use_fields` collection now selects no fields, unknown
+  exclusions fail instead of being ignored, and `Operable.allowed()` returns an immutable
+  membership view.
 
 ### Deprecated
 
