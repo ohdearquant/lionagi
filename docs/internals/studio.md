@@ -1066,6 +1066,45 @@ that has not reached any terminal status of its own is reported as
 `completed_empty` (no positive evidence) rather than being inferred as
 `completed`.
 
+**`_recover_missed_fire_run_once`** — reserves its admission claims and then
+`next_fire_at`, synchronously, before queueing the recovery fire. The order is
+load-bearing in both directions. Claims come first because a rate or slot
+refusal has to leave the row still due, and clearing an `at` trigger's
+`next_fire_at` ahead of a refusal would strand its single run permanently. The
+reserve comes before the fire because `_tick_loop()` runs `_check_missed_fires()`
+and then `_tick()` with nothing awaited in between, so a `next_fire_at` left for
+the recovery fire's own background task to persist is still the past-due value
+when the very next `_tick()` reads it, and the schedule double-fires.
+
+The crash window this leaves was weighed and accepted. If the process dies
+between the reserve and the recovery fire landing, the run is lost for that
+cycle but the schedule is not stuck: one skipped run rather than starvation.
+The exception is an `at` trigger, where the reserve has already cleared
+`next_fire_at` and there is no later occurrence, so that crash loses the run
+permanently. That was accepted rather than reopen the duplicate-fire window,
+and a later change that closes the crash window by deferring the reserve would
+be trading this decision away rather than fixing an oversight.
+
+**`_guarded_terminal_status`** — writes a terminal `schedule_run` or
+`invocation` status guarded on the row still being `running`, because a
+concurrent writer such as the deadline reaper may have finalized it first.
+Returning `False` is the expected outcome of losing that race, not an error:
+callers get a checked no-op instead of an exception. `extra_fields` carries
+same-row columns belonging to the same finalization, `ended_at` and
+`error_detail`, and they ride the same guard and the same transaction as the
+status precisely so that a lost race leaves the winner's values intact rather
+than overwriting them with ours. Both properties are extension hazards, since
+this is the shared helper every terminal write goes through.
+
+**`_next_fire_field`** — returns the field or fields to merge into an
+`update_schedule()` call, and its two `None` behaviours are different on
+purpose. For interval, cron and `github_poll`, a `None` next fire can only come
+from a malformed row, so it returns an empty dict and leaves `next_fire_at`
+alone rather than blanking a value another write has set. For `at`, `None` is
+the terminal and correct answer, so it returns an explicit `{"next_fire_at":
+None}`: the one-shot has to be persisted as no longer due, or it reads back as
+still pending forever.
+
 ## lionagi/studio/scheduler/worker.py
 
 `claim_and_execute`'s D4 match rule: row R is claimable iff its capability
