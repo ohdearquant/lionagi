@@ -1,0 +1,44 @@
+name: Issue links
+
+# Phase-tracking issues are opened in bulk when an ADR lands, one per phase, and
+# each is meant to close when its phase ships. That only happens if the PR body
+# spells a closing keyword, so this checks that it does.
+#
+# Its own workflow rather than a job in ci.yml, because the fix for a failure
+# here is editing the PR body, which means the check has to re-run on `edited`.
+# Adding that type to ci.yml would re-run the whole test matrix every time
+# somebody fixed a typo in a description.
+on:
+  pull_request:
+    types: [ opened, edited, reopened, synchronize ]
+    branches: [ main, develop ]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: issue-links-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  closing-keywords:
+    runs-on: ubuntu-latest
+    steps:
+    # A fork's PR code is attacker-controlled and this job runs a script out of
+    # the tree with a token in the step environment, so it checks out the base
+    # revision and runs that script rather than the one the PR proposes. The
+    # credential is also kept out of .git/config, so nothing left in the
+    # workspace carries it.
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        ref: ${{ github.event.pull_request.base.sha }}
+        persist-credentials: false
+    - name: Require a closing keyword for every referenced phase issue
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        PR_BODY: ${{ github.event.pull_request.body }}
+        PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+      run: python3 scripts/check_issue_links.py
