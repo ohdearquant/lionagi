@@ -223,7 +223,8 @@ _LEAKS_TOKEN_SHAPE_THEN_HANGS = (
 
 # A credential in a variable whose name says nothing about it and which nobody
 # declared: no vocabulary can recognise it, so only the length rule can.
-_UNNAMEABLE_SECRET = "opaque-value-a41f9c2b"
+# Exactly at the length floor, the hardest case the rule still covers.
+_UNNAMEABLE_SECRET = "hunter2!"
 _LEAKS_UNNAMEABLE_ENV_THEN_HANGS = (
     "import os, sys, time; "
     "sys.stderr.write('rejected token ' + os.environ['LIONAGI_TEST_THING']); "
@@ -320,11 +321,20 @@ class TestWhatCountsAsASecretToRemove:
         )
 
     def test_a_short_unrecognised_value_is_left_alone(self):
-        env = {"LIONAGI_TEST_THING": "short-one"}
+        # Under the floor, where a value is not tellable from an ordinary word.
+        env = {"LIONAGI_TEST_THING": "abc"}
         opaque = cs._opaque_env_values(env, {})
         assert opaque == {}, "the length floor is not being applied: " + repr(opaque)
-        text = "rejected token short-one"
+        text = "rejected token abc"
         assert cs._redact_secrets_for_log(text, {}, opaque) == text
+
+    def test_a_credential_only_just_long_enough_is_still_not_echoed(self):
+        env = {"WORKER_PAYLOAD": "hunter2!"}
+        assert cs._secret_candidates(env, []) == {}, "no name rule may be what catches this"
+        opaque = cs._opaque_env_values(env, {})
+        out = cs._redact_secrets_for_log("worker refused: hunter2!", {}, opaque)
+        assert "hunter2!" not in out, out
+        assert "[$WORKER_PAYLOAD]" in out, out
 
     def test_a_declared_secret_is_redacted_rather_than_named(self):
         env = {"LIONAGI_TEST_VALUE": "declared-value-77c3f1"}

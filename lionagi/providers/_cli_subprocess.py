@@ -332,17 +332,9 @@ _URL_CREDENTIAL_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/?#@]*:)[^\s/?
 # reads the name vocabulary above rather than restating it.
 _URL_QUERY_PARAM_RE = re.compile(r"([?&])([^=&\s]+)=([^&\s]+)")
 
-# Short values collide with ordinary words, so the name guess needs a floor. A
-# declared name does not: the operator said it holds a secret.
-_MIN_GUESSED_SECRET_LEN = 8
-
-# A secret can sit in a variable whose name says nothing, undeclared, and no
-# vocabulary will ever recognise it. So the log declines to echo any environment
-# value long enough to be a credential, whatever it is called. The floor is
-# higher than the name guess's because this rule has no name evidence behind it,
-# and it is the variable's name that replaces the value, so a path or a model id
-# caught by it still tells the reader what was there.
-_MIN_OPAQUE_ENV_VALUE_LEN = 16
+# Short values collide with ordinary words, which is the only reason either rule
+# below has a floor, so both use the same one. A declared name needs none.
+_MIN_REDACTABLE_VALUE_LEN = 8
 
 
 def _secret_candidates(
@@ -366,7 +358,7 @@ def _secret_candidates(
         and value
         and (
             key in named
-            or (len(value) >= _MIN_GUESSED_SECRET_LEN and _SECRET_ENV_KEY_RE.search(key))
+            or (len(value) >= _MIN_REDACTABLE_VALUE_LEN and _SECRET_ENV_KEY_RE.search(key))
         )
     }
 
@@ -374,7 +366,11 @@ def _secret_candidates(
 def _opaque_env_values(
     env: Mapping[str, str] | None, already_secret: Mapping[str, str]
 ) -> dict[str, str]:
-    """Environment values the log will not echo even though nothing marks them secret."""
+    """Values the log will not echo even though nothing marks them secret.
+
+    A secret can sit in a variable whose name says nothing, so length is the
+    only signal left.
+    """
     if not env:
         return {}
     return {
@@ -383,7 +379,7 @@ def _opaque_env_values(
         if isinstance(key, str)
         and isinstance(value, str)
         and key not in already_secret
-        and len(value) >= _MIN_OPAQUE_ENV_VALUE_LEN
+        and len(value) >= _MIN_REDACTABLE_VALUE_LEN
     }
 
 
