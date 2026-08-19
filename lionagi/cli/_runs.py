@@ -14,7 +14,7 @@ import uuid
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 from uuid import uuid4
 
 from lionagi._paths import RUNS_ROOT, ensure_lionagi_dir
@@ -529,6 +529,7 @@ async def _teardown_common(
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
     gate_rejected_evidence: list[dict] | None = None,
+    message_loss: MessageLoss | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -541,7 +542,38 @@ async def _teardown_common(
 
     if defer_terminal:
         # A resumed leg on this same session owns the real terminal write (ADR-0035);
-        # skip the DB mutation here and let the caller's non-status bookkeeping run.
+        # skip the status mutation here and let the caller's non-status bookkeeping run.
+        #
+        # The loss is the exception, and it is not a status write. This leg is the only
+        # one that ever knows about it -- its queue is unrouted straight after this and
+        # the resuming leg builds its own -- so leaving it here means the eventual
+        # terminal write reports a clean run over a transcript missing part of itself.
+        if message_loss:
+            try:
+                # Re-merged, not just written: a session can time out twice before
+                # anything terminal, and this branch is the only writer of the field it
+                # also reads. Writing this leg's own loss alone drops every leg before
+                # it, and the terminal write has no way to tell.
+                carried = await db.get_session(session_id) or {}
+                message_loss = _merge_message_loss(carried.get("node_metadata") or {}, message_loss)
+                # Serialized, because the merge refuses a nested patch value: sqlite and
+                # postgres merge nested objects differently and it will not persist state
+                # that depends on the backend.
+                await db.merge_session_node_metadata(
+                    session_id, {"message_persist_loss_json": json.dumps(message_loss)}
+                )
+            except Exception:
+                # This path's job is to defer, and the caller reads the status it
+                # returns to decide whether to resume. Letting a bookkeeping write
+                # decide that would trade a run that resumes for one that hangs
+                # unresumed, to save an annotation. Loud, because the annotation
+                # existed to stop exactly this kind of silent loss.
+                _log.exception(
+                    "Could not record %d lost message event(s) for deferred session "
+                    "%s; the resuming leg's terminal row will not carry them",
+                    message_loss["lost"],
+                    session_id,
+                )
         return status
 
     all_msgs = await db.get_progression(session_prog_id)
@@ -550,6 +582,13 @@ async def _teardown_common(
     # Fetched before this call's own write so started_at reflects session
     # creation, not a value this same update is about to touch.
     session_before_teardown = await db.get_session(session_id) or {}
+
+    # A leg that timed out on this session recorded its loss and deferred the terminal
+    # write. This is that write, so it reports both legs' losses or the earlier one is
+    # gone: the leg that saw it is finished and its queue no longer exists.
+    message_loss = _merge_message_loss(
+        (session_before_teardown.get("node_metadata") or {}), message_loss
+    )
 
     # ended_at and duration_ms are terminal fields and must land in the same
     # atomic write as the status transition below (see the
@@ -786,7 +825,12 @@ async def _teardown_common(
             metadata = dict(metadata or {})
             metadata["completion_evidence"] = evidence
             metadata["has_assistant_output"] = has_output
-            if not has_completion_evidence(evidence) and not has_output:
+            # "No assistant response recorded" is read off the transcript, and
+            # a run that lost messages has a transcript missing exactly the
+            # kind of thing this looks for. Concluding emptiness from it states
+            # a fact about the run that is really a fact about our record, so
+            # the loss below carries the reason instead.
+            if not has_completion_evidence(evidence) and not has_output and not message_loss:
                 final_status = "completed_empty"
                 final_reason_code = RunReasons.COMPLETED_EMPTY_NO_EVIDENCE
                 base_label = evidence.get("base_ref") or "base"
@@ -855,6 +899,35 @@ async def _teardown_common(
                     "label": finalize_error.get("error", ""),
                 }
             ]
+
+    # Live-message persistence gave up. The run's own work stands, so this never
+    # manufactures a failure and never displaces a reason that is about the work --
+    # it goes last, and takes the reason code only if nothing else claimed one. The
+    # evidence ref is appended either way: a reader has to be able to find the loss
+    # on a run that also failed, or hit a finalize error, or this records it only in
+    # the case where nothing else went wrong.
+    if message_loss:
+        from lionagi.state.reasons import RunReasons
+
+        metadata = dict(metadata or {})
+        metadata["message_persist_loss"] = message_loss
+        final_evidence_refs = list(final_evidence_refs or []) + [
+            {
+                "kind": "message_persist_loss",
+                "id": queue["owner"],
+                "label": f"{queue['lost']} event(s) lost",
+            }
+            for queue in message_loss["queues"]
+        ]
+        if final_status in ("completed", "completed_empty") and (
+            final_reason_code in (None, "", RunReasons.COMPLETED_OK)
+        ):
+            final_reason_code = RunReasons.COMPLETED_MESSAGE_LOSS
+            final_reason_summary = (
+                f"Run completed; {message_loss['lost']} live message event(s) were "
+                "never written and are lost, so this session's transcript is "
+                "incomplete."
+            )
 
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
 
@@ -975,13 +1048,14 @@ async def teardown_persist(
 
     db = ctx["db"]
     try:
-        await _flush_pending_message_events(ctx)
+        message_loss = await _flush_pending_message_events(ctx)
         final_status = await _teardown_common(
             db,
             session_id=ctx["session_id"],
             session_prog_id=ctx["session_prog_id"],
             status=status,
             exception=exception,
+            message_loss=message_loss,
             artifacts_path=ctx.get("artifacts_path"),
             artifact_contract=ctx.get("artifact_contract"),
             extras=extras,
@@ -1204,18 +1278,93 @@ def _make_message_handler(
     return _on_message
 
 
-async def _flush_pending_message_events(ctx: dict) -> bool:
+class QueueLoss(TypedDict):
+    """One retry queue that gave up, and how much it was holding."""
+
+    owner: str
+    lost: int
+
+
+class MessageLoss(TypedDict):
+    """What a teardown could not persist, summed and itemized.
+
+    Written by ``_flush_pending_message_events``, carried across a deferred leg as
+    JSON, and read by ``_teardown_common``. Spelled out because those three are in
+    different places and a bare dict makes the shape a convention rather than a
+    contract.
+    """
+
+    lost: int
+    queues: list[QueueLoss]
+
+
+def _as_message_loss(value: Any) -> MessageLoss | None:
+    """Coerce a payload parsed from the session row into a ``MessageLoss``.
+
+    The carried value crossed a persistence boundary and may have been written by
+    a leg running different code, so its shape is an assumption rather than a
+    guarantee. Entries that do not fit are dropped instead of partly trusted: the
+    total feeds a lost-event count a reader treats as exact, and an unchecked one
+    reaches ``queue["owner"]`` indexing further on. The total is recomputed here
+    rather than read, so it agrees with the entries it claims to sum.
+    """
+    if not isinstance(value, dict):
+        return None
+    raw = value.get("queues")
+    queues: list[QueueLoss] = [
+        {"owner": str(q["owner"]), "lost": q["lost"]}
+        for q in (raw if isinstance(raw, list) else [])
+        if isinstance(q, dict)
+        and q.get("owner") is not None
+        and isinstance(q.get("lost"), int)
+        and not isinstance(q["lost"], bool)
+    ]
+    if not queues:
+        return None
+    return {"lost": sum(q["lost"] for q in queues), "queues": queues}
+
+
+def _merge_message_loss(node_metadata: Any, current: MessageLoss | None) -> MessageLoss | None:
+    """This teardown's loss plus any a deferred earlier leg left on the session."""
+    if isinstance(node_metadata, str):
+        try:
+            node_metadata = json.loads(node_metadata)
+        except (TypeError, ValueError):
+            node_metadata = None
+    carried = (
+        node_metadata.get("message_persist_loss_json") if isinstance(node_metadata, dict) else None
+    )
+    if isinstance(carried, str):
+        try:
+            carried = json.loads(carried)
+        except (TypeError, ValueError):
+            carried = None
+    carried = _as_message_loss(carried)
+    if not carried:
+        return current
+    if not current:
+        return carried
+    queues = carried["queues"] + current["queues"]
+    return {"lost": sum(q["lost"] for q in queues), "queues": queues}
+
+
+async def _flush_pending_message_events(ctx: dict) -> MessageLoss | None:
     """Retry queued messages before teardown reads completion evidence.
 
-    Returns whether every queue emptied. What follows this reads the run's
-    completion evidence, so a queue that gave up here means that evidence is
-    being read against a transcript missing messages the run produced.
+    Returns what was lost, or ``None`` when every queue emptied. What follows
+    this reads the run's completion evidence, so a queue that gave up here
+    means that evidence is being read against a transcript missing messages the
+    run produced. Returning the loss rather than a bare failure flag is what
+    lets the terminal row say so: a log line lives in one console tail, and the
+    tail is not where anyone looks to find out how a run went.
     """
-    flushed = True
+    queues: list[QueueLoss] = []
     for retry_queue in ctx.get("message_retry_queues", []):
         if not await retry_queue.flush_final():
-            flushed = False
-    return flushed
+            queues.append({"owner": retry_queue.owner, "lost": retry_queue.pending_count})
+    if not queues:
+        return None
+    return {"lost": sum(q["lost"] for q in queues), "queues": queues}
 
 
 async def _reopen_session_for_resume(

@@ -45,6 +45,11 @@ class MessagePersistRetryQueue:
     def pending_count(self) -> int:
         return len(self._pending)
 
+    @property
+    def owner(self) -> str:
+        """What this queue's events belong to, for a report that names them."""
+        return self._owner
+
     async def submit(self, event: PendingMessageEvent) -> bool:
         """Queue ``event`` and persist pending events in their original order."""
         async with self._lock:

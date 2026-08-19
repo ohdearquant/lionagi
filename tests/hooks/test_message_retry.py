@@ -208,11 +208,14 @@ async def test_the_run_teardown_reports_whether_its_queues_emptied():
 
     logger = logging.getLogger("test")
     lost = await _deferred_queue(_RefusingDB(), logger)
-    assert await _flush_pending_message_events({"message_retry_queues": [lost]}) is False
+    assert await _flush_pending_message_events({"message_retry_queues": [lost]}) == {
+        "lost": 4,
+        "queues": [{"owner": "b1", "lost": 4}],
+    }
 
     healthy = MessagePersistRetryQueue(_FakeDB(fail_ids=set()), logger=logger, owner="b2")
     await healthy.submit(_event("good-1"))
-    assert await _flush_pending_message_events({"message_retry_queues": [healthy]}) is True
+    assert await _flush_pending_message_events({"message_retry_queues": [healthy]}) is None
 
 
 async def test_both_teardown_paths_over_one_queue_report_the_loss_once(caplog):
@@ -238,7 +241,7 @@ async def test_both_teardown_paths_over_one_queue_report_the_loss_once(caplog):
 
     with caplog.at_level(logging.ERROR, logger="test"):
         assert await bus.flush_message_retries() is False
-        assert await _flush_pending_message_events({"message_retry_queues": [queue]}) is False
+        assert await _flush_pending_message_events({"message_retry_queues": [queue]}) is not None
 
     losses = [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
     assert len(losses) == 1, (
@@ -302,3 +305,381 @@ async def test_a_recovery_between_teardowns_does_not_swallow_a_later_loss(caplog
     assert len(losses) == 2, (
         "the second loss has the same count as the first and is still a different loss"
     )
+
+
+# The loss reaching the run's terminal record. Until this, the return value
+# above was read by nothing: both teardowns awaited it and dropped it, so a run
+# that lost messages closed as "run.completed.ok / Run completed successfully."
+
+
+async def _closed_out(tmp_path, sid: str, queues: list, **kwargs) -> dict:
+    """Take one session through the real teardown and read back what it wrote.
+
+    ``teardown_persist`` closes the handle it was given, so the read-back opens
+    its own -- the row is what a later reader sees, which is the whole subject
+    here.
+    """
+    import json
+
+    from sqlalchemy import text
+
+    from lionagi.cli._runs import teardown_persist
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / f"{sid}.db"
+    db = StateDB(path)
+    await db.open()
+    await db.create_progression(f"prog-{sid}")
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": f"prog-{sid}",
+            "status": "running",
+            "started_at": 1_700_000_000.0,
+        }
+    )
+    final = await teardown_persist(
+        {
+            "db": db,
+            "session_id": sid,
+            "session_prog_id": f"prog-{sid}",
+            "message_retry_queues": queues,
+        },
+        **kwargs,
+    )
+
+    reader = StateDB(path)
+    await reader.open()
+    try:
+        row = await reader.get_session(sid)
+        async with reader._read() as conn:
+            result = await conn.execute(
+                text(
+                    "SELECT metadata FROM status_transitions "
+                    "WHERE entity_id = :sid ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"sid": sid},
+            )
+            recorded = result.scalar()
+    finally:
+        await reader.close()
+    if isinstance(recorded, str):
+        recorded = json.loads(recorded)
+    return {"final": final, "row": row, "transition_metadata": recorded or {}}
+
+
+async def _healthy_queue(owner: str = "b2"):
+    queue = MessagePersistRetryQueue(
+        _FakeDB(fail_ids=set()), logger=logging.getLogger("test"), owner=owner
+    )
+    await queue.submit(_event("good-1"))
+    return queue
+
+
+async def test_a_run_that_lost_messages_does_not_close_as_a_clean_success(tmp_path):
+    """What the reported incident looked like from the row: events gone, and the
+    session saying the run completed successfully."""
+    queue = await _deferred_queue(_RefusingDB(), logging.getLogger("test"))
+
+    out = await _closed_out(tmp_path, "sess-loss", [queue], status="completed")
+
+    assert out["final"] == "completed", "the run's own work stands; this is not a failure"
+    assert out["row"]["status_reason_code"] == "run.completed.message_loss"
+    assert "4 live message event(s) were never written" in out["row"]["status_reason_summary"]
+
+
+async def test_the_terminal_row_names_which_queue_lost_how_many(tmp_path):
+    """A count with no owner cannot be chased. Two queues, only one losing."""
+    lost = await _deferred_queue(_RefusingDB(), logging.getLogger("test"))
+
+    out = await _closed_out(
+        tmp_path, "sess-loss-refs", [await _healthy_queue(), lost], status="completed"
+    )
+
+    assert out["row"]["status_evidence_refs"] == [
+        {"kind": "message_persist_loss", "id": "b1", "label": "4 event(s) lost"}
+    ], "the queue that emptied contributes nothing to name"
+
+
+async def test_a_run_that_lost_nothing_is_untouched(tmp_path):
+    """The control. A clean run must still read clean, or the annotation above
+    is noise on every row rather than a signal on the affected ones."""
+    out = await _closed_out(tmp_path, "sess-clean", [await _healthy_queue()], status="completed")
+
+    assert out["row"]["status_reason_code"] == "run.completed.ok"
+    assert out["row"]["status_evidence_refs"] in (None, [])
+    assert "message_persist_loss" not in out["transition_metadata"]
+
+
+async def test_a_failed_run_keeps_its_own_failure(tmp_path):
+    """The loss annotates; it never overwrites why a run actually failed."""
+    queue = await _deferred_queue(_RefusingDB(), logging.getLogger("test"))
+
+    out = await _closed_out(
+        tmp_path,
+        "sess-failed",
+        [queue],
+        status="failed",
+        exception=RuntimeError("the real cause"),
+    )
+
+    assert out["final"] == "failed"
+    assert out["row"]["status_reason_code"] == "run.failed.exception"
+    assert out["transition_metadata"]["message_persist_loss"]["lost"] == 4, (
+        "annotated, so the loss is still findable on a run that failed for its own reasons"
+    )
+
+
+async def test_the_structured_loss_is_recorded_for_a_reader_that_wants_the_shape(tmp_path):
+    """reason_summary is prose. The audit trail carries the numbers."""
+    queue = await _deferred_queue(_RefusingDB(), logging.getLogger("test"))
+
+    out = await _closed_out(tmp_path, "sess-loss-meta", [queue], status="completed")
+
+    assert out["transition_metadata"]["message_persist_loss"] == {
+        "lost": 4,
+        "queues": [{"owner": "b1", "lost": 4}],
+    }
+
+
+# The deferred leg. A timed-out leg defers its terminal write to the leg that resumes
+# the session, and its queue is unrouted right after. It is the only thing that ever
+# knew about its own loss, so if it does not leave it behind the resumed leg's clean
+# terminal write is the only record and the loss is gone.
+
+
+async def _teardown_on(path, sid: str, queues: list, **kwargs):
+    from lionagi.cli._runs import teardown_persist
+    from lionagi.state.db import StateDB
+
+    db = StateDB(path)
+    await db.open()
+    existing = await db.get_session(sid)
+    if existing is None:
+        await db.create_progression(f"prog-{sid}")
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": f"prog-{sid}",
+                "status": "running",
+                "started_at": 1_700_000_000.0,
+            }
+        )
+    return await teardown_persist(
+        {
+            "db": db,
+            "session_id": sid,
+            "session_prog_id": f"prog-{sid}",
+            "message_retry_queues": queues,
+        },
+        **kwargs,
+    )
+
+
+async def _session_row(path, sid: str) -> dict:
+    from lionagi.state.db import StateDB
+
+    reader = StateDB(path)
+    await reader.open()
+    try:
+        return await reader.get_session(sid)
+    finally:
+        await reader.close()
+
+
+async def test_a_deferred_legs_loss_reaches_the_terminal_write_that_resumes_it(tmp_path):
+    path = tmp_path / "deferred.db"
+    sid = "sess-deferred"
+    logger = logging.getLogger("test")
+
+    await _teardown_on(
+        path,
+        sid,
+        [await _deferred_queue(_RefusingDB(), logger)],
+        status="timed_out",
+        defer_terminal=True,
+    )
+    row = await _session_row(path, sid)
+    assert row["status"] == "running", "the deferred leg writes no terminal status"
+
+    await _teardown_on(path, sid, [], status="completed")
+
+    row = await _session_row(path, sid)
+    assert row["status_reason_code"] == "run.completed.message_loss"
+    assert "4 live message event(s) were never written" in row["status_reason_summary"]
+
+
+async def test_both_legs_losses_are_added_up_rather_than_one_replacing_the_other(tmp_path):
+    path = tmp_path / "two-legs.db"
+    sid = "sess-two-legs"
+    logger = logging.getLogger("test")
+
+    await _teardown_on(
+        path,
+        sid,
+        [await _deferred_queue(_RefusingDB(), logger)],
+        status="timed_out",
+        defer_terminal=True,
+    )
+    await _teardown_on(
+        path, sid, [await _deferred_queue(_RefusingDB(), logger)], status="completed"
+    )
+
+    row = await _session_row(path, sid)
+    assert "8 live message event(s) were never written" in row["status_reason_summary"]
+    assert len(row["status_evidence_refs"]) == 2, "one ref per queue that lost"
+
+
+async def test_a_second_deferred_leg_adds_to_the_carried_loss_rather_than_replacing_it(
+    tmp_path,
+):
+    """Two timeouts before anything terminal. The second deferral is the case a
+    deferred-then-terminal test cannot reach: it both reads and writes the carried
+    payload, so a leg that only writes its own loss drops every leg before it."""
+    path = tmp_path / "three-legs.db"
+    sid = "sess-three-legs"
+    logger = logging.getLogger("test")
+
+    for _ in range(2):
+        await _teardown_on(
+            path,
+            sid,
+            [await _deferred_queue(_RefusingDB(), logger)],
+            status="timed_out",
+            defer_terminal=True,
+        )
+    await _teardown_on(
+        path, sid, [await _deferred_queue(_RefusingDB(), logger)], status="completed"
+    )
+
+    row = await _session_row(path, sid)
+    assert "12 live message event(s) were never written" in row["status_reason_summary"]
+    assert len(row["status_evidence_refs"]) == 3, "one ref per queue that lost"
+
+
+async def test_a_deferred_leg_that_lost_nothing_leaves_nothing_behind(tmp_path):
+    """The control. Without it the resumed write could report a loss on every session
+    that was ever deferred."""
+    path = tmp_path / "deferred-clean.db"
+    sid = "sess-deferred-clean"
+
+    await _teardown_on(path, sid, [await _healthy_queue()], status="timed_out", defer_terminal=True)
+    await _teardown_on(path, sid, [], status="completed")
+
+    row = await _session_row(path, sid)
+    assert row["status_reason_code"] == "run.completed.ok"
+    assert row["status_evidence_refs"] in (None, [])
+
+
+async def test_the_loss_is_recorded_on_a_run_that_failed_for_its_own_reasons(tmp_path):
+    """The reason code belongs to the failure; the evidence still names the loss, or a
+    reader can only find it on runs where nothing else went wrong."""
+    out = await _closed_out(
+        tmp_path,
+        "sess-failed-with-loss",
+        [await _deferred_queue(_RefusingDB(), logging.getLogger("test"))],
+        status="failed",
+        exception=RuntimeError("the real cause"),
+    )
+
+    assert out["row"]["status_reason_code"] == "run.failed.exception"
+    kinds = {ref["kind"] for ref in (out["row"]["status_evidence_refs"] or [])}
+    assert "message_persist_loss" in kinds
+
+
+async def test_a_failed_loss_record_does_not_cost_the_deferred_leg_its_handoff(
+    tmp_path, monkeypatch, caplog
+):
+    """The annotation must never decide whether a timed-out run gets resumed.
+
+    The caller reads this status to choose the auto-resume path, so a bookkeeping
+    write that raises here would trade a run that resumes for one that hangs
+    unresumed. Losing the record is the lesser failure, and it is logged rather
+    than swallowed because silent loss is what the record exists to stop.
+    """
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "carry-fails.db"
+    sid = "sess-carry-fails"
+    logger = logging.getLogger("test")
+
+    async def _refuse(self, *args, **kwargs):
+        raise RuntimeError("node metadata write refused")
+
+    monkeypatch.setattr(StateDB, "merge_session_node_metadata", _refuse)
+
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli"):
+        final = await _teardown_on(
+            path,
+            sid,
+            [await _deferred_queue(_RefusingDB(), logger)],
+            status="timed_out",
+            defer_terminal=True,
+        )
+
+    assert final == "timed_out", "the caller reads this to decide whether to resume"
+    row = await _session_row(path, sid)
+    assert row["status"] == "running", "the deferred leg still writes no terminal status"
+    assert any("lost message event" in r.getMessage() for r in caplog.records)
+
+
+# The carried loss payload crosses a persistence boundary, so its shape is an
+# assumption. These pin what a drifted one is allowed to do to the count.
+
+
+def _carry(payload: Any) -> dict[str, Any]:
+    """A session row whose node metadata carries `payload` as the loss JSON."""
+    from json import dumps
+
+    return {"message_persist_loss_json": dumps(payload)}
+
+
+def test_a_carried_payload_with_a_non_list_queues_field_is_dropped_not_walked():
+    from lionagi.cli._runs import _merge_message_loss
+
+    # list("ab") would otherwise yield character entries and q.get() would raise.
+    merged = _merge_message_loss(_carry({"lost": 9, "queues": "ab"}), None)
+    assert merged is None
+
+
+def test_a_queue_entry_with_a_non_numeric_lost_is_dropped_rather_than_summed():
+    from lionagi.cli._runs import _merge_message_loss
+
+    merged = _merge_message_loss(
+        _carry({"lost": 5, "queues": [{"owner": "a", "lost": "many"}, {"owner": "b", "lost": 2}]}),
+        None,
+    )
+    assert merged == {"lost": 2, "queues": [{"owner": "b", "lost": 2}]}
+
+
+def test_a_carried_total_that_disagrees_with_its_entries_is_recomputed_not_believed():
+    from lionagi.cli._runs import _merge_message_loss
+
+    merged = _merge_message_loss(_carry({"lost": 999, "queues": [{"owner": "a", "lost": 3}]}), None)
+    assert merged["lost"] == 3, "the total must agree with the entries it claims to sum"
+
+
+def test_a_boolean_lost_does_not_pass_as_a_count():
+    from lionagi.cli._runs import _merge_message_loss
+
+    assert _merge_message_loss(_carry({"queues": [{"owner": "a", "lost": True}]}), None) is None
+
+
+def test_node_metadata_that_parses_to_a_non_mapping_does_not_raise():
+    from lionagi.cli._runs import _merge_message_loss
+
+    current = {"lost": 1, "queues": [{"owner": "live", "lost": 1}]}
+    assert _merge_message_loss("[1, 2]", current) == current
+
+
+def test_a_well_formed_carry_still_sums_with_this_legs_own_loss():
+    from lionagi.cli._runs import _merge_message_loss
+
+    merged = _merge_message_loss(
+        _carry({"lost": 4, "queues": [{"owner": "deferred", "lost": 4}]}),
+        {"lost": 1, "queues": [{"owner": "live", "lost": 1}]},
+    )
+    assert merged == {
+        "lost": 5,
+        "queues": [{"owner": "deferred", "lost": 4}, {"owner": "live", "lost": 1}],
+    }

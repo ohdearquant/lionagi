@@ -93,6 +93,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A run whose live-message persistence gave up now records that on its terminal row.
+  Under database-lock contention the retry queue defers and then abandons its pending
+  events at teardown; the count reached one line in one console tail while the session
+  closed as a clean success, so the loss was invisible to every reader of the run. The
+  session now carries a `run.completed.message_loss` reason, a summary naming how many
+  events were lost, and evidence refs naming each queue that lost them, with the
+  structured counts in the transition record. The completion-trust gate also no longer
+  demotes such a run to `completed_empty`: that conclusion is read off the transcript, and
+  this run's transcript is known to be missing part of itself.
+
+  The loss survives the two ways a run's terminal row is written by someone other than the
+  leg that saw it. A leg that hands its terminal write to a resuming leg now leaves the loss
+  on the session, and the write that eventually happens adds up every deferred leg's count
+  rather than reporting only its own, because each leg that observed a loss is gone by then and
+  its queue with it. A session that defers twice before anything terminal accumulates across
+  both deferrals rather than the second replacing the first. And a run that failed on its own keeps its own failure: the loss is appended to the
+  evidence either way and claims the reason code only when nothing else has.
+  Recording that carried loss cannot cost the handoff: the deferred path's job is to defer, and
+  the caller reads the status it returns to decide whether to resume, so a bookkeeping write that
+  fails is logged and the status stands rather than leaving a timed-out run unresumed. The carried
+  payload is validated where it is read back rather than trusted for its shape, since it was written
+  by whatever code the earlier leg was running; entries that do not fit are dropped, and the total is
+  recomputed from the entries that survive so it agrees with what it claims to sum.
+
+  A flow invocation whose children all completed no longer reports a clean success when one of
+  them lost messages. It reads the loss off the child's evidence rather than its reason code,
+  so a child that lost messages and also hit something else is still named, and the invocation
+  carries the sessions whose transcripts are incomplete.
 - The schedule list surfaces no longer carry record content. They served every column of the
   schedule row, including the command a schedule runs and its arguments, its authored spec, its
   notify command and owner key, and they served `trigger_context`, which holds whole external
