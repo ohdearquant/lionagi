@@ -67,11 +67,11 @@ def test_restarts_are_surfaced_alongside_the_verdict(monkeypatch):
         last_tick_completed_at=time.time(),
         restarts=3,
         last_failure_at=time.time() - 30,
-        last_failure="RuntimeError: db locked",
+        last_failure="RuntimeError",
     )
     assert result["restarts"] == 3
     assert "restarted 3 time(s)" in result["detail"]
-    assert result["last_failure"] == "RuntimeError: db locked"
+    assert result["last_failure"] == "RuntimeError"
 
 
 @pytest.mark.asyncio
@@ -101,3 +101,33 @@ async def test_ready_is_true_only_when_both_subjects_are(
     assert payload["status"] == store_status
     assert payload["latency_ms"] == 1.0
     assert payload["scheduler"]["status"] == sched_status
+
+
+async def test_the_doctor_verdict_reads_the_payload_the_route_actually_builds(monkeypatch):
+    """The defect this closes was a fixture the route never emits.
+
+    The doctor tests hand-write readiness bodies, so one missing field there is invisible.
+    Building the body the way the route does and feeding it to the verdict is what ties the
+    two ends together.
+    """
+    import json
+
+    from lionagi.cli.doctor import _readiness_verdict
+
+    for facts, expected in (
+        ({"started_at": None, "last_tick_completed_at": None}, "warn"),
+        (
+            {"started_at": time.time() - 10_000, "last_tick_completed_at": time.time() - 9_000},
+            "warn",
+        ),
+        ({"started_at": time.time() - 100, "last_tick_completed_at": time.time() - 1}, "ok"),
+    ):
+        sched = _probe(monkeypatch, **facts)
+        store = {"status": "healthy", "detail": "store answered"}
+        payload = {
+            **store,
+            "scheduler": sched,
+            "ready": store["status"] == "healthy" and sched["status"] == "advancing",
+        }
+        verdict = _readiness_verdict("http://x/api/admin/readiness", json.dumps(payload).encode())
+        assert verdict["status"] == expected, (facts, sched["status"], verdict)

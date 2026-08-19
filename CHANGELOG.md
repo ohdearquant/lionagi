@@ -79,8 +79,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   new `scheduler` object carries the verdict, when a tick last completed, the stall threshold and
   the tick-loop restart count; and a new `ready` boolean is true only when both subjects are. The
   store answering a bounded indexed read was never evidence that anything fires, and `li doctor`
-  now warns instead of reporting the daemon ready when the store is healthy and the scheduler has
-  stalled. A daemon that does not report the field is treated as before rather than as stalled.
+  now warns instead of reporting the daemon ready when the daemon does not report itself ready, so
+  a scheduler state this build has never heard of cannot read as healthy either. A daemon that does
+  not report the field at all is treated as before. The recorded failure is reported as its
+  exception class rather than its message, since readiness is served to anyone who can reach the
+  port and a message can carry paths and connection details.
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
   and `DataClass` now discover inherited instance fields through one ordered dataclass path,

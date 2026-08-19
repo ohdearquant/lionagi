@@ -135,11 +135,13 @@ def scheduler_probe() -> dict[str, Any]:
     and a scheduler that fires schedules are two subjects, and the incident this exists
     for is the one where the first was true and the second was not for hours.
     """
-    from lionagi.studio.scheduler.engine import _TICK_INTERVAL, scheduler
+    from lionagi.studio.scheduler.engine import scheduler
 
     facts = scheduler.liveness()
     now = time.time()
-    threshold = max(_TICK_INTERVAL * SCHEDULER_STALL_INTERVALS, SCHEDULER_STALL_FLOOR_S)
+    # The interval comes from the same report as the timestamps it is compared against, so the
+    # two cannot describe different engines.
+    threshold = max(facts["tick_interval_s"] * SCHEDULER_STALL_INTERVALS, SCHEDULER_STALL_FLOOR_S)
     result: dict[str, Any] = {
         "status": "unknown",
         "detail": "",

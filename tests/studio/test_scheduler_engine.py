@@ -3245,6 +3245,84 @@ async def _supervised_engine(monkeypatch, ticks: list):
     return engine
 
 
+@pytest.mark.asyncio
+async def test_a_cancel_inside_startup_recovery_does_not_cost_the_later_passes(monkeypatch):
+    """Recovery repairs durable state, so abandoning the rest of it leaves half-repairs behind."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    ran: list = []
+
+    async def _cancelled_pass():
+        ran.append("first")
+        raise asyncio.CancelledError
+
+    async def _second():
+        ran.append("second")
+
+    async def _third():
+        ran.append("third")
+
+    monkeypatch.setattr(engine, "_recover_undispatched_fires", _cancelled_pass)
+    monkeypatch.setattr(engine, "_reconcile_dispatched_orphans", _second)
+    monkeypatch.setattr(engine, "_check_missed_fires", _third)
+
+    await engine.start()
+    try:
+        await _until(lambda: len(ticks) >= 1)
+        assert ran == ["first", "second", "third"]
+        assert engine._tick_loop_restarts == 0
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_inter_tick_wait_neither_ends_the_loop_nor_skips_the_delay(
+    monkeypatch,
+):
+    """Absorbing a cancel and returning early let a stream of them drive the tick in a tight loop."""
+    from lionagi.studio.scheduler import engine as engine_mod
+
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    monkeypatch.setattr(engine_mod, "_TICK_INTERVAL", 0.2)
+
+    await engine.start()
+    try:
+        await _until(lambda: len(ticks) >= 1)
+        started = time.monotonic()
+        for _ in range(5):
+            engine._task.cancel()
+            await asyncio.sleep(0.01)
+        # The wait is measured against its own deadline, so five cancels cannot buy a sixth tick.
+        assert len(ticks) == 1, ticks
+        assert engine._tick_loop_restarts == 0
+        await _until(lambda: len(ticks) >= 2, timeout=2.0)
+        assert time.monotonic() - started >= 0.15
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_tick_loop_failure_reports_its_class_without_its_message(monkeypatch):
+    """Readiness serves this to anyone who can reach the port, and messages carry paths."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+
+    async def _exploding_loop():
+        raise RuntimeError("/Users/someone/.lionagi/state.db is unreachable at host:5432")
+
+    monkeypatch.setattr(engine, "_tick_loop", _exploding_loop)
+
+    await engine.start()
+    try:
+        await _until(lambda: engine._tick_loop_restarts >= 1)
+        failure = engine.liveness()["last_failure"]
+        assert failure == "RuntimeError"
+        assert "state.db" not in failure
+    finally:
+        await engine.stop()
+
+
 @pytest.mark.parametrize("death", ("returns", "raises"))
 @pytest.mark.asyncio
 async def test_a_tick_loop_that_ends_while_running_is_replaced(monkeypatch, death):
@@ -3388,11 +3466,16 @@ async def test_stop_ends_the_loop_rather_than_restarting_it(monkeypatch):
     ticks: list = []
     engine = await _supervised_engine(monkeypatch, ticks)
     await engine.start()
-    await _until(lambda: len(ticks) >= 1)
-    await engine.stop()
+    try:
+        await _until(lambda: len(ticks) >= 1)
+        await engine.stop()
 
-    assert engine._task is None
-    settled = len(ticks)
-    await asyncio.sleep(0.05)
-    assert len(ticks) == settled
-    assert engine._tick_loop_restarts == 0
+        assert engine._task is None
+        settled = len(ticks)
+        await asyncio.sleep(0.05)
+        assert len(ticks) == settled
+        assert engine._tick_loop_restarts == 0
+    finally:
+        # stop() is idempotent, so this only matters when an assertion above never reached it:
+        # a live loop outliving its test runs during every later one.
+        await engine.stop()
