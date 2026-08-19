@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from tests._scheduler_claims import fire_with_claim
+
 
 def _minimal_schedule(**overrides) -> dict:
     base = {
@@ -594,7 +596,7 @@ async def test_fire_threshold_schedule_stamps_last_alert_at_after_run_persisted(
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
-        await engine._fire(schedule, "run-alert-1", trigger_context=_threshold_ctx())
+        await fire_with_claim(engine, schedule, "run-alert-1", trigger_context=_threshold_ctx())
 
     svc.create_schedule_run.assert_not_awaited()
     svc.create_schedule_run_and_advance.assert_awaited_once()
@@ -624,7 +626,7 @@ async def test_fire_create_invocation_failure_does_not_stamp_last_alert_at():
     )
 
     with pytest.raises(RuntimeError, match="db unavailable"):
-        await engine._fire(schedule, "run-fail-inv", trigger_context=_threshold_ctx())
+        await fire_with_claim(engine, schedule, "run-fail-inv", trigger_context=_threshold_ctx())
 
     svc.create_schedule_run.assert_not_awaited()
     assert not _last_alert_calls(svc)
@@ -653,7 +655,7 @@ async def test_fire_invalid_action_still_stamps_last_alert_at_after_failed_run_p
         "lionagi.studio.scheduler.subprocess.build_argv",
         side_effect=ValueError("bad action_kind"),
     ):
-        await engine._fire(schedule, "run-alert-2", trigger_context=_threshold_ctx())
+        await fire_with_claim(engine, schedule, "run-alert-2", trigger_context=_threshold_ctx())
 
     svc.create_schedule_run.assert_not_awaited()
     svc.create_schedule_run_and_advance.assert_awaited_once()
@@ -687,7 +689,8 @@ async def test_fire_invalid_action_releases_threshold_cooldown_claim():
         "lionagi.studio.scheduler.subprocess.build_argv",
         side_effect=ValueError("bad action_kind"),
     ):
-        await engine._fire(
+        await fire_with_claim(
+            engine,
             schedule,
             "run-alert-invalid",
             trigger_context=_threshold_ctx(),
@@ -729,7 +732,8 @@ async def test_fire_success_releases_threshold_cooldown_claim():
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
-        await engine._fire(
+        await fire_with_claim(
+            engine,
             schedule,
             "run-alert-success",
             trigger_context=_threshold_ctx(),
@@ -767,7 +771,9 @@ async def test_fire_chain_child_does_not_restamp_last_alert_at():
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
-        await engine._fire(schedule, "run-chain-1", trigger_context=_threshold_ctx(), chain_depth=1)
+        await fire_with_claim(
+            engine, schedule, "run-chain-1", trigger_context=_threshold_ctx(), chain_depth=1
+        )
 
     assert not _last_alert_calls(svc)
 
@@ -792,7 +798,9 @@ async def test_fire_non_threshold_schedule_never_stamps_last_alert_at():
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
-        await engine._fire(schedule, "run-no-threshold", trigger_context={"scheduled": True})
+        await fire_with_claim(
+            engine, schedule, "run-no-threshold", trigger_context={"scheduled": True}
+        )
 
     assert not _last_alert_calls(svc)
 

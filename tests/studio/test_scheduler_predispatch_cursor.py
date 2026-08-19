@@ -25,6 +25,7 @@ import pytest
 from lionagi.state.reasons import RunReasons
 from lionagi.studio.scheduler.engine import SchedulerEngine
 from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult
+from tests._scheduler_claims import fire_with_claim
 
 CURSOR_AT_TICK_START = "2026-07-07T09:00:00Z"
 FIRST_EVENT_AT = "2026-07-07T10:00:00Z"
@@ -302,7 +303,8 @@ async def test_cancellation_before_launch_leaves_the_run_for_startup_recovery():
         patch("lionagi.studio.scheduler.subprocess.spawn_and_wait", new=_cancel_before_launch),
     ):
         with pytest.raises(asyncio.CancelledError):
-            await engine._fire(
+            await fire_with_claim(
+                engine,
                 schedule,
                 "run-cancel-pre",
                 trigger_context={"github_events": [_item(1, FIRST_EVENT_AT).event]},
@@ -334,7 +336,8 @@ async def test_cancellation_after_launch_still_records_a_cancelled_run():
         patch("lionagi.studio.scheduler.subprocess.spawn_and_wait", new=_cancel_after_launch),
     ):
         with pytest.raises(asyncio.CancelledError):
-            await engine._fire(
+            await fire_with_claim(
+                engine,
                 schedule,
                 "run-cancel-post",
                 trigger_context={"github_events": [_item(1, FIRST_EVENT_AT).event]},

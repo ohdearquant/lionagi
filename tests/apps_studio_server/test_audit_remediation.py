@@ -14,6 +14,8 @@ fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
 
 import lionagi.state.db as state_db_mod
+from lionagi.state.db import NO_CURSOR_CLAIM
+from tests._scheduler_claims import fire_with_claim
 
 # Helpers
 
@@ -136,7 +138,9 @@ class TestSchedulerFireTaskLifecycle:
 
         # Inject a tracked task directly via _tracked_fire
         with patch.object(engine, "_fire", side_effect=fake_fire):
-            task = engine._tracked_fire({}, "run_id", trigger_context={})
+            task = engine._tracked_fire(
+                {}, "run_id", trigger_context={}, expect_next_fire_at=NO_CURSOR_CLAIM
+            )
 
         # Task is still running — should be in the set
         await fired.wait()
@@ -283,7 +287,7 @@ class TestFireBuildFailureRecorded:
         schedule = _interval_schedule(action_kind="totally-bogus")  # same id
 
         # Must NOT raise (no LookupError leaking out) and must return cleanly.
-        await engine._fire(schedule, run_id, trigger_context={})
+        await fire_with_claim(engine, schedule, run_id, trigger_context={})
 
         async with StateDB() as db:
             run = await db.get_schedule_run(run_id)
@@ -436,7 +440,9 @@ class TestFireCancellationRecorded:
 
         engine = SchedulerEngine()
         run_id = "run-cancel"
-        engine._tracked_fire(_interval_schedule(), run_id, trigger_context={})
+        engine._tracked_fire(
+            _interval_schedule(), run_id, trigger_context={}, expect_next_fire_at=NO_CURSOR_CLAIM
+        )
 
         await started.wait()  # row created, now inside spawn
         await engine.stop()  # cancels + awaits the fire task
