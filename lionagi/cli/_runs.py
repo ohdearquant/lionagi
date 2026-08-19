@@ -549,12 +549,25 @@ async def _teardown_common(
         # the resuming leg builds its own -- so leaving it here means the eventual
         # terminal write reports a clean run over a transcript missing part of itself.
         if message_loss:
-            # Serialized, because the merge refuses a nested patch value: sqlite and
-            # postgres merge nested objects differently and it will not persist state
-            # that depends on the backend.
-            await db.merge_session_node_metadata(
-                session_id, {"message_persist_loss_json": json.dumps(message_loss)}
-            )
+            try:
+                # Serialized, because the merge refuses a nested patch value: sqlite and
+                # postgres merge nested objects differently and it will not persist state
+                # that depends on the backend.
+                await db.merge_session_node_metadata(
+                    session_id, {"message_persist_loss_json": json.dumps(message_loss)}
+                )
+            except Exception:
+                # This path's job is to defer, and the caller reads the status it
+                # returns to decide whether to resume. Letting a bookkeeping write
+                # decide that would trade a run that resumes for one that hangs
+                # unresumed, to save an annotation. Loud, because the annotation
+                # existed to stop exactly this kind of silent loss.
+                _log.exception(
+                    "Could not record %d lost message event(s) for deferred session "
+                    "%s; the resuming leg's terminal row will not carry them",
+                    message_loss["lost"],
+                    session_id,
+                )
         return status
 
     all_msgs = await db.get_progression(session_prog_id)

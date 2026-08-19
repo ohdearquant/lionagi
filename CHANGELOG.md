@@ -82,6 +82,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   reporting only its own, because the leg that observed the earlier one is gone and its queue
   with it. And a run that failed on its own keeps its own failure: the loss is appended to the
   evidence either way and claims the reason code only when nothing else has.
+  Recording that carried loss cannot cost the handoff: the deferred path's job is to defer, and
+  the caller reads the status it returns to decide whether to resume, so a bookkeeping write that
+  fails is logged and the status stands rather than leaving a timed-out run unresumed.
 
   A flow invocation whose children all completed no longer reports a clean success when one of
   them lost messages. It reads the loss off the child's evidence rather than its reason code,

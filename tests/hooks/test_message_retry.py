@@ -558,3 +558,39 @@ async def test_the_loss_is_recorded_on_a_run_that_failed_for_its_own_reasons(tmp
     assert out["row"]["status_reason_code"] == "run.failed.exception"
     kinds = {ref["kind"] for ref in (out["row"]["status_evidence_refs"] or [])}
     assert "message_persist_loss" in kinds
+
+
+async def test_a_failed_loss_record_does_not_cost_the_deferred_leg_its_handoff(
+    tmp_path, monkeypatch, caplog
+):
+    """The annotation must never decide whether a timed-out run gets resumed.
+
+    The caller reads this status to choose the auto-resume path, so a bookkeeping
+    write that raises here would trade a run that resumes for one that hangs
+    unresumed. Losing the record is the lesser failure, and it is logged rather
+    than swallowed because silent loss is what the record exists to stop.
+    """
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / "carry-fails.db"
+    sid = "sess-carry-fails"
+    logger = logging.getLogger("test")
+
+    async def _refuse(self, *args, **kwargs):
+        raise RuntimeError("node metadata write refused")
+
+    monkeypatch.setattr(StateDB, "merge_session_node_metadata", _refuse)
+
+    with caplog.at_level(logging.ERROR, logger="lionagi.cli"):
+        final = await _teardown_on(
+            path,
+            sid,
+            [await _deferred_queue(_RefusingDB(), logger)],
+            status="timed_out",
+            defer_terminal=True,
+        )
+
+    assert final == "timed_out", "the caller reads this to decide whether to resume"
+    row = await _session_row(path, sid)
+    assert row["status"] == "running", "the deferred leg still writes no terminal status"
+    assert any("lost message event" in r.getMessage() for r in caplog.records)
