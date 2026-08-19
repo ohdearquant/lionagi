@@ -272,7 +272,7 @@ async def _spawn_detached(
     """Spawn the process and update the invocation row when it exits."""
     from lionagi.state.reasons import RunReasons
 
-    from ..scheduler.subprocess import spawn_and_wait
+    from ..scheduler.subprocess import SubprocessDeadlineExceededError, spawn_and_wait
 
     output_tail = ""
     try:
@@ -314,6 +314,9 @@ async def _spawn_detached(
                 inv_id,
             )
         raise
+    except SubprocessDeadlineExceededError as exc:
+        status, reason = "timed_out", RunReasons.TIMED_OUT_DEADLINE
+        output_tail = str(exc)
     except Exception:
         _log.exception("Detached launch failed for invocation %s", inv_id)
         status, reason = "failed", RunReasons.FAILED_EXCEPTION
@@ -325,7 +328,11 @@ async def _spawn_detached(
                 inv_id,
                 new_status=status,
                 reason_code=reason,
-                reason_summary=_failure_reason_summary(status, output_tail),
+                reason_summary=(
+                    output_tail
+                    if status == "timed_out"
+                    else _failure_reason_summary(status, output_tail)
+                ),
                 evidence_refs=[],
                 source="executor",
                 actor=inv_id,

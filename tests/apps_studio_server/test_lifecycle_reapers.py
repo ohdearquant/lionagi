@@ -6,12 +6,14 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import time
 import uuid
 from pathlib import Path
 
 import pytest
+from sqlalchemy import event, text
 
 import lionagi.state.db as state_db_mod
 from lionagi.state.db import StateDB
@@ -172,6 +174,122 @@ def test_reap_stale_invocations_skips_recent(tmp_path, monkeypatch):
 
     inv = run_async(_get_invocation(db_path, iid))
     assert inv["status"] == "running"
+
+
+def test_reap_stale_invocations_reaches_oldest_row_past_first_thousand(tmp_path, monkeypatch):
+    """A stale invocation cannot hide behind 1,000 newer running rows.
+
+    ``list_invocations`` sorts newest-first and the lifecycle pass historically
+    capped that list at 1,000. A busy daemon could therefore leave its oldest
+    crashed invocation running forever as long as at least 1,000 newer rows
+    remained active.
+    """
+    db_path = tmp_path / "state.db"
+    _monkey_db(monkeypatch, db_path)
+
+    now = time.time()
+    stale_id = "stale-behind-first-page"
+    rows = [
+        {
+            "id": f"recent-{index:04d}",
+            "skill": "test:skill",
+            "started_at": now - 60,
+            "status": "running",
+            "session_count": 1,
+            "created_at": now,
+            "updated_at": now,
+        }
+        for index in range(1000)
+    ]
+    rows.append(
+        {
+            "id": stale_id,
+            "skill": "test:skill",
+            "started_at": now - 8000,
+            "status": "running",
+            "session_count": 1,
+            "created_at": now - 8000,
+            "updated_at": now - 8000,
+        }
+    )
+
+    async def _seed() -> None:
+        async with StateDB(db_path) as db:
+            async with db.transaction() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO invocations "
+                        "(id, skill, started_at, status, session_count, created_at, updated_at) "
+                        "VALUES (:id, :skill, :started_at, :status, :session_count, "
+                        ":created_at, :updated_at)"
+                    ),
+                    rows,
+                )
+
+    run_async(_seed())
+
+    from lionagi.studio.services.lifecycle import reap_stale_invocations
+
+    count = run_async(reap_stale_invocations(deadline_seconds=7200))
+
+    assert count == 1
+    stale = run_async(_get_invocation(db_path, stale_id))
+    assert stale is not None
+    assert stale["status"] == "timed_out"
+
+
+def test_invocation_reaper_keyset_uses_bounded_composite_index_plan(tmp_path):
+    """A later keyset page must seek into running rows, not rescan them.
+
+    This captures the exact statement emitted by StateDB and explains that
+    statement on disk. The top-level invocation search must use the composite
+    ``(status, started_at, id)`` index with a row-value range and must not
+    allocate a temporary B-tree for its ORDER BY. A correlated schedule-run
+    subquery has its own plan nodes and is deliberately outside this assertion.
+    """
+    db_path = tmp_path / "state.db"
+
+    async def _capture_query() -> tuple[str, tuple[object, ...]]:
+        async with StateDB(db_path) as db:
+            await db.create_invocation(
+                {
+                    "id": "reaper-plan-row",
+                    "skill": "test:skill",
+                    "started_at": 2.0,
+                    "status": "running",
+                    "session_count": 1,
+                }
+            )
+            captured: list[tuple[str, tuple[object, ...]]] = []
+
+            def _capture(_conn, _cursor, statement, parameters, _context, _executemany):
+                if "FROM invocations inv" in statement and "inv.status = 'running'" in statement:
+                    captured.append((statement, tuple(parameters)))
+
+            event.listen(db._engine.sync_engine, "before_cursor_execute", _capture)
+            try:
+                await db.list_running_invocations_for_reaping(
+                    after_started_at=1.0,
+                    after_id="cursor-id",
+                    limit=500,
+                )
+            finally:
+                event.remove(db._engine.sync_engine, "before_cursor_execute", _capture)
+        assert len(captured) == 1
+        return captured[0]
+
+    statement, parameters = run_async(_capture_query())
+    with sqlite3.connect(db_path) as conn:
+        plan = list(conn.execute(f"EXPLAIN QUERY PLAN {statement}", parameters))
+
+    top_level = [row[3] for row in plan if row[1] == 0]
+    invocation_search = next(detail for detail in top_level if "inv" in detail.lower())
+    compact_search = invocation_search.replace(" ", "").lower()
+
+    assert "idx_invocations_reaper" in invocation_search
+    assert "(started_at,id)>(?,?)" in compact_search
+    assert "scan inv" not in invocation_search.lower()
+    assert not any("USE TEMP B-TREE" in detail for detail in top_level), plan
 
 
 def test_reap_stale_invocations_zero_session_grace(tmp_path, monkeypatch):
@@ -367,14 +485,14 @@ def test_reap_stale_invocations_per_kind_override(tmp_path, monkeypatch):
     agent_iid = run_async(_seed_invocation(db_path, started_at=started, session_count=1))
     flow_iid = run_async(_seed_invocation(db_path, started_at=started, session_count=1))
 
-    # Patch list_invocations to inject action_kind into the returned rows
+    # Patch the reaper projection to inject action_kind into the returned rows
     # (the invocations table currently has no action_kind column; the per-kind
-    # lookup is tested here at the reaper level via the list_invocations result).
+    # lookup is tested here at the reaper level via its projected page).
 
-    _original_list = state_db_mod.StateDB.list_invocations
+    _original_list = state_db_mod.StateDB.list_running_invocations_for_reaping
 
-    async def _patched_list(self, *, skill=None, status=None, limit=100, offset=0):
-        rows = await _original_list(self, skill=skill, status=status, limit=limit, offset=offset)
+    async def _patched_list(self, **kwargs):
+        rows = await _original_list(self, **kwargs)
         for row in rows:
             if row["id"] == agent_iid:
                 row["action_kind"] = "agent"
@@ -382,7 +500,7 @@ def test_reap_stale_invocations_per_kind_override(tmp_path, monkeypatch):
                 row["action_kind"] = "flow"
         return rows
 
-    monkeypatch.setattr(state_db_mod.StateDB, "list_invocations", _patched_list)
+    monkeypatch.setattr(state_db_mod.StateDB, "list_running_invocations_for_reaping", _patched_list)
 
     from lionagi.studio.services.lifecycle import reap_stale_invocations
 

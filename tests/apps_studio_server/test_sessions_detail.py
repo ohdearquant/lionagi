@@ -93,6 +93,32 @@ async def overwrite_session_node_metadata(db_path: Path, session_id: str, raw: s
         await db.commit()
 
 
+class _RowsCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def fetchall(self):
+        return self._rows
+
+
+class _CountingMessageDB:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    async def execute(self, sql, _params=()):
+        self.calls.append(sql)
+        return _RowsCursor([])
+
+
+async def test_full_history_role_counts_use_one_json_table_query():
+    from lionagi.studio.services.sessions import _fetch_role_counts
+
+    db = _CountingMessageDB()
+
+    assert await _fetch_role_counts(db, [f"message-{index}" for index in range(1_201)]) == {}
+    assert len(db.calls) == 1
+
+
 # Test 1.1 — falsy / unparseable inputs return None
 
 

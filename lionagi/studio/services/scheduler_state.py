@@ -9,8 +9,11 @@ SchedulerStateService.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
 from lionagi.state.db import TERMINAL_RUN_STATUSES, StateDB
@@ -102,20 +105,70 @@ class SchedulerStateService(Protocol):
 
 
 class _DBSchedulerStateService:
-    """Real implementation — each method opens a fresh StateDB context."""
+    """Real implementation with optional daemon-lifetime DB reuse."""
+
+    def __init__(self, *, persistent: bool = False) -> None:
+        self.persistent = persistent
+        self._db: StateDB | None = None
+        self._open_lock = asyncio.Lock()
+
+    async def open(self) -> None:
+        if not self.persistent:
+            return
+        # Resolve the configured store on every call instead of binding it once.
+        # A daemon keeps one database for its whole life, but the store is
+        # selectable per process, and a connection held under the previous URL
+        # would keep answering reads and writes against a database nobody asked
+        # for -- silently, since both the stale and the current one are real.
+        url = StateDB().url
+        if self._db is not None and self._db.url == url:
+            return
+        async with self._open_lock:
+            if self._db is not None and self._db.url == url:
+                return
+            stale, self._db = self._db, None
+            if stale is not None:
+                await stale.close()
+            db = StateDB(url=url)
+            try:
+                await db.open()
+            except BaseException:
+                await db.close()
+                raise
+            self._db = db
+
+    async def close(self) -> None:
+        async with self._open_lock:
+            db, self._db = self._db, None
+        if db is not None:
+            await db.close()
+
+    @asynccontextmanager
+    async def _db_context(self) -> AsyncIterator[StateDB]:
+        if self.persistent:
+            await self.open()
+            assert self._db is not None
+            yield self._db
+            return
+        async with StateDB() as db:
+            yield db
 
     async def get_schedule(self, schedule_id: str) -> dict[str, Any] | None:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await db.get_schedule(schedule_id)
 
     async def list_schedules(self, *, enabled: bool | None = None) -> list[dict[str, Any]]:
-        async with StateDB() as db:
-            return await db.list_schedules(enabled=enabled)
+        async with self._db_context() as db:
+            # Scheduler correctness cannot inherit StateDB's public 100-row
+            # page default: an omitted enabled row would never be evaluated.
+            # The unbounded per-tick scan is the accepted cost. Paging cannot
+            # replace it: the page orders by updated_at, and firing writes it.
+            return await db.list_schedules(enabled=enabled, limit=None)
 
     async def update_schedule(
         self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
     ) -> None:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             await db.update_schedule(
                 schedule_id, guard_cursor_forward=guard_cursor_forward, **fields
             )
@@ -128,7 +181,7 @@ class _DBSchedulerStateService:
         statuses: tuple[str, ...] = TERMINAL_RUN_STATUSES,
         fired_after: float | None = None,
     ) -> int:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await db.count_schedule_runs(
                 schedule_id,
                 chain_depth=chain_depth,
@@ -137,19 +190,19 @@ class _DBSchedulerStateService:
             )
 
     async def sum_schedule_spend(self, schedule_id: str) -> dict[str, Any]:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await db.sum_schedule_spend(schedule_id)
 
     async def metric_value(self, metric: str, window_start: float) -> float:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await db.metric_value(metric, window_start)
 
     async def metric_unreported_sessions(self, metric: str, window_start: float) -> int:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await db.metric_unreported_sessions(metric, window_start)
 
     async def create_schedule_run(self, run: dict[str, Any]) -> None:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             await db.create_schedule_run(run)
 
     async def create_schedule_run_and_advance(
@@ -159,21 +212,21 @@ class _DBSchedulerStateService:
         schedule_id: str,
         schedule_fields: dict[str, Any],
     ) -> None:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             await db.create_schedule_run_and_advance(
                 run, schedule_id=schedule_id, schedule_fields=schedule_fields
             )
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await db.schedule_run_exists_since(schedule_id, since)
 
     async def list_undispatched_schedule_runs(self) -> list[dict[str, Any]]:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await db.list_undispatched_schedule_runs()
 
     async def list_dispatched_running_schedule_runs(self) -> list[dict[str, Any]]:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await db.list_dispatched_running_schedule_runs()
 
     async def tombstone_and_replace_schedule_run(
@@ -183,7 +236,7 @@ class _DBSchedulerStateService:
         *,
         expected_orphan_status: str = "running",
     ) -> bool:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await db.tombstone_and_replace_schedule_run(
                 orphan_id,
                 replacement_run,
@@ -191,23 +244,23 @@ class _DBSchedulerStateService:
             )
 
     async def update_schedule_run(self, run_id: str, **fields: Any) -> None:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             await db.update_schedule_run(run_id, **fields)
 
     async def create_invocation(self, invocation: dict[str, Any]) -> None:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             await db.create_invocation(invocation)
 
     async def update_invocation(self, inv_id: str, **fields: Any) -> None:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             await db.update_invocation(inv_id, **fields)
 
     async def get_invocation(self, invocation_id: str) -> dict[str, Any] | None:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await db.get_invocation(invocation_id)
 
     async def compute_files_overlap(self, invocation_id: str, *, top_n: int = 5) -> dict[str, Any]:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await _coordination.compute_files_overlap(db, invocation_id, top_n=top_n)
 
     async def update_status(
@@ -225,7 +278,7 @@ class _DBSchedulerStateService:
         expected_statuses: set[str | None] | frozenset[str | None] | None = None,
         extra_fields: dict[str, Any] | None = None,
     ) -> bool:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await db.update_status(
                 entity_type,
                 entity_id,
@@ -241,7 +294,7 @@ class _DBSchedulerStateService:
             )
 
     async def list_sessions_for_invocation(self, invocation_id: str) -> list[dict[str, Any]]:
-        async with StateDB() as db:
+        async with self._db_context() as db:
             return await db.list_sessions_for_invocation(invocation_id)
 
 
