@@ -405,6 +405,19 @@ owning schedule's cursor together, so a crash can only discard an occurrence
 that was never durably recorded. It can never leave the cursor pointing before
 one that was, which would make a restart re-fire it.
 
+The cursor advance also carries `expect_next_fire_at`, and it runs first: the
+occurrence is written only if the schedule still holds the cursor the caller
+selected on, and a caller that lost it gets `False` having written nothing.
+Selecting a due schedule and firing it are separate statements, and every
+admission gate above this one lives in the firing process's own memory, so
+without this predicate two schedulers reading one due row both commit, each
+with its own run id and each launching a child. The predicate is NULL-safe
+because a schedule with no cursor is a real state, and it is required rather
+than defaulted so that a new caller has to decide what it is claiming instead
+of silently claiming nothing. It bounds the race it names and no more: if the
+update carries no new `next_fire_at`, the cursor does not move and the next
+caller holds the same claim.
+
 `_build_update_schedule_stmt` is the single choke point for both the field
 allowlist and the SQL shape, shared by `update_schedule` and by the folded-in
 update inside `create_schedule_run_and_advance`, so the two write paths cannot

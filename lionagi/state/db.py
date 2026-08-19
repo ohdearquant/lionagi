@@ -127,6 +127,9 @@ def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
+# Distinguishes "no cursor predicate" from a predicate whose expected value is NULL.
+_NO_CURSOR_PREDICATE = object()
+
 # Shape of the schema this code applies; ``_apply_schema`` stamps it into ``schema_meta.version`` on
 # every open, so the recorded version describes the database after migrations. Bump it whenever a
 # migration changes the shape a reader would see.
@@ -3733,6 +3736,7 @@ class StateDB:
         fields: dict[str, Any],
         *,
         guard_cursor_forward: bool = False,
+        expect_next_fire_at: Any = _NO_CURSOR_PREDICATE,
     ):
         """Validate and build the ``UPDATE schedules`` statement and params, no transaction."""
         bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
@@ -3774,7 +3778,13 @@ class StateDB:
                 bind_params.append(bindparam(k, type_=JSON))
         params = dict(fields)
         params["_id"] = schedule_id
-        stmt = text(f"UPDATE schedules SET {', '.join(sets_parts)} WHERE id = :_id")  # noqa: S608
+        where = "id = :_id"
+        if expect_next_fire_at is not _NO_CURSOR_PREDICATE:
+            # NULL-safe on purpose: IS compares NULL to NULL, so a schedule with no cursor is
+            # guarded on the same terms as one that has it.
+            where += " AND next_fire_at IS :_expect_nfa"
+            params["_expect_nfa"] = expect_next_fire_at
+        stmt = text(f"UPDATE schedules SET {', '.join(sets_parts)} WHERE {where}")  # noqa: S608
         if bind_params:
             stmt = stmt.bindparams(*bind_params)
         return stmt, params
@@ -3843,15 +3853,28 @@ class StateDB:
         *,
         schedule_id: str,
         schedule_fields: dict[str, Any],
-    ) -> None:
-        """Insert one occurrence row and advance the schedule's cursor in a single transaction."""
+        expect_next_fire_at: float | None,
+    ) -> bool:
+        """Insert one occurrence row and advance the schedule's cursor in a single transaction.
+
+        Returns False when *expect_next_fire_at* no longer matches, having written nothing.
+        """
         run_stmt, run_params = self._build_schedule_run_insert_stmt(run)
         # Engine-only path, so the monotonic cursor guard always applies: this value came from a
         # poll snapshot and must never walk an operator's move backwards.
         sched_stmt, sched_params = self._build_update_schedule_stmt(
-            schedule_id, schedule_fields, guard_cursor_forward=True
+            schedule_id,
+            schedule_fields,
+            guard_cursor_forward=True,
+            expect_next_fire_at=expect_next_fire_at,
         )
         async with self._tx() as conn:
+            # The cursor claim goes FIRST so a lost race writes no occurrence at all. Selecting a
+            # due schedule and firing it are separate statements, so without this predicate two
+            # schedulers reading one due row both commit, each with its own run id.
+            result = await conn.execute(sched_stmt, sched_params)
+            if result.rowcount == 0:
+                return False
             await conn.execute(run_stmt, run_params)
             await self._initialize_managed_entity_in_tx(
                 conn,
@@ -3860,7 +3883,7 @@ class StateDB:
                 status=run_params["status"],
                 actor_id="create_schedule_run_and_advance",
             )
-            await conn.execute(sched_stmt, sched_params)
+        return True
 
     async def tombstone_and_replace_schedule_run(
         self,

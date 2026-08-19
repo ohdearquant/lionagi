@@ -57,7 +57,8 @@ class SchedulerStateService(Protocol):
         *,
         schedule_id: str,
         schedule_fields: dict[str, Any],
-    ) -> None: ...
+        expect_next_fire_at: float | None,
+    ) -> bool: ...
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool: ...
 
@@ -211,10 +212,14 @@ class _DBSchedulerStateService:
         *,
         schedule_id: str,
         schedule_fields: dict[str, Any],
-    ) -> None:
+        expect_next_fire_at: float | None,
+    ) -> bool:
         async with self._db_context() as db:
-            await db.create_schedule_run_and_advance(
-                run, schedule_id=schedule_id, schedule_fields=schedule_fields
+            return await db.create_schedule_run_and_advance(
+                run,
+                schedule_id=schedule_id,
+                schedule_fields=schedule_fields,
+                expect_next_fire_at=expect_next_fire_at,
             )
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:

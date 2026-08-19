@@ -193,9 +193,12 @@ async def test_max_runs_exhaustion_mid_batch_stops_cursor_before_undispatched(ca
     svc = _make_svc()
     fired = 0
 
-    async def _create_schedule_run_and_advance(_payload, *, schedule_id, schedule_fields):
+    async def _create_schedule_run_and_advance(
+        _payload, *, schedule_id, schedule_fields, expect_next_fire_at
+    ):
         nonlocal fired
         fired += 1
+        return True
 
     svc.create_schedule_run_and_advance = AsyncMock(side_effect=_create_schedule_run_and_advance)
     svc.count_schedule_runs = AsyncMock(side_effect=lambda *a, **k: fired)
@@ -399,9 +402,12 @@ async def test_undispatched_event_is_relisted_on_next_poll(monkeypatch, caplog):
     svc = _make_svc()
     fired = 0
 
-    async def _create_schedule_run_and_advance(_payload, *, schedule_id, schedule_fields):
+    async def _create_schedule_run_and_advance(
+        _payload, *, schedule_id, schedule_fields, expect_next_fire_at
+    ):
         nonlocal fired
         fired += 1
+        return True
 
     svc.create_schedule_run_and_advance = AsyncMock(side_effect=_create_schedule_run_and_advance)
     svc.count_schedule_runs = AsyncMock(side_effect=lambda *a, **k: fired)
@@ -483,8 +489,11 @@ async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(
     svc = _make_svc()
     fired_prs: list[int] = []
 
-    async def _create_schedule_run_and_advance(payload, *, schedule_id, schedule_fields):
+    async def _create_schedule_run_and_advance(
+        payload, *, schedule_id, schedule_fields, expect_next_fire_at
+    ):
         fired_prs.append(payload["trigger_context"]["github_events"][0]["pr_number"])
+        return True
 
     svc.create_schedule_run_and_advance = AsyncMock(side_effect=_create_schedule_run_and_advance)
     svc.count_schedule_runs = AsyncMock(side_effect=lambda *a, **k: len(fired_prs))

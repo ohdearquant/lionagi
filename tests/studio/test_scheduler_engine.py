@@ -2592,9 +2592,12 @@ class _StatefulSvc:
     async def create_schedule_run(self, run):
         self.runs[run["id"]] = dict(run)
 
-    async def create_schedule_run_and_advance(self, run, *, schedule_id, schedule_fields):
+    async def create_schedule_run_and_advance(
+        self, run, *, schedule_id, schedule_fields, expect_next_fire_at
+    ):
         self.runs[run["id"]] = dict(run)
         self.schedule_updates.append((schedule_id, dict(schedule_fields)))
+        return True
 
     async def schedule_run_exists_since(self, schedule_id, since):
         return any(

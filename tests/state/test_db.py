@@ -20,6 +20,22 @@ from sqlalchemy import text
 
 from lionagi.state.db import SCHEMA_VERSION, StateDB
 
+
+async def _claim_and_advance(db, run, *, schedule_id, schedule_fields):
+    """Write an occurrence holding whatever cursor the schedule currently has.
+
+    These tests predate the cursor claim and are about atomicity, so they always hold it;
+    the claim itself is covered in tests/state/test_schedule_due_cursor_claim.py.
+    """
+    current = (await db.get_schedule(schedule_id))["next_fire_at"]
+    return await db.create_schedule_run_and_advance(
+        run,
+        schedule_id=schedule_id,
+        schedule_fields=schedule_fields,
+        expect_next_fire_at=current,
+    )
+
+
 # Fixtures
 
 
@@ -192,7 +208,8 @@ async def test_managed_entity_creations_write_initial_lifecycle_history(db: Stat
         "status": "running",
         "fired_at": time.time(),
     }
-    await db.create_schedule_run_and_advance(
+    await _claim_and_advance(
+        db,
         advanced_run,
         schedule_id=schedule_id,
         schedule_fields={"last_fired_at": time.time()},

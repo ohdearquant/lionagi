@@ -1861,6 +1861,7 @@ class SchedulerEngine:
         schedule_id: str,
         schedule_fields: dict[str, Any],
         supersedes_run_id: str | None,
+        expect_next_fire_at: float | None,
     ) -> bool:
         """Durably record one occurrence row: the choke point both write sites take."""
         if supersedes_run_id is not None:
@@ -1885,10 +1886,47 @@ class SchedulerEngine:
                     actor="scheduler_startup_recovery",
                 )
             return applied
-        await self._svc.create_schedule_run_and_advance(
-            run, schedule_id=schedule_id, schedule_fields=schedule_fields
+        # The cursor this fire was selected on is the claim: if another scheduler already advanced
+        # it, that scheduler owns this occurrence and nothing is written here.
+        return await self._svc.create_schedule_run_and_advance(
+            run,
+            schedule_id=schedule_id,
+            schedule_fields=schedule_fields,
+            expect_next_fire_at=expect_next_fire_at,
         )
-        return True
+
+    async def _abandon_refused_fire(
+        self, inv_id: str, schedule_id: str, *, orphan_id: str | None
+    ) -> None:
+        """Route a refused occurrence write to the reason that actually refused it."""
+        if orphan_id is not None:
+            await self._abandon_superseded_recovery_fire(inv_id, orphan_id=orphan_id)
+        else:
+            await self._abandon_lost_cursor_claim(inv_id, schedule_id=schedule_id)
+
+    async def _abandon_lost_cursor_claim(self, inv_id: str, *, schedule_id: str) -> None:
+        """Clean up a fire whose occurrence write lost the cursor claim to another scheduler."""
+        _log.info(
+            "Abandoning fire for invocation %s: schedule %s was already advanced past "
+            "this occurrence by another scheduler",
+            inv_id,
+            schedule_id,
+        )
+        await self._guarded_terminal_status(
+            "invocation",
+            inv_id,
+            new_status="cancelled",
+            reason_code=RunReasons.CANCELLED_STALE_AUTO,
+            reason_summary=(
+                f"Fire abandoned: another scheduler advanced schedule {schedule_id} "
+                "past this occurrence before this fire's own write landed, so that "
+                "scheduler owns it."
+            ),
+            evidence_refs=[{"kind": "schedule", "id": schedule_id}],
+            source="system",
+            actor="scheduler_cursor_claim",
+            extra_fields={"ended_at": time.time()},
+        )
 
     async def _abandon_superseded_recovery_fire(self, inv_id: str, *, orphan_id: str) -> None:
         """Clean up a recovery re-fire whose occurrence write was refused."""
@@ -2035,13 +2073,12 @@ class SchedulerEngine:
                     schedule_id=sid,
                     schedule_fields=failed_schedule_fields,
                     supersedes_run_id=supersedes_run_id,
+                    expect_next_fire_at=schedule.get("next_fire_at"),
                 )
                 if not written_occurrence:
                     # Abandon writes the invocation's cancelled terminal status, and the finally
                     # unregisters only after it, so a declared notify still fires.
-                    await self._abandon_superseded_recovery_fire(
-                        inv_id, orphan_id=supersedes_run_id
-                    )
+                    await self._abandon_refused_fire(inv_id, sid, orphan_id=supersedes_run_id)
                     return False
                 if rate_limit_claim is not None:
                     # The durable row now accounts for this fire across process
@@ -2147,9 +2184,10 @@ class SchedulerEngine:
                 schedule_id=sid,
                 schedule_fields=update_fields,
                 supersedes_run_id=supersedes_run_id,
+                expect_next_fire_at=schedule.get("next_fire_at"),
             )
             if not written_occurrence:
-                await self._abandon_superseded_recovery_fire(inv_id, orphan_id=supersedes_run_id)
+                await self._abandon_refused_fire(inv_id, sid, orphan_id=supersedes_run_id)
                 return False
             occurrence_committed = True
             if rate_limit_claim is not None:
