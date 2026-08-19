@@ -19,6 +19,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import pathlib
 import sys
 
 import pytest
@@ -755,20 +756,23 @@ class TestACredentialCannotReachTheCommandLine:
     # loudly and costs a line, where a new credential field must never pass quietly.
     _COUNTS_NOT_CREDENTIALS = frozenset({"max_thinking_tokens"})
 
-    @staticmethod
-    def _credential_fields(model: type) -> list[str]:
+    @classmethod
+    def _credential_fields(cls) -> list[tuple[type, str]]:
         return [
-            name
+            (model, name)
+            for model in _CLI_REQUEST_MODELS
             for name in model.model_fields
-            if name not in TestACredentialCannotReachTheCommandLine._COUNTS_NOT_CREDENTIALS
-            and cs._name_reads_as_credential(name)
+            if name not in cls._COUNTS_NOT_CREDENTIALS and cs._name_reads_as_credential(name)
         ]
 
-    @pytest.mark.parametrize("model", _CLI_REQUEST_MODELS, ids=lambda m: m.__name__)
-    def test_no_credential_field_declares_a_cli_flag(self, model):
+    def test_no_credential_field_declares_a_cli_flag(self):
+        """Enumerated, not pinned: a field pinned by name certifies nothing about the next one."""
+        found = self._credential_fields()
+        # Same test, or an enumeration that selects nothing passes and proves nothing.
+        assert found, "the vocabulary selected no field at all, so the assertion below is vacuous"
         emitted = [
-            f"{model.__name__}.{name}={(model.model_fields[name].json_schema_extra or {})['cli_flag']}"
-            for name in self._credential_fields(model)
+            f"{model.__name__}.{name}"
+            for model, name in found
             if "cli_flag" in (model.model_fields[name].json_schema_extra or {})
         ]
         assert not emitted, (
@@ -776,8 +780,26 @@ class TestACredentialCannotReachTheCommandLine:
             "from a path or a subcommand: " + ", ".join(emitted)
         )
 
-    def test_the_vocabulary_still_selects_a_real_credential_field(self):
-        """Without this the guard above passes by selecting nothing at all."""
-        from lionagi.providers.pi.cli import PiCodeRequest
+    def test_every_model_that_builds_argv_is_in_the_enumeration(self):
+        """A fourth provider adding a CLI request model must not walk past the guard above."""
+        import ast
 
-        assert "api_key" in self._credential_fields(PiCodeRequest)
+        builders = set()
+        root = pathlib.Path(cs.__file__).parent
+        sources = sorted(root.rglob("*.py"))
+        assert sources, "no provider sources found, so this discovery proves nothing"
+        for path in sources:
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+                names = {
+                    n.func.id
+                    for n in ast.walk(node)
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                }
+                if "build_declarative_cli_args" in names:
+                    builders.add(node.name)
+        assert builders, "found no class building declarative CLI args, so the compare is vacuous"
+        missing = builders - {m.__name__ for m in _CLI_REQUEST_MODELS}
+        assert not missing, f"request models build argv but are not guarded: {sorted(missing)}"
