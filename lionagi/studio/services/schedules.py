@@ -608,11 +608,20 @@ _RUN_RECORD_FIELDS = _RUN_VIEW_FIELDS + ("error_detail",)
 def _run_record(row: dict[str, Any]) -> dict[str, Any]:
     """One run as the single-run route serves it.
 
+    Built directly rather than on top of _run_view, because that one sanitises a
+    reported outcome summary and this surface must not. error_detail is the raw text
+    only when the occurrence is the layer that won; when a session or invocation
+    reported the failure instead, the summary IS the text, and replacing it with a
+    class would leave this route -- the one place raw text is reachable -- with no text
+    at all for exactly those runs.
+
     chain_children is a list surface nested inside a record, so it takes the run-list
     projection; absent rather than empty on a run that is itself a child.
     """
-    record = _run_view(row)
-    record.update({name: row[name] for name in _RUN_RECORD_FIELDS if name in row})
+    record = {name: row[name] for name in _RUN_RECORD_FIELDS if name in row}
+    record["error_class"] = _error_class_for(row)
+    if "outcome" in row:
+        record["outcome"] = row["outcome"]
     if "chain_children" in row:
         record["chain_children"] = [_run_summary(child) for child in row["chain_children"]]
     return record

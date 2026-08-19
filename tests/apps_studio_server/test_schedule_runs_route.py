@@ -1004,3 +1004,31 @@ def test_the_run_allow_list_serves_everything_the_client_declares():
     # outcome and error_class are computed by the projection rather than named in it.
     served = set(_RUN_RECORD_FIELDS) | {"outcome", "error_class"}
     assert not [name for name in declared if name not in served]
+
+
+def test_the_single_run_record_keeps_a_session_reported_summary(tmp_path, monkeypatch):
+    """The record route is the one place raw failure text is reachable, and when a
+    session is the winning layer the summary IS that text: the occurrence carries no
+    error_detail of its own, so classifying the summary here would leave this route with
+    nothing to show for exactly those runs. The list surface for the same run still
+    classifies it, which is what makes the split real rather than a leak."""
+    session = {
+        "id": "sess-1",
+        "status": _terminal_session_status(),
+        "status_reason_summary": f"PermissionError: {_RAW_ERROR_SENTINEL}",
+    }
+    schedule_id, run_id = _seed_run_linked_to(
+        monkeypatch,
+        tmp_path / "state.db",
+        invocation={"id": "inv-1", "status": _terminal_invocation_status()},
+        sessions=[session],
+    )
+    client = _make_client()
+
+    body = client.get(f"/api/schedules/runs/{run_id}").json()
+    assert body["outcome"]["source"] == "session"
+    assert _RAW_ERROR_SENTINEL in body["outcome"]["summary"]
+    assert body.get("error_detail") is None, "the occurrence has no text of its own here"
+
+    listed = client.get(f"/api/schedules/{schedule_id}/runs")
+    assert _RAW_ERROR_SENTINEL not in listed.text, "the list surface still classifies it"
