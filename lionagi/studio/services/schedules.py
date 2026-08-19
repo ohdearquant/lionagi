@@ -483,6 +483,31 @@ async def list_schedules(
     return rows
 
 
+# The schedule_runs columns the run-summary surfaces serve. The table also carries
+# operational columns no client reads: action arguments, resume packets, lease holders,
+# capability and library references. The API answers without a token when
+# LIONAGI_STUDIO_AUTH_TOKEN is unset, so rows are projected onto this list rather than
+# passed through, which also means a column added to the table later stays private until
+# someone names it here.
+_RUN_SUMMARY_FIELDS = (
+    "id",
+    "schedule_id",
+    "invocation_id",
+    "trigger_context",
+    "action_kind",
+    "status",
+    "exit_code",
+    "chain_depth",
+    "fired_at",
+    "ended_at",
+    "error_detail",
+)
+
+
+def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
+    return {name: row[name] for name in _RUN_SUMMARY_FIELDS if name in row}
+
+
 async def list_schedule_summary(
     *,
     enabled: bool | None = None,
@@ -509,7 +534,10 @@ async def list_schedule_summary(
             }
         else:
             run_summaries = {
-                schedule_id: {"state": "ok", "runs": runs_by_schedule[schedule_id]}
+                schedule_id: {
+                    "state": "ok",
+                    "runs": [_run_summary(run) for run in runs_by_schedule[schedule_id]],
+                }
                 for schedule_id in schedule_ids
             }
     return {

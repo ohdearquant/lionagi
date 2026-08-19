@@ -11,6 +11,7 @@ in production).
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from pathlib import Path
@@ -208,3 +209,87 @@ def test_schedule_summary_marks_each_slice_failed_when_batch_read_fails(tmp_path
     summaries = response.json()["run_summaries"]
     assert summaries[first] == {"state": "error", "runs": []}
     assert summaries[second] == {"state": "error", "runs": []}
+
+
+# Every surface below serves the same declared run shape, so they are checked together:
+# a projection applied to one emitter and not its siblings is the defect it was meant to fix.
+_DECLARED_RUN_FIELDS = {
+    "id",
+    "schedule_id",
+    "invocation_id",
+    "trigger_context",
+    "action_kind",
+    "status",
+    "exit_code",
+    "chain_depth",
+    "fired_at",
+    "ended_at",
+    "error_detail",
+}
+# Written by the seeder above and never part of the declared shape.
+_OPERATIONAL_COLUMN = "action_args"
+
+
+def _seeded_schedule_with_one_run(monkeypatch, db_path: Path) -> str:
+    _patch_db(monkeypatch, db_path)
+
+    async def seed():
+        schedule_id = await _seed_schedule()
+        await _seed_run(schedule_id, status="completed", fired_at=time.time())
+        return schedule_id
+
+    return asyncio.run(seed())
+
+
+def test_the_summary_slice_serves_only_the_declared_run_fields(tmp_path, monkeypatch):
+    schedule_id = _seeded_schedule_with_one_run(monkeypatch, tmp_path / "state.db")
+
+    body = _make_client().get("/api/schedules/summary").json()
+    runs = body["run_summaries"][schedule_id]["runs"]
+
+    assert len(runs) == 1
+    assert set(runs[0]) <= _DECLARED_RUN_FIELDS
+    assert _OPERATIONAL_COLUMN not in runs[0]
+    assert runs[0]["status"] == "completed"
+
+
+def test_the_seeded_run_really_carries_the_operational_column(tmp_path, monkeypatch):
+    """The control. Without this the three assertions above pass on an empty column set."""
+    schedule_id = _seeded_schedule_with_one_run(monkeypatch, tmp_path / "state.db")
+
+    async def read():
+        async with StateDB() as db:
+            return await db.list_schedule_runs(schedule_id, limit=10)
+
+    stored = asyncio.run(read())
+
+    assert len(stored) == 1
+    assert _OPERATIONAL_COLUMN in stored[0]
+    assert _DECLARED_RUN_FIELDS <= set(stored[0])
+
+
+def test_a_column_added_to_schedule_runs_is_not_served_until_it_is_named(tmp_path, monkeypatch):
+    """The projection is an allow-list, so a column added later is private by default.
+
+    A deny-list naming today's operational columns would pass every test above and serve
+    this one, which is the failure mode the allow-list exists to prevent.
+    """
+    schedule_id = _seeded_schedule_with_one_run(monkeypatch, tmp_path / "state.db")
+    real_batch = StateDB.list_schedule_runs_batch
+
+    async def batch_with_a_new_column(self, ids, **kwargs):
+        grouped = await real_batch(self, ids, **kwargs)
+        for rows in grouped.values():
+            for row in rows:
+                row["a_column_nobody_has_declared"] = "secret-value"
+        return grouped
+
+    monkeypatch.setattr(StateDB, "list_schedule_runs_batch", batch_with_a_new_column)
+
+    body = _make_client().get("/api/schedules/summary").json()
+    runs = body["run_summaries"][schedule_id]["runs"]
+
+    assert len(runs) == 1
+    assert "a_column_nobody_has_declared" not in runs[0]
+    assert "secret-value" not in json.dumps(body)
+    assert runs[0]["status"] == "completed"
