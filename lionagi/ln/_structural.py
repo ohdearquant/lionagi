@@ -628,11 +628,11 @@ def _try_stable_cache_key(value: Any) -> _StructuralKey | None:
         return None
     if not key.cache_stable or key._weight > _MAX_CACHED_WEIGHT:
         return None
-    # The caches behind this gate hold their built value strongly, and a built annotation
-    # or model holds the declaration's own callables. Keying weakly buys nothing there:
-    # the entry's value keeps the callable alive, which keeps the weak key resolvable, so
-    # an entry standing for a callable that nothing else holds under a name outlives the
-    # name. That is the case the pin flag already identifies for the projection cache.
+    # Asked once, at admission: does a name resolve to this callable right now. A name
+    # withdrawn later is outside what this can see, and refusing here would not help --
+    # building the annotation or model takes its own reference to the declaration's
+    # callables, whether or not the result is then cached. What this refuses is a callable
+    # no name ever reached, whose identity a cache cannot key on safely.
     if key._pins:
         return None
     return key
