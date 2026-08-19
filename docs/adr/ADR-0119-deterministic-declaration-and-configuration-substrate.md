@@ -15,8 +15,9 @@
   `DataClass` and every current `HashableModel` descendant are unhashable behind a closed consumer
   inventory; Pydantic materialization is owned by `PydanticSpecAdapter.materialize()` without a
   `lionagi.models` dependency, and production callers no longer construct `OperableModel` or use
-  the `Operable.create_model()` compatibility edge; registry snapshots and canonical durable
-  serialization remain open
+  the `Operable.create_model()` compatibility edge; the dependency-light immutable registry
+  composition primitive, source records, and version-bound override ledger are implemented;
+  domain catalog migrations and canonical durable serialization remain open
 - **Area**: utilities
 - **Date**: 2026-08-16
 - **Relations**: extends ADR-0050 (foundational utility and typed adaptation strata); required
@@ -475,14 +476,39 @@ A declaration module exports values. It does not mutate the active registry when
 
 ```python
 @dataclass(frozen=True, slots=True, init=False, eq=False)
-class Registry(Params, Generic[ItemT]):
-    name: str
-    items: tuple[ItemT, ...]
-    version: str | UnsetType = Unset
+class RegistryEntry(Params, Generic[ItemT]):
+    key: str
+    value: ItemT
 
+@dataclass(frozen=True, slots=True, init=False, eq=False)
+class RegistryFragment(Params, Generic[ItemT]):
+    owner: str
+    version: str
+    items: tuple[RegistryEntry[ItemT], ...]
+    feature: str | UnsetType = Unset
+
+@dataclass(frozen=True, slots=True, init=False, eq=False)
+class Registry(Params, Generic[ItemT]):
     @classmethod
-    def compose(cls, *fragments: RegistryFragment[ItemT]) -> Registry[ItemT]: ...
+    def compose(cls, *fragments: RegistryFragment[ItemT],
+                name: str, version: str | UnsetType = Unset) -> Registry[ItemT]: ...
 ```
+
+The composed `items` are source-bearing `RegistryRecord` values. The snapshot also retains the
+exact input fragments and an ordered `RegistryOverride` history containing both the displaced and
+replacement entries. Callers cannot supply override rules to `compose()`: a registry subtype owns
+an immutable `ClassVar` allowlist whose rule names the key, incumbent and replacement owners and
+fragment versions, registry contract version, and rule version. `Registry` construction and
+`with_updates()` are closed; `compose()` is the only invariant-forming entry point.
+Composition-authority subtypes inherit from one `Registry[T]` base, not an ABC or mixin; a reusable
+typed subtype uses `class Catalog(Registry[ItemT])`. A subtype may add frozen, structurally stable
+`ClassVar` metadata, which remains outside snapshot fields and projection, but cannot add instance
+fields or methods. Subtypes are declaration-only authorities, not domain facades. Domain lookup
+helpers and cross-entry validation live in a separate facade; when those invariants exist, the
+facade is the exported composition root and encapsulates both its private marker subtype and raw
+`Registry` snapshot. It returns domain projections or the facade, never the marker instance as the
+public authority, so callers cannot recover inherited `compose()` through `type(snapshot)` and
+bypass domain validation.
 
 Composition occurs at a named application boundary:
 
@@ -495,27 +521,33 @@ tool_catalog = ToolCatalog.compose(builtin_tools, selected_mcp_tools)
 Exact semantics:
 
 - fragment and item order are explicit and stable;
+- fragment owners are unique within a composition, including empty fragments;
 - duplicate canonical keys fail with both owners named unless the registry type declares a
   versioned override rule;
-- an override is recorded in the registry snapshot and its canonical hash;
+- an override is recorded in the runtime registry value and structural hash; D7 later includes
+  that history in the canonical content digest;
 - optional modules contribute a fragment only when the composition root enables them;
-- querying an uncomposed optional fragment cannot import that feature implicitly; it raises the
-  missing-feature error ADR-0122 D4 defines, so neither record assumes the other supplies it;
-- a registry snapshot is immutable and safe to attach to a Run or schema plan;
-- dynamic plugin enablement produces a new snapshot/version; it does not mutate a snapshot being
-  used by an in-flight operation;
+- the generic registry never imports, probes, or infers an optional feature. A miss returns the
+  caller's default or raises `KeyError`; the ADR-0122 loader or domain facade, which knows the
+  omitted manifest/distribution, owns the typed missing-feature error;
+- a registry value is immutable and safe as a runtime catalog. Durable attachment to a Run,
+  schema plan, persisted policy, or signed record waits for D7's resolved snapshot envelope,
+  `CallableRef`, canonical bytes, and content digest;
+- dynamic plugin enablement produces a new snapshot value; it does not mutate a snapshot being
+  used by an in-flight operation. `Registry.version` is the contract version used to authorize
+  override rules, not a content digest; D7 supplies content identity;
 - module reload does not duplicate registrations because imports do not register.
 
 This rejects decorator-driven global self-registration for schema, hooks, providers, and tools.
 Decorators may tag declarations; the composition root must still collect an explicit declared
 set.
 
-The shape already exists in the package and is the reference implementation for this decision.
-`lionagi/state/lifecycle/policy.py` builds `DEFAULT_REGISTRY` through an explicit
-`build_default_registry()` that names each policy it composes rather than collecting whatever
-imported itself. Migration of the remaining registries is an alignment with that module, not an
-invention, and a reviewer comparing a proposed registry against it has a concrete standard to
-compare to.
+`lionagi.ln.types.registry` is the dependency-light reference implementation for this decision.
+`lionagi/state/lifecycle/policy.py` already has the right explicit builder and fixed policy order,
+but its sealed compatibility facade still retains a mutable dictionary. Its domain migration
+therefore composes an immutable policy catalog underneath the existing public facade rather than
+copying that internal representation or breaking `register()`/`seal()` callers in this primitive
+change.
 
 ### D7 — durable snapshots are distinct from wire serialization and runtime hash
 
@@ -615,6 +647,19 @@ The foundation suite adds the following required matrices.
 - no new raw `asyncio`, `json`, schema-library, or serialization helper is introduced outside the
   approved `lionagi.ln` seams.
 
+**Registry composition**
+
+- same-fragment and cross-owner duplicate keys report the key, both owners, and declared
+  positions deterministically; repeated owners fail even when their keys do not overlap;
+- an override matches the exact key, current owner/version, replacement owner/version, and
+  registry version; ambiguous matches and an unversioned registry fail closed;
+- chained overrides preserve the first key slot and retain ordered displaced/replacement history;
+- composing base and optional profiles in one process, concurrently, or after module reload does
+  not mutate the fragments or any already-composed snapshot;
+- imports of `lionagi.ln.types.registry` load no adapter, model, operation, provider, session,
+  state, Studio, Pydantic, or SQLAlchemy layer and expose no mutable registration API or hidden
+  collector.
+
 **Compatibility**
 
 - existing public imports remain during their declared window;
@@ -636,7 +681,8 @@ The foundation suite adds the following required matrices.
    the current `DataClass`/`HashableModel` families unhashable.
 6. Move production callers from `OperableModel` and the lazy `Operable.create_model()` edge to
    neutral declarations and explicit adapters. (Delivered for current production callers.)
-7. Introduce explicit registry fragments at composition roots.
+7. Introduce the immutable registry primitive, then migrate each domain at its named composition
+   root behind its compatibility facade. (Primitive delivered; domain migrations remain open.)
 8. Land strict snapshot envelopes, canonical bytes/digest, and versioned CallableRef resolution.
 9. Only then allow ADR-0118 schema hashes, harness policy snapshots, dispatch policies, and Run
    contracts to depend on these primitives.

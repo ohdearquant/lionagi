@@ -197,13 +197,29 @@ class Params:
     """Immutable keyword-argument parameter bag; configure via _config = ModelConfig(...)."""
 
     _config: ClassVar[ModelConfig] = ModelConfig()
+    _params_init_closed: ClassVar[bool] = False
 
     def __init__(self, **kwargs: Any):
-        unknown = next((key for key in kwargs if key not in self.allowed()), None)
+        if type(self)._params_init_closed:
+            raise TypeError(f"{type(self).__name__} must use its invariant-forming constructor")
+        Params._initialize_derived(self, **kwargs)
+
+    @staticmethod
+    def _initialize_derived(instance: Params, **kwargs: Any) -> None:
+        """Initialize one fresh value for a trusted invariant-forming owner."""
+        layout = _field_layout(type(instance))
+        for field_info in layout.declared:
+            try:
+                object.__getattribute__(instance, field_info.name)
+            except AttributeError:
+                continue
+            raise TypeError(f"{type(instance).__name__} is already initialized")
+
+        unknown = next((key for key in kwargs if key not in instance.allowed()), None)
         if unknown is not None:
             raise ValueError(f"Invalid parameter: {unknown}")
 
-        for field_info in _field_layout(type(self)).declared:
+        for field_info in layout.declared:
             if field_info.name in kwargs:
                 value = kwargs[field_info.name]
             elif field_info.default is not MISSING:
@@ -212,9 +228,9 @@ class Params:
                 value = field_info.default_factory()
             else:
                 value = Undefined
-            object.__setattr__(self, field_info.name, value)
+            object.__setattr__(instance, field_info.name, value)
 
-        self._validate()
+        instance._validate()
 
     @classmethod
     def _is_sentinel(cls, value: Any) -> bool:

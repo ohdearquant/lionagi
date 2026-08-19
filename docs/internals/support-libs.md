@@ -6,6 +6,39 @@ Extracted rationale for `lionagi/casts/`, `lionagi/lndl/`, `lionagi/testing/`,
 modules — material that a maintainer needs but that doesn't belong as an
 in-source essay. Source points here with `# See docs/internals/support-libs.md#<anchor>`.
 
+<a id="immutable-registry"></a>
+
+## ln.types.registry: explicit immutable composition
+
+Declaration modules export `RegistryFragment` values; importing one never changes an active
+registry. Each fragment names one owner and contract version and contains an ordered tuple of
+explicitly keyed `RegistryEntry` values. A named application root calls `Registry.compose()` with
+the fragments selected for that profile. The resulting snapshot retains source-bearing records,
+the exact fragments, and any authorized override history, so two profiles can coexist without a
+process-global collector.
+
+Duplicate owners always fail. Duplicate keys fail unless the concrete `Registry` subtype declares
+one exact, version-bound `RegistryOverrideRule`; callers cannot pass an ad hoc rule to composition.
+The first declaration fixes a key's output slot, while an allowed replacement changes the active
+record in that slot and records both entries. Values must be recursively immutable enough for the
+runtime structural-key contract. Mutable lists, mappings, `DataClass` instances, and unresolved
+sentinels are rejected rather than hidden inside a frozen snapshot.
+
+Composition-authority subtypes use one `Registry[T]` base (including `Registry[ItemT]` for a
+reusable generic subtype), without ABC or mixin bases. They may declare frozen, structurally stable
+`ClassVar` metadata; it is excluded from snapshot fields and projection. They cannot add instance
+fields or methods. A subtype is a declaration-only authority for override rules and metadata, not
+a domain facade. Domain lookup helpers and cross-entry validation live in a separate facade; when
+such invariants exist, that facade is the exported composition root and keeps the marker subtype
+and raw `Registry` snapshot encapsulated. It returns domain projections or the facade itself, not
+the marker instance as public authority, so callers cannot recover inherited `compose()` through
+`type(snapshot)` and bypass domain validation.
+
+This layer does not discover plugins, import optional modules, or decide what a missing feature
+means. Domain loaders choose fragments and own feature-specific errors. It also does not provide a
+durable digest: `Registry.version` is a contract version for override admission, while the strict
+snapshot envelope and canonical content digest are separate ADR-0119 D7 work.
+
 <a id="spec-limits"></a>
 
 ## _spec_limits: MAX_SPEC_PROMPT_CHARS
