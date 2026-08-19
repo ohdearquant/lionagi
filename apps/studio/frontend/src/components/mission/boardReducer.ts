@@ -11,7 +11,7 @@ import type { RunSummary, ScheduleSummary } from "@/lib/types";
 import type { AttentionDisposition, GatedPlaySummary, InvocationSummary } from "@/lib/api";
 import { deriveDisplayStatus, isOrphanedReason } from "@/lib/runStatus";
 import { resolveRunLabel } from "@/lib/runLabel";
-import { legacyRunId, runSessionId } from "@/lib/runIdentity";
+import { runSessionId } from "@/lib/runIdentity";
 
 // ─── State shape ─────────────────────────────────────────────────────────────
 
@@ -90,12 +90,6 @@ export interface AttentionItem {
    * landing on the bare fleet list.
    */
   sessionId?: string | null;
-  /**
-   * The id this item was keyed on before routing moved to the session `id`.
-   * Only set when the two differ; read when joining persisted dispositions so
-   * an item discharged under the old key stays discharged.
-   */
-  legacyId?: string;
 }
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
@@ -210,25 +204,6 @@ function buildAttentionItems(
     });
   }
 
-  // A legacy key only stands in for a row when it names exactly one. Today the
-  // runs projection reports run_id as the session id, so no row has a legacy
-  // key at all; once those are distinct values, nothing guarantees run_id is
-  // unique across sessions, and a shared one would join two rows to a single
-  // stored disposition — one row's undo would then clear the other's.
-  //
-  // Both keys a row can present are counted, not just its legacy one: a row
-  // whose id and run_id are the same value has no legacy key, yet it still
-  // occupies that value as its current key, and a second session naming it as
-  // run_id would otherwise claim it as unshared.
-  const keyCounts = new Map<string, number>();
-  const countKey = (key: string | null) => {
-    if (key) keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
-  };
-  for (const run of runs) {
-    countKey(runSessionId(run) || null);
-    countKey(legacyRunId(run));
-  }
-
   for (const run of runs) {
     // DESIGN-BRIEF §0: a daemon-restart reap is housekeeping, never attention
     // — it must not surface here as "failed" or under any other reason.
@@ -259,11 +234,8 @@ function buildAttentionItems(
       reason = "stale";
     }
     if (reason == null) continue;
-    const legacy = legacyRunId(run);
-    const runLegacyId = legacy && keyCounts.get(legacy) === 1 ? legacy : null;
     items.push({
       id: `run:${runSessionId(run)}`,
-      ...(runLegacyId ? { legacyId: `run:${runLegacyId}` } : {}),
       kind: "run",
       name: resolveRunLabel(run),
       reason,
@@ -341,8 +313,7 @@ function buildAttentionItems(
   const active: AttentionItem[] = [];
   const discharged: AttentionItem[] = [];
   for (const item of deduped) {
-    const disposition =
-      dispositions[item.id] ?? (item.legacyId ? dispositions[item.legacyId] : undefined);
+    const disposition = dispositions[item.id];
     const joined = disposition ? { ...item, disposition } : item;
     // "A gated item only ever discharges via acknowledged" (see the comment
     // above) — this is that arm. Without it, acknowledged isn't in

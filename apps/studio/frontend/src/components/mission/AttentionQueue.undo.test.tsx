@@ -98,15 +98,6 @@ describe("AttentionQueue — undo", () => {
     });
   }
 
-  it("clears the legacy key as well as the current one", async () => {
-    renderQueue([item({ legacyId: "run:legacy" })]);
-    await clickUndo();
-
-    expect(api.deleteAttentionDisposition.mock.calls.flat()).toEqual(
-      expect.arrayContaining(["run:current", "run:legacy"]),
-    );
-  });
-
   it("clears only the current key when there is no legacy id", async () => {
     renderQueue([item()]);
     await clickUndo();
