@@ -401,8 +401,16 @@ result forward, so an `Enum` member value, a mapping value, or a model field can
 callable that satisfies it at admission and is unbound afterwards, since a name can be withdrawn
 and a cache entry outlives the binding. Such a callable stays alive until its entry is evicted,
 which is bounded by `LIONAGI_STRUCTURAL_CACHE_SIZE`. Instances that can be weakly referenced carry
-no residual at all, and neither do the annotation, model, field-layout, sentinel-policy, and
-sentinel-singleton caches, whose keys are the projections rather than the instances.
+no residual at all, and neither do the field-layout, sentinel-policy, and sentinel-singleton
+caches, whose keys are the projections rather than the instances.
+
+The annotation and model caches are keyed on projections too, and that alone does not bound them:
+each entry holds a built annotation or model, and a built value refers to the declaration's own
+callables. A weak key stays resolvable because the entry's own value keeps its referent alive, so
+the entry outlives the name the callable was reachable under. Their shared admission gate therefore
+reads the same pin flag the projection cache reads and declines to key anything that pins. A
+declaration carrying a closure or a `type()` result is rebuilt on each use rather than cached,
+which is the cost the narrower rule above already accepts elsewhere.
 
 **The decoration contract is part of this decision.** The base implementations above are reachable
 only when a subclass does not shadow them, and today's subclasses decide that by accident. A

@@ -923,3 +923,59 @@ def test_mutable_spec_metadata_opts_out_of_annotation_cache():
     spec = Spec(int, payload={"value": 1})
 
     assert spec.annotated() is not spec.annotated()
+
+
+def test_a_pinning_declaration_is_not_admitted_to_the_stable_key_caches():
+    """The annotation and model caches hold their built value strongly.
+
+    A weakly-held key does not bound that. The entry's own value holds the declaration's
+    callables, which keeps the weak key resolvable, so the entry outlives the name the
+    callable was reachable under. The pin flag already identifies that case for the
+    projection cache; the gate these two caches share has to read it as well.
+    """
+    from lionagi.ln._structural import _try_stable_cache_key
+
+    assert _try_stable_cache_key(_Payload(_dynamic_function(b"x" * 16))) is None
+
+
+class _Captured:
+    """Weak-referenceable on purpose: _Payload has slots and cannot be one."""
+
+
+def _annotation_capture_ref():
+    """A closure validator over a fresh payload, and a weak reference to that payload."""
+    captured = _Captured()
+
+    def validator(value, _held=captured):
+        return value
+
+    return validator, weakref.ref(captured)
+
+
+def test_a_materialized_annotation_does_not_retain_a_closure_capture():
+    from lionagi.ln.types._annotation import _materialize_annotation
+    from lionagi.ln.types.base import Meta
+
+    validator, captured_ref = _annotation_capture_ref()
+    metadata = (Meta(key="validator", value=validator),)
+    _materialize_annotation(
+        owner=("declaration", int, metadata),
+        base_type=int,
+        metadata=metadata,
+        sentinel_predicate=lambda _: False,
+    )
+    del validator, metadata
+    gc.collect()
+
+    assert captured_ref() is None
+
+
+def test_the_annotation_capture_probe_can_report_a_live_capture():
+    """Control: without this, the test above passes on a probe that never sees anything."""
+    validator, captured_ref = _annotation_capture_ref()
+    gc.collect()
+    assert captured_ref() is not None
+
+    del validator
+    gc.collect()
+    assert captured_ref() is None

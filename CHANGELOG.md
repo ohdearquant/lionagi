@@ -99,6 +99,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   dropped that one, so a closure, lambda, or `type()` result behind an `Enum` member value was
   admitted and held alive by the entry. Mapping values, Pydantic model fields, and msgspec
   struct fields rebuilt their keys the same way and now carry the flag as well.
+- The shared annotation and model caches now decline to key a declaration whose projection
+  reports that it holds a callable nothing else keeps alive under a name. Keying on the
+  projection rather than the instance does not bound those two on its own, because each entry
+  holds a built annotation or model that refers to the declaration's callables: the entry's own
+  value keeps its weak key resolvable, so a closure validator or a dynamically created type
+  stayed reachable through the cache after the name it was declared under was withdrawn, along
+  with whatever it captured. Such declarations are now rebuilt on each use instead of cached.
 
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
