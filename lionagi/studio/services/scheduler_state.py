@@ -16,7 +16,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
-from lionagi.state.db import TERMINAL_RUN_STATUSES, StateDB
+from lionagi.state.db import (
+    NO_CURSOR_CLAIM,
+    TERMINAL_RUN_STATUSES,
+    CursorClaim,
+    StateDB,
+)
 from lionagi.state.reasons import RunReasons
 from lionagi.studio.scheduler import coordination as _coordination
 
@@ -31,8 +36,14 @@ class SchedulerStateService(Protocol):
     async def list_schedules(self, *, enabled: bool | None = None) -> list[dict[str, Any]]: ...
 
     async def update_schedule(
-        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
-    ) -> None: ...
+        self,
+        schedule_id: str,
+        *,
+        guard_cursor_forward: bool = False,
+        expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        **fields: Any,
+    ) -> bool: ...
 
     async def count_schedule_runs(
         self,
@@ -57,7 +68,9 @@ class SchedulerStateService(Protocol):
         *,
         schedule_id: str,
         schedule_fields: dict[str, Any],
-    ) -> None: ...
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+    ) -> bool: ...
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool: ...
 
@@ -166,11 +179,21 @@ class _DBSchedulerStateService:
             return await db.list_schedules(enabled=enabled, limit=None)
 
     async def update_schedule(
-        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
-    ) -> None:
+        self,
+        schedule_id: str,
+        *,
+        guard_cursor_forward: bool = False,
+        expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        **fields: Any,
+    ) -> bool:
         async with self._db_context() as db:
-            await db.update_schedule(
-                schedule_id, guard_cursor_forward=guard_cursor_forward, **fields
+            return await db.update_schedule(
+                schedule_id,
+                guard_cursor_forward=guard_cursor_forward,
+                expect_next_fire_at=expect_next_fire_at,
+                expect_github_cursor=expect_github_cursor,
+                **fields,
             )
 
     async def count_schedule_runs(
@@ -211,10 +234,16 @@ class _DBSchedulerStateService:
         *,
         schedule_id: str,
         schedule_fields: dict[str, Any],
-    ) -> None:
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+    ) -> bool:
         async with self._db_context() as db:
-            await db.create_schedule_run_and_advance(
-                run, schedule_id=schedule_id, schedule_fields=schedule_fields
+            return await db.create_schedule_run_and_advance(
+                run,
+                schedule_id=schedule_id,
+                schedule_fields=schedule_fields,
+                expect_next_fire_at=expect_next_fire_at,
+                expect_github_cursor=expect_github_cursor,
             )
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:
