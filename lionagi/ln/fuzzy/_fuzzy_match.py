@@ -125,7 +125,7 @@ def fuzzy_match_keys(
     return corrected_out
 
 
-@dataclass(slots=True, init=False, frozen=True)
+@dataclass(slots=True, init=False, frozen=True, eq=False)
 class FuzzyMatchKeysParams(Params):
     _func: ClassVar[Any] = fuzzy_match_keys
 
