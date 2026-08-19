@@ -41,6 +41,7 @@ def _session_outcome(session: dict[str, Any], artifacts: list[str]) -> dict[str,
     status = session.get("status") or ""
     code = session.get("status_reason_code")
     summary = session.get("status_reason_summary")
+    reported = bool(summary)
     if status == "completed":
         code = code or "run.completed.ok"
         summary = summary or (
@@ -52,7 +53,7 @@ def _session_outcome(session: dict[str, Any], artifacts: list[str]) -> dict[str,
     else:
         code = code or f"run.failed.{status or 'unknown'}"
         summary = summary or (status or "failed")
-    return {"code": code, "summary": summary, "source": "session"}
+    return {"code": code, "summary": summary, "source": "session", "summary_reported": reported}
 
 
 def _invocation_outcome(invocation: dict[str, Any]) -> dict[str, Any]:
@@ -64,20 +65,32 @@ def _invocation_outcome(invocation: dict[str, Any]) -> dict[str, Any]:
     else:
         default_code = f"run.failed.{status or 'unknown'}"
     code = invocation.get("status_reason_code") or default_code
+    reported = bool(invocation.get("status_reason_summary"))
     summary = invocation.get("status_reason_summary") or (status or "unknown")
-    return {"code": code, "summary": summary, "source": "invocation"}
+    return {
+        "code": code,
+        "summary": summary,
+        "source": "invocation",
+        "summary_reported": reported,
+    }
 
 
 def _fallback_outcome(run: dict[str, Any]) -> dict[str, Any]:
     status = run.get("status") or "unknown"
     exit_code = run.get("exit_code")
     if status == "running":
-        return {"code": "running", "summary": "running", "source": "occurrence"}
+        return {
+            "code": "running",
+            "summary": "running",
+            "source": "occurrence",
+            "summary_reported": False,
+        }
     if status == "skipped":
         return {
             "code": "skipped",
             "summary": run.get("error_detail") or "skipped",
             "source": "occurrence",
+            "summary_reported": bool(run.get("error_detail")),
         }
     if status == "completed":
         code = "completed"
@@ -88,7 +101,7 @@ def _fallback_outcome(run: dict[str, Any]) -> dict[str, Any]:
     else:
         code = status
     summary = f"{status} (exit {exit_code})" if exit_code is not None else status
-    return {"code": code, "summary": summary, "source": "fallback"}
+    return {"code": code, "summary": summary, "source": "fallback", "summary_reported": False}
 
 
 def _occurrence_outcome(run: dict[str, Any]) -> dict[str, Any]:
@@ -96,7 +109,12 @@ def _occurrence_outcome(run: dict[str, Any]) -> dict[str, Any]:
     status = run.get("status") or "dispatch"
     if not error_detail or status in ("running", "skipped"):
         return _fallback_outcome(run)
-    return {"code": f"failed_{status}", "summary": error_detail, "source": "occurrence"}
+    return {
+        "code": f"failed_{status}",
+        "summary": error_detail,
+        "source": "occurrence",
+        "summary_reported": True,
+    }
 
 
 def build_outcome(
@@ -104,7 +122,12 @@ def build_outcome(
     invocation: dict[str, Any] | None,
     sessions: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Outcome precedence: session > invocation > occurrence error_detail > fallback."""
+    """Outcome precedence: session > invocation > occurrence error_detail > fallback.
+
+    Each branch declares whether its summary is text a caller reported (a free-text
+    column) or a string this module generated. Only the branch that produced a
+    summary knows which it is, so a list surface cannot re-derive it downstream.
+    """
     primary = _primary_session(sessions)
     if primary is not None and primary.get("status") in SESSION_TERMINAL_STATUSES:
         return _session_outcome(primary, _artifact_paths(sessions))

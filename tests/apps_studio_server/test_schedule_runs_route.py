@@ -344,6 +344,10 @@ _PRIVATE_SCHEDULE_COLUMNS = {
     "notify_on": ["fail"],
     "owner_key": "owner-abc",
     "github_cursor": "2026-01-01T00:00:00Z",
+    # An absolute path on the host the daemon runs on. No client reads it back today,
+    # so withholding it costs nothing and naming it here makes that a decision rather
+    # than an omission: adding it to the served set now has to break this test first.
+    "action_cwd": "/srv/deploy/private-root",
 }
 
 
@@ -464,20 +468,35 @@ def test_the_schedule_allow_list_serves_everything_the_client_declares():
     import re as _re
     from pathlib import Path as _Path
 
-    from lionagi.studio.services.schedules import _SCHEDULE_SUMMARY_FIELDS
+    from lionagi.studio.services.schedules import (
+        _SCHEDULE_RECORD_FIELDS,
+        _SCHEDULE_SUMMARY_FIELDS,
+    )
 
     source = _Path("apps/studio/frontend/src/lib/types.ts")
     if not source.exists():  # the frontend is not vendored into every checkout
         pytest.skip("frontend source not present")
 
-    block = _re.search(
-        r"^export interface ScheduleSummary \{(.*?)^\}", source.read_text(), _re.S | _re.M
-    )
-    assert block, "ScheduleSummary interface not found"
-    declared = _re.findall(r"^\s{2}(\w+)\??:", block.group(1), _re.M)
+    text = source.read_text()
 
-    assert declared, "no fields parsed from the client interface"
-    assert not [name for name in declared if name not in _SCHEDULE_SUMMARY_FIELDS]
+    def declared_in(interface: str) -> list[str]:
+        block = _re.search(rf"^export interface {interface}[^{{]*\{{(.*?)^\}}", text, _re.S | _re.M)
+        assert block, f"{interface} interface not found"
+        return _re.findall(r"^\s{2}(\w+)\??:", block.group(1), _re.M)
+
+    summary_declared = declared_in("ScheduleSummary")
+    assert summary_declared, "no fields parsed from the client interface"
+    assert not [name for name in summary_declared if name not in _SCHEDULE_SUMMARY_FIELDS]
+
+    # The record view serves both sets, so what the client declares only on the detail
+    # type has to be reachable there and nowhere narrower.
+    record_declared = declared_in("ScheduleDetail")
+    served_by_record = set(_SCHEDULE_SUMMARY_FIELDS) | set(_SCHEDULE_RECORD_FIELDS)
+    assert not [
+        name for name in record_declared if name not in served_by_record and name != "recent_runs"
+    ]
+    # ...and the split is real: nothing record-only may sit in the list projection.
+    assert not set(_SCHEDULE_RECORD_FIELDS) & set(_SCHEDULE_SUMMARY_FIELDS)
 
 
 # A string that exists nowhere else, so finding it in a response is unambiguous.
@@ -619,3 +638,141 @@ def test_the_status_view_still_serves_what_the_cli_renders(tmp_path, monkeypatch
 
     missing = [name for name in _CLI_STATUS_RUN_FIELDS if name not in body["latest_run"]]
     assert not missing, f"`li schedule status` reads {missing}"
+
+
+# The outcome reconciler prefers a session's reason over an invocation's over the
+# occurrence's error text. Both preferred branches carry `status_reason_summary`,
+# a free-text column, so a check scoped to the occurrence branch covers the case
+# that loses and misses the two that win.
+def _seed_run_linked_to(monkeypatch, db_path: Path, *, invocation, sessions) -> tuple[str, str]:
+    from lionagi.studio.services import run_view
+
+    _patch_db(monkeypatch, db_path)
+
+    async def seed():
+        schedule_id = await _seed_schedule()
+        run_id = await _seed_run(schedule_id, status="failed", fired_at=time.time())
+        return schedule_id, run_id
+
+    ids = asyncio.run(seed())
+
+    async def _linked(_db, _run):
+        return invocation, list(sessions)
+
+    monkeypatch.setattr(run_view, "_linked", _linked)
+    return ids
+
+
+def _terminal_session_status() -> str:
+    from lionagi.state.db import SESSION_TERMINAL_STATUSES
+
+    return sorted(SESSION_TERMINAL_STATUSES)[0]
+
+
+def _terminal_invocation_status() -> str:
+    from lionagi.state.db import INVOCATION_TERMINAL_STATUSES
+
+    return sorted(INVOCATION_TERMINAL_STATUSES)[0]
+
+
+def test_a_session_reported_summary_really_reaches_the_outcome(tmp_path, monkeypatch):
+    """The control. Without it the sweep below passes on an outcome nothing populated."""
+    from lionagi.studio.services.run_view import build_outcome
+
+    session = {
+        "id": "sess-1",
+        "status": _terminal_session_status(),
+        "status_reason_summary": f"PermissionError: {_RAW_ERROR_SENTINEL}",
+    }
+    outcome = build_outcome({"status": "failed"}, None, [session])
+
+    assert outcome["source"] == "session"
+    assert _RAW_ERROR_SENTINEL in outcome["summary"]
+    assert outcome["summary_reported"] is True
+
+
+def test_no_list_surface_serves_a_session_reported_summary(tmp_path, monkeypatch):
+    session = {
+        "id": "sess-1",
+        "status": _terminal_session_status(),
+        "status_reason_summary": f"PermissionError: {_RAW_ERROR_SENTINEL}",
+    }
+    schedule_id, _ = _seed_run_linked_to(
+        monkeypatch,
+        tmp_path / "state.db",
+        invocation={"id": "inv-1", "status": _terminal_invocation_status()},
+        sessions=[session],
+    )
+    client = _make_client()
+
+    for path in _list_surfaces(schedule_id):
+        resp = client.get(path)
+        assert resp.status_code == 200, path
+        assert _RAW_ERROR_SENTINEL not in resp.text, f"{path} serves a session-reported summary"
+
+
+def test_no_list_surface_serves_an_invocation_reported_summary(tmp_path, monkeypatch):
+    schedule_id, _ = _seed_run_linked_to(
+        monkeypatch,
+        tmp_path / "state.db",
+        invocation={
+            "id": "inv-1",
+            "status": _terminal_invocation_status(),
+            "status_reason_summary": f"PermissionError: {_RAW_ERROR_SENTINEL}",
+        },
+        sessions=[],
+    )
+    client = _make_client()
+
+    for path in _list_surfaces(schedule_id):
+        resp = client.get(path)
+        assert resp.status_code == 200, path
+        assert _RAW_ERROR_SENTINEL not in resp.text, f"{path} serves an invocation-reported summary"
+
+
+def test_a_generated_summary_is_served_verbatim(tmp_path, monkeypatch):
+    """The other half: classifying everything would destroy the useful summaries.
+
+    A summary this module generated carries no caller text, so it stays readable.
+    """
+    from lionagi.studio.services.run_view import build_outcome
+    from lionagi.studio.services.schedules import _outcome_for_list
+
+    outcome = build_outcome(
+        {"status": "completed", "exit_code": 0}, {"id": "inv-1", "status": "completed"}, []
+    )
+
+    assert outcome["summary_reported"] is False
+    assert _outcome_for_list(outcome)["summary"] == outcome["summary"]
+
+
+def test_no_list_surface_serves_the_record_only_schedule_fields(tmp_path, monkeypatch):
+    """The prompt text and the policy objects reach the edit form and nothing else.
+
+    They are named fields rather than private columns, so the key sweep over the
+    private set cannot see them; this names them directly.
+    """
+    from lionagi.studio.services.schedules import _SCHEDULE_RECORD_FIELDS
+
+    # Named here rather than imported: a watch set taken from the constant under test
+    # follows that constant, so moving a field out of it moves the field out of the
+    # test at the same time and the check reports clean on the change it exists to catch.
+    watched = ("action_prompt", "on_success", "on_fail")
+    assert set(watched) == set(_SCHEDULE_RECORD_FIELDS), (
+        "record-only set changed; decide per field whether a list surface may serve it, "
+        "then update this literal"
+    )
+
+    schedule_id = _seed_rich_schedule(monkeypatch, tmp_path / "state.db")
+    client = _make_client()
+
+    record = client.get(f"/api/schedules/{schedule_id}").json()
+    assert [name for name in watched if name in record] == list(watched), (
+        "the record view must still serve them"
+    )
+
+    for path in ("/api/schedules/", f"/api/schedules/{schedule_id}/status"):
+        resp = client.get(path)
+        assert resp.status_code == 200, path
+        leaked = sorted(_keys_anywhere(resp.json()) & set(watched))
+        assert not leaked, f"{path} serves {leaked}"

@@ -50,7 +50,12 @@ def test_pre_invocation_failure_uses_occurrence_error_detail():
 def test_running_outcome_is_not_terminal():
     run = _run(status="running", ended_at=None)
     view = build_run_view(run, None, [])
-    assert view["outcome"] == {"code": "running", "summary": "running", "source": "occurrence"}
+    assert view["outcome"] == {
+        "code": "running",
+        "summary": "running",
+        "source": "occurrence",
+        "summary_reported": False,
+    }
 
 
 def test_trusted_completion_prefers_session_reason():
@@ -68,9 +73,26 @@ def test_trusted_completion_prefers_session_reason():
         "code": "run.completed.ok",
         "summary": "3 commits landed",
         "source": "session",
+        "summary_reported": True,
     }
     assert view["artifacts"] == ["/runs/inv1/artifacts"]
     assert view["session_ids"] == ["sess1"]
+
+
+def test_summary_reported_splits_caller_text_from_generated_text():
+    run = _run(invocation_id="inv1")
+    reported = {
+        "id": "s",
+        "status": "completed",
+        "created_at": 1.0,
+        "status_reason_summary": "3 commits landed",
+    }
+    generated = {"id": "s", "status": "completed", "created_at": 1.0, "artifacts_path": "/p/1"}
+    invocation = {"id": "inv1", "status": "completed"}
+    assert build_outcome(run, invocation, [reported])["summary_reported"] is True
+    outcome = build_outcome(run, invocation, [generated])
+    assert outcome["summary_reported"] is False
+    assert outcome["summary"] == "completed: 1 artifact(s)"
 
 
 def test_completed_empty_distinct_from_unqualified_success():
@@ -112,6 +134,7 @@ def test_skip_outcome_from_occurrence():
         "code": "skipped",
         "summary": "overlap policy: prior running",
         "source": "occurrence",
+        "summary_reported": True,
     }
 
 
@@ -125,6 +148,7 @@ def test_missing_session_falls_back_to_invocation():
         "code": "run.completed.ok",
         "summary": "argv exited 0",
         "source": "invocation",
+        "summary_reported": True,
     }
 
 

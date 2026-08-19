@@ -543,37 +543,32 @@ def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
 _RUN_VIEW_FIELDS = _RUN_SUMMARY_FIELDS + ("duration_ms", "artifacts", "session_ids")
 
 
-# The only summaries an occurrence-sourced outcome carries without consulting the run's
-# error text. Anything else it carries IS that text, verbatim.
-_SAFE_OCCURRENCE_SUMMARIES = frozenset({"running", "skipped"})
+def _reported_summary_class(outcome: Any) -> str | None:
+    """The classification of an outcome summary that is caller-reported text, else None.
 
-
-def _occurrence_error_class(outcome: Any) -> str | None:
-    """The classification of an outcome summary that is really raw error text, else None.
-
-    Keyed on the outcome alone rather than on a sibling error_detail column, because the
-    status view drops that column while keeping the text here -- which is the whole reason
-    a field allow-list cannot close this: the text arrives under a different name than the
-    column it came from, on a row that no longer carries the column.
+    Keyed on the builder's own declaration, not on which branch produced the outcome:
+    the two branches that outrank the occurrence one carry `status_reason_summary`
+    verbatim, so a source test covers the lowest-precedence case and misses the two
+    that win.
     """
-    if not isinstance(outcome, dict) or outcome.get("source") != "occurrence":
+    if not isinstance(outcome, dict) or not outcome.get("summary_reported"):
         return None
     summary = outcome.get("summary")
-    if not isinstance(summary, str) or summary in _SAFE_OCCURRENCE_SUMMARIES:
+    if not isinstance(summary, str):
         return None
     return _error_class(summary)
 
 
 def _outcome_for_list(outcome: Any) -> Any:
     """The reconciled outcome as a list surface serves it: a class, never the text."""
-    classified = _occurrence_error_class(outcome)
+    classified = _reported_summary_class(outcome)
     return outcome if classified is None else {**outcome, "summary": classified}
 
 
 def _run_view(row: dict[str, Any]) -> dict[str, Any]:
     view = {name: row[name] for name in _RUN_VIEW_FIELDS if name in row}
     outcome = row.get("outcome")
-    view["error_class"] = _error_class(row.get("error_detail")) or _occurrence_error_class(outcome)
+    view["error_class"] = _error_class(row.get("error_detail")) or _reported_summary_class(outcome)
     if "outcome" in row:
         view["outcome"] = _outcome_for_list(outcome)
     return view
@@ -598,12 +593,9 @@ _SCHEDULE_SUMMARY_FIELDS = (
     "poll_interval_sec",
     "action_kind",
     "action_model",
-    "action_prompt",
     "action_agent",
     "action_playbook",
     "action_project",
-    "on_success",
-    "on_fail",
     "last_fired_at",
     "last_evaluated_at",
     "next_fire_at",
@@ -613,7 +605,7 @@ _SCHEDULE_SUMMARY_FIELDS = (
     # Not read by any web view, so the allow-list is not derivable from the client's
     # declared shape alone: `li schedule list` renders the remaining-runs counter, and
     # `li schedule get` is the only surface an operator can read spend from. These are
-    # counters and totals rather than authored content, which is what the list excludes.
+    # counters and totals, not the authored payload the record fields below hold.
     "max_runs",
     "remaining_runs",
     "budget_usd",
@@ -633,8 +625,15 @@ _SCHEDULE_SUMMARY_FIELDS = (
 )
 
 
-def _schedule_summary(row: dict[str, Any]) -> dict[str, Any]:
-    return {name: row[name] for name in _SCHEDULE_SUMMARY_FIELDS if name in row}
+# Read back only to prefill the edit form, and by nothing that renders a list. They
+# carry operator-authored prompt text and arbitrary policy objects, so the record view
+# serves them and the list surfaces do not.
+_SCHEDULE_RECORD_FIELDS = ("action_prompt", "on_success", "on_fail")
+
+
+def _schedule_summary(row: dict[str, Any], *, record: bool = False) -> dict[str, Any]:
+    names = _SCHEDULE_SUMMARY_FIELDS + (_SCHEDULE_RECORD_FIELDS if record else ())
+    return {name: row[name] for name in names if name in row}
 
 
 async def _attach_spend(db: StateDB, row: dict[str, Any]) -> None:
@@ -1096,7 +1095,7 @@ async def get_schedule_route(schedule_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
     # recent_runs is a list surface nested inside a record, so it takes the same
     # projection the top-level run lists take rather than inheriting the record's.
-    detail = _schedule_summary(data)
+    detail = _schedule_summary(data, record=True)
     detail["recent_runs"] = [_run_summary(run) for run in data.get("recent_runs", [])]
     return detail
 

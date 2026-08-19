@@ -413,12 +413,9 @@ export interface ScheduleSummary {
   poll_interval_sec: number | null;
   action_kind: "agent" | "flow" | "fanout" | "play";
   action_model: string | null;
-  action_prompt: string | null;
   action_agent: string | null;
   action_playbook: string | null;
   action_project: string | null;
-  on_success: Record<string, unknown> | null;
-  on_fail: Record<string, unknown> | null;
   last_fired_at: number | null;
   /** Completed threshold checks, including checks that did not breach. */
   last_evaluated_at?: number | null;
@@ -472,6 +469,12 @@ export interface ScheduleRunSliceRow {
 }
 
 export interface ScheduleDetail extends ScheduleSummary {
+  // Served by the single-schedule route only. The list surfaces withhold them:
+  // operator-authored prompt text and arbitrary policy objects that nothing
+  // rendering a list reads, only the edit form, which loads one schedule.
+  action_prompt: string | null;
+  on_success: Record<string, unknown> | null;
+  on_fail: Record<string, unknown> | null;
   recent_runs: ScheduleRunSliceRow[];
 }
 
