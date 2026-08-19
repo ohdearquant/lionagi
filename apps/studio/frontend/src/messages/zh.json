@@ -874,6 +874,7 @@
       "permission": "权限被拒绝",
       "missingDependency": "缺少依赖",
       "notFound": "文件未找到",
+      "unclassified": "未分类错误",
       "showDetails": "显示完整错误",
       "hideDetails": "隐藏完整错误"
     }

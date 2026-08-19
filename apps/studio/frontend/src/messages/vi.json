@@ -874,6 +874,7 @@
       "permission": "từ chối quyền truy cập",
       "missingDependency": "thiếu phụ thuộc",
       "notFound": "không tìm thấy tệp",
+      "unclassified": "lỗi chưa phân loại",
       "showDetails": "hiện lỗi đầy đủ",
       "hideDetails": "ẩn lỗi đầy đủ"
     }

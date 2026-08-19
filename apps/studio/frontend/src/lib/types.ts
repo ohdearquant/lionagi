@@ -413,12 +413,9 @@ export interface ScheduleSummary {
   poll_interval_sec: number | null;
   action_kind: "agent" | "flow" | "fanout" | "play";
   action_model: string | null;
-  action_prompt: string | null;
   action_agent: string | null;
   action_playbook: string | null;
   action_project: string | null;
-  on_success: Record<string, unknown> | null;
-  on_fail: Record<string, unknown> | null;
   last_fired_at: number | null;
   /** Completed threshold checks, including checks that did not breach. */
   last_evaluated_at?: number | null;
@@ -439,6 +436,16 @@ export interface ScheduleSummary {
   updated_at: number;
 }
 
+/** The reconciled failure reason for one run, and which layer reported it. */
+export interface RunOutcome {
+  code: number | null;
+  summary: string;
+  source: "session" | "invocation" | "occurrence" | "fallback";
+  /** False when `summary` is a status word this service generated rather than a
+   * reason a layer reported. */
+  summary_reported: boolean;
+}
+
 export interface ScheduleRunSummary {
   id: string;
   schedule_id: string;
@@ -451,10 +458,35 @@ export interface ScheduleRunSummary {
   fired_at: number;
   ended_at: number | null;
   error_detail: string | null;
+  outcome?: RunOutcome | null;
+}
+
+/**
+ * A run as the /schedules/summary slice serves it. Narrower than ScheduleRunSummary on
+ * purpose: the summary surface carries no trigger_context and no error_detail, only a
+ * translatable classification of the failure.
+ */
+export interface ScheduleRunSliceRow {
+  id: string;
+  schedule_id: string;
+  invocation_id: string | null;
+  action_kind: string;
+  status: "running" | "completed" | "failed" | "skipped" | "cancelled";
+  exit_code: number | null;
+  chain_depth: number;
+  fired_at: number;
+  ended_at: number | null;
+  error_class: string | null;
 }
 
 export interface ScheduleDetail extends ScheduleSummary {
-  recent_runs: ScheduleRunSummary[];
+  // Served by the single-schedule route only. The list surfaces withhold them:
+  // operator-authored prompt text and arbitrary policy objects that nothing
+  // rendering a list reads, only the edit form, which loads one schedule.
+  action_prompt: string | null;
+  on_success: Record<string, unknown> | null;
+  on_fail: Record<string, unknown> | null;
+  recent_runs: ScheduleRunSliceRow[];
 }
 
 // ─── Operator conversation protocol (ADR-0083 v1) ──────────────────────────
