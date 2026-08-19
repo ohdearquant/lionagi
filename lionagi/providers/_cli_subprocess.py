@@ -566,6 +566,16 @@ async def ndjson_from_cli(
 
     stderr_task = asyncio.create_task(_drain_stderr())
 
+    def captured_stderr() -> str:
+        """The child's stderr as anything outside this process may see it."""
+        # Both the non-zero-exit error and the abandoned-child warning surface
+        # these same bytes, so they are redacted here rather than at each.
+        return _redact_secrets_for_log(
+            b"".join(stderr_chunks).decode(errors="replace").strip(),
+            redaction_env,
+            opaque_env,
+        )
+
     async def _write_stdin(payload: bytes) -> None:
         if proc.stdin is None:
             return
@@ -697,7 +707,7 @@ async def ndjson_from_cli(
                 drain_truncated = True
             except asyncio.CancelledError:
                 raise
-            err = b"".join(stderr_chunks).decode(errors="replace").strip()
+            err = captured_stderr()
             # Emptiness decided on what was captured, before the drain note is
             # appended, so a truncated drain that captured nothing still gets
             # a message instead of the note masquerading as output.
@@ -734,11 +744,7 @@ async def ndjson_from_cli(
             log.warning(
                 "CLI subprocess produced no output before it was abandoned; %s",
                 _abandoned_without_output_note(
-                    _redact_secrets_for_log(
-                        b"".join(stderr_chunks).decode(errors="replace").strip(),
-                        redaction_env,
-                        opaque_env,
-                    ),
+                    captured_stderr(),
                     stderr_unavailable,
                     stderr_drain_error,
                     abandon_drain_incomplete,

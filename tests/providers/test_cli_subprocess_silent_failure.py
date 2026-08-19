@@ -231,6 +231,13 @@ _LEAKS_UNNAMEABLE_ENV_THEN_HANGS = (
     "sys.stderr.flush(); "
     "time.sleep(300)"
 )
+# The same leak on the ordinary failure path, where the stderr leaves the
+# process as an exception the caller may store or forward rather than a log.
+_LEAKS_UNNAMEABLE_ENV_THEN_FAILS = (
+    "import os, sys; "
+    "sys.stderr.write('rejected token ' + os.environ['LIONAGI_TEST_THING']); "
+    "sys.exit(5)"
+)
 
 _INJECTED_SECRET = "supersecretvalue1234"
 # Long enough to be redactable and deliberately unlike any credential shape, so
@@ -396,6 +403,26 @@ class TestTheQuotedStderrCarriesNoCredential:
         )
         assert "[$LIONAGI_TEST_THING]" in caplog.text, (
             "the stderr was dropped rather than named, losing the diagnostic: " + caplog.text
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_nonzero_exit_does_not_carry_a_credential_to_the_caller(self):
+        """A nonzero exit quotes the same stderr into an exception, which is the other way it leaves this process."""
+        env = {**os.environ, "LIONAGI_TEST_THING": _UNNAMEABLE_SECRET}
+
+        async def run():
+            async for _ in ndjson_from_cli(_cmd(_LEAKS_UNNAMEABLE_ENV_THEN_FAILS), env=env):
+                pass  # pragma: no cover - the child writes no stdout
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await asyncio.wait_for(asyncio.create_task(run()), timeout=30)
+
+        message = str(exc_info.value)
+        assert _UNNAMEABLE_SECRET not in message, (
+            "a credential reached the caller through the exception: " + message
+        )
+        assert "[$LIONAGI_TEST_THING]" in message, (
+            "the stderr was dropped rather than named, losing the diagnostic: " + message
         )
 
     @pytest.mark.asyncio
