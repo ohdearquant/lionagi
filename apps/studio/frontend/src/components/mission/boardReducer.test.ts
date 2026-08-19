@@ -736,6 +736,64 @@ describe("boardReducer — disposition join and active/discharged split", () => 
     expect(s.unacknowledgedAttentionCount).toBe(0);
   });
 
+  it("finds a discharge stored under the id an earlier build wrote", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          id: "session-1",
+          run_id: "legacy-run",
+          status: "failed",
+          started_at: nowSec - 600,
+        }),
+      ],
+      [],
+      nowSec,
+      null,
+      { "run:legacy-run": makeDisposition({ item_id: "run:legacy-run", state: "resolved" }) },
+    );
+    expect(s.attentionItems).toHaveLength(0);
+    expect(s.dischargedAttentionItems).toHaveLength(1);
+    expect(s.dischargedAttentionItems[0].id).toBe("run:session-1");
+    expect(s.dischargedAttentionItems[0].legacyId).toBe("run:legacy-run");
+    expect(s.dischargedAttentionItems[0].disposition?.state).toBe("resolved");
+  });
+
+  it("carries no second key when the two names hold one value", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({ id: "r1", run_id: "r1", status: "failed", started_at: nowSec - 600 }),
+    ]);
+    expect(s.attentionItems[0].id).toBe("run:r1");
+    expect(s.attentionItems[0].legacyId).toBeUndefined();
+  });
+
+  it("reads the current id over the older one when a row has both", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          id: "session-1",
+          run_id: "legacy-run",
+          status: "failed",
+          started_at: nowSec - 600,
+        }),
+      ],
+      [],
+      nowSec,
+      null,
+      {
+        "run:session-1": makeDisposition({ item_id: "run:session-1", state: "acknowledged" }),
+        "run:legacy-run": makeDisposition({ item_id: "run:legacy-run", state: "resolved" }),
+      },
+    );
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].disposition?.state).toBe("acknowledged");
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+  });
+
   it("a gated run carrying a stale resolved/expected/snoozed disposition from before gate-awareness stays active, never permanently discharged", () => {
     const nowSec = 1_000_000;
     const s = dispatchOk(

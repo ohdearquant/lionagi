@@ -104,4 +104,11 @@ describe("AttentionQueue — undo", () => {
 
     expect(api.deleteAttentionDisposition.mock.calls).toEqual([["run:current"]]);
   });
+
+  it("clears the older key as well when the row carries one", async () => {
+    renderQueue([item({ legacyId: "run:legacy" })]);
+    await clickUndo();
+
+    expect(api.deleteAttentionDisposition.mock.calls).toEqual([["run:current"], ["run:legacy"]]);
+  });
 });

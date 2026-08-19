@@ -69,6 +69,8 @@ export type AttentionReason = "streak" | "failed" | "stale" | "stuck" | "gated";
 
 export interface AttentionItem {
   id: string;
+  /** The id an earlier build stored dispositions under, when it is not `id`. */
+  legacyId?: string;
   kind: "run" | "invocation" | "schedule" | "play";
   name: string;
   reason: AttentionReason;
@@ -234,13 +236,19 @@ function buildAttentionItems(
       reason = "stale";
     }
     if (reason == null) continue;
+    const sessionId = runSessionId(run);
     items.push({
-      id: `run:${runSessionId(run)}`,
+      id: `run:${sessionId}`,
+      // Dispositions are stored server-side under whichever id the projection
+      // emitted when they were written, so a build that gives a run a session id
+      // distinct from its `run_id` leaves the older key behind on rows a human
+      // already discharged.
+      ...(run.run_id && run.run_id !== sessionId ? { legacyId: `run:${run.run_id}` } : {}),
       kind: "run",
       name: resolveRunLabel(run),
       reason,
       startedAt: run.started_at ?? null,
-      href: `/runs/${runSessionId(run)}`,
+      href: `/runs/${sessionId}`,
       status: run.status,
       ...(reason === "failed" && run.status_reason_summary
         ? { reasonSummary: run.status_reason_summary }
@@ -313,11 +321,10 @@ function buildAttentionItems(
   const active: AttentionItem[] = [];
   const discharged: AttentionItem[] = [];
   for (const item of deduped) {
-    // One key, not two: a run's session id and its compatibility `run_id` are one
-    // value today, so a disposition stored under either is found here. See
-    // runIdentity for where that is held and what has to land with the change
-    // that breaks it.
-    const disposition = dispositions[item.id];
+    // Read the older key too: a discharge stored under it is what a human already
+    // decided about this row, and missing it puts the row back in the queue.
+    const disposition =
+      dispositions[item.id] ?? (item.legacyId ? dispositions[item.legacyId] : undefined);
     const joined = disposition ? { ...item, disposition } : item;
     // "A gated item only ever discharges via acknowledged" (see the comment
     // above) — this is that arm. Without it, acknowledged isn't in

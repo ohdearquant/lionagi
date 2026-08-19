@@ -710,10 +710,10 @@ _IDENTITY_CONTRACT = (
     "value, so an item discharged under the old key is found today only because the old key "
     "and the new one are equal. The moment they differ, those dispositions stop being found "
     "and items a human already discharged come back as active.\n\n"
-    "So the change that makes them differ is the change that must also land the compatibility "
-    "join that reads both keys when joining stored dispositions, together with a test that can "
-    "finally exercise it, because until that change no input could. Relaxing or deleting this "
-    "assertion is not the fix."
+    "The board's disposition join and its undo already read both keys. This is the change that "
+    "finally makes an input able to exercise them, so land that test with it, and give any "
+    "other consumer of a stored key the same treatment. Relaxing or deleting this assertion is "
+    "not the fix."
 )
 
 
