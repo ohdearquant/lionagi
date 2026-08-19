@@ -20,6 +20,7 @@ import contextlib
 import logging
 import os
 import pathlib
+import signal
 import sys
 
 import pytest
@@ -163,15 +164,35 @@ async def _abandon_then(agen, between) -> None:
 # Writes nothing anywhere and stays up, so the buffer is empty on teardown.
 _SILENT_THEN_HANGS = "import time; time.sleep(300)"
 
-# Leaves a grandchild outside the child's process group holding the stderr pipe,
-# so killing the child does not produce EOF and the drain cannot finish. The
-# grandchild outlives the test by seconds, not minutes.
-_ESCAPES_WITH_THE_PIPE = (
-    "import subprocess, sys, time; "
-    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(8)'], "
-    "start_new_session=True, stderr=sys.stderr); "
-    "time.sleep(300)"
-)
+
+def _escapes_with_the_pipe(pid_path) -> str:
+    """A child that leaves a grandchild outside its process group holding stderr.
+
+    Killing the child then produces no EOF and the drain cannot finish, which is
+    the condition under test. The holder outlives any abandon rather than racing
+    it on a timer, and records its own pid as its first act so the caller can end
+    it afterwards. Recording it from the child instead would leave it orphaned
+    for its full lifetime whenever the child dies before that line runs.
+    """
+    holder = (
+        "import os, pathlib, sys, time; "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+        "time.sleep(300)"
+    )
+    return (
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {holder!r}, {str(pid_path)!r}], "
+        "start_new_session=True, stderr=sys.stderr); "
+        "time.sleep(300)"
+    )
+
+
+def _end_pipe_holder(pid_path) -> None:
+    """Kill the grandchild recorded by :func:`_escapes_with_the_pipe`, if any."""
+    if not pid_path.exists():
+        return
+    with contextlib.suppress(ValueError, OSError):
+        os.kill(int(pid_path.read_text()), signal.SIGKILL)
 
 
 async def _abandon(agen) -> None:
@@ -710,14 +731,26 @@ class TestADrainThatDidNotFinishIsNotSilence:
     """An unread pipe is unknown. Reporting it as a quiet child is the failure this whole path exists to prevent."""
 
     @pytest.mark.asyncio
-    async def test_an_unfinished_drain_is_not_reported_as_a_quiet_child(self, caplog):
-        with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
-            await _abandon(ndjson_from_cli(_cmd(_ESCAPES_WITH_THE_PIPE)))
+    async def test_an_unfinished_drain_is_not_reported_as_a_quiet_child(self, caplog, tmp_path):
+        pid_file = tmp_path / "pipe-holder.pid"
+        try:
+            with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
+                await _abandon(ndjson_from_cli(_cmd(_escapes_with_the_pipe(pid_file))))
 
-        assert "it wrote nothing to stderr either" not in caplog.text, (
-            "an undrained pipe was reported as a child that said nothing: " + caplog.text
-        )
-        assert "could not be drained in time" in caplog.text, caplog.text
+            # The premise, asserted rather than timed: an earlier version of this
+            # test let the holder exit on its own schedule, so on a machine where
+            # the abandon happened to take longer the pipe was already closed and
+            # the test measured a case it was not written for.
+            assert pid_file.exists(), (
+                "the child never recorded a pipe holder, so nothing was holding "
+                "stderr open and this asserts nothing"
+            )
+            assert "it wrote nothing to stderr either" not in caplog.text, (
+                "an undrained pipe was reported as a child that said nothing: " + caplog.text
+            )
+            assert "could not be drained in time" in caplog.text, caplog.text
+        finally:
+            _end_pipe_holder(pid_file)
 
     @pytest.mark.asyncio
     async def test_a_drain_that_finishes_still_reports_a_quiet_child_plainly(self, caplog):

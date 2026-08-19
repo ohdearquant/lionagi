@@ -93,6 +93,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Giving up on a stuck CLI subprocess no longer waits for processes outside it. The wait used
+  to be `proc.wait()`, which on some interpreters completes only once every inherited pipe has
+  closed, so a descendant that escaped the child's process group holding its stderr decided how
+  long the caller waited. Two things followed. The caller trying to abandon a child was bounded
+  by a process it never started, and by the time it looked at the pipe the holder had usually
+  gone, so an unread pipe was reported as a child that said nothing rather than as unknown. The
+  wait now reads the child's own exit status, which is set when the child is reaped whatever
+  still holds a pipe, and the post-kill wait is bounded as well instead of being able to hang
+  indefinitely.
+
+- Terminating a subprocess group now waits for the group to empty rather than for the direct
+  child alone to exit. Those are different facts: whatever ignores the signal is what gets left
+  behind, and the direct child usually exits first, so keying the forced-kill escalation on the
+  child skipped it in exactly the case that needed it. A descendant sharing the child's group
+  and ignoring the termination signal ran on past the timeout while the caller was told the
+  group had been ended. Escalation is now keyed on the group still holding someone. A pipe
+  holder that left the group is unaffected, since it is already absent from the group by the
+  time the group is read, so it still cannot extend the wait. The kill is aimed by identity
+  rather than by the group number: a group id becomes reusable the moment its group empties, so
+  the members seen at the start are re-checked against their recorded start times before any
+  group-wide signal, and a membership read that fails is waited on rather than reported as an
+  ended group.
+
 - The studio scheduler's tick loop is now supervised rather than merely guarded. It caught
   `Exception`, which does not include `asyncio.CancelledError`, so a cancel escaping from anything
   the tick awaited ended the loop permanently while the process and its HTTP surface kept

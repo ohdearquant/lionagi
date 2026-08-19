@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import signal
 from typing import Any
 
-from .concurrency import move_on_after
+from .concurrency import move_on_after, sleep
+
+_log = logging.getLogger(__name__)
 
 # Two reads of a kernel tick clock for one process can differ in the last
 # place, so a recorded start time is compared to a live one within this. Two
@@ -134,18 +137,17 @@ def live_group_members(
     return members, complete
 
 
-def group_member_pids(pgid: int) -> tuple[list[int], bool]:
-    """Pids currently in group *pgid*, and whether the scan was complete.
+def group_members_with_start_times(pgid: int) -> tuple[list[tuple[int, float]], bool]:
+    """Members of group *pgid* as ``(pid, start time)``, and whether the scan
+    was complete.
 
-    The marker-free membership read, for a caller asking only whether a group
-    is empty. Not a cheaper :func:`live_group_members` with a field dropped —
-    see docs/internals/ln-primitives.md#process-group-identity for why the
-    marker has to be read inside the same bracket. An incomplete scan is never
-    reported as emptiness.
+    The start time is what makes a member usable later as proof of the group's
+    identity: a pid on its own can be reissued, and comparing the time it was
+    read against the time it reads now catches that.
     """
     import psutil
 
-    members: list[int] = []
+    members: list[tuple[int, float]] = []
     complete = True
     try:
         pids = psutil.pids()
@@ -173,8 +175,21 @@ def group_member_pids(pgid: int) -> tuple[list[int], bool]:
             complete = False
             continue
         if in_group:
-            members.append(pid)
+            members.append((pid, created))
     return members, complete
+
+
+def group_member_pids(pgid: int) -> tuple[list[int], bool]:
+    """Pids currently in group *pgid*, and whether the scan was complete.
+
+    The marker-free membership read, for a caller asking only whether a group
+    is empty. Not a cheaper :func:`live_group_members` with a field dropped —
+    see docs/internals/ln-primitives.md#process-group-identity for why the
+    marker has to be read inside the same bracket. An incomplete scan is never
+    reported as emptiness.
+    """
+    members, complete = group_members_with_start_times(pgid)
+    return [pid for pid, _ in members], complete
 
 
 def safe_pgid_value(pgid: Any) -> int | None:
@@ -254,14 +269,156 @@ def terminate_process_group(
         proc.terminate()
 
 
+# How often the polls below re-read status. The first is short so terminating a
+# cooperative child still looks instant; it backs off because the long waits are
+# the ones where something is refusing to leave, and those do not need watching
+# fifty times a second.
+_CHILD_EXIT_POLL_SECONDS = 0.005
+_CHILD_EXIT_POLL_MAX_SECONDS = 0.05
+
+# How long to wait for a SIGKILLed group to be reaped. Not the caller's grace:
+# that is the window for exiting cleanly, and nothing is negotiating any more.
+_POST_KILL_REAP_SECONDS = 0.5
+
+
+async def _await_child_exit(proc: Any) -> None:
+    """Wait for the child itself to exit, not for everything holding its pipes.
+
+    ``proc.wait()`` cannot be used for this. On some interpreters it completes
+    only once every inherited pipe has closed, so a descendant that escaped with
+    the child's stderr decides when the wait returns: the caller trying to give
+    up on a process ends up bounded by a process it never started, and by the
+    time it looks, evidence it was about to report as missing has been resolved
+    behind its back. ``returncode`` is set when the child is reaped, whatever
+    still holds a pipe.
+
+    Objects that do not model ``returncode`` as a subprocess does (None until
+    exit, then an int) fall back to ``wait()``, which is the only thing they
+    offer.
+    """
+    rc = getattr(proc, "returncode", object())
+    if not (rc is None or isinstance(rc, int)):
+        await proc.wait()
+        return
+    delay = _CHILD_EXIT_POLL_SECONDS
+    while proc.returncode is None:
+        await sleep(delay)
+        delay = min(delay * 2, _CHILD_EXIT_POLL_MAX_SECONDS)
+
+
+def _group_has_member(pgid: int) -> bool:
+    """Whether group *pgid* still holds someone, in one syscall (this polls).
+
+    Signal 0 reads membership without disturbing it. Anything but "no such
+    group" counts as occupied: a group that exists but is not ours to signal is
+    still occupied, and reading a failed probe as empty would skip the
+    escalation in the one case that needs it.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _witness_still_in_group(pgid: int, witnesses: list[tuple[int, float]]) -> bool:
+    """Whether a recorded member is still alive in this same group.
+
+    Identity, not occupancy. Once a group empties its number is free to name a
+    different one, so a bare pgid stops meaning anything; a witness carries the
+    start time it was read with, and a pid reissued underneath it fails that
+    comparison rather than passing as the original.
+    """
+    for pid, created in witnesses:
+        state, now = process_create_time(pid)
+        if state != "found" or now != created:
+            continue
+        try:
+            if os.getpgid(pid) == pgid:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _group_still_this_childs(proc: Any, pgid: int, witnesses: list[tuple[int, float]]) -> bool:
+    """Whether *pgid* still names this child's group rather than a later one.
+
+    An unreaped child is itself a live member, so the number cannot have been
+    reissued and nothing needs scanning. Only once it is reaped does the number
+    become free, and then only a witness still in the group proves it never was.
+    Same rule the synchronous group-ending path uses, for the same reason.
+
+    An object that does not report ``returncode`` the way a subprocess does
+    cannot establish that the child was reaped either, and the safe reading of
+    that is the one that still ends the group.
+    """
+    rc = getattr(proc, "returncode", None)
+    if rc is None or not isinstance(rc, int):
+        return True
+    return _witness_still_in_group(pgid, witnesses)
+
+
+async def _await_group_exit(
+    proc: Any, pgid: int | None, witnesses: list[tuple[int, float]]
+) -> None:
+    """Wait for the child and for anything left in its group, recording who was
+    in it into *witnesses* so the caller can tell this group from a later one.
+
+    Two different facts. The direct child usually exits first, so returning when
+    it does leaves a descendant that ignored the signal running while the caller
+    is told the group was terminated. A pipe holder that escaped the group is
+    not that case: it is what the child wait refuses to be bounded by, and it is
+    already absent from the group by the time the group is asked.
+    """
+    await _await_child_exit(proc)
+    if pgid is None:
+        return
+    delay = _CHILD_EXIT_POLL_SECONDS
+    warned = False
+    while True:
+        if witnesses and _witness_still_in_group(pgid, witnesses):
+            await sleep(delay)
+            delay = min(delay * 2, _CHILD_EXIT_POLL_MAX_SECONDS)
+            continue
+        # Nobody known is left. One syscall settles the ordinary case before any
+        # scan runs, which is what keeps a process-table walk off every
+        # termination: an empty group cannot be confused with a reissued one.
+        if not _group_has_member(pgid):
+            return
+        found, complete = group_members_with_start_times(pgid)
+        if found:
+            # Re-read rather than kept from a single gate scan, so a descendant
+            # spawned into the group during the grace is waited for too.
+            witnesses[:] = found
+            continue
+        if complete:
+            return
+        # A scan that failed and saw nobody is not an empty group. Saying so is
+        # the difference between a descendant proven gone and one merely not
+        # found, and only the first may be reported as a terminated group.
+        if not warned:
+            warned = True
+            _log.warning(
+                "process group %s could not be read completely and showed no members; "
+                "waiting rather than reporting it as ended",
+                pgid,
+            )
+        await sleep(delay)
+        delay = min(delay * 2, _CHILD_EXIT_POLL_MAX_SECONDS)
+
+
 async def aterminate_process_group(
     proc: Any,
     *,
     grace: float | None = None,
     sig_first: signal.Signals = signal.SIGTERM,
 ) -> None:
-    """Async: signal the process group AND the direct child, wait up to grace, then
-    SIGKILL; grace=None sends SIGKILL immediately with no prior signal."""
+    """Async: signal the process group AND the direct child, wait up to grace for
+    the GROUP to empty, then SIGKILL; grace=None sends SIGKILL immediately with
+    no prior signal."""
     pgid = _safe_pgid(proc)
     if grace is None:
         # No prior SIGTERM/wait: signal group AND direct child directly.
@@ -279,13 +436,21 @@ async def aterminate_process_group(
     # Bound the grace wait with an anyio cancel scope, not asyncio.wait_for:
     # wait_for raises "no running event loop" on an AnyIO/Trio task before the
     # timeout policy can apply, so the forced-kill escalation never fires.
+    witnesses: list[tuple[int, float]] = []
     with move_on_after(grace) as scope:
-        await proc.wait()
+        await _await_group_exit(proc, pgid, witnesses)
     if scope.cancelled_caught:
-        if pgid is not None:
+        # Only at a group still shown to be this child's. The grace can outlast
+        # the whole group, and the pgid is reusable from the moment it empties,
+        # so signalling the number alone is how a timeout ends up killing
+        # somebody else's processes.
+        if pgid is not None and _group_still_this_childs(proc, pgid, witnesses):
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pgid, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        # Short, not another full grace: the negotiating is over and SIGKILL is
+        # not refusable, so what remains is reaping. Giving this the same window
+        # as the grace lets one call take twice as long as the caller asked for.
+        with move_on_after(min(grace, _POST_KILL_REAP_SECONDS)), contextlib.suppress(Exception):
+            await _await_group_exit(proc, pgid, witnesses)
