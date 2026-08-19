@@ -133,9 +133,9 @@ describe("SchedulesTable — source contract", () => {
     expect(SRC).toContain('taxonomy="session"');
   });
 
-  it("classifies failed-run errors instead of rendering the raw error_detail inline", () => {
-    expect(SRC).toContain("classifyError(run.error_detail");
-    expect(SRC).not.toMatch(/\{run\.error_detail\}/);
+  it("renders the server's classification and never a raw error_detail", () => {
+    expect(SRC).toContain("run.error_class");
+    expect(SRC).not.toContain("run.error_detail");
   });
 
   it("never leaks the raw error_detail into a hover title — only the classified line", () => {

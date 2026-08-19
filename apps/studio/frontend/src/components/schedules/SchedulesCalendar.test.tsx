@@ -54,14 +54,13 @@ function runRow(overrides: Partial<RunRow> = {}): RunRow {
     schedule_id: "sched-1",
     scheduleName: "nightly-build",
     invocation_id: null,
-    trigger_context: {},
     action_kind: "agent",
     status: "completed",
     exit_code: 0,
     chain_depth: 0,
     fired_at: 0,
     ended_at: null,
-    error_detail: null,
+    error_class: null,
     ...overrides,
   };
 }

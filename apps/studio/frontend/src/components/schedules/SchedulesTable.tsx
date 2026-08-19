@@ -13,7 +13,6 @@ import { triggerSchedule } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
 import type { ScheduleSummary } from "@/lib/types";
 import EnabledToggle from "./EnabledToggle";
-import { classifyError } from "./errorClassify";
 import { humanTrigger } from "./trigger";
 import {
   KNOWN_RUN_STATUSES,
@@ -105,7 +104,10 @@ function LastRunCell({ run, nowMs }: { run: RunRow | undefined; nowMs: number })
   const label = KNOWN_RUN_STATUSES.has(run.status)
     ? tStatus(run.status as Parameters<typeof tStatus>[0])
     : undefined;
-  const errorLine = run.status === "failed" ? classifyError(run.error_detail, tError) : null;
+  const errorLine =
+    run.status === "failed" && run.error_class
+      ? tError(run.error_class as Parameters<typeof tError>[0])
+      : null;
 
   return (
     <div className="flex flex-col gap-0.5">

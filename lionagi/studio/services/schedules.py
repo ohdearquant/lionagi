@@ -481,6 +481,162 @@ async def list_schedules(
     return rows
 
 
+# The schedule_runs columns the run-summary surfaces serve. The table also carries
+# operational columns no client reads: action arguments, resume packets, lease holders,
+# capability and library references. The API answers without a token when
+# LIONAGI_STUDIO_AUTH_TOKEN is unset, so rows are projected onto this list rather than
+# passed through, which also means a column added to the table later stays private until
+# someone names it here.
+#
+# trigger_context and error_detail are content-bearing and are not on it. trigger_context
+# carries whole external event payloads; error_detail carries subprocess stderr and
+# exception text. Neither is a summary fact, so this surface serves a classification of
+# the failure instead of the text that produced it.
+_RUN_SUMMARY_FIELDS = (
+    "id",
+    "schedule_id",
+    "invocation_id",
+    "action_kind",
+    "status",
+    "exit_code",
+    "chain_depth",
+    "fired_at",
+    "ended_at",
+)
+
+# Ordered, so the first match wins. Keys are translated by the client; no text from the
+# error itself reaches this surface, including when nothing matches.
+_ERROR_CLASS_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"failed to spawn", re.I), "spawnFailed"),
+    (
+        re.compile(r"econnrefused|connection refused|connectionerror|network is unreachable", re.I),
+        "network",
+    ),
+    (re.compile(r"timed out|timeouterror", re.I), "timeout"),
+    (re.compile(r"permissionerror|permission denied", re.I), "permission"),
+    (re.compile(r"modulenotfounderror|importerror", re.I), "missingDependency"),
+    (re.compile(r"filenotfounderror|no such file or directory", re.I), "notFound"),
+)
+
+_UNCLASSIFIED_ERROR = "unclassified"
+
+
+def _error_class(detail: str | None) -> str | None:
+    """Classify a run's error text into a translatable key, or None when there is none."""
+    if not detail or not detail.strip():
+        return None
+    for pattern, key in _ERROR_CLASS_PATTERNS:
+        if pattern.search(detail):
+            return key
+    return _UNCLASSIFIED_ERROR
+
+
+def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
+    summary = {name: row[name] for name in _RUN_SUMMARY_FIELDS if name in row}
+    summary["error_class"] = _error_class(row.get("error_detail"))
+    return summary
+
+
+# A run view adds the reconciled outcome and the joined session facts on top of the
+# occurrence row. These are the additions any list surface serves; the rest of the join
+# (leases, capabilities, library references, resume packets) stays private.
+_RUN_VIEW_FIELDS = _RUN_SUMMARY_FIELDS + ("duration_ms", "artifacts", "session_ids")
+
+
+# The only summaries an occurrence-sourced outcome carries without consulting the run's
+# error text. Anything else it carries IS that text, verbatim.
+_SAFE_OCCURRENCE_SUMMARIES = frozenset({"running", "skipped"})
+
+
+def _occurrence_error_class(outcome: Any) -> str | None:
+    """The classification of an outcome summary that is really raw error text, else None.
+
+    Keyed on the outcome alone rather than on a sibling error_detail column, because the
+    status view drops that column while keeping the text here -- which is the whole reason
+    a field allow-list cannot close this: the text arrives under a different name than the
+    column it came from, on a row that no longer carries the column.
+    """
+    if not isinstance(outcome, dict) or outcome.get("source") != "occurrence":
+        return None
+    summary = outcome.get("summary")
+    if not isinstance(summary, str) or summary in _SAFE_OCCURRENCE_SUMMARIES:
+        return None
+    return _error_class(summary)
+
+
+def _outcome_for_list(outcome: Any) -> Any:
+    """The reconciled outcome as a list surface serves it: a class, never the text."""
+    classified = _occurrence_error_class(outcome)
+    return outcome if classified is None else {**outcome, "summary": classified}
+
+
+def _run_view(row: dict[str, Any]) -> dict[str, Any]:
+    view = {name: row[name] for name in _RUN_VIEW_FIELDS if name in row}
+    outcome = row.get("outcome")
+    view["error_class"] = _error_class(row.get("error_detail")) or _occurrence_error_class(outcome)
+    if "outcome" in row:
+        view["outcome"] = _outcome_for_list(outcome)
+    return view
+
+
+# The schedule columns the list surfaces serve. The table carries roughly twice this
+# many: authored specs, flow YAML, shell commands and their arguments, notification
+# targets, poll cursors, ownership keys and lease bookkeeping. None of those has a
+# reader in the app, and the API answers without a token when LIONAGI_STUDIO_AUTH_TOKEN
+# is unset, so records are projected onto this list rather than passed through -- which
+# also means a column added to the table later stays private until someone names it here.
+_SCHEDULE_SUMMARY_FIELDS = (
+    "id",
+    "name",
+    "description",
+    "enabled",
+    "trigger_type",
+    "cron_expr",
+    "interval_sec",
+    "github_repo",
+    "github_filter",
+    "poll_interval_sec",
+    "action_kind",
+    "action_model",
+    "action_prompt",
+    "action_agent",
+    "action_playbook",
+    "action_project",
+    "on_success",
+    "on_fail",
+    "last_fired_at",
+    "last_evaluated_at",
+    "next_fire_at",
+    "missed_fire_policy",
+    "overlap_policy",
+    "project",
+    # Not read by any web view, so the allow-list is not derivable from the client's
+    # declared shape alone: `li schedule list` renders the remaining-runs counter, and
+    # `li schedule get` is the only surface an operator can read spend from. These are
+    # counters and totals rather than authored content, which is what the list excludes.
+    "max_runs",
+    "remaining_runs",
+    "budget_usd",
+    "budget_tokens",
+    "spend_usd",
+    "spend_tokens",
+    "unreported_sessions",
+    "spend_is_partial",
+    "consecutive_failures",
+    "last_status",
+    "health_state",
+    "health_last_outcome",
+    "health_last_outcome_at",
+    "health_since",
+    "created_at",
+    "updated_at",
+)
+
+
+def _schedule_summary(row: dict[str, Any]) -> dict[str, Any]:
+    return {name: row[name] for name in _SCHEDULE_SUMMARY_FIELDS if name in row}
+
+
 async def _attach_spend(db: StateDB, row: dict[str, Any]) -> None:
     """Attach the spend rollup to *row* in place, for schedules with a configured budget.
 
@@ -910,7 +1066,7 @@ async def list_schedules_route(
     project: str | None = Query(default=None),
 ) -> dict[str, Any]:
     rows = await list_schedules(enabled=enabled, trigger_type=trigger_type, project=project)
-    return {"schedules": rows}
+    return {"schedules": [_schedule_summary(row) for row in rows]}
 
 
 @studio_route("/schedules/limits", method="GET", area="schedules", name="schedule_limits")
@@ -938,7 +1094,11 @@ async def get_schedule_route(schedule_id: str) -> dict[str, Any]:
     data = await get_schedule(schedule_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
-    return data
+    # recent_runs is a list surface nested inside a record, so it takes the same
+    # projection the top-level run lists take rather than inheriting the record's.
+    detail = _schedule_summary(data)
+    detail["recent_runs"] = [_run_summary(run) for run in data.get("recent_runs", [])]
+    return detail
 
 
 @studio_route(
@@ -950,7 +1110,7 @@ async def get_schedule_route(schedule_id: str) -> dict[str, Any]:
 )
 async def create_schedule_route(body: CreateScheduleRequest) -> dict[str, Any]:
     try:
-        return await create_schedule(body.model_dump(exclude_none=True))
+        return _schedule_summary(await create_schedule(body.model_dump(exclude_none=True)))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except NameConflictError as exc:
@@ -1054,7 +1214,12 @@ async def list_schedule_runs_route(
     # RunView-enriched rows (adds outcome/duration_ms/session_ids/artifacts
     # additively) — status is repeatable (?status=failed&status=timed_out).
     rows = await list_schedule_run_views(schedule_id, status=status, limit=limit, offset=offset)
-    return {"runs": rows, "limit": limit, "offset": offset, "has_next": len(rows) == limit}
+    return {
+        "runs": [_run_view(row) for row in rows],
+        "limit": limit,
+        "offset": offset,
+        "has_next": len(rows) == limit,
+    }
 
 
 # Top-level schedule-runs endpoint for looking up a single run by ID
@@ -1082,4 +1247,9 @@ async def get_schedule_status_route(schedule_id: str) -> dict[str, Any]:
     data = await get_schedule_status(schedule_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Schedule '{schedule_id}' not found")
-    return data
+    latest = data.get("latest_run")
+    return {
+        **data,
+        "schedule": _schedule_summary(data["schedule"]),
+        "latest_run": _run_view(latest) if latest else latest,
+    }

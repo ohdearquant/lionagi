@@ -453,8 +453,26 @@ export interface ScheduleRunSummary {
   error_detail: string | null;
 }
 
+/**
+ * A run as the /schedules/summary slice serves it. Narrower than ScheduleRunSummary on
+ * purpose: the summary surface carries no trigger_context and no error_detail, only a
+ * translatable classification of the failure.
+ */
+export interface ScheduleRunSliceRow {
+  id: string;
+  schedule_id: string;
+  invocation_id: string | null;
+  action_kind: string;
+  status: "running" | "completed" | "failed" | "skipped" | "cancelled";
+  exit_code: number | null;
+  chain_depth: number;
+  fired_at: number;
+  ended_at: number | null;
+  error_class: string | null;
+}
+
 export interface ScheduleDetail extends ScheduleSummary {
-  recent_runs: ScheduleRunSummary[];
+  recent_runs: ScheduleRunSliceRow[];
 }
 
 // ─── Operator conversation protocol (ADR-0083 v1) ──────────────────────────

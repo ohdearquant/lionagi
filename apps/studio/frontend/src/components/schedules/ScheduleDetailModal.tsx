@@ -13,7 +13,6 @@ import ErrorBanner from "@/components/ui/ErrorBanner";
 import { useOverlayFocus } from "@/lib/useOverlayFocus";
 import EnabledToggle from "./EnabledToggle";
 import TemplateVarChips from "./TemplateVarChips";
-import { classifyError } from "./errorClassify";
 import { KNOWN_RUN_STATUSES, formatDelta, formatInterval, toMs } from "./data";
 import {
   getSchedule,
@@ -22,8 +21,9 @@ import {
   deleteSchedule,
   triggerSchedule,
   listScheduleRuns,
+  getScheduleRun,
 } from "@/lib/api";
-import type { ScheduleDetail, ScheduleRunSummary } from "@/lib/types";
+import type { ScheduleDetail, ScheduleRunSliceRow } from "@/lib/types";
 
 // Run history is a first-class section on the detail page (not a 5-item
 // sidebar afterthought) — fetch enough of it to read as a real timeline.
@@ -181,8 +181,10 @@ export default function ScheduleDetailModal({
 
   const [detail, setDetail] = useState<ScheduleDetail | null>(null);
   const [loadErr, setLoadErr] = useState(false);
-  const [recentRuns, setRecentRuns] = useState<ScheduleRunSummary[]>([]);
+  const [recentRuns, setRecentRuns] = useState<ScheduleRunSliceRow[]>([]);
   const [expandedRunIds, setExpandedRunIds] = useState<Set<string>>(new Set());
+  // Raw error text is not on the run list; opening a row fetches that one run.
+  const [runErrorText, setRunErrorText] = useState<Record<string, string | null>>({});
 
   const [form, setForm] = useState<DetailForm | null>(null);
   const [baseline, setBaseline] = useState<DetailForm | null>(null);
@@ -343,16 +345,27 @@ export default function ScheduleDetailModal({
     }
   }
 
-  function toggleExpanded(runId: string) {
+  async function toggleExpanded(runId: string) {
+    // Read from the current render, not from inside the updater -- React has not run the
+    // updater by the time the next statement executes, so a flag set in there is still
+    // false here and the fetch never fires.
+    const opening = !expandedRunIds.has(runId);
     setExpandedRunIds((prev) => {
       const next = new Set(prev);
       if (next.has(runId)) next.delete(runId);
       else next.add(runId);
       return next;
     });
+    if (!opening || runId in runErrorText) return;
+    try {
+      const run = await getScheduleRun(runId);
+      setRunErrorText((prev) => ({ ...prev, [runId]: run.error_detail }));
+    } catch {
+      setRunErrorText((prev) => ({ ...prev, [runId]: null }));
+    }
   }
 
-  async function handleOpenRun(run: ScheduleRunSummary) {
+  async function handleOpenRun(run: ScheduleRunSliceRow) {
     if (!run.invocation_id) return;
     try {
       const inv = await getInvocation(run.invocation_id);
@@ -681,7 +694,9 @@ export default function ScheduleDetailModal({
                       ? tStatus(r.status as Parameters<typeof tStatus>[0])
                       : undefined;
                     const errorLine =
-                      r.status === "failed" ? classifyError(r.error_detail, tError) : null;
+                      r.status === "failed" && r.error_class
+                        ? tError(r.error_class as Parameters<typeof tError>[0])
+                        : null;
                     const expanded = expandedRunIds.has(r.id);
                     return (
                       <div
@@ -723,9 +738,9 @@ export default function ScheduleDetailModal({
                             </button>
                           </div>
                         )}
-                        {expanded && r.error_detail && (
+                        {expanded && runErrorText[r.id] && (
                           <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-overlay p-2 font-data text-[length:var(--t-xs)] text-content-secondary">
-                            {r.error_detail}
+                            {runErrorText[r.id]}
                           </pre>
                         )}
                       </div>
