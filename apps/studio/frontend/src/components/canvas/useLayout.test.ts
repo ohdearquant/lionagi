@@ -194,14 +194,6 @@ describe("Dagre rank pinning — large-graph dummy-node budget (#3012)", () => {
     }
   });
 
-  it("keeps the returned rank map equal to the ASAP ranks on a capped graph", () => {
-    const layout = getLayoutedElements(issueNodes, issueEdges, "LR");
-
-    for (const node of issueNodes) {
-      expect(layout.ranks.get(node.id)).toBe(issueRanks.get(node.id));
-    }
-  });
-
   it("draws every edge left to right, and stops describing the drawing by the ASAP map", () => {
     // The map is not the drawing, and on a capped graph they disagree. The cap
     // frees dagre to place a node anywhere the relaxed constraint allows, so the
@@ -271,7 +263,7 @@ describe("Dagre rank pinning — large-graph dummy-node budget (#3012)", () => {
       ),
     ).toBe(true);
     for (const edge of issueEdges) {
-      expect(layout.ranks.get(edge.source)).toBeLessThan(layout.ranks.get(edge.target)!);
+      expect(issueRanks.get(edge.source)).toBeLessThan(issueRanks.get(edge.target)!);
     }
   });
 });
@@ -614,22 +606,19 @@ describe("enforceMinRankGap — minimum vertical gap within a rank", () => {
   });
 });
 
-describe("getLayoutedElements — exposes a rank map alongside the layout", () => {
-  it("returns a rank for every node, matching computeNodeDepths", () => {
-    const nodes: Node[] = [full("a"), full("b"), full("c")];
-    const edges: Edge[] = [
-      { id: "a-b", source: "a", target: "b" },
-      { id: "b-c", source: "b", target: "c" },
-    ];
-    const { ranks } = getLayoutedElements(nodes, edges, "LR");
-    expect(ranks.get("a")).toBe(0);
-    expect(ranks.get("b")).toBe(1);
-    expect(ranks.get("c")).toBe(2);
-  });
-
-  it("reports an empty rank map for an empty graph", () => {
-    const { ranks } = getLayoutedElements([], [], "LR");
-    expect(ranks.size).toBe(0);
+describe("getLayoutedElements — the result describes the drawing only", () => {
+  it("carries no rank map", () => {
+    // Deliberate, and re-decided more than once. A rank map is a property of the
+    // dependency graph, and once the layout may cap its rank spacing it stops
+    // describing where nodes land. Returning it beside the coordinates invites
+    // reading it as though it did. computeNodeDepths gives depth to anyone who
+    // wants depth.
+    const layout = getLayoutedElements(
+      [bare("a"), bare("b")],
+      [{ id: "a-b", source: "a", target: "b" }],
+      "LR",
+    );
+    expect(Object.keys(layout).sort()).toEqual(["edges", "height", "nodes", "width"]);
   });
 });
 
@@ -644,7 +633,8 @@ describe("getLayoutedElements — an edge naming a node that never arrived", () 
   const xOf = (laid: Node[], id: string) => laid.find((n) => n.id === id)!.position.x;
 
   it("leaves the real node on the rank the rank map assigns it", () => {
-    const { nodes: laid, ranks } = getLayoutedElements(nodes, dangling, "LR");
+    const { nodes: laid } = getLayoutedElements(nodes, dangling, "LR");
+    const ranks = computeNodeDepths(nodes, dangling);
     expect(laid).toHaveLength(3);
     // All three are roots once the dangling edge is ignored, so all three are
     // rank 0 and share an x. The failure this guards against is positions that
@@ -666,7 +656,8 @@ describe("getLayoutedElements — an edge naming a node that never arrived", () 
     // Control. Ignoring unresolved endpoints must not be satisfiable by
     // ignoring every edge — a real edge still has to separate its endpoints.
     const real: Edge[] = [{ id: "a-b", source: "a", target: "b" }];
-    const { nodes: laid, ranks } = getLayoutedElements(nodes, real, "LR");
+    const { nodes: laid } = getLayoutedElements(nodes, real, "LR");
+    const ranks = computeNodeDepths(nodes, real);
     expect(ranks.get("b")).toBe(1);
     expect(xOf(laid, "b")).toBeGreaterThan(xOf(laid, "a"));
   });

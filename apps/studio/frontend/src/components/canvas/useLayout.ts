@@ -432,15 +432,14 @@ export function markRankDistance(nodes: Node[], edges: Edge[]): Edge[] {
   });
 }
 
+// No rank map here on purpose. It describes the dependency graph and this returns
+// a drawing, and once the layout may cap its rank spacing the two disagree: a node
+// the cap let dagre place beside its consumer keeps its original depth. Depth is
+// available from computeNodeDepths, under a name that says what it is.
 export interface LayoutedGraph {
   nodes: Node[];
   edges: Edge[];
   height: number;
-  /** node id -> longest-path (ASAP) depth. A property of the graph, not of
-   * the drawing: a capped rank gap leaves this untouched while moving where
-   * the node lands, so anything asking what an edge crosses on screen reads
-   * the stamped rankDistance instead. */
-  ranks: Map<string, number>;
   /** UNSCALED bounding-box width, for computeReservedHeight callers. */
   width: number;
 }
@@ -638,7 +637,6 @@ export function getLayoutedElements(
     edges: markRankDistance(finalNodes, markContinuationEdges(finalNodes, edges)),
     height,
     width,
-    ranks,
   };
 }
 

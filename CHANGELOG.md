@@ -71,7 +71,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   to cap its rank spacing, the two stop agreeing: the cap lets the layout place an independent
   node beside the node that consumes it, so an edge drawn between neighbouring columns was
   still routed as though it swept across ten columns of cards. Edges now carry the distance
-  actually drawn, measured from the final geometry.
+  actually drawn, measured from the final geometry. The layout no longer returns the ranking
+  itself: it describes a drawing, the ranking describes the dependency graph, and returning the
+  two together is what let one be read as the other. Anything that wants dependency depth asks
+  for it by that name.
 
 - The schedule summary surface no longer carries run content. Its recent-run slice served
   `trigger_context`, which holds whole external event payloads, and `error_detail`, which holds
