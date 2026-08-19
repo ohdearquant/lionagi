@@ -239,6 +239,14 @@ _LEAKS_UNNAMEABLE_ENV_THEN_FAILS = (
     "sys.exit(5)"
 )
 
+# Handed to the child only as an argument, and echoed back with nothing beside
+# it to say what it is: no flag, no assignment, so the anchored text rules
+# cannot reach it and only an argument-derived candidate can.
+_ARGUMENT_ONLY_SECRET = "cmdonly9f21ab77"
+_LEAKS_ITS_ARGUMENT_THEN_FAILS = (
+    "import sys; sys.stderr.write('rejected by upstream ' + sys.argv[2]); sys.exit(6)"
+)
+
 _INJECTED_SECRET = "supersecretvalue1234"
 # Long enough to be redactable and deliberately unlike any credential shape, so
 # only the environment lookup can catch it.
@@ -389,6 +397,66 @@ class TestWhatCountsAsASecretToRemove:
         text = f"GET https://api.example.com/v1?{name}=alice&limit=10"
         assert cs._redact_secrets_for_log(text, {}) == text
 
+    def test_a_short_password_is_removed_when_the_text_says_what_it_is(self):
+        """Anchored to the name, so the floor the guesses need does not apply."""
+        out = cs._redact_secrets_for_log("child failed: PASSWORD=hunter2", {})
+        assert "hunter2" not in out, out
+
+    @pytest.mark.parametrize(
+        "text,secret",
+        [
+            ("connect refused password=hunter2pass", "hunter2pass"),
+            ("env dump: API_KEY=abcd1234efgh", "abcd1234efgh"),
+            ("unrecognized argument --api-key=hunter2pass", "hunter2pass"),
+            ("usage: cli --auth-token zzzz9999 --verbose", "zzzz9999"),
+        ],
+    )
+    def test_a_credential_outside_query_syntax_is_still_removed(self, text, secret):
+        """A plain assignment and an echoed flag carry it just as a query does."""
+        assert secret not in cs._redact_secrets_for_log(text, {}), text
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "rows limit=10 timeout=30",
+            "usage: cli --verbose true --out report.txt",
+            "retry after=30 attempts=3",
+        ],
+    )
+    def test_an_ordinary_assignment_is_left_alone(self, text):
+        """The name decides here too, or the rule eats the diagnostic."""
+        assert cs._redact_secrets_for_log(text, {}) == text
+
+    def test_redacting_one_parameter_does_not_swallow_the_next(self):
+        """The value stops at the separator; greedy matching ate the neighbour."""
+        out = cs._redact_secrets_for_log(
+            "GET https://api.example.com/v1?sig=hunter2pass&limit=10", {}
+        )
+        assert "hunter2pass" not in out, out
+        assert "limit=10" in out, out
+
+    @pytest.mark.parametrize(
+        "cmd,expected",
+        [
+            (["cli", "--api-key", "hunter2pass"], {"api-key": "hunter2pass"}),
+            (["cli", "--api-key=hunter2pass"], {"api-key": "hunter2pass"}),
+            (["cli", "--verbose", "true"], {}),
+            (["cli", "--api-key", "--other"], {}),
+            (["cli", "--api-key", "short"], {}),
+            (["cli", "--limit", "100"], {}),
+            (None, {}),
+        ],
+    )
+    def test_a_credential_given_only_as_an_argument_becomes_a_candidate(self, cmd, expected):
+        """A flag holding a value no environment mapping ever sees."""
+        assert cs._cmd_secret_values(cmd) == expected
+
+    def test_an_argument_credential_is_removed_even_echoed_without_its_flag(self):
+        """The text rules need the flag beside it; this is why the candidate exists."""
+        secrets = cs._cmd_secret_values(["cli", "--api-key", "hunter2pass"])
+        out = cs._redact_secrets_for_log("server rejected hunter2pass", secrets)
+        assert "hunter2pass" not in out, out
+
 
 class TestTheQuotedStderrCarriesNoCredential:
     """Quoting the child's stderr is the point of this path, so the credential has to be removed rather than the quoting withheld."""
@@ -418,6 +486,30 @@ class TestTheQuotedStderrCarriesNoCredential:
         )
         assert "[$LIONAGI_TEST_THING]" in caplog.text, (
             "the stderr was dropped rather than named, losing the diagnostic: " + caplog.text
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_credential_passed_only_as_an_argument_does_not_reach_the_caller(self):
+        """Nothing in the child's text names it, so the argument list is the only place it can be found."""
+        cmd = [
+            *_cmd(_LEAKS_ITS_ARGUMENT_THEN_FAILS),
+            "--api-key",
+            _ARGUMENT_ONLY_SECRET,
+        ]
+
+        async def run():
+            async for _ in ndjson_from_cli(cmd):
+                pass  # pragma: no cover - the child writes no stdout
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await asyncio.wait_for(asyncio.create_task(run()), timeout=30)
+
+        message = str(exc_info.value)
+        assert _ARGUMENT_ONLY_SECRET not in message, (
+            "a credential given only on the command line reached the caller: " + message
+        )
+        assert "[redacted]" in message, (
+            "the stderr was dropped rather than redacted, losing the diagnostic: " + message
         )
 
     @pytest.mark.asyncio

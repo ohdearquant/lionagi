@@ -337,6 +337,14 @@ _URL_CREDENTIAL_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/?#@]*:)[^\s/?
 # reads the name vocabulary above rather than restating it.
 _URL_QUERY_PARAM_RE = re.compile(r"([?&])([^=&\s]+)=([^&\s]+)")
 
+# The same credential written as a plain assignment has no "?" either, and may
+# be too short or too word-like to have become a candidate. Anchoring to the
+# name is what lets these two rules skip the length floor the guesses need.
+_ASSIGNMENT_RE = re.compile(r"([\w.\-]+)=([^\s&]+)")
+# And the space-separated form, which is how a child echoes its own argv back.
+# The value must not itself start with "-", or a bare flag eats the next one.
+_FLAG_VALUE_RE = re.compile(r"(--[\w.\-]+)(\s+)([^\s\-][^\s]*)")
+
 # Short values collide with ordinary words, which is the only reason either rule
 # below has a floor, so both use the same one. A declared name needs none.
 _MIN_REDACTABLE_VALUE_LEN = 8
@@ -368,6 +376,34 @@ def _secret_candidates(
     }
 
 
+def _cmd_secret_values(cmd: Iterable[str] | None) -> dict[str, str]:
+    """Credentials passed as arguments, which no environment mapping holds.
+
+    The anchored text rules already cover an echoed flag; this covers the child
+    printing the value alone, where nothing in the text says what it is. Same
+    length floor as the environment guesses, for the same reason: the flag name
+    is a guess, and a short value is not tellable from an ordinary word.
+    """
+    found: dict[str, str] = {}
+    awaiting: str | None = None
+    for token in cmd or ():
+        if not isinstance(token, str):
+            awaiting = None
+            continue
+        name, sep, value = token.partition("=")
+        if sep and _name_reads_as_credential(name):
+            if len(value) >= _MIN_REDACTABLE_VALUE_LEN:
+                found[name.lstrip("-")] = value
+            awaiting = None
+        elif awaiting is not None and not token.startswith("-"):
+            if len(token) >= _MIN_REDACTABLE_VALUE_LEN:
+                found[awaiting] = token
+            awaiting = None
+        else:
+            awaiting = token.lstrip("-") if _name_reads_as_credential(token) else None
+    return found
+
+
 def _opaque_env_values(
     env: Mapping[str, str] | None, already_secret: Mapping[str, str]
 ) -> dict[str, str]:
@@ -388,14 +424,35 @@ def _opaque_env_values(
     }
 
 
+def _name_reads_as_credential(name: str) -> bool:
+    """Whether a parameter, variable or flag name announces that it holds a secret."""
+    # Decoded before the test: `p%61ssword` is the same parameter to the server
+    # that reads it, and would otherwise carry its value past every rule.
+    return bool(_SECRET_ENV_KEY_RE.search(unquote(name)))
+
+
 def _redact_query_value(match: re.Match[str]) -> str:
     """Replace a query parameter's value when its name reads as a credential."""
     separator, name, value = match.groups()
-    # Decoded before the name test: `p%61ssword` is the same parameter to the
-    # server that reads it, and would otherwise carry its value past the rule.
-    if not _SECRET_ENV_KEY_RE.search(unquote(name)):
+    if not _name_reads_as_credential(name):
         return match.group(0)
     return f"{separator}{name}=[redacted]"
+
+
+def _redact_assignment_value(match: re.Match[str]) -> str:
+    """Replace a bare NAME=value pair when the name reads as a credential."""
+    name, value = match.groups()
+    if not _name_reads_as_credential(name):
+        return match.group(0)
+    return f"{name}=[redacted]"
+
+
+def _redact_flag_value(match: re.Match[str]) -> str:
+    """Replace the value after a credential-named flag, as echoed argv shows it."""
+    flag, gap, value = match.groups()
+    if not _name_reads_as_credential(flag):
+        return match.group(0)
+    return f"{flag}{gap}[redacted]"
 
 
 def _escape_control_characters(text: str) -> str:
@@ -434,6 +491,8 @@ def _redact_secrets_for_log(
         text = text.replace(value, replacements[value])
     text = _URL_CREDENTIAL_RE.sub(r"\1[redacted]\2", text)
     text = _URL_QUERY_PARAM_RE.sub(_redact_query_value, text)
+    text = _ASSIGNMENT_RE.sub(_redact_assignment_value, text)
+    text = _FLAG_VALUE_RE.sub(_redact_flag_value, text)
     # Escape last: the redaction patterns are written against the real text.
     return _escape_control_characters(_SECRET_SHAPE_RE.sub("[redacted]", text))
 
@@ -491,7 +550,10 @@ async def ndjson_from_cli(
     # One mapping for both the child and the redactor: with env=None the child
     # reads os.environ at exec, later than any snapshot taken here.
     spawn_env: dict[str, str] = dict(child_env) if child_env is not None else dict(os.environ)
-    redaction_env: Mapping[str, str] = _secret_candidates(spawn_env, declared)
+    redaction_env: Mapping[str, str] = {
+        **_secret_candidates(spawn_env, declared),
+        **_cmd_secret_values(cmd),
+    }
     opaque_env: Mapping[str, str] = _opaque_env_values(spawn_env, redaction_env)
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
