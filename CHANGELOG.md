@@ -73,7 +73,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   selected on: the advance runs first with a compare-and-swap on `next_fire_at`, the occurrence is
   written only if the claim holds, and the scheduler that loses it writes nothing and cancels its
   own invocation with a reason naming what happened. The same claim refuses a fire whose cursor an
-  operator moved between selection and dispatch.
+  operator moved between selection and dispatch. Fires that do not stand for a due instant, such as
+  chain children and manual triggers, say so explicitly and keep the guarantees they already had.
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
   and `DataClass` now discover inherited instance fields through one ordered dataclass path,

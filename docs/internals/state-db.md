@@ -418,6 +418,25 @@ of silently claiming nothing. It bounds the race it names and no more: if the
 update carries no new `next_fire_at`, the cursor does not move and the next
 caller holds the same claim.
 
+The predicate is spelled as a branch on the Python value, `IS NULL` for a claim
+of nothing and `= :param` otherwise, rather than as a single NULL-safe operator.
+`IS` accepts a bound parameter in sqlite and is a syntax error in postgres, and
+their common spelling, `IS NOT DISTINCT FROM`, is newer than the sqlite versions
+this project still runs against. The dual-backend tests skip without `asyncpg`
+installed, so the shape of the generated statement is asserted directly.
+
+Not every fire claims a due instant. A chain child runs because its parent
+finished, a manual trigger runs because a person asked, and a startup re-fire
+replaces an occurrence whose cursor already moved; those pass `NO_CURSOR_CLAIM`
+and are guarded by their own mechanisms, the CAS-tombstone of the orphan row in
+the re-fire's case. A `github_poll` batch is one due instant however many events
+it carries: the first dispatched event claims it, and the rest are separated by
+`github_cursor`, which is monotonic and advances in the same transaction as each
+event's occurrence. Missed-fire recovery reserves the cursor itself before
+dispatching, so its reserve is where it claims the instant, and the fire that
+follows claims the value the reserve wrote rather than the pre-reserve value its
+local snapshot still holds.
+
 `_build_update_schedule_stmt` is the single choke point for both the field
 allowlist and the SQL shape, shared by `update_schedule` and by the folded-in
 update inside `create_schedule_run_and_advance`, so the two write paths cannot

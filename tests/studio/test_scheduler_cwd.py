@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._scheduler_claims import fire_with_claim
+
 # _resolve_action_cwd's action_project branch imports lionagi.studio.services.projects,
 # which requires fastapi (the `studio` extra); skip gracefully in a bare-core install.
 pytest.importorskip("fastapi", reason="studio extra not installed")
@@ -670,7 +672,7 @@ async def test_fire_threads_resolved_cwd_into_spawn_and_wait(tmp_path, monkeypat
         ),
         patch("lionagi.studio.scheduler.subprocess.spawn_and_wait", new=spawn_mock),
     ):
-        await engine._fire(schedule, "run-cwd-001", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-cwd-001", trigger_context={"scheduled": True})
 
     spawn_mock.assert_awaited_once()
     _args, kwargs = spawn_mock.await_args
@@ -710,7 +712,7 @@ async def test_fire_refuses_owner_carrying_cwd_inherit(monkeypatch):
         ),
         patch("lionagi.studio.scheduler.subprocess.spawn_and_wait", new=spawn_mock),
     ):
-        await engine._fire(schedule, "run-cwd-002", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-cwd-002", trigger_context={"scheduled": True})
 
     spawn_mock.assert_not_awaited()
 
@@ -747,7 +749,7 @@ async def test_fire_plain_nonzero_exit_keeps_generic_reason(monkeypatch):
             new=AsyncMock(return_value=(1, "boom")),
         ),
     ):
-        await engine._fire(schedule, "run-cwd-003", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-cwd-003", trigger_context={"scheduled": True})
 
     terminal_calls = [
         c

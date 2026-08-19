@@ -647,3 +647,53 @@ async def test_tick_github_network_error_leaves_health_columns_untouched():
         await engine._tick_github(schedule, now=10_000.0)
 
     svc.update_schedule.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_every_event_in_a_batch_is_written_though_each_one_advances_the_cursor():
+    """One poll cycle is one due instant, however many events it carries.
+
+    Each dispatched event advances next_fire_at in its own transaction. If every event
+    claimed the cursor the poll started with, only the first could ever be written and a
+    multi-event batch would silently serialize into one event per poll.
+    """
+    from tests._scheduler_claims import claim_holds
+
+    schedule = _minimal_schedule(next_fire_at=9_000.0, poll_interval_sec=60, github_cursor=None)
+    svc = _make_svc()
+
+    # The row, kept apart from the dict the loop holds: a real write does not reach back into
+    # the caller's snapshot, and a double that mutated it would refresh the very staleness
+    # this test exists to catch.
+    stored = {"next_fire_at": schedule["next_fire_at"], "github_cursor": None}
+    written: list[str] = []
+
+    async def _advance(payload, *, schedule_id, schedule_fields, expect_next_fire_at):
+        if not claim_holds(stored["next_fire_at"], expect_next_fire_at):
+            return False
+        stored.update(schedule_fields)
+        written.append(payload["id"])
+        return True
+
+    svc.create_schedule_run_and_advance = AsyncMock(side_effect=_advance)
+
+    items = [
+        _item(1, "2026-01-01T00:00:01Z"),
+        _item(2, "2026-01-01T00:00:02Z"),
+        _item(3, "2026-01-01T00:00:03Z"),
+    ]
+    engine = SchedulerEngine(svc=svc)
+    build_argv_patch, spawn_patch = _spawn_patches()
+    with (
+        build_argv_patch,
+        spawn_patch,
+        patch.object(
+            gh_mod,
+            "github_poll",
+            new=AsyncMock(return_value=GithubPollResult(items=items, scan_complete=True)),
+        ),
+    ):
+        await engine._tick_github(schedule, now=10_000.0)
+
+    assert len(written) == 3, f"expected one occurrence per event, wrote {len(written)}"
+    assert stored["github_cursor"] == "2026-01-01T00:00:03Z"

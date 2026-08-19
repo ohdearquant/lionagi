@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
-from lionagi.state.db import TERMINAL_RUN_STATUSES, StateDB
+from lionagi.state.db import NO_CURSOR_CLAIM, TERMINAL_RUN_STATUSES, StateDB
 from lionagi.state.reasons import RunReasons
 from lionagi.studio.scheduler import coordination as _coordination
 
@@ -31,8 +31,13 @@ class SchedulerStateService(Protocol):
     async def list_schedules(self, *, enabled: bool | None = None) -> list[dict[str, Any]]: ...
 
     async def update_schedule(
-        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
-    ) -> None: ...
+        self,
+        schedule_id: str,
+        *,
+        guard_cursor_forward: bool = False,
+        expect_next_fire_at: Any = NO_CURSOR_CLAIM,
+        **fields: Any,
+    ) -> bool: ...
 
     async def count_schedule_runs(
         self,
@@ -167,11 +172,19 @@ class _DBSchedulerStateService:
             return await db.list_schedules(enabled=enabled, limit=None)
 
     async def update_schedule(
-        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
-    ) -> None:
+        self,
+        schedule_id: str,
+        *,
+        guard_cursor_forward: bool = False,
+        expect_next_fire_at: Any = NO_CURSOR_CLAIM,
+        **fields: Any,
+    ) -> bool:
         async with self._db_context() as db:
-            await db.update_schedule(
-                schedule_id, guard_cursor_forward=guard_cursor_forward, **fields
+            return await db.update_schedule(
+                schedule_id,
+                guard_cursor_forward=guard_cursor_forward,
+                expect_next_fire_at=expect_next_fire_at,
+                **fields,
             )
 
     async def count_schedule_runs(

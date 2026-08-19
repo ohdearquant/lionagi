@@ -203,21 +203,7 @@ def test_update_rejects_an_impossible_cursor_before_any_write():
 # The interleaving: an operator PATCH vs an in-flight poll, against a real store
 
 from lionagi.state.db import StateDB  # noqa: E402
-
-
-async def _claim_and_advance(db, run, *, schedule_id, schedule_fields):
-    """Write an occurrence holding whatever cursor the schedule currently has.
-
-    These tests predate the cursor claim and are about atomicity, so they always hold it;
-    the claim itself is covered in tests/state/test_schedule_due_cursor_claim.py.
-    """
-    current = (await db.get_schedule(schedule_id))["next_fire_at"]
-    return await db.create_schedule_run_and_advance(
-        run,
-        schedule_id=schedule_id,
-        schedule_fields=schedule_fields,
-        expect_next_fire_at=current,
-    )
+from tests._scheduler_claims import claim_and_advance
 
 
 def _gh_schedule(sid: str, cursor: str | None) -> dict:
@@ -270,7 +256,7 @@ async def test_operator_patch_survives_an_in_flight_polls_cursor_write(tmp_path)
     # The in-flight tick now lands, carrying the value it computed from the
     # cursor it read before the PATCH.
     async with StateDB(db_path) as db:
-        await _claim_and_advance(
+        await claim_and_advance(
             db,
             _run_row("run-race", sid),
             schedule_id=sid,
@@ -298,7 +284,7 @@ async def test_normal_forward_advance_is_unaffected_by_the_guard(tmp_path):
     sid = "sched-fwd"
     async with StateDB(db_path) as db:
         await db.create_schedule(_gh_schedule(sid, "2026-07-20T00:00:00Z"))
-        await _claim_and_advance(
+        await claim_and_advance(
             db,
             _run_row("run-fwd", sid),
             schedule_id=sid,
@@ -316,7 +302,7 @@ async def test_guard_advances_from_a_null_cursor(tmp_path):
     sid = "sched-null"
     async with StateDB(db_path) as db:
         await db.create_schedule(_gh_schedule(sid, None))
-        await _claim_and_advance(
+        await claim_and_advance(
             db,
             _run_row("run-null", sid),
             schedule_id=sid,
@@ -362,7 +348,7 @@ async def test_guard_is_inert_for_schedules_with_no_cursor_field(tmp_path):
                 "next_fire_at": 1000.0,
             }
         )
-        await _claim_and_advance(
+        await claim_and_advance(
             db,
             _run_row("run-cron", sid),
             schedule_id=sid,

@@ -127,8 +127,9 @@ def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
-# Distinguishes "no cursor predicate" from a predicate whose expected value is NULL.
-_NO_CURSOR_PREDICATE = object()
+# Distinguishes "this write claims no due instant" from "it claims one whose value is NULL".
+# Public because callers several layers up have to state which of the two they mean.
+NO_CURSOR_CLAIM = object()
 
 # Shape of the schema this code applies; ``_apply_schema`` stamps it into ``schema_meta.version`` on
 # every open, so the recorded version describes the database after migrations. Bump it whenever a
@@ -3721,13 +3722,27 @@ class StateDB:
     )
 
     async def update_schedule(
-        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
-    ) -> None:
+        self,
+        schedule_id: str,
+        *,
+        guard_cursor_forward: bool = False,
+        expect_next_fire_at: Any = NO_CURSOR_CLAIM,
+        **fields: Any,
+    ) -> bool:
+        """Update one schedule; returns whether a row matched.
+
+        With *expect_next_fire_at* the update also claims that cursor value, so a caller that
+        reserves a due instant ahead of dispatching it learns whether it won the reservation.
+        """
         stmt, params = self._build_update_schedule_stmt(
-            schedule_id, fields, guard_cursor_forward=guard_cursor_forward
+            schedule_id,
+            fields,
+            guard_cursor_forward=guard_cursor_forward,
+            expect_next_fire_at=expect_next_fire_at,
         )
         async with self._tx() as conn:
-            await conn.execute(stmt, params)
+            result = await conn.execute(stmt, params)
+        return result.rowcount > 0
 
     @classmethod
     def _build_update_schedule_stmt(
@@ -3736,7 +3751,7 @@ class StateDB:
         fields: dict[str, Any],
         *,
         guard_cursor_forward: bool = False,
-        expect_next_fire_at: Any = _NO_CURSOR_PREDICATE,
+        expect_next_fire_at: Any = NO_CURSOR_CLAIM,
     ):
         """Validate and build the ``UPDATE schedules`` statement and params, no transaction."""
         bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
@@ -3779,11 +3794,16 @@ class StateDB:
         params = dict(fields)
         params["_id"] = schedule_id
         where = "id = :_id"
-        if expect_next_fire_at is not _NO_CURSOR_PREDICATE:
-            # NULL-safe on purpose: IS compares NULL to NULL, so a schedule with no cursor is
-            # guarded on the same terms as one that has it.
-            where += " AND next_fire_at IS :_expect_nfa"
-            params["_expect_nfa"] = expect_next_fire_at
+        if expect_next_fire_at is not NO_CURSOR_CLAIM:
+            # Branching on the Python value rather than emitting a NULL-safe operator: sqlite
+            # spells one `IS`, postgres rejects `IS` with a bound parameter outright, and their
+            # shared spelling (`IS NOT DISTINCT FROM`) is too new to rely on. A schedule with no
+            # cursor is still guarded on the same terms as one that has it.
+            if expect_next_fire_at is None:
+                where += " AND next_fire_at IS NULL"
+            else:
+                where += " AND next_fire_at = :_expect_nfa"
+                params["_expect_nfa"] = expect_next_fire_at
         stmt = text(f"UPDATE schedules SET {', '.join(sets_parts)} WHERE {where}")  # noqa: S608
         if bind_params:
             stmt = stmt.bindparams(*bind_params)
@@ -3853,11 +3873,13 @@ class StateDB:
         *,
         schedule_id: str,
         schedule_fields: dict[str, Any],
-        expect_next_fire_at: float | None,
+        expect_next_fire_at: Any,
     ) -> bool:
         """Insert one occurrence row and advance the schedule's cursor in a single transaction.
 
         Returns False when *expect_next_fire_at* no longer matches, having written nothing.
+        Pass ``NO_CURSOR_CLAIM`` for a fire that does not stand for a due instant, such as a
+        chain child or a replacement for an occurrence already recorded.
         """
         run_stmt, run_params = self._build_schedule_run_insert_stmt(run)
         # Engine-only path, so the monotonic cursor guard always applies: this value came from a

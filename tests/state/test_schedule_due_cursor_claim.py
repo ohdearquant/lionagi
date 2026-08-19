@@ -169,3 +169,42 @@ async def test_update_schedule_still_writes_without_a_cursor_predicate(db: State
 
     await db.update_schedule(sid, next_fire_at=due + 5)
     assert await _cursor(db, sid) == due + 5
+
+
+def test_the_claim_predicate_is_valid_on_every_supported_dialect():
+    """`IS` with a bound parameter parses on sqlite and is a syntax error on postgres.
+
+    The dual-backend suite skips without asyncpg, so a postgres-invalid predicate reaches
+    CI unnoticed. Reading the generated text is what closes that.
+    """
+    with_value, params = StateDB._build_update_schedule_stmt(
+        "sched-1", {"next_fire_at": 200.0}, expect_next_fire_at=100.0
+    )
+    with_null, null_params = StateDB._build_update_schedule_stmt(
+        "sched-1", {"next_fire_at": 200.0}, expect_next_fire_at=None
+    )
+    unclaimed, _ = StateDB._build_update_schedule_stmt("sched-1", {"next_fire_at": 200.0})
+
+    for stmt in (with_value, with_null):
+        assert " IS :" not in str(stmt), f"postgres rejects a bound parameter after IS: {stmt}"
+
+    assert "next_fire_at = :_expect_nfa" in str(with_value)
+    assert params["_expect_nfa"] == 100.0
+    assert "next_fire_at IS NULL" in str(with_null)
+    assert "_expect_nfa" not in null_params
+    # Control: without a claim there is no predicate at all, so the two arms above are
+    # measuring a predicate that this builder only emits when asked for one.
+    assert "next_fire_at IS NULL" not in str(unclaimed)
+    assert "_expect_nfa" not in str(unclaimed)
+
+
+@pytest.mark.asyncio
+async def test_a_claim_of_none_matches_only_a_null_cursor(db: StateDB):
+    """The NULL arm has to behave like a claim, not like an unclaimed write."""
+    sid = await _schedule(db, due=500.0)
+    assert not await db.update_schedule(sid, expect_next_fire_at=None, next_fire_at=900.0)
+    assert (await db.get_schedule(sid))["next_fire_at"] == 500.0
+    assert await db.update_schedule(sid, expect_next_fire_at=500.0, next_fire_at=None)
+    assert (await db.get_schedule(sid))["next_fire_at"] is None
+    assert await db.update_schedule(sid, expect_next_fire_at=None, next_fire_at=900.0)
+    assert (await db.get_schedule(sid))["next_fire_at"] == 900.0
