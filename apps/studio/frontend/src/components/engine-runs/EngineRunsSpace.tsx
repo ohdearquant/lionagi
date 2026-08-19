@@ -95,7 +95,7 @@ function useEngineRunsData(kind: string, status: string, sessionId: string) {
   }, [kind, status, sessionId]);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- load() calls setState inside async callbacks; synchronous reset clears stale runs before the fetch resolves
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load() resets loading, error and the pagination lock synchronously so the new filters' controls are usable at once; the previous rows stay on screen until the new page lands
     return load();
   }, [load]);
 

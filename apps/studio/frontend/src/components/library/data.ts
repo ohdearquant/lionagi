@@ -28,6 +28,7 @@ export interface LibraryItem {
 export interface LibraryCatalogResult {
   items: LibraryItem[];
   allAgents: AgentProfileSummary[];
+  /** Always empty: no request loads engine defs while the engine tab is unfinished. */
   allEngines: EngineDef[];
   degraded: boolean;
 }
@@ -35,7 +36,6 @@ export interface LibraryCatalogResult {
 interface CatalogSlice {
   items: LibraryItem[];
   agents?: AgentProfileSummary[];
-  engines?: EngineDef[];
 }
 
 const wants = (active: LibraryDataTab, kind: LibraryKind) => active === "all" || active === kind;
@@ -149,7 +149,6 @@ export async function loadLibraryCatalogs(tab: LibraryDataTab): Promise<LibraryC
     }
     result.items.push(...entry.value.items);
     if (entry.value.agents) result.allAgents = entry.value.agents;
-    if (entry.value.engines) result.allEngines = entry.value.engines;
   }
   return result;
 }
