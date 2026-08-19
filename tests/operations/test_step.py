@@ -150,6 +150,11 @@ def test_operative_model_type_cache_size_zero_restores_per_call_classes(
     assert first.request_type is not second.request_type
 
 
+# Bound at module scope, so both resolve from the module they name. The tests below
+# turn on that and nothing else about them.
+MODULE_LEVEL_TYPE = type("MODULE_LEVEL_TYPE", (), {})
+
+
 def module_level_fn(v):
     return v
 
@@ -158,9 +163,10 @@ def test_structural_cache_admission_classifies_mutable_and_immutable_metadata():
     """Lists, dicts, bound methods, partials and arbitrary objects are never cache-safe;
     scalars, tuples, frozensets, types and plain functions are.
 
-    Admission asks only whether the value can be keyed soundly. Whether keying it keeps it
-    alive is a separate question the key answers by holding identity weakly, which is why a
-    locally built function and a locally built type belong on the safe side here.
+    Admission asks two things: whether the value can be keyed soundly, and whether an entry
+    keyed on it would outlive the name it was declared under. A locally built function or
+    type fails the second even though it passes the first, because the caches behind this
+    gate hold their built value strongly and that value holds the callable.
     """
     from functools import partial
 
@@ -185,6 +191,9 @@ def test_structural_cache_admission_classifies_mutable_and_immutable_metadata():
         partial(module_level_fn),
         CallableValidator(),
         Validators(),
+        # Keyable, and refused anyway: neither resolves from the module it names.
+        local_fn,
+        type("LocalType", (), {}),
     ]
     for value in unsafe_values:
         assert _try_stable_cache_key(value) is None
@@ -200,38 +209,29 @@ def test_structural_cache_admission_classifies_mutable_and_immutable_metadata():
         (1, 2),
         frozenset({1, 2}),
         module_level_fn,
-        local_fn,
-        type("LocalType", (), {}),
+        MODULE_LEVEL_TYPE,
     ]
     for value in safe_values:
         assert _try_stable_cache_key(value) is not None
 
 
-def test_admitting_a_locally_built_callable_does_not_keep_it_alive():
-    """The safe side above is only defensible because admission stopped implying retention.
+def test_the_refusal_tracks_reachability_by_name_not_the_kind_of_callable():
+    """A function and a `type()` result are refused for being unreachable, not for being built.
 
-    The key is kept for the duration, the way the annotation and model-type caches keep one.
-    Dropping it instead would leave nothing holding anything and the assertion would pass
-    whether or not identity is held weakly.
+    The module-scope pair is the arm that makes this a statement about reachability: an
+    admission rule that simply refused every function and every dynamic type would satisfy
+    the first half of this test and be a different rule.
     """
-    import gc
-    import weakref
-
     from lionagi.ln._structural import _try_stable_cache_key
 
     def local_fn(v):
         return v
 
-    local_fn.payload = b"x" * 4096
-    consumer_cache = {_try_stable_cache_key(local_fn): "value"}
-    assert None not in consumer_cache
+    assert _try_stable_cache_key(local_fn) is None
+    assert _try_stable_cache_key(type("LocalType", (), {})) is None
 
-    released = weakref.ref(local_fn)
-    del local_fn
-    gc.collect()
-
-    assert released() is None
-    assert len(consumer_cache) == 1
+    assert _try_stable_cache_key(module_level_fn) is not None
+    assert _try_stable_cache_key(MODULE_LEVEL_TYPE) is not None
 
 
 def test_model_type_cache_key_opts_out_for_bound_method_validator():
