@@ -822,3 +822,26 @@ def test_the_layout_is_not_stored_in_the_class_namespace():
     ]
     assert stored == [], f"layout reachable in the class namespace as {stored}"
     assert _base._field_layout(NamespaceParams) is layout
+
+
+def test_a_cached_layout_does_not_keep_its_model_type_alive():
+    """Keyed on id(): the int pins nothing, and the finalizer clears the entry before the id can be reused."""
+    import gc
+    import weakref
+
+    from lionagi.ln.types import base as _base
+
+    @dataclass(slots=True, frozen=True, init=False)
+    class TransientParams(Params):
+        value: int = 1
+
+    key = id(TransientParams)
+    _base._field_layout(TransientParams)
+    assert key in _base._LAYOUTS
+    ref = weakref.ref(TransientParams)
+
+    del TransientParams
+    gc.collect()
+
+    assert ref() is None, "the layout cache kept the model type alive"
+    assert key not in _base._LAYOUTS, "the cache entry outlived its type and its id can be reused"

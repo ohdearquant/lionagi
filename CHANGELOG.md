@@ -8,6 +8,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- `Params`, `Meta`, and `Spec` now compare through one exact-type structural projection instead of
+  generated dataclass equality, string fallback hashes, or hash-as-equality. Mutable nested
+  dict/list/set values remain structurally comparable but now raise
+  `UnhashableStructuralValueError` when hashed, preventing shallow-frozen objects from corrupting
+  set/dict membership after nested mutation. All production `Params` declarations explicitly use
+  the base `eq=False` authority. Field-layout, sentinel-policy/singleton, shared `Spec`/`FieldModel`
+  annotation, and Pydantic model caches now key classes by identity, distinguish typed values such
+  as `True` and `1`, preserve immutable `pathlib`/UUID value semantics, and bypass mutable or
+  receiver-bound metadata. Unsupported objects use identity semantics instead of trusting
+  arbitrary user equality/hash implementations. The two former 10,000-entry
+  annotation caches are one shared 10,000-entry cache under the same environment setting; a
+  separate stable-declaration projection cache is bounded by
+  `LIONAGI_STRUCTURAL_CACHE_SIZE` (10,000 by default) and, because each entry copies the projected
+  primitives in, by a summed projected-size ceiling `LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT` (8,192
+  by default) measured on the ordering token, above which a value is not retained but stays
+  comparable and hashable. A callable's token is its identity, which that ceiling cannot price, so
+  identity keys hold their target weakly wherever the runtime allows a weak reference: a cached key
+  cannot outlive the function, class, or declaration it stands for. The one instance that cannot be
+  keyed weakly is a frozen dataclass declared with `slots=True`, so those are admitted to the
+  declaration-projection cache only when every callable they reference is already reachable under
+  its own name, which keeps closures, lambdas, and `type()` results from being held by a cache
+  entry. Integers are projected as width-minimal two's complement instead of decimal digits,
+  so an integer wider than the interpreter's integer-to-string limit compares and hashes rather than
+  raising `ValueError`. Mappings other
+  than an exact `dict` are opaque and compare by identity, matching the existing treatment of
+  `tuple`, `frozenset`, `pathlib`, and UUID subclasses, since a `Mapping` implementation may carry
+  state that `items()` does not expose.
 - Lightweight `Params`, `DataClass`, `Role`, and `InstructionContent` projections now accept a
   keyword-only `mode="json"` while preserving positional `exclude` and the existing shallow
   Python-mode output. JSON mode delegates nested LionAGI/Pydantic/dataclass values to the internal
@@ -87,6 +114,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   The comparison that decides whether an event is already past the stored cursor clamps through
   the same helper as the writer. A value one of them capped and the other did not would never
   compare as past the cursor written for it, so the event would be offered again on every poll.
+- The rule keeping a declaration-projection cache entry from outliving what it references now
+  reaches through wrappers. It was applied to a callable a declaration held directly, but a
+  projection that rebuilt its key from a child value forwarded every other projected field and
+  dropped that one, so a closure, lambda, or `type()` result behind an `Enum` member value was
+  admitted and held alive by the entry. Mapping values, Pydantic model fields, and msgspec
+  struct fields rebuilt their keys the same way and now carry the flag as well.
+- The shared annotation and model caches now decline to key a declaration whose projection
+  reports that it holds a callable nothing else keeps alive under a name. Keying on the
+  projection rather than the instance does not bound those two on its own, because each entry
+  holds a built annotation or model that refers to the declaration's callables: the entry's own
+  value keeps its weak key resolvable, so a closure validator or a dynamically created type
+  stayed reachable through the cache after the name it was declared under was withdrawn, along
+  with whatever it captured. Such declarations are now rebuilt on each use instead of cached.
+
 - Two studio schedulers running against one database could each dispatch the same occurrence.
   The tick selects due schedules and fires them in separate statements, and every admission gate
   between the two lives in the firing process's own memory, so both processes committed, each with

@@ -439,7 +439,8 @@ def _body_dump(source: str, function: str) -> list[str]:
 
 _EXPECTED_CONFIG_POLICY_BODY = _body_dump(
     """
-def _config_sentinel_policy(owner, _config_identity, config):
+def _config_sentinel_policy(owner_key, _config_identity, config):
+    owner = cast(type[Any], owner_key.target)
     return _compat_policy(
         site=f"{owner.__module__}.{owner.__qualname__}._config",
         none_as_sentinel=config.none_as_sentinel,
@@ -455,7 +456,7 @@ def _effective_config_sentinel_policy(model_type):
     owner = next(
         base for base in model_type.__mro__ if base.__dict__.get("_config") is config
     )
-    return _config_sentinel_policy(owner, id(config), config)
+    return _config_sentinel_policy(_IdentityKey(owner), id(config), config)
 """,
     "_effective_config_sentinel_policy",
 )
@@ -481,7 +482,7 @@ def _validate_base_gateway(
             function_lists.setdefault(node.name, []).append(node)
     expected = {
         "_config_sentinel_policy": (
-            ("owner", "_config_identity", "config"),
+            ("owner_key", "_config_identity", "config"),
             _EXPECTED_CONFIG_POLICY_BODY,
         ),
         "_effective_config_sentinel_policy": (
