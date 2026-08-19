@@ -4663,3 +4663,99 @@ async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
         monkeypatch.setattr(ctx["db"], "update_session", real_update_session)
         monkeypatch.setattr(ctx["db"], "merge_session_node_metadata", real_merge)
         await stop_live_persist(env, status="completed")
+
+
+def _dead_queue_events(session_id: str, count: int = 4):
+    """A retry queue driven past its limit against a database that never accepts."""
+    import logging
+
+    from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
+
+    class _RefusingDB:
+        async def _persist_live_message(self, message, **kwargs):
+            raise RuntimeError("database is locked")
+
+    async def build():
+        queue = MessagePersistRetryQueue(
+            _RefusingDB(), logger=logging.getLogger("test"), owner=f"branch {session_id}"
+        )
+        for i in range(count):
+            await queue.submit(
+                PendingMessageEvent(
+                    message={"id": f"m{i}", "role": "assistant", "content": "x"},
+                    session_id=session_id,
+                )
+            )
+        return queue
+
+    return build()
+
+
+async def test_child_message_loss_surfaces_at_invocation_not_flattened_to_ok(
+    temp_db_path: Path,
+):
+    """A completed child carrying COMPLETED_MESSAGE_LOSS must not read as a clean pass
+    at the invocation. The reducer names every other completed-but-degraded reason and
+    named none for this one, so a flow whose child lost its transcript reported that all
+    child sessions completed successfully."""
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-child-message-loss"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    ctx["message_retry_queues"].append(await _dead_queue_events(ctx["session_id"]))
+
+    assert await stop_live_persist(env, status="completed") == "completed"
+
+    async with StateDB() as db:
+        child = await db.get_session(ctx["session_id"])
+    assert child["status_reason_code"] == RunReasons.COMPLETED_MESSAGE_LOSS
+
+    status, reason_code, summary, evidence, metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+
+    assert status == "completed", "the child's work stands"
+    assert reason_code == RunReasons.COMPLETED_MESSAGE_LOSS
+    assert "incomplete" in summary
+    assert metadata["message_loss_session_ids"] == [ctx["session_id"]]
+    assert {e["id"] for e in evidence} == {ctx["session_id"]}
+
+
+async def test_a_losing_child_is_named_even_when_another_reason_wins(
+    temp_db_path: Path,
+):
+    """Only one branch can claim the reason code. The child that lost its transcript is
+    still named in the metadata, or the reason that wins buries it."""
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-loss-and-finalize-error"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    ctx["message_retry_queues"].append(await _dead_queue_events(ctx["session_id"]))
+    env._finalize_error = {"error_class": "TimeoutError", "error": "team lock timed out"}
+
+    await stop_live_persist(env, status="completed")
+
+    _status, reason_code, _summary, _evidence, metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+
+    assert reason_code == RunReasons.COMPLETED_FINALIZE_ERROR, "the work outranks the record"
+    assert metadata["message_loss_session_ids"] == [ctx["session_id"]], (
+        "and the loss is still findable"
+    )

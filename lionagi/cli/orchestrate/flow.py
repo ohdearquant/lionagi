@@ -542,6 +542,19 @@ def _format_budget_preamble(
     )
 
 
+def _has_message_loss_evidence(session: dict) -> bool:
+    """Whether this session's row records that it lost live message events."""
+    refs = session.get("status_evidence_refs")
+    if isinstance(refs, str):
+        try:
+            refs = json.loads(refs)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(refs, list):
+        return False
+    return any(isinstance(ref, dict) and ref.get("kind") == "message_persist_loss" for ref in refs)
+
+
 async def _resolve_invocation_terminal_flow(
     invocation_id: str,
     *,
@@ -604,6 +617,17 @@ async def _resolve_invocation_terminal_flow(
                     metadata,
                 )
             if all(s == "completed" for s in child_statuses):
+                # Read off the evidence rather than the reason code. A child that lost
+                # messages AND hit something else carries the other reason, because a
+                # row has one; it carries both evidence refs. Named in the metadata
+                # before any branch below can claim the reason code, or the branch that
+                # wins takes the loss out of the invocation record with it.
+                lost_messages = [s for s in sessions if _has_message_loss_evidence(s)]
+                if lost_messages:
+                    metadata = dict(metadata)
+                    metadata["message_loss_session_ids"] = [
+                        s["id"] for s in lost_messages if s.get("id")
+                    ]
                 spawn_refused = [
                     s
                     for s in sessions
@@ -670,6 +694,21 @@ async def _resolve_invocation_terminal_flow(
                         "child's own DAG already produced its result).",
                         [{"kind": "session", "id": s["id"]} for s in degraded if s.get("id")],
                         degraded_metadata,
+                    )
+                # A "completed" child may still carry COMPLETED_MESSAGE_LOSS: its work
+                # stands, but part of its transcript was never written. Last of these
+                # branches because it is the only one not about work the flow failed to
+                # do -- and still ahead of a clean pass, which is what this would
+                # otherwise flatten to.
+                if lost_messages:
+                    return (
+                        "completed",
+                        RunReasons.COMPLETED_MESSAGE_LOSS,
+                        "All child sessions completed, but at least one lost live "
+                        "message events at teardown, so its transcript is incomplete "
+                        "and anything read from it is reading a partial record.",
+                        [{"kind": "session", "id": s["id"]} for s in lost_messages if s.get("id")],
+                        metadata,
                     )
                 return (
                     "completed",

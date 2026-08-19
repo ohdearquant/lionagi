@@ -440,3 +440,121 @@ async def test_the_structured_loss_is_recorded_for_a_reader_that_wants_the_shape
         "lost": 4,
         "queues": [{"owner": "b1", "lost": 4}],
     }
+
+
+# The deferred leg. A timed-out leg defers its terminal write to the leg that resumes
+# the session, and its queue is unrouted right after. It is the only thing that ever
+# knew about its own loss, so if it does not leave it behind the resumed leg's clean
+# terminal write is the only record and the loss is gone.
+
+
+async def _teardown_on(path, sid: str, queues: list, **kwargs):
+    from lionagi.cli._runs import teardown_persist
+    from lionagi.state.db import StateDB
+
+    db = StateDB(path)
+    await db.open()
+    existing = await db.get_session(sid)
+    if existing is None:
+        await db.create_progression(f"prog-{sid}")
+        await db.create_session(
+            {
+                "id": sid,
+                "progression_id": f"prog-{sid}",
+                "status": "running",
+                "started_at": 1_700_000_000.0,
+            }
+        )
+    return await teardown_persist(
+        {
+            "db": db,
+            "session_id": sid,
+            "session_prog_id": f"prog-{sid}",
+            "message_retry_queues": queues,
+        },
+        **kwargs,
+    )
+
+
+async def _session_row(path, sid: str) -> dict:
+    from lionagi.state.db import StateDB
+
+    reader = StateDB(path)
+    await reader.open()
+    try:
+        return await reader.get_session(sid)
+    finally:
+        await reader.close()
+
+
+async def test_a_deferred_legs_loss_reaches_the_terminal_write_that_resumes_it(tmp_path):
+    path = tmp_path / "deferred.db"
+    sid = "sess-deferred"
+    logger = logging.getLogger("test")
+
+    await _teardown_on(
+        path,
+        sid,
+        [await _deferred_queue(_RefusingDB(), logger)],
+        status="timed_out",
+        defer_terminal=True,
+    )
+    row = await _session_row(path, sid)
+    assert row["status"] == "running", "the deferred leg writes no terminal status"
+
+    await _teardown_on(path, sid, [], status="completed")
+
+    row = await _session_row(path, sid)
+    assert row["status_reason_code"] == "run.completed.message_loss"
+    assert "4 live message event(s) were never written" in row["status_reason_summary"]
+
+
+async def test_both_legs_losses_are_added_up_rather_than_one_replacing_the_other(tmp_path):
+    path = tmp_path / "two-legs.db"
+    sid = "sess-two-legs"
+    logger = logging.getLogger("test")
+
+    await _teardown_on(
+        path,
+        sid,
+        [await _deferred_queue(_RefusingDB(), logger)],
+        status="timed_out",
+        defer_terminal=True,
+    )
+    await _teardown_on(
+        path, sid, [await _deferred_queue(_RefusingDB(), logger)], status="completed"
+    )
+
+    row = await _session_row(path, sid)
+    assert "8 live message event(s) were never written" in row["status_reason_summary"]
+    assert len(row["status_evidence_refs"]) == 2, "one ref per queue that lost"
+
+
+async def test_a_deferred_leg_that_lost_nothing_leaves_nothing_behind(tmp_path):
+    """The control. Without it the resumed write could report a loss on every session
+    that was ever deferred."""
+    path = tmp_path / "deferred-clean.db"
+    sid = "sess-deferred-clean"
+
+    await _teardown_on(path, sid, [await _healthy_queue()], status="timed_out", defer_terminal=True)
+    await _teardown_on(path, sid, [], status="completed")
+
+    row = await _session_row(path, sid)
+    assert row["status_reason_code"] == "run.completed.ok"
+    assert row["status_evidence_refs"] in (None, [])
+
+
+async def test_the_loss_is_recorded_on_a_run_that_failed_for_its_own_reasons(tmp_path):
+    """The reason code belongs to the failure; the evidence still names the loss, or a
+    reader can only find it on runs where nothing else went wrong."""
+    out = await _closed_out(
+        tmp_path,
+        "sess-failed-with-loss",
+        [await _deferred_queue(_RefusingDB(), logging.getLogger("test"))],
+        status="failed",
+        exception=RuntimeError("the real cause"),
+    )
+
+    assert out["row"]["status_reason_code"] == "run.failed.exception"
+    kinds = {ref["kind"] for ref in (out["row"]["status_evidence_refs"] or [])}
+    assert "message_persist_loss" in kinds

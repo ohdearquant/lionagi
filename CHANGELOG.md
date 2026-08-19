@@ -76,6 +76,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   demotes such a run to `completed_empty`: that conclusion is read off the transcript, and
   this run's transcript is known to be missing part of itself.
 
+  The loss survives the two ways a run's terminal row is written by someone other than the
+  leg that saw it. A leg that hands its terminal write to a resuming leg now leaves the loss
+  on the session, and the write that eventually happens adds both legs' counts rather than
+  reporting only its own, because the leg that observed the earlier one is gone and its queue
+  with it. And a run that failed on its own keeps its own failure: the loss is appended to the
+  evidence either way and claims the reason code only when nothing else has.
+
+  A flow invocation whose children all completed no longer reports a clean success when one of
+  them lost messages. It reads the loss off the child's evidence rather than its reason code,
+  so a child that lost messages and also hit something else is still named, and the invocation
+  carries the sessions whose transcripts are incomplete.
+
 - Two studio schedulers running against one database could each dispatch the same occurrence.
   The tick selects due schedules and fires them in separate statements, and every admission gate
   between the two lives in the firing process's own memory, so both processes committed, each with

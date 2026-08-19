@@ -14,7 +14,7 @@ import uuid
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 from uuid import uuid4
 
 from lionagi._paths import RUNS_ROOT, ensure_lionagi_dir
@@ -529,7 +529,7 @@ async def _teardown_common(
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
     gate_rejected_evidence: list[dict] | None = None,
-    message_loss: dict | None = None,
+    message_loss: MessageLoss | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -542,7 +542,19 @@ async def _teardown_common(
 
     if defer_terminal:
         # A resumed leg on this same session owns the real terminal write (ADR-0035);
-        # skip the DB mutation here and let the caller's non-status bookkeeping run.
+        # skip the status mutation here and let the caller's non-status bookkeeping run.
+        #
+        # The loss is the exception, and it is not a status write. This leg is the only
+        # one that ever knows about it -- its queue is unrouted straight after this and
+        # the resuming leg builds its own -- so leaving it here means the eventual
+        # terminal write reports a clean run over a transcript missing part of itself.
+        if message_loss:
+            # Serialized, because the merge refuses a nested patch value: sqlite and
+            # postgres merge nested objects differently and it will not persist state
+            # that depends on the backend.
+            await db.merge_session_node_metadata(
+                session_id, {"message_persist_loss_json": json.dumps(message_loss)}
+            )
         return status
 
     all_msgs = await db.get_progression(session_prog_id)
@@ -551,6 +563,13 @@ async def _teardown_common(
     # Fetched before this call's own write so started_at reflects session
     # creation, not a value this same update is about to touch.
     session_before_teardown = await db.get_session(session_id) or {}
+
+    # A leg that timed out on this session recorded its loss and deferred the terminal
+    # write. This is that write, so it reports both legs' losses or the earlier one is
+    # gone: the leg that saw it is finished and its queue no longer exists.
+    message_loss = _merge_message_loss(
+        (session_before_teardown.get("node_metadata") or {}), message_loss
+    )
 
     # ended_at and duration_ms are terminal fields and must land in the same
     # atomic write as the status transition below (see the
@@ -838,33 +857,6 @@ async def _teardown_common(
                 }
             ]
 
-    # Live-message persistence gave up. The run's own work stands, so this does
-    # not touch a failed status and does not manufacture one -- but the record
-    # of that work is incomplete, and every later read of the transcript is
-    # reading it. Recording the loss on the row is the whole point: until now it
-    # existed only as one line in one console tail, while the row said the run
-    # completed successfully.
-    if message_loss:
-        from lionagi.state.reasons import RunReasons
-
-        metadata = dict(metadata or {})
-        metadata["message_persist_loss"] = message_loss
-        if final_status in ("completed", "completed_empty"):
-            final_reason_code = RunReasons.COMPLETED_MESSAGE_LOSS
-            final_reason_summary = (
-                f"Run completed; {message_loss['lost']} live message event(s) were "
-                "never written and are lost, so this session's transcript is "
-                "incomplete."
-            )
-            final_evidence_refs = [
-                {
-                    "kind": "message_persist_loss",
-                    "id": queue["owner"],
-                    "label": f"{queue['lost']} event(s) lost",
-                }
-                for queue in message_loss["queues"]
-            ]
-
     # A post-completion finalize step (persistence/team-teardown) raised after
     # the DAG itself already produced its result. That failure is real and must
     # not be silently dropped, but it is not a DAG failure either — surface it
@@ -888,6 +880,35 @@ async def _teardown_common(
                     "label": finalize_error.get("error", ""),
                 }
             ]
+
+    # Live-message persistence gave up. The run's own work stands, so this never
+    # manufactures a failure and never displaces a reason that is about the work --
+    # it goes last, and takes the reason code only if nothing else claimed one. The
+    # evidence ref is appended either way: a reader has to be able to find the loss
+    # on a run that also failed, or hit a finalize error, or this records it only in
+    # the case where nothing else went wrong.
+    if message_loss:
+        from lionagi.state.reasons import RunReasons
+
+        metadata = dict(metadata or {})
+        metadata["message_persist_loss"] = message_loss
+        final_evidence_refs = list(final_evidence_refs or []) + [
+            {
+                "kind": "message_persist_loss",
+                "id": queue["owner"],
+                "label": f"{queue['lost']} event(s) lost",
+            }
+            for queue in message_loss["queues"]
+        ]
+        if final_status in ("completed", "completed_empty") and (
+            final_reason_code in (None, "", RunReasons.COMPLETED_OK)
+        ):
+            final_reason_code = RunReasons.COMPLETED_MESSAGE_LOSS
+            final_reason_summary = (
+                f"Run completed; {message_loss['lost']} live message event(s) were "
+                "never written and are lost, so this session's transcript is "
+                "incomplete."
+            )
 
     from lionagi.state.db import SESSION_TERMINAL_STATUSES, TransitionRejectedError
 
@@ -1238,7 +1259,48 @@ def _make_message_handler(
     return _on_message
 
 
-async def _flush_pending_message_events(ctx: dict) -> dict | None:
+class QueueLoss(TypedDict):
+    """One retry queue that gave up, and how much it was holding."""
+
+    owner: str
+    lost: int
+
+
+class MessageLoss(TypedDict):
+    """What a teardown could not persist, summed and itemized.
+
+    Written by ``_flush_pending_message_events``, carried across a deferred leg as
+    JSON, and read by ``_teardown_common``. Spelled out because those three are in
+    different places and a bare dict makes the shape a convention rather than a
+    contract.
+    """
+
+    lost: int
+    queues: list[QueueLoss]
+
+
+def _merge_message_loss(node_metadata: Any, current: MessageLoss | None) -> MessageLoss | None:
+    """This teardown's loss plus any a deferred earlier leg left on the session."""
+    if isinstance(node_metadata, str):
+        try:
+            node_metadata = json.loads(node_metadata)
+        except (TypeError, ValueError):
+            node_metadata = None
+    carried = (node_metadata or {}).get("message_persist_loss_json") if node_metadata else None
+    if isinstance(carried, str):
+        try:
+            carried = json.loads(carried)
+        except (TypeError, ValueError):
+            carried = None
+    if not isinstance(carried, dict):
+        return current
+    if not current:
+        return carried
+    queues = list(carried.get("queues") or []) + list(current.get("queues") or [])
+    return {"lost": sum(q.get("lost", 0) for q in queues), "queues": queues}
+
+
+async def _flush_pending_message_events(ctx: dict) -> MessageLoss | None:
     """Retry queued messages before teardown reads completion evidence.
 
     Returns what was lost, or ``None`` when every queue emptied. What follows
@@ -1248,7 +1310,7 @@ async def _flush_pending_message_events(ctx: dict) -> dict | None:
     lets the terminal row say so: a log line lives in one console tail, and the
     tail is not where anyone looks to find out how a run went.
     """
-    queues = []
+    queues: list[QueueLoss] = []
     for retry_queue in ctx.get("message_retry_queues", []):
         if not await retry_queue.flush_final():
             queues.append({"owner": retry_queue.owner, "lost": retry_queue.pending_count})
