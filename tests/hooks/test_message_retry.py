@@ -208,11 +208,14 @@ async def test_the_run_teardown_reports_whether_its_queues_emptied():
 
     logger = logging.getLogger("test")
     lost = await _deferred_queue(_RefusingDB(), logger)
-    assert await _flush_pending_message_events({"message_retry_queues": [lost]}) is False
+    assert await _flush_pending_message_events({"message_retry_queues": [lost]}) == {
+        "lost": 4,
+        "queues": [{"owner": "b1", "lost": 4}],
+    }
 
     healthy = MessagePersistRetryQueue(_FakeDB(fail_ids=set()), logger=logger, owner="b2")
     await healthy.submit(_event("good-1"))
-    assert await _flush_pending_message_events({"message_retry_queues": [healthy]}) is True
+    assert await _flush_pending_message_events({"message_retry_queues": [healthy]}) is None
 
 
 async def test_both_teardown_paths_over_one_queue_report_the_loss_once(caplog):
@@ -238,7 +241,7 @@ async def test_both_teardown_paths_over_one_queue_report_the_loss_once(caplog):
 
     with caplog.at_level(logging.ERROR, logger="test"):
         assert await bus.flush_message_retries() is False
-        assert await _flush_pending_message_events({"message_retry_queues": [queue]}) is False
+        assert await _flush_pending_message_events({"message_retry_queues": [queue]}) is not None
 
     losses = [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
     assert len(losses) == 1, (
@@ -302,3 +305,138 @@ async def test_a_recovery_between_teardowns_does_not_swallow_a_later_loss(caplog
     assert len(losses) == 2, (
         "the second loss has the same count as the first and is still a different loss"
     )
+
+
+# The loss reaching the run's terminal record. Until this, the return value
+# above was read by nothing: both teardowns awaited it and dropped it, so a run
+# that lost messages closed as "run.completed.ok / Run completed successfully."
+
+
+async def _closed_out(tmp_path, sid: str, queues: list, **kwargs) -> dict:
+    """Take one session through the real teardown and read back what it wrote.
+
+    ``teardown_persist`` closes the handle it was given, so the read-back opens
+    its own -- the row is what a later reader sees, which is the whole subject
+    here.
+    """
+    import json
+
+    from sqlalchemy import text
+
+    from lionagi.cli._runs import teardown_persist
+    from lionagi.state.db import StateDB
+
+    path = tmp_path / f"{sid}.db"
+    db = StateDB(path)
+    await db.open()
+    await db.create_progression(f"prog-{sid}")
+    await db.create_session(
+        {
+            "id": sid,
+            "progression_id": f"prog-{sid}",
+            "status": "running",
+            "started_at": 1_700_000_000.0,
+        }
+    )
+    final = await teardown_persist(
+        {
+            "db": db,
+            "session_id": sid,
+            "session_prog_id": f"prog-{sid}",
+            "message_retry_queues": queues,
+        },
+        **kwargs,
+    )
+
+    reader = StateDB(path)
+    await reader.open()
+    try:
+        row = await reader.get_session(sid)
+        async with reader._read() as conn:
+            result = await conn.execute(
+                text(
+                    "SELECT metadata FROM status_transitions "
+                    "WHERE entity_id = :sid ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"sid": sid},
+            )
+            recorded = result.scalar()
+    finally:
+        await reader.close()
+    if isinstance(recorded, str):
+        recorded = json.loads(recorded)
+    return {"final": final, "row": row, "transition_metadata": recorded or {}}
+
+
+async def _healthy_queue(owner: str = "b2"):
+    queue = MessagePersistRetryQueue(
+        _FakeDB(fail_ids=set()), logger=logging.getLogger("test"), owner=owner
+    )
+    await queue.submit(_event("good-1"))
+    return queue
+
+
+async def test_a_run_that_lost_messages_does_not_close_as_a_clean_success(tmp_path):
+    """What the reported incident looked like from the row: events gone, and the
+    session saying the run completed successfully."""
+    queue = await _deferred_queue(_RefusingDB(), logging.getLogger("test"))
+
+    out = await _closed_out(tmp_path, "sess-loss", [queue], status="completed")
+
+    assert out["final"] == "completed", "the run's own work stands; this is not a failure"
+    assert out["row"]["status_reason_code"] == "run.completed.message_loss"
+    assert "4 live message event(s) were never written" in out["row"]["status_reason_summary"]
+
+
+async def test_the_terminal_row_names_which_queue_lost_how_many(tmp_path):
+    """A count with no owner cannot be chased. Two queues, only one losing."""
+    lost = await _deferred_queue(_RefusingDB(), logging.getLogger("test"))
+
+    out = await _closed_out(
+        tmp_path, "sess-loss-refs", [await _healthy_queue(), lost], status="completed"
+    )
+
+    assert out["row"]["status_evidence_refs"] == [
+        {"kind": "message_persist_loss", "id": "b1", "label": "4 event(s) lost"}
+    ], "the queue that emptied contributes nothing to name"
+
+
+async def test_a_run_that_lost_nothing_is_untouched(tmp_path):
+    """The control. A clean run must still read clean, or the annotation above
+    is noise on every row rather than a signal on the affected ones."""
+    out = await _closed_out(tmp_path, "sess-clean", [await _healthy_queue()], status="completed")
+
+    assert out["row"]["status_reason_code"] == "run.completed.ok"
+    assert out["row"]["status_evidence_refs"] in (None, [])
+    assert "message_persist_loss" not in out["transition_metadata"]
+
+
+async def test_a_failed_run_keeps_its_own_failure(tmp_path):
+    """The loss annotates; it never overwrites why a run actually failed."""
+    queue = await _deferred_queue(_RefusingDB(), logging.getLogger("test"))
+
+    out = await _closed_out(
+        tmp_path,
+        "sess-failed",
+        [queue],
+        status="failed",
+        exception=RuntimeError("the real cause"),
+    )
+
+    assert out["final"] == "failed"
+    assert out["row"]["status_reason_code"] == "run.failed.exception"
+    assert out["transition_metadata"]["message_persist_loss"]["lost"] == 4, (
+        "annotated, so the loss is still findable on a run that failed for its own reasons"
+    )
+
+
+async def test_the_structured_loss_is_recorded_for_a_reader_that_wants_the_shape(tmp_path):
+    """reason_summary is prose. The audit trail carries the numbers."""
+    queue = await _deferred_queue(_RefusingDB(), logging.getLogger("test"))
+
+    out = await _closed_out(tmp_path, "sess-loss-meta", [queue], status="completed")
+
+    assert out["transition_metadata"]["message_persist_loss"] == {
+        "lost": 4,
+        "queues": [{"owner": "b1", "lost": 4}],
+    }

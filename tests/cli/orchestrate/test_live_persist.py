@@ -1840,6 +1840,56 @@ async def test_stop_no_artifact_no_commits_flips_to_completed_empty(
     assert v is None
 
 
+async def test_lost_messages_stop_the_gate_calling_a_run_empty(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """The gate reads "no assistant response recorded" off the transcript, and a
+    run that lost messages has a transcript missing exactly that. Concluding
+    emptiness from it states a fact about the run that is really a fact about
+    our record, so the loss carries the reason instead."""
+    import logging
+
+    from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
+
+    class _RefusingDB:
+        async def _persist_live_message(self, message, **kwargs):
+            raise RuntimeError("database is locked")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    queue = MessagePersistRetryQueue(
+        _RefusingDB(), logger=logging.getLogger("test"), owner="branch b-1"
+    )
+    for i in range(4):
+        await queue.submit(
+            PendingMessageEvent(
+                message={"id": f"m{i}", "role": "assistant", "content": "x"},
+                session_id=ctx["session_id"],
+            )
+        )
+    ctx["message_retry_queues"].append(queue)
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed", (
+        "same repo state as the demotion test above; the only difference is "
+        "that the transcript this conclusion would rest on is known incomplete"
+    )
+    assert s["status_reason_code"] == "run.completed.message_loss"
+
+
 async def test_stop_failed_operation_evidence_wins_over_completed_empty_demotion(
     temp_db_path: Path,
     tmp_path: Path,

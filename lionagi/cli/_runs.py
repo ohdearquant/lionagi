@@ -529,6 +529,7 @@ async def _teardown_common(
     finalize_error: dict | None = None,
     artifact_write_error: dict | None = None,
     gate_rejected_evidence: list[dict] | None = None,
+    message_loss: dict | None = None,
     cwd: str | None = None,
     engine_session_uid: str | None = None,
     defer_terminal: bool = False,
@@ -786,7 +787,12 @@ async def _teardown_common(
             metadata = dict(metadata or {})
             metadata["completion_evidence"] = evidence
             metadata["has_assistant_output"] = has_output
-            if not has_completion_evidence(evidence) and not has_output:
+            # "No assistant response recorded" is read off the transcript, and
+            # a run that lost messages has a transcript missing exactly the
+            # kind of thing this looks for. Concluding emptiness from it states
+            # a fact about the run that is really a fact about our record, so
+            # the loss below carries the reason instead.
+            if not has_completion_evidence(evidence) and not has_output and not message_loss:
                 final_status = "completed_empty"
                 final_reason_code = RunReasons.COMPLETED_EMPTY_NO_EVIDENCE
                 base_label = evidence.get("base_ref") or "base"
@@ -830,6 +836,33 @@ async def _teardown_common(
                     "id": artifact_write_error.get("error_class", "error"),
                     "label": artifact_write_error.get("error", ""),
                 }
+            ]
+
+    # Live-message persistence gave up. The run's own work stands, so this does
+    # not touch a failed status and does not manufacture one -- but the record
+    # of that work is incomplete, and every later read of the transcript is
+    # reading it. Recording the loss on the row is the whole point: until now it
+    # existed only as one line in one console tail, while the row said the run
+    # completed successfully.
+    if message_loss:
+        from lionagi.state.reasons import RunReasons
+
+        metadata = dict(metadata or {})
+        metadata["message_persist_loss"] = message_loss
+        if final_status in ("completed", "completed_empty"):
+            final_reason_code = RunReasons.COMPLETED_MESSAGE_LOSS
+            final_reason_summary = (
+                f"Run completed; {message_loss['lost']} live message event(s) were "
+                "never written and are lost, so this session's transcript is "
+                "incomplete."
+            )
+            final_evidence_refs = [
+                {
+                    "kind": "message_persist_loss",
+                    "id": queue["owner"],
+                    "label": f"{queue['lost']} event(s) lost",
+                }
+                for queue in message_loss["queues"]
             ]
 
     # A post-completion finalize step (persistence/team-teardown) raised after
@@ -975,13 +1008,14 @@ async def teardown_persist(
 
     db = ctx["db"]
     try:
-        await _flush_pending_message_events(ctx)
+        message_loss = await _flush_pending_message_events(ctx)
         final_status = await _teardown_common(
             db,
             session_id=ctx["session_id"],
             session_prog_id=ctx["session_prog_id"],
             status=status,
             exception=exception,
+            message_loss=message_loss,
             artifacts_path=ctx.get("artifacts_path"),
             artifact_contract=ctx.get("artifact_contract"),
             extras=extras,
@@ -1204,18 +1238,23 @@ def _make_message_handler(
     return _on_message
 
 
-async def _flush_pending_message_events(ctx: dict) -> bool:
+async def _flush_pending_message_events(ctx: dict) -> dict | None:
     """Retry queued messages before teardown reads completion evidence.
 
-    Returns whether every queue emptied. What follows this reads the run's
-    completion evidence, so a queue that gave up here means that evidence is
-    being read against a transcript missing messages the run produced.
+    Returns what was lost, or ``None`` when every queue emptied. What follows
+    this reads the run's completion evidence, so a queue that gave up here
+    means that evidence is being read against a transcript missing messages the
+    run produced. Returning the loss rather than a bare failure flag is what
+    lets the terminal row say so: a log line lives in one console tail, and the
+    tail is not where anyone looks to find out how a run went.
     """
-    flushed = True
+    queues = []
     for retry_queue in ctx.get("message_retry_queues", []):
         if not await retry_queue.flush_final():
-            flushed = False
-    return flushed
+            queues.append({"owner": retry_queue.owner, "lost": retry_queue.pending_count})
+    if not queues:
+        return None
+    return {"lost": sum(q["lost"] for q in queues), "queues": queues}
 
 
 async def _reopen_session_for_resume(

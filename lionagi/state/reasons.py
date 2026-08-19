@@ -77,6 +77,10 @@ class RunReasons:
     # unlike COMPLETED_FINALIZE_ERROR, a raised write failure is a real failure
     # (status -> failed); distinct from FAILED_MISSING_ARTIFACT's post-hoc gap
     FAILED_ARTIFACT_WRITE = "run.failed.artifact_write"
+    # live-message persistence gave up at teardown: the run's own work stands,
+    # but its transcript is missing messages it produced, so every later read
+    # of that transcript is reading an incomplete record
+    COMPLETED_MESSAGE_LOSS = "run.completed.message_loss"
     TIMED_OUT_DEADLINE = "run.timed_out.deadline"
     ABORTED_USER = "run.aborted.user"
     CANCELLED_SIGINT = "run.cancelled.sigint"

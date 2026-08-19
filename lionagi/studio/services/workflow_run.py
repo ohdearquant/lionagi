@@ -87,13 +87,14 @@ async def _teardown_run_persist(
 
     db = ctx["db"]
     try:
-        await _flush_pending_message_events(ctx)
+        message_loss = await _flush_pending_message_events(ctx)
         final_status = await _teardown_common(
             db,
             session_id=ctx["session_id"],
             session_prog_id=ctx["session_prog_id"],
             status=status,
             exception=exception,
+            message_loss=message_loss,
             artifacts_path=None,
             artifact_contract=None,
         )

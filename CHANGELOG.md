@@ -66,6 +66,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A run whose live-message persistence gave up now records that on its terminal row.
+  Under database-lock contention the retry queue defers and then abandons its pending
+  events at teardown; the count reached one line in one console tail while the session
+  closed as a clean success, so the loss was invisible to every reader of the run. The
+  session now carries a `run.completed.message_loss` reason, a summary naming how many
+  events were lost, and evidence refs naming each queue that lost them, with the
+  structured counts in the transition record. The completion-trust gate also no longer
+  demotes such a run to `completed_empty`: that conclusion is read off the transcript, and
+  this run's transcript is known to be missing part of itself.
+
 - Two studio schedulers running against one database could each dispatch the same occurrence.
   The tick selects due schedules and fires them in separate statements, and every admission gate
   between the two lives in the firing process's own memory, so both processes committed, each with
