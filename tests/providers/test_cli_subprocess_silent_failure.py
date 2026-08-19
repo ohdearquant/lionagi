@@ -374,6 +374,21 @@ class TestWhatCountsAsASecretToRemove:
         text = "connected to postgres://db.internal/app?sslmode=require&timeout=30 in 4ms"
         assert cs._redact_secrets_for_log(text, {}) == text
 
+    @pytest.mark.parametrize("name", ["signature", "sig", "x-sig", "sig_v2", "bearer"])
+    def test_a_signing_credential_is_recognised_by_its_own_vocabulary(self, name):
+        """These name a credential without containing key, token, secret or auth."""
+        out = cs._redact_secrets_for_log(
+            f"rejected: https://api.example.com/v1?{name}=hunter2pass&limit=10", {}
+        )
+        assert "hunter2pass" not in out, out
+        assert "limit=10" in out, out
+
+    @pytest.mark.parametrize("name", ["assignee", "design", "signal", "sigma"])
+    def test_an_ordinary_parameter_that_merely_contains_sig_is_left_alone(self, name):
+        """The short name is bounded, or the rule would eat diagnostics."""
+        text = f"GET https://api.example.com/v1?{name}=alice&limit=10"
+        assert cs._redact_secrets_for_log(text, {}) == text
+
 
 class TestTheQuotedStderrCarriesNoCredential:
     """Quoting the child's stderr is the point of this path, so the credential has to be removed rather than the quoting withheld."""

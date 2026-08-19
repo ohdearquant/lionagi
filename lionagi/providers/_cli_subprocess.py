@@ -309,7 +309,12 @@ _ABANDONED_STDERR_DRAIN_TIMEOUT = 0.5
 # A credential reaches a child either from the environment we build for it or
 # from its own config, so the log path strips both what we injected and what
 # merely looks like a secret.
-_SECRET_ENV_KEY_RE = re.compile(r"(?i)key|token|secret|password|passwd|credential|auth")
+# "sig" is bounded because it is short enough to sit inside ordinary words
+# (assignee, design, signal); the rest are long enough to stand alone.
+_SECRET_ENV_KEY_RE = re.compile(
+    r"(?i)key|token|secret|password|passwd|credential|auth|signature|bearer"
+    r"|(?<![a-z])sig(?![a-z])"
+)
 _SECRET_SHAPE_RE = re.compile(
     r"(?i)\b(?:"
     r"Bearer\s+\S+"
