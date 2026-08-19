@@ -598,6 +598,26 @@ def _run_view(row: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
+# The single-run route is the documented reader of the raw failure text -- the list
+# surfaces serve a classification instead -- which is why error_detail is here and off
+# _RUN_SUMMARY_FIELDS. trigger_context stays private on the list surfaces' reasoning:
+# whole external event payloads, and no client reads it.
+_RUN_RECORD_FIELDS = _RUN_VIEW_FIELDS + ("error_detail",)
+
+
+def _run_record(row: dict[str, Any]) -> dict[str, Any]:
+    """One run as the single-run route serves it.
+
+    chain_children is a list surface nested inside a record, so it takes the run-list
+    projection; absent rather than empty on a run that is itself a child.
+    """
+    record = _run_view(row)
+    record.update({name: row[name] for name in _RUN_RECORD_FIELDS if name in row})
+    if "chain_children" in row:
+        record["chain_children"] = [_run_summary(child) for child in row["chain_children"]]
+    return record
+
+
 # The schedule columns the list surfaces serve. The table carries roughly twice this
 # many: authored specs, flow YAML, shell commands and their arguments, notification
 # targets, poll cursors, ownership keys and lease bookkeeping. None of those has a
@@ -1264,7 +1284,9 @@ async def get_schedule_run_route(run_id: str) -> dict[str, Any]:
     data = await get_schedule_run(run_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Schedule run '{run_id}' not found")
-    return data
+    # The service returns the joined row; the wire gets the projection. Applying it here
+    # rather than in the service keeps the in-process readers of the full row whole.
+    return _run_record(data)
 
 
 @studio_route(

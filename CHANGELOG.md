@@ -153,6 +153,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Writable StateDB migration now fails closed when a table's columns cannot be
   inspected, preserving the prior schema-version stamp instead of recording an
   upgrade whose additive column reconciliation did not complete.
+- The single-run route `GET /api/schedules/runs/{run_id}` now serves an allow-list
+  instead of the joined row. It was the last schedule surface returning every column
+  the join carries, including the action arguments, resume packets, lease holders and
+  capability references the list surfaces already withhold, and its nested chain
+  children carried the same columns again. The raw failure text stays: reaching it is
+  the reason this route exists. The trigger payload that produced the run is no longer
+  served at all, and is dropped from the client's declared run type, since nothing read
+  it and it carries whole external event bodies.
 
 ### Deprecated
 

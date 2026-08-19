@@ -50,6 +50,7 @@ async def _seed_run(
     error_detail: str | None = None,
     chain_depth: int = 0,
     run_id: str | None = None,
+    chain_parent_id: str | None = None,
 ) -> str:
     resolved_run_id = run_id or str(uuid.uuid4())
     async with StateDB() as db:
@@ -62,6 +63,7 @@ async def _seed_run(
                 "action_args": {"prompt": "ping"},
                 "status": status,
                 "chain_depth": chain_depth,
+                "chain_parent_id": chain_parent_id,
                 "fired_at": fired_at,
                 "error_detail": error_detail,
             }
@@ -911,3 +913,94 @@ def test_no_list_surface_serves_a_private_run_column(tmp_path, monkeypatch):
         assert resp.status_code == 200, path
         leaked = sorted(_keys_anywhere(resp.json()) & set(_PRIVATE_RUN_COLUMNS))
         assert not leaked, f"{path} serves {leaked}"
+
+
+# The single-run route is the one surface that was never projected: it returned the
+# joined row, and its chain_children the raw child rows, so every private run column
+# reached the wire on a route the API answers without a token.
+def _seed_chained_run_with_private_columns(monkeypatch, db_path: Path) -> tuple[str, str]:
+    _patch_db(monkeypatch, db_path)
+
+    async def seed():
+        schedule_id = await _seed_schedule()
+        fired = time.time()
+        parent_id = await _seed_run(schedule_id, status="completed", fired_at=fired)
+        child_id = await _seed_run(
+            schedule_id,
+            status="completed",
+            fired_at=fired + 1,
+            chain_depth=1,
+            chain_parent_id=parent_id,
+        )
+        async with StateDB() as db:
+            for rid in (parent_id, child_id):
+                await db.update_schedule_run(rid, resume_packet={"cursor": "/private/host/state"})
+        return parent_id, child_id
+
+    return asyncio.run(seed())
+
+
+def test_the_record_path_really_carries_the_private_run_columns(tmp_path, monkeypatch):
+    """Positive control for the record sweep, and it has to be the record path's own
+    read: the list control above proves nothing about the row this route builds, which
+    comes from a different service function and adds the child rows."""
+    parent_id, _ = _seed_chained_run_with_private_columns(monkeypatch, tmp_path / "state.db")
+
+    from lionagi.studio.services.schedules import get_schedule_run
+
+    row = asyncio.run(get_schedule_run(parent_id))
+    unset = sorted(name for name in _PRIVATE_RUN_COLUMNS if not row.get(name))
+    assert not unset, f"the record read did not carry {unset}; the sweep would prove nothing"
+    assert row["chain_children"], "no child row; the nested half of the sweep would prove nothing"
+    child_unset = sorted(
+        name for name in _PRIVATE_RUN_COLUMNS if not row["chain_children"][0][name]
+    )
+    assert not child_unset, f"the child row did not carry {child_unset}"
+
+
+def test_the_single_run_record_serves_no_private_run_column(tmp_path, monkeypatch):
+    parent_id, child_id = _seed_chained_run_with_private_columns(monkeypatch, tmp_path / "state.db")
+    client = _make_client()
+
+    for run_id in (parent_id, child_id):
+        body = client.get(f"/api/schedules/runs/{run_id}").json()
+        leaked = sorted(_keys_anywhere(body) & set(_PRIVATE_RUN_COLUMNS))
+        assert not leaked, f"the record for {run_id} serves {leaked}"
+
+
+def test_the_single_run_record_serves_no_trigger_payload(tmp_path, monkeypatch):
+    """trigger_context carries whole external event payloads and no client reads it.
+    Named separately from the sweep because it is the one field this route used to serve
+    that the web client still declared, so dropping it is a client-visible decision."""
+    parent_id, _ = _seed_chained_run_with_private_columns(monkeypatch, tmp_path / "state.db")
+
+    body = _make_client().get(f"/api/schedules/runs/{parent_id}").json()
+
+    assert "trigger_context" not in _keys_anywhere(body)
+
+
+def test_the_run_allow_list_serves_everything_the_client_declares():
+    """Every field the web client declares on a run must survive the record projection.
+
+    Containment rather than equality: the served set is wider, because the CLI renders a
+    duration and artifact paths that no web view reads.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    from lionagi.studio.services.schedules import _RUN_RECORD_FIELDS
+
+    source = _Path("apps/studio/frontend/src/lib/types.ts")
+    if not source.exists():  # the frontend is not vendored into every checkout
+        pytest.skip("frontend source not present")
+
+    block = _re.search(
+        r"^export interface ScheduleRunSummary[^{]*\{(.*?)^\}", source.read_text(), _re.S | _re.M
+    )
+    assert block, "ScheduleRunSummary interface not found"
+    declared = _re.findall(r"^\s{2}(\w+)\??:", block.group(1), _re.M)
+    assert declared, "no fields parsed from the client interface"
+
+    # outcome and error_class are computed by the projection rather than named in it.
+    served = set(_RUN_RECORD_FIELDS) | {"outcome", "error_class"}
+    assert not [name for name in declared if name not in served]
