@@ -563,6 +563,12 @@ def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
 # A run view adds the reconciled outcome and the joined session facts on top of the
 # occurrence row. These are the additions any list surface serves; the rest of the join
 # (leases, capabilities, library references, resume packets) stays private.
+#
+# `artifacts` and `session_ids` carry host paths and raw session ids, and they are here
+# because `li schedule runs` and `li schedule status` print them (studio/cli.py). They
+# reach the wire on these routes either way -- before this list existed the routes
+# returned the joined row verbatim -- so naming them is what turns a pass-through into
+# a decision, and what makes withholding them later a one-line change in one place.
 _RUN_VIEW_FIELDS = _RUN_SUMMARY_FIELDS + ("duration_ms", "artifacts", "session_ids")
 
 
@@ -596,6 +602,35 @@ def _run_view(row: dict[str, Any]) -> dict[str, Any]:
         classified = _reported_summary_class(outcome)
         view["outcome"] = outcome if classified is None else {**outcome, "summary": classified}
     return view
+
+
+# The single-run route is the documented reader of the raw failure text -- the list
+# surfaces serve a classification instead -- which is why error_detail is here and off
+# _RUN_SUMMARY_FIELDS. trigger_context stays private on the list surfaces' reasoning:
+# whole external event payloads, and no client reads it.
+_RUN_RECORD_FIELDS = _RUN_VIEW_FIELDS + ("error_detail",)
+
+
+def _run_record(row: dict[str, Any]) -> dict[str, Any]:
+    """One run as the single-run route serves it.
+
+    Built directly rather than on top of _run_view, because that one sanitises a
+    reported outcome summary and this surface must not. error_detail is the raw text
+    only when the occurrence is the layer that won; when a session or invocation
+    reported the failure instead, the summary IS the text, and replacing it with a
+    class would leave this route -- the one place raw text is reachable -- with no text
+    at all for exactly those runs.
+
+    chain_children is a list surface nested inside a record, so it takes the run-list
+    projection; absent rather than empty on a run that is itself a child.
+    """
+    record = {name: row[name] for name in _RUN_RECORD_FIELDS if name in row}
+    record["error_class"] = _error_class_for(row)
+    if "outcome" in row:
+        record["outcome"] = row["outcome"]
+    if "chain_children" in row:
+        record["chain_children"] = [_run_summary(child) for child in row["chain_children"]]
+    return record
 
 
 # The schedule columns the list surfaces serve. The table carries roughly twice this
@@ -1264,7 +1299,9 @@ async def get_schedule_run_route(run_id: str) -> dict[str, Any]:
     data = await get_schedule_run(run_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Schedule run '{run_id}' not found")
-    return data
+    # The service returns the joined row; the wire gets the projection. Applying it here
+    # rather than in the service keeps the in-process readers of the full row whole.
+    return _run_record(data)
 
 
 @studio_route(

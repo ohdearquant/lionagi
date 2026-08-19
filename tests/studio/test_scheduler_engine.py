@@ -3411,3 +3411,318 @@ async def test_fire_deadline_records_one_timed_out_terminal_and_releases_slot(
         [run_id, invocation["id"]]
     )
     assert engine._global_inflight == 0
+
+
+# Tick-loop supervision
+
+
+async def _until(predicate, timeout: float = 5.0) -> None:
+    """Wait for a condition the loop reaches on its own, rather than sleeping a guess."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("condition never held")
+
+
+async def _supervised_engine(monkeypatch, ticks: list):
+    from lionagi.studio.scheduler import engine as engine_mod
+
+    monkeypatch.setattr(engine_mod, "_TICK_INTERVAL", 0.005)
+    monkeypatch.setattr(engine_mod, "_TICK_RESTART_BACKOFF", (0.005,))
+    engine = engine_mod.SchedulerEngine(svc=_make_svc())
+
+    async def _tick():
+        ticks.append(time.monotonic())
+
+    monkeypatch.setattr(engine, "_tick", _tick)
+    monkeypatch.setattr(engine, "_backfill_action_cwd", AsyncMock())
+    monkeypatch.setattr(engine, "_stamp_effective_timezones", AsyncMock())
+    monkeypatch.setattr(engine, "_recompute_armed_cron_schedules", AsyncMock())
+    monkeypatch.setattr(engine, "_recover_undispatched_fires", AsyncMock())
+    monkeypatch.setattr(engine, "_reconcile_dispatched_orphans", AsyncMock())
+    monkeypatch.setattr(engine, "_check_missed_fires", AsyncMock())
+    return engine
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_inside_startup_recovery_does_not_cost_the_later_passes(monkeypatch):
+    """Recovery repairs durable state, so abandoning the rest of it leaves half-repairs behind."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    ran: list = []
+
+    async def _cancelled_pass():
+        ran.append("first")
+        raise asyncio.CancelledError
+
+    async def _second():
+        ran.append("second")
+
+    async def _third():
+        ran.append("third")
+
+    monkeypatch.setattr(engine, "_recover_undispatched_fires", _cancelled_pass)
+    monkeypatch.setattr(engine, "_reconcile_dispatched_orphans", _second)
+    monkeypatch.setattr(engine, "_check_missed_fires", _third)
+
+    await engine.start()
+    try:
+        await _until(lambda: len(ticks) >= 1)
+        assert ran == ["first", "second", "third"]
+        assert engine._tick_loop_restarts == 0
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_aimed_at_the_loop_lets_the_recovery_pass_in_flight_finish(monkeypatch):
+    """A pass interrupted after it has finalized a run has no successor to finish the job.
+
+    Every later scan selects rows that are still running, which such a row no longer is, so
+    tearing a pass in half leaves durable state nothing repairs. Absorbing the cancel and
+    moving to the next pass is not enough; the pass in flight has to complete.
+    """
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    entered = asyncio.Event()
+    ran: list = []
+
+    async def _slow_first():
+        ran.append("entered")
+        entered.set()
+        await asyncio.sleep(0.05)
+        ran.append("finished")
+
+    monkeypatch.setattr(engine, "_recover_undispatched_fires", _slow_first)
+    monkeypatch.setattr(
+        engine, "_reconcile_dispatched_orphans", AsyncMock(side_effect=lambda: ran.append("second"))
+    )
+    monkeypatch.setattr(
+        engine, "_check_missed_fires", AsyncMock(side_effect=lambda: ran.append("third"))
+    )
+
+    await engine.start()
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        engine._task.cancel()
+        await _until(lambda: len(ticks) >= 1)
+        assert "finished" in ran, f"the interrupted pass was abandoned: {ran}"
+        assert ran == ["entered", "finished", "second", "third"]
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancels_aimed_at_the_loop_still_let_the_recovery_pass_finish(monkeypatch):
+    """One absorbed cancel is not the guarantee; the pass has to survive every one of them.
+
+    Absorbing the first and then awaiting the task directly leaves the second cancel free to
+    interrupt exactly the repair the first was absorbed to protect, so this fires three.
+    """
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    entered = asyncio.Event()
+    ran: list = []
+
+    async def _slow_first():
+        ran.append("entered")
+        entered.set()
+        await asyncio.sleep(0.15)
+        ran.append("finished")
+
+    monkeypatch.setattr(engine, "_recover_undispatched_fires", _slow_first)
+    monkeypatch.setattr(
+        engine, "_reconcile_dispatched_orphans", AsyncMock(side_effect=lambda: ran.append("second"))
+    )
+    monkeypatch.setattr(
+        engine, "_check_missed_fires", AsyncMock(side_effect=lambda: ran.append("third"))
+    )
+
+    await engine.start()
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        for _ in range(3):
+            engine._task.cancel()
+            await asyncio.sleep(0)
+        await _until(lambda: len(ticks) >= 1)
+        assert "finished" in ran, f"a later cancel abandoned the pass: {ran}"
+        assert ran == ["entered", "finished", "second", "third"]
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_during_recovery_does_not_wait_for_the_pass_in_flight(monkeypatch):
+    """Control: a shutdown that cannot interrupt recovery is a shutdown that hangs."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    entered = asyncio.Event()
+    ran: list = []
+
+    async def _very_slow_first():
+        entered.set()
+        await asyncio.sleep(30)
+        ran.append("finished")
+
+    monkeypatch.setattr(engine, "_recover_undispatched_fires", _very_slow_first)
+
+    await engine.start()
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    started = time.monotonic()
+    await asyncio.wait_for(engine.stop(), timeout=5)
+    assert time.monotonic() - started < 5
+    assert ran == []
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_during_the_inter_tick_wait_neither_ends_the_loop_nor_skips_the_delay(
+    monkeypatch,
+):
+    """Absorbing a cancel and returning early let a stream of them drive the tick in a tight loop."""
+    from lionagi.studio.scheduler import engine as engine_mod
+
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    monkeypatch.setattr(engine_mod, "_TICK_INTERVAL", 0.2)
+
+    await engine.start()
+    try:
+        await _until(lambda: len(ticks) >= 1)
+        started = time.monotonic()
+        for _ in range(5):
+            engine._task.cancel()
+            await asyncio.sleep(0.01)
+        # The wait is measured against its own deadline, so five cancels cannot buy a sixth tick.
+        assert len(ticks) == 1, ticks
+        assert engine._tick_loop_restarts == 0
+        await _until(lambda: len(ticks) >= 2, timeout=2.0)
+        assert time.monotonic() - started >= 0.15
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.parametrize("death", ("returns", "raises"))
+@pytest.mark.asyncio
+async def test_a_tick_loop_that_ends_while_running_is_replaced(monkeypatch, death):
+    """The process staying up is not the scheduler staying up: any end that is not stop() restarts."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    calls: list = []
+
+    async def _short_lived_loop():
+        calls.append(time.monotonic())
+        if len(calls) <= 2:
+            if death == "raises":
+                raise RuntimeError("loop blew up")
+            return
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(engine, "_tick_loop", _short_lived_loop)
+    await engine.start()
+    try:
+        await _until(lambda: len(calls) >= 3)
+        assert engine._tick_loop_restarts >= 2
+        when, reason = engine._last_tick_loop_failure
+        assert when > 0
+        assert ("RuntimeError" in reason) is (death == "raises"), reason
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_external_cancel_is_absorbed_rather_than_ending_the_loop(monkeypatch):
+    """Only stop() stops it. A cancel from anywhere else is the failure mode, not the request."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    await engine.start()
+    try:
+        await _until(lambda: len(ticks) >= 1)
+        original = engine._task
+        original.cancel()
+
+        advanced = len(ticks)
+        await _until(lambda: len(ticks) > advanced + 1)
+        assert engine._task is original, "absorbed in place, so no restart was needed"
+        assert engine._tick_loop_restarts == 0
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_stray_cancel_inside_a_tick_does_not_end_the_loop(monkeypatch):
+    """A cancel escaping from something the tick awaited is not a shutdown request."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    raised = []
+
+    async def _tick():
+        ticks.append(time.monotonic())
+        if not raised:
+            raised.append(True)
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(engine, "_tick", _tick)
+    await engine.start()
+    try:
+        await _until(lambda: len(ticks) >= 3)
+        assert raised, "the cancelling tick never ran, so this proves nothing"
+        assert engine._tick_loop_restarts == 0, "the loop survived in place, without a restart"
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_startup_recovery_pass_does_not_cost_every_tick(monkeypatch):
+    """Startup recovery is best effort; one bad pass must not take the loop with it."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    monkeypatch.setattr(
+        engine, "_reconcile_dispatched_orphans", AsyncMock(side_effect=RuntimeError("db locked"))
+    )
+    await engine.start()
+    try:
+        await _until(lambda: len(ticks) >= 2)
+        engine._check_missed_fires.assert_awaited()
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_raising_tick_does_not_end_the_loop(monkeypatch):
+    """The pre-existing guard, pinned so the restructure cannot quietly drop it."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+
+    async def _tick():
+        ticks.append(time.monotonic())
+        raise RuntimeError("tick blew up")
+
+    monkeypatch.setattr(engine, "_tick", _tick)
+    await engine.start()
+    try:
+        await _until(lambda: len(ticks) >= 3)
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_stop_ends_the_loop_rather_than_restarting_it(monkeypatch):
+    """The control: supervision must not resurrect a deliberate shutdown."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    await engine.start()
+    try:
+        await _until(lambda: len(ticks) >= 1)
+        await engine.stop()
+
+        assert engine._task is None
+        settled = len(ticks)
+        await asyncio.sleep(0.05)
+        assert len(ticks) == settled
+        assert engine._tick_loop_restarts == 0
+    finally:
+        # stop() is idempotent, so this only matters when an assertion above never reached it:
+        # a live loop outliving its test runs during every later one.
+        await engine.stop()

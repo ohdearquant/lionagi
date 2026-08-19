@@ -127,6 +127,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   status is decided rather than inside the all-completed arm, so a child that lost messages and
   also failed is still named on the invocation row, and a scheduled run with an incomplete
   transcript carries `run.completed.message_loss` instead of flattening to a clean pass.
+- The studio scheduler's tick loop is now supervised rather than merely guarded. It caught
+  `Exception`, which does not include `asyncio.CancelledError`, so a cancel escaping from anything
+  the tick awaited ended the loop permanently while the process and its HTTP surface kept
+  answering; startup recovery ran outside the guard, so one failing pass took the loop with it; and
+  the inter-tick sleep was unguarded. Only `stop()` ends the loop now: a cancel arriving at any
+  other time is absorbed in place, a failing recovery pass is logged and skipped, and any exit that
+  is not a stop restarts the loop on a bounded backoff with the reason and a restart count recorded
+  on the engine. Startup recovery absorbs a non-stop cancel the same way, so one cancelled pass no
+  longer costs the passes after it, and the inter-tick wait is measured against its own deadline so
+  a stream of cancels cannot drive the tick in a tight loop or skip the delay on the error path. A
+  cancel aimed at the loop itself no longer tears a recovery pass in half either: the pass in
+  flight is allowed to finish, because a pass interrupted after it has finalized a schedule_run has
+  no successor to complete the job, every later scan selecting rows that are still running. A stop
+  still interrupts it, since a shutdown that cannot interrupt recovery is one that hangs.
 - A GitHub-triggered schedule permanently lost the second of two events sharing a cursor
   timestamp. The scheduler advances `github_cursor` per dispatched event, writing that event's
   raw timestamp, and the poller drops anything at or below the stored value, so two pull
@@ -208,6 +222,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Writable StateDB migration now fails closed when a table's columns cannot be
   inspected, preserving the prior schema-version stamp instead of recording an
   upgrade whose additive column reconciliation did not complete.
+- The single-run route `GET /api/schedules/runs/{run_id}` now serves an allow-list
+  instead of the joined row. It was the last schedule surface returning every column
+  the join carries, including the action arguments, resume packets, lease holders and
+  capability references the list surfaces already withhold, and its nested chain
+  children carried the same columns again. The raw failure text stays: reaching it is
+  the reason this route exists. The trigger payload that produced the run is no longer
+  served at all, and is dropped from the client's declared run type, since nothing read
+  it and it carries whole external event bodies.
 
 ### Deprecated
 
@@ -217,6 +239,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   accepting it silently, and will keep accepting it until it is removed in a
   later release. It remains available and functional on `li agent`, which is
   the surface that implements it.
+
+### Removed
+
+- `trigger_context` from every run object the schedule surfaces serve, and from the
+  run type the web client declares. It held the whole external event body that
+  produced a run, no client read it, and the single-run route was the last surface
+  still sending it.
 
 ## [0.35.0] - 2026-08-12
 
