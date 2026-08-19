@@ -730,3 +730,54 @@ class TestADrainThatDidNotFinishIsNotSilence:
         note = _abandoned_without_output_note("half a line", None, None, True)
         assert "half a line" in note
         assert "[stderr drain did not finish]" in note
+
+
+def _cli_request_models() -> tuple[type, ...]:
+    from lionagi.providers.anthropic.claude_code import ClaudeCodeRequest
+    from lionagi.providers.openai.codex import CodexCodeRequest
+    from lionagi.providers.pi.cli import PiCodeRequest
+
+    return (PiCodeRequest, ClaudeCodeRequest, CodexCodeRequest)
+
+
+_CLI_REQUEST_MODELS = _cli_request_models()
+
+
+class TestACredentialCannotReachTheCommandLine:
+    """The bare-positional residual holds only while no credential field is emitted to argv.
+
+    Today nothing enforces that but a field description, so it is enforced here.
+    """
+
+    # Credential-shaped means the redactor's OWN name vocabulary matches, so this
+    # guard and the redaction cannot drift apart. Names that match it while
+    # holding a count rather than a secret are excluded by name: a new one fails
+    # loudly and costs a line, where a new credential field must never pass quietly.
+    _COUNTS_NOT_CREDENTIALS = frozenset({"max_thinking_tokens"})
+
+    @staticmethod
+    def _credential_fields(model: type) -> list[str]:
+        return [
+            name
+            for name in model.model_fields
+            if name not in TestACredentialCannotReachTheCommandLine._COUNTS_NOT_CREDENTIALS
+            and cs._name_reads_as_credential(name)
+        ]
+
+    @pytest.mark.parametrize("model", _CLI_REQUEST_MODELS, ids=lambda m: m.__name__)
+    def test_no_credential_field_declares_a_cli_flag(self, model):
+        emitted = [
+            f"{model.__name__}.{name}={(model.model_fields[name].json_schema_extra or {})['cli_flag']}"
+            for name in self._credential_fields(model)
+            if "cli_flag" in (model.model_fields[name].json_schema_extra or {})
+        ]
+        assert not emitted, (
+            "a credential would be built into argv, where the redactor cannot tell it "
+            "from a path or a subcommand: " + ", ".join(emitted)
+        )
+
+    def test_the_vocabulary_still_selects_a_real_credential_field(self):
+        """Without this the guard above passes by selecting nothing at all."""
+        from lionagi.providers.pi.cli import PiCodeRequest
+
+        assert "api_key" in self._credential_fields(PiCodeRequest)

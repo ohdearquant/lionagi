@@ -389,6 +389,11 @@ def _cmd_secret_values(cmd: Iterable[str] | None) -> dict[str, str]:
     printing the value alone, where nothing in the text says what it is. Same
     length floor as the environment guesses, for the same reason: the flag name
     is a guess, and a short value is not tellable from an ordinary word.
+
+    A caller that does need a bare positional covered declares the literal value
+    to remove, because it is the one that knows which argument is the credential.
+    Widening this to guess at positionals is not the extension: it would strip
+    the paths and subcommands the failure message exists to carry.
     """
     found: dict[str, str] = {}
     awaiting: str | None = None
