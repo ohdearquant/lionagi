@@ -127,9 +127,24 @@ def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
+
+class NoCursorClaim:
+    """The type of :data:`NO_CURSOR_CLAIM`, so a claim is not typed as ``Any`` end to end."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "NO_CURSOR_CLAIM"
+
+
 # Distinguishes "this write claims no due instant" from "it claims one whose value is NULL".
 # Public because callers several layers up have to state which of the two they mean.
-NO_CURSOR_CLAIM = object()
+NO_CURSOR_CLAIM = NoCursorClaim()
+
+# What a caller may claim a cursor column still holds: the value it read, including NULL, or
+# the sentinel for a write that claims nothing. Spelled out so a reader of any of the three
+# layers that forward it can tell a cursor value from a missing claim.
+CursorClaim = float | str | None | NoCursorClaim
 
 # Shape of the schema this code applies; ``_apply_schema`` stamps it into ``schema_meta.version`` on
 # every open, so the recorded version describes the database after migrations. Bump it whenever a
@@ -3726,8 +3741,8 @@ class StateDB:
         schedule_id: str,
         *,
         guard_cursor_forward: bool = False,
-        expect_next_fire_at: Any = NO_CURSOR_CLAIM,
-        expect_github_cursor: Any = NO_CURSOR_CLAIM,
+        expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
         **fields: Any,
     ) -> bool:
         """Update one schedule; returns whether a row matched.
@@ -3758,8 +3773,8 @@ class StateDB:
         fields: dict[str, Any],
         *,
         guard_cursor_forward: bool = False,
-        expect_next_fire_at: Any = NO_CURSOR_CLAIM,
-        expect_github_cursor: Any = NO_CURSOR_CLAIM,
+        expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
     ):
         """Validate and build the ``UPDATE schedules`` statement and params, no transaction."""
         bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
@@ -3887,8 +3902,8 @@ class StateDB:
         *,
         schedule_id: str,
         schedule_fields: dict[str, Any],
-        expect_next_fire_at: Any,
-        expect_github_cursor: Any = NO_CURSOR_CLAIM,
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
     ) -> bool:
         """Insert one occurrence row and advance the schedule's cursor in a single transaction.
 

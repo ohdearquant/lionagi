@@ -725,25 +725,37 @@ async def test_a_concurrent_advance_between_events_refuses_the_later_write():
     schedule = _minimal_schedule(next_fire_at=9_000.0, poll_interval_sec=60, github_cursor=None)
     svc = _make_svc()
     stored = {"next_fire_at": schedule["next_fire_at"], "github_cursor": None}
-    written: list[int] = []
+    writes: list[tuple[str, int]] = []
+    writer = "first"
 
     advance = claiming_advance(
         stored,
-        on_write=lambda payload: written.append(
-            payload["trigger_context"]["github_events"][0]["pr_number"]
+        on_write=lambda payload: writes.append(
+            (writer, payload["trigger_context"]["github_events"][0]["pr_number"])
         ),
     )
     second_scheduler_ran = False
 
     async def _advance_then_lose_the_race(payload, **kwargs):
-        nonlocal second_scheduler_ran
+        nonlocal second_scheduler_ran, writer
         won = await advance(payload, **kwargs)
         pr = payload["trigger_context"]["github_events"][0]["pr_number"]
         if won and pr == 1 and not second_scheduler_ran:
             # The other scheduler polls here, sees the cursor this write just advanced, and
-            # takes event 2 for itself before this loop reaches it.
+            # takes event 2 for itself before this loop reaches it. It goes through the same
+            # claim-aware write rather than editing the row: moving the cursor by hand would
+            # set up the race without ever exercising the claim that has to decide it.
             second_scheduler_ran = True
-            stored["github_cursor"] = "2026-01-01T00:00:02Z"
+            writer = "second"
+            other_won = await advance(
+                {"trigger_context": {"github_events": [{"pr_number": 2}]}},
+                schedule_id=schedule["id"],
+                schedule_fields={"github_cursor": "2026-01-01T00:00:02Z"},
+                expect_next_fire_at=NO_CURSOR_CLAIM,
+                expect_github_cursor="2026-01-01T00:00:01Z",
+            )
+            writer = "first"
+            assert other_won, "the second scheduler was refused, so the race never happened"
         return won
 
     svc.create_schedule_run_and_advance = AsyncMock(side_effect=_advance_then_lose_the_race)
@@ -763,7 +775,9 @@ async def test_a_concurrent_advance_between_events_refuses_the_later_write():
         await engine._tick_github(schedule, now=10_000.0)
 
     assert second_scheduler_ran, "the interleave never happened, so nothing was tested"
-    assert written == [1], f"event 2 was written by both schedulers: {written}"
+    # The second scheduler wrote event 2; the first scheduler reached it afterwards and its
+    # claim was refused, so it appears nowhere against event 2.
+    assert writes == [("first", 1), ("second", 2)], writes
 
 
 @pytest.mark.asyncio

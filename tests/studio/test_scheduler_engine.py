@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from lionagi.state.db import NO_CURSOR_CLAIM
-from tests._scheduler_claims import fire_with_claim, persisting_update_schedule
+from tests._scheduler_claims import claim_holds, fire_with_claim, persisting_update_schedule
 
 NY = ZoneInfo("America/New_York")
 
@@ -2659,7 +2659,13 @@ class _StatefulSvc:
         self,
         existing_runs: dict[str, dict] | None = None,
         fail_create_invocation_times: int = 0,
+        schedule_row: dict | None = None,
     ):
+        # Stands for the schedule row the claims are decided against. Empty by default, which
+        # reads as a row whose cursors are NULL; a test modelling a refusal seeds it. Held by
+        # reference rather than copied, so a caller passing the schedule dict it also hands the
+        # engine sees its own writes, the way a caller re-reading the row would.
+        self.schedule_row: dict = schedule_row if schedule_row is not None else {}
         self.runs: dict[str, dict] = dict(existing_runs or {})
         self.schedule_updates: list[tuple[str, dict]] = []
         self._fail_create_invocation_times = fail_create_invocation_times
@@ -2670,6 +2676,16 @@ class _StatefulSvc:
 
     async def list_schedules(self, *, enabled=None):
         return []
+
+    def _claims_hold(self, expect_next_fire_at, expect_github_cursor) -> bool:
+        """Decide both claims against the modelled row rather than accepting either.
+
+        Returning True regardless would let a claim-dependent test pass without the claim
+        being checked at all, which is the same as not having written the claim.
+        """
+        return claim_holds(self.schedule_row.get("next_fire_at"), expect_next_fire_at) and (
+            claim_holds(self.schedule_row.get("github_cursor"), expect_github_cursor)
+        )
 
     async def update_schedule(
         self,
@@ -2683,7 +2699,10 @@ class _StatefulSvc:
         # Mirrors the real signature and return type. Absorbing the claims into **fields
         # would record them as schedule columns and return None, which the recovery path
         # reads as a refusal, so a test reusing this fake would model a different interface.
+        if not self._claims_hold(expect_next_fire_at, expect_github_cursor):
+            return False
         self.schedule_updates.append((schedule_id, fields))
+        self.schedule_row.update(fields)
         return True
 
     async def count_schedule_runs(
@@ -2715,8 +2734,11 @@ class _StatefulSvc:
         expect_next_fire_at,
         expect_github_cursor=NO_CURSOR_CLAIM,
     ):
+        if not self._claims_hold(expect_next_fire_at, expect_github_cursor):
+            return False
         self.runs[run["id"]] = dict(run)
         self.schedule_updates.append((schedule_id, dict(schedule_fields)))
+        self.schedule_row.update(schedule_fields)
         return True
 
     async def schedule_run_exists_since(self, schedule_id, since):
@@ -2814,9 +2836,11 @@ async def test_max_runs_reservation_released_lets_next_schedule_check_run():
     count (not an over-counted stale claim)."""
     from lionagi.studio.scheduler.engine import SchedulerEngine
 
-    svc = _StatefulSvc()
-    engine = SchedulerEngine(svc)
     schedule = _minimal_schedule(id="sched-multi", max_runs=2)
+    # The fake decides the due-instant claim against this row, so it is the same object the
+    # engine is handed: a fire advances it, and the next fire claims the advanced value.
+    svc = _StatefulSvc(schedule_row=schedule)
+    engine = SchedulerEngine(svc)
 
     with (
         patch(

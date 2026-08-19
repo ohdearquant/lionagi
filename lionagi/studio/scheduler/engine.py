@@ -21,6 +21,7 @@ from lionagi.state.db import (
     NO_CURSOR_CLAIM,
     SESSION_TERMINAL_STATUSES,
     TERMINAL_RUN_STATUSES,
+    CursorClaim,
 )
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS, RunTerminalEnvelope
 from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notify_config
@@ -1873,8 +1874,8 @@ class SchedulerEngine:
         threshold_cooldown_claim: _ThresholdCooldownClaim | None = None,
         extra_schedule_fields: dict[str, Any] | None = None,
         supersedes_run_id: str | None = None,
-        expect_next_fire_at: Any,
-        expect_github_cursor: Any = NO_CURSOR_CLAIM,
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
     ) -> bool:
         """Thin wrapper that releases every admission claim on all exit paths.
 
@@ -1922,8 +1923,8 @@ class SchedulerEngine:
         schedule_id: str,
         schedule_fields: dict[str, Any],
         supersedes_run_id: str | None,
-        expect_next_fire_at: Any,
-        expect_github_cursor: Any = NO_CURSOR_CLAIM,
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
     ) -> bool:
         """Durably record one occurrence row: the choke point both write sites take."""
         if supersedes_run_id is not None:
@@ -2027,8 +2028,8 @@ class SchedulerEngine:
         max_runs_claim: _MaxRunsClaim | None = None,
         extra_schedule_fields: dict[str, Any] | None = None,
         supersedes_run_id: str | None = None,
-        expect_next_fire_at: Any,
-        expect_github_cursor: Any = NO_CURSOR_CLAIM,
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
     ) -> bool:
         """Fire one occurrence of *schedule*; False only if it refused before anything committed."""
         sid = schedule["id"]

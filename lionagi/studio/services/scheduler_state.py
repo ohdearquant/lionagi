@@ -16,7 +16,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
-from lionagi.state.db import NO_CURSOR_CLAIM, TERMINAL_RUN_STATUSES, StateDB
+from lionagi.state.db import (
+    NO_CURSOR_CLAIM,
+    TERMINAL_RUN_STATUSES,
+    CursorClaim,
+    StateDB,
+)
 from lionagi.state.reasons import RunReasons
 from lionagi.studio.scheduler import coordination as _coordination
 
@@ -35,8 +40,8 @@ class SchedulerStateService(Protocol):
         schedule_id: str,
         *,
         guard_cursor_forward: bool = False,
-        expect_next_fire_at: Any = NO_CURSOR_CLAIM,
-        expect_github_cursor: Any = NO_CURSOR_CLAIM,
+        expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
         **fields: Any,
     ) -> bool: ...
 
@@ -63,8 +68,8 @@ class SchedulerStateService(Protocol):
         *,
         schedule_id: str,
         schedule_fields: dict[str, Any],
-        expect_next_fire_at: Any,
-        expect_github_cursor: Any = NO_CURSOR_CLAIM,
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
     ) -> bool: ...
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool: ...
@@ -178,8 +183,8 @@ class _DBSchedulerStateService:
         schedule_id: str,
         *,
         guard_cursor_forward: bool = False,
-        expect_next_fire_at: Any = NO_CURSOR_CLAIM,
-        expect_github_cursor: Any = NO_CURSOR_CLAIM,
+        expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
         **fields: Any,
     ) -> bool:
         async with self._db_context() as db:
@@ -229,8 +234,8 @@ class _DBSchedulerStateService:
         *,
         schedule_id: str,
         schedule_fields: dict[str, Any],
-        expect_next_fire_at: Any,
-        expect_github_cursor: Any = NO_CURSOR_CLAIM,
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
     ) -> bool:
         async with self._db_context() as db:
             return await db.create_schedule_run_and_advance(
