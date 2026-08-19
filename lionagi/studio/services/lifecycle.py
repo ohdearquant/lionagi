@@ -5,8 +5,8 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from lionagi.state.db import StateDB, state_db_known_absent
@@ -55,27 +55,43 @@ _REAPABLE_PLAY_STATUSES = frozenset({"running", "running_complete", "prepared", 
 # a shell script, a test runner — which has no reason to ever open a Branch.
 # The wall-clock deadline still applies to them; only this heuristic is off.
 _SESSIONLESS_ACTION_KINDS = frozenset({"command"})
+_INVOCATION_REAPER_PAGE_SIZE = 500
 
 
-def _deadline_for_kind(action_kind: str | None, global_default: int) -> int:
-    """Resolve the effective deadline: checks
-    ``LIONAGI_STUDIO_INVOCATION_DEADLINE_<KIND>_SECONDS`` first, falling back
-    to *global_default* when absent or *action_kind* is None.
-    """
-    if action_kind:
-        env_key = f"LIONAGI_STUDIO_INVOCATION_DEADLINE_{action_kind.upper()}_SECONDS"
-        raw = os.environ.get(env_key)
-        if raw is not None:
-            try:
-                return int(raw)
-            except ValueError:
-                _log.warning("Ignoring non-integer env var %s=%r", env_key, raw)
-    return global_default
+def _deadline_for_kind(action_kind: str | None, global_default: float | int) -> float:
+    """Compatibility wrapper around the shared validated deadline resolver."""
+    from lionagi.studio.config import invocation_deadline_seconds
+
+    return invocation_deadline_seconds(
+        action_kind,
+        global_default=global_default,
+    )
+
+
+async def _running_invocations_for_reaping(db: StateDB) -> AsyncIterator[dict]:
+    """Yield every running invocation through stable oldest-first keyset pages."""
+    after_started_at: float | None = None
+    after_id: str | None = None
+    while True:
+        invocations = await db.list_running_invocations_for_reaping(
+            limit=_INVOCATION_REAPER_PAGE_SIZE,
+            after_started_at=after_started_at,
+            after_id=after_id,
+        )
+        if not invocations:
+            return
+        for invocation in invocations:
+            yield invocation
+        last = invocations[-1]
+        after_started_at = last["started_at"]
+        after_id = last["id"]
+        if len(invocations) < _INVOCATION_REAPER_PAGE_SIZE:
+            return
 
 
 async def reap_stale_invocations(
     *,
-    deadline_seconds: int | None = None,
+    deadline_seconds: float | int | None = None,
     zero_session_grace_seconds: int | None = None,
 ) -> int:
     """Transition stale running invocations to ``timed_out``.
@@ -104,8 +120,7 @@ async def reap_stale_invocations(
 
     try:
         async with StateDB() as db:
-            invocations = await db.list_invocations(status="running", limit=1000)
-            for inv in invocations:
+            async for inv in _running_invocations_for_reaping(db):
                 inv_id = inv["id"]
                 started_at = inv.get("started_at") or now
                 updated_at = inv.get("updated_at") or started_at

@@ -24,6 +24,7 @@ __all__ = (
     "ResolvedSecretLookup",
     "SecretLookupResolution",
     "fill_declared_secrets",
+    "fill_declared_secrets_and_names",
     "resolve_secret_lookup_config",
 )
 
@@ -247,7 +248,33 @@ async def fill_declared_secrets(
     absent or misconfigured, with nothing pointing at the operator's own
     config.
     """
+    return await _fill_from_resolution(env, resolve_secret_lookup_config(settings=settings))
+
+
+async def fill_declared_secrets_and_names(
+    env: Mapping[str, str] | None,
+    *,
+    settings: dict[str, Any] | None = None,
+) -> tuple[Mapping[str, str] | None, tuple[str, ...]]:
+    """The child's environment and the names it was filled against, from one config read.
+
+    The names come back with the environment because callers that both fill and
+    redact need them to agree. Filling awaits a lookup, the config is re-read
+    from disk on every resolve, and a second resolve after that await can see an
+    edit the first did not — handing the child a value the redactor was never
+    told about, which is exactly the secret named for its purpose that declaring
+    exists to cover. The operator's declaration is what makes a value a secret;
+    a name that reads like one is only a guess.
+    """
     resolution = resolve_secret_lookup_config(settings=settings)
+    names = () if resolution.lookup is None else resolution.lookup.names
+    return await _fill_from_resolution(env, resolution), names
+
+
+async def _fill_from_resolution(
+    env: Mapping[str, str] | None,
+    resolution: SecretLookupResolution,
+) -> Mapping[str, str] | None:
     lookup = resolution.lookup
     if lookup is None:
         if resolution.reason:

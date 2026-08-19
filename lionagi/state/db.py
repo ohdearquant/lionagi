@@ -21,6 +21,7 @@ from typing import Any
 
 from sqlalchemy import JSON, MetaData, bindparam, event, inspect, text
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.schema import CreateTable
 
 from lionagi._paths import LIONAGI_HOME, ensure_lionagi_dir
@@ -663,6 +664,45 @@ class StateDB:
     async def _read(self):
         async with self._engine.connect() as conn:
             conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+            yield conn
+
+    @asynccontextmanager
+    async def read_snapshot(self):
+        """Yield one non-blocking, repeatable read snapshot.
+
+        SQLite's legacy driver mode does not start a transaction for SELECT,
+        so ``conn.begin()`` alone would still let successive reads observe
+        different WAL commits. An explicit deferred ``BEGIN`` pins the WAL
+        snapshot without reserving the writer slot. PostgreSQL needs
+        REPEATABLE READ because its default READ COMMITTED isolation takes a
+        new snapshot for every statement.
+        """
+        async with self._engine.connect() as conn:
+            if self.dialect == "sqlite":
+                # AUTOCOMMIT suppresses the writable engine's BEGIN IMMEDIATE
+                # event. The explicit deferred BEGIN below is read-only and
+                # therefore remains compatible with a concurrent WAL writer.
+                conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+                await conn.exec_driver_sql("BEGIN")
+                try:
+                    yield conn
+                finally:
+                    if conn.in_transaction():
+                        await conn.exec_driver_sql("ROLLBACK")
+                        await conn.rollback()
+            else:
+                conn = await conn.execution_options(isolation_level="REPEATABLE READ")
+                async with conn.begin():
+                    await conn.exec_driver_sql("SET TRANSACTION READ ONLY")
+                    yield conn
+
+    @asynccontextmanager
+    async def _read_connection(self, connection: AsyncConnection | None = None):
+        """Use a caller-owned snapshot connection or an ordinary one-shot read."""
+        if connection is not None:
+            yield connection
+            return
+        async with self._read() as conn:
             yield conn
 
     @asynccontextmanager
@@ -3594,7 +3634,7 @@ class StateDB:
         enabled: bool | None = None,
         trigger_type: str | None = None,
         project: str | None = None,
-        limit: int = 100,
+        limit: int | None = 100,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         query = "SELECT * FROM schedules"
@@ -3611,9 +3651,11 @@ class StateDB:
             params["project"] = project
         if conds:
             query += " WHERE " + " AND ".join(conds)
-        query += " ORDER BY updated_at DESC LIMIT :limit OFFSET :offset"
-        params["limit"] = limit
-        params["offset"] = offset
+        query += " ORDER BY updated_at DESC"
+        if limit is not None:
+            query += " LIMIT :limit OFFSET :offset"
+            params["limit"] = limit
+            params["offset"] = offset
         async with self._read() as conn:
             rows = (await conn.execute(text(query), params)).mappings().all()
         return [self._row_to_dict(r) for r in rows]
@@ -4469,6 +4511,7 @@ class StateDB:
         status: str | None = None,
         limit: int = 100,
         offset: int = 0,
+        connection: AsyncConnection | None = None,
     ) -> list[dict[str, Any]]:
         # Per invocation, take project/project_source from its latest-updated session; ROW_NUMBER()
         # is portable where the old SQLite idiom is rejected by PostgreSQL. The schedule_run that
@@ -4523,6 +4566,46 @@ class StateDB:
         query += " ORDER BY inv.updated_at DESC LIMIT :limit OFFSET :offset"
         params["limit"] = limit
         params["offset"] = offset
+        async with self._read_connection(connection) as conn:
+            rows = (await conn.execute(text(query), params)).mappings().all()
+        return [self._row_to_dict(r) for r in rows]
+
+    async def list_running_invocations_for_reaping(
+        self,
+        *,
+        limit: int = 500,
+        after_started_at: float | None = None,
+        after_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return one oldest-first keyset page for the lifecycle reaper.
+
+        This deliberately avoids ``list_invocations``'s UI projection and
+        offset pagination. Reaping changes rows from running to terminal while
+        it scans, so offsets would skip rows as the result set shrank; the
+        immutable ``(started_at, id)`` cursor remains stable across those
+        transitions. Only the fields the reaper evaluates are projected.
+        """
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        if (after_started_at is None) != (after_id is None):
+            raise ValueError("after_started_at and after_id must be provided together")
+
+        query = (
+            "SELECT inv.id, inv.started_at, inv.updated_at, inv.session_count, inv.ended_at, "
+            "  ( SELECT sr.action_kind FROM schedule_runs sr "
+            "    WHERE sr.invocation_id = inv.id "
+            "    ORDER BY COALESCE(sr.created_at, 0) DESC, sr.id DESC LIMIT 1 "
+            "  ) AS action_kind "
+            "FROM invocations inv "
+            "WHERE inv.status = 'running'"
+        )
+        params: dict[str, Any] = {"limit": limit}
+        if after_started_at is not None:
+            query += " AND (inv.started_at, inv.id) > (:after_started_at, :after_id)"
+            params["after_started_at"] = after_started_at
+            params["after_id"] = after_id
+        query += " ORDER BY inv.started_at ASC, inv.id ASC LIMIT :limit"
+
         async with self._read() as conn:
             rows = (await conn.execute(text(query), params)).mappings().all()
         return [self._row_to_dict(r) for r in rows]
@@ -4533,6 +4616,7 @@ class StateDB:
         skill: str | None = None,
         plugin: str | None = None,
         status: str | None = None,
+        connection: AsyncConnection | None = None,
     ) -> int:
         """Real total matching the same filters ``list_invocations`` accepts, which is paginated."""
         conds: list[str] = []
@@ -4549,7 +4633,7 @@ class StateDB:
         query = "SELECT COUNT(*) AS n FROM invocations"
         if conds:
             query += " WHERE " + " AND ".join(conds)
-        async with self._read() as conn:
+        async with self._read_connection(connection) as conn:
             row = (await conn.execute(text(query), params)).mappings().first()
         return row["n"]
 
@@ -4568,6 +4652,34 @@ class StateDB:
                 .all()
             )
         return [self._row_to_dict(r) for r in rows]
+
+    async def list_sessions_for_invocations(
+        self,
+        invocation_ids: list[str],
+        *,
+        connection: AsyncConnection | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Return child sessions grouped by invocation in one bounded query."""
+        ids = list(dict.fromkeys(invocation_ids))
+        grouped: dict[str, list[dict[str, Any]]] = {invocation_id: [] for invocation_id in ids}
+        if not ids:
+            return grouped
+
+        params = {
+            f"invocation_id_{index}": invocation_id for index, invocation_id in enumerate(ids)
+        }
+        placeholders = ", ".join(f":invocation_id_{index}" for index in range(len(ids)))
+        query = (
+            "SELECT * FROM sessions "  # noqa: S608 -- generated names; values stay bound
+            f"WHERE invocation_id IN ({placeholders}) "
+            "ORDER BY invocation_id ASC, created_at ASC"
+        )
+        async with self._read_connection(connection) as conn:
+            rows = (await conn.execute(text(query), params)).mappings().all()
+        for row in rows:
+            data = self._row_to_dict(row)
+            grouped[data["invocation_id"]].append(data)
+        return grouped
 
     # Artifacts
 

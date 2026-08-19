@@ -100,7 +100,10 @@ _TERMINAL_SESSION_STATUSES = (
     "aborted",
     "cancelled",
 )
-_TERMINAL_RUN_STATUSES = ("completed", "failed", "skipped", "cancelled")
+# Not db.TERMINAL_RUN_STATUSES: that set answers whether a fire consumed
+# budget, so it excludes "skipped". A skipped run never fired and is still
+# finished, so it is still prunable.
+_TERMINAL_RUN_STATUSES = ("completed", "failed", "skipped", "cancelled", "timed_out")
 
 
 def _run_retention_predicate(cutoff: float) -> tuple[str, tuple[Any, ...]]:
@@ -662,6 +665,49 @@ async def _prune_dispatch_chunk(
         dispatch_ids,
         retention_params,
     )
+
+
+async def prune_terminal_sessions_by_id(session_ids: Sequence[str]) -> int:
+    """Safely prune only terminal sessions from an explicit ID selection.
+
+    Uses the same row-lock/recheck and lineage-scoped cleanup as retention
+    pruning. Running or otherwise non-terminal rows are refused even when an
+    administrator names them explicitly, and unrelated orphan rows elsewhere
+    in the database are never swept as a side effect.
+    """
+    from lionagi.studio.config import PRUNE_ARCHIVE_DIR, PRUNE_CHUNK_ROWS
+
+    ids = sorted(set(session_ids))
+    if not ids or state_db_known_absent():
+        return 0
+
+    sess_ph = ", ".join("?" * len(_TERMINAL_SESSION_STATUSES))
+    retention_sql = f"status IN ({sess_ph})"
+    retention_params: tuple[Any, ...] = _TERMINAL_SESSION_STATUSES
+    prune_started_at = time.time()
+    pruned = 0
+
+    chunks = [ids[i : i + PRUNE_CHUNK_ROWS] for i in range(0, len(ids), PRUNE_CHUNK_ROWS)]
+
+    async with StateDB() as db:
+        for chunk_index, chunk_ids in enumerate(chunks):
+            archive_id = archive_chunk_id(
+                cutoff=prune_started_at,
+                chunk_index=chunk_index,
+                kind="session-explicit",
+            )
+            async with db.transaction() as conn:
+                pruned += await _prune_session_chunk(
+                    conn,
+                    chunk_ids,
+                    sess_ph=sess_ph,
+                    retention_sql=retention_sql,
+                    retention_params=retention_params,
+                    archive_destination=PRUNE_ARCHIVE_DIR,
+                    archive_id=archive_id,
+                )
+
+    return pruned
 
 
 async def prune_old_data(

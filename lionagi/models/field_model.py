@@ -5,14 +5,14 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, cast
 
 from typing_extensions import Self, override
 
 from .._errors import ValidationError
 from ..ln._cache import BoundedLRUCache
 from ..ln._lazy_init import LazyInit
-from ..ln.types import Meta, ModelConfig, Params, Spec, Undefined, Unset
+from ..ln.types import MaybeSentinel, Meta, ModelConfig, Params, Spec, Undefined, Unset
 
 # Cache of valid Pydantic Field parameters
 _lazy_field_params = LazyInit()
@@ -34,9 +34,9 @@ def _get_pydantic_field_params() -> set[str]:
     return _PYDANTIC_FIELD_PARAMS
 
 
-_annotated_cache: BoundedLRUCache[tuple[type, tuple[Meta, ...]], type] = BoundedLRUCache(
-    "LIONAGI_FIELD_CACHE_SIZE", 10000
-)
+_annotated_cache: BoundedLRUCache[
+    tuple[MaybeSentinel[type[Any]] | None, tuple[Meta, ...]], type
+] = BoundedLRUCache("LIONAGI_FIELD_CACHE_SIZE", 10000)
 
 METADATA_LIMIT = int(os.environ.get("LIONAGI_FIELD_META_LIMIT", "10"))
 
@@ -47,10 +47,14 @@ class FieldModel(Params):
 
     _config: ClassVar[ModelConfig] = ModelConfig(prefill_unset=True, none_as_sentinel=True)
 
-    base_type: type[Any]
+    base_type: MaybeSentinel[type[Any]] | None
     metadata: tuple[Meta, ...]
 
-    def __init__(self, base_type: type[Any] | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        base_type: MaybeSentinel[type[Any]] | None = None,
+        **kwargs: Any,
+    ) -> None:
         if base_type is not None:
             kwargs["base_type"] = base_type
         converted = self._convert_kwargs_to_params(**kwargs)
@@ -284,7 +288,7 @@ class FieldModel(Params):
         if cached is not None:
             return cached
 
-        actual_type = Any if self._is_sentinel(self.base_type) else self.base_type
+        actual_type = Any if self._is_sentinel(self.base_type) else cast(type[Any], self.base_type)
         current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
 
         if any(m.key == "nullable" and m.value for m in current_metadata):
@@ -407,7 +411,7 @@ class FieldModel(Params):
     def annotation(self) -> type[Any]:
         if self._is_sentinel(self.base_type):
             return Any
-        t_ = self.base_type
+        t_ = cast(type[Any], self.base_type)
         if self.is_listable:
             # Avoid double-wrapping if base_type is already list[X]
             origin = getattr(t_, "__origin__", None)
@@ -425,7 +429,11 @@ class FieldModel(Params):
         metas.append(Meta("nullable", self.is_nullable))
         metas.append(Meta("listable", self.is_listable))
 
-        return Spec(self.base_type, metadata=tuple(metas))
+        # FieldModel historically accepts annotation=None as an unspecified
+        # adapter input. Keep that boundary explicit instead of teaching Spec
+        # to collapse a caller-supplied null into absence.
+        base_type = Unset if self.base_type is None else self.base_type
+        return Spec(base_type, metadata=tuple(metas))
 
     def metadata_dict(self, exclude: list[str] | None = None) -> dict[str, Any]:
         result = {}

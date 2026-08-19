@@ -265,9 +265,10 @@ def test_prepare_operate_kw_field_models_with_fieldmodel():
 def test_prepare_operate_kw_field_models_with_spec():
     """Spec in field_models is forwarded unchanged to operate()."""
     branch = Branch()
-    spec = Spec(name="label", annotation=str)
+    spec = Spec(str, name="label")
     result = prepare_operate_kw(branch, field_models=[spec])
     assert result["field_models"] == [spec]
+    assert spec.base_type is str
     assert result["operative"] is None
 
 

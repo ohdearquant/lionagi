@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pydantic import BaseModel
 
@@ -59,6 +61,21 @@ def test_instruction_content_all_fields():
     assert content.response_format == {"result": "value"}
     assert len(content.images) == 1
     assert content.image_detail == "high"
+
+
+def test_instruction_content_json_projection_uses_internal_nested_serializer():
+    content = InstructionContent(
+        instruction="Inspect artifact",
+        prompt_context=[{"artifact": Path("runs/output.json")}],
+        response_format={"example": Path("schemas/result.json")},
+    )
+
+    python_projection = content.to_dict()
+    json_projection = content.to_dict(mode="json")
+
+    assert python_projection["prompt_context"][0]["artifact"] == Path("runs/output.json")
+    assert json_projection["prompt_context"] == [{"artifact": "runs/output.json"}]
+    assert json_projection["response_format"] == {"example": "schemas/result.json"}
 
 
 def test_instruction_content_rendered_text_only():

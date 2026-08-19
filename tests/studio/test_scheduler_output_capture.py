@@ -10,7 +10,9 @@ reported its failure on stdout used to leave a bare exit code there.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -125,3 +127,133 @@ async def test_a_cancelled_spawn_still_terminates_the_child():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=30)
+
+
+async def test_a_deadline_terminates_the_owned_process_group(monkeypatch):
+    """Deadline expiry follows the same process-tree cleanup contract as cancellation."""
+    from lionagi.studio.scheduler import subprocess as subprocess_mod
+
+    class _BlockingStream:
+        async def read(self, _size: int) -> bytes:
+            await asyncio.Event().wait()
+            return b""  # pragma: no cover - unreachable
+
+    class _FakeProc:
+        pid = 424244
+        returncode = None
+        stdout = _BlockingStream()
+        stderr = _BlockingStream()
+
+        async def wait(self):
+            await asyncio.Event().wait()
+
+    proc = _FakeProc()
+
+    async def _fake_exec(*_args, **kwargs):
+        assert kwargs["start_new_session"] is True
+        return proc
+
+    cleanup = AsyncMock()
+    monkeypatch.setattr(subprocess_mod.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(subprocess_mod, "aterminate_process_group", cleanup)
+
+    with pytest.raises(subprocess_mod.SubprocessDeadlineExceededError, match="0.01"):
+        await subprocess_mod.spawn_and_wait(
+            ["sleep", "30"],
+            "inv-deadline",
+            deadline_seconds=0.01,
+        )
+
+    cleanup.assert_awaited_once_with(proc, grace=5.0)
+
+
+async def test_a_process_finishing_before_its_deadline_is_unchanged():
+    code, tail = await spawn_and_wait(
+        _py("print('done')"),
+        "inv-before-deadline",
+        deadline_seconds=5,
+    )
+    assert code == 0
+    assert "done" in tail
+
+
+async def test_the_deadline_includes_post_spawn_dispatch_confirmation():
+    """A stuck durability callback cannot leave the already-running child unbounded."""
+    from lionagi.studio.scheduler import subprocess as subprocess_mod
+
+    async def _never_confirms():
+        await asyncio.Event().wait()
+
+    with pytest.raises(subprocess_mod.SubprocessDeadlineExceededError):
+        await asyncio.wait_for(
+            subprocess_mod.spawn_and_wait(
+                _py("import time; time.sleep(120)"),
+                "inv-callback-deadline",
+                deadline_seconds=0.05,
+                on_launched=_never_confirms,
+            ),
+            timeout=2,
+        )
+
+
+async def test_a_non_positive_deadline_is_rejected_before_spawn(monkeypatch):
+    from lionagi.studio.scheduler import subprocess as subprocess_mod
+
+    create = AsyncMock()
+    monkeypatch.setattr(subprocess_mod.asyncio, "create_subprocess_exec", create)
+
+    with pytest.raises(ValueError, match="positive"):
+        await subprocess_mod.spawn_and_wait(
+            [sys.executable, "-c", "pass"],
+            "inv-invalid-deadline",
+            deadline_seconds=0,
+        )
+    create.assert_not_awaited()
+
+
+async def test_a_non_positive_per_kind_deadline_is_rejected_before_spawn(monkeypatch):
+    from lionagi.studio.scheduler import subprocess as subprocess_mod
+
+    create = AsyncMock()
+    monkeypatch.setenv("LIONAGI_STUDIO_INVOCATION_DEADLINE_AGENT_SECONDS", "-1")
+    monkeypatch.setattr(subprocess_mod.asyncio, "create_subprocess_exec", create)
+
+    with pytest.raises(ValueError, match="must be positive"):
+        await subprocess_mod.spawn_and_wait(
+            [sys.executable, "-c", "pass"],
+            "inv-invalid-agent-deadline",
+            action_kind="agent",
+        )
+    create.assert_not_awaited()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+async def test_a_deadline_kills_a_real_descendant_process(tmp_path, monkeypatch):
+    """Returning from a timeout means no descendant remains in the owned group."""
+    from lionagi.studio.scheduler import subprocess as subprocess_mod
+
+    pid_file = tmp_path / "descendant.pid"
+    script = (
+        "import pathlib, subprocess, sys, time; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid)); "
+        "time.sleep(120)"
+    )
+    monkeypatch.setattr(subprocess_mod, "_PROCESS_TERMINATION_GRACE_SECONDS", 0.25)
+
+    with pytest.raises(subprocess_mod.SubprocessDeadlineExceededError):
+        await subprocess_mod.spawn_and_wait(
+            _py(script),
+            "inv-descendant-deadline",
+            deadline_seconds=0.25,
+        )
+
+    descendant_pid = int(pid_file.read_text())
+    for _ in range(100):
+        try:
+            os.kill(descendant_pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.01)
+    else:  # pragma: no cover - diagnostic path
+        pytest.fail(f"descendant {descendant_pid} survived process-group deadline cleanup")

@@ -60,9 +60,7 @@ class _FakeResponse:
         return self._body
 
 
-def _run_and_capture(
-    monkeypatch, args: argparse.Namespace
-) -> tuple[str, str, str | None]:
+def _run_and_capture(monkeypatch, args: argparse.Namespace) -> tuple[str, str, str | None]:
     """Run a real `li schedule` dispatch, capturing the request the
     CLI's _api() helper would have sent — without any real network I/O."""
     from lionagi.studio.cli import run_schedule
@@ -119,6 +117,5 @@ def test_schedule_cli_paths_are_served(monkeypatch, argv):
     )
     if method not in {"GET", "HEAD", "OPTIONS"}:
         assert content_type == "application/json", (
-            f"li schedule {argv[1]} sends unsafe {method} without declaring "
-            "application/json"
+            f"li schedule {argv[1]} sends unsafe {method} without declaring application/json"
         )
