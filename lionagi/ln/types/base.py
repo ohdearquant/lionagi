@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, MutableMapping
+from collections.abc import Callable, Collection, Hashable, MutableMapping
 from dataclasses import MISSING, dataclass, fields
 from enum import Enum as _Enum
 from functools import lru_cache
-from typing import Any, ClassVar, Literal
-from weakref import WeakKeyDictionary
+from typing import Any, ClassVar, Literal, cast
+from weakref import finalize
 
 from typing_extensions import Self, TypedDict, override
 
+from .._structural import _IdentityKey, _structural_hash, _structural_key
 from ._sentinel import Undefined, Unset, _compat_policy, _SentinelPolicy
 
 __all__ = (
@@ -62,14 +63,19 @@ class _FieldLayout:
 
 # Keyed off the type rather than stored on it: any attribute name this could use is
 # also a name a subclass may declare as a field, and under slots that field becomes a
-# descriptor in the class namespace which reads back as a cached layout. Weak keys so
-# a type stays collectable, and one entry per type so nothing evicts under a cap.
-_LAYOUTS: MutableMapping[type[Any], _FieldLayout] = WeakKeyDictionary()
+# descriptor in the class namespace which reads back as a cached layout. Keyed on
+# id() rather than the type itself because a metaclass may overload __eq__/__hash__,
+# which would collide two unrelated models onto one layout. An int key holds no
+# reference, so the type stays collectable; the finalizer is what stops a dead type's
+# entry from being served to whatever later type reuses its id. Uncapped, so nothing
+# evicts.
+_LAYOUTS: MutableMapping[int, _FieldLayout] = {}
 
 
 def _field_layout(model_type: type[Any]) -> _FieldLayout:
-    """One immutable public-field layout per model type, keyed on the type itself."""
-    cached = _LAYOUTS.get(model_type)
+    """One immutable public-field layout per model type, keyed on that type's identity."""
+    key = id(model_type)
+    cached = _LAYOUTS.get(key)
     if cached is not None:
         return cached
     declared = tuple(
@@ -77,7 +83,8 @@ def _field_layout(model_type: type[Any]) -> _FieldLayout:
     )
     names = tuple(field_info.name for field_info in declared)
     layout = _FieldLayout(declared=declared, names=names, allowed=frozenset(names))
-    _LAYOUTS[model_type] = layout
+    _LAYOUTS[key] = layout
+    finalize(model_type, _LAYOUTS.pop, key, None)
     return layout
 
 
@@ -148,11 +155,12 @@ def _apply_serialization_mode(
 
 @lru_cache(maxsize=256)
 def _config_sentinel_policy(
-    owner: type[Any],
+    owner_key: _IdentityKey,
     _config_identity: int,
     config: ModelConfig,
 ) -> _SentinelPolicy:
     """Compile one lexically-owned class policy outside the field hot path."""
+    owner = cast(type[Any], owner_key.target)
     return _compat_policy(
         site=f"{owner.__module__}.{owner.__qualname__}._config",
         none_as_sentinel=config.none_as_sentinel,
@@ -164,7 +172,7 @@ def _effective_config_sentinel_policy(model_type: type[Any]) -> _SentinelPolicy:
     """Resolve the live lexical owner before consulting the compiled-policy cache."""
     config = model_type._config
     owner = next(base for base in model_type.__mro__ if base.__dict__.get("_config") is config)
-    return _config_sentinel_policy(owner, id(config), config)
+    return _config_sentinel_policy(_IdentityKey(owner), id(config), config)
 
 
 def _is_config_sentinel(model_type: type[Any], value: Any) -> bool:
@@ -184,7 +192,7 @@ def _sentinel_predicate(instance: Any) -> Callable[[Any], bool]:
     return predicate
 
 
-@dataclass(slots=True, frozen=True, init=False)
+@dataclass(slots=True, frozen=True, init=False, eq=False)
 class Params:
     """Immutable keyword-argument parameter bag; configure via _config = ModelConfig(...)."""
 
@@ -254,15 +262,16 @@ class Params:
             mode,
         )
 
+    def _key(self) -> Hashable:
+        return _structural_key(self)
+
     def __hash__(self) -> int:
-        from .._hash import hash_dict
+        return _structural_hash(self)
 
-        return hash_dict(self.to_dict())
-
-    def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, Params):
-            return False
-        return hash(self) == hash(other)
+    def __eq__(self, other: object) -> bool:
+        if self is other:
+            return True
+        return type(self) is type(other) and self._key() == cast(Params, other)._key()
 
     def with_updates(self, **kwargs: Any) -> Self:
         """Return a new instance with updated fields."""
@@ -366,33 +375,27 @@ class DataClass:
 KeysLike = list[str] | tuple[str, ...] | set[str] | frozenset[str] | KeysDict
 
 
-@dataclass(slots=True, frozen=True)
+# Slots are written out so `__weakref__` is among them: the projection cache keys
+# declarations by identity and stores only what it can hold weakly, so without it an
+# entry would pin the metadata and whatever it carries, a validator included.
+@dataclass(frozen=True, eq=False)
 class Meta:
     """Immutable metadata container for field templates and other configurations."""
+
+    __slots__ = ("key", "value", "__weakref__")
 
     key: str
     value: Any
 
+    def _key(self) -> Hashable:
+        return _structural_key(self)
+
     @override
     def __hash__(self) -> int:
-        # callables hash by id
-        if callable(self.value):
-            return hash((self.key, id(self.value)))
-        try:
-            return hash((self.key, self.value))
-        except TypeError:
-            return hash((self.key, str(self.value)))
+        return _structural_hash(self)
 
     @override
     def __eq__(self, other: object) -> bool:
-        # callables compare by identity to maximize cache hits
-        if not isinstance(other, Meta):
-            return NotImplemented
-
-        if self.key != other.key:
-            return False
-
-        if callable(self.value) and callable(other.value):
-            return id(self.value) == id(other.value)
-
-        return bool(self.value == other.value)
+        if self is other:
+            return True
+        return type(self) is type(other) and self._key() == cast(Meta, other)._key()
