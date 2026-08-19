@@ -86,6 +86,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/identity"),
     ("GET", "/api/invocations/"),
     ("GET", "/api/invocations/{invocation_id}"),
+    ("GET", "/api/invocations/{invocation_id}/status"),
     ("GET", "/api/mcp/servers/"),
     ("GET", "/api/mcp/servers/{name}"),
     ("GET", "/api/operator/conversations"),
@@ -111,6 +112,7 @@ _GOLDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/api/schedules/"),
     ("GET", "/api/schedules/limits"),
     ("GET", "/api/schedules/runs/{run_id}"),
+    ("GET", "/api/schedules/summary"),
     ("GET", "/api/schedules/{schedule_id}"),
     ("GET", "/api/schedules/{schedule_id}/runs"),
     ("GET", "/api/schedules/{schedule_id}/status"),
@@ -275,7 +277,7 @@ def test_golden_route_table_matches_pinned_snapshot():
 
 
 def test_golden_route_count_pinned():
-    assert len(_GOLDEN_ROUTES) == 137
+    assert len(_GOLDEN_ROUTES) == 139
 
 
 def _compiled_match_shape(path_template: str) -> str:
@@ -668,30 +670,24 @@ def test_sessions_detail_malformed_cursor_400_shape(tmp_path, monkeypatch):
 
 # 3c. Schedules endpoint family.
 
+# The projected detail shape. The schedules table carries roughly twice this many
+# columns; the route serves this allow-list, so a column added later stays private
+# until it is named both here and in the service's own list.
 _SCHEDULE_DETAIL_KEYS = sorted(
     [
         "action_agent",
-        "action_command",
-        "action_command_args",
-        "action_cwd",
-        "action_extra_args",
-        "action_flow_yaml",
         "action_kind",
         "action_model",
         "action_playbook",
         "action_project",
         "action_prompt",
-        "authored_spec",
         "budget_tokens",
         "budget_usd",
         "consecutive_failures",
         "created_at",
         "cron_expr",
         "description",
-        "effective_timezone",
-        "effective_timezone_source",
         "enabled",
-        "github_cursor",
         "github_filter",
         "github_repo",
         "health_last_outcome",
@@ -700,34 +696,19 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "health_state",
         "id",
         "interval_sec",
-        "last_alert_at",
         "last_evaluated_at",
         "last_fired_at",
-        "last_healthy_poll_at",
         "last_status",
-        "managed_by",
         "max_runs",
         "missed_fire_policy",
         "name",
         "next_fire_at",
-        "notify_command",
-        "notify_on",
         "on_fail",
         "on_success",
         "overlap_policy",
-        "owner_key",
         "poll_interval_sec",
-        "poller_consecutive_401",
-        "predispatch_refusal_count",
-        "predispatch_refusal_event",
         "project",
-        "rate_limit",
         "recent_runs",
-        "resolved_digest",
-        "resolved_target",
-        "resolved_timezone",
-        "spec_version",
-        "threshold_config",
         "trigger_type",
         "updated_at",
     ]

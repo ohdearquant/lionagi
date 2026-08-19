@@ -851,6 +851,7 @@
       "colLastRun": "آخر تشغيل",
       "colNextFire": "التشغيل القادم",
       "colActions": "الإجراءات",
+      "historyUnavailable": "غير متاح",
       "neverRun": "لم يُشغَّل قط",
       "notScheduled": "—",
       "editAction": "تعديل"
@@ -874,6 +875,7 @@
       "permission": "تم رفض الإذن",
       "missingDependency": "تبعية مفقودة",
       "notFound": "الملف غير موجود",
+      "unclassified": "خطأ غير مصنف",
       "showDetails": "إظهار الخطأ الكامل",
       "hideDetails": "إخفاء الخطأ الكامل"
     }

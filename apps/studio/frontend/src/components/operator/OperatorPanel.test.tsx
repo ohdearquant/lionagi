@@ -3,7 +3,11 @@ import React, { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { IntlProvider } from "use-intl";
 import enMessages from "@/messages/en.json";
-import type { OperatorFrame, OperatorModelCatalogEntry } from "@/lib/types";
+import type {
+  OperatorConversationSnapshot,
+  OperatorFrame,
+  OperatorModelCatalogEntry,
+} from "@/lib/types";
 
 const api = vi.hoisted(() => ({
   acknowledgeOperatorEffect: vi.fn(),
@@ -307,6 +311,70 @@ describe("OperatorPanel", () => {
     expect(api.getOperatorConversation).toHaveBeenCalledWith("conversation-prior");
     expect(container.textContent).toContain("Prior daemon transcript");
     expect(window.localStorage.getItem("studio:operator-conversation")).toBe("conversation-prior");
+  });
+
+  it("ignores a slower conversation response after the operator selects a newer one", async () => {
+    let resolveSlow!: (snapshot: OperatorConversationSnapshot) => void;
+    const slowSnapshot = new Promise<OperatorConversationSnapshot>((resolve) => {
+      resolveSlow = resolve;
+    });
+    const snapshot = (
+      id: string,
+      title: string,
+      transcript: string,
+    ): OperatorConversationSnapshot => ({
+      conversation: { id, title, status: "active", activeRequestId: null, pinned: false },
+      frames: [
+        {
+          ...textFrame(1, "assistant", transcript),
+          conversationId: id,
+        },
+      ],
+    });
+    api.listOperatorConversations.mockResolvedValue([
+      {
+        id: "conversation-slow",
+        title: "Slow conversation",
+        status: "active",
+        activeRequestId: null,
+        updatedAt: 20,
+      },
+      {
+        id: "conversation-fast",
+        title: "Fast conversation",
+        status: "active",
+        activeRequestId: null,
+        updatedAt: 10,
+      },
+    ]);
+    api.getOperatorConversation.mockImplementation((id: string) =>
+      id === "conversation-slow"
+        ? slowSnapshot
+        : Promise.resolve(snapshot(id, "Fast conversation", "Fast transcript wins")),
+    );
+
+    await mount();
+    const toggle = container.querySelector(
+      'button[aria-label^="Conversations"]',
+    ) as HTMLButtonElement;
+    await act(async () => toggle.click());
+    const fastRow = [...container.querySelectorAll("ul li button")].find((button) =>
+      button.textContent?.includes("Fast conversation"),
+    ) as HTMLButtonElement;
+    await act(async () => {
+      fastRow.click();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("Fast transcript wins");
+
+    await act(async () => {
+      resolveSlow(snapshot("conversation-slow", "Slow conversation", "Stale slow transcript"));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Fast transcript wins");
+    expect(container.textContent).not.toContain("Stale slow transcript");
+    expect(window.localStorage.getItem("studio:operator-conversation")).toBe("conversation-fast");
   });
 
   function mockProposal(command: Record<string, unknown>, risk = "execute") {

@@ -97,6 +97,9 @@ function deferred<T>(): Deferred<T> {
     resolve = resolvePromise;
     reject = rejectPromise;
   });
+  // A deferred a test rejects may never be consumed, so it swallows its own
+  // rejection rather than surfacing as an unhandled one that fails the run.
+  promise.catch(() => {});
   return { promise, resolve, reject };
 }
 
@@ -108,6 +111,10 @@ async function flush() {
   });
 }
 
+// The workflow tab is in UNFINISHED_KINDS, so these drive the detail pane a
+// workflow selection still renders rather than a tab row. Right after a create
+// the optimistic id answers, so the catalog reload these set up is not always
+// consumed; each deferred therefore owns a catch of its own.
 describe("Library workflow creation identity", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -205,5 +212,69 @@ describe("Library workflow creation identity", () => {
     expect(
       container.querySelector<HTMLElement>('[data-testid="workflow-detail"]')?.dataset.workflowId,
     ).toBe(createdWorkflow.id);
+  });
+
+  it("resolves a workflow deep link with no create behind it", async () => {
+    router.search = { sel: `workflow:${createdWorkflow.name}` };
+    api.listWorkflowDefs.mockResolvedValue([
+      { id: "wf_other", name: "something else" },
+      { id: createdWorkflow.id, name: createdWorkflow.name },
+    ]);
+
+    await act(async () => {
+      root.render(<LibraryPage />);
+    });
+    await flush();
+
+    expect(api.listWorkflowDefs).toHaveBeenCalled();
+    expect(router.search.sel).toBe(`workflow:${createdWorkflow.name}`);
+    expect(
+      container.querySelector<HTMLElement>('[data-testid="workflow-detail"]')?.dataset.workflowId,
+    ).toBe(createdWorkflow.id);
+  });
+
+  it("holds a workflow link selected after the catalog has already loaded", async () => {
+    // Selecting on a loaded catalog is the case the mount path cannot reach:
+    // there, the resolve has already settled by the time the selection effect
+    // stops being short-circuited by `loading`. Here both effects run in one
+    // commit, and the selection effect reads the resolve state from before its
+    // sibling set it, so requiring a positive pending discards the link.
+    const inFlight = deferred<unknown[]>();
+    // The catalog never requests workflows, so this mock answers only the
+    // resolve effect; a `mockResolvedValueOnce` here would be eaten by it.
+    api.listWorkflowDefs.mockReturnValue(inFlight.promise);
+
+    router.search = {};
+    await act(async () => {
+      root.render(<LibraryPage />);
+    });
+    await flush();
+
+    router.search = { sel: `workflow:${createdWorkflow.name}` };
+    await act(async () => {
+      root.render(<LibraryPage />);
+    });
+    await flush();
+
+    expect(router.search.sel).toBe(`workflow:${createdWorkflow.name}`);
+
+    inFlight.resolve([{ id: createdWorkflow.id, name: createdWorkflow.name }]);
+    await flush();
+    expect(router.search.sel).toBe(`workflow:${createdWorkflow.name}`);
+  });
+
+  it("drops a workflow deep link whose name no longer exists", async () => {
+    router.search = { sel: "workflow:deleted" };
+    api.listWorkflowDefs.mockResolvedValue([
+      { id: createdWorkflow.id, name: createdWorkflow.name },
+    ]);
+
+    await act(async () => {
+      root.render(<LibraryPage />);
+    });
+    await flush();
+
+    expect(router.search.sel).not.toBe("workflow:deleted");
+    expect(container.querySelector('[data-testid="workflow-detail"]')).toBeNull();
   });
 });

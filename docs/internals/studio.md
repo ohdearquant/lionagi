@@ -182,6 +182,15 @@ between `build_argv()` and this function gives a revoked
 
 ## lionagi/studio/services/schedules.py
 
+- **Schedule summary contract** — `GET /api/schedules/summary` is the
+  schedule-board read path. Version 1 returns the filtered schedule definitions
+  and a bounded recent-run slice for every returned schedule. The slices come
+  from one windowed database query, ordered by `fired_at DESC, id DESC`; each
+  schedule id is present in `run_summaries`, with `state = "ok"` even when its
+  run list is empty. A batch-read failure preserves the schedule definitions
+  and marks each affected slice `state = "error"`, so the client never treats
+  unavailable history as a known-empty history. The per-schedule limit is
+  caller-selectable from 1 through 25 and is echoed in the response.
 - **`_svc_validate_action_command`** — Delegates to the subprocess validators
   so charset/allow-list rules live in one place. `build_argv` re-checks the
   allow-list again at spawn time since `LIONAGI_SCHEDULER_COMMAND_ALLOWLIST`
@@ -238,6 +247,43 @@ between `build_argv()` and this function gives a revoked
   requires both signals to agree nothing was recorded (zero rows AND no
   watermark); either one alone being non-null means the schedule executed
   at some point, and the honest verdict is `no-evidence`, not `never-fired`.
+
+## lionagi/studio/services/invocations.py
+
+**Scalar lifecycle read** — `GET /api/invocations/{invocation_id}/status`
+returns only `id`, `status`, `ended_at`, and `updated_at`. It is the reconnect
+fallback for a resumed live run; callers that need messages, sessions,
+artifacts, or health must continue to use the invocation/session detail
+routes. Keeping the fallback scalar prevents a disconnected stream from
+repeatedly materializing an invocation's growing detail payload.
+
+**`get_invocation`** — One invocation with its child sessions, artifacts
+and derived health. `readonly` opens the store read-only for callers whose
+contract says they only read; the ordinary open runs schema application,
+which takes a write lock and can issue migration statements. Defaults
+`False` because read-only mode is available only on an on-disk SQLite
+store — the decision belongs to a caller that has already checked
+`read_only_open_supported()`, since passing `True` unconditionally would
+fail at open elsewhere rather than degrade.
+
+## apps/studio/frontend/src/components/history/RunDetail.tsx
+
+**Resumed-run freshness** — The session and signal streams are the primary
+freshness path. While both connections are open, a resumed run performs no
+lifecycle polling. If either connection is not open, a scalar invocation-status
+fallback starts after 750 ms and backs off on consecutive failures to an
+8-second ceiling. A terminal status or terminal stream frame ends the watch and
+allows exactly one final session-detail refresh to collect persisted output;
+run navigation invalidates delayed results from the previous selection.
+
+## apps/studio/frontend/src/components/library/data.ts
+
+**Active-tab catalog reads** — A Library tab requests only the catalogs that
+can render on that tab. Playbooks intentionally join the built-in and custom
+sources; All requests every supported visible catalog. Workflow and engine are
+unfinished/hidden surfaces and therefore issue no catalog request. A failed
+active source marks the result degraded while preserving rows from fulfilled
+active sources.
 
 ## lionagi/studio/services/runs.py
 
@@ -307,17 +353,6 @@ message ids) must not fall through to `0 or fallback`.
   fresh on every call (never cached at start, since the question is
   necessarily about *now*), shelling out to git off the event loop under
   its own budget so a daemon never stalls on its own health check.
-
-## lionagi/studio/services/invocations.py
-
-**`get_invocation`** — One invocation with its child sessions, artifacts
-and derived health. `readonly` opens the store read-only for callers whose
-contract says they only read; the ordinary open runs schema application,
-which takes a write lock and can issue migration statements. Defaults
-`False` because read-only mode is available only on an on-disk SQLite
-store — the decision belongs to a caller that has already checked
-`read_only_open_supported()`, since passing `True` unconditionally would
-fail at open elsewhere rather than degrade.
 
 ## lionagi/studio/services/engine_runs.py
 

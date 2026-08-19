@@ -39,6 +39,13 @@ test.beforeEach(async ({ page }) => {
   await page.route("https://analytics.khive.ai/**", (route) =>
     route.fulfill({ status: 200, contentType: "application/javascript", body: "" }),
   );
+  // These flows exercise the Operator panel itself, so establish the
+  // precondition they depend on: a fresh context has no persisted visibility
+  // choice, and below the responsive default width the panel would never
+  // mount. Seeding the explicit choice keeps the suite viewport-independent
+  // and exercises the persisted-choice branch the shell calls authoritative.
+  // The responsive default itself is covered by operator-default.spec.ts.
+  await page.addInitScript(() => window.localStorage.setItem("studio:operator-visibility", "open"));
 });
 
 /** What the operator typed, as the transcript shows it back rather than as the composer still holds it. */
@@ -98,9 +105,13 @@ test("Operator streams, persists, stops, records a run, and resumes it", async (
 
   const followUp = page.getByLabel("Follow-up instruction");
   await followUp.fill("Continue with the next check.");
+  // The resume watch polls the invocation's status endpoint, not its full
+  // detail: the poll only needs the terminal state, and fetching the whole
+  // record on a timer is what this view was scaled away from.
   const activityPoll = page.waitForResponse(
     (response) =>
-      response.request().method() === "GET" && /\/api\/invocations\/[^/?]+$/.test(response.url()),
+      response.request().method() === "GET" &&
+      /\/api\/invocations\/[^/?]+\/status$/.test(response.url()),
   );
   await page.getByRole("button", { name: "Resume", exact: true }).click();
   await expect(page.getByText("Follow-up accepted", { exact: true })).toBeVisible({

@@ -17,6 +17,7 @@ import * as path from "node:path";
 
 const LIBRARY_DIR = path.resolve(__dirname);
 const ROUTES_DIR = path.resolve(__dirname, "../../routes");
+const DATA_FILE = path.join(LIBRARY_DIR, "data.ts");
 
 // ─── Deleted drawer files ─────────────────────────────────────────────────────
 
@@ -79,6 +80,18 @@ describe("routes/library.tsx — uses SplitPane master-detail", () => {
 
   it("wires detailActive prop", () => {
     expect(src).toMatch(/detailActive/);
+  });
+});
+
+describe("routes/library.tsx — selection follows the visible search results", () => {
+  const src = fs.readFileSync(path.join(ROUTES_DIR, "library.tsx"), "utf-8");
+  const effectStart = src.indexOf("// Keep detail selection aligned");
+  const effectEnd = src.indexOf("const selectItem", effectStart);
+  const selectionEffect = src.slice(effectStart, effectEnd);
+
+  it("reconciles selection when text search or the URL sel changes", () => {
+    expect(selectionEffect).toMatch(/\}, \[[^\]]*search[^\]]*sel[^\]]*\]\);/s);
+    expect(selectionEffect).not.toContain("intentionally runs only on tab/items change");
   });
 });
 
@@ -268,27 +281,28 @@ describe("components/library/KindBadge.tsx — workflow + playbook kinds", () =>
 // distinct top-level kind from "workflow" (graph designs) — they are not a
 // workflow subKind.
 
-describe("routes/library.tsx — built-in + user playbooks are fetched", () => {
-  const src = fs.readFileSync(path.join(ROUTES_DIR, "library.tsx"), "utf-8");
+describe("library data — built-in + user playbooks are fetched", () => {
+  const dataSrc = fs.readFileSync(DATA_FILE, "utf-8");
+  const routeSrc = fs.readFileSync(path.join(ROUTES_DIR, "library.tsx"), "utf-8");
 
   it("imports listBuiltinPlaybooks and listPlaybooks from lib/api", () => {
-    expect(src).toMatch(/listBuiltinPlaybooks/);
-    expect(src).toMatch(/listPlaybooks/);
+    expect(dataSrc).toMatch(/listBuiltinPlaybooks/);
+    expect(dataSrc).toMatch(/listPlaybooks/);
   });
 
   it("useLibraryData pushes builtin-subKind and custom-subKind playbook rows", () => {
-    expect(src).toMatch(/subKind:\s*"builtin"/);
-    expect(src).toMatch(/subKind:\s*"custom"/);
-    expect(src).toMatch(/kind:\s*"playbook"/);
+    expect(dataSrc).toMatch(/subKind:\s*"builtin"/);
+    expect(dataSrc).toMatch(/subKind:\s*"custom"/);
+    expect(dataSrc).toMatch(/kind:\s*"playbook"/);
   });
 
   it("imports PlaybookTemplateDetail for the builtin/custom detail pane", () => {
-    expect(src).toMatch(/import\s*\{\s*PlaybookTemplateDetail\s*\}\s*from/);
+    expect(routeSrc).toMatch(/import\s*\{\s*PlaybookTemplateDetail\s*\}\s*from/);
   });
 
   it("dispatches playbook kind to PlaybookTemplateDetail, workflow kind to WorkflowDetail", () => {
-    expect(src).toMatch(/parsed\?\.kind === "workflow"[\s\S]{0,80}<WorkflowDetail/);
-    expect(src).toMatch(/parsed\?\.kind === "playbook"[\s\S]{0,80}<PlaybookTemplateDetail/);
+    expect(routeSrc).toMatch(/parsed\?\.kind === "workflow"[\s\S]{0,80}<WorkflowDetail/);
+    expect(routeSrc).toMatch(/parsed\?\.kind === "playbook"[\s\S]{0,80}<PlaybookTemplateDetail/);
   });
 });
 

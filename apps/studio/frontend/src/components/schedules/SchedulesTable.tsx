@@ -13,7 +13,6 @@ import { triggerSchedule } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
 import type { ScheduleSummary } from "@/lib/types";
 import EnabledToggle from "./EnabledToggle";
-import { classifyError } from "./errorClassify";
 import { humanTrigger } from "./trigger";
 import {
   KNOWN_RUN_STATUSES,
@@ -95,17 +94,36 @@ function NextFireCell({ schedule, nowMs }: { schedule: ScheduleSummary; nowMs: n
   );
 }
 
-function LastRunCell({ run, nowMs }: { run: RunRow | undefined; nowMs: number }) {
+function LastRunCell({
+  run,
+  nowMs,
+  historyUnavailable,
+}: {
+  run: RunRow | undefined;
+  nowMs: number;
+  historyUnavailable: boolean;
+}) {
   const t = useTranslations("schedules");
   const tError = useTranslations("schedules.error");
   const tStatus = useTranslations("history.status");
 
-  if (!run) return <span className="text-meta text-content-muted">{t("table.neverRun")}</span>;
+  if (!run) {
+    // An empty slice and an unavailable one both render no run, so they have to
+    // be told apart here or a fetch failure reads as "this has never fired".
+    return (
+      <span className="text-meta text-content-muted">
+        {historyUnavailable ? t("table.historyUnavailable") : t("table.neverRun")}
+      </span>
+    );
+  }
 
   const label = KNOWN_RUN_STATUSES.has(run.status)
     ? tStatus(run.status as Parameters<typeof tStatus>[0])
     : undefined;
-  const errorLine = run.status === "failed" ? classifyError(run.error_detail, tError) : null;
+  const errorLine =
+    run.status === "failed" && run.error_class
+      ? tError(run.error_class as Parameters<typeof tError>[0])
+      : null;
 
   return (
     <div className="flex flex-col gap-0.5">
@@ -128,12 +146,14 @@ function LastRunCell({ run, nowMs }: { run: RunRow | undefined; nowMs: number })
 function ScheduleRow({
   schedule,
   lastRun,
+  historyUnavailable,
   nowMs,
   onChanged,
   onOpen,
 }: {
   schedule: ScheduleSummary;
   lastRun: RunRow | undefined;
+  historyUnavailable: boolean;
   nowMs: number;
   onChanged: () => void;
   onOpen: (id: string) => void;
@@ -203,7 +223,7 @@ function ScheduleRow({
         />
       </td>
       <td className="px-3 py-2.5">
-        <LastRunCell run={lastRun} nowMs={nowMs} />
+        <LastRunCell run={lastRun} nowMs={nowMs} historyUnavailable={historyUnavailable} />
       </td>
       <td className="px-3 py-2.5">
         <NextFireCell schedule={schedule} nowMs={nowMs} />
@@ -264,12 +284,14 @@ function SortableHeader({
 export default function SchedulesTable({
   schedules,
   runs,
+  runSummaryErrors,
   nowMs,
   onChanged,
   onOpen,
 }: {
   schedules: ScheduleSummary[];
   runs: RunRow[];
+  runSummaryErrors: ReadonlySet<string>;
   nowMs: number;
   onChanged: () => void;
   onOpen: (id: string) => void;
@@ -305,6 +327,7 @@ export default function SchedulesTable({
               key={s.id}
               schedule={s}
               lastRun={lastRuns.get(s.id)}
+              historyUnavailable={runSummaryErrors.has(s.id)}
               nowMs={nowMs}
               onChanged={onChanged}
               onOpen={onOpen}

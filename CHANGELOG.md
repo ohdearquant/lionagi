@@ -66,6 +66,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Execution-graph edges were routed by how far apart their endpoints are in the dependency
+  ranking rather than by how far apart they are drawn. On a graph large enough for the layout
+  to cap its rank spacing, the two stop agreeing: the cap lets the layout place an independent
+  node beside the node that consumes it, so an edge drawn between neighbouring columns was
+  still routed as though it swept across ten columns of cards. Edges now carry the distance
+  actually drawn, measured from the final geometry. The layout no longer returns the ranking
+  itself: it describes a drawing, the ranking describes the dependency graph, and returning the
+  two together is what let one be read as the other. Anything that wants dependency depth asks
+  for it by that name.
+
+- The schedule summary surface no longer carries run content. Its recent-run slice served
+  `trigger_context`, which holds whole external event payloads, and `error_detail`, which holds
+  subprocess stderr and exception text, on an API that answers without a token when
+  `LIONAGI_STUDIO_AUTH_TOKEN` is unset. `trigger_context` is gone, and a failed run is now
+  described by `error_class`, a translatable classification the client renders. A failure the
+  server cannot classify is reported as such rather than by falling back to the last line of
+  its traceback. The full text stays available through the run detail view, which reads a
+  different endpoint and asks for it explicitly.
+
 - Two studio schedulers running against one database could each dispatch the same occurrence.
   The tick selects due schedules and fires them in separate statements, and every admission gate
   between the two lives in the firing process's own memory, so both processes committed, each with

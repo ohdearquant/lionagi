@@ -4047,6 +4047,44 @@ class StateDB:
             rows = (await conn.execute(text(query), params)).mappings().all()
         return [self._row_to_dict(r) for r in rows]
 
+    async def list_schedule_runs_batch(
+        self,
+        schedule_ids: list[str],
+        *,
+        limit_per_schedule: int = 25,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Return each schedule's newest runs with one bounded query.
+
+        ``id DESC`` is the deterministic tie-breaker when two runs share a
+        firing timestamp. Every requested id is present in the result, so an
+        empty history remains distinct from a caller-level batch failure.
+        """
+        if not schedule_ids:
+            return {}
+        if limit_per_schedule < 1:
+            raise ValueError("limit_per_schedule must be positive")
+        id_placeholders = ", ".join(f":id{i}" for i in range(len(schedule_ids)))
+        params: dict[str, Any] = {f"id{i}": sid for i, sid in enumerate(schedule_ids)}
+        params["limit_per_schedule"] = limit_per_schedule
+        query = (
+            "SELECT * FROM ("  # noqa: S608
+            "  SELECT schedule_runs.*,"
+            "         ROW_NUMBER() OVER ("
+            "           PARTITION BY schedule_id ORDER BY fired_at DESC, id DESC"
+            "         ) AS _summary_rank"
+            f"  FROM schedule_runs WHERE schedule_id IN ({id_placeholders})"
+            ") ranked WHERE _summary_rank <= :limit_per_schedule"
+            " ORDER BY schedule_id, _summary_rank"
+        )
+        async with self._read() as conn:
+            rows = (await conn.execute(text(query), params)).mappings().all()
+        grouped = {schedule_id: [] for schedule_id in schedule_ids}
+        for row in rows:
+            decoded = self._row_to_dict(row)
+            decoded.pop("_summary_rank", None)
+            grouped[row["schedule_id"]].append(decoded)
+        return grouped
+
     async def count_schedule_runs(
         self,
         schedule_id: str,

@@ -287,15 +287,19 @@ describe("WorkerCanvas.tsx — source contract for rank-distance edge data", () 
   const CANVAS_DIR = path.resolve(__dirname);
   const src = fs.readFileSync(path.join(CANVAS_DIR, "WorkerCanvas.tsx"), "utf-8");
 
-  it("attaches rankDistance to edges after the initial layout pass", () => {
-    expect(src).toMatch(/attachRankDistance\(le,\s*ranks\)/);
-  });
-
-  it("destructures ranks from getLayoutedElements in both layout call sites", () => {
+  it("uses the layout's edges as they come, at both layout call sites", () => {
     const calls = src.match(/=\s*getLayoutedElements\(/g) ?? [];
     // Layout-on-mount effect + handleAutoLayout (editable canvas).
     expect(calls.length).toBeGreaterThanOrEqual(2);
-    expect(src).toMatch(/ranks,?\s*\}\s*=\s*getLayoutedElements/);
+    expect(src.match(/setEdges\(le\b/g) ?? []).toHaveLength(calls.length);
+  });
+
+  it("does not re-derive rank distance from the ASAP map", () => {
+    // The map describes the graph and the stamped distance describes the
+    // drawing, and a capped rank gap makes them disagree. Deriving here would
+    // silently restore the map as the routing input.
+    expect(src).not.toMatch(/rankDistance/);
+    expect(src).not.toMatch(/\branks\b/);
   });
 });
 

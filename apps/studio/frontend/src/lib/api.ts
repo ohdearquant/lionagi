@@ -22,6 +22,7 @@ import type {
   RunResumeResponse,
   RunSummary,
   ScheduleDetail,
+  ScheduleRunSliceRow,
   ScheduleRunSummary,
   ScheduleSummary,
   ShowDetail,
@@ -234,9 +235,12 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 // studio endpoints: unnamed `data: <json>\n\n` frames, auto-reconnect after
 // 2s unless closed. Callers parse the JSON and call the returned closer on
 // their terminal "done" frame.
+export type StreamConnectionState = "connecting" | "open" | "disconnected";
+
 function sseSubscribe(
   path: string | (() => string),
   onData: (data: string, eventId?: string) => void,
+  onConnectionState?: (state: StreamConnectionState) => void,
 ): () => void {
   const controller = new AbortController();
   let closed = false;
@@ -247,6 +251,7 @@ function sseSubscribe(
 
   void (async () => {
     while (!closed) {
+      onConnectionState?.("connecting");
       try {
         const token = resolveAuthToken();
         const headers: Record<string, string> = { Accept: "text/event-stream" };
@@ -273,6 +278,7 @@ function sseSubscribe(
         if (!response.body) {
           throw new Error(`SSE request failed: ${response.status}`);
         }
+        if (!closed) onConnectionState?.("open");
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -300,6 +306,7 @@ function sseSubscribe(
       } catch {
         // Aborted by close(), or a network error worth retrying.
       }
+      if (!closed) onConnectionState?.("disconnected");
       if (!closed) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
@@ -1391,6 +1398,7 @@ export async function getSession(
 export function streamSession(
   id: string,
   onEvent: (event: Record<string, unknown>) => void,
+  onConnectionState?: (state: StreamConnectionState) => void,
 ): () => void {
   let cursor: string | undefined;
   const close = sseSubscribe(
@@ -1418,6 +1426,7 @@ export function streamSession(
         cursor = eventId;
       }
     },
+    onConnectionState,
   );
   return close;
 }
@@ -1450,6 +1459,7 @@ export function normalizeSignalEvent(raw: SignalEvent): SignalEvent {
 export function streamSignals(
   id: string,
   onEvent: (event: SignalEvent | { type: string }) => void,
+  onConnectionState?: (state: StreamConnectionState) => void,
 ): () => void {
   let afterSeq = 0;
   const close = sseSubscribe(
@@ -1478,6 +1488,7 @@ export function streamSignals(
       // processed is the cheaper failure of the two.
       afterSeq = Math.max(afterSeq, event.seq);
     },
+    onConnectionState,
   );
   return close;
 }
@@ -1589,6 +1600,17 @@ export async function listInvocations(
 
 export async function getInvocation(id: string): Promise<InvocationDetail> {
   return fetchJson<InvocationDetail>(`/api/invocations/${encodeURIComponent(id)}`);
+}
+
+export interface InvocationStatus {
+  id: string;
+  status: string;
+  ended_at: number | null;
+  updated_at: number;
+}
+
+export async function getInvocationStatus(id: string): Promise<InvocationStatus> {
+  return fetchJson<InvocationStatus>(`/api/invocations/${encodeURIComponent(id)}/status`);
 }
 
 // ─── Definitions (versioned md files via SQLite) ──────────────────────────────
@@ -2249,6 +2271,17 @@ export interface ScheduleListResponse {
   schedules: ScheduleSummary[];
 }
 
+export interface ScheduleRunSummarySlice {
+  state: "ok" | "error";
+  runs: ScheduleRunSliceRow[];
+}
+
+export interface ScheduleSummaryResponse extends ScheduleListResponse {
+  summary_version: number;
+  recent_runs_limit: number;
+  run_summaries: Record<string, ScheduleRunSummarySlice>;
+}
+
 export async function listSchedules(params?: {
   enabled?: boolean;
   trigger_type?: string;
@@ -2260,6 +2293,29 @@ export async function listSchedules(params?: {
   if (params?.project) query.set("project", params.project);
   const qs = query.toString();
   return fetchJson<ScheduleListResponse>(`/api/schedules/${qs ? `?${qs}` : ""}`);
+}
+
+export async function listScheduleSummary(params?: {
+  enabled?: boolean;
+  trigger_type?: string;
+  project?: string;
+  recentRunsLimit?: number;
+}): Promise<ScheduleSummaryResponse> {
+  const query = new URLSearchParams();
+  if (params?.enabled !== undefined) query.set("enabled", String(params.enabled));
+  if (params?.trigger_type) query.set("trigger_type", params.trigger_type);
+  if (params?.project) query.set("project", params.project);
+  if (params?.recentRunsLimit != null) {
+    query.set("recent_runs_limit", String(params.recentRunsLimit));
+  }
+  const qs = query.toString();
+  const response = await fetchJson<ScheduleSummaryResponse>(
+    `/api/schedules/summary${qs ? `?${qs}` : ""}`,
+  );
+  if (response.summary_version !== 1) {
+    throw new Error(`Unsupported schedule summary version: ${response.summary_version}`);
+  }
+  return response;
 }
 
 export async function getSchedule(id: string): Promise<ScheduleDetail> {
@@ -2308,10 +2364,15 @@ export async function triggerSchedule(id: string): Promise<{ run_id: string }> {
   });
 }
 
+/** One run in full, including the raw error text a list surface does not carry. */
+export async function getScheduleRun(runId: string): Promise<ScheduleRunSummary> {
+  return fetchJson(`/api/schedules/runs/${encodeURIComponent(runId)}`);
+}
+
 export async function listScheduleRuns(
   scheduleId: string,
   params?: { status?: string; limit?: number; offset?: number },
-): Promise<{ runs: ScheduleRunSummary[]; has_next: boolean }> {
+): Promise<{ runs: ScheduleRunSliceRow[]; has_next: boolean }> {
   const query = new URLSearchParams();
   if (params?.status) query.set("status", params.status);
   if (params?.limit != null) query.set("limit", String(params.limit));

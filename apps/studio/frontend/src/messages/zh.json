@@ -851,6 +851,7 @@
       "colLastRun": "上次运行",
       "colNextFire": "下次触发",
       "colActions": "操作",
+      "historyUnavailable": "无法获取",
       "neverRun": "从未运行",
       "notScheduled": "—",
       "editAction": "编辑"
@@ -874,6 +875,7 @@
       "permission": "权限被拒绝",
       "missingDependency": "缺少依赖",
       "notFound": "文件未找到",
+      "unclassified": "未分类错误",
       "showDetails": "显示完整错误",
       "hideDetails": "隐藏完整错误"
     }

@@ -11,6 +11,7 @@ import ScheduleDetailModal from "./ScheduleDetailModal";
 const api = vi.hoisted(() => ({
   getSchedule: vi.fn(),
   listScheduleRuns: vi.fn(),
+  getScheduleRun: vi.fn(),
   getInvocation: vi.fn(),
   updateSchedule: vi.fn(),
   deleteSchedule: vi.fn(),
@@ -385,5 +386,44 @@ describe("ScheduleDetailModal interactions", () => {
     expect(stillAbove?.contains(document.activeElement)).toBe(true);
 
     launcher.remove();
+  });
+  it("shows the served classification and fetches the raw text only when expanded", async () => {
+    api.listScheduleRuns.mockResolvedValue({
+      runs: [
+        {
+          id: "run-1",
+          schedule_id: "schedule-1",
+          invocation_id: null,
+          action_kind: "agent",
+          status: "failed",
+          exit_code: 1,
+          chain_depth: 0,
+          fired_at: 1_700_000_000,
+          ended_at: 1_700_000_010,
+          error_class: "permission",
+        },
+      ],
+      total: 1,
+    });
+    api.getScheduleRun.mockResolvedValue({ error_detail: "RAW-TRACEBACK-TEXT" });
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await renderModal();
+
+    expect(container.textContent).toContain("permission denied");
+    expect(container.textContent).not.toContain("RAW-TRACEBACK-TEXT");
+    expect(api.getScheduleRun).not.toHaveBeenCalled();
+
+    const toggle = Array.from(container.querySelectorAll<HTMLElement>("button")).find(
+      (button) => button.textContent === "Show full error",
+    );
+    expect(toggle).toBeTruthy();
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(api.getScheduleRun).toHaveBeenCalledWith("run-1");
+    expect(container.textContent).toContain("RAW-TRACEBACK-TEXT");
   });
 });

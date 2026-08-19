@@ -709,6 +709,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   const renameButtonRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
   const previousRenamingIdRef = useRef<string | null>(null);
   const conversationListButtonRef = useRef<HTMLButtonElement>(null);
+  const conversationLoadGenerationRef = useRef(0);
 
   // Derived rather than synced through an effect: archiving the row being
   // renamed, or switching the filter away from it, removes the row and its
@@ -741,9 +742,11 @@ export default function OperatorPanel({ open, onClose }: Props) {
 
   const loadConversation = useCallback(
     async (conversationId: string) => {
+      const generation = ++conversationLoadGenerationRef.current;
       dispatch({ type: "LOAD_START" });
       try {
         const snapshot = await getOperatorConversation(conversationId);
+        if (generation !== conversationLoadGenerationRef.current) return;
         window.localStorage.setItem(STORAGE_KEY, snapshot.conversation.id);
         setConversations((current) => {
           const index = current.findIndex((item) => item.id === snapshot.conversation.id);
@@ -758,6 +761,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
           frames: snapshot.frames,
         });
       } catch (error) {
+        if (generation !== conversationLoadGenerationRef.current) return;
         dispatch({
           type: "LOAD_ERROR",
           error: error instanceof Error ? error.message : t("errors.load"),
@@ -792,6 +796,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
       });
     return () => {
       active = false;
+      conversationLoadGenerationRef.current += 1;
     };
   }, []);
 
@@ -1184,6 +1189,7 @@ export default function OperatorPanel({ open, onClose }: Props) {
   }, [autoAllow, proposals, decidedProposalIds, deciding, handleProposalDecision]);
 
   const resetConversation = useCallback(() => {
+    conversationLoadGenerationRef.current += 1;
     window.localStorage.removeItem(STORAGE_KEY);
     dispatch({ type: "RESET" });
     setActionError(null);

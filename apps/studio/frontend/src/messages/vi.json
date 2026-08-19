@@ -851,6 +851,7 @@
       "colLastRun": "lần chạy gần nhất",
       "colNextFire": "lần chạy tiếp theo",
       "colActions": "hành động",
+      "historyUnavailable": "Không khả dụng",
       "neverRun": "chưa từng chạy",
       "notScheduled": "—",
       "editAction": "sửa"
@@ -874,6 +875,7 @@
       "permission": "từ chối quyền truy cập",
       "missingDependency": "thiếu phụ thuộc",
       "notFound": "không tìm thấy tệp",
+      "unclassified": "lỗi chưa phân loại",
       "showDetails": "hiện lỗi đầy đủ",
       "hideDetails": "ẩn lỗi đầy đủ"
     }

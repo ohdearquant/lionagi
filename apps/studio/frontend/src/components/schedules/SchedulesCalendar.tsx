@@ -64,6 +64,7 @@ interface DayPoll {
 type DayItem = DayRun | DayFire | DayPoll;
 
 type CalMode = "month" | "week" | "day";
+type CalendarBucketGranularity = "day" | "hour";
 
 function dayKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -75,6 +76,55 @@ function hourKey(d: Date): string {
 
 function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function nextBucketStart(atMs: number, granularity: CalendarBucketGranularity): number {
+  const at = new Date(atMs);
+  if (granularity === "day") {
+    return new Date(at.getFullYear(), at.getMonth(), at.getDate() + 1).getTime();
+  }
+  return new Date(at.getFullYear(), at.getMonth(), at.getDate(), at.getHours() + 1).getTime();
+}
+
+/**
+ * Returns the first real occurrence in each visible calendar bucket.
+ *
+ * Advancing directly to the next bucket keeps the work proportional to the
+ * number of cells rendered. The previous projection advanced one interval at
+ * a time and only deduped afterwards, so a one-second monthly schedule still
+ * performed roughly 2.6 million iterations despite producing 31 chips.
+ */
+export function projectIntervalFires(
+  nextFireMs: number,
+  stepMs: number,
+  rangeStartMs: number,
+  rangeEndMs: number,
+  granularity: CalendarBucketGranularity,
+): number[] {
+  if (
+    !Number.isFinite(nextFireMs) ||
+    !Number.isFinite(stepMs) ||
+    stepMs <= 0 ||
+    !Number.isFinite(rangeStartMs) ||
+    !Number.isFinite(rangeEndMs) ||
+    rangeEndMs < rangeStartMs
+  ) {
+    return [];
+  }
+
+  let fireMs = nextFireMs;
+  if (fireMs < rangeStartMs) {
+    fireMs += Math.ceil((rangeStartMs - fireMs) / stepMs) * stepMs;
+  }
+
+  const fires: number[] = [];
+  while (fireMs <= rangeEndMs) {
+    fires.push(fireMs);
+    const boundaryMs = nextBucketStart(fireMs, granularity);
+    const stepsToNextBucket = Math.max(1, Math.ceil((boundaryMs - fireMs) / stepMs));
+    fireMs += stepsToNextBucket * stepMs;
+  }
+  return fires;
 }
 
 /** Monday-first start of the week containing d. */
@@ -115,6 +165,7 @@ function bucketItems(
   rangeEndMs: number,
   today: Date,
   keyFn: (d: Date) => string,
+  granularity: CalendarBucketGranularity,
 ): Map<string, DayItem[]> {
   const map = new Map<string, DayItem[]>();
   const push = (key: string, item: DayItem) => {
@@ -134,19 +185,14 @@ function bucketItems(
 
     if (s.trigger_type === "interval" && s.interval_sec != null && s.interval_sec > 0) {
       const stepMs = s.interval_sec * 1000;
-      let fireMs = nextMs;
-      if (fireMs < rangeStartMs) {
-        const stepsNeeded = Math.ceil((rangeStartMs - fireMs) / stepMs);
-        fireMs += stepsNeeded * stepMs;
-      }
-      const seenCells = new Set<string>();
-      while (fireMs <= rangeEndMs) {
-        const key = keyFn(new Date(fireMs));
-        if (!seenCells.has(key)) {
-          seenCells.add(key);
-          push(key, { kind: "fire", atMs: fireMs, schedule: s });
-        }
-        fireMs += stepMs;
+      for (const fireMs of projectIntervalFires(
+        nextMs,
+        stepMs,
+        rangeStartMs,
+        rangeEndMs,
+        granularity,
+      )) {
+        push(keyFn(new Date(fireMs)), { kind: "fire", atMs: fireMs, schedule: s });
       }
     } else if (s.trigger_type === "github_poll") {
       // No discrete fire time — indicator on today only, keyed by day so the
@@ -352,7 +398,7 @@ export default function SchedulesCalendar({
 
   // Day-granularity buckets — month grid cells and the detail strip.
   const byDay = useMemo(
-    () => bucketItems(schedules, runs, range.startMs, range.endMs, today, dayKey),
+    () => bucketItems(schedules, runs, range.startMs, range.endMs, today, dayKey, "day"),
     [schedules, runs, range, today],
   );
 
@@ -361,7 +407,7 @@ export default function SchedulesCalendar({
   const byHour = useMemo(
     () =>
       mode === "day"
-        ? bucketItems(schedules, runs, range.startMs, range.endMs, today, hourKey)
+        ? bucketItems(schedules, runs, range.startMs, range.endMs, today, hourKey, "hour")
         : null,
     [mode, schedules, runs, range, today],
   );

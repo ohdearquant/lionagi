@@ -851,6 +851,7 @@
       "colLastRun": "Dernière exécution",
       "colNextFire": "Prochaine exécution",
       "colActions": "Actions",
+      "historyUnavailable": "Indisponible",
       "neverRun": "Jamais",
       "notScheduled": "—",
       "editAction": "Modifier"
@@ -874,6 +875,7 @@
       "permission": "permission refusée",
       "missingDependency": "dépendance manquante",
       "notFound": "fichier introuvable",
+      "unclassified": "erreur non classée",
       "showDetails": "Afficher l'erreur complète",
       "hideDetails": "Masquer l'erreur complète"
     }

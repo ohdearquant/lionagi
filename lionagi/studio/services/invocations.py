@@ -274,6 +274,22 @@ async def get_invocation(
     }
 
 
+async def get_invocation_status(invocation_id: str) -> dict[str, Any] | None:
+    """Return only the lifecycle fields needed by disconnected live views."""
+    if state_db_known_absent():
+        return None
+    async with StateDB(readonly=read_only_open_supported()) as db:
+        row = await db.get_invocation(invocation_id)
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "ended_at": row.get("ended_at"),
+        "updated_at": row["updated_at"],
+    }
+
+
 def _serialize_artifact(row: dict[str, Any]) -> dict[str, Any]:
     """Common artifact projection — decodes JSON content columns so the frontend gets real objects."""
     raw_content = row.get("content")
@@ -368,6 +384,19 @@ async def list_invocations_route(
         "total": total,
         "completed_total": completed_total,
     }
+
+
+@studio_route(
+    "/invocations/{invocation_id}/status",
+    method="GET",
+    area="invocations",
+    name="get_invocation_status",
+)
+async def get_invocation_status_route(invocation_id: str) -> dict[str, Any]:
+    data = await get_invocation_status(invocation_id)
+    if data is None:
+        raise NotFoundError(f"Invocation '{invocation_id}' not found")
+    return data
 
 
 @studio_route(

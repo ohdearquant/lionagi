@@ -21,13 +21,17 @@ import {
   wrapWideRanks,
   foldWideGraph,
   markContinuationEdges,
+  markRankDistance,
   DAG_MAX_ZOOM,
   DAG_FIT_PADDING,
   FIT_ZOOM_FLOOR,
   computeReservedHeight,
+  boundPinnedMinlens,
+  estimatePinnedDummyNodes,
 } from "./useLayout";
 import { transitiveReduceDisplay } from "@/lib/operationGraph";
 import { fitZoomFor, MIN_INTERACTIVE_ZOOM } from "./WorkerCanvas";
+import { isLongRangeEdge } from "./ConditionEdge";
 
 const bare = (id: string): Node => ({
   id,
@@ -93,6 +97,176 @@ function assertNoOverlap(nodes: Node[]) {
     }
   }
 }
+
+describe("Dagre rank pinning — large-graph dummy-node budget (#3012)", () => {
+  const chain = Array.from({ length: 10 }, (_, index) => `chain-${index}`);
+  const roots = Array.from({ length: 100 }, (_, index) => `root-${index}`);
+  const issueNodes = [...chain.map(bare), ...roots.map(bare), bare("sink")];
+  const issueEdges: Edge[] = [
+    ...chain.slice(0, -1).map((id, index) => ({
+      id: `${id}-${chain[index + 1]}`,
+      source: id,
+      target: chain[index + 1],
+    })),
+    { id: "chain-9-sink", source: "chain-9", target: "sink" },
+    ...roots.map((id) => ({ id: `${id}-sink`, source: id, target: "sink" })),
+  ];
+  const underThresholdChain = Array.from({ length: 9 }, (_, index) => `short-chain-${index}`);
+  const underThresholdRoots = Array.from({ length: 89 }, (_, index) => `short-root-${index}`);
+  const underThresholdNodes = [
+    ...underThresholdChain.map(bare),
+    ...underThresholdRoots.map(bare),
+    bare("short-sink"),
+  ];
+  const underThresholdEdges: Edge[] = [
+    ...underThresholdChain.slice(0, -1).map((id, index) => ({
+      id: `${id}-${underThresholdChain[index + 1]}`,
+      source: id,
+      target: underThresholdChain[index + 1],
+    })),
+    {
+      id: "short-chain-8-short-sink",
+      source: "short-chain-8",
+      target: "short-sink",
+    },
+    ...underThresholdRoots.map((id) => ({
+      id: `${id}-short-sink`,
+      source: id,
+      target: "short-sink",
+    })),
+  ];
+
+  const issueRanks = computeNodeDepths(issueNodes, issueEdges);
+
+  it("keeps exact ASAP gaps for ordinary graphs", () => {
+    const gaps = [1, 6, 5, 4, 3, 2];
+    expect(boundPinnedMinlens(gaps, 18)).toEqual(gaps);
+  });
+
+  it("bounds the issue fixture's 1,910 synthetic nodes before Dagre runs", () => {
+    // Ten chain edges establish a sink at rank 10, then 100 independent roots
+    // feed that sink directly. Dagre doubles minlen to reserve edge-label
+    // ranks, so the ten minlen=1 edges create one dummy apiece and the hundred
+    // minlen=10 edges create nineteen apiece: 10 + (100 * 19) = 1,910.
+    const gaps = [...Array(10).fill(1), ...Array(100).fill(10)];
+    expect(estimatePinnedDummyNodes(gaps)).toBe(1_910);
+
+    const bounded = boundPinnedMinlens(gaps, 111);
+
+    expect(estimatePinnedDummyNodes(bounded)).toBeLessThanOrEqual(222);
+    expect(bounded.every((gap) => gap >= 1)).toBe(true);
+    expect(bounded.some((gap, index) => gap < gaps[index])).toBe(true);
+  });
+
+  it("bounds an adversarial 99-node graph based on estimated burden, not node count", () => {
+    expect(underThresholdNodes).toHaveLength(99);
+    expect(underThresholdEdges).toHaveLength(98);
+    const gaps = [...Array(9).fill(1), ...Array(89).fill(9)];
+    expect(estimatePinnedDummyNodes(gaps)).toBe(1_522);
+
+    const bounded = boundPinnedMinlens(gaps, underThresholdNodes.length);
+
+    expect(estimatePinnedDummyNodes(bounded)).toBeLessThanOrEqual(198);
+    expect(bounded.some((gap, index) => gap < gaps[index])).toBe(true);
+  });
+
+  it("cannot move a rank, however hard the budget caps the gaps", () => {
+    // Why getLayoutedElements can return the ASAP map beside a Dagre run that
+    // was handed rescaled gaps: the edge that SET a node's rank always has gap
+    // 1, the cap never reduces a gap below 1, so it can never touch a
+    // rank-determining edge. Capping only releases reserved dummy ranks. If a
+    // future cap ever returns 0, or the gap floor moves, this goes red and the
+    // returned rank map stops describing what was drawn.
+    const gaps = issueEdges.map((e) =>
+      Math.max(1, issueRanks.get(e.target)! - issueRanks.get(e.source)!),
+    );
+    const bounded = boundPinnedMinlens(gaps, issueNodes.length);
+
+    expect(gaps.filter((gap, index) => bounded[index] < gap).length).toBeGreaterThan(0);
+    expect(Math.min(...bounded)).toBe(1);
+    expect(gaps.filter((gap, index) => bounded[index] < gap && gap === 1)).toEqual([]);
+
+    for (const target of new Set(issueEdges.map((e) => e.target))) {
+      const inbound = issueEdges
+        .filter((e) => e.target === target)
+        .map((e) => issueRanks.get(target)! - issueRanks.get(e.source)!);
+      expect(Math.min(...inbound)).toBe(1);
+    }
+  });
+
+  it("draws every edge left to right, and stops describing the drawing by the ASAP map", () => {
+    // The map is not the drawing, and on a capped graph they disagree. The cap
+    // frees dagre to place a node anywhere the relaxed constraint allows, so the
+    // 100 rank-0 roots land in and to the right of the rank-9 column while their
+    // map entries still read 0. Dependency order survives that; the map's
+    // correspondence to the drawing does not.
+    const gaps = issueEdges.map((e) =>
+      Math.max(1, issueRanks.get(e.target)! - issueRanks.get(e.source)!),
+    );
+    expect(
+      boundPinnedMinlens(gaps, issueNodes.length).some((gap, index) => gap < gaps[index]),
+    ).toBe(true);
+
+    const layout = getLayoutedElements(issueNodes, issueEdges, "LR");
+    const x = new Map(layout.nodes.map((n) => [n.id, Math.round(n.position.x)]));
+
+    for (const edge of issueEdges) {
+      expect(x.get(edge.target)!).toBeGreaterThan(x.get(edge.source)!);
+    }
+
+    expect(issueRanks.get("root-0")).toBe(0);
+    expect(x.get("root-0")).toBe(x.get("chain-9"));
+    expect(issueRanks.get("chain-9")).toBe(9);
+  });
+
+  it("routes edges on drawn distance, so a capped gap stops inflating the range", () => {
+    const layout = getLayoutedElements(issueNodes, issueEdges, "LR");
+    const x = new Map(layout.nodes.map((n) => [n.id, Math.round(n.position.x)]));
+    const columns = [...new Set(x.values())].sort((a, b) => a - b);
+    const column = (id: string) => columns.indexOf(x.get(id)!);
+
+    // Every root sits one ASAP rank gap of 10 from the sink...
+    const asap = roots.map((id) => issueRanks.get("sink")! - issueRanks.get(id)!);
+    expect(new Set(asap)).toEqual(new Set([10]));
+    // ...and they are drawn anywhere from adjacent to it to a wrapped grid away.
+    const drawn = roots.map((id) => column("sink") - column(id));
+    expect(Math.min(...drawn)).toBe(1);
+    expect(Math.max(...drawn)).toBeGreaterThan(1);
+
+    const stamped = (id: string) => {
+      const edge = layout.edges.find((e) => e.source === id && e.target === "sink")!;
+      return (edge.data as { rankDistance?: number }).rankDistance;
+    };
+    const adjacent = roots.find((id) => column("sink") - column(id) === 1)!;
+    expect(stamped(adjacent)).toBe(1);
+    expect(isLongRangeEdge(stamped(adjacent))).toBe(false);
+    for (const id of roots) expect(stamped(id)).toBe(column("sink") - column(id));
+  });
+
+  it("leaves an edge whose endpoint was never placed unstamped", () => {
+    const placed = [{ ...bare("a"), position: { x: 0, y: 0 } }];
+    const [edge] = markRankDistance(placed, [{ id: "a-ghost", source: "a", target: "ghost" }]);
+
+    expect((edge.data as { rankDistance?: number } | undefined)?.rankDistance).toBeUndefined();
+    expect(isLongRangeEdge(undefined)).toBe(false);
+  });
+
+  it("lays out the measured fixture with finite positions and dependency-ordered ranks", () => {
+    expect(issueNodes).toHaveLength(111);
+    expect(issueEdges).toHaveLength(110);
+    const layout = getLayoutedElements(issueNodes, issueEdges, "LR");
+
+    expect(layout.nodes).toHaveLength(issueNodes.length);
+    expect(
+      layout.nodes.every(
+        (node) => Number.isFinite(node.position.x) && Number.isFinite(node.position.y),
+      ),
+    ).toBe(true);
+    for (const edge of issueEdges) {
+      expect(issueRanks.get(edge.source)).toBeLessThan(issueRanks.get(edge.target)!);
+    }
+  });
+});
 
 describe("estimateNodeHeight", () => {
   // The card is a fixed-height box, so its height cannot depend on how far
@@ -432,22 +606,19 @@ describe("enforceMinRankGap — minimum vertical gap within a rank", () => {
   });
 });
 
-describe("getLayoutedElements — exposes a rank map alongside the layout", () => {
-  it("returns a rank for every node, matching computeNodeDepths", () => {
-    const nodes: Node[] = [full("a"), full("b"), full("c")];
-    const edges: Edge[] = [
-      { id: "a-b", source: "a", target: "b" },
-      { id: "b-c", source: "b", target: "c" },
-    ];
-    const { ranks } = getLayoutedElements(nodes, edges, "LR");
-    expect(ranks.get("a")).toBe(0);
-    expect(ranks.get("b")).toBe(1);
-    expect(ranks.get("c")).toBe(2);
-  });
-
-  it("reports an empty rank map for an empty graph", () => {
-    const { ranks } = getLayoutedElements([], [], "LR");
-    expect(ranks.size).toBe(0);
+describe("getLayoutedElements — the result describes the drawing only", () => {
+  it("carries no rank map", () => {
+    // Deliberate, and re-decided more than once. A rank map is a property of the
+    // dependency graph, and once the layout may cap its rank spacing it stops
+    // describing where nodes land. Returning it beside the coordinates invites
+    // reading it as though it did. computeNodeDepths gives depth to anyone who
+    // wants depth.
+    const layout = getLayoutedElements(
+      [bare("a"), bare("b")],
+      [{ id: "a-b", source: "a", target: "b" }],
+      "LR",
+    );
+    expect(Object.keys(layout).sort()).toEqual(["edges", "height", "nodes", "width"]);
   });
 });
 
@@ -462,7 +633,8 @@ describe("getLayoutedElements — an edge naming a node that never arrived", () 
   const xOf = (laid: Node[], id: string) => laid.find((n) => n.id === id)!.position.x;
 
   it("leaves the real node on the rank the rank map assigns it", () => {
-    const { nodes: laid, ranks } = getLayoutedElements(nodes, dangling, "LR");
+    const { nodes: laid } = getLayoutedElements(nodes, dangling, "LR");
+    const ranks = computeNodeDepths(nodes, dangling);
     expect(laid).toHaveLength(3);
     // All three are roots once the dangling edge is ignored, so all three are
     // rank 0 and share an x. The failure this guards against is positions that
@@ -484,7 +656,8 @@ describe("getLayoutedElements — an edge naming a node that never arrived", () 
     // Control. Ignoring unresolved endpoints must not be satisfiable by
     // ignoring every edge — a real edge still has to separate its endpoints.
     const real: Edge[] = [{ id: "a-b", source: "a", target: "b" }];
-    const { nodes: laid, ranks } = getLayoutedElements(nodes, real, "LR");
+    const { nodes: laid } = getLayoutedElements(nodes, real, "LR");
+    const ranks = computeNodeDepths(nodes, real);
     expect(ranks.get("b")).toBe(1);
     expect(xOf(laid, "b")).toBeGreaterThan(xOf(laid, "a"));
   });

@@ -851,6 +851,7 @@
       "colLastRun": "Última execução",
       "colNextFire": "Próxima execução",
       "colActions": "Ações",
+      "historyUnavailable": "Indisponível",
       "neverRun": "Nunca",
       "notScheduled": "—",
       "editAction": "Editar"
@@ -874,6 +875,7 @@
       "permission": "permissão negada",
       "missingDependency": "dependência ausente",
       "notFound": "arquivo não encontrado",
+      "unclassified": "erro não classificado",
       "showDetails": "Mostrar erro completo",
       "hideDetails": "Ocultar erro completo"
     }

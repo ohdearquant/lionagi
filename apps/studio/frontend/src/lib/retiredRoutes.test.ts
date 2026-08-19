@@ -11,6 +11,17 @@ import {
 } from "./retiredRoutes";
 import type { InvocationDetail } from "@/lib/api";
 
+describe("retired /playbooks route", () => {
+  it("redirects to the live playbook library tab", () => {
+    const source = fs.readFileSync(
+      path.resolve(__dirname, "../routes/playbooks/index.tsx"),
+      "utf-8",
+    );
+    expect(source).toContain('retiredRedirect("/library", search, { tab: "playbook" })');
+    expect(source).not.toContain('{ tab: "workflow" }');
+  });
+});
+
 function makeInvocation(sessionIds: string[]): InvocationDetail {
   return {
     id: "inv-1",

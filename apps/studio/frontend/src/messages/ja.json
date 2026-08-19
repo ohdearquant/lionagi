@@ -851,6 +851,7 @@
       "colLastRun": "前回の実行",
       "colNextFire": "次回の実行",
       "colActions": "操作",
+      "historyUnavailable": "取得できません",
       "neverRun": "未実行",
       "notScheduled": "—",
       "editAction": "編集"
@@ -874,6 +875,7 @@
       "permission": "権限がありません",
       "missingDependency": "依存関係が不足",
       "notFound": "ファイルが見つかりません",
+      "unclassified": "分類外のエラー",
       "showDetails": "エラー全文を表示",
       "hideDetails": "エラー全文を隠す"
     }

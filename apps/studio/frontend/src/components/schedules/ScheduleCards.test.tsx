@@ -31,3 +31,13 @@ describe("ScheduleCards — health badge wiring", () => {
     expect(SRC).toMatch(/"no-evidence":\s*"var\(--content-muted\)"/);
   });
 });
+
+describe("ScheduleCards — run history availability", () => {
+  it("tells an unavailable run slice apart from a schedule that never ran", () => {
+    // The table view carries the same branch. Threading the prop without reading
+    // it renders every failed slice as "never", which states something about the
+    // schedule when the only thing that failed was the request.
+    expect(SRC).toMatch(/historyUnavailable\s*\?\s*t\("table\.historyUnavailable"\)/);
+    expect(SRC).toMatch(/:\s*t\("table\.neverRun"\)/);
+  });
+});

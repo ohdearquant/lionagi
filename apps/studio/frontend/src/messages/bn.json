@@ -851,6 +851,7 @@
       "colLastRun": "শেষ রান",
       "colNextFire": "পরবর্তী রান",
       "colActions": "ক্রিয়া",
+      "historyUnavailable": "পাওয়া যায়নি",
       "neverRun": "কখনও না",
       "notScheduled": "—",
       "editAction": "সম্পাদনা করুন"
@@ -874,6 +875,7 @@
       "permission": "অনুমতি প্রত্যাখ্যাত",
       "missingDependency": "নির্ভরতা অনুপস্থিত",
       "notFound": "ফাইল পাওয়া যায়নি",
+      "unclassified": "অশ্রেণীবদ্ধ ত্রুটি",
       "showDetails": "সম্পূর্ণ ত্রুটি দেখান",
       "hideDetails": "সম্পূর্ণ ত্রুটি লুকান"
     }
