@@ -459,3 +459,22 @@ def test_a_number_too_big_for_the_padding_still_writes_a_cursor_its_own_api_acce
     assert overflowing == f"{at}#9999999999"
     _svc_validate_github_cursor(overflowing)
     assert _cursor_for(at, 1) < _cursor_for(at, 42) < overflowing
+
+
+def test_an_overflowing_event_is_not_re_offered_after_its_own_cursor_is_stored():
+    """The writer and the comparator have to clamp the same way or the event replays.
+
+    The poller stores the cursor it writes for an event, then skips anything whose
+    position is at or before the stored bound. If only the writer clamps, an
+    overflowing number is stored as the cap but still compares as larger than it,
+    so the event is never past its own cursor and every poll offers it again.
+    """
+    from lionagi.studio.scheduler.github import _cursor_bound, _cursor_for, _event_position
+
+    at = "2026-07-20T15:21:57Z"
+    for pr_number in (42, 9999999999, 10_000_000_000, 10**18):
+        stored = _cursor_for(at, pr_number)
+        bound = _cursor_bound(stored)
+        assert _event_position(at, pr_number) <= bound, (
+            f"PR {pr_number} is not past the cursor written for it, so it replays"
+        )

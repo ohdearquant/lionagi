@@ -36,6 +36,27 @@ CURSOR_FORM = f"YYYY-MM-DDTHH:MM:SSZ, optionally followed by {_CURSOR_SEP} and a
 CURSOR_FORM += f"{_CURSOR_NUMBER_WIDTH}-digit zero-padded pull request number"
 
 
+def _placed_number(pr_number: Any) -> int | None:
+    """The number a cursor carries for this event, or None if it cannot be placed.
+
+    The single answer for both the writer and the comparator below. They have to
+    agree exactly: the writer decides what gets stored and the comparator decides
+    what counts as already past it, so a value one of them clamps and the other
+    does not is an event that never compares as processed and is re-offered on
+    every poll forever.
+
+    The width is a cap as well as a pad. Lexical order agrees with numeric order
+    only at a FIXED width -- "9999999999" sorts after "10000000000", because the
+    comparison diverges at the first character and never reaches the length -- so a
+    number that overflows the padding cannot be placed within its second and is
+    clamped to the largest one that can. Letting it through would also emit a cursor
+    the scheduler's own API refuses.
+    """
+    if not isinstance(pr_number, int) or isinstance(pr_number, bool) or pr_number < 0:
+        return None
+    return min(pr_number, _CURSOR_MAX_NUMBER)
+
+
 def _cursor_for(cursor_at: str, pr_number: Any) -> str:
     """The cursor value for one event: its timestamp, then the PR it belongs to.
 
@@ -45,15 +66,10 @@ def _cursor_for(cursor_at: str, pr_number: Any) -> str:
     this value is ordered lexically everywhere it is compared, in SQL included. An event
     without a number cannot be placed within its second and keeps the older meaning.
     """
-    if not isinstance(pr_number, int) or isinstance(pr_number, bool) or pr_number < 0:
+    placed = _placed_number(pr_number)
+    if placed is None:
         return cursor_at
-    # The width is a cap as well as a pad. Lexical order only agrees with numeric
-    # order at a FIXED width -- "9999999999" sorts after "10000000000", because the
-    # comparison diverges at the first character and never reaches the length -- so a
-    # number that overflows the padding cannot be placed within its second. Clamping
-    # keeps the value inside the grammar the API validator enforces; letting it through
-    # would emit a cursor the scheduler's own API refuses.
-    return f"{cursor_at}{_CURSOR_SEP}{min(pr_number, _CURSOR_MAX_NUMBER):0{_CURSOR_NUMBER_WIDTH}d}"
+    return f"{cursor_at}{_CURSOR_SEP}{placed:0{_CURSOR_NUMBER_WIDTH}d}"
 
 
 def _cursor_bound(cursor: str | None) -> tuple[str, int] | None:
@@ -67,10 +83,15 @@ def _cursor_bound(cursor: str | None) -> tuple[str, int] | None:
 
 
 def _event_position(cursor_at: str, pr_number: Any) -> tuple[str, int]:
-    """Where one event sits in the same order a stored cursor is read in."""
-    if not isinstance(pr_number, int) or isinstance(pr_number, bool) or pr_number < 0:
+    """Where one event sits in the same order a stored cursor is read in.
+
+    Through the same helper the writer uses, so the position of an event is the
+    position of the cursor written for it.
+    """
+    placed = _placed_number(pr_number)
+    if placed is None:
         return (cursor_at, _WHOLE_SECOND)
-    return (cursor_at, pr_number)
+    return (cursor_at, placed)
 
 
 @dataclass(frozen=True, slots=True)

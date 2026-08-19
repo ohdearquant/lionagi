@@ -84,6 +84,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   only at a fixed width, so a pull request number too large to fit the padding cannot be placed
   within its second and is clamped instead of widening the value, which would have written a
   cursor the same validator refuses.
+  The comparison that decides whether an event is already past the stored cursor clamps through
+  the same helper as the writer. A value one of them capped and the other did not would never
+  compare as past the cursor written for it, so the event would be offered again on every poll.
 - Two studio schedulers running against one database could each dispatch the same occurrence.
   The tick selects due schedules and fires them in separate statements, and every admission gate
   between the two lives in the firing process's own memory, so both processes committed, each with
