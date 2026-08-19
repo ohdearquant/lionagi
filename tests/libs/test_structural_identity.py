@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import gc
 import json
 import math
@@ -514,6 +515,103 @@ def test_no_dynamically_created_callable_is_retained(shape, holder):
     plain one can, so the cache stores it and still lets it go.
     """
     assert not _survives_projection(holder, lambda: _IDENTITY_ONLY_SHAPES[shape](b"x" * 4096))
+
+
+def _enum_member_holding(made):
+    """An Enum member whose value is `made`. Only a class can be carried this way, since a
+    function assigned in an Enum body becomes a method rather than a member."""
+    return Enum("_Wrapper", {"MEMBER": made}).MEMBER
+
+
+def _callable_survives_behind(wrap) -> bool:
+    """Whether an unexported class survives projection when `wrap` puts something around it.
+
+    Built in here for the same reason as _survives_projection: a caller's argument slot would
+    keep it alive on its own. The weak reference is on the class rather than on the wrapper,
+    since the class is what a wrapper would be retaining.
+    """
+    from lionagi.ln._structural import _structural_key
+
+    made = type("_Made", (), {})
+    released = weakref.ref(made)
+    holder = _Payload(wrap(made))
+    _structural_key(holder)
+    del made, holder
+    gc.collect()
+    return released() is not None
+
+
+def test_a_callable_behind_a_wrapper_is_not_retained():
+    """A wrapper projects its child's key, so it has to carry the child's retention flag too.
+
+    _Payload cannot be weakly referenced, so the cache's only defence here is declining to
+    store a key that pins something. A wrapper that forwards every other projected field and
+    drops that one puts the entry back in the cache and the class back in memory.
+    """
+    assert not _callable_survives_behind(_enum_member_holding)
+    assert not _callable_survives_behind(lambda made: {"key": made})
+
+
+def test_the_wrapper_probe_really_wraps_the_callable():
+    """The control: if a wrapper stopped carrying its argument the test above would pass empty."""
+    made = type("_Made", (), {})
+
+    assert _enum_member_holding(made).value is made
+    assert _callable_survives_behind(lambda held: held) is False
+
+
+def _key_constructions_reading_a_child() -> tuple[list[int], list[int]]:
+    """Line numbers of every _StructuralKey(...) built from another key, and those dropping _pins."""
+    from lionagi.ln import _structural
+
+    projected_fields = {
+        "value",
+        "cache_stable",
+        "hash_safe",
+        "_sort_token",
+        "_unsafe_path",
+        "_unsafe_type",
+        "_pins",
+    }
+    from_child: list[int] = []
+    dropping: list[int] = []
+    for node in ast.walk(ast.parse(Path(_structural.__file__).read_text())):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id != "_StructuralKey":
+            continue
+        arguments = list(node.args) + [keyword.value for keyword in node.keywords]
+        reads_child = any(
+            isinstance(sub, ast.Attribute)
+            and isinstance(sub.value, ast.Name)
+            and sub.attr in projected_fields
+            for argument in arguments
+            for sub in ast.walk(argument)
+        )
+        if not reads_child:
+            continue
+        from_child.append(node.lineno)
+        if not any(keyword.arg == "_pins" for keyword in node.keywords):
+            dropping.append(node.lineno)
+    return from_child, dropping
+
+
+def test_every_key_built_from_a_child_carries_the_retention_flag():
+    """The leak was one wrapper forwarding five projected fields and forgetting the sixth.
+
+    Checked against the source rather than by shape, so a wrapper added later is covered
+    without anyone remembering to add a case for it.
+    """
+    _, dropping = _key_constructions_reading_a_child()
+
+    assert not dropping
+
+
+def test_the_construction_scan_sees_the_wrappers_it_checks():
+    """The assertion above says nothing if the scan matches no construction at all."""
+    from_child, _ = _key_constructions_reading_a_child()
+
+    assert len(from_child) >= 5
 
 
 def test_the_identity_only_enumeration_is_not_empty():

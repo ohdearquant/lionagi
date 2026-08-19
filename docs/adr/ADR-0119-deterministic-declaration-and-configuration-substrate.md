@@ -395,7 +395,9 @@ roughly an order of magnitude on the projection of every such declaration, measu
 they are stored under a narrower rule: an instance is admitted only when each of its
 identity-keyed components is already held alive elsewhere under its own name, which is checked by
 resolving `__module__` and `__qualname__` back to the same object. Closures, lambdas, and `type()`
-results fail that check and keep their holders out of the cache. What the rule does not cover is a
+results fail that check and keep their holders out of the cache. A component reached through a
+wrapper counts: every projection that rebuilds its key from a child value carries the child's
+result forward, so an `Enum` member value, a mapping value, or a model field cannot hide one. What the rule does not cover is a
 callable that satisfies it at admission and is unbound afterwards, since a name can be withdrawn
 and a cache entry outlives the binding. Such a callable stays alive until its entry is evicted,
 which is bounded by `LIONAGI_STRUCTURAL_CACHE_SIZE`. Instances that can be weakly referenced carry

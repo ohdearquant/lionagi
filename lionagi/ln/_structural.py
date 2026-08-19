@@ -346,6 +346,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
             _frame(b"e", _identity_token(value_type), projected._sort_token),
             projected._unsafe_path,
             projected._unsafe_type,
+            _pins=projected._pins,
         )
 
     if any(value_type is path_type for path_type in _PATH_TYPES):
@@ -430,6 +431,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
                 _sort_token=token,
                 _unsafe_path=(unsafe._unsafe_path if unsafe else path),
                 _unsafe_type=(unsafe._unsafe_type if unsafe else value_type),
+                _pins=any(part._pins for entry in ordered for part in entry),
             )
         finally:
             active.remove(identity)
@@ -546,6 +548,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
                 ),
                 _unsafe_path=projected._unsafe_path or path,
                 _unsafe_type=projected._unsafe_type or value_type,
+                _pins=projected._pins,
             )
         finally:
             active.remove(identity)
@@ -563,6 +566,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
                 _frame(b"q", _identity_token(value_type), projected._sort_token),
                 projected._unsafe_path,
                 projected._unsafe_type,
+                _pins=projected._pins,
             )
         finally:
             active.remove(identity)

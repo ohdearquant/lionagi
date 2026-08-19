@@ -93,6 +93,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The rule keeping a declaration-projection cache entry from outliving what it references now
+  reaches through wrappers. It was applied to a callable a declaration held directly, but a
+  projection that rebuilt its key from a child value forwarded every other projected field and
+  dropped that one, so a closure, lambda, or `type()` result behind an `Enum` member value was
+  admitted and held alive by the entry. Mapping values, Pydantic model fields, and msgspec
+  struct fields rebuilt their keys the same way and now carry the flag as well.
+
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
   and `DataClass` now discover inherited instance fields through one ordered dataclass path,
