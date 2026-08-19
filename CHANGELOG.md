@@ -108,7 +108,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   on the session, and the write that eventually happens adds up every deferred leg's count
   rather than reporting only its own, because each leg that observed a loss is gone by then and
   its queue with it. A session that defers twice before anything terminal accumulates across
-  both deferrals rather than the second replacing the first. And a run that failed on its own keeps its own failure: the loss is appended to the
+  both deferrals rather than the second replacing the first, and so does a session whose legs
+  tear down at the same time: each leg records what it saw under a key of its own instead of
+  rewriting a shared one, so no leg's record can replace a sibling's. And a run that failed on its own keeps its own failure: the loss is appended to the
   evidence either way and claims the reason code only when nothing else has.
   Recording that carried loss cannot cost the handoff: the deferred path's job is to defer, and
   the caller reads the status it returns to decide whether to resume, so a bookkeeping write that

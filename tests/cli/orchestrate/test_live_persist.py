@@ -4777,6 +4777,128 @@ async def test_a_leg_that_loses_the_terminal_write_race_still_records_its_loss(
     assert metadata["message_loss_session_ids"] == [ctx["session_id"]]
 
 
+async def test_concurrent_losing_teardowns_keep_both_losses(
+    temp_db_path: Path,
+    monkeypatch,
+):
+    """Two teardowns of one session, both losing the terminal write, each holding a
+    different loss. Both read the row before either writes, so a merge that rewrites
+    one shared value replaces the other leg's loss instead of adding to it."""
+    from lionagi.cli._runs import _merge_message_loss, _teardown_common
+
+    invocation_id = "inv-two-losers"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    db = ctx["db"]
+    session_id = ctx["session_id"]
+
+    real_update_status = db.update_status
+
+    async def lose_the_race(entity_type, entity_id, **kwargs):
+        if entity_type == "session" and entity_id == session_id:
+            return False
+        return await real_update_status(entity_type, entity_id, **kwargs)
+
+    monkeypatch.setattr(db, "update_status", lose_the_race)
+
+    # Hold each leg at its write until the other arrives: by then both have read the
+    # row, and neither read can see the loss the other is about to record.
+    real_merge = db.merge_session_node_metadata
+    both_arrived = asyncio.Event()
+    arrivals = 0
+
+    async def gated_merge(sid, patch):
+        nonlocal arrivals
+        arrivals += 1
+        if arrivals >= 2:
+            both_arrived.set()
+        await asyncio.wait_for(both_arrived.wait(), timeout=10)
+        await real_merge(sid, patch)
+
+    monkeypatch.setattr(db, "merge_session_node_metadata", gated_merge)
+
+    async def teardown(owner: str, lost: int):
+        return await _teardown_common(
+            db,
+            session_id=session_id,
+            session_prog_id=ctx["session_prog_id"],
+            status="completed",
+            exception=None,
+            artifacts_path=ctx["artifacts_path"],
+            artifact_contract=ctx["artifact_contract"],
+            message_loss={"lost": lost, "queues": [{"owner": owner, "lost": lost}]},
+        )
+
+    await asyncio.gather(teardown("branch one", 4), teardown("branch two", 7))
+    assert arrivals == 2, "both legs must reach the write or the race is not exercised"
+
+    async with StateDB() as reader:
+        row = await reader.get_session(session_id)
+    carried = _merge_message_loss(row["node_metadata"], None)
+    assert carried is not None, "neither leg's loss survived"
+    assert sorted(q["owner"] for q in carried["queues"]) == ["branch one", "branch two"]
+    assert carried["lost"] == 11, carried
+
+
+async def test_a_losing_teardown_does_not_double_count_an_earlier_legs_loss(
+    temp_db_path: Path,
+    monkeypatch,
+):
+    """A deferred leg's loss is already on the row under its own key, and the terminal
+    write folds it into what it reports. A teardown that then loses the terminal write
+    has to record only what it saw, or the carried loss is written a second time."""
+    from lionagi.cli._runs import _merge_message_loss, _teardown_common
+
+    invocation_id = "inv-no-double-count"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    db = ctx["db"]
+    session_id = ctx["session_id"]
+
+    async def teardown(owner: str, lost: int, **kwargs):
+        return await _teardown_common(
+            db,
+            session_id=session_id,
+            session_prog_id=ctx["session_prog_id"],
+            status="completed",
+            exception=None,
+            artifacts_path=ctx["artifacts_path"],
+            artifact_contract=ctx["artifact_contract"],
+            message_loss={"lost": lost, "queues": [{"owner": owner, "lost": lost}]},
+            **kwargs,
+        )
+
+    await teardown("deferred", 4, defer_terminal=True)
+
+    real_update_status = db.update_status
+
+    async def lose_the_race(entity_type, entity_id, **kwargs):
+        if entity_type == "session" and entity_id == session_id:
+            return False
+        return await real_update_status(entity_type, entity_id, **kwargs)
+
+    monkeypatch.setattr(db, "update_status", lose_the_race)
+    await teardown("live", 7)
+
+    async with StateDB() as reader:
+        row = await reader.get_session(session_id)
+    carried = _merge_message_loss(row["node_metadata"], None)
+    assert sorted(q["owner"] for q in carried["queues"]) == ["deferred", "live"], carried
+    assert carried["lost"] == 11, carried
+
+
 async def test_a_losing_child_is_named_when_a_sibling_fails(
     temp_db_path: Path,
 ):

@@ -549,18 +549,19 @@ async def _teardown_common(
         # the resuming leg builds its own -- so leaving it here means the eventual
         # terminal write reports a clean run over a transcript missing part of itself.
         if message_loss:
+            from lionagi.state.reasons import MESSAGE_LOSS_KEY_PREFIX
+
             try:
-                # Re-merged, not just written: a session can time out twice before
-                # anything terminal, and this branch is the only writer of the field it
-                # also reads. Writing this leg's own loss alone drops every leg before
-                # it, and the terminal write has no way to tell.
-                carried = await db.get_session(session_id) or {}
-                message_loss = _merge_message_loss(carried.get("node_metadata") or {}, message_loss)
+                # This leg's own loss under its own key. A session can time out twice
+                # before anything terminal, and reading the field to rewrite it would
+                # drop whichever concurrent leg wrote between the read and the write;
+                # the terminal write reads every key, so nothing needs merging here.
                 # Serialized, because the merge refuses a nested patch value: sqlite and
                 # postgres merge nested objects differently and it will not persist state
                 # that depends on the backend.
                 await db.merge_session_node_metadata(
-                    session_id, {"message_persist_loss_json": json.dumps(message_loss)}
+                    session_id,
+                    {f"{MESSAGE_LOSS_KEY_PREFIX}{uuid4().hex}": json.dumps(message_loss)},
                 )
             except Exception:
                 # This path's job is to defer, and the caller reads the status it
@@ -584,8 +585,12 @@ async def _teardown_common(
     session_before_teardown = await db.get_session(session_id) or {}
 
     # A leg that timed out on this session recorded its loss and deferred the terminal
-    # write. This is that write, so it reports both legs' losses or the earlier one is
-    # gone: the leg that saw it is finished and its queue no longer exists.
+    # write. This is that write, so it reports every leg's loss or the earlier ones are
+    # gone: the legs that saw them are finished and their queues no longer exist.
+    # This leg's own loss stays separate. If the terminal write below turns out to belong
+    # to another leg, this one records only what it saw: the earlier losses are already on
+    # the row under their own keys, and writing them again would count them twice.
+    own_message_loss = message_loss
     message_loss = _merge_message_loss(
         (session_before_teardown.get("node_metadata") or {}), message_loss
     )
@@ -999,22 +1004,23 @@ async def _teardown_common(
                 final_status,
             )
 
-    if message_loss and not wrote_terminal_record:
+    if own_message_loss and not wrote_terminal_record:
+        from lionagi.state.reasons import MESSAGE_LOSS_KEY_PREFIX
+
         # The row that won says the run is clean and this leg is the only one that saw
         # the loss. Leave it where the invocation reducers look, without touching the
         # winner's status or reason -- an earlier terminal record stands.
         try:
-            carried = await db.get_session(session_id) or {}
-            merged = _merge_message_loss(carried.get("node_metadata") or {}, message_loss)
             await db.merge_session_node_metadata(
-                session_id, {"message_persist_loss_json": json.dumps(merged)}
+                session_id,
+                {f"{MESSAGE_LOSS_KEY_PREFIX}{uuid4().hex}": json.dumps(own_message_loss)},
             )
         except Exception as exc:  # noqa: BLE001 - bookkeeping must not mask the outcome
             _log.warning(
                 "session %s: could not record %d lost message event(s) after its "
                 "terminal row was written by another teardown: %r",
                 session_id,
-                message_loss["lost"],
+                own_message_loss["lost"],
                 exc,
             )
     return final_status
@@ -1352,27 +1358,13 @@ def _as_message_loss(value: Any) -> MessageLoss | None:
 
 
 def _merge_message_loss(node_metadata: Any, current: MessageLoss | None) -> MessageLoss | None:
-    """This teardown's loss plus any a deferred earlier leg left on the session."""
-    if isinstance(node_metadata, str):
-        try:
-            node_metadata = json.loads(node_metadata)
-        except (TypeError, ValueError):
-            node_metadata = None
-    carried = (
-        node_metadata.get("message_persist_loss_json") if isinstance(node_metadata, dict) else None
-    )
-    if isinstance(carried, str):
-        try:
-            carried = json.loads(carried)
-        except (TypeError, ValueError):
-            carried = None
-    carried = _as_message_loss(carried)
+    """This teardown's loss plus every loss earlier legs left on the session row."""
+    from lionagi.state.reasons import carried_message_loss_queues
+
+    carried = carried_message_loss_queues(node_metadata)
     if not carried:
         return current
-    if not current:
-        return carried
-    queues = carried["queues"] + current["queues"]
-    return {"lost": sum(q["lost"] for q in queues), "queues": queues}
+    return _as_message_loss({"queues": carried + list((current or {}).get("queues") or [])})
 
 
 async def _flush_pending_message_events(ctx: dict) -> MessageLoss | None:

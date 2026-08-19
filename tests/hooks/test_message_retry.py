@@ -627,11 +627,13 @@ async def test_a_failed_loss_record_does_not_cost_the_deferred_leg_its_handoff(
 # assumption. These pin what a drifted one is allowed to do to the count.
 
 
-def _carry(payload: Any) -> dict[str, Any]:
-    """A session row whose node metadata carries `payload` as the loss JSON."""
+def _carry(payload: Any, leg: str = "leg-1") -> dict[str, Any]:
+    """Node metadata carrying `payload` under one leg's own loss key."""
     from json import dumps
 
-    return {"message_persist_loss_json": dumps(payload)}
+    from lionagi.state.reasons import MESSAGE_LOSS_KEY_PREFIX
+
+    return {f"{MESSAGE_LOSS_KEY_PREFIX}{leg}": dumps(payload)}
 
 
 def test_a_carried_payload_with_a_non_list_queues_field_is_dropped_not_walked():

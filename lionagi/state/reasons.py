@@ -253,6 +253,43 @@ def entity_table(entity_type: str) -> str:
     return ENTITY_TYPE_TO_TABLE[canonical]
 
 
+#: Prefix for the node_metadata keys a teardown writes when it observed live-message
+#: loss but does not own the session's terminal row. One key per observing leg, never a
+#: shared one: legs tear down concurrently, and the database merges a patch key by key,
+#: so a leg that rewrote a shared value would replace a sibling's record instead of
+#: adding to it. Keys are left in place once folded into a terminal row -- clearing them
+#: would race the next leg's write -- and their number is bounded by how many teardowns
+#: one session has.
+MESSAGE_LOSS_KEY_PREFIX: Final = "message_persist_loss:"
+
+
+def carried_message_loss_queues(node_metadata: Any) -> list[Any]:
+    """Every queue loss left on a session row, across the legs that recorded them.
+
+    Entries are returned as found. They crossed a persistence boundary and may have been
+    written by a leg running different code, so the caller validates before summing.
+    """
+    if isinstance(node_metadata, str):
+        try:
+            node_metadata = json.loads(node_metadata)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(node_metadata, dict):
+        return []
+    queues: list[Any] = []
+    for key, value in node_metadata.items():
+        if not (isinstance(key, str) and key.startswith(MESSAGE_LOSS_KEY_PREFIX)):
+            continue
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                continue
+        if isinstance(value, dict) and isinstance(value.get("queues"), list):
+            queues.extend(value["queues"])
+    return queues
+
+
 def has_message_loss_evidence(session: Any) -> bool:
     """Whether a session row records that it lost live message events.
 
@@ -273,18 +310,4 @@ def has_message_loss_evidence(session: Any) -> bool:
         return True
     # A leg whose own terminal write never landed -- it deferred, or lost the race to a
     # concurrent teardown -- leaves the loss here instead, and no evidence ref exists.
-    node_metadata = session.get("node_metadata")
-    if isinstance(node_metadata, str):
-        try:
-            node_metadata = json.loads(node_metadata)
-        except (TypeError, ValueError):
-            return False
-    if not isinstance(node_metadata, dict):
-        return False
-    carried = node_metadata.get("message_persist_loss_json")
-    if isinstance(carried, str):
-        try:
-            carried = json.loads(carried)
-        except (TypeError, ValueError):
-            return False
-    return isinstance(carried, dict) and bool(carried.get("queues"))
+    return bool(carried_message_loss_queues(session.get("node_metadata")))
