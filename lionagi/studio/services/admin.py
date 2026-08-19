@@ -154,12 +154,16 @@ def scheduler_probe() -> dict[str, Any]:
         result["detail"] = "scheduler engine has not been started in this process"
         return result
 
-    # Before the first pass completes there is nothing to measure against but the start,
-    # which is the honest reference: a scheduler that has never advanced is stalled too.
-    reference = facts["last_tick_completed_at"] or facts["started_at"]
+    # Before the first pass of THIS generation completes there is nothing to measure against
+    # but its start, which is the honest reference: a scheduler that has never advanced is
+    # stalled too. The engine is a module-level singleton, so a stop-and-start leaves the
+    # previous generation's tick timestamp in place; taking the later of the two keeps a
+    # restart from reading as a stall it inherited rather than one it is in.
+    last_tick = facts["last_tick_completed_at"]
+    advanced = last_tick is not None and last_tick >= facts["started_at"]
+    reference = last_tick if advanced else facts["started_at"]
     since = round(now - reference, 1)
     result["seconds_since_advance"] = since
-    advanced = facts["last_tick_completed_at"] is not None
 
     if since > threshold:
         result["status"] = "stalled"

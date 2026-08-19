@@ -60,6 +60,32 @@ def test_a_freshly_started_scheduler_is_not_called_stalled_before_its_first_tick
     assert result["status"] == "advancing"
 
 
+def test_a_restarted_scheduler_is_not_stalled_by_the_previous_generations_tick(monkeypatch):
+    """The engine is a module-level singleton, so a stop-and-start keeps the old timestamp.
+
+    Reading it as this generation's last tick reports a stall the new loop inherited rather
+    than one it is in, for as long as the process sat stopped.
+    """
+    result = _probe(
+        monkeypatch,
+        started_at=time.time() - 5,
+        last_tick_completed_at=time.time() - 7200,
+    )
+    assert result["status"] == "advancing"
+    assert result["seconds_since_advance"] < 10
+    assert "first tick is not yet due" in result["detail"]
+
+
+def test_a_restart_that_has_itself_gone_quiet_is_still_stalled(monkeypatch):
+    """Control: preferring the start time must not make a genuinely dead new loop look fine."""
+    result = _probe(
+        monkeypatch,
+        started_at=time.time() - 7200,
+        last_tick_completed_at=time.time() - 10800,
+    )
+    assert result["status"] == "stalled"
+
+
 def test_restarts_are_surfaced_alongside_the_verdict(monkeypatch):
     result = _probe(
         monkeypatch,

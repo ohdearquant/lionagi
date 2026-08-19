@@ -85,7 +85,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   a scheduler state this build has never heard of cannot read as healthy either. A daemon that does
   not report the field at all is treated as before. The recorded failure is reported as its
   exception class rather than its message, since readiness is served to anyone who can reach the
-  port and a message can carry paths and connection details.
+  port and a message can carry paths and connection details. The stall verdict is scoped to the
+  running generation of the loop: the engine is a module-level singleton, so a stop-and-start
+  leaves the previous generation's tick timestamp in place, and reading that as the current one
+  reported a stall the new loop had inherited rather than one it was in.
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
   and `DataClass` now discover inherited instance fields through one ordered dataclass path,
