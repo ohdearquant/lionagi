@@ -344,10 +344,6 @@ _PRIVATE_SCHEDULE_COLUMNS = {
     "notify_on": ["fail"],
     "owner_key": "owner-abc",
     "github_cursor": "2026-01-01T00:00:00Z",
-    # An absolute path on the host the daemon runs on. No client reads it back today,
-    # so withholding it costs nothing and naming it here makes that a decision rather
-    # than an omission: adding it to the served set now has to break this test first.
-    "action_cwd": "/srv/deploy/private-root",
 }
 
 
@@ -644,14 +640,18 @@ def test_the_status_view_still_serves_what_the_cli_renders(tmp_path, monkeypatch
 # occurrence's error text. Both preferred branches carry `status_reason_summary`,
 # a free-text column, so a check scoped to the occurrence branch covers the case
 # that loses and misses the two that win.
-def _seed_run_linked_to(monkeypatch, db_path: Path, *, invocation, sessions) -> tuple[str, str]:
+def _seed_run_linked_to(
+    monkeypatch, db_path: Path, *, invocation, sessions, error_detail: str | None = None
+) -> tuple[str, str]:
     from lionagi.studio.services import run_view
 
     _patch_db(monkeypatch, db_path)
 
     async def seed():
         schedule_id = await _seed_schedule()
-        run_id = await _seed_run(schedule_id, status="failed", fired_at=time.time())
+        run_id = await _seed_run(
+            schedule_id, status="failed", fired_at=time.time(), error_detail=error_detail
+        )
         return schedule_id, run_id
 
     ids = asyncio.run(seed())
@@ -736,14 +736,16 @@ def test_a_generated_summary_is_served_verbatim(tmp_path, monkeypatch):
     A summary this module generated carries no caller text, so it stays readable.
     """
     from lionagi.studio.services.run_view import build_outcome
-    from lionagi.studio.services.schedules import _outcome_for_list
+    from lionagi.studio.services.schedules import _run_view
 
     outcome = build_outcome(
         {"status": "completed", "exit_code": 0}, {"id": "inv-1", "status": "completed"}, []
     )
 
     assert outcome["summary_reported"] is False
-    assert _outcome_for_list(outcome)["summary"] == outcome["summary"]
+    served = _run_view({"outcome": outcome})
+    assert served["outcome"]["summary"] == outcome["summary"]
+    assert served["error_class"] is None
 
 
 def test_no_list_surface_serves_the_record_only_schedule_fields(tmp_path, monkeypatch):
@@ -757,7 +759,7 @@ def test_no_list_surface_serves_the_record_only_schedule_fields(tmp_path, monkey
     # Named here rather than imported: a watch set taken from the constant under test
     # follows that constant, so moving a field out of it moves the field out of the
     # test at the same time and the check reports clean on the change it exists to catch.
-    watched = ("action_prompt", "on_success", "on_fail")
+    watched = ("action_prompt", "on_success", "on_fail", "action_cwd")
     assert set(watched) == set(_SCHEDULE_RECORD_FIELDS), (
         "record-only set changed; decide per field whether a list surface may serve it, "
         "then update this literal"
@@ -776,3 +778,64 @@ def test_no_list_surface_serves_the_record_only_schedule_fields(tmp_path, monkey
         assert resp.status_code == 200, path
         leaked = sorted(_keys_anywhere(resp.json()) & set(watched))
         assert not leaked, f"{path} serves {leaked}"
+
+
+def test_the_served_class_describes_the_outcome_the_surface_serves(tmp_path, monkeypatch):
+    """One failure, one classification. The occurrence row loses to the session.
+
+    error_class and outcome.summary answer the same question on the same row, so a
+    class read off a layer the outcome did not come from contradicts the summary
+    printed beside it.
+    """
+    schedule_id, _ = _seed_run_linked_to(
+        monkeypatch,
+        tmp_path / "state.db",
+        invocation={"id": "inv-1", "status": _terminal_invocation_status()},
+        sessions=[
+            {
+                "id": "sess-1",
+                "status": _terminal_session_status(),
+                "status_reason_summary": f"PermissionError: {_RAW_ERROR_SENTINEL}",
+            }
+        ],
+        error_detail="ConnectionError: connection refused",
+    )
+    client = _make_client()
+
+    # The contradiction needs both layers populated and classifying differently.
+    from lionagi.studio.services.schedules import _error_class
+
+    assert _error_class("ConnectionError: connection refused") == "network"
+    assert _error_class(f"PermissionError: {_RAW_ERROR_SENTINEL}") == "permission"
+
+    for path in (f"/api/schedules/{schedule_id}/runs", f"/api/schedules/{schedule_id}/status"):
+        body = client.get(path).json()
+        row = body["runs"][0] if "runs" in body else body["latest_run"]
+        assert row["outcome"]["source"] == "session", path
+        assert row["error_class"] == row["outcome"]["summary"] == "permission", path
+
+    # Same rule for the run slice nested inside the record.
+    nested = _served_runs(schedule_id)[0]
+    assert nested["error_class"] == "permission"
+
+
+def test_the_record_route_serves_the_persisted_execution_root(tmp_path, monkeypatch):
+    """`li schedule create --machine` reads this route back for exactly this field.
+
+    Its own docstring says the caller is shown the execution root that was actually
+    persisted, which the command resolves from its environment when the caller named
+    neither a cwd nor a project. Echoing the request back would not answer that.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    schedule_id = _seed_rich_schedule(monkeypatch, tmp_path / "state.db")
+    record = _make_client().get(f"/api/schedules/{schedule_id}").json()
+    assert "action_cwd" in record
+
+    source = _Path("lionagi/cli/machine_schedule.py").read_text()
+    create = _re.search(r"^def _create\(argv.*?^def ", source, _re.S | _re.M)
+    assert create, "_create not found"
+    assert '_studio(f"/{_quote(schedule_id)}")' in create.group(0), (
+        "the read-back moved; re-derive which route this test is about"
+    )

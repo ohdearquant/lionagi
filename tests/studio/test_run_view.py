@@ -279,3 +279,41 @@ def test_exit_code_occurrence_only_terminal_status_uses_shared_vocabulary(
     itself must still map through EXIT_CODE_BY_STATUS, not collapse to 1."""
     run = _run(status=occurrence_status, exit_code=None)
     assert exit_code_for_view(run, None, []) == expected
+
+
+def test_every_outcome_this_module_returns_declares_its_summary_provenance():
+    """Builder seven has to declare, and this is what tells whoever writes it.
+
+    The consumer treats an outcome with no declaration as caller-reported and
+    classifies it, which costs a readable summary rather than leaking one. That
+    is the safe direction to fail, not a reason to leave the omission silent.
+    """
+    import ast
+    import inspect
+
+    from lionagi.studio.services import run_view
+
+    tree = ast.parse(inspect.getsource(run_view))
+    outcomes = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Dict):
+            continue
+        keys = {k.value for k in node.value.keys if isinstance(k, ast.Constant)}
+        if "source" in keys:
+            outcomes.append((node.lineno, keys))
+
+    assert len(outcomes) >= 4, f"outcome returns not found; the parse is wrong: {outcomes}"
+    missing = [line for line, keys in outcomes if "summary_reported" not in keys]
+    assert not missing, f"outcome dicts at line(s) {missing} declare no summary provenance"
+
+
+def test_an_outcome_that_declares_nothing_is_treated_as_reported():
+    from lionagi.studio.services.schedules import _reported_summary_class
+
+    undeclared = {
+        "code": "x",
+        "summary": "PermissionError: /home/someone/.ssh/id_rsa",
+        "source": "?",
+    }
+    assert _reported_summary_class(undeclared) == "permission"
+    assert _reported_summary_class({**undeclared, "summary_reported": False}) is None

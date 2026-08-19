@@ -674,6 +674,9 @@ def test_sessions_detail_malformed_cursor_400_shape(tmp_path, monkeypatch):
 _SCHEDULE_DETAIL_KEYS = sorted(
     [
         "action_agent",
+        # Read back by `li schedule create --machine` to report the execution root
+        # that was actually persisted. Record route only; no list surface serves it.
+        "action_cwd",
         "action_kind",
         "action_model",
         "action_playbook",

@@ -78,8 +78,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   classify is reported as such rather than by falling back to the last line of its traceback.
   Reconciled outcomes are classified whichever layer reported them, since a run's outcome summary
   can come from its session, its invocation or the occurrence row, and the first two take
-  precedence over the third. The full text stays available through the run detail view, which
-  reads a different endpoint and asks for it explicitly.
+  precedence over the third. `error_class` describes that same winning layer, on every surface
+  that serves a run including the slice nested in a schedule record, so it can no longer name a
+  different failure than the summary printed beside it. The full text stays available through the
+  run detail view, which reads a different endpoint and asks for it explicitly.
 
 - Two studio schedulers running against one database could each dispatch the same occurrence.
   The tick selects due schedules and fires them in separate statements, and every admission gate

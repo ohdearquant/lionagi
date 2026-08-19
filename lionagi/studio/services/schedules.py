@@ -531,9 +531,23 @@ def _error_class(detail: str | None) -> str | None:
     return _UNCLASSIFIED_ERROR
 
 
+def _error_class_for(row: dict[str, Any]) -> str | None:
+    """The classification a surface serves for one run.
+
+    Taken from the reconciled outcome whenever the row carries one, because that
+    is the layer the surface's own `outcome` reports: a session's failure outranks
+    the occurrence row's `error_detail`, and classifying the loser produces a class
+    that contradicts the summary beside it. Only a row with no outcome at all falls
+    back to the occurrence text.
+    """
+    if "outcome" in row:
+        return _reported_summary_class(row.get("outcome"))
+    return _error_class(row.get("error_detail"))
+
+
 def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
     summary = {name: row[name] for name in _RUN_SUMMARY_FIELDS if name in row}
-    summary["error_class"] = _error_class(row.get("error_detail"))
+    summary["error_class"] = _error_class_for(row)
     return summary
 
 
@@ -550,27 +564,28 @@ def _reported_summary_class(outcome: Any) -> str | None:
     the two branches that outrank the occurrence one carry `status_reason_summary`
     verbatim, so a source test covers the lowest-precedence case and misses the two
     that win.
+
+    An outcome that declares nothing is classified. A missing declaration and a
+    False one would otherwise be the same value, and they mean opposite things
+    here: only False says the text was generated and is safe to serve. Defaulting
+    the other way would let a builder added later ship caller text by forgetting a
+    key, which is the failure this classification exists to prevent.
     """
-    if not isinstance(outcome, dict) or not outcome.get("summary_reported"):
+    if not isinstance(outcome, dict):
         return None
     summary = outcome.get("summary")
-    if not isinstance(summary, str):
+    if not isinstance(summary, str) or outcome.get("summary_reported", True) is False:
         return None
     return _error_class(summary)
 
 
-def _outcome_for_list(outcome: Any) -> Any:
-    """The reconciled outcome as a list surface serves it: a class, never the text."""
-    classified = _reported_summary_class(outcome)
-    return outcome if classified is None else {**outcome, "summary": classified}
-
-
 def _run_view(row: dict[str, Any]) -> dict[str, Any]:
     view = {name: row[name] for name in _RUN_VIEW_FIELDS if name in row}
-    outcome = row.get("outcome")
-    view["error_class"] = _error_class(row.get("error_detail")) or _reported_summary_class(outcome)
+    view["error_class"] = _error_class_for(row)
     if "outcome" in row:
-        view["outcome"] = _outcome_for_list(outcome)
+        outcome = row["outcome"]
+        classified = _reported_summary_class(outcome)
+        view["outcome"] = outcome if classified is None else {**outcome, "summary": classified}
     return view
 
 
@@ -625,10 +640,13 @@ _SCHEDULE_SUMMARY_FIELDS = (
 )
 
 
-# Read back only to prefill the edit form, and by nothing that renders a list. They
-# carry operator-authored prompt text and arbitrary policy objects, so the record view
-# serves them and the list surfaces do not.
-_SCHEDULE_RECORD_FIELDS = ("action_prompt", "on_success", "on_fail")
+# Served by the record view and by no list surface. The prompt text and the two policy
+# objects are read back only to prefill the edit form, which loads one schedule.
+# `action_cwd` is an absolute path on the daemon's host, and `li schedule create
+# --machine` reads it back from this route to report the execution root that was
+# actually persisted, which it resolves from its own environment when the caller
+# named neither a cwd nor a project.
+_SCHEDULE_RECORD_FIELDS = ("action_prompt", "on_success", "on_fail", "action_cwd")
 
 
 def _schedule_summary(row: dict[str, Any], *, record: bool = False) -> dict[str, Any]:
@@ -659,6 +677,10 @@ async def get_schedule(schedule_id: str) -> dict[str, Any] | None:
         if not row:
             return None
         runs = await db.list_schedule_runs(schedule_id, limit=10)
+        # Reconciled here, not in the route: the nested slice is served beside the
+        # top-level run lists and would otherwise classify the occurrence row while
+        # they classify the session or invocation that outranks it.
+        runs = [{**run, **await run_view.build_run_view_for(db, run)} for run in runs]
         if row.get("max_runs"):
             used = await db.count_schedule_runs(schedule_id, chain_depth=0)
             row["remaining_runs"] = max(row["max_runs"] - used, 0)
