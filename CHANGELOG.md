@@ -66,6 +66,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Execution-graph edges were routed by how far apart their endpoints are in the dependency
+  ranking rather than by how far apart they are drawn. On a graph large enough for the layout
+  to cap its rank spacing, the two stop agreeing: the cap lets the layout place an independent
+  node beside the node that consumes it, so an edge drawn between neighbouring columns was
+  still routed as though it swept across ten columns of cards. Edges now carry the distance
+  actually drawn, measured from the final geometry.
+
 - The schedule summary surface no longer carries run content. Its recent-run slice served
   `trigger_context`, which holds whole external event payloads, and `error_detail`, which holds
   subprocess stderr and exception text, on an API that answers without a token when

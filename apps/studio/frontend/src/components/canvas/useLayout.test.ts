@@ -21,6 +21,7 @@ import {
   wrapWideRanks,
   foldWideGraph,
   markContinuationEdges,
+  markRankDistance,
   DAG_MAX_ZOOM,
   DAG_FIT_PADDING,
   FIT_ZOOM_FLOOR,
@@ -30,6 +31,7 @@ import {
 } from "./useLayout";
 import { transitiveReduceDisplay } from "@/lib/operationGraph";
 import { fitZoomFor, MIN_INTERACTIVE_ZOOM } from "./WorkerCanvas";
+import { isLongRangeEdge } from "./ConditionEdge";
 
 const bare = (id: string): Node => ({
   id,
@@ -198,6 +200,63 @@ describe("Dagre rank pinning — large-graph dummy-node budget (#3012)", () => {
     for (const node of issueNodes) {
       expect(layout.ranks.get(node.id)).toBe(issueRanks.get(node.id));
     }
+  });
+
+  it("draws every edge left to right, and stops describing the drawing by the ASAP map", () => {
+    // The map is not the drawing, and on a capped graph they disagree. The cap
+    // frees dagre to place a node anywhere the relaxed constraint allows, so the
+    // 100 rank-0 roots land in and to the right of the rank-9 column while their
+    // map entries still read 0. Dependency order survives that; the map's
+    // correspondence to the drawing does not.
+    const gaps = issueEdges.map((e) =>
+      Math.max(1, issueRanks.get(e.target)! - issueRanks.get(e.source)!),
+    );
+    expect(
+      boundPinnedMinlens(gaps, issueNodes.length).some((gap, index) => gap < gaps[index]),
+    ).toBe(true);
+
+    const layout = getLayoutedElements(issueNodes, issueEdges, "LR");
+    const x = new Map(layout.nodes.map((n) => [n.id, Math.round(n.position.x)]));
+
+    for (const edge of issueEdges) {
+      expect(x.get(edge.target)!).toBeGreaterThan(x.get(edge.source)!);
+    }
+
+    expect(issueRanks.get("root-0")).toBe(0);
+    expect(x.get("root-0")).toBe(x.get("chain-9"));
+    expect(issueRanks.get("chain-9")).toBe(9);
+  });
+
+  it("routes edges on drawn distance, so a capped gap stops inflating the range", () => {
+    const layout = getLayoutedElements(issueNodes, issueEdges, "LR");
+    const x = new Map(layout.nodes.map((n) => [n.id, Math.round(n.position.x)]));
+    const columns = [...new Set(x.values())].sort((a, b) => a - b);
+    const column = (id: string) => columns.indexOf(x.get(id)!);
+
+    // Every root sits one ASAP rank gap of 10 from the sink...
+    const asap = roots.map((id) => issueRanks.get("sink")! - issueRanks.get(id)!);
+    expect(new Set(asap)).toEqual(new Set([10]));
+    // ...and they are drawn anywhere from adjacent to it to a wrapped grid away.
+    const drawn = roots.map((id) => column("sink") - column(id));
+    expect(Math.min(...drawn)).toBe(1);
+    expect(Math.max(...drawn)).toBeGreaterThan(1);
+
+    const stamped = (id: string) => {
+      const edge = layout.edges.find((e) => e.source === id && e.target === "sink")!;
+      return (edge.data as { rankDistance?: number }).rankDistance;
+    };
+    const adjacent = roots.find((id) => column("sink") - column(id) === 1)!;
+    expect(stamped(adjacent)).toBe(1);
+    expect(isLongRangeEdge(stamped(adjacent))).toBe(false);
+    for (const id of roots) expect(stamped(id)).toBe(column("sink") - column(id));
+  });
+
+  it("leaves an edge whose endpoint was never placed unstamped", () => {
+    const placed = [{ ...bare("a"), position: { x: 0, y: 0 } }];
+    const [edge] = markRankDistance(placed, [{ id: "a-ghost", source: "a", target: "ghost" }]);
+
+    expect((edge.data as { rankDistance?: number } | undefined)?.rankDistance).toBeUndefined();
+    expect(isLongRangeEdge(undefined)).toBe(false);
   });
 
   it("lays out the measured fixture with finite positions and dependency-ordered ranks", () => {

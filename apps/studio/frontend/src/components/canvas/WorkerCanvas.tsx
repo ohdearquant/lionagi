@@ -280,24 +280,6 @@ function toFlowEdges(edges: WorkerLinkEdge[]): Edge<ConditionEdgeData>[] {
   }));
 }
 
-// Rank distance is a layout output (useLayout's rank map), not something
-// toFlowEdges can know at the initial graph -> ReactFlow conversion — so it
-// is stamped on afterward, once a layout pass has run. Edges outside the
-// rank map (e.g. a node dropped mid-edit) fall back to undefined, which
-// ConditionEdge treats as short-range.
-function attachRankDistance(
-  edges: Edge<ConditionEdgeData>[],
-  ranks: Map<string, number>,
-): Edge<ConditionEdgeData>[] {
-  return edges.map((e) => {
-    const srcRank = ranks.get(e.source);
-    const tgtRank = ranks.get(e.target);
-    const rankDistance =
-      srcRank !== undefined && tgtRank !== undefined ? tgtRank - srcRank : undefined;
-    return { ...e, data: { ...(e.data as ConditionEdgeData), rankDistance } };
-  });
-}
-
 function fromFlowNodes(nodes: Node<StepNodeData>[]): WorkerStepNode[] {
   return nodes.map((n) => ({
     id: n.id,
@@ -410,11 +392,10 @@ export default function WorkerCanvas({
       nodes: ln,
       edges: le,
       height,
-      ranks,
       width,
     } = getLayoutedElements(initialFlowNodes, initialFlowEdges, "LR");
     setNodes(ln);
-    setEdges(attachRankDistance(le, ranks));
+    setEdges(le as Edge<ConditionEdgeData>[]);
     initialised.current = true;
     layoutBBoxRef.current = { width, height };
     const containerWidth = containerRef.current?.clientWidth ?? 0;
@@ -682,9 +663,9 @@ export default function WorkerCanvas({
 
   // Auto layout
   const handleAutoLayout = useCallback(() => {
-    const { nodes: ln, edges: le, ranks } = getLayoutedElements(nodes, edges, "LR");
+    const { nodes: ln, edges: le } = getLayoutedElements(nodes, edges, "LR");
     setNodes(ln);
-    setEdges(attachRankDistance(le, ranks));
+    setEdges(le as Edge<ConditionEdgeData>[]);
   }, [nodes, edges, setNodes, setEdges]);
 
   return (

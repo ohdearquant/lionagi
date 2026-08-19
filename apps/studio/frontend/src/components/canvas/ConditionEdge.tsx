@@ -21,10 +21,9 @@ export interface ConditionEdgeData {
   map?: Record<string, string>;
   handler?: string;
   sourceCompleted?: boolean;
-  /** Longest-path rank distance source -> target, from useLayout's rank map
-   * (WorkerCanvas attaches this after each layout pass). Undefined for edges
-   * that predate a layout — e.g. a fresh onConnect in the editor — which
-   * fall back to the short-edge bezier route. */
+  /** Drawn column distance source -> target, stamped by the layout from the
+   * final geometry. Undefined for edges that predate a layout — e.g. a fresh
+   * onConnect in the editor — which fall back to the short-edge bezier route. */
   rankDistance?: number;
   /** Set by the layout when folding put this edge's target on the row below
    * its source, so it sweeps back across the canvas. See markContinuationEdges. */

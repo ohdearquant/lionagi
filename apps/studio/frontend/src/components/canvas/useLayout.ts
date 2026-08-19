@@ -410,12 +410,36 @@ export function markContinuationEdges(nodes: Node[], edges: Edge[]): Edge[] {
   return changed ? out : edges;
 }
 
+// What an edge crosses on screen is its drawn column distance, not its ASAP
+// rank distance, and once boundPinnedMinlens caps a gap the two stop agreeing:
+// the cap frees dagre to place a node anywhere the relaxed constraint allows,
+// so a rank-0 node whose only consumer is far downstream gets drawn beside that
+// consumer while its map entry still reads 0. Measured from the final geometry,
+// like the continuation mark above, so it survives whichever pass moved a node.
+export function markRankDistance(nodes: Node[], edges: Edge[]): Edge[] {
+  const columns = [...new Set(nodes.map((n) => Math.round(n.position.x)))].sort((a, b) => a - b);
+  const indexByX = new Map(columns.map((x, index) => [x, index]));
+  const columnById = new Map(
+    nodes.map((n) => [n.id, indexByX.get(Math.round(n.position.x))!] as const),
+  );
+
+  return edges.map((edge) => {
+    const source = columnById.get(edge.source);
+    const target = columnById.get(edge.target);
+    // An endpoint the layout never placed says nothing about distance.
+    if (source === undefined || target === undefined) return edge;
+    return { ...edge, data: { ...(edge.data ?? {}), rankDistance: target - source } };
+  });
+}
+
 export interface LayoutedGraph {
   nodes: Node[];
   edges: Edge[];
   height: number;
-  /** node id -> longest-path depth (rank index), for edge rank-distance
-   * styling (ConditionEdge's long-range smooth-step routing). */
+  /** node id -> longest-path (ASAP) depth. A property of the graph, not of
+   * the drawing: a capped rank gap leaves this untouched while moving where
+   * the node lands, so anything asking what an edge crosses on screen reads
+   * the stamped rankDistance instead. */
   ranks: Map<string, number>;
   /** UNSCALED bounding-box width, for computeReservedHeight callers. */
   width: number;
@@ -611,7 +635,7 @@ export function getLayoutedElements(
 
   return {
     nodes: finalNodes,
-    edges: markContinuationEdges(finalNodes, edges),
+    edges: markRankDistance(finalNodes, markContinuationEdges(finalNodes, edges)),
     height,
     width,
     ranks,
