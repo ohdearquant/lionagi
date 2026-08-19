@@ -31,6 +31,15 @@ lint-python() {
   else
     uv run ruff check "$@"
   fi
+  # --check, never the writing form: fmt-python is where formatting is applied.
+  # Without this a file can sit unformatted on main indefinitely, since the
+  # pre-commit hook only ever sees files someone is committing.
+  echo "==> ruff format --check"
+  if [ $# -eq 0 ]; then
+    uv run ruff format --check lionagi/ apps/ tests/ marketplace/ scripts/
+  else
+    uv run ruff format --check "$@"
+  fi
 }
 
 lint-quarantine() {
