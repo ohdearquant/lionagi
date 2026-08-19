@@ -276,14 +276,35 @@ def test_dataclass_with_updates():
 
 
 def test_dataclass_hash():
-    """Test DataClass.__hash__() method"""
-    # DataClass needs to be frozen to be hashable, use Params instead
-    params1 = MyParams(field1="test", field2=42)
-    params2 = MyParams(field1="test", field2=42)
-    hash1 = hash(params1)
-    hash2 = hash(params2)
-    assert isinstance(hash1, int)
-    assert isinstance(hash2, int)
+    """Mutable DataClass contexts reject set/dict-key admission."""
+    with pytest.raises(TypeError, match="unhashable type"):
+        hash(DataClass())
+
+
+def test_eq_false_dataclass_inherits_unhashable_structural_equality(monkeypatch):
+    @dataclass(slots=True, eq=False)
+    class MutableContext(DataClass):
+        values: list[int] = field(default_factory=list)
+
+    @dataclass(slots=True, eq=False)
+    class OtherMutableContext(DataClass):
+        values: list[int] = field(default_factory=list)
+
+    import lionagi.ln._hash as legacy_hash
+
+    monkeypatch.setattr(legacy_hash, "hash_dict", lambda _value: 0)
+    first = MutableContext(values=[1])
+    second = MutableContext(values=[1])
+    assert first == second
+    assert first != OtherMutableContext(values=[1])
+
+    with pytest.raises(TypeError, match="unhashable type"):
+        {first}
+    with pytest.raises(TypeError, match="unhashable type"):
+        {first: "value"}
+
+    second.values.append(2)
+    assert first != second
 
 
 def test_dataclass_eq():

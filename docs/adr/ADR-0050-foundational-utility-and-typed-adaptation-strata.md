@@ -129,7 +129,7 @@ lionagi/
 │   └── validate/             LionAGI validation/coercion policy
 ├── models/
 │   ├── field_model.py        Spec-compatible Pydantic field materialization
-│   ├── hashable_model.py     deterministic model serialization and hashing
+│   ├── hashable_model.py     deterministic model serialization; mutable models are unhashable
 │   └── note.py               nested mapping model
 └── adapters/
     ├── _base.py              sync/async registry and typed errors
@@ -220,6 +220,7 @@ Pydantic-side serializers preserve the same omission meaning:
 
 ```python
 class HashableModel(BaseModel):
+    __hash__ = None
     def to_dict(self, mode: Literal["python", "json", "db"] = "python", **kw) -> dict: ...
     def to_json(self, decode: bool = True, **kw) -> bytes | str: ...
 
@@ -252,6 +253,9 @@ class Note(BaseModel):
 - `HashableModel._to_dict()` removes top-level sentinel values. `mode="json"`
   round-trips through deterministic JSON; `mode="db"` additionally renames
   `metadata` to `node_metadata`. The inverse DB path renames it back.
+- `HashableModel` is a historical serialization-base name. Its current production family is
+  assignment-enabled and unhashable; callers use equality, stable Lion identity, or an immutable
+  declaration/snapshot rather than placing a mutable model in a set or dictionary key.
 - `Note.to_dict()` recursively removes sentinel values from dictionaries and lists.
   `exclude_none` and `exclude_empty` extend that recursive omission policy. The
   returned structure is a deep copy; JSON mode additionally runs recursive model

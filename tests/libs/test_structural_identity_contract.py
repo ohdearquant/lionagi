@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import ast
+import importlib
+from collections.abc import Hashable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 _ROOT = Path(__file__).parents[2]
@@ -35,6 +38,79 @@ _EXPECTED = frozenset(
     }
 )
 
+_MUTABLE_MODEL_BASES = frozenset(
+    {
+        "lionagi.ln.types.base.DataClass",
+        "lionagi.models.hashable_model.HashableModel",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _MutableModelInventoryEntry:
+    mutation_evidence: str
+    key_consumers: tuple[str, ...] = ()
+    dedup_consumers: tuple[str, ...] = ()
+
+
+# Machine-readable closure for mutable runtime-model identity. A new descendant must name its
+# surface and every set/dict-key or transient dedup consumer before CI accepts it.
+_MUTABLE_MODEL_INVENTORY = {
+    "lionagi.ln.types.base.DataClass": _MutableModelInventoryEntry("mutable dataclass substrate"),
+    "lionagi.protocols.messages.message.MessageContent": _MutableModelInventoryEntry(
+        "assignment and revision-tracked list/dict fields"
+    ),
+    "lionagi.protocols.messages.action_request.ActionRequestContent": (
+        _MutableModelInventoryEntry("message field assignment")
+    ),
+    "lionagi.protocols.messages.action_response.ActionResponseContent": (
+        _MutableModelInventoryEntry("message field assignment")
+    ),
+    "lionagi.protocols.messages.assistant_response.AssistantResponseContent": (
+        _MutableModelInventoryEntry("message field assignment")
+    ),
+    "lionagi.protocols.messages.instruction.InstructionContent": (
+        _MutableModelInventoryEntry("message field and tracked-container assignment")
+    ),
+    "lionagi.protocols.messages.system.SystemContent": _MutableModelInventoryEntry(
+        "message field assignment"
+    ),
+    "lionagi.models.hashable_model.HashableModel": _MutableModelInventoryEntry(
+        "Pydantic validate_assignment"
+    ),
+    "lionagi.models.operable_model.OperableModel": _MutableModelInventoryEntry(
+        "add_field/update_field/remove_field"
+    ),
+    "lionagi.models.schema_model.SchemaModel": _MutableModelInventoryEntry(
+        "Pydantic validate_assignment"
+    ),
+    "lionagi.libs.schema.function_to_schema.FunctionSchema": _MutableModelInventoryEntry(
+        "Pydantic validate_assignment"
+    ),
+    "lionagi.operations.ReAct.utils.ReActAnalysis": _MutableModelInventoryEntry(
+        "Pydantic validate_assignment"
+    ),
+    "lionagi.operations.ReAct.utils.Analysis": _MutableModelInventoryEntry(
+        "Pydantic validate_assignment"
+    ),
+    "lionagi.operations.fields.Instruct": _MutableModelInventoryEntry(
+        "Pydantic validate_assignment",
+        dedup_consumers=("lionagi.operations.fields._validate_listable_field",),
+    ),
+    "lionagi.operations.fields.Reason": _MutableModelInventoryEntry(
+        "Pydantic validate_assignment",
+        dedup_consumers=("lionagi.operations.fields._validate_listable_field",),
+    ),
+    "lionagi.operations.fields.ActionRequestModel": _MutableModelInventoryEntry(
+        "Pydantic validate_assignment",
+        dedup_consumers=("lionagi.operations.fields._validate_listable_field",),
+    ),
+    "lionagi.operations.fields.ActionResponseModel": _MutableModelInventoryEntry(
+        "Pydantic validate_assignment",
+        dedup_consumers=("lionagi.operations.fields._validate_listable_field",),
+    ),
+}
+
 
 @dataclass(frozen=True)
 class _Module:
@@ -50,6 +126,7 @@ class _Class:
     module: _Module
     node: ast.ClassDef
     bases: tuple[str, ...]
+    bindings: dict[str, str | None]
 
 
 def _module_name(path: Path) -> tuple[str, str]:
@@ -121,27 +198,47 @@ def _module_bindings(
     return bindings
 
 
-def _symbol(node: ast.AST, module: _Module) -> str | None:
+def _symbol(
+    node: ast.AST,
+    module: _Module,
+    bindings: dict[str, str | None] | None = None,
+) -> str | None:
     if isinstance(node, ast.Name):
+        if bindings is not None and node.id in bindings:
+            return bindings[node.id]
         return module.bindings.get(node.id, f"{module.name}.{node.id}")
     if isinstance(node, ast.Attribute):
-        parent = _symbol(node.value, module)
+        parent = _symbol(node.value, module, bindings)
         return f"{parent}.{node.attr}" if parent else None
     return None
 
 
-def _load_modules(overrides: dict[str, str] | None = None) -> dict[str, _Module]:
-    overrides = overrides or {}
+@lru_cache(maxsize=1)
+def _production_modules() -> dict[str, _Module]:
     modules: dict[str, _Module] = {}
     for path in sorted(_PACKAGE.rglob("*.py")):
         name, package = _module_name(path)
-        source = overrides.get(name, path.read_text())
+        source = path.read_text()
         tree = ast.parse(source, filename=str(path))
         modules[name] = _Module(
             name=name,
             package=package,
             tree=tree,
             bindings=_module_bindings(name, package, tree),
+        )
+    return modules
+
+
+def _load_modules(overrides: dict[str, str] | None = None) -> dict[str, _Module]:
+    modules = dict(_production_modules())
+    for name, source in (overrides or {}).items():
+        original = modules[name]
+        tree = ast.parse(source, filename=str(_ROOT.joinpath(*name.split(".")).with_suffix(".py")))
+        modules[name] = _Module(
+            name=name,
+            package=original.package,
+            tree=tree,
+            bindings=_module_bindings(name, original.package, tree),
         )
     return modules
 
@@ -164,28 +261,87 @@ def _canonical(symbol: str, aliases: dict[str, str]) -> str:
     return symbol
 
 
-def _class_nodes(tree: ast.Module) -> tuple[tuple[str, ast.ClassDef], ...]:
-    found: list[tuple[str, ast.ClassDef]] = []
+def _class_nodes(
+    module: _Module,
+) -> tuple[tuple[str, ast.ClassDef, dict[str, str | None]], ...]:
+    found: list[tuple[str, ast.ClassDef, dict[str, str | None]]] = []
 
     class Visitor(ast.NodeVisitor):
         def __init__(self) -> None:
             self.scope: list[str] = []
+            self.bindings: list[dict[str, str | None]] = [dict(module.bindings)]
+
+        def _visible_bindings(self) -> dict[str, str | None]:
+            visible: dict[str, str | None] = {}
+            for scope in self.bindings:
+                visible.update(scope)
+            return visible
+
+        def _resolve(self, node: ast.AST) -> str | None:
+            return _symbol(node, module, self._visible_bindings())
+
+        def _bind(self, name: str, target: str | None) -> None:
+            self.bindings[-1][name] = target
 
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
             qualified = ".".join((*self.scope, node.name))
-            found.append((qualified, node))
+            found.append((qualified, node, self._visible_bindings()))
             self.scope.append(node.name)
-            self.generic_visit(node)
+            self.bindings.append({})
+            for statement in node.body:
+                self.visit(statement)
+            self.bindings.pop()
             self.scope.pop()
+            self._bind(node.name, f"{module.name}.{qualified}")
 
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
             self.scope.append(f"{node.name}.<locals>")
-            self.generic_visit(node)
+            arguments = (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            )
+            local_bindings = {argument.arg: None for argument in arguments}
+            if node.args.vararg is not None:
+                local_bindings[node.args.vararg.arg] = None
+            if node.args.kwarg is not None:
+                local_bindings[node.args.kwarg.arg] = None
+            self.bindings.append(local_bindings)
+            for statement in node.body:
+                self.visit(statement)
+            self.bindings.pop()
             self.scope.pop()
+            qualified = ".".join((*self.scope, node.name))
+            self._bind(node.name, f"{module.name}.{qualified}")
 
         visit_AsyncFunctionDef = visit_FunctionDef
 
-    Visitor().visit(tree)
+        def visit_Assign(self, node: ast.Assign) -> None:
+            target = self._resolve(node.value)
+            for assignment_target in node.targets:
+                if isinstance(assignment_target, ast.Name):
+                    self._bind(assignment_target.id, target)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if isinstance(node.target, ast.Name):
+                target = self._resolve(node.value) if node.value is not None else None
+                self._bind(node.target.id, target)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for imported in node.names:
+                local = imported.asname or imported.name.split(".", 1)[0]
+                self._bind(local, imported.name if imported.asname else local)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            base = _from_base(module.package, node)
+            for imported in node.names:
+                if imported.name == "*":
+                    continue
+                local = imported.asname or imported.name
+                target = f"{base}.{imported.name}" if base else imported.name
+                self._bind(local, target)
+
+    Visitor().visit(module.tree)
     return tuple(found)
 
 
@@ -193,14 +349,20 @@ def _classes(modules: dict[str, _Module]) -> tuple[dict[str, _Class], dict[str, 
     aliases = _reexports(modules)
     classes: dict[str, _Class] = {}
     for module in modules.values():
-        for qualified_name, node in _class_nodes(module.tree):
+        for qualified_name, node, bindings in _class_nodes(module):
             fqn = f"{module.name}.{qualified_name}"
             bases = tuple(
                 _canonical(symbol, aliases)
                 for base in node.bases
-                if (symbol := _symbol(base, module)) is not None
+                if (symbol := _symbol(base, module, bindings)) is not None
             )
-            classes[fqn] = _Class(fqn=fqn, module=module, node=node, bases=bases)
+            classes[fqn] = _Class(
+                fqn=fqn,
+                module=module,
+                node=node,
+                bases=bases,
+                bindings=bindings,
+            )
     return classes, aliases
 
 
@@ -217,11 +379,68 @@ def _structural_classes(classes: dict[str, _Class]) -> frozenset[str]:
     return frozenset(selected)
 
 
+def _mutable_model_classes(classes: dict[str, _Class]) -> frozenset[str]:
+    selected = set(_MUTABLE_MODEL_BASES)
+    changed = True
+    while changed:
+        changed = False
+        for fqn, class_info in classes.items():
+            if fqn in selected or not any(base in selected for base in class_info.bases):
+                continue
+            selected.add(fqn)
+            changed = True
+    return frozenset(selected)
+
+
+def _class_authorities(class_info: _Class) -> frozenset[str]:
+    authorities: set[str] = set()
+    for node in class_info.node.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            authorities.add(node.name)
+        elif isinstance(node, ast.Assign):
+            authorities.update(target.id for target in node.targets if isinstance(target, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            authorities.add(node.target.id)
+    return frozenset(authorities)
+
+
+def _mutable_model_violations(overrides: dict[str, str] | None = None) -> tuple[str, ...]:
+    modules = _load_modules(overrides)
+    classes, _aliases = _classes(modules)
+    selected = _mutable_model_classes(classes)
+    expected = frozenset(_MUTABLE_MODEL_INVENTORY)
+    violations: list[str] = []
+    if selected != expected:
+        missing = sorted(expected - selected)
+        unexpected = sorted(selected - expected)
+        violations.append(f"mutable inventory drift: missing={missing}, unexpected={unexpected}")
+
+    for fqn in sorted(selected):
+        class_info = classes.get(fqn)
+        if class_info is None:
+            violations.append(f"missing mutable declaration: {fqn}")
+            continue
+        authorities = _class_authorities(class_info)
+        if fqn not in _MUTABLE_MODEL_BASES and "__hash__" in authorities:
+            violations.append(f"{fqn}: mutable descendant declares __hash__")
+    return tuple(violations)
+
+
+def _load_type(fqn: str) -> type:
+    module_name, _, class_name = fqn.rpartition(".")
+    return getattr(importlib.import_module(module_name), class_name)
+
+
+def _load_object(fqn: str) -> object:
+    module_name, _, attribute = fqn.rpartition(".")
+    return getattr(importlib.import_module(module_name), attribute)
+
+
 def _dataclass_eq_false(class_info: _Class, aliases: dict[str, str]) -> bool:
     for decorator in class_info.node.decorator_list:
         if not isinstance(decorator, ast.Call):
             continue
-        symbol = _symbol(decorator.func, class_info.module)
+        symbol = _symbol(decorator.func, class_info.module, class_info.bindings)
         if symbol is None or _canonical(symbol, aliases) != "dataclasses.dataclass":
             continue
         eq = next((kw.value for kw in decorator.keywords if kw.arg == "eq"), None)
@@ -282,6 +501,73 @@ def _source(module: str) -> str:
 
 def test_production_structural_identity_owners_are_closed():
     assert _violations() == ()
+
+
+def test_production_mutable_model_owners_are_closed_and_unhashable():
+    assert _mutable_model_violations() == ()
+    assert all(not entry.key_consumers for entry in _MUTABLE_MODEL_INVENTORY.values())
+    for entry in _MUTABLE_MODEL_INVENTORY.values():
+        assert entry.mutation_evidence.strip()
+        for consumer in (*entry.key_consumers, *entry.dedup_consumers):
+            assert consumer.strip()
+            assert callable(_load_object(consumer)), consumer
+    assert {
+        fqn: entry.dedup_consumers
+        for fqn, entry in _MUTABLE_MODEL_INVENTORY.items()
+        if entry.dedup_consumers
+    } == {
+        "lionagi.operations.fields.Instruct": (
+            "lionagi.operations.fields._validate_listable_field",
+        ),
+        "lionagi.operations.fields.Reason": ("lionagi.operations.fields._validate_listable_field",),
+        "lionagi.operations.fields.ActionRequestModel": (
+            "lionagi.operations.fields._validate_listable_field",
+        ),
+        "lionagi.operations.fields.ActionResponseModel": (
+            "lionagi.operations.fields._validate_listable_field",
+        ),
+    }
+    for fqn in _MUTABLE_MODEL_INVENTORY:
+        model_type = _load_type(fqn)
+        assert model_type.__hash__ is None, fqn
+        assert not issubclass(model_type, Hashable), fqn
+
+
+def test_mutable_model_contract_rejects_an_unregistered_descendant():
+    module = "lionagi.operations.fields"
+    source = _source(module) + "\n\nclass RogueMutableModel(HashableModel):\n    pass\n"
+    assert any(
+        "RogueMutableModel" in item and "unexpected=" in item
+        for item in _mutable_model_violations({module: source})
+    )
+
+
+def test_mutable_model_contract_rejects_a_descendant_hash_authority():
+    module = "lionagi.operations.fields"
+    source = _source(module).replace(
+        "class Reason(HashableModel):\n",
+        "class Reason(HashableModel):\n    __hash__ = object.__hash__\n",
+        1,
+    )
+    assert any(
+        "Reason: mutable descendant declares __hash__" in item
+        for item in _mutable_model_violations({module: source})
+    )
+
+
+def test_mutable_model_contract_follows_a_function_local_base_alias():
+    module = "lionagi.operations.fields"
+    source = (
+        _source(module)
+        + "\n\ndef factory():\n"
+        + "    Alias = HashableModel\n"
+        + "    class HiddenMutable(Alias):\n"
+        + "        __hash__ = object.__hash__\n"
+        + "    return HiddenMutable\n"
+    )
+    violations = _mutable_model_violations({module: source})
+    assert any("HiddenMutable" in item and "unexpected=" in item for item in violations)
+    assert any("HiddenMutable: mutable descendant declares __hash__" in item for item in violations)
 
 
 def test_contract_rejects_generated_dataclass_equality():
@@ -358,6 +644,21 @@ def test_contract_follows_a_module_level_base_alias():
         "unexpected=['lionagi.operations.types.AliasRogueParam']" in item for item in violations
     )
     assert any("AliasRogueParam: dataclass must declare eq=False" in item for item in violations)
+
+
+def test_contract_follows_a_class_local_base_alias():
+    module = "lionagi.operations.types"
+    source = (
+        _source(module)
+        + "\n\nclass Namespace:\n"
+        + "    Alias = Params\n"
+        + "    @dataclass(slots=True, frozen=True, init=False)\n"
+        + "    class HiddenParam(Alias):\n"
+        + "        pass\n"
+    )
+    violations = _violations({module: source})
+    assert any("HiddenParam" in item and "unexpected=" in item for item in violations)
+    assert any("HiddenParam: dataclass must declare eq=False" in item for item in violations)
 
 
 def test_contract_rejects_a_nested_substrate_subclass():

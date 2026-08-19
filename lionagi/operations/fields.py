@@ -16,8 +16,6 @@ from lionagi.models import HashableModel
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_FIELDS = {}
-
 
 class Instruct(HashableModel):
     """Model for defining instruction parameters and execution requirements."""
@@ -298,13 +296,7 @@ def get_default_field(
     nullable: bool = True,
     listable: bool | None = None,
 ):
-    global _DEFAULT_FIELDS
-    key = (kind, str(default), nullable, listable)
-    if key not in _DEFAULT_FIELDS:
-        _DEFAULT_FIELDS[key] = _get_default_fields(
-            kind, default=default, nullable=nullable, listable=listable
-        )
-    return _DEFAULT_FIELDS[key]
+    return _get_default_fields(kind, default=default, nullable=nullable, listable=listable)
 
 
 def _get_default_fields(
@@ -328,14 +320,10 @@ def _get_default_fields(
             fm = FieldModel(Instruct, name="instruct_model")
 
         case "action_required":
-            from lionagi.libs.validate.common_field_validators import (
-                validate_boolean_field,
-            )
-
             fm = FieldModel(
                 bool,
                 name="action_required",
-                validator=lambda cls, v: validate_boolean_field(cls, v, False),
+                validator=_validate_action_required_field,
                 description=(
                     "Whether this step strictly requires performing actions. "
                     "If true, the requests in `action_requests` must be fulfilled, "
@@ -382,9 +370,27 @@ def _get_default_fields(
         fm = fm.with_default(default)
 
     if fm.is_listable:
-        fm = fm.with_validator(lambda cls, x: to_list(x, dropna=True, flatten=True, unique=True))
+        fm = fm.with_validator(_validate_listable_field)
 
     return fm
+
+
+def _validate_listable_field(cls: Any, value: Any) -> list[Any]:
+    """Normalize and equality-deduplicate one small operation DTO list."""
+    del cls  # Pydantic recognizes the validator class argument by this exact name.
+    values = to_list(value, dropna=True, flatten=True)
+    result: list[Any] = []
+    for item in values:
+        if not any(existing is item or existing == item for existing in result):
+            result.append(item)
+    return result
+
+
+def _validate_action_required_field(cls: Any, value: Any) -> bool | None:
+    """Normalize the action-required flag through one stable validator identity."""
+    from lionagi.libs.validate.common_field_validators import validate_boolean_field
+
+    return validate_boolean_field(cls, value, False)
 
 
 # Lazily-generated field constants
@@ -401,7 +407,9 @@ _FIELD_CONSTANTS = {
 def __getattr__(name: str):
     if name in _FIELD_CONSTANTS:
         field_name, kwargs = _FIELD_CONSTANTS[name]
-        return get_default_field(field_name, **kwargs)
+        value = get_default_field(field_name, **kwargs)
+        globals()[name] = value
+        return value
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 

@@ -19,6 +19,7 @@ __all__ = ("to_list", "ToListParams")
 _lazy = LazyInit()
 _MODEL_LIKE = None
 _MAP_LIKE = None
+_DATA_CLASS = None
 _SINGLETONE_TYPES = None
 _SKIP_TYPE = None
 _SKIP_TUPLE_SET = None
@@ -31,7 +32,7 @@ def _do_init() -> None:
     from pydantic import BaseModel
     from pydantic_core import PydanticUndefinedType
 
-    from .types import UndefinedType, UnsetType
+    from .types import DataClass, UndefinedType, UnsetType
 
     try:
         from msgspec import Struct
@@ -40,9 +41,11 @@ def _do_init() -> None:
     except ImportError:
         _model_like = (BaseModel,)
 
-    global _MODEL_LIKE, _MAP_LIKE, _SINGLETONE_TYPES, _SKIP_TYPE, _SKIP_TUPLE_SET
+    global _MODEL_LIKE, _MAP_LIKE, _DATA_CLASS
+    global _SINGLETONE_TYPES, _SKIP_TYPE, _SKIP_TUPLE_SET
     _MODEL_LIKE = _model_like
-    _MAP_LIKE = (Mapping, *_MODEL_LIKE)
+    _DATA_CLASS = DataClass
+    _MAP_LIKE = (Mapping, DataClass, *_MODEL_LIKE)
     _SINGLETONE_TYPES = (UndefinedType, UnsetType, PydanticUndefinedType)
     _SKIP_TYPE = (*_BYTE_LIKE, *_MAP_LIKE, _Enum)
     _SKIP_TUPLE_SET = (*_SKIP_TYPE, *_TUPLE_SET)
@@ -123,6 +126,7 @@ def to_list(
     if unique:
         seen: set = set()
         unhashable_buckets: dict[Any, list] = {}
+        unhashable_dataclasses: list[Any] = []
         out: list = []
         for i in processed:
             try:
@@ -130,9 +134,18 @@ def to_list(
                     seen.add(i)
                     out.append(i)
             except TypeError:
-                # Unhashable item (e.g. a dict): bucket by structural hash, then
-                # confirm identity-or-equality within the bucket, mirroring the
-                # identity-first fast path native set membership gives above.
+                # DataClass was not accepted by this fallback before its unsafe
+                # base hash was removed. Compare it directly because a structural
+                # bucket need not be congruent with a generated/custom dataclass
+                # equality implementation. Existing mapping, Pydantic, and msgspec
+                # inputs retain the transient structural-hash fallback below.
+                if _DATA_CLASS is not None and isinstance(i, _DATA_CLASS):
+                    if not any(
+                        existing is i or existing == i for existing in unhashable_dataclasses
+                    ):
+                        unhashable_dataclasses.append(i)
+                        out.append(i)
+                    continue
                 if isinstance(i, _MAP_LIKE):
                     hash_value = hash_dict(i)
                 else:

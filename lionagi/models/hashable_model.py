@@ -18,7 +18,7 @@ __all__ = (
 
 
 class HashableModel(BaseModel):
-    """Used as base class for models that need to be hashable."""
+    """Legacy serialization base for mutable Pydantic models."""
 
     model_config = ConfigDict(
         populate_by_name=True,
@@ -84,8 +84,7 @@ class HashableModel(BaseModel):
         """Creates an instance of this class from a JSON string."""
         return cls.from_dict(data, mode=mode, **kwargs)
 
-    def __hash__(self):
-        return ln.hash_dict(self.to_dict())
+    __hash__ = None  # type: ignore[assignment]
 
 
 def _get_default_hashable_serializer():
