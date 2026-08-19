@@ -161,6 +161,8 @@ class _DBSchedulerStateService:
         async with self._db_context() as db:
             # Scheduler correctness cannot inherit StateDB's public 100-row
             # page default: an omitted enabled row would never be evaluated.
+            # The unbounded per-tick scan is the accepted cost. Paging cannot
+            # replace it: the page orders by updated_at, and firing writes it.
             return await db.list_schedules(enabled=enabled, limit=None)
 
     async def update_schedule(
