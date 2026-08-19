@@ -24,12 +24,19 @@ import pytest
 
 from lionagi.state.reasons import RunReasons
 from lionagi.studio.scheduler.engine import SchedulerEngine
-from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult
+from lionagi.studio.scheduler.github import (
+    GithubPollItem,
+    GithubPollResult,
+    _cursor_for,
+)
 from tests._scheduler_claims import fire_with_claim
 
 CURSOR_AT_TICK_START = "2026-07-07T09:00:00Z"
 FIRST_EVENT_AT = "2026-07-07T10:00:00Z"
 SECOND_EVENT_AT = "2026-07-07T11:00:00Z"
+# What each event stores: its timestamp plus its own PR number.
+FIRST_EVENT_CURSOR = _cursor_for(FIRST_EVENT_AT, 1)
+SECOND_EVENT_CURSOR = _cursor_for(SECOND_EVENT_AT, 2)
 
 
 def _minimal_schedule(**overrides) -> dict:
@@ -92,6 +99,7 @@ def _item(pr_number: int, updated_at: str) -> GithubPollItem:
         },
         updated_at=updated_at,
         dispatchable=True,
+        cursor=_cursor_for(updated_at, pr_number),
     )
 
 
@@ -252,7 +260,7 @@ async def test_nonzero_exit_still_advances_the_cursor():
         await engine._tick_github(schedule, now=10_000.0)
 
     fields = svc.create_schedule_run_and_advance.await_args_list[0].kwargs["schedule_fields"]
-    assert fields["github_cursor"] == FIRST_EVENT_AT
+    assert fields["github_cursor"] == FIRST_EVENT_CURSOR
     failed = _run_status_calls(svc, "failed")
     assert len(failed) == 1
     assert failed[0].kwargs["reason_code"] == RunReasons.FAILED_EXIT_NONZERO
@@ -278,7 +286,7 @@ async def test_successful_run_advances_the_cursor():
         call.kwargs["schedule_fields"]["github_cursor"]
         for call in svc.create_schedule_run_and_advance.await_args_list
     ]
-    assert advanced == [FIRST_EVENT_AT, SECOND_EVENT_AT]
+    assert advanced == [FIRST_EVENT_CURSOR, SECOND_EVENT_CURSOR]
 
 
 # Cancellation: which side of the split it lands on depends on the process
@@ -308,7 +316,7 @@ async def test_cancellation_before_launch_leaves_the_run_for_startup_recovery():
                 schedule,
                 "run-cancel-pre",
                 trigger_context={"github_events": [_item(1, FIRST_EVENT_AT).event]},
-                extra_schedule_fields={"github_cursor": FIRST_EVENT_AT},
+                extra_schedule_fields={"github_cursor": FIRST_EVENT_CURSOR},
             )
 
     # No terminal write, so the row stays in the undispatched-recovery lane.
@@ -341,14 +349,14 @@ async def test_cancellation_after_launch_still_records_a_cancelled_run():
                 schedule,
                 "run-cancel-post",
                 trigger_context={"github_events": [_item(1, FIRST_EVENT_AT).event]},
-                extra_schedule_fields={"github_cursor": FIRST_EVENT_AT},
+                extra_schedule_fields={"github_cursor": FIRST_EVENT_CURSOR},
             )
 
     cancelled = _run_status_calls(svc, "cancelled")
     assert len(cancelled) == 1
     assert cancelled[0].kwargs["reason_code"] == RunReasons.CANCELLED_SYSTEM
     fields = svc.create_schedule_run_and_advance.await_args_list[0].kwargs["schedule_fields"]
-    assert fields["github_cursor"] == FIRST_EVENT_AT
+    assert fields["github_cursor"] == FIRST_EVENT_CURSOR
 
 
 # The refusal is not always a property of the schedule: bounded retry
@@ -412,7 +420,7 @@ async def test_event_specific_argv_failure_retries_before_the_limit(_command_all
     ]
     assert len(streak) == 1
     assert streak[0].kwargs["predispatch_refusal_count"] == 1
-    assert streak[0].kwargs["predispatch_refusal_event"] == FIRST_EVENT_AT
+    assert streak[0].kwargs["predispatch_refusal_event"] == FIRST_EVENT_CURSOR
 
 
 @pytest.mark.asyncio
@@ -425,7 +433,7 @@ async def test_event_specific_argv_failure_progresses_at_the_limit(_command_allo
     svc = _make_svc()
     engine = SchedulerEngine(svc=svc)
     schedule = _poison_command_schedule(
-        predispatch_refusal_event=FIRST_EVENT_AT,
+        predispatch_refusal_event=FIRST_EVENT_CURSOR,
         predispatch_refusal_count=_MAX_PREDISPATCH_REFUSALS - 1,
     )
 
@@ -448,8 +456,8 @@ async def test_event_specific_argv_failure_progresses_at_the_limit(_command_allo
     # value in the same poll.)
     written = _cursor_values_written(svc)
     assert written
-    assert all(v == SECOND_EVENT_AT for v in written)
-    assert SECOND_EVENT_AT > FIRST_EVENT_AT
+    assert all(v == SECOND_EVENT_CURSOR for v in written)
+    assert SECOND_EVENT_CURSOR > FIRST_EVENT_CURSOR
     # The streak is cleared once the cursor is past the event it counted.
     cleared = [
         c
@@ -495,7 +503,7 @@ async def test_pre_launch_status_write_failure_leaves_the_run_recoverable():
     assert inserted.get("dispatched_at") is None
     # Only this event's own advance, committed with the occurrence (the
     # trailing batched write re-states the same value).
-    assert set(_cursor_values_written(svc)) == {FIRST_EVENT_AT}
+    assert set(_cursor_values_written(svc)) == {FIRST_EVENT_CURSOR}
     # Nothing terminal was written for it, so it is still in the lane.
     assert _run_status_calls(svc, "failed") == []
     assert _run_status_calls(svc, "cancelled") == []

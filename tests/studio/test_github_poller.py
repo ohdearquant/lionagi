@@ -1273,3 +1273,88 @@ def test_github_poll_truncated_scan_that_still_dispatches_does_not_warn(monkeypa
     assert [i.event["pr_number"] for i in result.items] == [1000]
     assert result.scan_complete is False
     assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == []
+
+
+# The oldest updated_at a full ``_closed_page`` carries, restated here because the
+# same-second paging tests below key on that exact boundary.
+_PAGE_OLDEST_UPDATED = "2026-07-06T12:01:15Z"
+
+
+def test_an_event_sharing_a_timestamp_survives_the_other_claiming_it(monkeypatch):
+    """Two PRs updated in the same second are two events, and a cursor has to say which.
+
+    GitHub timestamps have one-second resolution and a merge queue lands batches inside
+    one, so a shared timestamp is ordinary. The caller advances the cursor per dispatched
+    event, so an interruption between the two leaves the second one facing a cursor
+    sitting at its own timestamp.
+    """
+    shared = "2026-07-07T10:00:00Z"
+    prs = [_pr(2, shared, head_repo="owner/name"), _pr(1, shared, head_repo="owner/name")]
+
+    _install(monkeypatch, prs)
+    both = _poll({"id": "s1", "github_repo": "owner/name"})
+    assert [i.event["pr_number"] for i in both] == [1, 2]
+
+    _install(monkeypatch, prs)
+    after_first = _poll({"id": "s1", "github_repo": "owner/name", "github_cursor": both[0].cursor})
+    assert [i.event["pr_number"] for i in after_first] == [2]
+
+    _install(monkeypatch, prs)
+    after_both = _poll(
+        {"id": "s1", "github_repo": "owner/name", "github_cursor": after_first[0].cursor}
+    )
+    assert after_both == []
+
+
+def test_a_cursor_stored_before_the_number_joined_it_still_claims_its_whole_second(monkeypatch):
+    """An upgrade must not re-offer events already dispatched.
+
+    Every cursor written before this carried the timestamp alone and meant every event in
+    that second was done, so that is what a bare one goes on meaning.
+    """
+    shared = "2026-07-07T10:00:00Z"
+    prs = [_pr(2, shared, head_repo="owner/name"), _pr(1, shared, head_repo="owner/name")]
+    _install(monkeypatch, prs)
+
+    assert _poll({"id": "s1", "github_repo": "owner/name", "github_cursor": shared}) == []
+
+
+def test_events_sharing_a_timestamp_come_back_in_the_order_their_cursors_sort(monkeypatch):
+    """The stored value is ordered lexically wherever it is compared, in SQL included."""
+    shared = "2026-07-07T10:00:00Z"
+    _install(monkeypatch, [_pr(n, shared, head_repo="owner/name") for n in (40, 5, 7)])
+
+    items = _poll({"id": "s1", "github_repo": "owner/name"})
+
+    assert [i.event["pr_number"] for i in items] == [5, 7, 40]
+    assert items[0].cursor < items[1].cursor < items[2].cursor
+
+
+def test_merged_mode_keeps_paging_while_the_cursors_own_second_may_hold_more(monkeypatch):
+    """A cursor naming one event within a second cannot stop the scan at that second.
+
+    The stop condition exists to prove no unfetched page holds a wanted event. An event
+    sharing the cursor's second is still wanted, so a page whose oldest sits exactly there
+    proves nothing and the scan has to go on.
+    """
+    page1 = _closed_page(12, 100)
+    assert page1[-1]["updated_at"] == _PAGE_OLDEST_UPDATED, "the paging boundary moved"
+    page2 = [_pr(77, "2026-07-06T09:00:00Z", state="closed", merged_at=_PAGE_OLDEST_UPDATED)]
+    schedule = {
+        "id": "s1",
+        "github_repo": "owner/name",
+        "github_filter": {"event": "pr_merged"},
+    }
+
+    client = _install_paginated(monkeypatch, [page1, page2])
+    named = _poll({**schedule, "github_cursor": gh_mod._cursor_for(_PAGE_OLDEST_UPDATED, 7)})
+
+    assert [i.event["pr_number"] for i in named] == [77]
+    assert len(client.requests) == 2
+
+    # A whole-second cursor has nothing left to find there, so it stops on page 1.
+    client = _install_paginated(monkeypatch, [page1, page2])
+    whole_second = _poll({**schedule, "github_cursor": _PAGE_OLDEST_UPDATED})
+
+    assert whole_second == []
+    assert len(client.requests) == 1
