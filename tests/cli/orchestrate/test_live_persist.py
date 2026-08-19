@@ -4729,6 +4729,47 @@ async def test_child_message_loss_surfaces_at_invocation_not_flattened_to_ok(
     assert {e["id"] for e in evidence} == {ctx["session_id"]}
 
 
+async def test_a_losing_child_is_named_when_a_sibling_fails(
+    temp_db_path: Path,
+):
+    """The precedence ladder returns on the first status that matches, and every arm
+    above the all-completed one used to return before the loss was ever looked for. A
+    failure alongside an incomplete transcript is the case that most needs both."""
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-loss-beside-a-failure"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    ctx["message_retry_queues"].append(await _dead_queue_events(ctx["session_id"]))
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        await db.create_progression("prog-failed-sibling")
+        await db.create_session(
+            {
+                "id": "sess-failed-sibling",
+                "progression_id": "prog-failed-sibling",
+                "invocation_id": invocation_id,
+                "status": "failed",
+            }
+        )
+
+    status, reason_code, _summary, _evidence, metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+
+    assert status == "failed"
+    assert reason_code == RunReasons.FAILED_EXCEPTION, "the failure outranks the record"
+    assert metadata["message_loss_session_ids"] == [ctx["session_id"]]
+
+
 async def test_a_losing_child_is_named_even_when_another_reason_wins(
     temp_db_path: Path,
 ):

@@ -542,32 +542,25 @@ def _format_budget_preamble(
     )
 
 
-def _has_message_loss_evidence(session: dict) -> bool:
-    """Whether this session's row records that it lost live message events."""
-    refs = session.get("status_evidence_refs")
-    if isinstance(refs, str):
-        try:
-            refs = json.loads(refs)
-        except (TypeError, ValueError):
-            return False
-    if not isinstance(refs, list):
-        return False
-    return any(isinstance(ref, dict) and ref.get("kind") == "message_persist_loss" for ref in refs)
-
-
 async def _resolve_invocation_terminal_flow(
     invocation_id: str,
     *,
     fallback_status: str,
 ) -> tuple[str, str, str, list[dict], dict]:
     from lionagi.state.db import StateDB
-    from lionagi.state.reasons import RunReasons
+    from lionagi.state.reasons import RunReasons, has_message_loss_evidence
 
     async with StateDB() as db:
         sessions = await db.list_sessions_for_invocation(invocation_id)
         child_statuses = [str(s.get("status") or "") for s in sessions]
         evidence_refs = [{"kind": "session", "id": s["id"]} for s in sessions if s.get("id")]
         metadata: dict = {"child_statuses": child_statuses}
+        # Named ahead of the precedence ladder, not inside its all-completed arm: a
+        # child that lost messages and also failed carries the other status, and the
+        # loss has to survive that. Only the reason code defers, because a row has one.
+        lost_messages = [s for s in sessions if has_message_loss_evidence(s)]
+        if lost_messages:
+            metadata["message_loss_session_ids"] = [s["id"] for s in lost_messages if s.get("id")]
 
         # Precedence: timed_out > failed > aborted > cancelled > completed_empty
         # > completed. completed_empty outranks completed so one silently
@@ -617,17 +610,6 @@ async def _resolve_invocation_terminal_flow(
                     metadata,
                 )
             if all(s == "completed" for s in child_statuses):
-                # Read off the evidence rather than the reason code. A child that lost
-                # messages AND hit something else carries the other reason, because a
-                # row has one; it carries both evidence refs. Named in the metadata
-                # before any branch below can claim the reason code, or the branch that
-                # wins takes the loss out of the invocation record with it.
-                lost_messages = [s for s in sessions if _has_message_loss_evidence(s)]
-                if lost_messages:
-                    metadata = dict(metadata)
-                    metadata["message_loss_session_ids"] = [
-                        s["id"] for s in lost_messages if s.get("id")
-                    ]
                 spawn_refused = [
                     s
                     for s in sessions

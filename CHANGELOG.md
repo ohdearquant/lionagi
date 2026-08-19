@@ -117,10 +117,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   by whatever code the earlier leg was running; entries that do not fit are dropped, and the total is
   recomputed from the entries that survive so it agrees with what it claims to sum.
 
-  A flow invocation whose children all completed no longer reports a clean success when one of
-  them lost messages. It reads the loss off the child's evidence rather than its reason code,
-  so a child that lost messages and also hit something else is still named, and the invocation
-  carries the sessions whose transcripts are incomplete.
+  An invocation whose child lost messages no longer reports a clean success, on the flow path
+  and the scheduled path alike. The loss is read off the child's evidence before the terminal
+  status is decided rather than inside the all-completed arm, so a child that lost messages and
+  also failed is still named on the invocation row, and a scheduled run with an incomplete
+  transcript carries `run.completed.message_loss` instead of flattening to a clean pass.
 - The schedule list surfaces no longer carry record content. They served every column of the
   schedule row, including the command a schedule runs and its arguments, its authored spec, its
   notify command and owner key, and they served `trigger_context`, which holds whole external

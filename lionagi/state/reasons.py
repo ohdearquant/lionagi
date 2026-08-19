@@ -4,7 +4,8 @@
 
 from __future__ import annotations
 
-from typing import Final
+import json
+from typing import Any, Final
 
 # Canonical singular entity types (ADR-0057); validated at write time in
 # StateDB.update_status().
@@ -250,3 +251,22 @@ def entity_table(entity_type: str) -> str:
     """Resolve entity_type (including aliases) to its SQLite table name."""
     canonical = validate_entity_type(entity_type)
     return ENTITY_TYPE_TO_TABLE[canonical]
+
+
+def has_message_loss_evidence(session: Any) -> bool:
+    """Whether a session row records that it lost live message events.
+
+    Reads the evidence refs rather than the reason code: a row carries one reason and
+    a session that lost messages may have failed for something else entirely.
+    """
+    if not isinstance(session, dict):
+        return False
+    refs = session.get("status_evidence_refs")
+    if isinstance(refs, str):
+        try:
+            refs = json.loads(refs)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(refs, list):
+        return False
+    return any(isinstance(ref, dict) and ref.get("kind") == "message_persist_loss" for ref in refs)

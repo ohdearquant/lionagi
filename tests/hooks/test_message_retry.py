@@ -665,6 +665,24 @@ def test_a_boolean_lost_does_not_pass_as_a_count():
     assert _merge_message_loss(_carry({"queues": [{"owner": "a", "lost": True}]}), None) is None
 
 
+def test_a_non_positive_lost_is_dropped_rather_than_subtracted_from_the_total():
+    from lionagi.cli._runs import _merge_message_loss
+
+    merged = _merge_message_loss(
+        _carry(
+            {
+                "queues": [
+                    {"owner": "a", "lost": -3},
+                    {"owner": "b", "lost": 0},
+                    {"owner": "c", "lost": 2},
+                ]
+            }
+        ),
+        None,
+    )
+    assert merged == {"lost": 2, "queues": [{"owner": "c", "lost": 2}]}
+
+
 def test_node_metadata_that_parses_to_a_non_mapping_does_not_raise():
     from lionagi.cli._runs import _merge_message_loss
 

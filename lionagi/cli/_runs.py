@@ -1318,6 +1318,9 @@ def _as_message_loss(value: Any) -> MessageLoss | None:
         and q.get("owner") is not None
         and isinstance(q.get("lost"), int)
         and not isinstance(q["lost"], bool)
+        # A loss record with a zero or negative count is malformed, and summing it
+        # produces totals like "-3 event(s) lost".
+        and q["lost"] > 0
     ]
     if not queues:
         return None
