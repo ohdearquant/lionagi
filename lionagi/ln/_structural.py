@@ -11,6 +11,7 @@ import struct
 import sys
 import types
 import typing
+import weakref
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -38,21 +39,56 @@ class UnhashableStructuralValueError(TypeError):
         )
 
 
-@dataclass(frozen=True, slots=True, eq=False)
 class _IdentityKey:
-    """Strong identity key immune to overloaded type/callable equality."""
+    """Identity key that does not extend the lifetime of what it identifies.
 
-    target: object = field(repr=False)
+    Immune to overloaded type/callable equality, and weak where it can be. A cached key
+    only ever produces a hit for a target something is still holding and looking up, so
+    keeping the target alive from inside a cache earns nothing and costs whatever the
+    target retains. The hash is the id taken while the target was alive, so it stays usable
+    after the target dies; equality demands both referents still be live, so an id the
+    interpreter has reused cannot collide with a dead entry, and the dead entry matches
+    nothing and is evicted in its turn. A target that cannot be weakly referenced, a static
+    type or a builtin function, is held strongly: those last as long as the interpreter and
+    what they retain is bounded anyway.
+    """
+
+    __slots__ = ("_hash", "_ref", "_strong")
+
+    def __init__(self, target: object) -> None:
+        self._hash = id(target)
+        try:
+            self._ref: weakref.ref | None = weakref.ref(target)
+            self._strong: object = None
+        except TypeError:
+            self._ref = None
+            self._strong = target
+
+    @property
+    def target(self) -> object:
+        """The identified object, or None once it has been collected."""
+        return self._strong if self._ref is None else self._ref()
+
+    @property
+    def holds_weakly(self) -> bool:
+        """Whether this key can be kept without keeping its target alive."""
+        return self._ref is not None
 
     def __hash__(self) -> int:
-        return id(self.target)
+        return self._hash
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, _IdentityKey) and self.target is other.target
+        if not isinstance(other, _IdentityKey):
+            return NotImplemented
+        mine = self.target
+        return mine is not None and mine is other.target
 
     def __repr__(self) -> str:
-        module = getattr(self.target, "__module__", type(self.target).__module__)
-        name = getattr(self.target, "__qualname__", type(self.target).__qualname__)
+        target = self.target
+        if target is None:
+            return "_IdentityKey(<collected>)"
+        module = getattr(target, "__module__", type(target).__module__)
+        name = getattr(target, "__qualname__", type(target).__qualname__)
         return f"_IdentityKey({module}.{name})"
 
 
@@ -66,6 +102,12 @@ class _StructuralKey:
     _sort_token: bytes = field(compare=False, hash=False, repr=False)
     _unsafe_path: str | None = field(compare=False, hash=False, repr=False, default=None)
     _unsafe_type: type[Any] | None = field(compare=False, hash=False, repr=False, default=None)
+    # Whether anything under this key is held by identity alone and is not already held
+    # alive elsewhere. Such a component contributes almost nothing to the weight below
+    # while retaining whatever it captured, so weight cannot price it and it is tracked
+    # apart. This only decides whether an entry that pins its own key may be stored; see
+    # the note on the cache below for what that leaves open.
+    _pins: bool = field(compare=False, hash=False, repr=False, default=False)
     _weight: int = field(init=False, compare=False, hash=False, repr=False)
     _hash_value: int = field(init=False, compare=False, hash=False, repr=False)
 
@@ -120,8 +162,10 @@ _stable_dataclass_keys: BoundedLRUCache[_IdentityKey, _StructuralKey] = BoundedL
     "LIONAGI_STRUCTURAL_CACHE_SIZE",
     10000,
 )
-# An entry count alone does not bound bytes: one cached key strongly retains its
-# whole target, so a projection that carries a large payload is not cached at all.
+# An entry count alone does not bound bytes. Identity is held weakly, so a cached key
+# never keeps its target alive, but the projected primitives are copied into the key and
+# are held for as long as the entry is: a projection carrying a large payload of them is
+# not cached at all.
 _MAX_CACHED_WEIGHT = int(os.environ.get("LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT", "8192"))
 _PATH_TYPES = (PurePosixPath, PureWindowsPath, PosixPath, WindowsPath)
 _TYPING_SINGLETONS = tuple(
@@ -166,10 +210,10 @@ def _identity_token(value: object) -> bytes:
     return _frame(b"r", _encode_text(str(id(value))))
 
 
-def _held_by_its_module(value: object) -> bool:
-    # A callable's token is its identity, so its length says nothing about what the
-    # callable retains. Caching one the interpreter already holds alive by name costs
-    # no extra memory; caching a closure or a type() result retains whatever it carries.
+def _reachable_by_name(value: object) -> bool:
+    # Whether the interpreter already holds this callable alive under the name it
+    # advertises. __module__ and __qualname__ are both writable, so the name has to
+    # resolve back to this exact object before it says anything about lifetime.
     module = sys.modules.get(getattr(value, "__module__", "") or "")
     qualname = getattr(value, "__qualname__", "") or ""
     if module is None or not qualname or "<locals>" in qualname:
@@ -197,6 +241,7 @@ def _combine(
         _sort_token=_frame(token_tag, *(part._sort_token for part in parts)),
         _unsafe_path=unsafe._unsafe_path if unsafe else None,
         _unsafe_type=unsafe._unsafe_type if unsafe else None,
+        _pins=any(part._pins for part in parts),
     )
 
 
@@ -463,7 +508,15 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
                         combined._sort_token,
                     ),
                 )
-                if result.cache_stable and result._weight <= _MAX_CACHED_WEIGHT:
+                # The entry keeps this instance alive whenever its identity cannot be held
+                # weakly, and the instance in turn keeps its fields alive. Weight prices
+                # those fields only where they projected to primitives, so an instance
+                # carrying something held by identity alone is left out rather than pinned.
+                if (
+                    result.cache_stable
+                    and result._weight <= _MAX_CACHED_WEIGHT
+                    and (identity_key.holds_weakly or not result._pins)
+                ):
                     _stable_dataclass_keys.put(identity_key, result)
                 return result
             return dataclasses.replace(
@@ -515,19 +568,19 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
             active.remove(identity)
 
     if callable(value):
-        cache_stable = (
-            isinstance(value, (type, types.FunctionType))
-            or (
-                isinstance(value, types.BuiltinFunctionType)
-                and isinstance(getattr(value, "__self__", None), types.ModuleType)
-            )
-        ) and _held_by_its_module(value)
-        identity = _IdentityKey(value)
+        # Whether identity is a sound key: it is for types and functions, and for a
+        # builtin bound to a module. A callable instance is excluded because its
+        # behaviour lives in mutable state that its identity says nothing about.
+        cache_stable = isinstance(value, (type, types.FunctionType)) or (
+            isinstance(value, types.BuiltinFunctionType)
+            and isinstance(getattr(value, "__self__", None), types.ModuleType)
+        )
         return _StructuralKey(
-            (_CALLABLE, identity),
+            (_CALLABLE, _IdentityKey(value)),
             cache_stable,
             True,
             _frame(b"a", _identity_token(value)),
+            _pins=not _reachable_by_name(value),
         )
 
     if not isinstance(value, Hashable):

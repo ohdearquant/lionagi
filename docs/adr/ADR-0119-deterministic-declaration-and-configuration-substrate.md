@@ -338,13 +338,14 @@ The projection rules are:
   because they may add mutable state;
 - dataclass owners include exact concrete type identity and their declared fields; mutable
   dataclasses and Pydantic models are structurally comparable but not hash/cache-safe;
-- callables compare and hash by strong identity. Plain functions and types may be cache-stable,
-  but only when the interpreter already holds them alive under their own name, because caching one
-  of those retains nothing that was not retained already, while caching a closure or a `type()`
-  result retains whatever it carries; bound methods, partials, and callable instances are never
-  cache-stable, because sharing would retain mutable receiver state. The name has to resolve back
-  to the same object, since `__module__` and `__qualname__` are writable. Their unordered runtime
-  ordering token uses strong identity, never those same mutable presentation attributes;
+- callables compare and hash by identity, and the key holds that identity weakly wherever the
+  runtime permits a weak reference, so a key can be kept without keeping its target alive. The
+  hash is the address taken while the target was alive and stays usable after it dies; equality
+  requires both referents to be live, so an address the interpreter has reused cannot collide with
+  a dead entry. Plain functions and types are cache-stable because identity is a sound key for
+  them; bound methods, partials, and callable instances are never cache-stable, because sharing
+  would retain mutable receiver state. Their unordered runtime ordering token uses identity, never
+  the writable `__module__` and `__qualname__` presentation attributes;
 - unsupported unhashable opaque values compare by identity and raise
   `UnhashableStructuralValueError` with their path when a hash is requested; cycles fail with the
   same typed path error. Cache admission converts that error into an uncached materialization,
@@ -375,17 +376,31 @@ custom metaclasses. Python 3.10–3.14 contract tests pin that isolated private 
 model keys include adapter-class identity, base-model identity, model name, the final ordered
 declaration projection, and documentation; the already-projected spec order makes raw
 `include`/`exclude` selectors redundant. A separate bounded stable-declaration projection cache
-keeps those recursive checks off hot cache-hit paths. A cached entry keys on strong identity, so it
-retains its whole target for as long as it lives, and an entry count alone would leave the retained
+keeps those recursive checks off hot cache-hit paths. Its entries copy the projected primitives in
+and hold them for as long as the entry lives, so an entry count alone would leave the retained
 bytes unbounded. Admission therefore also has a projected-size ceiling
 (`LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT`) measured on the ordering token, which already frames every
 descendant's token and so accumulates without any branch having to remember to report its own size.
-A token that stands for identity rather than content is the one case that ceiling cannot price, so
-the callable rule above carries the bound for that branch instead. Exceeding either withholds
-caching only: the value stays structurally comparable and hashable, because retention is never a
-correctness question. Field-layout, sentinel-policy, and
-sentinel-singleton caches likewise wrap class objects in strong identity keys so permissive
-metaclass equality cannot cross-wire their values.
+A token that stands for identity rather than content is the one case that ceiling cannot price, and
+weak identity is what bounds that branch: the entry cannot outlive what the token stands for.
+Exceeding the ceiling withholds caching only: the value stays structurally comparable and hashable,
+because retention is never a correctness question. Field-layout, sentinel-policy, and
+sentinel-singleton caches likewise wrap class objects in identity keys so permissive metaclass
+equality cannot cross-wire their values.
+
+One residual is deliberate and bounded. This cache is keyed on the declaration instance, and a
+frozen dataclass declared with `slots=True` cannot be weakly referenced, so its entry has to hold
+it and holds whatever it refers to along with it. Declining to store those instances instead costs
+roughly an order of magnitude on the projection of every such declaration, measured on `Spec`, so
+they are stored under a narrower rule: an instance is admitted only when each of its
+identity-keyed components is already held alive elsewhere under its own name, which is checked by
+resolving `__module__` and `__qualname__` back to the same object. Closures, lambdas, and `type()`
+results fail that check and keep their holders out of the cache. What the rule does not cover is a
+callable that satisfies it at admission and is unbound afterwards, since a name can be withdrawn
+and a cache entry outlives the binding. Such a callable stays alive until its entry is evicted,
+which is bounded by `LIONAGI_STRUCTURAL_CACHE_SIZE`. Instances that can be weakly referenced carry
+no residual at all, and neither do the annotation, model, field-layout, sentinel-policy, and
+sentinel-singleton caches, whose keys are the projections rather than the instances.
 
 **The decoration contract is part of this decision.** The base implementations above are reachable
 only when a subclass does not shadow them, and today's subclasses decide that by accident. A

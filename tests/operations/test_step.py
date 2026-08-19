@@ -155,8 +155,13 @@ def module_level_fn(v):
 
 
 def test_structural_cache_admission_classifies_mutable_and_immutable_metadata():
-    """Lists, dicts, bound methods, locally built callables, and arbitrary objects are never
-    cache-safe; scalars, tuples, frozensets, and module-held functions are."""
+    """Lists, dicts, bound methods, partials and arbitrary objects are never cache-safe;
+    scalars, tuples, frozensets, types and plain functions are.
+
+    Admission asks only whether the value can be keyed soundly. Whether keying it keeps it
+    alive is a separate question the key answers by holding identity weakly, which is why a
+    locally built function and a locally built type belong on the safe side here.
+    """
     from functools import partial
 
     from lionagi.ln._structural import _try_stable_cache_key
@@ -180,8 +185,6 @@ def test_structural_cache_admission_classifies_mutable_and_immutable_metadata():
         partial(module_level_fn),
         CallableValidator(),
         Validators(),
-        local_fn,
-        type("LocalType", (), {}),
     ]
     for value in unsafe_values:
         assert _try_stable_cache_key(value) is None
@@ -197,9 +200,38 @@ def test_structural_cache_admission_classifies_mutable_and_immutable_metadata():
         (1, 2),
         frozenset({1, 2}),
         module_level_fn,
+        local_fn,
+        type("LocalType", (), {}),
     ]
     for value in safe_values:
         assert _try_stable_cache_key(value) is not None
+
+
+def test_admitting_a_locally_built_callable_does_not_keep_it_alive():
+    """The safe side above is only defensible because admission stopped implying retention.
+
+    The key is kept for the duration, the way the annotation and model-type caches keep one.
+    Dropping it instead would leave nothing holding anything and the assertion would pass
+    whether or not identity is held weakly.
+    """
+    import gc
+    import weakref
+
+    from lionagi.ln._structural import _try_stable_cache_key
+
+    def local_fn(v):
+        return v
+
+    local_fn.payload = b"x" * 4096
+    consumer_cache = {_try_stable_cache_key(local_fn): "value"}
+    assert None not in consumer_cache
+
+    released = weakref.ref(local_fn)
+    del local_fn
+    gc.collect()
+
+    assert released() is None
+    assert len(consumer_cache) == 1
 
 
 def test_model_type_cache_key_opts_out_for_bound_method_validator():

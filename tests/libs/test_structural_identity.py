@@ -368,7 +368,7 @@ class _Payload:
 
 
 def test_a_large_payload_is_not_retained_by_the_substrate_cache():
-    """One cached key strongly retains its whole target, so size has to gate retention."""
+    """A cached key copies the projected primitives in, so size has to gate retention."""
     from lionagi.ln._structural import _MAX_CACHED_WEIGHT, _try_stable_cache_key
 
     assert _try_stable_cache_key(_Payload("x" * (_MAX_CACHED_WEIGHT + 1))) is None
@@ -479,18 +479,55 @@ _IDENTITY_ONLY_SHAPES = {
 }
 
 
-@pytest.mark.parametrize("shape", sorted(_IDENTITY_ONLY_SHAPES))
-def test_no_dynamically_created_callable_is_retained(shape):
-    """A callable's token is its identity, so its length cannot price what it carries."""
-    from lionagi.ln._structural import _try_stable_cache_key
+@dataclass(frozen=True)
+class _WeakReferenceablePayload:
+    """A holder the cache can key weakly, unlike the slotted _Payload above."""
 
-    made = _IDENTITY_ONLY_SHAPES[shape](b"x" * 4096)
-    assert _try_stable_cache_key(_Payload(made)) is None
+    body: Any
+
+
+def _survives_projection(holder_type, factory) -> bool:
+    """Whether the substrate still holds the callable after projecting a holder around it.
+
+    The holder is built in here on purpose. Passing one in leaves the caller's argument
+    slot referring to it for the duration of the call, which keeps the payload alive and
+    reads as retention no matter what the cache did.
+    """
+    from lionagi.ln._structural import _structural_key
+
+    made = factory()
+    holder = holder_type(made)
+    _structural_key(holder)
+    released = weakref.ref(made)
+    del made, holder
+    gc.collect()
+    return released() is not None
+
+
+@pytest.mark.parametrize("holder", (_Payload, _WeakReferenceablePayload))
+@pytest.mark.parametrize("shape", sorted(_IDENTITY_ONLY_SHAPES))
+def test_no_dynamically_created_callable_is_retained(shape, holder):
+    """A callable's token is its identity, so its length cannot price what it carries.
+
+    Both holder shapes matter and they are released by different halves of the design. The
+    slotted one cannot be weakly referenced, so the cache declines to store it at all; the
+    plain one can, so the cache stores it and still lets it go.
+    """
+    assert not _survives_projection(holder, lambda: _IDENTITY_ONLY_SHAPES[shape](b"x" * 4096))
 
 
 def test_the_identity_only_enumeration_is_not_empty():
     """The parametrization above asserts nothing if its source is."""
     assert len(_IDENTITY_ONLY_SHAPES) >= 3
+
+
+def test_the_probe_reports_retention_when_retention_is_real():
+    """The control for the probe above: it has to be able to say yes."""
+    kept = _dynamic_function(b"x" * 16)
+    holder = _Payload(kept)
+
+    assert _survives_projection(_Payload, lambda: kept)
+    assert holder.body is kept
 
 
 def test_a_module_level_callable_is_still_retained():
@@ -503,26 +540,91 @@ def test_a_module_level_callable_is_still_retained():
 
 def test_a_callable_wearing_a_module_level_name_is_not_retained():
     """__module__ and __qualname__ are writable, so the name has to resolve back to this object."""
-    from lionagi.ln._structural import _try_stable_cache_key
 
-    impostor = types.FunctionType(_module_level_marker.__code__, {}, "_module_level_marker")
-    impostor.__module__ = _module_level_marker.__module__
-    impostor.__qualname__ = _module_level_marker.__qualname__
+    def impostor_factory():
+        impostor = types.FunctionType(_module_level_marker.__code__, {}, "_module_level_marker")
+        impostor.__module__ = _module_level_marker.__module__
+        impostor.__qualname__ = _module_level_marker.__qualname__
+        return impostor
 
-    assert _try_stable_cache_key(_Payload(impostor)) is None
+    assert not _survives_projection(_Payload, impostor_factory)
 
 
-def test_a_dynamically_created_callable_is_released_after_projection():
-    """Non-admission is the mechanism; releasing the payload is the property it buys."""
+def _export_then_withdraw(name: str):
+    """Publish a fresh callable under a module name, then take the name back."""
+    made = _dynamic_function(b"x" * 4096)
+    made.__qualname__ = name
+    setattr(sys.modules[__name__], name, made)
+    try:
+        yield made
+    finally:
+        delattr(sys.modules[__name__], name)
+
+
+def test_a_callable_unbound_after_admission_is_released_by_a_weakly_keyed_holder():
+    """Reachability holds at admission and not afterwards, so it cannot be what frees this."""
     from lionagi.ln._structural import _structural_key
 
-    made = _dynamic_function(b"x" * 4096)
-    _structural_key(_Payload(made))
+    step = _export_then_withdraw("_exported_for_weak_holder")
+    made = next(step)
+    holder = _WeakReferenceablePayload(made)
+    _structural_key(holder)
+    next(step, None)
+
     released = weakref.ref(made)
-    del made
+    del made, holder
     gc.collect()
 
     assert released() is None
+
+
+def test_a_callable_unbound_after_admission_is_still_held_by_a_slots_holder():
+    """The documented residual, asserted so that closing it later is a visible change.
+
+    A frozen dataclass declared with slots=True cannot be weakly referenced, so the entry
+    keying it has to hold it, and it holds whatever the instance refers to along with it.
+    Refusing to store such an instance instead costs an order of magnitude on the projection
+    of every declaration in the codebase, so the entry is kept and this is what it means:
+    a callable that was reachable by name when the cache took it, and is not afterwards,
+    stays alive until the entry is evicted.
+    """
+    from lionagi.ln._structural import _structural_key
+
+    step = _export_then_withdraw("_exported_for_slots_holder")
+    made = next(step)
+    holder = _Payload(made)
+    _structural_key(holder)
+    next(step, None)
+
+    released = weakref.ref(made)
+    del made, holder
+    gc.collect()
+
+    assert released() is not None
+
+
+def test_the_residual_is_bounded_by_eviction():
+    """The residual is a bounded cache, not a leak: eviction has to actually release it."""
+    from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
+
+    step = _export_then_withdraw("_exported_for_eviction")
+    made = next(step)
+    holder = _Payload(made)
+    _structural_key(holder)
+    next(step, None)
+    released = weakref.ref(made)
+    del made, holder
+
+    for filler in range(_stable_dataclass_keys._max_size + 1):
+        _structural_key(_Payload(filler))
+    gc.collect()
+
+    assert released() is None
+
+
+def test_a_dynamically_created_callable_is_released_after_projection():
+    """Admission is one question; releasing the payload afterwards is the one that matters."""
+    assert not _survives_projection(_Payload, lambda: _dynamic_function(b"x" * 4096))
 
 
 def test_an_int_wider_than_the_decimal_conversion_limit_still_projects():

@@ -20,13 +20,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   arbitrary user equality/hash implementations. The two former 10,000-entry
   annotation caches are one shared 10,000-entry cache under the same environment setting; a
   separate stable-declaration projection cache is bounded by
-  `LIONAGI_STRUCTURAL_CACHE_SIZE` (10,000 by default) and, because each entry strongly retains its
-  target, by a summed projected-size ceiling `LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT` (8,192 by
-  default) measured on the ordering token, above which a value is not retained but stays comparable
-  and hashable. A callable's token is its identity, which that ceiling cannot price, so functions
-  and types are cache-stable only when the interpreter already holds them alive under their own
-  name: caching one of those retains nothing that was not retained already, while a closure or a
-  `type()` result would keep whatever it carries alive for the life of the entry. Integers are projected as width-minimal two's complement instead of decimal digits,
+  `LIONAGI_STRUCTURAL_CACHE_SIZE` (10,000 by default) and, because each entry copies the projected
+  primitives in, by a summed projected-size ceiling `LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT` (8,192
+  by default) measured on the ordering token, above which a value is not retained but stays
+  comparable and hashable. A callable's token is its identity, which that ceiling cannot price, so
+  identity keys hold their target weakly wherever the runtime allows a weak reference: a cached key
+  cannot outlive the function, class, or declaration it stands for. The one instance that cannot be
+  keyed weakly is a frozen dataclass declared with `slots=True`, so those are admitted to the
+  declaration-projection cache only when every callable they reference is already reachable under
+  its own name, which keeps closures, lambdas, and `type()` results from being held by a cache
+  entry. Integers are projected as width-minimal two's complement instead of decimal digits,
   so an integer wider than the interpreter's integer-to-string limit compares and hashes rather than
   raising `ValueError`. Mappings other
   than an exact `dict` are opaque and compare by identity, matching the existing treatment of
