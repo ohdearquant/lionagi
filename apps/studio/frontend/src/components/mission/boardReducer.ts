@@ -313,6 +313,10 @@ function buildAttentionItems(
   const active: AttentionItem[] = [];
   const discharged: AttentionItem[] = [];
   for (const item of deduped) {
+    // One key, not two: a run's session id and its compatibility `run_id` are one
+    // value today, so a disposition stored under either is found here. See
+    // runIdentity for where that is held and what has to land with the change
+    // that breaks it.
     const disposition = dispositions[item.id];
     const joined = disposition ? { ...item, disposition } : item;
     // "A gated item only ever discharges via acknowledged" (see the comment

@@ -1,9 +1,11 @@
 /**
  * Session identity used by the current runs projection.
  *
- * `run_id` remains a compatibility field for older rows and clients. It may
- * describe a different or unavailable future execution identity, so routing,
- * list keys, and joins prefer the row's session `id` whenever it is present.
+ * The projection assigns `run_id` and `id` from one expression, so every row
+ * carries one value under both names and this returns that value either way.
+ * A server-side assertion holds it that way, and its message says that the
+ * change giving a run a second identity is the change that must also land the
+ * join reading both keys wherever a stored key was written from this one.
  */
 export function runSessionId(run: { id?: string | null; run_id?: string | null }): string {
   // Empty counts as absent. `??` alone would let an empty `id` suppress a
