@@ -22,6 +22,7 @@ import type {
   RunResumeResponse,
   RunSummary,
   ScheduleDetail,
+  ScheduleRunSliceRow,
   ScheduleRunSummary,
   ScheduleSummary,
   ShowDetail,
@@ -2272,7 +2273,7 @@ export interface ScheduleListResponse {
 
 export interface ScheduleRunSummarySlice {
   state: "ok" | "error";
-  runs: ScheduleRunSummary[];
+  runs: ScheduleRunSliceRow[];
 }
 
 export interface ScheduleSummaryResponse extends ScheduleListResponse {

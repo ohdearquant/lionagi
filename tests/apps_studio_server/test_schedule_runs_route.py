@@ -217,15 +217,18 @@ _DECLARED_RUN_FIELDS = {
     "id",
     "schedule_id",
     "invocation_id",
-    "trigger_context",
     "action_kind",
     "status",
     "exit_code",
     "chain_depth",
     "fired_at",
     "ended_at",
-    "error_detail",
+    "error_class",
 }
+# Named one by one rather than left to the allow-list, because each is content-bearing and
+# each was called out by name: trigger_context carries whole external event payloads and
+# error_detail carries subprocess stderr and exception text.
+_CONTENT_BEARING_COLUMNS = ("trigger_context", "error_detail")
 # Written by the seeder above and never part of the declared shape.
 _OPERATIONAL_COLUMN = "action_args"
 
@@ -265,7 +268,8 @@ def test_the_seeded_run_really_carries_the_operational_column(tmp_path, monkeypa
 
     assert len(stored) == 1
     assert _OPERATIONAL_COLUMN in stored[0]
-    assert _DECLARED_RUN_FIELDS <= set(stored[0])
+    for column in _CONTENT_BEARING_COLUMNS:
+        assert column in stored[0]
 
 
 def test_a_column_added_to_schedule_runs_is_not_served_until_it_is_named(tmp_path, monkeypatch):
@@ -293,3 +297,79 @@ def test_a_column_added_to_schedule_runs_is_not_served_until_it_is_named(tmp_pat
     assert "a_column_nobody_has_declared" not in runs[0]
     assert "secret-value" not in json.dumps(body)
     assert runs[0]["status"] == "completed"
+
+
+def test_the_summary_slice_never_serves_the_content_bearing_columns(tmp_path, monkeypatch):
+    """Named one by one, since an allow-list can be widened without anyone rereading it."""
+    schedule_id = _seeded_schedule_with_one_run(monkeypatch, tmp_path / "state.db")
+
+    body = _make_client().get("/api/schedules/summary").json()
+    runs = body["run_summaries"][schedule_id]["runs"]
+
+    assert len(runs) == 1
+    for column in _CONTENT_BEARING_COLUMNS:
+        assert column not in runs[0]
+
+
+def test_a_failed_run_is_served_as_a_classification_not_its_error_text(tmp_path, monkeypatch):
+    _patch_db(monkeypatch, tmp_path / "state.db")
+    detail = "Traceback (most recent call last):\n  ...\nModuleNotFoundError: No module named 'x'"
+
+    async def seed():
+        schedule_id = await _seed_schedule()
+        await _seed_run(schedule_id, status="failed", fired_at=time.time(), error_detail=detail)
+        return schedule_id
+
+    schedule_id = asyncio.run(seed())
+    runs = _make_client().get("/api/schedules/summary").json()["run_summaries"][schedule_id]["runs"]
+
+    assert runs[0]["error_class"] == "missingDependency"
+    assert "No module named" not in json.dumps(runs[0])
+
+
+def test_an_unrecognised_error_is_served_as_a_class_not_its_last_line(tmp_path, monkeypatch):
+    """The arm that leaks: falling back to the traceback's last line ships the exception text."""
+    _patch_db(monkeypatch, tmp_path / "state.db")
+    detail = "Traceback (most recent call last):\n  ...\nWeirdError: /srv//secret/path exploded"
+
+    async def seed():
+        schedule_id = await _seed_schedule()
+        await _seed_run(schedule_id, status="failed", fired_at=time.time(), error_detail=detail)
+        return schedule_id
+
+    schedule_id = asyncio.run(seed())
+    runs = _make_client().get("/api/schedules/summary").json()["run_summaries"][schedule_id]["runs"]
+
+    assert runs[0]["error_class"] == "unclassified"
+    assert "WeirdError" not in json.dumps(runs[0])
+    assert "secret" not in json.dumps(runs[0])
+
+
+def test_a_run_that_did_not_fail_carries_no_classification(tmp_path, monkeypatch):
+    schedule_id = _seeded_schedule_with_one_run(monkeypatch, tmp_path / "state.db")
+
+    runs = _make_client().get("/api/schedules/summary").json()["run_summaries"][schedule_id]["runs"]
+
+    assert runs[0]["error_class"] is None
+
+
+def test_the_two_classifiers_agree_on_their_class_names():
+    """The list surface classifies server-side; the detail surface still classifies in the client.
+
+    Two lists of the same rule drift, and the symptom is one failure wearing different labels
+    in the list and in the detail view, which nothing else would catch.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    from lionagi.studio.services.schedules import _ERROR_CLASS_PATTERNS
+
+    source = _Path("apps/studio/frontend/src/components/schedules/errorClassify.ts")
+    if not source.exists():  # the frontend is not vendored into every checkout
+        pytest.skip("frontend source not present")
+
+    client_keys = _re.findall(r'key:\s*"([^"]+)"', source.read_text())
+    server_keys = [key for _, key in _ERROR_CLASS_PATTERNS]
+
+    assert client_keys, "no keys parsed from the client classifier"
+    assert client_keys == server_keys

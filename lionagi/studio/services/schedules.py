@@ -489,23 +489,54 @@ async def list_schedules(
 # LIONAGI_STUDIO_AUTH_TOKEN is unset, so rows are projected onto this list rather than
 # passed through, which also means a column added to the table later stays private until
 # someone names it here.
+#
+# trigger_context and error_detail are content-bearing and are not on it. trigger_context
+# carries whole external event payloads; error_detail carries subprocess stderr and
+# exception text. Neither is a summary fact, so this surface serves a classification of
+# the failure instead of the text that produced it.
 _RUN_SUMMARY_FIELDS = (
     "id",
     "schedule_id",
     "invocation_id",
-    "trigger_context",
     "action_kind",
     "status",
     "exit_code",
     "chain_depth",
     "fired_at",
     "ended_at",
-    "error_detail",
 )
+
+# Ordered, so the first match wins. Keys are translated by the client; no text from the
+# error itself reaches this surface, including when nothing matches.
+_ERROR_CLASS_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"failed to spawn", re.I), "spawnFailed"),
+    (
+        re.compile(r"econnrefused|connection refused|connectionerror|network is unreachable", re.I),
+        "network",
+    ),
+    (re.compile(r"timed out|timeouterror", re.I), "timeout"),
+    (re.compile(r"permissionerror|permission denied", re.I), "permission"),
+    (re.compile(r"modulenotfounderror|importerror", re.I), "missingDependency"),
+    (re.compile(r"filenotfounderror|no such file or directory", re.I), "notFound"),
+)
+
+_UNCLASSIFIED_ERROR = "unclassified"
+
+
+def _error_class(detail: str | None) -> str | None:
+    """Classify a run's error text into a translatable key, or None when there is none."""
+    if not detail or not detail.strip():
+        return None
+    for pattern, key in _ERROR_CLASS_PATTERNS:
+        if pattern.search(detail):
+            return key
+    return _UNCLASSIFIED_ERROR
 
 
 def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
-    return {name: row[name] for name in _RUN_SUMMARY_FIELDS if name in row}
+    summary = {name: row[name] for name in _RUN_SUMMARY_FIELDS if name in row}
+    summary["error_class"] = _error_class(row.get("error_detail"))
+    return summary
 
 
 async def list_schedule_summary(

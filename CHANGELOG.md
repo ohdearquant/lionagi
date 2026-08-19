@@ -66,6 +66,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The schedule summary surface no longer carries run content. Its recent-run slice served
+  `trigger_context`, which holds whole external event payloads, and `error_detail`, which holds
+  subprocess stderr and exception text, on an API that answers without a token when
+  `LIONAGI_STUDIO_AUTH_TOKEN` is unset. `trigger_context` is gone, and a failed run is now
+  described by `error_class`, a translatable classification the client renders. A failure the
+  server cannot classify is reported as such rather than by falling back to the last line of
+  its traceback. The full text stays available through the run detail view, which reads a
+  different endpoint and asks for it explicitly.
+
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
   and `DataClass` now discover inherited instance fields through one ordered dataclass path,
