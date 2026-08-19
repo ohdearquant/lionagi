@@ -35,7 +35,7 @@ class PatternKind(Enum):
     MODE = "mode"
 
 
-@dataclass(init=False, frozen=True, slots=True)
+@dataclass(init=False, frozen=True, slots=True, eq=False)
 class Pattern(Params, Composable):
     """Composable, frozen atom of agent configuration; Role and Mode subclass and override ``kind``."""
 
@@ -82,7 +82,7 @@ def _list_builtin_modules(pkg: str) -> set[str]:
     return names
 
 
-@dataclass(init=False, frozen=True, slots=True)
+@dataclass(init=False, frozen=True, slots=True, eq=False)
 class Mode(Pattern):
     """Cognitive overlay — shapes *how* an agent reasons."""
 
@@ -102,7 +102,7 @@ class Mode(Pattern):
         return obj
 
 
-@dataclass(init=False, frozen=True, slots=True)
+@dataclass(init=False, frozen=True, slots=True, eq=False)
 class Role(Pattern):
     """Behavioral pattern: ``body`` composes into the system prompt; ``emits`` declares the emission contract."""
 

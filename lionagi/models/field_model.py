@@ -5,14 +5,14 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Annotated, Any, ClassVar, cast
+from typing import Any, ClassVar, cast
 
 from typing_extensions import Self, override
 
 from .._errors import ValidationError
-from ..ln._cache import BoundedLRUCache
 from ..ln._lazy_init import LazyInit
 from ..ln.types import MaybeSentinel, Meta, ModelConfig, Params, Spec, Undefined, Unset
+from ..ln.types._annotation import _materialize_annotation
 
 # Cache of valid Pydantic Field parameters
 _lazy_field_params = LazyInit()
@@ -34,14 +34,10 @@ def _get_pydantic_field_params() -> set[str]:
     return _PYDANTIC_FIELD_PARAMS
 
 
-_annotated_cache: BoundedLRUCache[
-    tuple[MaybeSentinel[type[Any]] | None, tuple[Meta, ...]], type
-] = BoundedLRUCache("LIONAGI_FIELD_CACHE_SIZE", 10000)
-
 METADATA_LIMIT = int(os.environ.get("LIONAGI_FIELD_META_LIMIT", "10"))
 
 
-@dataclass(slots=True, frozen=True, init=False)
+@dataclass(slots=True, frozen=True, init=False, eq=False)
 class FieldModel(Params):
     """Compositional field definition with lazy Annotated-type materialization."""
 
@@ -281,29 +277,13 @@ class FieldModel(Params):
     # ---- materialization -------------------------------------------------- #
 
     def annotated(self) -> type[Any]:
-        """Materialize into an Annotated type (LRU-cached, thread-safe)."""
-        cache_key = (self.base_type, self.metadata)
-
-        cached = _annotated_cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        actual_type = Any if self._is_sentinel(self.base_type) else cast(type[Any], self.base_type)
-        current_metadata = () if self._is_sentinel(self.metadata) else self.metadata
-
-        if any(m.key == "nullable" and m.value for m in current_metadata):
-            actual_type = actual_type | None  # type: ignore
-
-        if current_metadata:
-            args = [actual_type] + list(current_metadata)
-            # Subscription (not the __class_getitem__ attribute, which 3.14
-            # removed from special forms). Annotated[(a, b, c)] == Annotated[a, b, c].
-            result = Annotated[tuple(args)]  # type: ignore
-        else:
-            result = actual_type  # type: ignore[misc]
-
-        _annotated_cache.put(cache_key, result)  # type: ignore[arg-type]
-        return result  # type: ignore[return-value]
+        """Materialize through the shared identity-safe annotation cache."""
+        return _materialize_annotation(
+            owner=self,
+            base_type=self.base_type,
+            metadata=self.metadata,
+            sentinel_predicate=self._is_sentinel,
+        )
 
     def extract_metadata(self, key: str) -> Any:
         if not self._is_sentinel(self.metadata):

@@ -110,6 +110,8 @@ async def test_unregistered_scope_never_fires():
 
 from unittest.mock import AsyncMock, patch  # noqa: E402
 
+from tests._scheduler_claims import fire_inner_with_claim, fire_with_claim
+
 
 def _notify_schedule(**overrides) -> dict:
     base = {
@@ -192,7 +194,8 @@ async def test_abandoned_recovery_unregisters_only_after_terminal_write():
         "lionagi.studio.scheduler.subprocess.build_argv",
         side_effect=RuntimeError("bad argv"),
     ):
-        await engine._fire(
+        await fire_with_claim(
+            engine,
             _notify_schedule(),
             "run-notify-1",
             trigger_context={"scheduled": True},
@@ -223,7 +226,8 @@ async def test_abandonment_failure_still_unregisters():
         ),
         pytest.raises(RuntimeError, match="db down"),
     ):
-        await engine._fire_inner(
+        await fire_inner_with_claim(
+            engine,
             _notify_schedule(),
             "run-notify-3",
             trigger_context={"scheduled": True},
@@ -250,7 +254,8 @@ async def test_invalid_argv_terminal_write_failure_still_unregisters():
         ),
         pytest.raises(RuntimeError, match="terminal write failed"),
     ):
-        await engine._fire_inner(
+        await fire_inner_with_claim(
+            engine,
             _notify_schedule(),
             "run-notify-4",
             trigger_context={"scheduled": True},
@@ -276,7 +281,8 @@ async def test_occurrence_write_failure_on_invalid_argv_still_unregisters():
         ),
         pytest.raises(RuntimeError, match="occurrence failed"),
     ):
-        await engine._fire_inner(
+        await fire_inner_with_claim(
+            engine,
             _notify_schedule(),
             "run-notify-5",
             trigger_context={"scheduled": True},
@@ -304,7 +310,8 @@ async def test_cancellation_during_action_setup_still_unregisters():
         ),
         pytest.raises(asyncio.CancelledError),
     ):
-        await engine._fire_inner(
+        await fire_inner_with_claim(
+            engine,
             _notify_schedule(),
             "run-notify-6",
             trigger_context={"scheduled": True},
@@ -327,7 +334,8 @@ async def test_create_invocation_failure_does_not_leak_registration():
     engine = SchedulerEngine(svc=svc)
 
     with pytest.raises(RuntimeError, match="db down"):
-        await engine._fire_inner(
+        await fire_inner_with_claim(
+            engine,
             _notify_schedule(),
             "run-notify-2",
             trigger_context={"scheduled": True},
