@@ -75,6 +75,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   closed ADR-0119 compatibility inventory. Existing built-in compatibility
   adapters keep their prior omission behavior. Third-party callers that set
   either flag must replace it with an explicit domain adapter.
+- The lifecycle contract suite now pins the complete seven-entity transition
+  matrix independently of the production registry: every allowed edge, every
+  terminal status, dispatch recovery constraints, and the selected
+  same-status reason refresh have executable regression coverage.
 - Resuming a flow whose checkpoint recorded any operation as failed now refuses
   and names those operations, instead of replaying them as terminal state.
   Replaying a failed operation as terminal marks it failed without running it,

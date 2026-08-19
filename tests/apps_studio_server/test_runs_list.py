@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -147,6 +148,38 @@ def test_runs_list_invalid_page_rejected(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch, db_path)
     r = client.get("/api/runs?page=0")
     assert r.status_code == 422
+
+
+async def test_list_runs_offloads_process_snapshot(tmp_path, monkeypatch):
+    import lionagi.state.db as state_db_mod
+    import lionagi.studio.services.admin as admin_mod
+    import lionagi.studio.services.runs as runs_mod
+
+    db_path = tmp_path / "state.db"
+    await _seed_sessions(db_path, [{"id": str(uuid.uuid4()), "status": "running"}])
+    monkeypatch.setattr(state_db_mod, "DEFAULT_DB_PATH", db_path)
+    # The host scan is cached behind module globals with a TTL. Left alone,
+    # whether this test observes a capture at all depends on which tests ran
+    # before it and how recently, so it passes alone and fails in a suite.
+    # Clearing the cache makes the capture happen here, which is the only way
+    # to say anything about the thread it happens on.
+    monkeypatch.setattr(admin_mod, "_PS_SNAPSHOT_CACHE", None, raising=False)
+    monkeypatch.setattr(admin_mod, "_PS_SNAPSHOT_INFLIGHT", {}, raising=False)
+    monkeypatch.setattr(admin_mod, "_PS_SNAPSHOT_METRICS", None, raising=False)
+    monkeypatch.setattr(admin_mod, "_PS_SNAPSHOT_SEQUENCE", 0, raising=False)
+    event_loop_thread = threading.get_ident()
+    snapshot_threads: list[int] = []
+
+    def fake_snapshot() -> str:
+        snapshot_threads.append(threading.get_ident())
+        return ""
+
+    monkeypatch.setattr(admin_mod, "_ps_snapshot", fake_snapshot)
+
+    await runs_mod.list_runs(limit=20)
+
+    assert snapshot_threads
+    assert snapshot_threads[0] != event_loop_thread
 
 
 @pytest.mark.parametrize("unknown_name", ["limit", "worker"])

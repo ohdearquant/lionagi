@@ -551,6 +551,25 @@ async def _execute_claimed(
 
     try:
         exit_code, error_detail = await execute(task_row)
+    except _subprocess.SubprocessDeadlineExceededError as exc:
+        completion_time = time.time()
+        await transition(
+            db,
+            TransitionRequest(
+                entity_type="schedule_run",
+                entity_id=run_id,
+                from_state="running",
+                to_state="timed_out",
+                reason=StateReason(
+                    code=RunReasons.TIMED_OUT_DEADLINE,
+                    summary=str(exc)[:500],
+                ),
+                actor=Actor(type="system", id="task_worker"),
+                idempotency_key=f"timeout:{run_id}:{completion_time}",
+            ),
+            guard=lease_guard,
+        )
+        return
     except Exception as exc:  # noqa: BLE001
         exit_code, error_detail = 1, f"{type(exc).__name__}: {exc}"
 

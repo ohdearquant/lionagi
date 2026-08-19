@@ -25,12 +25,19 @@ _require() {
 # ---------------------------------------------------------------------------
 
 lint-python() {
-  echo "==> ruff check"
+  # One list for both steps, or a directory added later reaches one of them and
+  # is silently left out of the other.
+  local paths=("$@")
   if [ $# -eq 0 ]; then
-    uv run ruff check lionagi/ apps/ tests/ marketplace/ scripts/
-  else
-    uv run ruff check "$@"
+    paths=(lionagi/ apps/ tests/ marketplace/ scripts/)
   fi
+  echo "==> ruff check"
+  uv run ruff check "${paths[@]}"
+  # --check, never the writing form: fmt-python is where formatting is applied.
+  # Without this a file can sit unformatted on main indefinitely, since the
+  # pre-commit hook only ever sees files someone is committing.
+  echo "==> ruff format --check"
+  uv run ruff format --check "${paths[@]}"
 }
 
 lint-quarantine() {
