@@ -338,10 +338,13 @@ The projection rules are:
   because they may add mutable state;
 - dataclass owners include exact concrete type identity and their declared fields; mutable
   dataclasses and Pydantic models are structurally comparable but not hash/cache-safe;
-- callables compare and hash by strong identity. Plain functions and types may be cache-stable;
-  bound methods, partials, and callable instances are not, because sharing would retain mutable
-  receiver state. Their unordered runtime ordering token uses that same identity, never mutable
-  presentation attributes such as `__module__` or `__qualname__`;
+- callables compare and hash by strong identity. Plain functions and types may be cache-stable,
+  but only when the interpreter already holds them alive under their own name, because caching one
+  of those retains nothing that was not retained already, while caching a closure or a `type()`
+  result retains whatever it carries; bound methods, partials, and callable instances are never
+  cache-stable, because sharing would retain mutable receiver state. The name has to resolve back
+  to the same object, since `__module__` and `__qualname__` are writable. Their unordered runtime
+  ordering token uses strong identity, never those same mutable presentation attributes;
 - unsupported unhashable opaque values compare by identity and raise
   `UnhashableStructuralValueError` with their path when a hash is requested; cycles fail with the
   same typed path error. Cache admission converts that error into an uncached materialization,
@@ -376,8 +379,11 @@ keeps those recursive checks off hot cache-hit paths. A cached entry keys on str
 retains its whole target for as long as it lives, and an entry count alone would leave the retained
 bytes unbounded. Admission therefore also has a projected-size ceiling
 (`LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT`) measured on the ordering token, which already frames every
-descendant's token and so accumulates without any branch having to remember to report its own size. Exceeding it withholds caching only: the value stays structurally comparable and
-hashable, because size is a retention question and never a correctness one. Field-layout, sentinel-policy, and
+descendant's token and so accumulates without any branch having to remember to report its own size.
+A token that stands for identity rather than content is the one case that ceiling cannot price, so
+the callable rule above carries the bound for that branch instead. Exceeding either withholds
+caching only: the value stays structurally comparable and hashable, because retention is never a
+correctness question. Field-layout, sentinel-policy, and
 sentinel-singleton caches likewise wrap class objects in strong identity keys so permissive
 metaclass equality cannot cross-wire their values.
 

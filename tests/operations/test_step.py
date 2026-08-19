@@ -150,8 +150,13 @@ def test_operative_model_type_cache_size_zero_restores_per_call_classes(
     assert first.request_type is not second.request_type
 
 
+def module_level_fn(v):
+    return v
+
+
 def test_structural_cache_admission_classifies_mutable_and_immutable_metadata():
-    """Lists, dicts, bound methods, and arbitrary objects are never cache-safe; scalars, tuples, frozensets, and plain functions are."""
+    """Lists, dicts, bound methods, locally built callables, and arbitrary objects are never
+    cache-safe; scalars, tuples, frozensets, and module-held functions are."""
     from functools import partial
 
     from lionagi.ln._structural import _try_stable_cache_key
@@ -160,7 +165,7 @@ def test_structural_cache_admission_classifies_mutable_and_immutable_metadata():
         def check(self, v):
             return v
 
-    def plain_fn(v):
+    def local_fn(v):
         return v
 
     class CallableValidator:
@@ -172,9 +177,11 @@ def test_structural_cache_admission_classifies_mutable_and_immutable_metadata():
         {"a": 1},
         Validators().check,
         [].append,
-        partial(plain_fn),
+        partial(module_level_fn),
         CallableValidator(),
         Validators(),
+        local_fn,
+        type("LocalType", (), {}),
     ]
     for value in unsafe_values:
         assert _try_stable_cache_key(value) is None
@@ -189,7 +196,7 @@ def test_structural_cache_admission_classifies_mutable_and_immutable_metadata():
         len,
         (1, 2),
         frozenset({1, 2}),
-        plain_fn,
+        module_level_fn,
     ]
     for value in safe_values:
         assert _try_stable_cache_key(value) is not None

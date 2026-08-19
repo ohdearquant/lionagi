@@ -166,6 +166,22 @@ def _identity_token(value: object) -> bytes:
     return _frame(b"r", _encode_text(str(id(value))))
 
 
+def _held_by_its_module(value: object) -> bool:
+    # A callable's token is its identity, so its length says nothing about what the
+    # callable retains. Caching one the interpreter already holds alive by name costs
+    # no extra memory; caching a closure or a type() result retains whatever it carries.
+    module = sys.modules.get(getattr(value, "__module__", "") or "")
+    qualname = getattr(value, "__qualname__", "") or ""
+    if module is None or not qualname or "<locals>" in qualname:
+        return False
+    target: object = module
+    for part in qualname.split("."):
+        target = getattr(target, part, None)
+        if target is None:
+            return False
+    return target is value
+
+
 def _combine(
     marker: int,
     parts: tuple[_StructuralKey, ...],
@@ -499,10 +515,13 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
             active.remove(identity)
 
     if callable(value):
-        cache_stable = isinstance(value, (type, types.FunctionType)) or (
-            isinstance(value, types.BuiltinFunctionType)
-            and isinstance(getattr(value, "__self__", None), types.ModuleType)
-        )
+        cache_stable = (
+            isinstance(value, (type, types.FunctionType))
+            or (
+                isinstance(value, types.BuiltinFunctionType)
+                and isinstance(getattr(value, "__self__", None), types.ModuleType)
+            )
+        ) and _held_by_its_module(value)
         identity = _IdentityKey(value)
         return _StructuralKey(
             (_CALLABLE, identity),

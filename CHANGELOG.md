@@ -23,7 +23,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `LIONAGI_STRUCTURAL_CACHE_SIZE` (10,000 by default) and, because each entry strongly retains its
   target, by a summed projected-size ceiling `LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT` (8,192 by
   default) measured on the ordering token, above which a value is not retained but stays comparable
-  and hashable. Integers are projected as width-minimal two's complement instead of decimal digits,
+  and hashable. A callable's token is its identity, which that ceiling cannot price, so functions
+  and types are cache-stable only when the interpreter already holds them alive under their own
+  name: caching one of those retains nothing that was not retained already, while a closure or a
+  `type()` result would keep whatever it carries alive for the life of the entry. Integers are projected as width-minimal two's complement instead of decimal digits,
   so an integer wider than the interpreter's integer-to-string limit compares and hashes rather than
   raising `ValueError`. Mappings other
   than an exact `dict` are opaque and compare by identity, matching the existing treatment of

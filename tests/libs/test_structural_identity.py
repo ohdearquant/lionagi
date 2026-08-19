@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import gc
+import json
 import math
 import os
 import subprocess
 import sys
+import types
 import typing
+import weakref
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -454,6 +458,71 @@ def test_a_small_value_of_every_unbounded_shape_is_still_retained():
 
     for factory in _UNBOUNDED_SHAPES.values():
         assert _try_stable_cache_key(_Payload(factory(1))) is not None
+
+
+def _module_level_marker() -> None:
+    return None
+
+
+def _dynamic_function(payload: bytes) -> Callable[[], None]:
+    def made() -> None:
+        return None
+
+    made.payload = payload
+    return made
+
+
+_IDENTITY_ONLY_SHAPES = {
+    "closure": _dynamic_function,
+    "lambda": lambda payload: lambda: payload,
+    "type_call": lambda payload: type("_Made", (), {"payload": payload}),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_IDENTITY_ONLY_SHAPES))
+def test_no_dynamically_created_callable_is_retained(shape):
+    """A callable's token is its identity, so its length cannot price what it carries."""
+    from lionagi.ln._structural import _try_stable_cache_key
+
+    made = _IDENTITY_ONLY_SHAPES[shape](b"x" * 4096)
+    assert _try_stable_cache_key(_Payload(made)) is None
+
+
+def test_the_identity_only_enumeration_is_not_empty():
+    """The parametrization above asserts nothing if its source is."""
+    assert len(_IDENTITY_ONLY_SHAPES) >= 3
+
+
+def test_a_module_level_callable_is_still_retained():
+    """The control: bounding retention by refusing every callable would disable the cache."""
+    from lionagi.ln._structural import _try_stable_cache_key
+
+    for held in (json.dumps, dict, len, _module_level_marker, _Payload):
+        assert _try_stable_cache_key(_Payload(held)) is not None
+
+
+def test_a_callable_wearing_a_module_level_name_is_not_retained():
+    """__module__ and __qualname__ are writable, so the name has to resolve back to this object."""
+    from lionagi.ln._structural import _try_stable_cache_key
+
+    impostor = types.FunctionType(_module_level_marker.__code__, {}, "_module_level_marker")
+    impostor.__module__ = _module_level_marker.__module__
+    impostor.__qualname__ = _module_level_marker.__qualname__
+
+    assert _try_stable_cache_key(_Payload(impostor)) is None
+
+
+def test_a_dynamically_created_callable_is_released_after_projection():
+    """Non-admission is the mechanism; releasing the payload is the property it buys."""
+    from lionagi.ln._structural import _structural_key
+
+    made = _dynamic_function(b"x" * 4096)
+    _structural_key(_Payload(made))
+    released = weakref.ref(made)
+    del made
+    gc.collect()
+
+    assert released() is None
 
 
 def test_an_int_wider_than_the_decimal_conversion_limit_still_projects():
