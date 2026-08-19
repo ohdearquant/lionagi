@@ -13,9 +13,13 @@ from .._cache import BoundedLRUCache
 from .._structural import _try_stable_cache_key
 from .base import Meta
 
+# Weakly: the materialized annotation holds the declaration's metadata, and the
+# metadata holds whatever it carries, a validator included. An entry holding that
+# strongly outlives every name the validator had.
 _annotation_cache: BoundedLRUCache[Any, Any] = BoundedLRUCache(
     "LIONAGI_FIELD_CACHE_SIZE",
     10000,
+    weak_values=True,
 )
 
 

@@ -25,8 +25,11 @@ if TYPE_CHECKING:
 
 # Shared across identical constructions — callers must not mutate a returned model class.
 # LIONAGI_OPERATIVE_MODEL_CACHE_SIZE=0 disables sharing entirely.
+# Weakly, so the entry shares a model that something is using and never keeps one
+# alive on its own. A declaration's callables are reachable from the model it built,
+# so an entry holding the model strongly outlives every name they had.
 _model_type_cache: BoundedLRUCache[Any, type[BaseModel]] = BoundedLRUCache(
-    "LIONAGI_OPERATIVE_MODEL_CACHE_SIZE", 512
+    "LIONAGI_OPERATIVE_MODEL_CACHE_SIZE", 512, weak_values=True
 )
 
 

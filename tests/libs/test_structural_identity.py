@@ -363,8 +363,17 @@ def test_exact_dicts_are_still_projected_structurally():
     assert ValueParams(payload={"k": 1}) != ValueParams(payload={"k": 2})
 
 
-@dataclass(frozen=True, slots=True)
+# `__weakref__` is written out rather than generated: the projection cache stores only
+# a weakly-held key, so a fixture without it never reaches the branches tested here.
+@dataclass(frozen=True)
 class _Payload:
+    __slots__ = ("body", "__weakref__")
+
+    body: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _Unreferenceable:
     body: Any
 
 
@@ -416,6 +425,18 @@ def test_a_large_payload_never_enters_the_dataclass_cache():
     assert len(_stable_dataclass_keys._cache) == before
 
     _structural_key(_Payload("x"))
+    assert len(_stable_dataclass_keys._cache) == before + 1
+
+
+def test_a_declaration_that_cannot_be_held_weakly_never_enters_the_dataclass_cache():
+    """Storing it means the entry holds it, and it holds everything it carries."""
+    from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
+
+    before = len(_stable_dataclass_keys._cache)
+    _structural_key(_Unreferenceable("x"))
+    assert len(_stable_dataclass_keys._cache) == before
+
+    _structural_key(_Payload("y"))
     assert len(_stable_dataclass_keys._cache) == before + 1
 
 
@@ -676,48 +697,32 @@ def test_a_callable_unbound_after_admission_is_released_by_a_weakly_keyed_holder
     assert released() is None
 
 
-def test_a_callable_unbound_after_admission_is_still_held_by_a_slots_holder():
-    """The documented residual, asserted so that closing it later is a visible change.
-
-    A frozen dataclass declared with slots=True cannot be weakly referenced, so the entry
-    keying it has to hold it, and it holds whatever the instance refers to along with it.
-    Refusing to store such an instance instead costs an order of magnitude on the projection
-    of every declaration in the codebase, so the entry is kept and this is what it means:
-    a callable that was reachable by name when the cache took it, and is not afterwards,
-    stays alive until the entry is evicted.
-    """
+def test_a_callable_unbound_after_admission_is_released_by_a_holder_that_cannot_be_keyed_weakly():
+    """Such a holder is refused by the cache, so nothing survives the name being withdrawn."""
     from lionagi.ln._structural import _structural_key
 
     step = _export_then_withdraw("_exported_for_slots_holder")
     made = next(step)
-    holder = _Payload(made)
+    holder = _Unreferenceable(made)
     _structural_key(holder)
     next(step, None)
 
     released = weakref.ref(made)
     del made, holder
-    gc.collect()
-
-    assert released() is not None
-
-
-def test_the_residual_is_bounded_by_eviction():
-    """The residual is a bounded cache, not a leak: eviction has to actually release it."""
-    from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
-
-    step = _export_then_withdraw("_exported_for_eviction")
-    made = next(step)
-    holder = _Payload(made)
-    _structural_key(holder)
-    next(step, None)
-    released = weakref.ref(made)
-    del made, holder
-
-    for filler in range(_stable_dataclass_keys._max_size + 1):
-        _structural_key(_Payload(filler))
     gc.collect()
 
     assert released() is None
+
+
+def test_the_cache_is_bounded_by_eviction():
+    """A cache is a bounded store, not a growing one: eviction has to actually fire."""
+    from lionagi.ln._structural import _stable_dataclass_keys, _structural_key
+
+    for filler in range(_stable_dataclass_keys._max_size + 1):
+        _structural_key(_Payload(filler))
+
+    held = len(_stable_dataclass_keys._cache)
+    assert 0 < held <= _stable_dataclass_keys._max_size
 
 
 def test_a_dynamically_created_callable_is_released_after_projection():
@@ -926,20 +931,14 @@ def test_mutable_spec_metadata_opts_out_of_annotation_cache():
 
 
 def test_a_pinning_declaration_is_not_admitted_to_the_stable_key_caches():
-    """The annotation and model caches hold their built value strongly.
-
-    A weakly-held key does not bound that. The entry's own value holds the declaration's
-    callables, which keeps the weak key resolvable, so the entry outlives the name the
-    callable was reachable under. The pin flag already identifies that case for the
-    projection cache; the gate these two caches share has to read it as well.
-    """
+    """Identity is not a sound key for a callable that no name ever reached."""
     from lionagi.ln._structural import _try_stable_cache_key
 
     assert _try_stable_cache_key(_Payload(_dynamic_function(b"x" * 16))) is None
 
 
 class _Captured:
-    """Weak-referenceable on purpose: _Payload has slots and cannot be one."""
+    """A plain class, so the closure capture below can be weakly referenced."""
 
 
 def _annotation_capture_ref():
@@ -979,3 +978,106 @@ def test_the_annotation_capture_probe_can_report_a_live_capture():
     del validator
     gc.collect()
     assert captured_ref() is None
+
+
+def _shared_caches() -> dict[str, Any]:
+    from lionagi.adapters.spec_adapters.pydantic_field import _model_type_cache
+    from lionagi.ln._structural import _stable_dataclass_keys
+    from lionagi.ln.types._annotation import _annotation_cache
+
+    return {
+        "annotation": _annotation_cache,
+        "model": _model_type_cache,
+        "projection": _stable_dataclass_keys,
+    }
+
+
+def _outlives_its_only_name(drive: Callable[[Spec], Any], keep: str) -> tuple[bool, int]:
+    """Whether a validator survives losing its only name, with one cache left holding.
+
+    Every other cache the drive touched is emptied before collection, so what survives
+    is attributable to `keep` and not to a layer the drive happened to warm.
+    """
+    caches = _shared_caches()
+    for cache in caches.values():
+        cache._cache.clear()
+
+    module = types.ModuleType("_withdrawn_validator_module")
+    exec("def validate(cls, value):\n    return value\n", module.__dict__)
+    sys.modules["_withdrawn_validator_module"] = module
+    validator = module.validate
+    ref = weakref.ref(validator)
+    try:
+        spec = Spec(int, name="checked", validator=validator)
+        drive(spec)
+        del spec
+    finally:
+        del module.validate, validator
+        sys.modules.pop("_withdrawn_validator_module", None)
+        del module
+
+    for name, cache in caches.items():
+        if name != keep:
+            cache._cache.clear()
+    stored = len(caches[keep]._cache)
+    for _ in range(3):
+        gc.collect()
+    try:
+        return ref() is not None, stored
+    finally:
+        for cache in caches.values():
+            cache._cache.clear()
+
+
+def _build_probe_model(spec: Spec) -> None:
+    from pydantic import BaseModel
+
+    from lionagi.adapters.spec_adapters.pydantic_field import PydanticSpecAdapter
+    from lionagi.ln.types.operable import Operable
+
+    PydanticSpecAdapter.create_model(Operable((spec,), name="Probe"), "Probe", base_type=BaseModel)
+
+
+def test_the_annotation_cache_releases_a_validator_that_lost_its_only_name():
+    alive, stored = _outlives_its_only_name(lambda spec: spec.annotated(), keep="annotation")
+
+    assert stored == 1, "the annotation cache stored nothing, so this arm reports nothing"
+    assert alive is False
+
+
+def test_the_model_cache_releases_a_validator_that_lost_its_only_name():
+    alive, stored = _outlives_its_only_name(_build_probe_model, keep="model")
+
+    assert stored == 1, "the model cache stored nothing, so this arm reports nothing"
+    assert alive is False
+
+
+def test_the_projection_cache_releases_a_declaration_that_lost_its_only_name():
+    from lionagi.ln._structural import _try_stable_cache_key
+
+    alive, stored = _outlives_its_only_name(_try_stable_cache_key, keep="projection")
+
+    assert stored >= 1, "the projection cache stored nothing, so this arm reports nothing"
+    assert alive is False
+
+
+def test_the_withdrawn_name_probe_reports_a_validator_something_still_holds():
+    """Control: the three arms above pass on a probe that cannot see a live validator."""
+    held: list[Any] = []
+
+    def drive(spec: Spec) -> None:
+        held.append(spec.annotated())
+
+    alive, _ = _outlives_its_only_name(drive, keep="annotation")
+
+    assert alive is True
+
+
+def test_the_declaration_types_this_cache_keys_on_are_weakly_referenceable():
+    """The projection cache stores only a weakly-held key, so these must be able to be one."""
+    from lionagi.ln._structural import _IdentityKey
+    from lionagi.ln.types.operable import Operable
+
+    spec = Spec(int, name="checked")
+    for declaration in (Meta(key="k", value=1), spec, Operable((spec,), name="Probe")):
+        assert _IdentityKey(declaration).holds_weakly, type(declaration).__name__

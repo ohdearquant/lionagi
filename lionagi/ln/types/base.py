@@ -375,9 +375,14 @@ class DataClass:
 KeysLike = list[str] | tuple[str, ...] | set[str] | frozenset[str] | KeysDict
 
 
-@dataclass(slots=True, frozen=True, eq=False)
+# Slots are written out so `__weakref__` is among them: the projection cache keys
+# declarations by identity and stores only what it can hold weakly, so without it an
+# entry would pin the metadata and whatever it carries, a validator included.
+@dataclass(frozen=True, eq=False)
 class Meta:
     """Immutable metadata container for field templates and other configurations."""
+
+    __slots__ = ("key", "value", "__weakref__")
 
     key: str
     value: Any

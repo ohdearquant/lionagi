@@ -86,9 +86,13 @@ class CommonMeta(Enum):
         return tuple(metas)
 
 
-@dataclass(frozen=True, slots=True, init=False, eq=False)
+# Slots are written out rather than generated so `__weakref__` is among them; see
+# Meta for why the projection cache needs that.
+@dataclass(frozen=True, init=False, eq=False)
 class Spec:
     """Framework-agnostic field type + metadata specification."""
+
+    __slots__ = ("base_type", "metadata", "__weakref__")
 
     base_type: MaybeSentinel[type[Any]]
     metadata: tuple[Meta, ...]

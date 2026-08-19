@@ -48,9 +48,10 @@ class _IdentityKey:
     target retains. The hash is the id taken while the target was alive, so it stays usable
     after the target dies; equality demands both referents still be live, so an id the
     interpreter has reused cannot collide with a dead entry, and the dead entry matches
-    nothing and is evicted in its turn. A target that cannot be weakly referenced, a static
-    type or a builtin function, is held strongly: those last as long as the interpreter and
-    what they retain is bounded anyway.
+    nothing and is evicted in its turn. A target that cannot be weakly referenced is held
+    strongly, which keeps it and everything it carries alive for as long as the key lives;
+    `holds_weakly` says which of the two a key is, so a caller storing one past the call
+    can decide whether to.
     """
 
     __slots__ = ("_hash", "_ref", "_strong")
@@ -105,8 +106,8 @@ class _StructuralKey:
     # Whether anything under this key is held by identity alone and is not already held
     # alive elsewhere. Such a component contributes almost nothing to the weight below
     # while retaining whatever it captured, so weight cannot price it and it is tracked
-    # apart. This only decides whether an entry that pins its own key may be stored; see
-    # the note on the cache below for what that leaves open.
+    # apart. It decides admission in `_try_stable_cache_key`: identity is not a sound
+    # key for a callable no name ever reached.
     _pins: bool = field(compare=False, hash=False, repr=False, default=False)
     _weight: int = field(init=False, compare=False, hash=False, repr=False)
     _hash_value: int = field(init=False, compare=False, hash=False, repr=False)
@@ -162,9 +163,9 @@ _stable_dataclass_keys: BoundedLRUCache[_IdentityKey, _StructuralKey] = BoundedL
     "LIONAGI_STRUCTURAL_CACHE_SIZE",
     10000,
 )
-# An entry count alone does not bound bytes. Identity is held weakly, so a cached key
-# never keeps its target alive, but the projected primitives are copied into the key and
-# are held for as long as the entry is: a projection carrying a large payload of them is
+# An entry count alone does not bound bytes. Only a weakly-held key is stored, so a cached
+# key never keeps its target alive, but the projected primitives are copied into the key
+# and held for as long as the entry is: a projection carrying a large payload of them is
 # not cached at all.
 _MAX_CACHED_WEIGHT = int(os.environ.get("LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT", "8192"))
 _PATH_TYPES = (PurePosixPath, PureWindowsPath, PosixPath, WindowsPath)
@@ -510,14 +511,14 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
                         combined._sort_token,
                     ),
                 )
-                # The entry keeps this instance alive whenever its identity cannot be held
-                # weakly, and the instance in turn keeps its fields alive. Weight prices
-                # those fields only where they projected to primitives, so an instance
-                # carrying something held by identity alone is left out rather than pinned.
+                # A key that cannot be held weakly keeps this instance alive, and the
+                # instance keeps its fields alive with it, so it is not stored. The types
+                # this cache exists for carry a `__weakref__` slot for that reason; any
+                # other declaration type is simply not cached here.
                 if (
                     result.cache_stable
                     and result._weight <= _MAX_CACHED_WEIGHT
-                    and (identity_key.holds_weakly or not result._pins)
+                    and identity_key.holds_weakly
                 ):
                     _stable_dataclass_keys.put(identity_key, result)
                 return result
