@@ -93,6 +93,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The studio scheduler's tick loop is now supervised rather than merely guarded. It caught
+  `Exception`, which does not include `asyncio.CancelledError`, so a cancel escaping from anything
+  the tick awaited ended the loop permanently while the process and its HTTP surface kept
+  answering; startup recovery ran outside the guard, so one failing pass took the loop with it; and
+  the inter-tick sleep was unguarded. Only `stop()` ends the loop now: a cancel arriving at any
+  other time is absorbed in place, a failing recovery pass is logged and skipped, and any exit that
+  is not a stop restarts the loop on a bounded backoff with the reason and a restart count recorded
+  on the engine. Startup recovery absorbs a non-stop cancel the same way, so one cancelled pass no
+  longer costs the passes after it, and the inter-tick wait is measured against its own deadline so
+  a stream of cancels cannot drive the tick in a tight loop or skip the delay on the error path. A
+  cancel aimed at the loop itself no longer tears a recovery pass in half either: the pass in
+  flight is allowed to finish, because a pass interrupted after it has finalized a schedule_run has
+  no successor to complete the job, every later scan selecting rows that are still running. A stop
+  still interrupts it, since a shutdown that cannot interrupt recovery is one that hangs.
 - A GitHub-triggered schedule permanently lost the second of two events sharing a cursor
   timestamp. The scheduler advances `github_cursor` per dispatched event, writing that event's
   raw timestamp, and the poller drops anything at or below the stored value, so two pull
