@@ -318,9 +318,30 @@ function buildAttentionItems(
   // stale disposition is reachable forever — a genuine gate would silently
   // vanish from the default queue with no path back except editing the
   // store directly. A gated item only ever discharges via "acknowledged".
+  // A legacy key only identifies a row while exactly one row claims it. Two
+  // sessions can carry the same `run_id`, and the disposition stored under that
+  // id records one human decision about the single row the old projection
+  // showed, so spending it on both would discharge a session nobody looked at.
+  // The ambiguous key is dropped from the item itself rather than skipped at the
+  // read, so every consumer inherits the guard -- the join below and the Undo
+  // that deletes by this key both stop seeing it, instead of each having to
+  // remember. Those rows stay in the queue, which is the recoverable direction.
+  const legacyClaims = new Map<string, number>();
+  for (const item of deduped) {
+    if (item.legacyId) {
+      legacyClaims.set(item.legacyId, (legacyClaims.get(item.legacyId) ?? 0) + 1);
+    }
+  }
+  const resolved = deduped.map((item): AttentionItem => {
+    if (!item.legacyId || legacyClaims.get(item.legacyId) === 1) return item;
+    const unkeyed = { ...item };
+    delete unkeyed.legacyId;
+    return unkeyed;
+  });
+
   const active: AttentionItem[] = [];
   const discharged: AttentionItem[] = [];
-  for (const item of deduped) {
+  for (const item of resolved) {
     // Read the older key too: a discharge stored under it is what a human already
     // decided about this row, and missing it puts the row back in the queue.
     const disposition =

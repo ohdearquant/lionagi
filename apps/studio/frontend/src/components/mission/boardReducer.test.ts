@@ -794,6 +794,54 @@ describe("boardReducer — disposition join and active/discharged split", () => 
     expect(s.dischargedAttentionItems).toHaveLength(0);
   });
 
+  it("does not spend one shared legacy discharge on two sessions that carry the same run_id", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          id: "session-1",
+          run_id: "shared-run",
+          status: "failed",
+          started_at: nowSec - 600,
+        }),
+        makeRun({
+          id: "session-2",
+          run_id: "shared-run",
+          status: "failed",
+          started_at: nowSec - 500,
+        }),
+      ],
+      [],
+      nowSec,
+      null,
+      { "run:shared-run": makeDisposition({ item_id: "run:shared-run", state: "resolved" }) },
+    );
+    // The stored decision was about the one row the older projection showed. It
+    // cannot say which of these two a human looked at, so it discharges neither.
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+    expect(s.attentionItems.map((i) => i.id).sort()).toEqual(["run:session-1", "run:session-2"]);
+    // Dropped from the items themselves, so the Undo that deletes by this key
+    // cannot reach a disposition that belongs to the other session's history.
+    expect(s.attentionItems.every((i) => i.legacyId === undefined)).toBe(true);
+  });
+
+  it("still claims an unshared legacy key, so the collision guard is not a blanket refusal", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({ id: "sess-c", run_id: "solo-run", status: "failed", started_at: nowSec - 600 }),
+        makeRun({ id: "sess-d", run_id: "other-run", status: "failed", started_at: nowSec - 600 }),
+      ],
+      [],
+      nowSec,
+      null,
+      { "run:solo-run": makeDisposition({ item_id: "run:solo-run", state: "resolved" }) },
+    );
+    expect(s.dischargedAttentionItems.map((i) => i.id)).toEqual(["run:sess-c"]);
+  });
+
   it("a gated run carrying a stale resolved/expected/snoozed disposition from before gate-awareness stays active, never permanently discharged", () => {
     const nowSec = 1_000_000;
     const s = dispatchOk(
