@@ -379,6 +379,12 @@ def _secret_candidates(
 def _cmd_secret_values(cmd: Iterable[str] | None) -> dict[str, str]:
     """Credentials passed as arguments, which no environment mapping holds.
 
+    A name or a flag is what makes an argument tellable from a path or a
+    subcommand, so a credential passed as a bare positional stays outside this:
+    nothing distinguishes it from the arguments the message needs to stay
+    useful. The environment is the supported channel for one, and it is covered
+    whatever the value looks like.
+
     The anchored text rules already cover an echoed flag; this covers the child
     printing the value alone, where nothing in the text says what it is. Same
     length floor as the environment guesses, for the same reason: the flag name
@@ -402,6 +408,30 @@ def _cmd_secret_values(cmd: Iterable[str] | None) -> dict[str, str]:
         else:
             awaiting = token.lstrip("-") if _name_reads_as_credential(token) else None
     return found
+
+
+def _bounded_env_values(
+    env: Mapping[str, str] | None, already_secret: Mapping[str, str]
+) -> dict[str, str]:
+    """Name-matched values under the floor, replaceable only as whole tokens.
+
+    The name is evidence the value is a credential, so length must not excuse
+    it entirely. What length does decide is the replacement: a short value can
+    sit inside an ordinary word, so it gets a bounded replacement while longer
+    values keep the stronger substring one.
+    """
+    if not env:
+        return {}
+    return {
+        key: value
+        for key, value in env.items()
+        if isinstance(key, str)
+        and isinstance(value, str)
+        and value
+        and key not in already_secret
+        and len(value) < _MIN_REDACTABLE_VALUE_LEN
+        and _SECRET_ENV_KEY_RE.search(key)
+    }
 
 
 def _opaque_env_values(
@@ -467,6 +497,7 @@ def _redact_secrets_for_log(
     text: str,
     secrets: Mapping[str, str] | None,
     opaque: Mapping[str, str] | None = None,
+    bounded: Mapping[str, str] | None = None,
 ) -> str:
     """Strip credentials out of child output before any of it reaches a log.
 
@@ -489,6 +520,9 @@ def _redact_secrets_for_log(
     # Longest first, so a value containing another is not left half-revealed.
     for value in sorted(replacements, key=len, reverse=True):
         text = text.replace(value, replacements[value])
+    for value in sorted({v for v in (bounded or {}).values() if v}, key=len, reverse=True):
+        # Whole token only: a substring pass would splice into ordinary words.
+        text = re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", "[redacted]", text)
     text = _URL_CREDENTIAL_RE.sub(r"\1[redacted]\2", text)
     text = _URL_QUERY_PARAM_RE.sub(_redact_query_value, text)
     text = _ASSIGNMENT_RE.sub(_redact_assignment_value, text)
@@ -555,6 +589,7 @@ async def ndjson_from_cli(
         **_cmd_secret_values(cmd),
     }
     opaque_env: Mapping[str, str] = _opaque_env_values(spawn_env, redaction_env)
+    bounded_env: Mapping[str, str] = _bounded_env_values(spawn_env, redaction_env)
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
         env=spawn_env,
@@ -641,6 +676,7 @@ async def ndjson_from_cli(
             b"".join(stderr_chunks).decode(errors="replace").strip(),
             redaction_env,
             opaque_env,
+            bounded_env,
         )
 
     async def _write_stdin(payload: bytes) -> None:

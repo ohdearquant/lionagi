@@ -242,6 +242,15 @@ _LEAKS_UNNAMEABLE_ENV_THEN_FAILS = (
 # Handed to the child only as an argument, and echoed back with nothing beside
 # it to say what it is: no flag, no assignment, so the anchored text rules
 # cannot reach it and only an argument-derived candidate can.
+# Shorter than the redaction floor, in a variable the name rules recognise, and
+# echoed alone so no surrounding text can identify it.
+_SHORT_NAMED_SECRET = "hunter2"
+_LEAKS_SHORT_NAMED_ENV_THEN_FAILS = (
+    "import os, sys; "
+    "sys.stderr.write('rejected token ' + os.environ['LIONAGI_TEST_PASSWORD']); "
+    "sys.exit(7)"
+)
+
 _ARGUMENT_ONLY_SECRET = "cmdonly9f21ab77"
 _LEAKS_ITS_ARGUMENT_THEN_FAILS = (
     "import sys; sys.stderr.write('rejected by upstream ' + sys.argv[2]); sys.exit(6)"
@@ -313,12 +322,27 @@ class TestWhatCountsAsASecretToRemove:
         out = cs._redact_secrets_for_log("auth failed for abc", selected)
         assert "abc" not in out, out
 
-    def test_a_short_value_the_pattern_only_guessed_at_is_left_alone(self):
-        """The control: without a declaration the floor still holds, or every "key" mangles the log."""
-        selected = cs._secret_candidates({"LIONAGI_API_KEY": "shortie"}, [])
-        assert cs._redact_secrets_for_log("auth failed for shortie", selected) == (
-            "auth failed for shortie"
-        )
+    def test_a_short_value_the_pattern_guessed_at_is_bounded_rather_than_ignored(self):
+        """The name is evidence, so length decides the REPLACEMENT, never whether to act."""
+        env = {"LIONAGI_API_KEY": "shortie"}
+        selected = cs._secret_candidates(env, [])
+        assert selected == {}, "the floor still keeps it out of substring replacement"
+        bounded = cs._bounded_env_values(env, selected)
+        assert bounded == {"LIONAGI_API_KEY": "shortie"}
+        out = cs._redact_secrets_for_log("auth failed for shortie", selected, {}, bounded)
+        assert "shortie" not in out, out
+
+    @pytest.mark.parametrize("text", ["xshortiey stays whole", "shortieness is one word"])
+    def test_a_bounded_value_may_only_replace_a_whole_token(self, text):
+        """The reason the floor existed: a substring pass splices into ordinary words."""
+        bounded = cs._bounded_env_values({"LIONAGI_API_KEY": "shortie"}, {})
+        assert cs._redact_secrets_for_log(text, {}, {}, bounded) == text
+
+    def test_a_long_value_keeps_the_stronger_substring_replacement(self):
+        """Bounding is additive; it must not weaken what already worked."""
+        selected = cs._secret_candidates({"LIONAGI_API_KEY": "supersecretvalue1234"}, [])
+        out = cs._redact_secrets_for_log("Bearersupersecretvalue1234x", selected)
+        assert "supersecretvalue1234" not in out, out
 
     def test_a_declared_name_holding_nothing_does_not_redact_every_character(self):
         selected = cs._secret_candidates({"LIONAGI_TEST_VALUE": ""}, ["LIONAGI_TEST_VALUE"])
@@ -486,6 +510,26 @@ class TestTheQuotedStderrCarriesNoCredential:
         )
         assert "[$LIONAGI_TEST_THING]" in caplog.text, (
             "the stderr was dropped rather than named, losing the diagnostic: " + caplog.text
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_short_named_credential_does_not_reach_the_caller(self):
+        """Under the floor and echoed with nothing beside it: only the bounded pass can catch it."""
+        env = {**os.environ, "LIONAGI_TEST_PASSWORD": _SHORT_NAMED_SECRET}
+
+        async def run():
+            async for _ in ndjson_from_cli(_cmd(_LEAKS_SHORT_NAMED_ENV_THEN_FAILS), env=env):
+                pass  # pragma: no cover - the child writes no stdout
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await asyncio.wait_for(asyncio.create_task(run()), timeout=30)
+
+        message = str(exc_info.value)
+        assert _SHORT_NAMED_SECRET not in message, (
+            "a credential too short for the floor reached the caller: " + message
+        )
+        assert "[redacted]" in message, (
+            "the stderr was dropped rather than redacted, losing the diagnostic: " + message
         )
 
     @pytest.mark.asyncio
