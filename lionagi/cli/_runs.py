@@ -1338,19 +1338,15 @@ def _as_message_loss(value: Any) -> MessageLoss | None:
     reaches ``queue["owner"]`` indexing further on. The total is recomputed here
     rather than read, so it agrees with the entries it claims to sum.
     """
+    from lionagi.state.reasons import is_countable_queue_loss
+
     if not isinstance(value, dict):
         return None
     raw = value.get("queues")
     queues: list[QueueLoss] = [
         {"owner": str(q["owner"]), "lost": q["lost"]}
         for q in (raw if isinstance(raw, list) else [])
-        if isinstance(q, dict)
-        and q.get("owner") is not None
-        and isinstance(q.get("lost"), int)
-        and not isinstance(q["lost"], bool)
-        # A loss record with a zero or negative count is malformed, and summing it
-        # produces totals like "-3 event(s) lost".
-        and q["lost"] > 0
+        if is_countable_queue_loss(q)
     ]
     if not queues:
         return None

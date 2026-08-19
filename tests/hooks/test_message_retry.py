@@ -636,6 +636,30 @@ def _carry(payload: Any, leg: str = "leg-1") -> dict[str, Any]:
     return {f"{MESSAGE_LOSS_KEY_PREFIX}{leg}": dumps(payload)}
 
 
+def test_a_row_is_only_evidence_of_loss_when_the_count_can_be_read():
+    """The reader that decides a row lost messages and the reader that sums how many
+    have to agree: a payload one rejects must not still produce a loss verdict from the
+    other, or a run carries a message-loss reason with nothing to count."""
+    from lionagi.cli._runs import _merge_message_loss
+    from lionagi.state.reasons import has_message_loss_evidence
+
+    for payload in (
+        {"lost": 5, "queues": [{"owner": "a", "lost": "many"}]},
+        {"lost": 5, "queues": [{"owner": "a", "lost": 0}]},
+        {"lost": 5, "queues": [{"owner": "a", "lost": -3}]},
+        {"lost": 5, "queues": [{"owner": "a", "lost": True}]},
+        {"lost": 5, "queues": [{"lost": 2}]},
+    ):
+        row = {"node_metadata": _carry(payload)}
+        assert _merge_message_loss(row["node_metadata"], None) is None, payload
+        assert not has_message_loss_evidence(row), payload
+
+    # Control: a well-formed payload is still evidence, and still counts.
+    row = {"node_metadata": _carry({"queues": [{"owner": "a", "lost": 2}]})}
+    assert has_message_loss_evidence(row)
+    assert _merge_message_loss(row["node_metadata"], None)["lost"] == 2
+
+
 def test_a_carried_payload_with_a_non_list_queues_field_is_dropped_not_walked():
     from lionagi.cli._runs import _merge_message_loss
 

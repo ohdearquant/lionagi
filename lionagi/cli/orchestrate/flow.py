@@ -701,6 +701,19 @@ async def _resolve_invocation_terminal_flow(
                 )
 
         if fallback_status == "completed":
+            # Reached with children that exist but have not all reached a terminal status,
+            # so none of the arms above claimed the outcome. The loss is still real and this
+            # is still the clean-pass reason code, which is the one place it can hide.
+            if lost_messages:
+                return (
+                    "completed",
+                    RunReasons.COMPLETED_MESSAGE_LOSS,
+                    "Flow completed, but at least one child session lost live message "
+                    "events at teardown, so its transcript is incomplete and anything "
+                    "read from it is reading a partial record.",
+                    [{"kind": "session", "id": s["id"]} for s in lost_messages if s.get("id")],
+                    metadata,
+                )
             return (
                 "completed",
                 RunReasons.COMPLETED_OK,

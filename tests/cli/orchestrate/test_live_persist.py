@@ -4899,6 +4899,50 @@ async def test_a_losing_teardown_does_not_double_count_an_earlier_legs_loss(
     assert carried["lost"] == 11, carried
 
 
+async def test_a_nonterminal_child_that_lost_messages_is_not_a_clean_pass(
+    temp_db_path: Path,
+):
+    """No arm of the ladder claims an outcome when a child is still running, so the
+    fallback decides it. That fallback is the clean-pass reason code, which is the one
+    place a loss can be reported as a run that went fine."""
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-loss-under-a-nonterminal-child"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    ctx["message_retry_queues"].append(await _dead_queue_events(ctx["session_id"]))
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        await db.create_progression("prog-still-running")
+        await db.create_session(
+            {
+                "id": "sess-still-running",
+                "progression_id": "prog-still-running",
+                "invocation_id": invocation_id,
+                "status": "running",
+            }
+        )
+
+    status, reason_code, _summary, evidence, metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+
+    assert status == "completed"
+    assert reason_code == RunReasons.COMPLETED_MESSAGE_LOSS, (
+        "the fallback must not report a clean pass over an incomplete transcript"
+    )
+    assert metadata["message_loss_session_ids"] == [ctx["session_id"]]
+    assert [e["id"] for e in evidence] == [ctx["session_id"]]
+
+
 async def test_a_losing_child_is_named_when_a_sibling_fails(
     temp_db_path: Path,
 ):

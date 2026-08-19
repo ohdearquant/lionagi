@@ -263,12 +263,27 @@ def entity_table(entity_type: str) -> str:
 MESSAGE_LOSS_KEY_PREFIX: Final = "message_persist_loss:"
 
 
-def carried_message_loss_queues(node_metadata: Any) -> list[Any]:
-    """Every queue loss left on a session row, across the legs that recorded them.
+def is_countable_queue_loss(entry: Any) -> bool:
+    """Whether one queue-loss entry can be counted.
 
-    Entries are returned as found. They crossed a persistence boundary and may have been
-    written by a leg running different code, so the caller validates before summing.
+    The entry crossed a persistence boundary and may have been written by a leg running
+    different code, so its shape is an assumption. Shared rather than repeated per reader:
+    a reader that decides a row lost messages and a reader that sums how many have to
+    agree, or a payload one rejects still produces a loss verdict from the other.
     """
+    return (
+        isinstance(entry, dict)
+        and entry.get("owner") is not None
+        and isinstance(entry.get("lost"), int)
+        and not isinstance(entry["lost"], bool)
+        # Zero or negative is malformed, not a small loss: summing it produces totals
+        # like "-3 event(s) lost", and counting it makes a clean run report a loss.
+        and entry["lost"] > 0
+    )
+
+
+def carried_message_loss_queues(node_metadata: Any) -> list[Any]:
+    """Every countable queue loss left on a session row, across the legs that recorded them."""
     if isinstance(node_metadata, str):
         try:
             node_metadata = json.loads(node_metadata)
@@ -286,7 +301,7 @@ def carried_message_loss_queues(node_metadata: Any) -> list[Any]:
             except (TypeError, ValueError):
                 continue
         if isinstance(value, dict) and isinstance(value.get("queues"), list):
-            queues.extend(value["queues"])
+            queues.extend(q for q in value["queues"] if is_countable_queue_loss(q))
     return queues
 
 

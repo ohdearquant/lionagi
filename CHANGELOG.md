@@ -117,7 +117,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   fails is logged and the status stands rather than leaving a timed-out run unresumed. The carried
   payload is validated where it is read back rather than trusted for its shape, since it was written
   by whatever code the earlier leg was running; entries that do not fit are dropped, and the total is
-  recomputed from the entries that survive so it agrees with what it claims to sum. A leg
+  recomputed from the entries that survive so it agrees with what it claims to sum. One rule decides
+  that, shared by the reader that asks whether a row lost anything and the reader that sums how many,
+  so a payload one rejects cannot still produce a loss verdict from the other. A leg
   whose own terminal write never lands, because a concurrent teardown won the race or the row
   was already terminal, keeps the loss on the session rather than discarding it with the status
   it was about to write: the winner's record stands and the loss stays where its readers look.
@@ -126,7 +128,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   and the scheduled path alike. The loss is read off the child's evidence before the terminal
   status is decided rather than inside the all-completed arm, so a child that lost messages and
   also failed is still named on the invocation row, and a scheduled run with an incomplete
-  transcript carries `run.completed.message_loss` instead of flattening to a clean pass.
+  transcript carries `run.completed.message_loss` instead of flattening to a clean pass. That
+  holds for a flow whose children have not all reached a terminal status either, where no arm of
+  the precedence ladder claims the outcome and the clean-pass fallback used to decide it.
 - The studio scheduler's tick loop is now supervised rather than merely guarded. It caught
   `Exception`, which does not include `asyncio.CancelledError`, so a cancel escaping from anything
   the tick awaited ended the loop permanently while the process and its HTTP surface kept
