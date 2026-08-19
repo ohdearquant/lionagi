@@ -387,7 +387,7 @@ describe("ScheduleDetailModal interactions", () => {
 
     launcher.remove();
   });
-  it("shows the served classification and fetches the raw text only when expanded", async () => {
+  async function renderOneFailedRun(record: Record<string, unknown>) {
     api.listScheduleRuns.mockResolvedValue({
       runs: [
         {
@@ -405,15 +405,13 @@ describe("ScheduleDetailModal interactions", () => {
       ],
       total: 1,
     });
-    api.getScheduleRun.mockResolvedValue({ error_detail: "RAW-TRACEBACK-TEXT" });
+    api.getScheduleRun.mockResolvedValue(record);
     await act(async () => root.unmount());
     root = createRoot(container);
     await renderModal();
+  }
 
-    expect(container.textContent).toContain("permission denied");
-    expect(container.textContent).not.toContain("RAW-TRACEBACK-TEXT");
-    expect(api.getScheduleRun).not.toHaveBeenCalled();
-
+  async function clickShowFullError() {
     const toggle = Array.from(container.querySelectorAll<HTMLElement>("button")).find(
       (button) => button.textContent === "Show full error",
     );
@@ -422,8 +420,62 @@ describe("ScheduleDetailModal interactions", () => {
       toggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
     });
+  }
+
+  it("shows the served classification and fetches the raw text only when expanded", async () => {
+    await renderOneFailedRun({ error_detail: "RAW-TRACEBACK-TEXT" });
+
+    expect(container.textContent).toContain("permission denied");
+    expect(container.textContent).not.toContain("RAW-TRACEBACK-TEXT");
+    expect(api.getScheduleRun).not.toHaveBeenCalled();
+
+    await clickShowFullError();
 
     expect(api.getScheduleRun).toHaveBeenCalledWith("run-1");
+    expect(container.textContent).toContain("RAW-TRACEBACK-TEXT");
+  });
+
+  it("expands the reason the failing session reported when the occurrence carries none", async () => {
+    await renderOneFailedRun({
+      error_detail: null,
+      outcome: {
+        code: 1,
+        summary: "PermissionError: denied",
+        source: "session",
+        summary_reported: true,
+      },
+    });
+
+    await clickShowFullError();
+
+    expect(container.textContent).toContain("PermissionError: denied");
+  });
+
+  it("expands the winning reason rather than the occurrence text it replaced", async () => {
+    await renderOneFailedRun({
+      error_detail: "LOSING-OCCURRENCE-TEXT",
+      outcome: {
+        code: 1,
+        summary: "WINNING-INVOCATION-REASON",
+        source: "invocation",
+        summary_reported: true,
+      },
+    });
+
+    await clickShowFullError();
+
+    expect(container.textContent).toContain("WINNING-INVOCATION-REASON");
+    expect(container.textContent).not.toContain("LOSING-OCCURRENCE-TEXT");
+  });
+
+  it("falls through to the occurrence text when the summary is one this service wrote", async () => {
+    await renderOneFailedRun({
+      error_detail: "RAW-TRACEBACK-TEXT",
+      outcome: { code: 1, summary: "failed", source: "fallback", summary_reported: false },
+    });
+
+    await clickShowFullError();
+
     expect(container.textContent).toContain("RAW-TRACEBACK-TEXT");
   });
 });

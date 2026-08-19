@@ -436,6 +436,16 @@ export interface ScheduleSummary {
   updated_at: number;
 }
 
+/** The reconciled failure reason for one run, and which layer reported it. */
+export interface RunOutcome {
+  code: number | null;
+  summary: string;
+  source: "session" | "invocation" | "occurrence" | "fallback";
+  /** False when `summary` is a status word this service generated rather than a
+   * reason a layer reported. */
+  summary_reported: boolean;
+}
+
 export interface ScheduleRunSummary {
   id: string;
   schedule_id: string;
@@ -448,6 +458,7 @@ export interface ScheduleRunSummary {
   fired_at: number;
   ended_at: number | null;
   error_detail: string | null;
+  outcome?: RunOutcome | null;
 }
 
 /**

@@ -23,11 +23,24 @@ import {
   listScheduleRuns,
   getScheduleRun,
 } from "@/lib/api";
-import type { ScheduleDetail, ScheduleRunSliceRow } from "@/lib/types";
+import type { ScheduleDetail, ScheduleRunSliceRow, ScheduleRunSummary } from "@/lib/types";
 
 // Run history is a first-class section on the detail page (not a 5-item
 // sidebar afterthought) — fetch enough of it to read as a real timeline.
 const DETAIL_RUNS_LIMIT = 50;
+
+/**
+ * The failure reason to expand for one run.
+ *
+ * The reconciled outcome is what the layer that actually failed reported, and the
+ * classification shown beside this control is derived from it, so anything else here
+ * would contradict the badge above it. A summary this service generated is a status
+ * word rather than a reason, so those fall through to the occurrence's own text.
+ */
+function failureText(run: ScheduleRunSummary): string | null {
+  const reported = run.outcome?.summary_reported ? run.outcome.summary?.trim() : "";
+  return reported || run.error_detail || null;
+}
 
 type TriggerType = "cron" | "interval" | "github_poll";
 type ActionKind = "agent" | "flow" | "fanout" | "play";
@@ -359,7 +372,7 @@ export default function ScheduleDetailModal({
     if (!opening || runId in runErrorText) return;
     try {
       const run = await getScheduleRun(runId);
-      setRunErrorText((prev) => ({ ...prev, [runId]: run.error_detail }));
+      setRunErrorText((prev) => ({ ...prev, [runId]: failureText(run) }));
     } catch {
       setRunErrorText((prev) => ({ ...prev, [runId]: null }));
     }
