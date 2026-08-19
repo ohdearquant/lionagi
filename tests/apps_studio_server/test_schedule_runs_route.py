@@ -50,6 +50,7 @@ async def _seed_run(
     error_detail: str | None = None,
     chain_depth: int = 0,
     run_id: str | None = None,
+    chain_parent_id: str | None = None,
 ) -> str:
     resolved_run_id = run_id or str(uuid.uuid4())
     async with StateDB() as db:
@@ -62,6 +63,7 @@ async def _seed_run(
                 "action_args": {"prompt": "ping"},
                 "status": status,
                 "chain_depth": chain_depth,
+                "chain_parent_id": chain_parent_id,
                 "fired_at": fired_at,
                 "error_detail": error_detail,
             }
@@ -867,3 +869,171 @@ def test_the_record_route_serves_the_persisted_execution_root(tmp_path, monkeypa
     assert '_studio(f"/{_quote(schedule_id)}")' in create.group(0), (
         "the read-back moved; re-derive which route this test is about"
     )
+
+
+# The run-side counterpart to the private-schedule-column sweep above. The run join
+# carries more than the view names, and the routes that serve a view returned the joined
+# row verbatim before the view existed, so the allow-list is the only thing standing
+# between these columns and the wire.
+_PRIVATE_RUN_COLUMNS = ("action_args", "resume_packet")
+
+
+def _seed_run_with_private_columns(monkeypatch, db_path: Path) -> str:
+    _patch_db(monkeypatch, db_path)
+
+    async def seed():
+        schedule_id = await _seed_schedule()
+        run_id = await _seed_run(schedule_id, status="completed", fired_at=time.time())
+        async with StateDB() as db:
+            await db.update_schedule_run(run_id, resume_packet={"cursor": "/private/host/state"})
+        return schedule_id
+
+    return asyncio.run(seed())
+
+
+def test_the_seeded_run_really_carries_the_private_run_columns(tmp_path, monkeypatch):
+    """Positive control: without this the sweep below passes on a run that never had
+    the columns, which is the shape a broken seeder fails in."""
+    schedule_id = _seed_run_with_private_columns(monkeypatch, tmp_path / "state.db")
+
+    from lionagi.studio.services.schedules import list_schedule_run_views
+
+    rows = asyncio.run(list_schedule_run_views(schedule_id))
+    assert len(rows) == 1
+    unset = sorted(name for name in _PRIVATE_RUN_COLUMNS if not rows[0].get(name))
+    assert not unset, f"the join did not carry {unset}; the sweep would prove nothing"
+
+
+def test_no_list_surface_serves_a_private_run_column(tmp_path, monkeypatch):
+    schedule_id = _seed_run_with_private_columns(monkeypatch, tmp_path / "state.db")
+    client = _make_client()
+
+    for path in _list_surfaces(schedule_id):
+        resp = client.get(path)
+        assert resp.status_code == 200, path
+        leaked = sorted(_keys_anywhere(resp.json()) & set(_PRIVATE_RUN_COLUMNS))
+        assert not leaked, f"{path} serves {leaked}"
+
+
+# The single-run route is the one surface that was never projected: it returned the
+# joined row, and its chain_children the raw child rows, so every private run column
+# reached the wire on a route the API answers without a token.
+def _seed_chained_run_with_private_columns(monkeypatch, db_path: Path) -> tuple[str, str]:
+    _patch_db(monkeypatch, db_path)
+
+    async def seed():
+        schedule_id = await _seed_schedule()
+        fired = time.time()
+        parent_id = await _seed_run(schedule_id, status="completed", fired_at=fired)
+        child_id = await _seed_run(
+            schedule_id,
+            status="completed",
+            fired_at=fired + 1,
+            chain_depth=1,
+            chain_parent_id=parent_id,
+        )
+        async with StateDB() as db:
+            for rid in (parent_id, child_id):
+                await db.update_schedule_run(rid, resume_packet={"cursor": "/private/host/state"})
+        return parent_id, child_id
+
+    return asyncio.run(seed())
+
+
+def test_the_record_path_really_carries_the_private_run_columns(tmp_path, monkeypatch):
+    """Positive control for the record sweep, and it has to be the record path's own
+    read: the list control above proves nothing about the row this route builds, which
+    comes from a different service function and adds the child rows."""
+    parent_id, _ = _seed_chained_run_with_private_columns(monkeypatch, tmp_path / "state.db")
+
+    from lionagi.studio.services.schedules import get_schedule_run
+
+    row = asyncio.run(get_schedule_run(parent_id))
+    unset = sorted(name for name in _PRIVATE_RUN_COLUMNS if not row.get(name))
+    assert not unset, f"the record read did not carry {unset}; the sweep would prove nothing"
+    assert row["chain_children"], "no child row; the nested half of the sweep would prove nothing"
+    child_unset = sorted(
+        name for name in _PRIVATE_RUN_COLUMNS if not row["chain_children"][0][name]
+    )
+    assert not child_unset, f"the child row did not carry {child_unset}"
+
+
+def test_the_single_run_record_serves_no_private_run_column(tmp_path, monkeypatch):
+    parent_id, child_id = _seed_chained_run_with_private_columns(monkeypatch, tmp_path / "state.db")
+    client = _make_client()
+
+    for run_id in (parent_id, child_id):
+        resp = client.get(f"/api/schedules/runs/{run_id}")
+        # A 404 body carries no private key either, so it would pass the sweep below.
+        assert resp.status_code == 200, run_id
+        leaked = sorted(_keys_anywhere(resp.json()) & set(_PRIVATE_RUN_COLUMNS))
+        assert not leaked, f"the record for {run_id} serves {leaked}"
+
+
+def test_the_single_run_record_serves_no_trigger_payload(tmp_path, monkeypatch):
+    """trigger_context carries whole external event payloads and no client reads it.
+    Named separately from the sweep because it is the one field this route used to serve
+    that the web client still declared, so dropping it is a client-visible decision."""
+    parent_id, _ = _seed_chained_run_with_private_columns(monkeypatch, tmp_path / "state.db")
+
+    resp = _make_client().get(f"/api/schedules/runs/{parent_id}")
+
+    assert resp.status_code == 200
+    assert "trigger_context" not in _keys_anywhere(resp.json())
+
+
+def test_the_record_serves_every_field_the_client_declares(tmp_path, monkeypatch):
+    """Asserted against a real response, not against the field list.
+
+    Comparing the client's names to the projection's names says only that the two lists
+    agree; a projection that names a field and never emits it passes that. Optional
+    fields are excluded: the client marks them optional because a run need not have one.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    source = _Path("apps/studio/frontend/src/lib/types.ts")
+    if not source.exists():  # the frontend is not vendored into every checkout
+        pytest.skip("frontend source not present")
+    block = _re.search(
+        r"^export interface ScheduleRunSummary[^{]*\{(.*?)^\}", source.read_text(), _re.S | _re.M
+    )
+    assert block, "ScheduleRunSummary interface not found"
+    declared = _re.findall(r"^\s{2}(\w+)(\??):", block.group(1), _re.M)
+    required = [name for name, optional in declared if not optional]
+    assert required, "no required fields parsed from the client interface"
+
+    parent_id, _ = _seed_chained_run_with_private_columns(monkeypatch, tmp_path / "state.db")
+    resp = _make_client().get(f"/api/schedules/runs/{parent_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert not [name for name in required if name not in body]
+
+
+def test_the_single_run_record_keeps_a_session_reported_summary(tmp_path, monkeypatch):
+    """The record route is the one place raw failure text is reachable, and when a
+    session is the winning layer the summary IS that text: the occurrence carries no
+    error_detail of its own, so classifying the summary here would leave this route with
+    nothing to show for exactly those runs. The list surface for the same run still
+    classifies it, which is what makes the split real rather than a leak."""
+    session = {
+        "id": "sess-1",
+        "status": _terminal_session_status(),
+        "status_reason_summary": f"PermissionError: {_RAW_ERROR_SENTINEL}",
+    }
+    schedule_id, run_id = _seed_run_linked_to(
+        monkeypatch,
+        tmp_path / "state.db",
+        invocation={"id": "inv-1", "status": _terminal_invocation_status()},
+        sessions=[session],
+    )
+    client = _make_client()
+
+    body = client.get(f"/api/schedules/runs/{run_id}").json()
+    assert body["outcome"]["source"] == "session"
+    assert _RAW_ERROR_SENTINEL in body["outcome"]["summary"]
+    assert body.get("error_detail") is None, "the occurrence has no text of its own here"
+
+    listed = client.get(f"/api/schedules/{schedule_id}/runs")
+    assert _RAW_ERROR_SENTINEL not in listed.text, "the list surface still classifies it"
