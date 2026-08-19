@@ -7,12 +7,51 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sys
 from dataclasses import dataclass
 from typing import Any, Literal, NamedTuple
 
 import httpx
 
 _log = logging.getLogger(__name__)
+
+_CURSOR_SEP = "#"
+_CURSOR_NUMBER_WIDTH = 10
+# The number a cursor carrying no PR of its own compares as: every event in its second
+# is behind it. That is what a bare timestamp meant before this, and reading it that way
+# is what keeps an upgrade from re-offering a batch already dispatched.
+_WHOLE_SECOND = sys.maxsize
+
+
+def _cursor_for(cursor_at: str, pr_number: Any) -> str:
+    """The cursor value for one event: its timestamp, then the PR it belongs to.
+
+    GitHub timestamps have one-second resolution and a merge queue lands batches inside
+    one second, so several events routinely share a timestamp and the timestamp alone
+    cannot say which of them a schedule has dispatched. The number is zero-padded because
+    this value is ordered lexically everywhere it is compared, in SQL included. An event
+    without a number cannot be placed within its second and keeps the older meaning.
+    """
+    if not isinstance(pr_number, int) or isinstance(pr_number, bool) or pr_number < 0:
+        return cursor_at
+    return f"{cursor_at}{_CURSOR_SEP}{pr_number:0{_CURSOR_NUMBER_WIDTH}d}"
+
+
+def _cursor_bound(cursor: str | None) -> tuple[str, int] | None:
+    """What a stored cursor claims, as a (timestamp, PR number) pair, or None if unset."""
+    if not cursor:
+        return None
+    timestamp, sep, number = cursor.partition(_CURSOR_SEP)
+    if not sep or not number.isdigit():
+        return (timestamp, _WHOLE_SECOND)
+    return (timestamp, int(number))
+
+
+def _event_position(cursor_at: str, pr_number: Any) -> tuple[str, int]:
+    """Where one event sits in the same order a stored cursor is read in."""
+    if not isinstance(pr_number, int) or isinstance(pr_number, bool) or pr_number < 0:
+        return (cursor_at, _WHOLE_SECOND)
+    return (cursor_at, pr_number)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,13 +62,16 @@ class GithubPollItem:
     caller can log which PR was seen without firing it. ``updated_at`` is the
     cursor field for this item -- the PR's raw ``updated_at``, except under
     ``github_filter={"event": "pr_merged"}`` where it holds ``merged_at``
-    instead. ``dispatchable`` is False when ``github_filter`` excludes the PR
-    from firing, but it's still returned so the cursor can advance past it.
+    instead. ``cursor`` is that field plus this PR's number, and is the value a
+    caller persists: the timestamp alone cannot separate two events that share a
+    second. ``dispatchable`` is False when ``github_filter`` excludes the PR from
+    firing, but it's still returned so the cursor can advance past it.
     """
 
     event: dict[str, Any]
     updated_at: str
     dispatchable: bool
+    cursor: str
 
 
 class GithubPollResult(NamedTuple):
@@ -309,6 +351,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         _log.warning("GitHub rate limit low: %d remaining for %s", remaining, repo)
 
     cursor = schedule.get("github_cursor")
+    bound = _cursor_bound(cursor)
     per_page = int(params["per_page"])
     page = resp.json()
     prs = list(page)
@@ -325,7 +368,15 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         while True:
             is_short_page = len(page) < per_page
             oldest_updated = page[-1].get("updated_at", "") if page else ""
-            cursor_reached = bool(cursor) and oldest_updated <= cursor
+            # A cursor naming an event within its second leaves that second's other
+            # events unclaimed, so paging stops only once a page is strictly older
+            # than it; a whole-second cursor has nothing left to find there.
+            if bound is None:
+                cursor_reached = False
+            elif bound[1] == _WHOLE_SECOND:
+                cursor_reached = oldest_updated <= bound[0]
+            else:
+                cursor_reached = oldest_updated < bound[0]
             next_url = _next_page_url(resp)
             if is_short_page or cursor_reached or not next_url:
                 # Boundary proven safe regardless of how many pages were fetched.
@@ -391,7 +442,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         else:
             cursor_at = updated
 
-        if cursor and cursor_at <= cursor:
+        if bound is not None and _event_position(cursor_at, pr.get("number")) <= bound:
             continue
 
         if unsafe_floor is not None and cursor_at >= unsafe_floor:
@@ -442,7 +493,14 @@ async def github_poll(schedule: dict) -> GithubPollResult:
         }
         if merged_mode:
             event["pr_merged_at"] = merged_at
-        items.append(GithubPollItem(event=event, updated_at=cursor_at, dispatchable=dispatchable))
+        items.append(
+            GithubPollItem(
+                event=event,
+                updated_at=cursor_at,
+                dispatchable=dispatchable,
+                cursor=_cursor_for(cursor_at, pr.get("number")),
+            )
+        )
 
     # Holding back some events is ordinary (the cursor still advances past
     # what was returned). Holding back everything is the stuck shape: no
@@ -463,6 +521,7 @@ async def github_poll(schedule: dict) -> GithubPollResult:
 
     # API order (updated_at desc) isn't contractually identical to the
     # cursor field in merged mode; sort explicitly so cursor advance stays
-    # monotone in both modes.
-    items.sort(key=lambda it: it.updated_at)
+    # monotone in both modes. By the stored value rather than the timestamp,
+    # so events sharing a second advance in a defined order too.
+    items.sort(key=lambda it: it.cursor)
     return GithubPollResult(items=items, scan_complete=scan_complete, poll_status="ok")

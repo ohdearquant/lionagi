@@ -66,6 +66,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A GitHub-triggered schedule permanently lost the second of two events sharing a cursor
+  timestamp. The scheduler advances `github_cursor` per dispatched event, writing that event's
+  raw timestamp, and the poller drops anything at or below the stored value, so two pull
+  requests updated in the same second were indistinguishable to the filter and the one that
+  had not dispatched yet was dropped on every later poll. GitHub timestamps have one-second
+  resolution and a merge queue lands batches inside one, so this needed no race, only a single
+  interruption between the two dispatches. The cursor now carries the pull request's number
+  after its timestamp and is compared as a pair, and merged-mode paging goes on past a page
+  whose oldest item sits in the cursor's own second. A cursor stored before this change still
+  claims its whole second, so an upgrade re-dispatches nothing.
 - Two studio schedulers running against one database could each dispatch the same occurrence.
   The tick selects due schedules and fires them in separate statements, and every admission gate
   between the two lives in the firing process's own memory, so both processes committed, each with
