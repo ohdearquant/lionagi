@@ -3727,18 +3727,25 @@ class StateDB:
         *,
         guard_cursor_forward: bool = False,
         expect_next_fire_at: Any = NO_CURSOR_CLAIM,
+        expect_github_cursor: Any = NO_CURSOR_CLAIM,
         **fields: Any,
     ) -> bool:
         """Update one schedule; returns whether a row matched.
 
         With *expect_next_fire_at* the update also claims that cursor value, so a caller that
         reserves a due instant ahead of dispatching it learns whether it won the reservation.
+
+        *expect_github_cursor* claims the poll cursor the same way, which is what serializes the
+        events inside one poll batch. A batch's events all resolve to the same next_fire_at, so a
+        claim on that value matches twice and separates nothing; github_cursor advances per event
+        and is the only value in the row that distinguishes one event of a batch from the next.
         """
         stmt, params = self._build_update_schedule_stmt(
             schedule_id,
             fields,
             guard_cursor_forward=guard_cursor_forward,
             expect_next_fire_at=expect_next_fire_at,
+            expect_github_cursor=expect_github_cursor,
         )
         async with self._tx() as conn:
             result = await conn.execute(stmt, params)
@@ -3752,6 +3759,7 @@ class StateDB:
         *,
         guard_cursor_forward: bool = False,
         expect_next_fire_at: Any = NO_CURSOR_CLAIM,
+        expect_github_cursor: Any = NO_CURSOR_CLAIM,
     ):
         """Validate and build the ``UPDATE schedules`` statement and params, no transaction."""
         bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
@@ -3794,16 +3802,22 @@ class StateDB:
         params = dict(fields)
         params["_id"] = schedule_id
         where = "id = :_id"
-        if expect_next_fire_at is not NO_CURSOR_CLAIM:
-            # Branching on the Python value rather than emitting a NULL-safe operator: sqlite
-            # spells one `IS`, postgres rejects `IS` with a bound parameter outright, and their
-            # shared spelling (`IS NOT DISTINCT FROM`) is too new to rely on. A schedule with no
-            # cursor is still guarded on the same terms as one that has it.
-            if expect_next_fire_at is None:
-                where += " AND next_fire_at IS NULL"
+        # One loop rather than a block per column, so a second claim cannot be given subtly
+        # different NULL handling from the first. Branching on the Python value rather than
+        # emitting a NULL-safe operator: sqlite spells one `IS`, postgres rejects `IS` with a
+        # bound parameter outright, and their shared spelling (`IS NOT DISTINCT FROM`) is too
+        # new to rely on. A schedule with no cursor is guarded on the same terms as one with it.
+        for column, expected, bind in (
+            ("next_fire_at", expect_next_fire_at, "_expect_nfa"),
+            ("github_cursor", expect_github_cursor, "_expect_ghc"),
+        ):
+            if expected is NO_CURSOR_CLAIM:
+                continue
+            if expected is None:
+                where += f" AND {column} IS NULL"
             else:
-                where += " AND next_fire_at = :_expect_nfa"
-                params["_expect_nfa"] = expect_next_fire_at
+                where += f" AND {column} = :{bind}"
+                params[bind] = expected
         stmt = text(f"UPDATE schedules SET {', '.join(sets_parts)} WHERE {where}")  # noqa: S608
         if bind_params:
             stmt = stmt.bindparams(*bind_params)
@@ -3874,12 +3888,14 @@ class StateDB:
         schedule_id: str,
         schedule_fields: dict[str, Any],
         expect_next_fire_at: Any,
+        expect_github_cursor: Any = NO_CURSOR_CLAIM,
     ) -> bool:
         """Insert one occurrence row and advance the schedule's cursor in a single transaction.
 
-        Returns False when *expect_next_fire_at* no longer matches, having written nothing.
-        Pass ``NO_CURSOR_CLAIM`` for a fire that does not stand for a due instant, such as a
-        chain child or a replacement for an occurrence already recorded.
+        Returns False when a claim no longer matches, having written nothing. Pass
+        ``NO_CURSOR_CLAIM`` for a fire that does not stand for a due instant, such as a chain
+        child or a replacement for an occurrence already recorded. *expect_github_cursor* is the
+        per-event claim a poll batch needs, since every event in one batch shares a due instant.
         """
         run_stmt, run_params = self._build_schedule_run_insert_stmt(run)
         # Engine-only path, so the monotonic cursor guard always applies: this value came from a
@@ -3889,6 +3905,7 @@ class StateDB:
             schedule_fields,
             guard_cursor_forward=True,
             expect_next_fire_at=expect_next_fire_at,
+            expect_github_cursor=expect_github_cursor,
         )
         async with self._tx() as conn:
             # The cursor claim goes FIRST so a lost race writes no occurrence at all. Selecting a

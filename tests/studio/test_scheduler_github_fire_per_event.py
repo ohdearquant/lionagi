@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from lionagi.state.db import NO_CURSOR_CLAIM
 from lionagi.studio.scheduler import github as gh_mod
 from lionagi.studio.scheduler.engine import SchedulerEngine
 from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult
@@ -194,7 +195,12 @@ async def test_max_runs_exhaustion_mid_batch_stops_cursor_before_undispatched(ca
     fired = 0
 
     async def _create_schedule_run_and_advance(
-        _payload, *, schedule_id, schedule_fields, expect_next_fire_at
+        _payload,
+        *,
+        schedule_id,
+        schedule_fields,
+        expect_next_fire_at,
+        expect_github_cursor=NO_CURSOR_CLAIM,
     ):
         nonlocal fired
         fired += 1
@@ -403,7 +409,12 @@ async def test_undispatched_event_is_relisted_on_next_poll(monkeypatch, caplog):
     fired = 0
 
     async def _create_schedule_run_and_advance(
-        _payload, *, schedule_id, schedule_fields, expect_next_fire_at
+        _payload,
+        *,
+        schedule_id,
+        schedule_fields,
+        expect_next_fire_at,
+        expect_github_cursor=NO_CURSOR_CLAIM,
     ):
         nonlocal fired
         fired += 1
@@ -490,7 +501,12 @@ async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(
     fired_prs: list[int] = []
 
     async def _create_schedule_run_and_advance(
-        payload, *, schedule_id, schedule_fields, expect_next_fire_at
+        payload,
+        *,
+        schedule_id,
+        schedule_fields,
+        expect_next_fire_at,
+        expect_github_cursor=NO_CURSOR_CLAIM,
     ):
         fired_prs.append(payload["trigger_context"]["github_events"][0]["pr_number"])
         return True
@@ -657,7 +673,7 @@ async def test_every_event_in_a_batch_is_written_though_each_one_advances_the_cu
     claimed the cursor the poll started with, only the first could ever be written and a
     multi-event batch would silently serialize into one event per poll.
     """
-    from tests._scheduler_claims import claim_holds
+    from tests._scheduler_claims import claiming_advance
 
     schedule = _minimal_schedule(next_fire_at=9_000.0, poll_interval_sec=60, github_cursor=None)
     svc = _make_svc()
@@ -668,14 +684,9 @@ async def test_every_event_in_a_batch_is_written_though_each_one_advances_the_cu
     stored = {"next_fire_at": schedule["next_fire_at"], "github_cursor": None}
     written: list[str] = []
 
-    async def _advance(payload, *, schedule_id, schedule_fields, expect_next_fire_at):
-        if not claim_holds(stored["next_fire_at"], expect_next_fire_at):
-            return False
-        stored.update(schedule_fields)
-        written.append(payload["id"])
-        return True
-
-    svc.create_schedule_run_and_advance = AsyncMock(side_effect=_advance)
+    svc.create_schedule_run_and_advance = AsyncMock(
+        side_effect=claiming_advance(stored, on_write=lambda payload: written.append(payload["id"]))
+    )
 
     items = [
         _item(1, "2026-01-01T00:00:01Z"),
@@ -697,3 +708,104 @@ async def test_every_event_in_a_batch_is_written_though_each_one_advances_the_cu
 
     assert len(written) == 3, f"expected one occurrence per event, wrote {len(written)}"
     assert stored["github_cursor"] == "2026-01-01T00:00:03Z"
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_advance_between_events_refuses_the_later_write():
+    """A second scheduler that polls mid-batch must not get a second copy of one event.
+
+    The first scheduler dispatches event 1, which advances github_cursor. A second scheduler
+    polling in that window reads the advanced cursor, so its poll starts at event 2 and its
+    claim on event 2 succeeds. The first scheduler then reaches event 2 itself. Only one of
+    them may write it, and the cursor is what decides: next_fire_at is identical for every
+    event of one poll, so claiming that instead would let both through.
+    """
+    from tests._scheduler_claims import claiming_advance
+
+    schedule = _minimal_schedule(next_fire_at=9_000.0, poll_interval_sec=60, github_cursor=None)
+    svc = _make_svc()
+    stored = {"next_fire_at": schedule["next_fire_at"], "github_cursor": None}
+    written: list[int] = []
+
+    advance = claiming_advance(
+        stored,
+        on_write=lambda payload: written.append(
+            payload["trigger_context"]["github_events"][0]["pr_number"]
+        ),
+    )
+    second_scheduler_ran = False
+
+    async def _advance_then_lose_the_race(payload, **kwargs):
+        nonlocal second_scheduler_ran
+        won = await advance(payload, **kwargs)
+        pr = payload["trigger_context"]["github_events"][0]["pr_number"]
+        if won and pr == 1 and not second_scheduler_ran:
+            # The other scheduler polls here, sees the cursor this write just advanced, and
+            # takes event 2 for itself before this loop reaches it.
+            second_scheduler_ran = True
+            stored["github_cursor"] = "2026-01-01T00:00:02Z"
+        return won
+
+    svc.create_schedule_run_and_advance = AsyncMock(side_effect=_advance_then_lose_the_race)
+
+    items = [_item(1, "2026-01-01T00:00:01Z"), _item(2, "2026-01-01T00:00:02Z")]
+    engine = SchedulerEngine(svc=svc)
+    build_argv_patch, spawn_patch = _spawn_patches()
+    with (
+        build_argv_patch,
+        spawn_patch,
+        patch.object(
+            gh_mod,
+            "github_poll",
+            new=AsyncMock(return_value=GithubPollResult(items=items, scan_complete=True)),
+        ),
+    ):
+        await engine._tick_github(schedule, now=10_000.0)
+
+    assert second_scheduler_ran, "the interleave never happened, so nothing was tested"
+    assert written == [1], f"event 2 was written by both schedulers: {written}"
+
+
+@pytest.mark.asyncio
+async def test_a_filtered_event_between_two_dispatched_ones_does_not_break_the_claim():
+    """The claim follows what was written, not how far the poll has read.
+
+    A filtered-out event moves the local read position without writing anything, so a claim
+    that followed the read position would name a value no transaction ever put in the row
+    and every event after the first filtered one would be refused.
+    """
+    from tests._scheduler_claims import claiming_advance
+
+    schedule = _minimal_schedule(next_fire_at=9_000.0, poll_interval_sec=60, github_cursor=None)
+    svc = _make_svc()
+    stored = {"next_fire_at": schedule["next_fire_at"], "github_cursor": None}
+    written: list[int] = []
+
+    svc.create_schedule_run_and_advance = AsyncMock(
+        side_effect=claiming_advance(
+            stored,
+            on_write=lambda payload: written.append(
+                payload["trigger_context"]["github_events"][0]["pr_number"]
+            ),
+        )
+    )
+
+    items = [
+        _item(1, "2026-01-01T00:00:01Z"),
+        _item(2, "2026-01-01T00:00:02Z", dispatchable=False),
+        _item(3, "2026-01-01T00:00:03Z"),
+    ]
+    engine = SchedulerEngine(svc=svc)
+    build_argv_patch, spawn_patch = _spawn_patches()
+    with (
+        build_argv_patch,
+        spawn_patch,
+        patch.object(
+            gh_mod,
+            "github_poll",
+            new=AsyncMock(return_value=GithubPollResult(items=items, scan_complete=True)),
+        ),
+    ):
+        await engine._tick_github(schedule, now=10_000.0)
+
+    assert written == [1, 3], f"the filtered event stalled the batch: wrote {written}"

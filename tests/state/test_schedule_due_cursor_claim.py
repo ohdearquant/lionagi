@@ -208,3 +208,46 @@ async def test_a_claim_of_none_matches_only_a_null_cursor(db: StateDB):
     assert (await db.get_schedule(sid))["next_fire_at"] is None
     assert await db.update_schedule(sid, expect_next_fire_at=None, next_fire_at=900.0)
     assert (await db.get_schedule(sid))["next_fire_at"] == 900.0
+
+
+def test_the_poll_cursor_claim_uses_the_same_predicate_shape():
+    """A second claim column has to get the same NULL handling as the first.
+
+    Every event of one poll batch resolves to the same next_fire_at, so a claim on that
+    value matches twice and separates nothing. github_cursor advances per event, and a
+    schedule polling for the first time has none, so the NULL arm is the common case here
+    rather than an edge.
+    """
+    with_value, params = StateDB._build_update_schedule_stmt(
+        "sched-1", {"github_cursor": "b"}, expect_github_cursor="a"
+    )
+    with_null, null_params = StateDB._build_update_schedule_stmt(
+        "sched-1", {"github_cursor": "b"}, expect_github_cursor=None
+    )
+    both, both_params = StateDB._build_update_schedule_stmt(
+        "sched-1",
+        {"github_cursor": "b"},
+        expect_next_fire_at=100.0,
+        expect_github_cursor="a",
+    )
+    unclaimed, unclaimed_params = StateDB._build_update_schedule_stmt(
+        "sched-1", {"github_cursor": "b"}
+    )
+
+    for stmt in (with_value, with_null, both):
+        assert " IS :" not in str(stmt), f"postgres rejects a bound parameter after IS: {stmt}"
+
+    assert "github_cursor = :_expect_ghc" in str(with_value)
+    assert params["_expect_ghc"] == "a"
+    assert "github_cursor IS NULL" in str(with_null)
+    assert "_expect_ghc" not in null_params
+    # Both claims are independent conditions on one statement, not one overwriting the other.
+    assert "next_fire_at = :_expect_nfa" in str(both)
+    assert "github_cursor = :_expect_ghc" in str(both)
+    assert both_params["_expect_nfa"] == 100.0
+    assert both_params["_expect_ghc"] == "a"
+    # Control: unasked, neither predicate appears, so the arms above measure something the
+    # builder emits only on request rather than a condition it always writes.
+    assert "_expect_ghc" not in str(unclaimed)
+    assert "_expect_ghc" not in unclaimed_params
+    assert "_expect_nfa" not in str(unclaimed)

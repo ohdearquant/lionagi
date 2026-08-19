@@ -11,6 +11,7 @@ from lionagi.state.db import NO_CURSOR_CLAIM
 
 __all__ = (
     "claim_and_advance",
+    "claiming_advance",
     "claim_holds",
     "fire_inner_with_claim",
     "fire_with_claim",
@@ -77,3 +78,34 @@ def persisting_update_schedule(schedule: dict):
         return True
 
     return _update
+
+
+def claiming_advance(stored: dict, *, on_write=None):
+    """A ``create_schedule_run_and_advance`` double that honors both claims.
+
+    Mirrors the real signature instead of absorbing the claims into ``**fields``. A double
+    that always returns True cannot tell a winning claim from a losing one, so every test
+    using it would pass whether or not the engine claims anything.
+
+    *stored* stands for the schedule row and is updated on a winning write, which is what
+    makes a second caller's stale claim fail the way the database would fail it.
+    """
+
+    async def _advance(
+        payload,
+        *,
+        schedule_id,
+        schedule_fields,
+        expect_next_fire_at,
+        expect_github_cursor=NO_CURSOR_CLAIM,
+    ):
+        if not claim_holds(stored.get("next_fire_at"), expect_next_fire_at):
+            return False
+        if not claim_holds(stored.get("github_cursor"), expect_github_cursor):
+            return False
+        stored.update(schedule_fields)
+        if on_write is not None:
+            on_write(payload)
+        return True
+
+    return _advance

@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from lionagi.state.db import NO_CURSOR_CLAIM
 from tests._scheduler_claims import fire_with_claim, persisting_update_schedule
 
 NY = ZoneInfo("America/New_York")
@@ -2670,8 +2671,20 @@ class _StatefulSvc:
     async def list_schedules(self, *, enabled=None):
         return []
 
-    async def update_schedule(self, schedule_id, **fields):
+    async def update_schedule(
+        self,
+        schedule_id,
+        *,
+        guard_cursor_forward=False,
+        expect_next_fire_at=NO_CURSOR_CLAIM,
+        expect_github_cursor=NO_CURSOR_CLAIM,
+        **fields,
+    ):
+        # Mirrors the real signature and return type. Absorbing the claims into **fields
+        # would record them as schedule columns and return None, which the recovery path
+        # reads as a refusal, so a test reusing this fake would model a different interface.
         self.schedule_updates.append((schedule_id, fields))
+        return True
 
     async def count_schedule_runs(
         self,
@@ -2694,7 +2707,13 @@ class _StatefulSvc:
         self.runs[run["id"]] = dict(run)
 
     async def create_schedule_run_and_advance(
-        self, run, *, schedule_id, schedule_fields, expect_next_fire_at
+        self,
+        run,
+        *,
+        schedule_id,
+        schedule_fields,
+        expect_next_fire_at,
+        expect_github_cursor=NO_CURSOR_CLAIM,
     ):
         self.runs[run["id"]] = dict(run)
         self.schedule_updates.append((schedule_id, dict(schedule_fields)))

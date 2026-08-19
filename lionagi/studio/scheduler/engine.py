@@ -1242,11 +1242,15 @@ class SchedulerEngine:
             dropped_prs: list[Any] = []
             # One poll cycle is one due instant, however many events it carries. The first event
             # to dispatch claims that instant on behalf of the whole batch; the rest are already
-            # inside a cycle this scheduler won, and each dispatched event advances next_fire_at,
-            # so re-claiming the pre-poll value would refuse every event after the first. What
-            # keeps the later events from double-firing is github_cursor, which is monotonic and
-            # advances in the same transaction as each event's occurrence.
+            # inside a cycle this scheduler won, and every event of a batch resolves to the same
+            # next_fire_at, so re-claiming it would either refuse every event after the first or,
+            # since the value does not change between them, match twice and separate nothing.
+            # github_cursor is what distinguishes one event of a batch from the next: it advances
+            # per event, in the same transaction as that event's occurrence. Claiming it per event
+            # is what stops a second scheduler that polled after this one committed an earlier
+            # event from dispatching a later one this scheduler has not reached yet.
             unclaimed_poll_cycle = True
+            claimed_cursor = schedule.get("github_cursor")
 
             for idx, item in enumerate(polled):
                 if not item.dispatchable:
@@ -1313,9 +1317,14 @@ class SchedulerEngine:
                             if unclaimed_poll_cycle
                             else NO_CURSOR_CLAIM
                         ),
+                        expect_github_cursor=claimed_cursor,
                     )
                     if fired:
                         unclaimed_poll_cycle = False
+                        # Only a written advance moves the claim. Skipped events move the local
+                        # read position below without writing, so following that instead would
+                        # claim a value no transaction ever put in the row.
+                        claimed_cursor = item.updated_at
                     if not fired:
                         # A refusal before a process started means nothing ran, so re-offering the
                         # event is not a re-execution. Bounded, because a refusal can be a property
@@ -1865,6 +1874,7 @@ class SchedulerEngine:
         extra_schedule_fields: dict[str, Any] | None = None,
         supersedes_run_id: str | None = None,
         expect_next_fire_at: Any,
+        expect_github_cursor: Any = NO_CURSOR_CLAIM,
     ) -> bool:
         """Thin wrapper that releases every admission claim on all exit paths.
 
@@ -1885,6 +1895,7 @@ class SchedulerEngine:
                 extra_schedule_fields=extra_schedule_fields,
                 supersedes_run_id=supersedes_run_id,
                 expect_next_fire_at=expect_next_fire_at,
+                expect_github_cursor=expect_github_cursor,
             )
         finally:
             if rate_limit_claim is not None:
@@ -1912,6 +1923,7 @@ class SchedulerEngine:
         schedule_fields: dict[str, Any],
         supersedes_run_id: str | None,
         expect_next_fire_at: Any,
+        expect_github_cursor: Any = NO_CURSOR_CLAIM,
     ) -> bool:
         """Durably record one occurrence row: the choke point both write sites take."""
         if supersedes_run_id is not None:
@@ -1943,6 +1955,7 @@ class SchedulerEngine:
             schedule_id=schedule_id,
             schedule_fields=schedule_fields,
             expect_next_fire_at=expect_next_fire_at,
+            expect_github_cursor=expect_github_cursor,
         )
 
     async def _abandon_refused_fire(
@@ -2015,6 +2028,7 @@ class SchedulerEngine:
         extra_schedule_fields: dict[str, Any] | None = None,
         supersedes_run_id: str | None = None,
         expect_next_fire_at: Any,
+        expect_github_cursor: Any = NO_CURSOR_CLAIM,
     ) -> bool:
         """Fire one occurrence of *schedule*; False only if it refused before anything committed."""
         sid = schedule["id"]
@@ -2125,6 +2139,7 @@ class SchedulerEngine:
                     schedule_fields=failed_schedule_fields,
                     supersedes_run_id=supersedes_run_id,
                     expect_next_fire_at=expect_next_fire_at,
+                    expect_github_cursor=expect_github_cursor,
                 )
                 if not written_occurrence:
                     # Abandon writes the invocation's cancelled terminal status, and the finally
@@ -2236,6 +2251,7 @@ class SchedulerEngine:
                 schedule_fields=update_fields,
                 supersedes_run_id=supersedes_run_id,
                 expect_next_fire_at=expect_next_fire_at,
+                expect_github_cursor=expect_github_cursor,
             )
             if not written_occurrence:
                 await self._abandon_refused_fire(inv_id, sid, orphan_id=supersedes_run_id)

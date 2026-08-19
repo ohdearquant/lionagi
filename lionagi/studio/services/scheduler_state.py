@@ -36,6 +36,7 @@ class SchedulerStateService(Protocol):
         *,
         guard_cursor_forward: bool = False,
         expect_next_fire_at: Any = NO_CURSOR_CLAIM,
+        expect_github_cursor: Any = NO_CURSOR_CLAIM,
         **fields: Any,
     ) -> bool: ...
 
@@ -62,7 +63,8 @@ class SchedulerStateService(Protocol):
         *,
         schedule_id: str,
         schedule_fields: dict[str, Any],
-        expect_next_fire_at: float | None,
+        expect_next_fire_at: Any,
+        expect_github_cursor: Any = NO_CURSOR_CLAIM,
     ) -> bool: ...
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool: ...
@@ -177,6 +179,7 @@ class _DBSchedulerStateService:
         *,
         guard_cursor_forward: bool = False,
         expect_next_fire_at: Any = NO_CURSOR_CLAIM,
+        expect_github_cursor: Any = NO_CURSOR_CLAIM,
         **fields: Any,
     ) -> bool:
         async with self._db_context() as db:
@@ -184,6 +187,7 @@ class _DBSchedulerStateService:
                 schedule_id,
                 guard_cursor_forward=guard_cursor_forward,
                 expect_next_fire_at=expect_next_fire_at,
+                expect_github_cursor=expect_github_cursor,
                 **fields,
             )
 
@@ -225,7 +229,8 @@ class _DBSchedulerStateService:
         *,
         schedule_id: str,
         schedule_fields: dict[str, Any],
-        expect_next_fire_at: float | None,
+        expect_next_fire_at: Any,
+        expect_github_cursor: Any = NO_CURSOR_CLAIM,
     ) -> bool:
         async with self._db_context() as db:
             return await db.create_schedule_run_and_advance(
@@ -233,6 +238,7 @@ class _DBSchedulerStateService:
                 schedule_id=schedule_id,
                 schedule_fields=schedule_fields,
                 expect_next_fire_at=expect_next_fire_at,
+                expect_github_cursor=expect_github_cursor,
             )
 
     async def schedule_run_exists_since(self, schedule_id: str, since: float) -> bool:

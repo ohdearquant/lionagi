@@ -430,9 +430,18 @@ finished, a manual trigger runs because a person asked, and a startup re-fire
 replaces an occurrence whose cursor already moved; those pass `NO_CURSOR_CLAIM`
 and are guarded by their own mechanisms, the CAS-tombstone of the orphan row in
 the re-fire's case. A `github_poll` batch is one due instant however many events
-it carries: the first dispatched event claims it, and the rest are separated by
-`github_cursor`, which is monotonic and advances in the same transaction as each
-event's occurrence. Missed-fire recovery reserves the cursor itself before
+it carries: the first dispatched event claims it, and the rest are separated by a
+claim on `github_cursor` instead. That second claim is not a convenience. Every
+event of one batch resolves to the same `next_fire_at`, so claiming that value
+would either refuse every event after the first or, since the value does not
+change between them, match twice and separate nothing. `github_cursor` advances
+per event, in the same transaction as that event's occurrence, and is the only
+value in the row that tells one event of a batch from the next. Without the claim
+the column is written but never read, which leaves a window: a second scheduler
+polling after this one commits event 1 reads the advanced cursor, starts its poll
+at event 2, and dispatches it while this one has not reached it yet. The claim
+follows what was written, not how far the poll has read, because a filtered-out
+event moves the read position without writing anything. Missed-fire recovery reserves the cursor itself before
 dispatching, so its reserve is where it claims the instant, and the fire that
 follows claims the value the reserve wrote rather than the pre-reserve value its
 local snapshot still holds.
