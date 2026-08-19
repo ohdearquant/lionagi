@@ -472,7 +472,7 @@ export interface ScheduleRunSliceRow {
 }
 
 export interface ScheduleDetail extends ScheduleSummary {
-  recent_runs: ScheduleRunSummary[];
+  recent_runs: ScheduleRunSliceRow[];
 }
 
 // ─── Operator conversation protocol (ADR-0083 v1) ──────────────────────────
