@@ -303,3 +303,16 @@ async def test_stopping_cancels_a_prune_still_in_flight():
         await asyncio.wait_for(engine.stop(), timeout=2)
 
     assert engine._retention_task is None
+
+
+def test_every_status_the_reconciler_writes_as_final_is_prunable():
+    """A status written as final but absent from the retention predicate accumulates forever."""
+    from lionagi.studio.scheduler.engine import _SCHEDULE_RUN_STATUS_FROM_INVOCATION
+    from lionagi.studio.services.db_maintenance import _TERMINAL_RUN_STATUSES
+
+    # Derived from the writer, not restated: a new terminal status added to the
+    # map reaches this assertion without anyone remembering to edit it.
+    written = set(_SCHEDULE_RUN_STATUS_FROM_INVOCATION.values())
+    assert written, "read no statuses: the map moved and this test is blind"
+    missing = written - set(_TERMINAL_RUN_STATUSES)
+    assert not missing, f"written as final but never pruned: {sorted(missing)}"

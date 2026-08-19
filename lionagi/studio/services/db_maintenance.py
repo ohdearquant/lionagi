@@ -100,7 +100,10 @@ _TERMINAL_SESSION_STATUSES = (
     "aborted",
     "cancelled",
 )
-_TERMINAL_RUN_STATUSES = ("completed", "failed", "skipped", "cancelled")
+# Not db.TERMINAL_RUN_STATUSES: that set answers whether a fire consumed
+# budget, so it excludes "skipped". A skipped run never fired and is still
+# finished, so it is still prunable.
+_TERMINAL_RUN_STATUSES = ("completed", "failed", "skipped", "cancelled", "timed_out")
 
 
 def _run_retention_predicate(cutoff: float) -> tuple[str, tuple[Any, ...]]:
