@@ -874,6 +874,7 @@
       "permission": "izin reddedildi",
       "missingDependency": "eksik bağımlılık",
       "notFound": "dosya bulunamadı",
+      "unclassified": "sınıflandırılmamış hata",
       "showDetails": "tam hatayı göster",
       "hideDetails": "tam hatayı gizle"
     }

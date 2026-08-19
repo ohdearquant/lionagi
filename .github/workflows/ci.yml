@@ -399,9 +399,14 @@ jobs:
     - name: Install frontend dependencies
       working-directory: apps/studio/frontend
       run: npm ci
+    # No --with-deps: it runs apt on the runner, which has hung for the whole
+    # 15-minute job budget when an Ubuntu mirror is unreachable, and the runner
+    # image already ships Chrome and the shared libraries Chromium needs. If one
+    # is ever genuinely missing, the e2e step below fails immediately and names
+    # it, which is a better failure than a silent timeout.
     - name: Install Playwright browsers
       working-directory: apps/studio/frontend
-      run: npx playwright install chromium --with-deps
+      run: npx playwright install chromium
     # Builds the SPA, boots a seeded daemon + `vite preview` on temp/free-port
     # infrastructure (never the real ~/.lionagi), and runs the Chromium smoke
     # specs against it -- see apps/studio/frontend/e2e/ and tests/e2e_studio/.

@@ -114,6 +114,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   The comparison that decides whether an event is already past the stored cursor clamps through
   the same helper as the writer. A value one of them capped and the other did not would never
   compare as past the cursor written for it, so the event would be offered again on every poll.
+- The schedule list surfaces no longer carry record content. They served every column of the
+  schedule row, including the command a schedule runs and its arguments, its authored spec, its
+  notify command and owner key, and they served `trigger_context`, which holds whole external
+  event payloads, and `error_detail`, which holds subprocess stderr and exception text, on an API
+  that answers without a token when `LIONAGI_STUDIO_AUTH_TOKEN` is unset. Each surface now serves
+  a named set of fields, so a column added later stays private until someone names it. The
+  schedule's prompt text and its success and failure policies are served by the single-schedule
+  route, which the edit form reads, and by no list surface. A failed run is described by
+  `error_class`, a translatable classification the client renders; a failure the server cannot
+  classify is reported as such rather than by falling back to the last line of its traceback.
+  Reconciled outcomes are classified whichever layer reported them, since a run's outcome summary
+  can come from its session, its invocation or the occurrence row, and the first two take
+  precedence over the third. `error_class` describes that same winning layer, on every surface
+  that serves a run including the slice nested in a schedule record, so it can no longer name a
+  different failure than the summary printed beside it. The full text stays available through the
+  run detail view, which reads a different endpoint and asks for it explicitly.
 - The rule keeping a declaration-projection cache entry from outliving what it references now
   reaches through wrappers. It was applied to a callable a declaration held directly, but a
   projection that rebuilt its key from a child value forwarded every other projected field and

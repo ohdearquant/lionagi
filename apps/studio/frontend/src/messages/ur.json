@@ -874,6 +874,7 @@
       "permission": "اجازت مسترد",
       "missingDependency": "انحصار غائب",
       "notFound": "فائل نہیں ملی",
+      "unclassified": "غیر درجہ بند خرابی",
       "showDetails": "مکمل خرابی دکھائیں",
       "hideDetails": "مکمل خرابی چھپائیں"
     }

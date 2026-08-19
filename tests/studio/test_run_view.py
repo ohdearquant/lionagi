@@ -50,7 +50,12 @@ def test_pre_invocation_failure_uses_occurrence_error_detail():
 def test_running_outcome_is_not_terminal():
     run = _run(status="running", ended_at=None)
     view = build_run_view(run, None, [])
-    assert view["outcome"] == {"code": "running", "summary": "running", "source": "occurrence"}
+    assert view["outcome"] == {
+        "code": "running",
+        "summary": "running",
+        "source": "occurrence",
+        "summary_reported": False,
+    }
 
 
 def test_trusted_completion_prefers_session_reason():
@@ -68,9 +73,26 @@ def test_trusted_completion_prefers_session_reason():
         "code": "run.completed.ok",
         "summary": "3 commits landed",
         "source": "session",
+        "summary_reported": True,
     }
     assert view["artifacts"] == ["/runs/inv1/artifacts"]
     assert view["session_ids"] == ["sess1"]
+
+
+def test_summary_reported_splits_caller_text_from_generated_text():
+    run = _run(invocation_id="inv1")
+    reported = {
+        "id": "s",
+        "status": "completed",
+        "created_at": 1.0,
+        "status_reason_summary": "3 commits landed",
+    }
+    generated = {"id": "s", "status": "completed", "created_at": 1.0, "artifacts_path": "/p/1"}
+    invocation = {"id": "inv1", "status": "completed"}
+    assert build_outcome(run, invocation, [reported])["summary_reported"] is True
+    outcome = build_outcome(run, invocation, [generated])
+    assert outcome["summary_reported"] is False
+    assert outcome["summary"] == "completed: 1 artifact(s)"
 
 
 def test_completed_empty_distinct_from_unqualified_success():
@@ -112,6 +134,7 @@ def test_skip_outcome_from_occurrence():
         "code": "skipped",
         "summary": "overlap policy: prior running",
         "source": "occurrence",
+        "summary_reported": True,
     }
 
 
@@ -125,6 +148,7 @@ def test_missing_session_falls_back_to_invocation():
         "code": "run.completed.ok",
         "summary": "argv exited 0",
         "source": "invocation",
+        "summary_reported": True,
     }
 
 
@@ -255,3 +279,41 @@ def test_exit_code_occurrence_only_terminal_status_uses_shared_vocabulary(
     itself must still map through EXIT_CODE_BY_STATUS, not collapse to 1."""
     run = _run(status=occurrence_status, exit_code=None)
     assert exit_code_for_view(run, None, []) == expected
+
+
+def test_every_outcome_this_module_returns_declares_its_summary_provenance():
+    """Builder seven has to declare, and this is what tells whoever writes it.
+
+    The consumer treats an outcome with no declaration as caller-reported and
+    classifies it, which costs a readable summary rather than leaking one. That
+    is the safe direction to fail, not a reason to leave the omission silent.
+    """
+    import ast
+    import inspect
+
+    from lionagi.studio.services import run_view
+
+    tree = ast.parse(inspect.getsource(run_view))
+    outcomes = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Dict):
+            continue
+        keys = {k.value for k in node.value.keys if isinstance(k, ast.Constant)}
+        if "source" in keys:
+            outcomes.append((node.lineno, keys))
+
+    assert len(outcomes) >= 4, f"outcome returns not found; the parse is wrong: {outcomes}"
+    missing = [line for line, keys in outcomes if "summary_reported" not in keys]
+    assert not missing, f"outcome dicts at line(s) {missing} declare no summary provenance"
+
+
+def test_an_outcome_that_declares_nothing_is_treated_as_reported():
+    from lionagi.studio.services.schedules import _reported_summary_class
+
+    undeclared = {
+        "code": "x",
+        "summary": "PermissionError: /home/someone/.ssh/id_rsa",
+        "source": "?",
+    }
+    assert _reported_summary_class(undeclared) == "permission"
+    assert _reported_summary_class({**undeclared, "summary_reported": False}) is None

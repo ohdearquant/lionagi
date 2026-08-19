@@ -874,6 +874,7 @@
       "permission": "अनुमति अस्वीकृत",
       "missingDependency": "निर्भरता गुम",
       "notFound": "फ़ाइल नहीं मिली",
+      "unclassified": "अवर्गीकृत त्रुटि",
       "showDetails": "पूरी त्रुटि दिखाएं",
       "hideDetails": "पूरी त्रुटि छिपाएं"
     }
