@@ -23,6 +23,18 @@ _CURSOR_NUMBER_WIDTH = 10
 _WHOLE_SECOND = sys.maxsize
 
 
+# The one spelling of a cursor, so the writer below and the API validator that has to
+# accept what it writes cannot drift apart. The number is fixed-width for the same reason
+# it is zero-padded: a shorter one would order wrongly against a longer one.
+CURSOR_RE = re.compile(
+    r"^(?P<instant>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
+    rf"(?:{re.escape(_CURSOR_SEP)}\d{{{_CURSOR_NUMBER_WIDTH}}})?$"
+)
+
+CURSOR_FORM = f"YYYY-MM-DDTHH:MM:SSZ, optionally followed by {_CURSOR_SEP} and a "
+CURSOR_FORM += f"{_CURSOR_NUMBER_WIDTH}-digit zero-padded pull request number"
+
+
 def _cursor_for(cursor_at: str, pr_number: Any) -> str:
     """The cursor value for one event: its timestamp, then the PR it belongs to.
 

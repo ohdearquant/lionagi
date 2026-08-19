@@ -75,7 +75,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   interruption between the two dispatches. The cursor now carries the pull request's number
   after its timestamp and is compared as a pair, and merged-mode paging goes on past a page
   whose oldest item sits in the cursor's own second. A cursor stored before this change still
-  claims its whole second, so an upgrade re-dispatches nothing.
+  claims its whole second, so an upgrade re-dispatches nothing. The schedule PATCH validator
+  accepts the same grammar, imported from the poller rather than restated: it previously
+  spelled a form the engine had stopped writing, so the system persisted a cursor its own API
+  then refused, and an operator replaying a stored value got an error on the scheduler's own
+  output.
 - Two studio schedulers running against one database could each dispatch the same occurrence.
   The tick selects due schedules and fires them in separate statements, and every admission gate
   between the two lives in the firing process's own memory, so both processes committed, each with

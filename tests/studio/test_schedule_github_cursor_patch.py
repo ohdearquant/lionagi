@@ -192,6 +192,66 @@ def test_update_can_clear_the_cursor():
     mock_db.update_schedule.assert_awaited_once_with("sid-cursor-1", github_cursor=None)
 
 
+# What the poller actually writes. The validator and the writer are two spellings of one
+# format, and they drifted: the engine persisted a cursor naming the event within its
+# second while this validator still accepted only the bare instant, so the system wrote a
+# value its own API refused and an operator replaying a stored cursor got an error on the
+# scheduler's own output. These pin the round trip rather than the spelling, so the next
+# format change cannot reintroduce the split quietly.
+
+
+@pytest.mark.parametrize("pr_number", [0, 1, 42, 999999, 9999999999])
+def test_the_validator_accepts_every_cursor_the_poller_writes(pr_number):
+    from lionagi.studio.scheduler.github import _cursor_for
+
+    _svc_validate_github_cursor(_cursor_for("2026-07-20T15:21:57Z", pr_number))
+
+
+def test_the_stored_cursor_survives_being_patched_back():
+    """The operator flow the split broke: read a persisted cursor, PATCH it back."""
+    from lionagi.studio.scheduler.github import _cursor_for
+
+    stored = _cursor_for("2026-07-26T07:00:00Z", 3389)
+    result, mock_db = _run_update({"github_cursor": stored})
+
+    assert result is True
+    mock_db.update_schedule.assert_awaited_once_with("sid-cursor-1", github_cursor=stored)
+
+
+def test_the_bare_instant_a_cursor_had_before_the_number_is_still_accepted():
+    """Every cursor stored before the number existed is one of these."""
+    _svc_validate_github_cursor("2026-07-20T15:21:57Z")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "2026-07-20T15:21:57Z#1",  # not padded
+        "2026-07-20T15:21:57Z#00000000001",  # one digit too wide
+        "2026-07-20T15:21:57Z#",  # separator, no number
+        "2026-07-20T15:21:57Z#00000000ab",  # not digits
+        "2026-07-20T15:21:57Z#0000000001#0000000002",  # two of them
+    ],
+)
+def test_the_validator_rejects_a_number_the_poller_would_never_write(bad):
+    with pytest.raises(ValueError, match="github_cursor"):
+        _svc_validate_github_cursor(bad)
+
+
+def test_why_the_number_is_fixed_width_rather_than_pedantic():
+    """Same reason the instant is strict: the comparison is lexical.
+
+    An unpadded number sorts by its first digit, so the cursor for PR 9 reads as
+    later than the cursor for PR 10 and the poller drops an event it never
+    dispatched. The padding is what makes string order agree with numeric order.
+    """
+    from lionagi.studio.scheduler.github import _cursor_for
+
+    at = "2026-07-20T15:21:57Z"
+    assert _cursor_for(at, 9) < _cursor_for(at, 10), "padded: 9 sorts before 10"
+    assert f"{at}#9" > f"{at}#10", "unpadded: 9 sorts after 10, which is the defect"
+
+
 def test_update_rejects_a_malformed_cursor_before_any_write():
     _expect_rejected({"github_cursor": "2026-07-26 07:00:00"}, "github_cursor")
 
