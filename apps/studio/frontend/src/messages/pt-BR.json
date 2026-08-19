@@ -874,6 +874,7 @@
       "permission": "permissão negada",
       "missingDependency": "dependência ausente",
       "notFound": "arquivo não encontrado",
+      "unclassified": "erro não classificado",
       "showDetails": "Mostrar erro completo",
       "hideDetails": "Ocultar erro completo"
     }

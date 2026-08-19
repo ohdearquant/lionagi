@@ -4,7 +4,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listScheduleRuns, listSchedules } from "@/lib/api";
-import type { ScheduleRunSummary, ScheduleSummary } from "@/lib/types";
+import type { ScheduleRunSliceRow, ScheduleSummary } from "@/lib/types";
 
 // Statuses with a history.status translation; unknown values fall back to
 // StatusPill's built-in humanization.
@@ -60,7 +60,7 @@ export function formatInterval(sec: number): string {
 }
 
 /** A run joined with its parent schedule's name for display. */
-export interface RunRow extends ScheduleRunSummary {
+export interface RunRow extends ScheduleRunSliceRow {
   scheduleName: string;
 }
 

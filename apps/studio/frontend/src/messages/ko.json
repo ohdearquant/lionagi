@@ -874,6 +874,7 @@
       "permission": "권한 거부됨",
       "missingDependency": "종속성 누락",
       "notFound": "파일을 찾을 수 없음",
+      "unclassified": "분류되지 않은 오류",
       "showDetails": "전체 오류 보기",
       "hideDetails": "전체 오류 숨기기"
     }

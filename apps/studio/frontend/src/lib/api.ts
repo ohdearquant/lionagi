@@ -22,6 +22,7 @@ import type {
   RunResumeResponse,
   RunSummary,
   ScheduleDetail,
+  ScheduleRunSliceRow,
   ScheduleRunSummary,
   ScheduleSummary,
   ShowDetail,
@@ -2308,10 +2309,15 @@ export async function triggerSchedule(id: string): Promise<{ run_id: string }> {
   });
 }
 
+/** One run in full, including the raw error text a list surface does not carry. */
+export async function getScheduleRun(runId: string): Promise<ScheduleRunSummary> {
+  return fetchJson(`/api/schedules/runs/${encodeURIComponent(runId)}`);
+}
+
 export async function listScheduleRuns(
   scheduleId: string,
   params?: { status?: string; limit?: number; offset?: number },
-): Promise<{ runs: ScheduleRunSummary[]; has_next: boolean }> {
+): Promise<{ runs: ScheduleRunSliceRow[]; has_next: boolean }> {
   const query = new URLSearchParams();
   if (params?.status) query.set("status", params.status);
   if (params?.limit != null) query.set("limit", String(params.limit));
