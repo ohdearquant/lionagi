@@ -550,6 +550,12 @@ async def _teardown_common(
         # terminal write reports a clean run over a transcript missing part of itself.
         if message_loss:
             try:
+                # Re-merged, not just written: a session can time out twice before
+                # anything terminal, and this branch is the only writer of the field it
+                # also reads. Writing this leg's own loss alone drops every leg before
+                # it, and the terminal write has no way to tell.
+                carried = await db.get_session(session_id) or {}
+                message_loss = _merge_message_loss(carried.get("node_metadata") or {}, message_loss)
                 # Serialized, because the merge refuses a nested patch value: sqlite and
                 # postgres merge nested objects differently and it will not persist state
                 # that depends on the backend.

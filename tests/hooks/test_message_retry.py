@@ -530,6 +530,33 @@ async def test_both_legs_losses_are_added_up_rather_than_one_replacing_the_other
     assert len(row["status_evidence_refs"]) == 2, "one ref per queue that lost"
 
 
+async def test_a_second_deferred_leg_adds_to_the_carried_loss_rather_than_replacing_it(
+    tmp_path,
+):
+    """Two timeouts before anything terminal. The second deferral is the case a
+    deferred-then-terminal test cannot reach: it both reads and writes the carried
+    payload, so a leg that only writes its own loss drops every leg before it."""
+    path = tmp_path / "three-legs.db"
+    sid = "sess-three-legs"
+    logger = logging.getLogger("test")
+
+    for _ in range(2):
+        await _teardown_on(
+            path,
+            sid,
+            [await _deferred_queue(_RefusingDB(), logger)],
+            status="timed_out",
+            defer_terminal=True,
+        )
+    await _teardown_on(
+        path, sid, [await _deferred_queue(_RefusingDB(), logger)], status="completed"
+    )
+
+    row = await _session_row(path, sid)
+    assert "12 live message event(s) were never written" in row["status_reason_summary"]
+    assert len(row["status_evidence_refs"]) == 3, "one ref per queue that lost"
+
+
 async def test_a_deferred_leg_that_lost_nothing_leaves_nothing_behind(tmp_path):
     """The control. Without it the resumed write could report a loss on every session
     that was ever deferred."""

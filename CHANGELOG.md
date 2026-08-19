@@ -105,9 +105,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
   The loss survives the two ways a run's terminal row is written by someone other than the
   leg that saw it. A leg that hands its terminal write to a resuming leg now leaves the loss
-  on the session, and the write that eventually happens adds both legs' counts rather than
-  reporting only its own, because the leg that observed the earlier one is gone and its queue
-  with it. And a run that failed on its own keeps its own failure: the loss is appended to the
+  on the session, and the write that eventually happens adds up every deferred leg's count
+  rather than reporting only its own, because each leg that observed a loss is gone by then and
+  its queue with it. A session that defers twice before anything terminal accumulates across
+  both deferrals rather than the second replacing the first. And a run that failed on its own keeps its own failure: the loss is appended to the
   evidence either way and claims the reason code only when nothing else has.
   Recording that carried loss cannot cost the handoff: the deferred path's job is to defer, and
   the caller reads the status it returns to decide whether to resume, so a bookkeeping write that
