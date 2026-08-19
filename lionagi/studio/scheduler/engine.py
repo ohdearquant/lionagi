@@ -674,21 +674,49 @@ class SchedulerEngine:
                 if slot_claim is not None:
                     slot_claim.release()
 
+    async def _sleep_between_ticks(self) -> None:
+        """Wait one whole tick interval, however many stray cancels arrive during it.
+
+        Absorbing a cancel and returning early would let a stream of them drive _tick() in a
+        tight loop, so the deadline rather than the sleep call is what ends this.
+        """
+        deadline = time.monotonic() + _TICK_INTERVAL
+        while not self._stopping:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            try:
+                await asyncio.sleep(remaining)
+                return
+            except asyncio.CancelledError:
+                if self._stopping:
+                    raise
+                _log.warning("Scheduler inter-tick wait cancelled without a stop; continuing")
+
     async def _tick_loop(self) -> None:
         for recovery in (
             self._recover_undispatched_fires,
             self._reconcile_dispatched_orphans,
             self._check_missed_fires,
         ):
-            # Startup recovery is best-effort: one failing pass must not cost every later tick.
+            # Startup recovery is best-effort: one failing pass must not cost the later ones. A
+            # cancel is absorbed here for the same reason it is below, and for one more: these
+            # passes repair durable state, and abandoning the rest of them leaves whatever the
+            # cancelled pass had already half-written for nothing else to pick up.
             try:
                 await recovery()
+            except asyncio.CancelledError:
+                if self._stopping:
+                    raise
+                _log.exception(
+                    "Scheduler startup recovery cancelled without a stop in %s; continuing",
+                    recovery.__name__,
+                )
             except Exception:
                 _log.exception("Scheduler startup recovery failed in %s", recovery.__name__)
         while not self._stopping:
             try:
                 await self._tick()
-                await asyncio.sleep(_TICK_INTERVAL)
             except asyncio.CancelledError:
                 # stop() cancels this task, so a cancel while stopping IS the shutdown. A cancel
                 # at any other time escaped from something the tick awaited, and ending the loop
@@ -698,7 +726,9 @@ class SchedulerEngine:
                 _log.exception("Scheduler tick cancelled without a stop; continuing")
             except Exception:
                 _log.exception("Scheduler tick error")
-                await asyncio.sleep(_TICK_INTERVAL)
+            # Outside the handlers so every outcome waits, including the error path: a delay it
+            # skipped was one more way a repeatedly-failing tick could spin.
+            await self._sleep_between_ticks()
 
     def _maybe_start_prune(self, now: float) -> None:
         """Start the retention prune as a tracked, single-flight background task."""

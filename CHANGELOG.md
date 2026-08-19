@@ -73,7 +73,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the inter-tick sleep was unguarded. Only `stop()` ends the loop now: a cancel arriving at any
   other time is absorbed in place, a failing recovery pass is logged and skipped, and any exit that
   is not a stop restarts the loop on a bounded backoff with the reason and a restart count recorded
-  on the engine.
+  on the engine. Startup recovery absorbs a non-stop cancel the same way, so one cancelled pass no
+  longer costs the passes after it, and the inter-tick wait is measured against its own deadline so
+  a stream of cancels cannot drive the tick in a tight loop or skip the delay on the error path.
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
   and `DataClass` now discover inherited instance fields through one ordered dataclass path,
