@@ -736,7 +736,12 @@ def _identity_expressions() -> tuple[str, str]:
         }
         if "run_id" in named and "id" in named:
             return ast.unparse(named["run_id"]), ast.unparse(named["id"])
-    raise AssertionError("no dict in _run_row assigns both run_id and id")
+    raise AssertionError(
+        "_run_row no longer assigns run_id and id in one dict literal, so this can no longer\n"
+        "read the contract it guards. Re-point it at wherever the two are assigned now; a\n"
+        "row built here cannot replace it, for the reason in the test below.\n\n"
+        + _IDENTITY_CONTRACT
+    )
 
 
 def test_the_canonical_run_row_derives_both_identities_from_one_expression():
