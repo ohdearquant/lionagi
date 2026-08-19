@@ -819,6 +819,34 @@ def test_the_served_class_describes_the_outcome_the_surface_serves(tmp_path, mon
     assert nested["error_class"] == "permission"
 
 
+def test_a_failure_whose_winning_outcome_names_no_error_still_serves_a_class(tmp_path, monkeypatch):
+    """A run that failed without reporting why still has to reach its error detail.
+
+    The winning layer here is a session that failed and filled in no reason, so the
+    summary beside it is a status word this module wrote. There is no caller
+    classification for the occurrence text to contradict, and the occurrence still
+    holds that text, so it is what the class describes. Suppressing it instead takes
+    the detail-expansion path down for exactly the runs that need it.
+    """
+    schedule_id, _ = _seed_run_linked_to(
+        monkeypatch,
+        tmp_path / "state.db",
+        invocation={"id": "inv-1", "status": _terminal_invocation_status()},
+        sessions=[{"id": "sess-1", "status": _terminal_session_status()}],
+        error_detail="ConnectionError: connection refused",
+    )
+    client = _make_client()
+
+    for path in (f"/api/schedules/{schedule_id}/runs", f"/api/schedules/{schedule_id}/status"):
+        body = client.get(path).json()
+        row = body["runs"][0] if "runs" in body else body["latest_run"]
+        assert row["outcome"]["source"] == "session", path
+        assert row["outcome"]["summary_reported"] is False, path
+        assert row["error_class"] == "network", path
+
+    assert _served_runs(schedule_id)[0]["error_class"] == "network"
+
+
 def test_the_record_route_serves_the_persisted_execution_root(tmp_path, monkeypatch):
     """`li schedule create --machine` reads this route back for exactly this field.
 

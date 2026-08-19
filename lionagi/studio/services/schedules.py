@@ -534,14 +534,17 @@ def _error_class(detail: str | None) -> str | None:
 def _error_class_for(row: dict[str, Any]) -> str | None:
     """The classification a surface serves for one run.
 
-    Taken from the reconciled outcome whenever the row carries one, because that
-    is the layer the surface's own `outcome` reports: a session's failure outranks
-    the occurrence row's `error_detail`, and classifying the loser produces a class
-    that contradicts the summary beside it. Only a row with no outcome at all falls
-    back to the occurrence text.
+    Caller-reported outcome text wins: it is the layer the row's own `outcome`
+    reports, and classifying a layer that lost produces a class contradicting the
+    summary printed beside it. A generated summary makes no competing claim -- it is
+    a status word this module wrote -- so a row whose winning layer reported nothing
+    falls through to the occurrence's own error text, which is empty exactly when
+    there was no error. Suppressing the class there instead would leave a genuinely
+    failed run with no classification and no path to its detail.
     """
-    if "outcome" in row:
-        return _reported_summary_class(row.get("outcome"))
+    reported = _reported_summary_class(row.get("outcome"))
+    if reported is not None:
+        return reported
     return _error_class(row.get("error_detail"))
 
 

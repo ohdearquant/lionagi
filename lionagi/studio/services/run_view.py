@@ -254,7 +254,11 @@ async def get_schedule_status_view(db: Any, schedule_id: str) -> dict[str, Any] 
     if runs:
         run = runs[0]
         invocation, sessions = await _linked(db, run)
-        latest_run = build_run_view(run, invocation, sessions)
+        # Layered on the occurrence row, like the list and detail paths: the
+        # reconciled fields alone drop the row's own error text, and a projection
+        # that classifies a run's failure has nothing left to read when the winning
+        # layer reported no reason of its own.
+        latest_run = {**run, **build_run_view(run, invocation, sessions)}
         exit_code = exit_code_for_view(run, invocation, sessions)
     return {
         "schedule": {
