@@ -143,16 +143,20 @@ async def _abandon_then(agen, between) -> None:
     teardown then and there, so anything sequenced after it lands too late.
     """
     step = asyncio.create_task(agen.__anext__())
-    await asyncio.sleep(1)
-    assert not step.done(), "the child exited early, so nothing was live when between() ran"
-    between()
-    step.cancel()
-    # CancelledError is not an Exception, and cancelling the pending step is how
-    # this helper abandons the child at all.
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        await step
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        await agen.aclose()
+    try:
+        await asyncio.sleep(1)
+        assert not step.done(), "the child exited early, so nothing was live when between() ran"
+        between()
+    finally:
+        # In a finally because a failing assertion or callback would otherwise
+        # leave the five-minute child running with the pipe still open.
+        step.cancel()
+        # CancelledError is not an Exception, and cancelling the pending step is
+        # how this helper abandons the child at all.
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await step
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await agen.aclose()
 
 
 # Writes nothing anywhere and stays up, so the buffer is empty on teardown.
@@ -213,6 +217,16 @@ _LEAKS_ENV_SECRET_THEN_HANGS = (
 _LEAKS_TOKEN_SHAPE_THEN_HANGS = (
     "import sys, time; "
     "sys.stderr.write('refused: Authorization: Bearer sk-abcdefghijklmnopqrst'); "
+    "sys.stderr.flush(); "
+    "time.sleep(300)"
+)
+
+# A credential in a variable whose name says nothing about it and which nobody
+# declared: no vocabulary can recognise it, so only the length rule can.
+_UNNAMEABLE_SECRET = "opaque-value-a41f9c2b"
+_LEAKS_UNNAMEABLE_ENV_THEN_HANGS = (
+    "import os, sys, time; "
+    "sys.stderr.write('rejected token ' + os.environ['LIONAGI_TEST_THING']); "
     "sys.stderr.flush(); "
     "time.sleep(300)"
 )
@@ -294,6 +308,34 @@ class TestWhatCountsAsASecretToRemove:
         selected = cs._secret_candidates({"LIONAGI_TEST_VALUE": ""}, ["LIONAGI_TEST_VALUE"])
         assert cs._redact_secrets_for_log("connected in 4ms", selected) == "connected in 4ms"
 
+    def test_a_value_no_vocabulary_recognises_is_still_not_echoed(self):
+        env = {"LIONAGI_TEST_THING": "opaque-value-a41f9c2b"}
+        secrets = cs._secret_candidates(env, [])
+        assert secrets == {}, "the name rule must not be what catches this: " + repr(secrets)
+        opaque = cs._opaque_env_values(env, secrets)
+        out = cs._redact_secrets_for_log("rejected token opaque-value-a41f9c2b", secrets, opaque)
+        assert "opaque-value-a41f9c2b" not in out, out
+        assert "[$LIONAGI_TEST_THING]" in out, (
+            "the value went without saying which variable held it: " + out
+        )
+
+    def test_a_short_unrecognised_value_is_left_alone(self):
+        env = {"LIONAGI_TEST_THING": "short-one"}
+        opaque = cs._opaque_env_values(env, {})
+        assert opaque == {}, "the length floor is not being applied: " + repr(opaque)
+        text = "rejected token short-one"
+        assert cs._redact_secrets_for_log(text, {}, opaque) == text
+
+    def test_a_declared_secret_is_redacted_rather_than_named(self):
+        env = {"LIONAGI_TEST_VALUE": "declared-value-77c3f1"}
+        secrets = cs._secret_candidates(env, ["LIONAGI_TEST_VALUE"])
+        opaque = cs._opaque_env_values(env, secrets)
+        assert opaque == {}, "a known secret must not also be offered as nameable: " + repr(opaque)
+        out = cs._redact_secrets_for_log("auth failed for declared-value-77c3f1", secrets, opaque)
+        assert "declared-value-77c3f1" not in out, out
+        assert "[redacted]" in out, out
+        assert "LIONAGI_TEST_VALUE" not in out, "a known secret's variable was named: " + out
+
     def test_a_password_passed_as_a_query_parameter_is_removed(self):
         out = cs._redact_secrets_for_log(
             "could not connect: postgres://db.internal/app?password=hunter2pass&sslmode=require",
@@ -330,6 +372,20 @@ class TestTheQuotedStderrCarriesNoCredential:
         )
         assert "[redacted]" in caplog.text, (
             "the stderr was dropped rather than redacted, losing the diagnostic: " + caplog.text
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_secret_in_an_unremarkably_named_variable_does_not_reach_the_log(self, caplog):
+        """Nothing marks this variable as holding a credential, so the name rules cannot save it."""
+        env = {**os.environ, "LIONAGI_TEST_THING": _UNNAMEABLE_SECRET}
+        with caplog.at_level(logging.WARNING, logger=_MODULE_LOGGER):
+            await _abandon(ndjson_from_cli(_cmd(_LEAKS_UNNAMEABLE_ENV_THEN_HANGS), env=env))
+
+        assert _UNNAMEABLE_SECRET not in caplog.text, (
+            "a credential in a variable no rule recognises reached a log line: " + caplog.text
+        )
+        assert "[$LIONAGI_TEST_THING]" in caplog.text, (
+            "the stderr was dropped rather than named, losing the diagnostic: " + caplog.text
         )
 
     @pytest.mark.asyncio

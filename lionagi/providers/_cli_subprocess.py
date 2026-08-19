@@ -336,6 +336,14 @@ _URL_QUERY_PARAM_RE = re.compile(r"([?&])([^=&\s]+)=([^&\s]+)")
 # declared name does not: the operator said it holds a secret.
 _MIN_GUESSED_SECRET_LEN = 8
 
+# A secret can sit in a variable whose name says nothing, undeclared, and no
+# vocabulary will ever recognise it. So the log declines to echo any environment
+# value long enough to be a credential, whatever it is called. The floor is
+# higher than the name guess's because this rule has no name evidence behind it,
+# and it is the variable's name that replaces the value, so a path or a model id
+# caught by it still tells the reader what was there.
+_MIN_OPAQUE_ENV_VALUE_LEN = 16
+
 
 def _secret_candidates(
     env: Mapping[str, str] | None, declared: Iterable[str] = ()
@@ -363,6 +371,22 @@ def _secret_candidates(
     }
 
 
+def _opaque_env_values(
+    env: Mapping[str, str] | None, already_secret: Mapping[str, str]
+) -> dict[str, str]:
+    """Environment values the log will not echo even though nothing marks them secret."""
+    if not env:
+        return {}
+    return {
+        key: value
+        for key, value in env.items()
+        if isinstance(key, str)
+        and isinstance(value, str)
+        and key not in already_secret
+        and len(value) >= _MIN_OPAQUE_ENV_VALUE_LEN
+    }
+
+
 def _redact_query_value(match: re.Match[str]) -> str:
     """Replace a query parameter's value when its name reads as a credential."""
     separator, name, value = match.groups()
@@ -381,20 +405,32 @@ def _escape_control_characters(text: str) -> str:
     )
 
 
-def _redact_secrets_for_log(text: str, secrets: Mapping[str, str] | None) -> str:
+def _redact_secrets_for_log(
+    text: str,
+    secrets: Mapping[str, str] | None,
+    opaque: Mapping[str, str] | None = None,
+) -> str:
     """Strip credentials out of child output before any of it reaches a log.
 
-    ``secrets`` is already the set to remove, not an environment to filter: one
-    selection site, so the spawn path and the log path cannot drift apart.
+    Both arguments are already the sets to remove, not environments to filter:
+    one selection site, so the spawn path and the log path cannot drift apart.
+    A known secret becomes ``[redacted]`` because naming it adds nothing; an
+    unclassified value becomes its variable's name, which keeps the message
+    diagnostic without printing what the variable held.
     """
     if not text:
         return text
-    if secrets:
-        # Longest first, so a secret containing another is not left half-revealed.
-        for value in sorted(
-            {v for v in secrets.values() if isinstance(v, str)}, key=len, reverse=True
-        ):
-            text = text.replace(value, "[redacted]")
+    replacements: dict[str, str] = {}
+    for key, value in (opaque or {}).items():
+        if isinstance(value, str) and value:
+            replacements[value] = f"[${key}]"
+    # Second, so a value in both classes is redacted rather than named.
+    for value in (secrets or {}).values():
+        if isinstance(value, str) and value:
+            replacements[value] = "[redacted]"
+    # Longest first, so a value containing another is not left half-revealed.
+    for value in sorted(replacements, key=len, reverse=True):
+        text = text.replace(value, replacements[value])
     text = _URL_CREDENTIAL_RE.sub(r"\1[redacted]\2", text)
     text = _URL_QUERY_PARAM_RE.sub(_redact_query_value, text)
     # Escape last: the redaction patterns are written against the real text.
@@ -455,6 +491,7 @@ async def ndjson_from_cli(
     # reads os.environ at exec, later than any snapshot taken here.
     spawn_env: dict[str, str] = dict(child_env) if child_env is not None else dict(os.environ)
     redaction_env: Mapping[str, str] = _secret_candidates(spawn_env, declared)
+    opaque_env: Mapping[str, str] = _opaque_env_values(spawn_env, redaction_env)
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
         env=spawn_env,
@@ -704,6 +741,7 @@ async def ndjson_from_cli(
                     _redact_secrets_for_log(
                         b"".join(stderr_chunks).decode(errors="replace").strip(),
                         redaction_env,
+                        opaque_env,
                     ),
                     stderr_unavailable,
                     stderr_drain_error,
