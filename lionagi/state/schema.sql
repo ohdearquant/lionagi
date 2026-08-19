@@ -444,6 +444,8 @@ CREATE TABLE IF NOT EXISTS invocations (
 CREATE INDEX IF NOT EXISTS idx_invocations_skill ON invocations(skill);
 CREATE INDEX IF NOT EXISTS idx_invocations_status ON invocations(status);
 CREATE INDEX IF NOT EXISTS idx_invocations_updated ON invocations(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_invocations_reaper
+  ON invocations(status, started_at, id);
 
 -- ── Schedules (ADR-0027) ─────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS schedules (

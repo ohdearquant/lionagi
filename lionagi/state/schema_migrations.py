@@ -296,6 +296,7 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "ON engine_runs(signal_session_id) WHERE signal_session_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_engine_runs_parent_session "
         "ON engine_runs(parent_session_id) WHERE parent_session_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_invocations_reaper ON invocations(status, started_at, id)",
         *_ATTENTION_HISTORY_SEQUENCE_INDEX,
         *_ACTIVE_SNAPSHOT_CHILD_INDEX,
     ),
@@ -320,6 +321,7 @@ MIGRATION_INDEXES: dict[str, tuple[str, ...]] = {
         "ON engine_runs(signal_session_id) WHERE signal_session_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_engine_runs_parent_session "
         "ON engine_runs(parent_session_id) WHERE parent_session_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_invocations_reaper ON invocations(status, started_at, id)",
         *_ATTENTION_HISTORY_SEQUENCE_INDEX,
         *_ACTIVE_SNAPSHOT_CHILD_INDEX,
     ),
