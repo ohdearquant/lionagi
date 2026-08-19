@@ -80,6 +80,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   spelled a form the engine had stopped writing, so the system persisted a cursor its own API
   then refused, and an operator replaying a stored value got an error on the scheduler's own
   output.
+  The number's width caps the writer as well as padding it. Lexical order matches numeric order
+  only at a fixed width, so a pull request number too large to fit the padding cannot be placed
+  within its second and is clamped instead of widening the value, which would have written a
+  cursor the same validator refuses.
 - Two studio schedulers running against one database could each dispatch the same occurrence.
   The tick selects due schedules and fires them in separate statements, and every admission gate
   between the two lives in the firing process's own memory, so both processes committed, each with

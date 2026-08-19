@@ -17,6 +17,7 @@ _log = logging.getLogger(__name__)
 
 _CURSOR_SEP = "#"
 _CURSOR_NUMBER_WIDTH = 10
+_CURSOR_MAX_NUMBER = 10**_CURSOR_NUMBER_WIDTH - 1
 # The number a cursor carrying no PR of its own compares as: every event in its second
 # is behind it. That is what a bare timestamp meant before this, and reading it that way
 # is what keeps an upgrade from re-offering a batch already dispatched.
@@ -46,7 +47,13 @@ def _cursor_for(cursor_at: str, pr_number: Any) -> str:
     """
     if not isinstance(pr_number, int) or isinstance(pr_number, bool) or pr_number < 0:
         return cursor_at
-    return f"{cursor_at}{_CURSOR_SEP}{pr_number:0{_CURSOR_NUMBER_WIDTH}d}"
+    # The width is a cap as well as a pad. Lexical order only agrees with numeric
+    # order at a FIXED width -- "9999999999" sorts after "10000000000", because the
+    # comparison diverges at the first character and never reaches the length -- so a
+    # number that overflows the padding cannot be placed within its second. Clamping
+    # keeps the value inside the grammar the API validator enforces; letting it through
+    # would emit a cursor the scheduler's own API refuses.
+    return f"{cursor_at}{_CURSOR_SEP}{min(pr_number, _CURSOR_MAX_NUMBER):0{_CURSOR_NUMBER_WIDTH}d}"
 
 
 def _cursor_bound(cursor: str | None) -> tuple[str, int] | None:

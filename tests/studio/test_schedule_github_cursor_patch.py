@@ -227,7 +227,6 @@ def test_the_bare_instant_a_cursor_had_before_the_number_is_still_accepted():
     "bad",
     [
         "2026-07-20T15:21:57Z#1",  # not padded
-        "2026-07-20T15:21:57Z#00000000001",  # one digit too wide
         "2026-07-20T15:21:57Z#",  # separator, no number
         "2026-07-20T15:21:57Z#00000000ab",  # not digits
         "2026-07-20T15:21:57Z#0000000001#0000000002",  # two of them
@@ -442,3 +441,21 @@ def test_guarded_statement_compiles_on_both_dialects():
         sql = str(stmt.compile(dialect=dialect))
         assert "CASE WHEN github_cursor IS NULL" in sql
         assert '"last_fired_at"' in sql  # sibling fields still assigned plainly
+
+
+def test_a_number_too_big_for_the_padding_still_writes_a_cursor_its_own_api_accepts():
+    """The width caps the writer as well as padding it.
+
+    Lexical order agrees with numeric order only at a fixed width: "9999999999"
+    sorts AFTER "10000000000", because the comparison diverges at the first
+    character and never reaches the length. So a number that overflows the padding
+    cannot be placed within its second, and the writer clamps rather than emitting
+    a wider value that its own validator would then refuse.
+    """
+    from lionagi.studio.scheduler.github import _cursor_for
+
+    at = "2026-07-20T15:21:57Z"
+    overflowing = _cursor_for(at, 10_000_000_000)
+    assert overflowing == f"{at}#9999999999"
+    _svc_validate_github_cursor(overflowing)
+    assert _cursor_for(at, 1) < _cursor_for(at, 42) < overflowing
