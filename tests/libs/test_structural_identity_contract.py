@@ -41,6 +41,7 @@ _EXPECTED = frozenset(
         "lionagi.operations.types.InterpretParam",
         "lionagi.operations.types.ParseParam",
         "lionagi.operations.types.ActionParam",
+        "lionagi.state.lifecycle.policy._LifecyclePolicyDeclaration",
     }
 )
 

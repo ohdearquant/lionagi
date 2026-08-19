@@ -17,7 +17,9 @@
   `lionagi.models` dependency, and production callers no longer construct `OperableModel` or use
   the `Operable.create_model()` compatibility edge; the dependency-light immutable registry
   composition primitive, source records, and version-bound override ledger are implemented;
-  domain catalog migrations and canonical durable serialization remain open
+  the lifecycle policy domain now composes its fixed declarations into a private immutable
+  catalog behind `PolicyRegistry`; remaining domain catalogs and canonical durable serialization
+  remain open
 - **Area**: utilities
 - **Date**: 2026-08-16
 - **Relations**: extends ADR-0050 (foundational utility and typed adaptation strata); required
@@ -543,11 +545,11 @@ Decorators may tag declarations; the composition root must still collect an expl
 set.
 
 `lionagi.ln.types.registry` is the dependency-light reference implementation for this decision.
-`lionagi/state/lifecycle/policy.py` already has the right explicit builder and fixed policy order,
-but its sealed compatibility facade still retains a mutable dictionary. Its domain migration
-therefore composes an immutable policy catalog underneath the existing public facade rather than
-copying that internal representation or breaking `register()`/`seal()` callers in this primitive
-change.
+`lionagi/state/lifecycle/policy.py` is the first migrated domain. Its explicit builder preserves
+the fixed seven-policy order, `PolicyRegistry.seal()` composes a private tuple-backed declaration
+fragment, and the unchanged facade returns cached `LifecyclePolicy` projections with
+`ImmutableEdgeMap` compatibility. The old entity/table dictionaries are deleted. Other domains
+follow this pattern rather than exporting the raw marker subtype or snapshot.
 
 ### D7 — durable snapshots are distinct from wire serialization and runtime hash
 
@@ -682,7 +684,8 @@ The foundation suite adds the following required matrices.
 6. Move production callers from `OperableModel` and the lazy `Operable.create_model()` edge to
    neutral declarations and explicit adapters. (Delivered for current production callers.)
 7. Introduce the immutable registry primitive, then migrate each domain at its named composition
-   root behind its compatibility facade. (Primitive delivered; domain migrations remain open.)
+   root behind its compatibility facade. (Primitive and lifecycle-policy domain delivered;
+   remaining domain migrations remain open.)
 8. Land strict snapshot envelopes, canonical bytes/digest, and versioned CallableRef resolution.
 9. Only then allow ADR-0118 schema hashes, harness policy snapshots, dispatch policies, and Run
    contracts to depend on these primitives.

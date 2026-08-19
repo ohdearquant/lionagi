@@ -18,6 +18,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   registries remain on their compatibility surfaces until their separate composition-root
   migrations land. Callable/class values retain process-local identity and are not durable
   snapshot data until versioned references and canonical serialization land.
+- Lifecycle policies now use that substrate at the existing `build_default_registry()` root:
+  `PolicyRegistry.seal()` composes one private ordered catalog and retains cached
+  `LifecyclePolicy` projections behind the unchanged public facade. The former entity/table
+  dictionaries are gone, failed composition leaves an unsealed builder unchanged, and shallow
+  copies of unsealed builders no longer share mutable registration state.
 - `Spec` and ordered `Operable` are now the only production schema-declaration authority.
   `PydanticSpecAdapter.materialize()` converts declarations directly to Pydantic fields and model
   classes without routing through `FieldModel` or the legacy model builder. ReAct, operation

@@ -8,11 +8,18 @@ malformed policy) rather than deferring integrity checks to first use.
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Mapping
+from dataclasses import dataclass
 from types import MappingProxyType
 
-from .models import EdgePolicy, LifecyclePolicy
+from lionagi.ln.types import Params, Registry, RegistryEntry, RegistryFragment
+
+from .models import EdgePolicy, LifecyclePolicy, SameStatusRule
+
+_LIFECYCLE_POLICY_CATALOG_NAME = "lifecycle_policies"
+_LIFECYCLE_POLICY_CATALOG_VERSION = "1"
+_LIFECYCLE_POLICY_FRAGMENT_OWNER = "lionagi.state.lifecycle.policy"
+_LIFECYCLE_POLICY_FRAGMENT_VERSION = "1"
 
 
 class ImmutableEdgeMap(Mapping):
@@ -53,6 +60,62 @@ class ImmutableEdgeMap(Mapping):
         return (type(self), (dict(self._edges),))
 
 
+@dataclass(frozen=True, slots=True, init=False, eq=False)
+class _LifecyclePolicyDeclaration(Params):
+    """Structurally immutable lifecycle policy declaration."""
+
+    entity_type: str
+    table: str
+    statuses: frozenset[str]
+    initial_statuses: frozenset[str]
+    terminal_statuses: frozenset[str]
+    edge_items: tuple[tuple[str, tuple[EdgePolicy, ...]], ...]
+    same_status: SameStatusRule
+    patch_fields: frozenset[str]
+    reason_prefixes: frozenset[str]
+    reason_columns: bool = True
+
+
+class _LifecyclePolicyCatalog(Registry[_LifecyclePolicyDeclaration]):
+    """Private declaration authority; PolicyRegistry remains the public facade."""
+
+
+def _declaration_from_policy(
+    policy: LifecyclePolicy,
+    *,
+    edge_items: tuple[tuple[str, tuple[EdgePolicy, ...]], ...],
+) -> _LifecyclePolicyDeclaration:
+    return _LifecyclePolicyDeclaration(
+        entity_type=policy.entity_type,
+        table=policy.table,
+        statuses=policy.statuses,
+        initial_statuses=policy.initial_statuses,
+        terminal_statuses=policy.terminal_statuses,
+        edge_items=edge_items,
+        same_status=policy.same_status,
+        patch_fields=policy.patch_fields,
+        reason_prefixes=policy.reason_prefixes,
+        reason_columns=policy.reason_columns,
+    )
+
+
+def _projection_from_declaration(
+    declaration: _LifecyclePolicyDeclaration,
+) -> LifecyclePolicy:
+    return LifecyclePolicy(
+        entity_type=declaration.entity_type,
+        table=declaration.table,
+        statuses=declaration.statuses,
+        initial_statuses=declaration.initial_statuses,
+        terminal_statuses=declaration.terminal_statuses,
+        edges=ImmutableEdgeMap(declaration.edge_items),
+        same_status=declaration.same_status,
+        patch_fields=declaration.patch_fields,
+        reason_prefixes=declaration.reason_prefixes,
+        reason_columns=declaration.reason_columns,
+    )
+
+
 class PolicyRegistry:
     """Maps entity_type -> frozen LifecyclePolicy, validated at registration.
     Edge maps are wrapped in ``ImmutableEdgeMap`` so a caller holding a
@@ -62,8 +125,11 @@ class PolicyRegistry:
     calls ``seal()``."""
 
     def __init__(self) -> None:
-        self._by_entity_type: dict[str, LifecyclePolicy] = {}
-        self._by_table: dict[str, str] = {}  # table -> entity_type
+        self._staged: tuple[
+            tuple[RegistryEntry[_LifecyclePolicyDeclaration], LifecyclePolicy], ...
+        ] = ()
+        self._catalog: _LifecyclePolicyCatalog | None = None
+        self._projections: tuple[LifecyclePolicy, ...] = ()
         self._sealed = False
 
     def register(self, policy: LifecyclePolicy) -> None:
@@ -72,15 +138,23 @@ class PolicyRegistry:
                 "lifecycle policy registration: registry is sealed; cannot register "
                 f"entity_type {policy.entity_type!r}"
             )
-        if policy.entity_type in self._by_entity_type:
+        if any(entry.key == policy.entity_type for entry, _ in self._staged):
             raise ValueError(
                 f"lifecycle policy registration: entity_type {policy.entity_type!r} "
                 "is already registered"
             )
-        if policy.table in self._by_table:
+        incumbent = next(
+            (
+                declaration
+                for entry, _ in self._staged
+                if (declaration := entry.value).table == policy.table
+            ),
+            None,
+        )
+        if incumbent is not None:
             raise ValueError(
                 f"lifecycle policy registration: table {policy.table!r} is already "
-                f"registered (for entity_type {self._by_table[policy.table]!r})"
+                f"registered (for entity_type {incumbent.entity_type!r})"
             )
         unknown_initial = policy.initial_statuses - policy.statuses
         if unknown_initial:
@@ -94,13 +168,15 @@ class PolicyRegistry:
                 f"lifecycle policy registration: entity_type {policy.entity_type!r} "
                 f"declares terminal_statuses outside statuses: {sorted(unknown_terminal)}"
             )
-        for from_status, edges in policy.edges.items():
+        edge_items: list[tuple[str, tuple[EdgePolicy, ...]]] = []
+        for from_status, raw_edges in policy.edges.items():
             if from_status not in policy.statuses:
                 raise ValueError(
                     f"lifecycle policy registration: entity_type {policy.entity_type!r} "
                     f"declares edges from unknown status {from_status!r}"
                 )
-            for edge in edges:
+            snapshot_edges: list[EdgePolicy] = []
+            for edge in raw_edges:
                 if edge.to_status not in policy.statuses:
                     raise ValueError(
                         f"lifecycle policy registration: entity_type {policy.entity_type!r} "
@@ -120,28 +196,60 @@ class PolicyRegistry:
                         f"edge {from_status!r} -> {edge.to_status!r} requires guard field(s) "
                         f"{sorted(unknown_guard)} outside the policy's patch_fields allowlist"
                     )
-        frozen_policy = dataclasses.replace(policy, edges=ImmutableEdgeMap(policy.edges))
-        self._by_entity_type[policy.entity_type] = frozen_policy
-        self._by_table[policy.table] = policy.entity_type
+                snapshot_edges.append(edge)
+            edge_items.append((from_status, tuple(snapshot_edges)))
+        declaration = _declaration_from_policy(policy, edge_items=tuple(edge_items))
+        entry = RegistryEntry(key=declaration.entity_type, value=declaration)
+        projection = _projection_from_declaration(declaration)
+        self._staged += ((entry, projection),)
 
     def seal(self) -> None:
         """Close this registry to further registration."""
-        self._sealed = True
+        if self._sealed:
+            return
+
+        staged = self._staged
+        fragment = RegistryFragment(
+            owner=_LIFECYCLE_POLICY_FRAGMENT_OWNER,
+            version=_LIFECYCLE_POLICY_FRAGMENT_VERSION,
+            items=tuple(entry for entry, _ in staged),
+        )
+        catalog = _LifecyclePolicyCatalog.compose(
+            fragment,
+            name=_LIFECYCLE_POLICY_CATALOG_NAME,
+            version=_LIFECYCLE_POLICY_CATALOG_VERSION,
+        )
+        projections = tuple(projection for _, projection in staged)
+        self._catalog, self._projections, self._staged, self._sealed = (
+            catalog,
+            projections,
+            (),
+            True,
+        )
 
     def get(self, entity_type: str) -> LifecyclePolicy:
-        try:
-            return self._by_entity_type[entity_type]
-        except KeyError:
-            raise ValueError(
-                f"lifecycle policy: unknown entity_type {entity_type!r}; registered "
-                f"types are {sorted(self._by_entity_type)}"
-            ) from None
+        if self._catalog is not None:
+            for index, record in enumerate(self._catalog.items):
+                if record.entry.key == entity_type:
+                    return self._projections[index]
+        else:
+            for entry, projection in self._staged:
+                if entry.key == entity_type:
+                    return projection
+        raise ValueError(
+            f"lifecycle policy: unknown entity_type {entity_type!r}; registered "
+            f"types are {sorted(self.entity_types())}"
+        ) from None
 
     def __contains__(self, entity_type: str) -> bool:
-        return entity_type in self._by_entity_type
+        if self._catalog is not None:
+            return entity_type in self._catalog
+        return any(entry.key == entity_type for entry, _ in self._staged)
 
     def entity_types(self) -> frozenset[str]:
-        return frozenset(self._by_entity_type)
+        if self._catalog is not None:
+            return frozenset(self._catalog.keys())
+        return frozenset(entry.key for entry, _ in self._staged)
 
 
 def _edges(*pairs: tuple[str, tuple[EdgePolicy, ...]]) -> dict[str, tuple[EdgePolicy, ...]]:

@@ -244,9 +244,12 @@ StateDB/legacy-transition compatibility mapping (`adapters`).
   `__ior__` to reach, and re-invoking `__init__` is refused — while
   `pickle`/`copy.deepcopy` still round-trip via `__reduce__` (reconstructing
   through the constructor) and `dataclasses.asdict()` deep-copies the map
-  rather than raising. `PolicyRegistry.register()` wraps every policy's edge
-  map this way before storing, so a caller holding a policy from `get()`
-  cannot mutate global transition behavior for the process.
+  rather than raising. `PolicyRegistry.register()` converts each accepted policy
+  into one tuple-backed immutable declaration and one cached compatibility
+  projection whose edge map uses this wrapper. `seal()` composes the declarations
+  into the private catalog authority; `get()` resolves through that catalog and
+  returns the cached projection, so a caller cannot mutate global transition
+  behavior and the public `LifecyclePolicy` contract stays unchanged.
 - `notify_settings.py` stderr/argv redaction contract — a `notify.on_terminal`
   adapter's argv routinely carries secrets (webhook URLs, tokens passed as
   args), and its stderr is adapter-controlled free text whose most common leak
