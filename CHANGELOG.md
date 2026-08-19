@@ -75,7 +75,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   is not a stop restarts the loop on a bounded backoff with the reason and a restart count recorded
   on the engine. Startup recovery absorbs a non-stop cancel the same way, so one cancelled pass no
   longer costs the passes after it, and the inter-tick wait is measured against its own deadline so
-  a stream of cancels cannot drive the tick in a tight loop or skip the delay on the error path.
+  a stream of cancels cannot drive the tick in a tight loop or skip the delay on the error path. A
+  cancel aimed at the loop itself no longer tears a recovery pass in half either: the pass in
+  flight is allowed to finish, because a pass interrupted after it has finalized a schedule_run has
+  no successor to complete the job, every later scan selecting rows that are still running. A stop
+  still interrupts it, since a shutdown that cannot interrupt recovery is one that hangs.
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
   and `DataClass` now discover inherited instance fields through one ordered dataclass path,

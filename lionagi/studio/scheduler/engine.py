@@ -693,16 +693,18 @@ class SchedulerEngine:
                     raise
                 _log.warning("Scheduler inter-tick wait cancelled without a stop; continuing")
 
-    async def _tick_loop(self) -> None:
+    async def _startup_recovery_passes(self) -> None:
+        """The repair passes themselves; one failing pass must not cost the later ones.
+
+        The cancel absorbed here is the one a pass raises from inside itself, when something
+        it awaited was cancelled without this task being cancelled. The other direction, a
+        cancel aimed at the tick loop, is handled by the caller and never reaches this loop.
+        """
         for recovery in (
             self._recover_undispatched_fires,
             self._reconcile_dispatched_orphans,
             self._check_missed_fires,
         ):
-            # Startup recovery is best-effort: one failing pass must not cost the later ones. A
-            # cancel is absorbed here for the same reason it is below, and for one more: these
-            # passes repair durable state, and abandoning the rest of them leaves whatever the
-            # cancelled pass had already half-written for nothing else to pick up.
             try:
                 await recovery()
             except asyncio.CancelledError:
@@ -714,6 +716,32 @@ class SchedulerEngine:
                 )
             except Exception:
                 _log.exception("Scheduler startup recovery failed in %s", recovery.__name__)
+
+    async def _run_startup_recovery(self) -> None:
+        """Run the repair passes where a stray cancel cannot tear one in half.
+
+        These passes are the only thing that repairs durable state a previous process left
+        inconsistent, and a pass interrupted after it has finalized a schedule_run has no
+        successor to finish the job: every later scan selects rows that are still running,
+        which that row no longer is. Absorbing the cancel and carrying on is therefore not
+        enough, so a cancel that is not a stop waits for the work in flight rather than
+        abandoning it. A stop cancels it, because a shutdown that cannot interrupt recovery
+        is a shutdown that hangs.
+        """
+        passes = asyncio.ensure_future(self._startup_recovery_passes())
+        try:
+            await asyncio.shield(passes)
+        except asyncio.CancelledError:
+            if self._stopping:
+                passes.cancel()
+                raise
+            _log.warning(
+                "Scheduler startup recovery cancelled without a stop; letting the pass finish"
+            )
+            await passes
+
+    async def _tick_loop(self) -> None:
+        await self._run_startup_recovery()
         while not self._stopping:
             try:
                 await self._tick()
