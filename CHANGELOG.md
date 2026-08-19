@@ -103,6 +103,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   still holds a pipe, and the post-kill wait is bounded as well instead of being able to hang
   indefinitely.
 
+- A GitHub-triggered schedule permanently lost the second of two events sharing a cursor
+  timestamp. The scheduler advances `github_cursor` per dispatched event, writing that event's
+  raw timestamp, and the poller drops anything at or below the stored value, so two pull
+  requests updated in the same second were indistinguishable to the filter and the one that
+  had not dispatched yet was dropped on every later poll. GitHub timestamps have one-second
+  resolution and a merge queue lands batches inside one, so this needed no race, only a single
+  interruption between the two dispatches. The cursor now carries the pull request's number
+  after its timestamp and is compared as a pair, and merged-mode paging goes on past a page
+  whose oldest item sits in the cursor's own second. A cursor stored before this change still
+  claims its whole second, so an upgrade re-dispatches nothing. The schedule PATCH validator
+  accepts the same grammar, imported from the poller rather than restated: it previously
+  spelled a form the engine had stopped writing, so the system persisted a cursor its own API
+  then refused, and an operator replaying a stored value got an error on the scheduler's own
+  output.
+  The number's width caps the writer as well as padding it. Lexical order matches numeric order
+  only at a fixed width, so a pull request number too large to fit the padding cannot be placed
+  within its second and is clamped instead of widening the value, which would have written a
+  cursor the same validator refuses.
+  The comparison that decides whether an event is already past the stored cursor clamps through
+  the same helper as the writer. A value one of them capped and the other did not would never
+  compare as past the cursor written for it, so the event would be offered again on every poll.
 - The schedule list surfaces no longer carry record content. They served every column of the
   schedule row, including the command a schedule runs and its arguments, its authored spec, its
   notify command and owner key, and they served `trigger_context`, which holds whole external

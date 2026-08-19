@@ -192,6 +192,65 @@ def test_update_can_clear_the_cursor():
     mock_db.update_schedule.assert_awaited_once_with("sid-cursor-1", github_cursor=None)
 
 
+# What the poller actually writes. The validator and the writer are two spellings of one
+# format, and they drifted: the engine persisted a cursor naming the event within its
+# second while this validator still accepted only the bare instant, so the system wrote a
+# value its own API refused and an operator replaying a stored cursor got an error on the
+# scheduler's own output. These pin the round trip rather than the spelling, so the next
+# format change cannot reintroduce the split quietly.
+
+
+@pytest.mark.parametrize("pr_number", [0, 1, 42, 999999, 9999999999])
+def test_the_validator_accepts_every_cursor_the_poller_writes(pr_number):
+    from lionagi.studio.scheduler.github import _cursor_for
+
+    _svc_validate_github_cursor(_cursor_for("2026-07-20T15:21:57Z", pr_number))
+
+
+def test_the_stored_cursor_survives_being_patched_back():
+    """The operator flow the split broke: read a persisted cursor, PATCH it back."""
+    from lionagi.studio.scheduler.github import _cursor_for
+
+    stored = _cursor_for("2026-07-26T07:00:00Z", 3389)
+    result, mock_db = _run_update({"github_cursor": stored})
+
+    assert result is True
+    mock_db.update_schedule.assert_awaited_once_with("sid-cursor-1", github_cursor=stored)
+
+
+def test_the_bare_instant_a_cursor_had_before_the_number_is_still_accepted():
+    """Every cursor stored before the number existed is one of these."""
+    _svc_validate_github_cursor("2026-07-20T15:21:57Z")
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "2026-07-20T15:21:57Z#1",  # not padded
+        "2026-07-20T15:21:57Z#",  # separator, no number
+        "2026-07-20T15:21:57Z#00000000ab",  # not digits
+        "2026-07-20T15:21:57Z#0000000001#0000000002",  # two of them
+    ],
+)
+def test_the_validator_rejects_a_number_the_poller_would_never_write(bad):
+    with pytest.raises(ValueError, match="github_cursor"):
+        _svc_validate_github_cursor(bad)
+
+
+def test_why_the_number_is_fixed_width_rather_than_pedantic():
+    """Same reason the instant is strict: the comparison is lexical.
+
+    An unpadded number sorts by its first digit, so the cursor for PR 9 reads as
+    later than the cursor for PR 10 and the poller drops an event it never
+    dispatched. The padding is what makes string order agree with numeric order.
+    """
+    from lionagi.studio.scheduler.github import _cursor_for
+
+    at = "2026-07-20T15:21:57Z"
+    assert _cursor_for(at, 9) < _cursor_for(at, 10), "padded: 9 sorts before 10"
+    assert f"{at}#9" > f"{at}#10", "unpadded: 9 sorts after 10, which is the defect"
+
+
 def test_update_rejects_a_malformed_cursor_before_any_write():
     _expect_rejected({"github_cursor": "2026-07-26 07:00:00"}, "github_cursor")
 
@@ -382,3 +441,40 @@ def test_guarded_statement_compiles_on_both_dialects():
         sql = str(stmt.compile(dialect=dialect))
         assert "CASE WHEN github_cursor IS NULL" in sql
         assert '"last_fired_at"' in sql  # sibling fields still assigned plainly
+
+
+def test_a_number_too_big_for_the_padding_still_writes_a_cursor_its_own_api_accepts():
+    """The width caps the writer as well as padding it.
+
+    Lexical order agrees with numeric order only at a fixed width: "9999999999"
+    sorts AFTER "10000000000", because the comparison diverges at the first
+    character and never reaches the length. So a number that overflows the padding
+    cannot be placed within its second, and the writer clamps rather than emitting
+    a wider value that its own validator would then refuse.
+    """
+    from lionagi.studio.scheduler.github import _cursor_for
+
+    at = "2026-07-20T15:21:57Z"
+    overflowing = _cursor_for(at, 10_000_000_000)
+    assert overflowing == f"{at}#9999999999"
+    _svc_validate_github_cursor(overflowing)
+    assert _cursor_for(at, 1) < _cursor_for(at, 42) < overflowing
+
+
+def test_an_overflowing_event_is_not_re_offered_after_its_own_cursor_is_stored():
+    """The writer and the comparator have to clamp the same way or the event replays.
+
+    The poller stores the cursor it writes for an event, then skips anything whose
+    position is at or before the stored bound. If only the writer clamps, an
+    overflowing number is stored as the cap but still compares as larger than it,
+    so the event is never past its own cursor and every poll offers it again.
+    """
+    from lionagi.studio.scheduler.github import _cursor_bound, _cursor_for, _event_position
+
+    at = "2026-07-20T15:21:57Z"
+    for pr_number in (42, 9999999999, 10_000_000_000, 10**18):
+        stored = _cursor_for(at, pr_number)
+        bound = _cursor_bound(stored)
+        assert _event_position(at, pr_number) <= bound, (
+            f"PR {pr_number} is not past the cursor written for it, so it replays"
+        )
