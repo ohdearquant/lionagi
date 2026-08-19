@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy import text
 
 from lionagi.state.db import SCHEMA_VERSION, StateDB
+from tests._scheduler_claims import claim_and_advance
 
 # Fixtures
 
@@ -192,7 +193,8 @@ async def test_managed_entity_creations_write_initial_lifecycle_history(db: Stat
         "status": "running",
         "fired_at": time.time(),
     }
-    await db.create_schedule_run_and_advance(
+    await claim_and_advance(
+        db,
         advanced_run,
         schedule_id=schedule_id,
         schedule_fields={"last_fired_at": time.time()},
