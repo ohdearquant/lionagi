@@ -490,6 +490,7 @@ function LibraryPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder={t("searchPlaceholder")}
+          aria-label={t("searchPlaceholder")}
           className="min-w-0 flex-1 rounded border border-edge bg-surface-overlay px-2 py-1 font-ui text-[length:var(--t-sm)] text-content-primary focus:outline-none"
         />
         {!NO_CREATE_KINDS.has(kindFilter as LibraryKind) && (

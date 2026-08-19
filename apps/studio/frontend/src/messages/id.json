@@ -245,7 +245,7 @@
       "createWorkflow": "Alur kerja baru",
       "createAgent": "Agen baru",
       "allSkill": "Tidak ada skill ditemukan.",
-      "allSkillHint": "Tambahkan SKILL.md di ~/.lionagi/skills/<name>/ agar muncul di sini.",
+      "allSkillHint": "Tambahkan SKILL.md di ~/.lionagi/skills/NAME/ agar muncul di sini.",
       "allPlugin": "Tidak ada plugin ditemukan.",
       "allPluginHint": "Instal plugin di ~/.claude/plugins/ agar muncul di sini."
     },
@@ -508,6 +508,7 @@
       "statErrorsRecent": "Kesalahan (terbaru)",
       "noBranchErrorsPartial": "Tidak ada kesalahan dalam pesan yang dimuat.",
       "noFilesPartial": "Tidak ada operasi file terdeteksi dalam pesan yang dimuat.",
+      "filesUnionBounded": "Sebagian operasi file tidak tercantum: proses ini menyentuh lebih banyak berkas daripada yang dikumpulkan satu tampilan.",
       "olderUnavailable": "Riwayat lama tidak dapat dimuat — percakapan ini berlanjut sebelum permintaan selesai.",
       "reloadConversation": "Muat ulang percakapan",
       "graphEdgeCount": "{count} sisi",
@@ -832,6 +833,9 @@
       "noRuns": "Belum ada eksekusi",
       "ago": " yang lalu",
       "cancel": "Batal",
+      "discardWarning": "Ada perubahan yang belum disimpan.",
+      "keepEditing": "Lanjutkan mengedit",
+      "discardChanges": "Buang perubahan",
       "save": "Simpan perubahan",
       "saving": "Menyimpan…",
       "saveFailed": "Gagal menyimpan.",
@@ -911,7 +915,7 @@
     "stale": {
       "error": "kesalahan · {message}",
       "unreachable": "API tidak terjangkau",
-      "lastUpdated": "usang · terakhir diperbarui {age}s lalu"
+      "lastUpdated": "terakhir diperbarui {age}s lalu"
     },
     "detail": {
       "hint": "Pilih sesi untuk diperiksa",
@@ -927,8 +931,7 @@
       "updated": "Diperbarui",
       "branchesTitle": "{count, plural, other {Cabang (#)}}",
       "noBranches": "Tidak ada branch.",
-      "msgs": " pesan",
-      "engineRuns": "Proses engine"
+      "msgs": " pesan"
     },
     "split": {
       "master": "Daftar sesi",
@@ -1074,7 +1077,7 @@
     "stale": {
       "error": "kesalahan · {message}",
       "unreachable": "API tidak terjangkau",
-      "lastUpdated": "usang · terakhir diperbarui {age}s lalu"
+      "lastUpdated": "terakhir diperbarui {age}s lalu"
     },
     "zeroState": {
       "heading": "Mulai",
@@ -1163,6 +1166,7 @@
     "showEarlier": "Tampilkan {count, plural, other {{count, number} pesan sebelumnya}}",
     "noArgs": "(tanpa args)",
     "noOutput": "(tanpa output)",
+    "outputWithheld": "tidak dibaca",
     "roleUser": "pengguna",
     "roleThinking": "berpikir",
     "roleResponse": "respons",

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useLocale, useTranslations } from "use-intl";
 import { buildRegistry, fuzzyMatch, type Command } from "@/lib/commands";
+import { OverlayLayer } from "@/lib/overlayStack";
+import { useOverlayFocus } from "@/lib/useOverlayFocus";
 
 interface Props {
   open: boolean;
@@ -16,6 +18,7 @@ function PaletteInner({ onClose, toggleTheme, toggleOperator }: Omit<Props, "ope
   const operatorT = useTranslations("operator");
   const locale = useLocale();
   const navigate = useNavigate();
+  const dialogRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listboxRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
@@ -53,40 +56,64 @@ function PaletteInner({ onClose, toggleTheme, toggleOperator }: Omit<Props, "ope
     [doNavigate, onClose],
   );
 
-  // Focus input on mount
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
   // Scroll active option into view
   useEffect(() => {
     const el = listboxRef.current?.querySelectorAll<HTMLElement>("[role=option]")[active];
-    el?.scrollIntoView({ block: "nearest" });
+    el?.scrollIntoView?.({ block: "nearest" });
   }, [active]);
 
-  // Global keyboard handler for navigation within the palette
+  // Shell layer: rendered after the routed view, so it draws above a route's modal.
+  const { ownsKeyboard } = useOverlayFocus({
+    description: "CommandPalette",
+    layer: OverlayLayer.Shell,
+    dialogRef,
+    onEscape: onClose,
+    initialFocusRef: inputRef,
+  });
+
+  // Enter executes a result only from the command surface; on the close control it closes.
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       // Never react while an IME composition is in flight (zh input):
       // Enter/arrows there confirm the composition, not a command.
       if (e.isComposing) return;
+      if (!ownsKeyboard()) return;
+      const target = e.target instanceof Node ? e.target : null;
+      const isCommandSurface =
+        target === inputRef.current || Boolean(target && listboxRef.current?.contains(target));
       const vimNav = e.ctrlKey && !e.metaKey && !e.altKey;
-      if (e.key === "Escape") {
-        onClose();
-      } else if (e.key === "ArrowDown" || (vimNav && e.key === "j")) {
+      if (isCommandSurface && (e.key === "ArrowDown" || (vimNav && e.key === "j"))) {
         e.preventDefault();
         setActive((a) => Math.min(a + 1, filtered.length - 1));
-      } else if (e.key === "ArrowUp" || (vimNav && e.key === "k")) {
+      } else if (isCommandSurface && (e.key === "ArrowUp" || (vimNav && e.key === "k"))) {
         e.preventDefault();
         setActive((a) => Math.max(a - 1, 0));
-      } else if (e.key === "Enter") {
+      } else if (isCommandSurface && e.key === "Enter") {
+        e.preventDefault();
         const cmd = filtered[active];
         if (cmd) execute(cmd);
+      } else if (e.key === "Tab") {
+        const dialog = dialogRef.current;
+        if (!dialog) return;
+        const focusable = Array.from(
+          dialog.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+          ),
+        ).filter((element) => element.tabIndex >= 0);
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last?.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first?.focus();
+        }
       }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose, filtered, active, execute]);
+  }, [ownsKeyboard, filtered, active, execute]);
 
   function handleQueryChange(value: string) {
     setQuery(value);
@@ -98,6 +125,7 @@ function PaletteInner({ onClose, toggleTheme, toggleOperator }: Omit<Props, "ope
 
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]"
       aria-modal="true"
       role="dialog"

@@ -25,12 +25,19 @@ _require() {
 # ---------------------------------------------------------------------------
 
 lint-python() {
-  echo "==> ruff check"
+  # One list for both steps, or a directory added later reaches one of them and
+  # is silently left out of the other.
+  local paths=("$@")
   if [ $# -eq 0 ]; then
-    uv run ruff check lionagi/ apps/ tests/ marketplace/ scripts/
-  else
-    uv run ruff check "$@"
+    paths=(lionagi/ apps/ tests/ marketplace/ scripts/)
   fi
+  echo "==> ruff check"
+  uv run ruff check "${paths[@]}"
+  # --check, never the writing form: fmt-python is where formatting is applied.
+  # Without this a file can sit unformatted on main indefinitely, since the
+  # pre-commit hook only ever sees files someone is committing.
+  echo "==> ruff format --check"
+  uv run ruff format --check "${paths[@]}"
 }
 
 lint-quarantine() {
@@ -321,7 +328,7 @@ _hygiene_founder_name_scan() {
 }
 
 lint-hygiene() {
-  echo "==> publication hygiene lint (docs/notebooks/cookbooks/root)"
+  echo "==> publication hygiene lint (docs/notebooks/cookbooks/root + python source trees)"
   cd "$REPO_ROOT"
   local rc=0
   local scan_rc=0
@@ -372,7 +379,15 @@ lint-hygiene() {
     scan_rc=$?
     if [ "$scan_rc" -gt "$rc" ]; then rc=$scan_rc; fi
   fi
-  if uv run python "$PY_HYGIENE_SCRIPT" docs/ notebooks/ cookbooks/; then
+  # Source trees are included here and nowhere else in this function. The rg
+  # pass above has to skip *.py wholesale, because Python's own zero-argument
+  # `lambda:` closure syntax is indistinguishable from a leaked identifier to a
+  # line-oriented matcher. This scanner tokenizes, so it inspects comments,
+  # docstrings and string literals only and never sees closure syntax at all --
+  # which is exactly what makes the source trees safe to scan and what the
+  # narrower scope was leaving unscanned.
+  if uv run python "$PY_HYGIENE_SCRIPT" \
+    docs/ notebooks/ cookbooks/ examples/ lionagi/ tests/ scripts/ benchmarks/ marketplace/; then
     :
   else
     scan_rc=$?

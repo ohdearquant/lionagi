@@ -35,12 +35,24 @@ that list, not a change that only a end-to-end scenario would eventually surface
 The transition-policy edge graph in `PolicyRegistry` is enforced by
 `SQLAlchemyLifecycleService.transition()`, the public entry point. `StateDB.update_status()`
 itself does **not** enforce it — see `enforce_edges` in
-`lionagi/state/lifecycle/adapters.py`. Every declared edge for session, invocation, play,
-and schedule_run is expected to apply; sampled undeclared edges must come back as a
-`"rejected"` outcome with an `admin_events` audit row, never a raise and never a silent
-write. Code that calls `StateDB.update_status()` directly bypasses policy enforcement by
-construction — that is a property of the two-layer design, not an oversight to fix in the
-lower layer.
+`lionagi/state/lifecycle/adapters.py`. An independent literal golden drives every declared
+edge for session, invocation, show, play, team, schedule run, and dispatch through that
+public entry point. It also checks one fail-closed exit from every terminal status while
+retaining the two explicit operator-recovery edges from dispatch `dead_letter` and
+`expired`. Undeclared edges come back as a `"rejected"` outcome with an `admin_events`
+audit row, never a raise and never a silent write. Code that calls
+`StateDB.update_status()` directly bypasses policy enforcement by construction — that is a
+property of the two-layer design, not an oversight to fix in the lower layer.
+
+All seven policies currently select the `append` same-status rule. The contract includes a
+session `running -> running` reason refresh and asserts the full observable result: status
+does not move, current reason fields change, and a history row with a non-null transition
+id is appended. Merely asserting that the status remains `running` would not distinguish
+`append` from a silent `noop` implementation.
+
+A selected stale-version transition also pins the atomicity boundary: losing the status
+compare-and-set cannot write terminal companion fields or append transition history. This is
+single-transaction consistency, not a promise that all lifecycle callers are synchronized.
 
 ## The reaper guard pattern
 

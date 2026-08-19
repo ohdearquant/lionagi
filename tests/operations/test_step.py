@@ -196,7 +196,7 @@ def test_structural_cache_admission_classifies_mutable_and_immutable_metadata():
 
 
 def test_model_type_cache_key_opts_out_for_bound_method_validator():
-    """A bound-method validator is hashable (so the hash() fallback alone would not catch it) -- the opt-out relies specifically on _is_cache_safe_value rejecting it."""
+    """Hashable, so the hash fallback alone misses it: the opt-out is _try_stable_cache_key rejecting it."""
     from lionagi.adapters.spec_adapters import pydantic_field
 
     class Validators:

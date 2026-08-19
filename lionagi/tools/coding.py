@@ -10,7 +10,7 @@ import shlex
 from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
@@ -69,6 +69,9 @@ class SandboxRequest(BaseModel):
     )
 
 
+_SubagentPermissionPreset = Literal["read_only", "safe", "allow_all", "deny_all"]
+
+
 class SubagentRequest(BaseModel):
     instruction: str = Field(
         ...,
@@ -77,14 +80,14 @@ class SubagentRequest(BaseModel):
             "what files to look at, and what output you expect."
         ),
     )
-    permissions: str = Field(
+    permissions: _SubagentPermissionPreset = Field(
         default="read_only",
         description=(
             "Permission level for the sub-agent. One of:\n"
             "- 'read_only': Can only read files and search (safest).\n"
             "- 'safe': Can read/write/search, bash restricted (no rm/sudo).\n"
-            "- 'inherit': Same permissions as parent agent.\n"
-            "- 'allow_all': No restrictions (use with caution)."
+            "- 'allow_all': No restrictions (use with caution).\n"
+            "- 'deny_all': Block all tool calls."
         ),
     )
     max_turns: int = Field(
@@ -764,12 +767,12 @@ class CodingToolkit(LionTool):
 
         async def subagent(
             instruction: str,
-            permissions: str = "read_only",
+            permissions: _SubagentPermissionPreset = "read_only",
             max_turns: int = 20,
             cwd: str | None = None,
         ) -> dict:
             """Spawn a sub-agent with its own Branch and coding tools to handle a task independently via a ReAct loop.
-            permissions controls what it can do: read_only (search/read only), safe (read/write/search, bash restricted), or allow_all (full access).
+            permissions controls what it can do: read_only (search/read only), safe (read/write/search, bash restricted), allow_all (full access), or deny_all (no tool calls).
             """
             from lionagi.agent.spec import AgentSpec
 
