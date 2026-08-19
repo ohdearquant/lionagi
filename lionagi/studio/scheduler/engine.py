@@ -44,6 +44,9 @@ _log = logging.getLogger(__name__)
 
 _MAX_CHAIN_DEPTH = 10
 _TICK_INTERVAL = 30  # seconds
+# Backoff between tick-loop restarts, holding at the last value. A loop that dies every
+# time must not spin, and one that died once must come back before the next schedule is due.
+_TICK_RESTART_BACKOFF = (1.0, 2.0, 5.0, 15.0, 30.0)
 # Throttles deferred-capacity skipped-run records to one per schedule per this
 # many deferrals, so sustained saturation doesn't spam schedule_runs.
 _DEFERRED_RECORD_EVERY = 10
@@ -386,6 +389,10 @@ class SchedulerEngine:
         self._threshold_pending: set[str] = set()
         # ADR-0071 D4: this daemon process is the one host worker (v1).
         self._task_worker_id = f"host:{uuid.uuid4().hex[:8]}"
+        # Tick-loop supervision. The loop advancing is the only thing that makes this a
+        # scheduler, and the process staying up says nothing about whether it still is.
+        self._tick_loop_restarts = 0
+        self._last_tick_loop_failure: tuple[float, str] | None = None
 
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
@@ -394,7 +401,41 @@ class SchedulerEngine:
         await self._backfill_action_cwd()
         await self._stamp_effective_timezones()
         await self._recompute_armed_cron_schedules()
-        self._task = asyncio.create_task(self._tick_loop())
+        self._tick_loop_restarts = 0
+        self._task = self._spawn_tick_loop()
+
+    def _spawn_tick_loop(self) -> asyncio.Task:
+        task = asyncio.create_task(self._tick_loop())
+        task.add_done_callback(self._on_tick_loop_done)
+        return task
+
+    def _on_tick_loop_done(self, task: asyncio.Task) -> None:
+        """Restart the loop on any exit that is not stop(), including a clean return."""
+        if self._stopping or task is not self._task:
+            return
+        if task.cancelled():
+            reason = "cancelled"
+        elif (exc := task.exception()) is not None:
+            reason = f"{type(exc).__name__}: {exc}"
+        else:
+            reason = "returned while still running"
+        self._tick_loop_restarts += 1
+        self._last_tick_loop_failure = (time.time(), reason)
+        delay = _TICK_RESTART_BACKOFF[min(self._tick_loop_restarts, len(_TICK_RESTART_BACKOFF)) - 1]
+        _log.error(
+            "Scheduler tick loop ended (%s); restart %d in %.0fs",
+            reason,
+            self._tick_loop_restarts,
+            delay,
+        )
+        self._task = asyncio.create_task(self._restart_tick_loop(delay))
+
+    async def _restart_tick_loop(self, delay: float) -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.sleep(delay)
+        if self._stopping:
+            return
+        self._task = self._spawn_tick_loop()
 
     def _log_scheduler_timezone(self) -> None:
         """Say the effective cron timezone out loud, once, at startup."""
@@ -634,15 +675,30 @@ class SchedulerEngine:
                     slot_claim.release()
 
     async def _tick_loop(self) -> None:
-        await self._recover_undispatched_fires()
-        await self._reconcile_dispatched_orphans()
-        await self._check_missed_fires()
+        for recovery in (
+            self._recover_undispatched_fires,
+            self._reconcile_dispatched_orphans,
+            self._check_missed_fires,
+        ):
+            # Startup recovery is best-effort: one failing pass must not cost every later tick.
+            try:
+                await recovery()
+            except Exception:
+                _log.exception("Scheduler startup recovery failed in %s", recovery.__name__)
         while not self._stopping:
             try:
                 await self._tick()
+                await asyncio.sleep(_TICK_INTERVAL)
+            except asyncio.CancelledError:
+                # stop() cancels this task, so a cancel while stopping IS the shutdown. A cancel
+                # at any other time escaped from something the tick awaited, and ending the loop
+                # over it is how the scheduler goes quiet while the process keeps answering.
+                if self._stopping:
+                    raise
+                _log.exception("Scheduler tick cancelled without a stop; continuing")
             except Exception:
                 _log.exception("Scheduler tick error")
-            await asyncio.sleep(_TICK_INTERVAL)
+                await asyncio.sleep(_TICK_INTERVAL)
 
     def _maybe_start_prune(self, now: float) -> None:
         """Start the retention prune as a tracked, single-flight background task."""

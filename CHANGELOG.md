@@ -66,6 +66,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- The studio scheduler's tick loop is now supervised rather than merely guarded. It caught
+  `Exception`, which does not include `asyncio.CancelledError`, so a cancel escaping from anything
+  the tick awaited ended the loop permanently while the process and its HTTP surface kept
+  answering; startup recovery ran outside the guard, so one failing pass took the loop with it; and
+  the inter-tick sleep was unguarded. Only `stop()` ends the loop now: a cancel arriving at any
+  other time is absorbed in place, a failing recovery pass is logged and skipped, and any exit that
+  is not a stop restarts the loop on a bounded backoff with the reason and a restart count recorded
+  on the engine.
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
   and `DataClass` now discover inherited instance fields through one ordered dataclass path,
