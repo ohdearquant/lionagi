@@ -393,16 +393,39 @@ class SchedulerEngine:
         # scheduler, and the process staying up says nothing about whether it still is.
         self._tick_loop_restarts = 0
         self._last_tick_loop_failure: tuple[float, str] | None = None
+        # When the loop last completed a pass, and when it was asked to start. Whether the
+        # scheduler is advancing is a different question from whether the store answers, and
+        # only this side of the process can answer it.
+        self._last_tick_completed_at: float | None = None
+        self._started_at: float | None = None
 
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
         self._stopping = False
+        self._started_at = time.time()
         self._log_scheduler_timezone()
         await self._backfill_action_cwd()
         await self._stamp_effective_timezones()
         await self._recompute_armed_cron_schedules()
         self._tick_loop_restarts = 0
         self._task = self._spawn_tick_loop()
+
+    def liveness(self) -> dict[str, Any]:
+        """Report what the loop has done, with no verdict attached.
+
+        The threshold for calling this stalled belongs to whoever is asking, so this
+        returns only facts: when a pass last completed, when the engine was asked to
+        start, how often it is supposed to run, and what has gone wrong.
+        """
+        failure = self._last_tick_loop_failure
+        return {
+            "started_at": self._started_at,
+            "last_tick_completed_at": self._last_tick_completed_at,
+            "tick_interval_s": _TICK_INTERVAL,
+            "restarts": self._tick_loop_restarts,
+            "last_failure_at": failure[0] if failure else None,
+            "last_failure": failure[1] if failure else None,
+        }
 
     def _spawn_tick_loop(self) -> asyncio.Task:
         task = asyncio.create_task(self._tick_loop())
@@ -688,6 +711,7 @@ class SchedulerEngine:
         while not self._stopping:
             try:
                 await self._tick()
+                self._last_tick_completed_at = time.time()
                 await asyncio.sleep(_TICK_INTERVAL)
             except asyncio.CancelledError:
                 # stop() cancels this task, so a cancel while stopping IS the shutdown. A cancel

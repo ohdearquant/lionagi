@@ -205,6 +205,38 @@ def test_readiness_verdict_degraded_store_is_warn(state: str) -> None:
     assert state in result["detail"]
 
 
+def test_readiness_verdict_warns_when_the_store_is_healthy_and_the_scheduler_is_stalled() -> None:
+    """The store answering is what let this check say ready through hours of nothing firing."""
+    body = json.dumps(
+        {
+            "status": "healthy",
+            "detail": "store answered",
+            "scheduler": {"status": "stalled", "detail": "no tick has completed for 900s"},
+        }
+    ).encode()
+    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    assert result["status"] == "warn"
+    assert "900s" in result["detail"]
+
+
+def test_readiness_verdict_is_ok_when_the_scheduler_is_advancing() -> None:
+    body = json.dumps(
+        {
+            "status": "healthy",
+            "detail": "store answered",
+            "scheduler": {"status": "advancing", "detail": "a tick completed 3s ago"},
+        }
+    ).encode()
+    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    assert result["status"] == "ok"
+
+
+def test_readiness_verdict_ignores_a_missing_scheduler_field() -> None:
+    """A daemon older than this field must not read as stalled."""
+    body = json.dumps({"status": "healthy", "detail": "store answered"}).encode()
+    assert _readiness_verdict("http://x/api/admin/readiness", body)["status"] == "ok"
+
+
 def test_readiness_verdict_malformed_body_is_unknown() -> None:
     result = _readiness_verdict("http://x/api/admin/readiness", b"<html>not json</html>")
     assert result["status"] == "unknown"

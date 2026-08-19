@@ -74,6 +74,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   other time is absorbed in place, a failing recovery pass is logged and skipped, and any exit that
   is not a stop restarts the loop on a bounded backoff with the reason and a restart count recorded
   on the engine.
+- `/api/admin/readiness` now reports whether the scheduler is advancing, beside the store probe
+  rather than folded into it. `status` keeps its existing meaning and describes the store alone; a
+  new `scheduler` object carries the verdict, when a tick last completed, the stall threshold and
+  the tick-loop restart count; and a new `ready` boolean is true only when both subjects are. The
+  store answering a bounded indexed read was never evidence that anything fires, and `li doctor`
+  now warns instead of reporting the daemon ready when the store is healthy and the scheduler has
+  stalled. A daemon that does not report the field is treated as before rather than as stalled.
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
   and `DataClass` now discover inherited instance fields through one ordered dataclass path,

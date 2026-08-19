@@ -120,6 +120,63 @@ STORE_PROBE_TIMEOUT_MS = 1000
 # content, joins nothing, and its cost does not grow with the store.
 _STORE_PROBE_SQL = "SELECT id FROM sessions ORDER BY updated_at DESC LIMIT 1"
 
+# How many tick intervals may pass with no completed pass before the scheduler is called
+# stalled. Generous, because a slow pass is not a stopped one and a false stall trains
+# readers to ignore this field; the failure it exists for lasted hours, not minutes.
+SCHEDULER_STALL_INTERVALS = 4
+# Floor under the above, so a short tick interval cannot make a single slow pass read stalled.
+SCHEDULER_STALL_FLOOR_S = 120.0
+
+
+def scheduler_probe() -> dict[str, Any]:
+    """Whether the scheduler is advancing, which the store probe cannot answer.
+
+    Reported beside the store rather than folded into it: a store that answers reads
+    and a scheduler that fires schedules are two subjects, and the incident this exists
+    for is the one where the first was true and the second was not for hours.
+    """
+    from lionagi.studio.scheduler.engine import _TICK_INTERVAL, scheduler
+
+    facts = scheduler.liveness()
+    now = time.time()
+    threshold = max(_TICK_INTERVAL * SCHEDULER_STALL_INTERVALS, SCHEDULER_STALL_FLOOR_S)
+    result: dict[str, Any] = {
+        "status": "unknown",
+        "detail": "",
+        "seconds_since_advance": None,
+        "stall_threshold_s": threshold,
+        **facts,
+    }
+
+    if facts["started_at"] is None:
+        result["detail"] = "scheduler engine has not been started in this process"
+        return result
+
+    # Before the first pass completes there is nothing to measure against but the start,
+    # which is the honest reference: a scheduler that has never advanced is stalled too.
+    reference = facts["last_tick_completed_at"] or facts["started_at"]
+    since = round(now - reference, 1)
+    result["seconds_since_advance"] = since
+    advanced = facts["last_tick_completed_at"] is not None
+
+    if since > threshold:
+        result["status"] = "stalled"
+        result["detail"] = (
+            f"no tick has completed for {since:.0f}s"
+            if advanced
+            else f"no tick has completed since the engine started {since:.0f}s ago"
+        )
+    else:
+        result["status"] = "advancing"
+        result["detail"] = (
+            f"a tick completed {since:.0f}s ago"
+            if advanced
+            else f"engine started {since:.0f}s ago and its first tick is not yet due"
+        )
+    if facts["restarts"]:
+        result["detail"] += f"; tick loop has restarted {facts['restarts']} time(s)"
+    return result
+
 
 async def store_probe(*, timeout_ms: int = STORE_PROBE_TIMEOUT_MS) -> dict[str, Any]:
     """Run a bounded indexed read against the store and report which of three
@@ -1402,8 +1459,20 @@ async def readiness_route(
     is exactly the failure this reports. Never 5xx -- the verdict is in the
     body, so a caller can tell "store unreachable" from "store slow" from
     "healthy" instead of getting one boolean for all three.
+
+    ``status`` describes the store alone and keeps its existing meaning. Whether
+    the scheduler is advancing is a separate subject reported under ``scheduler``,
+    because a store that answers reads says nothing about whether anything fires.
+    ``ready`` is true only when both are true, so a caller that reads one field
+    is not told the daemon is fine while its scheduler has stopped.
     """
-    return await store_probe(timeout_ms=timeout_ms)
+    store = await store_probe(timeout_ms=timeout_ms)
+    sched = scheduler_probe()
+    return {
+        **store,
+        "scheduler": sched,
+        "ready": store["status"] == "healthy" and sched["status"] == "advancing",
+    }
 
 
 @studio_route("/admin/transition", method="POST", area="admin", name="transition")

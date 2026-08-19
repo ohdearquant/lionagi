@@ -135,6 +135,16 @@ def _readiness_verdict(target: str, body: bytes) -> dict[str, str]:
         )
 
     detail = payload.get("detail") or ""
+    sched = payload.get("scheduler")
+    if state == "healthy" and isinstance(sched, dict) and sched.get("status") == "stalled":
+        # The store answering is what made this check say ready through an incident where
+        # nothing fired for hours. A stalled scheduler is not a healthy daemon.
+        return _result(
+            "warn",
+            f"Studio daemon is up at {target} and its store is healthy, but its scheduler "
+            f"is not advancing ({sched.get('detail') or 'no detail'}) — nothing scheduled "
+            "will fire until it recovers.",
+        )
     if state == "healthy":
         return _result("ok", f"Studio daemon ready at {target} ({detail})")
     if state in ("slow", "unavailable"):

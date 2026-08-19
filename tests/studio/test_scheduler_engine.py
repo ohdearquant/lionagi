@@ -3350,6 +3350,39 @@ async def test_a_raising_tick_does_not_end_the_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_completed_tick_is_recorded_where_readiness_reads_it(monkeypatch):
+    """The probe reads liveness(), so the loop has to write it; a mocked probe cannot show that."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    assert engine.liveness()["last_tick_completed_at"] is None
+    await engine.start()
+    try:
+        assert engine.liveness()["started_at"] is not None
+        await _until(lambda: engine.liveness()["last_tick_completed_at"] is not None)
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_tick_that_raises_does_not_count_as_an_advance(monkeypatch):
+    """Recording the attempt rather than the completion would report a stuck loop as advancing."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+
+    async def _tick():
+        ticks.append(time.monotonic())
+        raise RuntimeError("tick blew up")
+
+    monkeypatch.setattr(engine, "_tick", _tick)
+    await engine.start()
+    try:
+        await _until(lambda: len(ticks) >= 3)
+        assert engine.liveness()["last_tick_completed_at"] is None
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
 async def test_stop_ends_the_loop_rather_than_restarting_it(monkeypatch):
     """The control: supervision must not resurrect a deliberate shutdown."""
     ticks: list = []
