@@ -103,7 +103,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   demotes such a run to `completed_empty`: that conclusion is read off the transcript, and
   this run's transcript is known to be missing part of itself.
 
-  The loss survives the two ways a run's terminal row is written by someone other than the
+  The loss survives every way a run's terminal row is written by someone other than the
   leg that saw it. A leg that hands its terminal write to a resuming leg now leaves the loss
   on the session, and the write that eventually happens adds up every deferred leg's count
   rather than reporting only its own, because each leg that observed a loss is gone by then and
@@ -115,7 +115,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   fails is logged and the status stands rather than leaving a timed-out run unresumed. The carried
   payload is validated where it is read back rather than trusted for its shape, since it was written
   by whatever code the earlier leg was running; entries that do not fit are dropped, and the total is
-  recomputed from the entries that survive so it agrees with what it claims to sum.
+  recomputed from the entries that survive so it agrees with what it claims to sum. A leg
+  whose own terminal write never lands, because a concurrent teardown won the race or the row
+  was already terminal, keeps the loss on the session rather than discarding it with the status
+  it was about to write: the winner's record stands and the loss stays where its readers look.
 
   An invocation whose child lost messages no longer reports a clean success, on the flow path
   and the scheduled path alike. The loss is read off the child's evidence before the terminal

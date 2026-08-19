@@ -4729,6 +4729,54 @@ async def test_child_message_loss_surfaces_at_invocation_not_flattened_to_ok(
     assert {e["id"] for e in evidence} == {ctx["session_id"]}
 
 
+async def test_a_leg_that_loses_the_terminal_write_race_still_records_its_loss(
+    temp_db_path: Path,
+    monkeypatch,
+):
+    """The winner's row says the run is clean and knows nothing about this leg's loss.
+
+    Recording it only inside the guarded transition means a concurrent teardown winning
+    the compare-and-swap discards it, and the terminal row reads clean while part of the
+    transcript is gone. The status still belongs to the winner; only the loss is kept.
+    """
+    from lionagi.state.reasons import RunReasons, has_message_loss_evidence
+
+    invocation_id = "inv-cas-loser"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    ctx["message_retry_queues"].append(await _dead_queue_events(ctx["session_id"]))
+
+    real_update_status = ctx["db"].update_status
+
+    async def lose_the_race(entity_type, entity_id, **kwargs):
+        if entity_type == "session" and entity_id == ctx["session_id"]:
+            return False
+        return await real_update_status(entity_type, entity_id, **kwargs)
+
+    monkeypatch.setattr(ctx["db"], "update_status", lose_the_race)
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        row = await db.get_session(ctx["session_id"])
+    assert row["status_reason_code"] != RunReasons.COMPLETED_MESSAGE_LOSS, (
+        "the winner's record stands"
+    )
+    assert has_message_loss_evidence(row), "and the loss is still on the row"
+
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+
+    _status, _rc, _summary, _evidence, metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+    assert metadata["message_loss_session_ids"] == [ctx["session_id"]]
+
+
 async def test_a_losing_child_is_named_when_a_sibling_fails(
     temp_db_path: Path,
 ):

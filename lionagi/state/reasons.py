@@ -267,6 +267,24 @@ def has_message_loss_evidence(session: Any) -> bool:
             refs = json.loads(refs)
         except (TypeError, ValueError):
             return False
-    if not isinstance(refs, list):
+    if isinstance(refs, list) and any(
+        isinstance(ref, dict) and ref.get("kind") == "message_persist_loss" for ref in refs
+    ):
+        return True
+    # A leg whose own terminal write never landed -- it deferred, or lost the race to a
+    # concurrent teardown -- leaves the loss here instead, and no evidence ref exists.
+    node_metadata = session.get("node_metadata")
+    if isinstance(node_metadata, str):
+        try:
+            node_metadata = json.loads(node_metadata)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(node_metadata, dict):
         return False
-    return any(isinstance(ref, dict) and ref.get("kind") == "message_persist_loss" for ref in refs)
+    carried = node_metadata.get("message_persist_loss_json")
+    if isinstance(carried, str):
+        try:
+            carried = json.loads(carried)
+        except (TypeError, ValueError):
+            return False
+    return isinstance(carried, dict) and bool(carried.get("queues"))

@@ -935,6 +935,10 @@ async def _teardown_common(
     # CAS guard below (not updated_at, which this function may itself have touched).
     pre_write_status = session_row.get("status")
 
+    # Whether this teardown's own terminal write landed. Every path where it did not
+    # returns someone else's status, and that row knows nothing about this leg's loss.
+    wrote_terminal_record = False
+
     if pre_write_status in SESSION_TERMINAL_STATUSES:
         # Already terminal before this teardown attempted anything (e.g. reattached
         # to a session an earlier run already finalized) -- skip the redundant write
@@ -973,6 +977,7 @@ async def _teardown_common(
                     else {"ended_at": ended_at, "duration_ms": duration_ms}
                 ),
             )
+            wrote_terminal_record = bool(written)
             if not written:
                 # CAS miss: a concurrent teardown of the same session won the race.
                 # Read back the persisted status rather than raising past callers.
@@ -992,6 +997,25 @@ async def _teardown_common(
                 "session %s already terminal (%s); skipped duplicate status write",
                 session_id,
                 final_status,
+            )
+
+    if message_loss and not wrote_terminal_record:
+        # The row that won says the run is clean and this leg is the only one that saw
+        # the loss. Leave it where the invocation reducers look, without touching the
+        # winner's status or reason -- an earlier terminal record stands.
+        try:
+            carried = await db.get_session(session_id) or {}
+            merged = _merge_message_loss(carried.get("node_metadata") or {}, message_loss)
+            await db.merge_session_node_metadata(
+                session_id, {"message_persist_loss_json": json.dumps(merged)}
+            )
+        except Exception as exc:  # noqa: BLE001 - bookkeeping must not mask the outcome
+            _log.warning(
+                "session %s: could not record %d lost message event(s) after its "
+                "terminal row was written by another teardown: %r",
+                session_id,
+                message_loss["lost"],
+                exc,
             )
     return final_status
 
