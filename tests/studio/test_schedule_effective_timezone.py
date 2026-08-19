@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._scheduler_claims import fire_with_claim
+
 pytest.importorskip("fastapi", reason="studio extra not installed")
 pytest.importorskip("croniter", reason="studio extra not installed")
 
@@ -214,7 +216,7 @@ async def test_an_actual_fire_stamps_the_row_too(temp_db_path, monkeypatch):
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
-        await engine._fire(schedule, "run-tz-001", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-tz-001", trigger_context={"scheduled": True})
 
     async with StateDB() as db:
         row = await db.get_schedule(sid)
@@ -251,7 +253,7 @@ async def test_a_fire_that_could_not_spawn_stamps_the_row_too(temp_db_path, monk
         "lionagi.studio.scheduler.subprocess.build_argv",
         side_effect=ValueError("action is not buildable"),
     ):
-        await engine._fire(schedule, "run-tz-002", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-tz-002", trigger_context={"scheduled": True})
 
     async with StateDB() as db:
         row = await db.get_schedule(sid)

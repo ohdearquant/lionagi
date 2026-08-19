@@ -127,6 +127,25 @@ def _default_reason_code_for_entity_status(entity_type: str, status: str) -> str
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 DEFAULT_DB_PATH = LIONAGI_HOME / "state.db"
 
+
+class NoCursorClaim:
+    """The type of :data:`NO_CURSOR_CLAIM`, so a claim is not typed as ``Any`` end to end."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "NO_CURSOR_CLAIM"
+
+
+# Distinguishes "this write claims no due instant" from "it claims one whose value is NULL".
+# Public because callers several layers up have to state which of the two they mean.
+NO_CURSOR_CLAIM = NoCursorClaim()
+
+# What a caller may claim a cursor column still holds: the value it read, including NULL, or
+# the sentinel for a write that claims nothing. Spelled out so a reader of any of the three
+# layers that forward it can tell a cursor value from a missing claim.
+CursorClaim = float | str | None | NoCursorClaim
+
 # Shape of the schema this code applies; ``_apply_schema`` stamps it into ``schema_meta.version`` on
 # every open, so the recorded version describes the database after migrations. Bump it whenever a
 # migration changes the shape a reader would see.
@@ -3718,13 +3737,34 @@ class StateDB:
     )
 
     async def update_schedule(
-        self, schedule_id: str, *, guard_cursor_forward: bool = False, **fields: Any
-    ) -> None:
+        self,
+        schedule_id: str,
+        *,
+        guard_cursor_forward: bool = False,
+        expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+        **fields: Any,
+    ) -> bool:
+        """Update one schedule; returns whether a row matched.
+
+        With *expect_next_fire_at* the update also claims that cursor value, so a caller that
+        reserves a due instant ahead of dispatching it learns whether it won the reservation.
+
+        *expect_github_cursor* claims the poll cursor the same way, which is what serializes the
+        events inside one poll batch. A batch's events all resolve to the same next_fire_at, so a
+        claim on that value matches twice and separates nothing; github_cursor advances per event
+        and is the only value in the row that distinguishes one event of a batch from the next.
+        """
         stmt, params = self._build_update_schedule_stmt(
-            schedule_id, fields, guard_cursor_forward=guard_cursor_forward
+            schedule_id,
+            fields,
+            guard_cursor_forward=guard_cursor_forward,
+            expect_next_fire_at=expect_next_fire_at,
+            expect_github_cursor=expect_github_cursor,
         )
         async with self._tx() as conn:
-            await conn.execute(stmt, params)
+            result = await conn.execute(stmt, params)
+        return result.rowcount > 0
 
     @classmethod
     def _build_update_schedule_stmt(
@@ -3733,6 +3773,8 @@ class StateDB:
         fields: dict[str, Any],
         *,
         guard_cursor_forward: bool = False,
+        expect_next_fire_at: CursorClaim = NO_CURSOR_CLAIM,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
     ):
         """Validate and build the ``UPDATE schedules`` statement and params, no transaction."""
         bad = set(fields) - cls._SCHEDULE_UPDATE_ALLOWED_FIELDS
@@ -3774,7 +3816,24 @@ class StateDB:
                 bind_params.append(bindparam(k, type_=JSON))
         params = dict(fields)
         params["_id"] = schedule_id
-        stmt = text(f"UPDATE schedules SET {', '.join(sets_parts)} WHERE id = :_id")  # noqa: S608
+        where = "id = :_id"
+        # One loop rather than a block per column, so a second claim cannot be given subtly
+        # different NULL handling from the first. Branching on the Python value rather than
+        # emitting a NULL-safe operator: sqlite spells one `IS`, postgres rejects `IS` with a
+        # bound parameter outright, and their shared spelling (`IS NOT DISTINCT FROM`) is too
+        # new to rely on. A schedule with no cursor is guarded on the same terms as one with it.
+        for column, expected, bind in (
+            ("next_fire_at", expect_next_fire_at, "_expect_nfa"),
+            ("github_cursor", expect_github_cursor, "_expect_ghc"),
+        ):
+            if expected is NO_CURSOR_CLAIM:
+                continue
+            if expected is None:
+                where += f" AND {column} IS NULL"
+            else:
+                where += f" AND {column} = :{bind}"
+                params[bind] = expected
+        stmt = text(f"UPDATE schedules SET {', '.join(sets_parts)} WHERE {where}")  # noqa: S608
         if bind_params:
             stmt = stmt.bindparams(*bind_params)
         return stmt, params
@@ -3843,15 +3902,33 @@ class StateDB:
         *,
         schedule_id: str,
         schedule_fields: dict[str, Any],
-    ) -> None:
-        """Insert one occurrence row and advance the schedule's cursor in a single transaction."""
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
+    ) -> bool:
+        """Insert one occurrence row and advance the schedule's cursor in a single transaction.
+
+        Returns False when a claim no longer matches, having written nothing. Pass
+        ``NO_CURSOR_CLAIM`` for a fire that does not stand for a due instant, such as a chain
+        child or a replacement for an occurrence already recorded. *expect_github_cursor* is the
+        per-event claim a poll batch needs, since every event in one batch shares a due instant.
+        """
         run_stmt, run_params = self._build_schedule_run_insert_stmt(run)
         # Engine-only path, so the monotonic cursor guard always applies: this value came from a
         # poll snapshot and must never walk an operator's move backwards.
         sched_stmt, sched_params = self._build_update_schedule_stmt(
-            schedule_id, schedule_fields, guard_cursor_forward=True
+            schedule_id,
+            schedule_fields,
+            guard_cursor_forward=True,
+            expect_next_fire_at=expect_next_fire_at,
+            expect_github_cursor=expect_github_cursor,
         )
         async with self._tx() as conn:
+            # The cursor claim goes FIRST so a lost race writes no occurrence at all. Selecting a
+            # due schedule and firing it are separate statements, so without this predicate two
+            # schedulers reading one due row both commit, each with its own run id.
+            result = await conn.execute(sched_stmt, sched_params)
+            if result.rowcount == 0:
+                return False
             await conn.execute(run_stmt, run_params)
             await self._initialize_managed_entity_in_tx(
                 conn,
@@ -3860,7 +3937,7 @@ class StateDB:
                 status=run_params["status"],
                 actor_id="create_schedule_run_and_advance",
             )
-            await conn.execute(sched_stmt, sched_params)
+        return True
 
     async def tombstone_and_replace_schedule_run(
         self,

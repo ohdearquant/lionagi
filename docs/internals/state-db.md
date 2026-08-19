@@ -405,6 +405,47 @@ owning schedule's cursor together, so a crash can only discard an occurrence
 that was never durably recorded. It can never leave the cursor pointing before
 one that was, which would make a restart re-fire it.
 
+The cursor advance also carries `expect_next_fire_at`, and it runs first: the
+occurrence is written only if the schedule still holds the cursor the caller
+selected on, and a caller that lost it gets `False` having written nothing.
+Selecting a due schedule and firing it are separate statements, and every
+admission gate above this one lives in the firing process's own memory, so
+without this predicate two schedulers reading one due row both commit, each
+with its own run id and each launching a child. The predicate is NULL-safe
+because a schedule with no cursor is a real state, and it is required rather
+than defaulted so that a new caller has to decide what it is claiming instead
+of silently claiming nothing. It bounds the race it names and no more: if the
+update carries no new `next_fire_at`, the cursor does not move and the next
+caller holds the same claim.
+
+The predicate is spelled as a branch on the Python value, `IS NULL` for a claim
+of nothing and `= :param` otherwise, rather than as a single NULL-safe operator.
+`IS` accepts a bound parameter in sqlite and is a syntax error in postgres, and
+their common spelling, `IS NOT DISTINCT FROM`, is newer than the sqlite versions
+this project still runs against. The dual-backend tests skip without `asyncpg`
+installed, so the shape of the generated statement is asserted directly.
+
+Not every fire claims a due instant. A chain child runs because its parent
+finished, a manual trigger runs because a person asked, and a startup re-fire
+replaces an occurrence whose cursor already moved; those pass `NO_CURSOR_CLAIM`
+and are guarded by their own mechanisms, the CAS-tombstone of the orphan row in
+the re-fire's case. A `github_poll` batch is one due instant however many events
+it carries: the first dispatched event claims it, and the rest are separated by a
+claim on `github_cursor` instead. That second claim is not a convenience. Every
+event of one batch resolves to the same `next_fire_at`, so claiming that value
+would either refuse every event after the first or, since the value does not
+change between them, match twice and separate nothing. `github_cursor` advances
+per event, in the same transaction as that event's occurrence, and is the only
+value in the row that tells one event of a batch from the next. Without the claim
+the column is written but never read, which leaves a window: a second scheduler
+polling after this one commits event 1 reads the advanced cursor, starts its poll
+at event 2, and dispatches it while this one has not reached it yet. The claim
+follows what was written, not how far the poll has read, because a filtered-out
+event moves the read position without writing anything. Missed-fire recovery reserves the cursor itself before
+dispatching, so its reserve is where it claims the instant, and the fire that
+follows claims the value the reserve wrote rather than the pre-reserve value its
+local snapshot still holds.
+
 `_build_update_schedule_stmt` is the single choke point for both the field
 allowlist and the SQL shape, shared by `update_schedule` and by the folded-in
 update inside `create_schedule_run_and_advance`, so the two write paths cannot
