@@ -110,9 +110,11 @@ class Structure:
         if self.is_dict_mode:
             return self._base_dict
         if self._request_cls is None:
+            from lionagi.adapters.spec_adapters import PydanticSpecAdapter
+
             exclude = {"action_responses"} if self._actions else None
-            self._request_cls = self._operable.create_model(
-                adapter="pydantic",
+            self._request_cls = PydanticSpecAdapter.materialize(
+                self._operable,
                 model_name=f"{self._name}Request",
                 exclude=exclude,
                 base_type=self._base,
@@ -124,8 +126,10 @@ class Structure:
         if self.is_dict_mode:
             return self._base_dict
         if self._response_cls is None:
-            self._response_cls = self._operable.create_model(
-                adapter="pydantic",
+            from lionagi.adapters.spec_adapters import PydanticSpecAdapter
+
+            self._response_cls = PydanticSpecAdapter.materialize(
+                self._operable,
                 model_name=f"{self._name}Response",
                 base_type=self.request_schema(),
             )
@@ -133,9 +137,9 @@ class Structure:
 
     def to_format(self, parsed: BaseModel | dict) -> BaseModel | dict:
         """Extract clean base from a parsed response."""
-        if self.is_dict_mode:
+        if (base_dict := self._base_dict) is not None:
             if isinstance(parsed, dict):
-                return {k: parsed.get(k) for k in self._base_dict}
+                return {k: parsed.get(k) for k in base_dict}
             return parsed
         if self._base is None:
             return parsed
@@ -154,15 +158,15 @@ class Structure:
     # Private
 
     def _build_operable(self, user_specs: list[Spec] | tuple[Spec, ...]) -> Operable:
-        from lionagi.operations.fields import get_default_field
+        from lionagi.operations.fields import get_default_spec
 
         all_specs: list[Spec] = []
         if self._reason:
-            all_specs.append(get_default_field("reason").to_spec())
+            all_specs.append(get_default_spec("reason"))
         if self._actions:
-            all_specs.append(get_default_field("action_required").to_spec())
-            all_specs.append(get_default_field("action_requests").to_spec())
-            all_specs.append(get_default_field("action_responses").to_spec())
+            all_specs.append(get_default_spec("action_required"))
+            all_specs.append(get_default_spec("action_requests"))
+            all_specs.append(get_default_spec("action_responses"))
         all_specs.extend(user_specs)
         return Operable(tuple(all_specs), name=self._name)
 

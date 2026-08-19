@@ -37,6 +37,14 @@ def _roles(*names: str) -> tuple[Session, dict[str, Branch]]:
     return session, roles
 
 
+def test_assignment_field_uses_neutral_spec_authority():
+    from lionagi.ln.types import Spec
+    from lionagi.orchestration.patterns import _ASSIGNMENTS_FIELD
+
+    assert isinstance(_ASSIGNMENTS_FIELD, Spec)
+    assert _ASSIGNMENTS_FIELD == Spec(list[TaskAssignment], name="assignments")
+
+
 class TestRoleNodeBuilder:
     def test_maps_assignee_to_branch(self):
         session, roles = _roles("researcher")

@@ -4,16 +4,21 @@
 """Tests for lionagi.operations.fields — covering Instruct.handle, ActionRequestModel.create,
 and _get_default_fields listable/nullable chaining."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import BaseModel
 
+from lionagi.ln.types import Undefined
 from lionagi.operations.fields import (
     ActionRequestModel,
     ActionResponseModel,
     Instruct,
     Reason,
+    _validate_action_required_field,
     _validate_listable_field,
     get_default_field,
+    get_default_spec,
 )
 
 # Instruct.handle — lines 119-137
@@ -161,6 +166,10 @@ class TestActionRequestModelCreate:
 
 
 class TestGetDefaultFieldChaining:
+    def test_legacy_default_field_factory_warns_with_neutral_replacement(self):
+        with pytest.warns(DeprecationWarning, match="get_default_spec"):
+            get_default_field("reason")
+
     def test_unknown_kind_raises_value_error(self):
         """Unknown kind raises ValueError."""
         from lionagi.operations.fields import _get_default_fields
@@ -214,6 +223,144 @@ class TestGetDefaultFieldChaining:
         fm = _get_default_fields("reason", nullable=False, default="fallback")
         assert fm.extract_metadata("default") == "fallback"
 
+    @pytest.mark.parametrize(
+        (
+            "kind",
+            "kwargs",
+            "expected_base",
+            "expected_name",
+            "expected_nullable",
+            "expected_listable",
+            "expected_default",
+            "expected_validator",
+        ),
+        [
+            ("instruct", {}, Instruct, "instruct_model", True, False, None, Undefined),
+            (
+                "action_required",
+                {},
+                bool,
+                "action_required",
+                True,
+                False,
+                None,
+                _validate_action_required_field,
+            ),
+            (
+                "action_requests",
+                {},
+                ActionRequestModel,
+                "action_requests",
+                True,
+                True,
+                None,
+                _validate_listable_field,
+            ),
+            (
+                "action_responses",
+                {},
+                ActionResponseModel,
+                "action_responses",
+                True,
+                True,
+                None,
+                _validate_listable_field,
+            ),
+            ("reason", {}, Reason, "reason", True, False, None, Undefined),
+            (
+                "reason",
+                {"nullable": False},
+                Reason,
+                "reason",
+                False,
+                False,
+                Undefined,
+                Undefined,
+            ),
+            (
+                "reason",
+                {"listable": True},
+                list[Reason],
+                "reason",
+                True,
+                True,
+                None,
+                _validate_listable_field,
+            ),
+            (
+                "action_requests",
+                {"listable": False},
+                ActionRequestModel,
+                "action_requests",
+                True,
+                False,
+                None,
+                Undefined,
+            ),
+            (
+                "action_requests",
+                {"listable": True},
+                ActionRequestModel,
+                "action_requests",
+                True,
+                False,
+                None,
+                Undefined,
+            ),
+            (
+                "action_required",
+                {"listable": True, "nullable": False},
+                list[bool],
+                "action_required",
+                False,
+                True,
+                list,
+                _validate_listable_field,
+            ),
+            (
+                "reason",
+                {"default": "fallback", "nullable": False},
+                Reason,
+                "reason",
+                False,
+                False,
+                "fallback",
+                Undefined,
+            ),
+        ],
+    )
+    def test_canonical_default_spec_matches_characterized_legacy_behavior(
+        self,
+        kind,
+        kwargs,
+        expected_base,
+        expected_name,
+        expected_nullable,
+        expected_listable,
+        expected_default,
+        expected_validator,
+    ):
+        actual = get_default_spec(kind, **kwargs)
+
+        assert actual.base_type == expected_base
+        assert actual.name == expected_name
+        assert actual.is_nullable is expected_nullable
+        assert actual.is_listable is expected_listable
+        assert actual.default is expected_default or actual.default == expected_default
+        assert actual.get("validator") is expected_validator
+
+    def test_action_required_listable_materializes_with_effective_legacy_validator(self):
+        from lionagi.adapters.spec_adapters import PydanticSpecAdapter
+        from lionagi.ln.types import Operable
+
+        spec = get_default_spec("action_required", nullable=False, listable=True)
+        model_type = PydanticSpecAdapter.materialize(
+            Operable((spec,)),
+            model_name="ListableActionRequired",
+        )
+
+        assert model_type(action_required=[True]).action_required == [True]
+
     def test_get_default_field_returns_fresh_declarations(self):
         """Mutable defaults are never retained by a process-global field cache."""
         fm1 = get_default_field("reason")
@@ -244,6 +391,26 @@ class TestGetDefaultFieldChaining:
 
         assert first is not second
         assert first.extract_metadata("validator") is second.extract_metadata("validator")
+
+    @pytest.mark.parametrize(
+        "name",
+        (
+            "ACTION_REQUESTS_FIELD",
+            "ACTION_RESPONSES_FIELD",
+            "ACTION_REQUIRED_FIELD",
+            "INSTRUCT_FIELD",
+            "LIST_INSTRUCT_FIELD_MODEL",
+            "REASON_FIELD",
+        ),
+    )
+    def test_legacy_field_constants_warn_with_caller_location(self, monkeypatch, name):
+        import lionagi.operations.fields as fields
+
+        monkeypatch.delitem(fields.__dict__, name, raising=False)
+        with pytest.warns(DeprecationWarning, match="get_default_spec") as recorded:
+            assert getattr(fields, name) is not None
+
+        assert Path(recorded[0].filename).resolve() == Path(__file__).resolve()
 
     def test_lazy_field_constants_preserve_identity(self):
         import lionagi.operations.fields as fields

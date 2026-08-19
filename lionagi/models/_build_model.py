@@ -1,16 +1,14 @@
 # Copyright (c) 2023-2026, HaiyangLi <quantocean.li at gmail dot com>
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build a Pydantic model from field sources."""
+"""Compatibility wrapper for legacy FieldModel-based Pydantic construction."""
 
 from __future__ import annotations
 
-import inspect
-
-from pydantic import BaseModel, ConfigDict, create_model
+from pydantic import BaseModel, ConfigDict
 from pydantic.fields import FieldInfo
 
-from lionagi.ln import copy
+from lionagi.adapters.spec_adapters._pydantic_builder import _build_pydantic_model
 
 from .field_model import FieldModel
 
@@ -31,32 +29,10 @@ def build_model_type(
     frozen: bool = False,
     validators: dict | None = None,
 ) -> type[BaseModel]:
-    # Keep this low-level constructor uncached: FieldInfo/validator inputs can be mutable.
-    # Field precedence (later wins): parameter_fields → base_type → field_models.
-    if base_type is not None and not (
-        inspect.isclass(base_type) and issubclass(base_type, BaseModel)
-    ):
-        raise ValueError(f"base_type must be BaseModel subclass, got {base_type}")
-
-    exclude_fields = exclude_fields or []
+    """Build through the target-owned builder while retaining FieldModel inputs."""
     field_descriptions = field_descriptions or {}
-    fields: dict[str, FieldInfo] = {}
+    override_fields: dict[str, FieldInfo] = {}
     collected_validators: dict = dict(validators) if validators else {}
-
-    if parameter_fields:
-        for fname, field_info in parameter_fields.items():
-            if not isinstance(field_info, FieldInfo):
-                raise ValueError(
-                    f"parameter_fields must contain FieldInfo instances, "
-                    f"got {type(field_info)} for field '{fname}'"
-                )
-        fields.update(copy(parameter_fields))
-
-    if base_type is not None:
-        base_fields = copy(base_type.model_fields)
-        if exclude_fields:
-            base_fields = {k: v for k, v in base_fields.items() if k not in exclude_fields}
-        fields.update(base_fields)
 
     if field_models:
         fms = [field_models] if isinstance(field_models, FieldModel) else field_models
@@ -72,31 +48,19 @@ def build_model_type(
         for fm in fms:
             field = fm.create_field()
             field.annotation = fm.annotation
-            fields[fm.name] = field
+            override_fields[fm.name] = field
             if fm.field_validator:
                 collected_validators.update(fm.field_validator)
 
-    model_name = name
-    if model_name is None and base_type is not None:
-        class_name = getattr(base_type, "class_name", None)
-        model_name = class_name() if callable(class_name) else (class_name or base_type.__name__)
-    if model_name is None:
-        model_name = "GeneratedModel"
-
-    use_base = None
-    if inherit_base and base_type is not None:
-        if not any(f in exclude_fields for f in base_type.model_fields):
-            use_base = base_type
-
-    use_fields = {k: (v.annotation, v) for k, v in fields.items()}
-    model = create_model(
-        model_name,
-        __base__=use_base,
-        __config__=config_dict or None,
-        __doc__=doc or None,
-        __validators__=collected_validators or None,
-        **use_fields,
+    return _build_pydantic_model(
+        name=name,
+        parameter_fields=parameter_fields,
+        override_fields=override_fields,
+        base_type=base_type,
+        exclude_fields=exclude_fields,
+        inherit_base=inherit_base,
+        config_dict=config_dict,
+        doc=doc,
+        frozen=frozen,
+        validators=collected_validators,
     )
-    if frozen:
-        model.model_config["frozen"] = True
-    return model

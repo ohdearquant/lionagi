@@ -6,11 +6,15 @@ from typing import Any
 import pytest
 from pydantic.fields import FieldInfo
 
-from lionagi.ln.types import Undefined, Unset
+from lionagi.ln.types import Meta, Undefined, Unset
 from lionagi.models import FieldModel
 
 
 class TestFieldModel:
+    def test_construction_warns_with_neutral_replacement(self):
+        with pytest.warns(DeprecationWarning, match="use Spec"):
+            FieldModel(int, name="value")
+
     def test_basic_field_creation(self):
         field = FieldModel(
             name="test_field",
@@ -70,6 +74,35 @@ class TestFieldModel:
         validator_dict = field.field_validator
         assert isinstance(validator_dict, dict)
         assert "test_field_validator" in validator_dict
+
+    def test_compatibility_projection_preserves_last_validator_wins(self):
+        from lionagi.models._build_model import build_model_type
+
+        def add_one(value: int) -> int:
+            return value + 1
+
+        def double(value: int) -> int:
+            return value * 2
+
+        field = FieldModel(int, name="value", validator=add_one).with_validator(double)
+
+        model_type = build_model_type(name="LegacyValidatorModel", field_models=[field])
+
+        assert model_type(value=3).value == 6
+        assert field.to_spec().get("validator") is double
+
+    def test_compatibility_projection_preserves_last_ordinary_metadata_value(self):
+        field = FieldModel(
+            int,
+            metadata=(
+                Meta("name", "value"),
+                Meta("description", "first"),
+                Meta("description", "last"),
+            ),
+        )
+
+        assert field.create_field().description == "last"
+        assert field.to_spec().get("description") == "last"
 
     def test_complex_field_configuration(self):
         field = FieldModel(

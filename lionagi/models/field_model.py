@@ -10,29 +10,8 @@ from typing import Any, ClassVar, cast
 from typing_extensions import Self, override
 
 from .._errors import ValidationError
-from ..ln._lazy_init import LazyInit
 from ..ln.types import MaybeSentinel, Meta, ModelConfig, Params, Spec, Undefined, Unset
 from ..ln.types._annotation import _materialize_annotation
-
-# Cache of valid Pydantic Field parameters
-_lazy_field_params = LazyInit()
-_PYDANTIC_FIELD_PARAMS: set[str] = set()
-
-
-def _init_pydantic_field_params() -> None:
-    global _PYDANTIC_FIELD_PARAMS
-    import inspect
-
-    from pydantic import Field as PydanticField
-
-    _PYDANTIC_FIELD_PARAMS = set(inspect.signature(PydanticField).parameters.keys())
-    _PYDANTIC_FIELD_PARAMS.discard("kwargs")
-
-
-def _get_pydantic_field_params() -> set[str]:
-    _lazy_field_params.ensure(_init_pydantic_field_params)
-    return _PYDANTIC_FIELD_PARAMS
-
 
 METADATA_LIMIT = int(os.environ.get("LIONAGI_FIELD_META_LIMIT", "10"))
 
@@ -51,6 +30,13 @@ class FieldModel(Params):
         base_type: MaybeSentinel[type[Any]] | None = None,
         **kwargs: Any,
     ) -> None:
+        import warnings
+
+        warnings.warn(
+            "FieldModel is deprecated as a declaration authority; use Spec instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if base_type is not None:
             kwargs["base_type"] = base_type
         converted = self._convert_kwargs_to_params(**kwargs)
@@ -235,44 +221,10 @@ class FieldModel(Params):
         return new_instance
 
     def create_field(self) -> Any:
-        """Create a Pydantic FieldInfo from this template."""
-        from pydantic import Field as PydanticField
+        """Create a Pydantic FieldInfo through the neutral declaration adapter."""
+        from lionagi.adapters.spec_adapters import PydanticSpecAdapter
 
-        pydantic_field_params = _get_pydantic_field_params()
-        field_kwargs = {}
-
-        if not self._is_sentinel(self.metadata):
-            for meta in self.metadata:
-                if meta.key == "default":
-                    if callable(meta.value):
-                        field_kwargs["default_factory"] = meta.value
-                    else:
-                        field_kwargs["default"] = meta.value
-                elif meta.key == "validator":
-                    continue
-                elif meta.key in pydantic_field_params:
-                    field_kwargs[meta.key] = meta.value
-                elif meta.key in {"nullable", "listable"}:
-                    pass
-                else:
-                    # Skip type objects -- unserializable in JSON schema
-                    if isinstance(meta.value, type):
-                        continue
-                    if "json_schema_extra" not in field_kwargs:
-                        field_kwargs["json_schema_extra"] = {}
-                    field_kwargs["json_schema_extra"][meta.key] = meta.value
-
-        if (
-            self.is_nullable
-            and "default" not in field_kwargs
-            and "default_factory" not in field_kwargs
-        ):
-            field_kwargs["default"] = None
-
-        field_info = PydanticField(**field_kwargs)
-        field_info.annotation = self.annotation
-
-        return field_info
+        return PydanticSpecAdapter.create_field(self.to_spec())
 
     # ---- materialization -------------------------------------------------- #
 
@@ -371,21 +323,10 @@ class FieldModel(Params):
 
     @property
     def field_validator(self) -> dict[str, Any] | None:
-        if not self.has_validator():
-            return None
+        """Build compatibility validators through the target-owned adapter."""
+        from lionagi.adapters.spec_adapters import PydanticSpecAdapter
 
-        from pydantic import field_validator
-
-        validators = {}
-        field_name = self.extract_metadata("name") or "field"
-
-        if not self._is_sentinel(self.metadata):
-            for meta in self.metadata:
-                if meta.key == "validator":
-                    validator_name = f"{field_name}_validator"
-                    validators[validator_name] = field_validator(field_name)(meta.value)
-
-        return validators if validators else None
+        return PydanticSpecAdapter.create_validator(self.to_spec())
 
     @property
     def annotation(self) -> type[Any]:
@@ -402,10 +343,21 @@ class FieldModel(Params):
         return t_
 
     def to_spec(self) -> Spec:
-        # Metadata is forwarded as a Meta tuple, not **kwargs — see
+        # Metadata crosses as a normalized Meta tuple, not **kwargs — see
         # docs/internals/support-libs.md#modelsfield_model-fieldmodelto_spec
         existing = () if self._is_sentinel(self.metadata) else self.metadata
-        metas = [m for m in existing if m.key not in ("nullable", "listable")]
+        # FieldModel historically accepted repeated metadata. Its Pydantic
+        # materializer used the last value for ordinary keys and validators,
+        # while the owning field name came from the first declaration. Collapse
+        # that legacy surface here instead of weakening Spec's unique-key rule.
+        normalized: dict[str, Meta] = {}
+        for meta in existing:
+            if meta.key in ("nullable", "listable"):
+                continue
+            if meta.key == "name" and meta.key in normalized:
+                continue
+            normalized[meta.key] = meta
+        metas = list(normalized.values())
         metas.append(Meta("nullable", self.is_nullable))
         metas.append(Meta("listable", self.is_listable))
 

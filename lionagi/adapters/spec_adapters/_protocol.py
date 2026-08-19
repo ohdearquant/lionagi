@@ -19,6 +19,15 @@ class SpecAdapter(ABC):
     """Base adapter for converting Spec to framework-specific formats."""
 
     @classmethod
+    def materialize(cls, declaration: Operable, /, **options: Any) -> Any:
+        """Materialize a neutral declaration through an existing adapter implementation.
+
+        This additive seam lets new callers depend on one target-neutral verb while
+        compatibility subclasses continue to implement ``create_model``.
+        """
+        return cls.create_model(declaration, **options)
+
+    @classmethod
     @abstractmethod
     def create_field(cls, spec: Spec) -> Any:
         """Convert Spec to framework-specific field definition."""

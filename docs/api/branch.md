@@ -96,7 +96,7 @@ and streaming persistence. Registered tools are only exposed and invoked when `a
 | `tools` | `ToolRef` | `None` | Subset of registered tools to expose |
 | `invoke_actions` | `bool` | `True` | Auto-invoke tool calls returned by model |
 | `action_strategy` | `"sequential" \| "concurrent"` | `"concurrent"` | Tool execution order |
-| `field_models` | `list[FieldModel]` | `None` | Dynamic field extensions |
+| `field_models` | `list[Spec \| FieldModel]` | `None` | Neutral dynamic field declarations; `FieldModel` is compatibility-only. |
 | `stream_persist` | `bool` | `False` | Write JSONL chunks live (CLI endpoints) |
 | `persist_dir` | `str \| None` | `None` | Directory for JSONL chunks |
 | `middle` | `Middle \| None` | `None` | Override default routing |

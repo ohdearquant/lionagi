@@ -64,7 +64,13 @@ def attempt_extract(text: str, capabilities: Operable) -> tuple[list[Any], list[
                 )
             )
             continue
-        model = capabilities.create_model(include=keys)
+        from lionagi.adapters.spec_adapters import PydanticSpecAdapter
+
+        model = PydanticSpecAdapter.materialize(
+            capabilities,
+            model_name=capabilities.name or "Capabilities",
+            include=keys,
+        )
         try:
             bundles.append(model.model_validate(block))
         except Exception as e:

@@ -1,8 +1,12 @@
 """End-to-end tests for PydanticSpecAdapter: Spec → FieldInfo → Model → Validation."""
 
 import math
+import subprocess
+import sys
+import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Barrier
 from typing import Any
 
@@ -10,18 +14,136 @@ import pytest
 from pydantic import BaseModel, Field, ValidationError
 
 from lionagi.adapters.spec_adapters import PydanticSpecAdapter
+from lionagi.adapters.spec_adapters._protocol import SpecAdapter
 from lionagi.ln.types import Operable, Spec, Undefined, Unset
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _assert_fresh_interpreter_succeeds(source: str) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(source)],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_importing_pydantic_adapter_does_not_load_legacy_schema_modules():
+    _assert_fresh_interpreter_succeeds(
+        """
+        import sys
+        from lionagi.adapters.spec_adapters import PydanticSpecAdapter
+
+        leaked = sorted(
+            name for name in sys.modules
+            if name == "lionagi.models" or name.startswith("lionagi.models.")
+        )
+        assert not leaked, leaked
+        assert PydanticSpecAdapter is not None
+        """
+    )
+
+
+def test_materializing_pydantic_adapter_does_not_load_legacy_schema_modules():
+    _assert_fresh_interpreter_succeeds(
+        """
+        import sys
+        from lionagi.adapters.spec_adapters import PydanticSpecAdapter
+        from lionagi.ln.types import Operable, Spec
+
+        declaration = Operable((Spec(int, name="value"),))
+        model_type = PydanticSpecAdapter.materialize(
+            declaration,
+            model_name="FreshModel",
+        )
+        assert model_type(value=3).value == 3
+
+        leaked = sorted(
+            name for name in sys.modules
+            if name == "lionagi.models" or name.startswith("lionagi.models.")
+        )
+        assert not leaked, leaked
+        """
+    )
 
 
 class TestProtocolConformance:
     def test_conforms_to_protocol(self):
         assert hasattr(PydanticSpecAdapter, "create_field")
+        assert hasattr(PydanticSpecAdapter, "materialize")
         assert hasattr(PydanticSpecAdapter, "create_model")
         assert hasattr(PydanticSpecAdapter, "create_validator")
         assert hasattr(PydanticSpecAdapter, "parse_json")
         assert hasattr(PydanticSpecAdapter, "fuzzy_match_fields")
         assert hasattr(PydanticSpecAdapter, "validate_response")
         assert hasattr(PydanticSpecAdapter, "update_model")
+
+    def test_create_model_delegates_to_canonical_materialize(self):
+        calls = []
+        expected = object()
+
+        class RecordingAdapter(PydanticSpecAdapter):
+            @classmethod
+            def materialize(cls, declaration, /, **options):
+                calls.append((declaration, options))
+                return expected
+
+        declaration = Operable((Spec(int, name="value"),))
+
+        with pytest.warns(DeprecationWarning, match="use materialize"):
+            result = RecordingAdapter.create_model(
+                declaration,
+                "CompatibilityModel",
+                include={"value"},
+                doc="compatibility facade",
+            )
+
+        assert result is expected
+        assert calls == [
+            (
+                declaration,
+                {
+                    "model_name": "CompatibilityModel",
+                    "include": {"value"},
+                    "exclude": None,
+                    "base_type": None,
+                    "doc": "compatibility facade",
+                },
+            )
+        ]
+
+    def test_additive_materialize_supports_legacy_adapter_subclasses(self):
+        expected = object()
+
+        class LegacyAdapter(SpecAdapter):
+            @classmethod
+            def create_field(cls, spec):
+                return spec
+
+            @classmethod
+            def create_model(cls, operable, model_name, **kwargs):
+                assert model_name == "LegacyModel"
+                assert not kwargs
+                return expected
+
+            @classmethod
+            def validate_model(cls, model_cls, data):
+                return data
+
+            @classmethod
+            def dump_model(cls, instance):
+                return instance
+
+            @classmethod
+            def fuzzy_match_fields(cls, data, model_cls, strict=False):
+                return data
+
+        declaration = Operable((Spec(int, name="value"),))
+
+        assert LegacyAdapter.materialize(declaration, model_name="LegacyModel") is expected
 
 
 class TestCreateField:
@@ -58,6 +180,21 @@ class TestCreateField:
         field_info = PydanticSpecAdapter.create_field(spec)
 
         assert field_info.annotation == list[str]
+
+    def test_declaration_name_is_not_emitted_as_json_schema_extra(self):
+        spec = Spec(str, name="username", description="Public user name")
+
+        field_info = PydanticSpecAdapter.create_field(spec)
+
+        assert field_info.description == "Public user name"
+        assert not field_info.json_schema_extra or "name" not in field_info.json_schema_extra
+
+    def test_already_list_annotation_is_not_wrapped_twice(self):
+        spec = Spec(list[int], name="values", listable=True)
+
+        field_info = PydanticSpecAdapter.create_field(spec)
+
+        assert field_info.annotation == list[int]
 
 
 class TestCreateModel:
@@ -150,6 +287,67 @@ class TestCreateModel:
         assert "age" in UserModel.model_fields
         assert "password" not in UserModel.model_fields
 
+    def test_validator_list_runs_once_each_in_declaration_order(self):
+        calls = []
+
+        def add_one(value):
+            calls.append(("add_one", value))
+            return value + 1
+
+        def double(value):
+            calls.append(("double", value))
+            return value * 2
+
+        declaration = Operable((Spec(int, name="value", validator=[add_one, double]),))
+
+        Model = PydanticSpecAdapter.create_model(
+            declaration,
+            "OrderedValidatorModel",
+        )
+        instance = Model(value=3)
+
+        assert instance.value == 8
+        assert calls == [("add_one", 3), ("double", 4)]
+
+    def test_base_field_wins_on_name_collision(self):
+        class Base(BaseModel):
+            value: int = 7
+
+        declaration = Operable((Spec(str, name="value", default="declaration"),))
+
+        Model = PydanticSpecAdapter.create_model(
+            declaration,
+            "BaseWinsModel",
+            base_type=Base,
+        )
+
+        assert issubclass(Model, Base)
+        assert Model.model_fields["value"].annotation is int
+        assert Model().value == 7
+
+    def test_declaration_validator_remains_attached_to_base_collision(self):
+        class Base(BaseModel):
+            value: int = 7
+
+        def require_nonnegative(value: int) -> int:
+            if value < 0:
+                raise ValueError("value must be nonnegative")
+            return value
+
+        declaration = Operable(
+            (Spec(str, name="value", default="declaration", validator=require_nonnegative),)
+        )
+
+        Model = PydanticSpecAdapter.materialize(
+            declaration,
+            model_name="BaseValidatorWinsModel",
+            base_type=Base,
+        )
+
+        assert Model(value=1).value == 1
+        with pytest.raises(ValidationError, match="value must be nonnegative"):
+            Model(value=-1)
+
 
 class TestEndToEnd:
     def test_spec_to_model_to_instance(self):
@@ -184,7 +382,8 @@ class TestEndToEnd:
         operable = Operable(specs, name="Player")
 
         # Use Operable's create_model method
-        PlayerModel = operable.create_model(adapter="pydantic", model_name="PlayerModel")
+        with pytest.warns(DeprecationWarning, match="SpecAdapter.materialize"):
+            PlayerModel = operable.create_model(adapter="pydantic", model_name="PlayerModel")
 
         assert issubclass(PlayerModel, BaseModel)
         player = PlayerModel(username="player1")
@@ -512,12 +711,12 @@ class TestEdgeCases:
         assert tuple(renamed_model.model_fields) == ("renamed",)
 
     def test_model_cache_constructs_one_class_under_concurrency(self, monkeypatch):
-        from lionagi.models import _build_model
+        from lionagi.adapters.spec_adapters import _pydantic_builder
 
         class CacheBase(BaseModel):
             pass
 
-        original = _build_model.build_model_type
+        original = _pydantic_builder._build_pydantic_model
         build_calls = []
 
         def slow_build(*args, **kwargs):
@@ -525,7 +724,7 @@ class TestEdgeCases:
             time.sleep(0.05)
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(_build_model, "build_model_type", slow_build)
+        monkeypatch.setattr(_pydantic_builder, "_build_pydantic_model", slow_build)
         fields = Operable((Spec(int, name="value"),))
         barrier = Barrier(2)
 

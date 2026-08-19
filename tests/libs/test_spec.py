@@ -1,6 +1,7 @@
 """Tests for lionagi/ln/types/spec.py"""
 
 import dataclasses
+from typing import get_args
 
 import pytest
 
@@ -157,6 +158,12 @@ class TestSpec:
         """Test annotation property with both nullable and listable."""
         spec = Spec(int, name="field", nullable=True, listable=True)
         assert spec.annotation == list[int] | None
+
+    def test_already_list_annotation_is_not_wrapped_twice(self):
+        spec = Spec(list[int], name="field", listable=True)
+
+        assert spec.annotation == list[int]
+        assert get_args(spec.annotated())[0] == list[int]
 
     def test_getitem(self):
         """Test __getitem__ access."""

@@ -59,8 +59,9 @@ class Operative:
         if self._request_model_cls:
             return self._request_model_cls
 
-        self._request_model_cls = self.operable.create_model(
-            adapter=self.adapter,
+        adapter_cls = self._get_adapter()
+        self._request_model_cls = adapter_cls.materialize(
+            self.operable,
             model_name=f"{self.name}Request",
             base_type=self.base_type,
             exclude=self.request_exclude,
@@ -75,8 +76,9 @@ class Operative:
         if not self._request_model_cls:
             self.create_request_model()
 
-        self._response_model_cls = self.operable.create_model(
-            adapter=self.adapter,
+        adapter_cls = self._get_adapter()
+        self._response_model_cls = adapter_cls.materialize(
+            self.operable,
             model_name=f"{self.name}Response",
             base_type=self._request_model_cls,
         )

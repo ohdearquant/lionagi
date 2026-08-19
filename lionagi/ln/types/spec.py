@@ -6,7 +6,7 @@ import contextlib
 from collections.abc import Callable, Collection, Hashable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, get_origin
 
 from .._structural import _structural_hash, _structural_key
 from ._annotation import _materialize_annotation
@@ -248,7 +248,7 @@ class Spec:
         if is_sentinel(self.base_type):
             return Any
         t_: Any = self.base_type
-        if self.is_listable:
+        if self.is_listable and get_origin(t_) is not list:
             t_ = list[t_]
         if self.is_nullable:
             return t_ | None

@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- `Spec` and ordered `Operable` are now the only production schema-declaration authority.
+  `PydanticSpecAdapter.materialize()` converts declarations directly to Pydantic fields and model
+  classes without routing through `FieldModel` or the legacy model builder. ReAct, operation
+  schemas, capability emission, and orchestration defaults use neutral declarations and explicit
+  target materialization. Declaration `name` is consumed as field identity instead of leaking into
+  JSON Schema extras; validator lists execute once each in declaration order; already-list
+  annotations are not wrapped twice. `FieldModel`, `OperableModel`, `get_default_field()`,
+  `Operable.create_model()`, and `PydanticSpecAdapter.create_model()` continue to project through
+  that authority during their compatibility window.
 - Mutable `DataClass` contexts and every current `HashableModel` descendant now reject `hash()`,
   set membership, and dictionary-key admission instead of exposing a content hash that changed
   after assignment. `DataClass`'s compatibility equality fallback compares exact concrete type
@@ -111,6 +120,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   upgrade whose additive column reconciliation did not complete.
 
 ### Deprecated
+
+- `FieldModel`, `OperableModel`, `get_default_field()`, the six legacy operation-field constants,
+  `Operable.create_model()`, and `PydanticSpecAdapter.create_model()` now warn with their neutral
+  replacements. Removal is allowed no earlier than the minor following the first published release
+  containing those warnings; an `[Unreleased]` merge does not start that window. The existing
+  `field_models=` parameter remains an input-container name for `Spec | FieldModel` values and is
+  not deprecated until an additive replacement is published.
 
 - `--resume-on-timeout` on `li o fanout` and `li o flow`. The flag is accepted
   and listed in the help output of both commands but neither ever read it, so

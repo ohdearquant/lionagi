@@ -195,20 +195,20 @@ result = await branch.operate(
 # return value → ReportModel (parsed from accumulated text)
 ```
 
-## `FieldModel` Dynamic Extensions
+## `Spec` Dynamic Extensions
 
 Add fields to any `operate()` call without modifying your base schema:
 
 ```python
-from lionagi import FieldModel
+from lionagi import Spec
 
 result = await branch.operate(
     instruction="Analyze this article",
     response_format=ArticleAnalysis,
     field_models=[
-        FieldModel(
+        Spec(
+            float,
             name="confidence",
-            annotation=float,
             default=0.0,
             description="Confidence score 0–1",
         ),

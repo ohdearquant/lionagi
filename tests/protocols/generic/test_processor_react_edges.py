@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from typing import ClassVar
 
+import pytest
+
 from lionagi.protocols.generic.event import Event, EventStatus
 from lionagi.protocols.generic.processor import Executor, Processor
 
@@ -378,3 +380,139 @@ class TestHandleFieldModels:
         fm = FieldModel(name="existing")
         fms = handle_field_models([fm], Extra)
         assert len(fms) == 2
+
+    def test_generated_intermediate_field_is_a_neutral_spec(self):
+        from pydantic import BaseModel
+
+        from lionagi.ln.types import Spec
+        from lionagi.operations.ReAct.ReAct import handle_field_models
+
+        class Intermediate(BaseModel):
+            value: str
+
+        generated = handle_field_models(None, Intermediate)[0]
+
+        assert isinstance(generated, Spec)
+        assert generated.name == "intermediate_response_options"
+
+    def test_intermediate_generation_does_not_mutate_the_callers_list(self):
+        from pydantic import BaseModel
+
+        from lionagi.models.field_model import FieldModel
+        from lionagi.operations.ReAct.ReAct import handle_field_models
+
+        class Intermediate(BaseModel):
+            value: str
+
+        existing = FieldModel(str, name="existing")
+        caller_fields = [existing]
+
+        result = handle_field_models(caller_fields, Intermediate)
+
+        assert caller_fields == [existing]
+        assert result is not caller_fields
+        assert result[0] is existing
+
+    def test_intermediate_inner_model_preserves_declaration_order_and_requiredness(self):
+        from pydantic import BaseModel
+
+        from lionagi.operations.ReAct.ReAct import handle_field_models
+
+        class FirstIntermediate(BaseModel):
+            first: str
+
+        class SecondIntermediate(BaseModel):
+            second: int
+
+        generated = handle_field_models(
+            None,
+            [FirstIntermediate, SecondIntermediate],
+        )[0]
+        inner_model = generated.base_type
+
+        assert tuple(inner_model.model_fields) == (
+            "firstintermediate",
+            "secondintermediate",
+        )
+        assert all(field.is_required() for field in inner_model.model_fields.values())
+        assert inner_model.model_json_schema()["required"] == [
+            "firstintermediate",
+            "secondintermediate",
+        ]
+
+    def test_intermediate_inner_model_fields_are_required_but_nullable(self):
+        from pydantic import BaseModel, ValidationError
+
+        from lionagi.operations.ReAct.ReAct import handle_field_models
+
+        class FirstIntermediate(BaseModel):
+            first: str
+
+        class SecondIntermediate(BaseModel):
+            second: int
+
+        generated = handle_field_models(
+            None,
+            [FirstIntermediate, SecondIntermediate],
+        )[0]
+        inner_model = generated.base_type
+
+        instance = inner_model.model_validate(
+            {"firstintermediate": None, "secondintermediate": None}
+        )
+        assert instance.firstintermediate is None
+        assert instance.secondintermediate is None
+        with pytest.raises(ValidationError):
+            inner_model.model_validate({"firstintermediate": None})
+
+    def test_intermediate_inner_model_schema_has_no_declaration_name_extension(self):
+        from pydantic import BaseModel
+
+        from lionagi.operations.ReAct.ReAct import handle_field_models
+
+        class FirstIntermediate(BaseModel):
+            first: str
+
+        class SecondIntermediate(BaseModel):
+            second: int
+
+        generated = handle_field_models(
+            None,
+            [FirstIntermediate, SecondIntermediate],
+        )[0]
+        properties = generated.base_type.model_json_schema()["properties"]
+
+        assert properties == {
+            "firstintermediate": {
+                "anyOf": [
+                    {"$ref": "#/$defs/FirstIntermediate"},
+                    {"type": "null"},
+                ]
+            },
+            "secondintermediate": {
+                "anyOf": [
+                    {"$ref": "#/$defs/SecondIntermediate"},
+                    {"type": "null"},
+                ]
+            },
+        }
+
+    def test_duplicate_normalized_intermediate_names_fail_deterministically(self):
+        from pydantic import BaseModel
+
+        from lionagi.operations.ReAct.ReAct import handle_field_models
+
+        class Choice(BaseModel):
+            first: str
+
+        class CHOICE(BaseModel):
+            second: int
+
+        messages: list[str] = []
+        for _ in range(2):
+            with pytest.raises(ValueError) as exc_info:
+                handle_field_models(None, [Choice, CHOICE])
+            messages.append(str(exc_info.value))
+
+        assert messages[0] == messages[1]
+        assert "choice" in messages[0].lower()

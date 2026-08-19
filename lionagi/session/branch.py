@@ -9,7 +9,7 @@ from pydantic import BaseModel, JsonValue, PrivateAttr, field_serializer
 
 from lionagi.config import settings
 from lionagi.ln import AlcallParams
-from lionagi.ln.types import Unset
+from lionagi.ln.types import Spec, Unset
 from lionagi.models.field_model import FieldModel
 from lionagi.operations.fields import Instruct
 from lionagi.operations.manager import OperationManager
@@ -923,7 +923,7 @@ class Branch(Element, Relational):
         call_params: AlcallParams = None,
         action_strategy: Literal["sequential", "concurrent"] = "concurrent",
         verbose_action: bool = False,
-        field_models: list[FieldModel] | None = None,
+        field_models: list[FieldModel | Spec] | None = None,
         exclude_fields: list | dict | None = None,
         handle_validation: Literal["raise", "return_value", "return_none"] = "return_value",
         include_token_usage_to_model: bool = False,

@@ -16,7 +16,7 @@ __all__ = ("Operable",)
 
 @dataclass(frozen=True, slots=True, init=False)
 class Operable:
-    """Immutable ordered Spec collection; use create_model() to emit a Pydantic model."""
+    """Immutable ordered Spec collection; materialize through an explicit target adapter."""
 
     __op_fields__: tuple[Spec, ...]
     name: str | None
@@ -116,7 +116,15 @@ class Operable:
         exclude: Collection[str] | None = None,
         **kw,
     ):
-        """Build and return a model class from specs via the named adapter (currently only "pydantic")."""
+        """Compatibility shim for model materialization through a named adapter."""
+        import warnings
+
+        warnings.warn(
+            "Operable.create_model() is deprecated; invoke a target SpecAdapter.materialize() "
+            "method explicitly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         match adapter:
             case "pydantic":
                 try:
@@ -132,6 +140,6 @@ class Operable:
                     "exclude": exclude,
                     **kw,
                 }
-                return PydanticSpecAdapter.create_model(self, **kws)
+                return PydanticSpecAdapter.materialize(self, **kws)
             case _:
                 raise ValueError(f"Unsupported adapter: {adapter}")

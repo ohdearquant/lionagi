@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import warnings
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, JsonValue, field_validator
@@ -10,7 +11,7 @@ if TYPE_CHECKING:
     from lionagi.models.field_model import FieldModel
 
 from lionagi.ln import extract_json, to_dict, to_list
-from lionagi.ln.types import Unset
+from lionagi.ln.types import Meta, Spec, Unset
 from lionagi.ln.types._sentinel import _compat_not_sentinel
 from lionagi.models import HashableModel
 
@@ -296,7 +297,111 @@ def get_default_field(
     nullable: bool = True,
     listable: bool | None = None,
 ):
+    """Project a neutral default declaration into the legacy FieldModel facade."""
+    warnings.warn(
+        "get_default_field() is deprecated; use get_default_spec() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return _get_default_fields(kind, default=default, nullable=nullable, listable=listable)
+
+
+def get_default_spec(
+    kind: Literal[
+        "action_requests",
+        "action_responses",
+        "action_required",
+        "instruct",
+        "reason",
+    ],
+    default: Any = Unset,
+    nullable: bool = True,
+    listable: bool | None = None,
+) -> Spec:
+    """Return the neutral declaration for a standard operation field."""
+    metadata: list[Meta] = []
+    initially_listable = False
+
+    match kind:
+        case "instruct":
+            base_type = Instruct
+            metadata.append(Meta("name", "instruct_model"))
+
+        case "action_required":
+            base_type = bool
+            metadata.extend(
+                (
+                    Meta("name", "action_required"),
+                    Meta("validator", _validate_action_required_field),
+                    Meta(
+                        "description",
+                        "Whether this step strictly requires performing actions. "
+                        "If true, the requests in `action_requests` must be fulfilled, "
+                        "assuming `tool_schemas` are available. "
+                        "If false or no `tool_schemas` exist, actions are optional.",
+                    ),
+                )
+            )
+
+        case "action_requests":
+            base_type = ActionRequestModel
+            initially_listable = True
+            metadata.extend(
+                (
+                    Meta("name", "action_requests"),
+                    Meta(
+                        "description",
+                        "List of actions to be executed when `action_required` is true. "
+                        "Each action must align with the available `tool_schemas`. "
+                        "Leave empty if no actions are needed.",
+                    ),
+                )
+            )
+
+        case "action_responses":
+            base_type = ActionResponseModel
+            initially_listable = True
+            metadata.append(Meta("name", "action_responses"))
+
+        case "reason":
+            base_type = Reason
+            metadata.append(Meta("name", "reason"))
+
+        case _:
+            raise ValueError(f"Unknown default field kind: {kind}")
+
+    is_listable = initially_listable
+    if listable is not None:
+        if listable and not initially_listable:
+            base_type = list[base_type]
+            is_listable = True
+        else:
+            # Preserve the compatibility helper's published override behavior.
+            is_listable = False
+
+    if nullable:
+        default = None
+
+    if is_listable and default is Unset:
+        default = list
+
+    if default is not Unset:
+        metadata.append(Meta("default", default))
+
+    if is_listable:
+        list_validator = Meta("validator", _validate_listable_field)
+        for index, meta in enumerate(metadata):
+            if meta.key == "validator":
+                # Legacy FieldModel registered every validator under the same
+                # Pydantic name, so the last one won. Preserve that behavior in
+                # one valid neutral metadata entry.
+                metadata[index] = list_validator
+                break
+        else:
+            metadata.append(list_validator)
+
+    metadata.extend((Meta("nullable", nullable), Meta("listable", is_listable)))
+    return Spec(base_type, metadata=tuple(metadata))
 
 
 def _get_default_fields(
@@ -313,66 +418,14 @@ def _get_default_fields(
 ):
     from lionagi.models.field_model import FieldModel
 
-    fm = None
-
-    match kind:
-        case "instruct":
-            fm = FieldModel(Instruct, name="instruct_model")
-
-        case "action_required":
-            fm = FieldModel(
-                bool,
-                name="action_required",
-                validator=_validate_action_required_field,
-                description=(
-                    "Whether this step strictly requires performing actions. "
-                    "If true, the requests in `action_requests` must be fulfilled, "
-                    "assuming `tool_schemas` are available. "
-                    "If false or no `tool_schemas` exist, actions are optional."
-                ),
-            )
-
-        case "action_requests":
-            fm = FieldModel(
-                ActionRequestModel,
-                name="action_requests",
-                listable=True,
-                description=(
-                    "List of actions to be executed when `action_required` is true. "
-                    "Each action must align with the available `tool_schemas`. "
-                    "Leave empty if no actions are needed."
-                ),
-            )
-
-        case "action_responses":
-            fm = FieldModel(ActionResponseModel, name="action_responses", listable=True)
-
-        case "reason":
-            fm = FieldModel(Reason, name="reason")
-
-        case _:
-            raise ValueError(f"Unknown default field kind: {kind}")
-
-    if listable is not None:
-        if listable and not fm.is_listable:
-            fm = fm.as_listable()
-        else:
-            fm = fm.with_metadata("listable", False)
-
-    if nullable:
-        fm = fm.as_nullable()
-        default = None
-
-    if fm.is_listable and default is Unset:
-        default = list
-
-    if default is not Unset:
-        fm = fm.with_default(default)
-
-    if fm.is_listable:
-        fm = fm.with_validator(_validate_listable_field)
-
-    return fm
+    spec = get_default_spec(kind, default=default, nullable=nullable, listable=listable)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="FieldModel is deprecated as a declaration authority.*",
+            category=DeprecationWarning,
+        )
+        return FieldModel(spec.base_type, metadata=spec.metadata)
 
 
 def _validate_listable_field(cls: Any, value: Any) -> list[Any]:
@@ -407,7 +460,12 @@ _FIELD_CONSTANTS = {
 def __getattr__(name: str):
     if name in _FIELD_CONSTANTS:
         field_name, kwargs = _FIELD_CONSTANTS[name]
-        value = get_default_field(field_name, **kwargs)
+        warnings.warn(
+            f"{name} is deprecated; use get_default_spec() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        value = _get_default_fields(field_name, **kwargs)
         globals()[name] = value
         return value
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
@@ -436,4 +494,5 @@ __all__ = (
     "Instruct",
     "Reason",
     "get_default_field",
+    "get_default_spec",
 )

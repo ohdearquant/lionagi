@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # ruff: noqa: N999  -- module intentionally named ReAct (acronym); rename breaks public API
 
+from __future__ import annotations
+
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
@@ -10,7 +12,7 @@ from pydantic import BaseModel
 
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.libs.validate.common_field_validators import validate_model_to_type
-from lionagi.models.field_model import FieldModel
+from lionagi.ln.types import Operable, Spec
 from lionagi.service.imodel import iModel
 
 from .._defaults import make_parse_param
@@ -22,13 +24,14 @@ from .utils import Analysis, ReActAnalysis
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from lionagi.models.field_model import FieldModel
     from lionagi.session.branch import Branch
 
 B = TypeVar("B", bound=type[BaseModel])
 
 
 async def ReAct(  # noqa: N802  # public name is the ReAct acronym
-    branch: "Branch",
+    branch: Branch,
     instruct: Instruct | dict[str, Any],
     interpret: bool = False,
     interpret_domain: str | None = None,
@@ -136,7 +139,7 @@ async def ReAct(  # noqa: N802  # public name is the ReAct acronym
 
 
 def prepare_react_kw(  # noqa: N802
-    branch: "Branch",
+    branch: Branch,
     instruct_dict: dict,
     *,
     instruction_fallback: str = "",
@@ -240,7 +243,7 @@ def prepare_react_kw(  # noqa: N802
 
 
 async def ReAct_v1(  # noqa: N802  # public name preserves the ReAct acronym
-    branch: "Branch",
+    branch: Branch,
     instruction: str,
     chat_param: ChatParam,
     action_param: ActionParam | None = None,
@@ -249,7 +252,7 @@ async def ReAct_v1(  # noqa: N802  # public name preserves the ReAct acronym
     resp_ctx: dict | None = None,
     reasoning_effort: Literal["low", "medium", "high"] | None = None,
     reason: bool = False,
-    field_models: list[FieldModel] | None = None,
+    field_models: list[FieldModel | Spec] | None = None,
     handle_validation: HandleValidation = "raise",
     invoke_actions: bool = True,
     clear_messages=False,
@@ -263,7 +266,7 @@ async def ReAct_v1(  # noqa: N802  # public name preserves the ReAct acronym
     verbose_length: int | None = None,
     continue_after_failed_response: bool = False,
     return_analysis: bool = False,
-    between_rounds: Callable[["Branch", int], Awaitable[str | None]] | None = None,
+    between_rounds: Callable[[Branch, int], Awaitable[str | None]] | None = None,
 ):
     """Collect all ReActStream outputs; return list of analyses when return_analysis=True, else the final result."""
     outs = []
@@ -310,55 +313,54 @@ async def ReAct_v1(  # noqa: N802  # public name preserves the ReAct acronym
 
 
 def handle_field_models(
-    field_models: list[FieldModel] | None,
+    field_models: list[FieldModel | Spec] | None,
     intermediate_response_options: B | list[B] | None = None,
     intermediate_listable: bool = False,
     intermediate_nullable: bool = False,
 ):
-    """Build field models including intermediate response options."""
-    fms = [] if not field_models else field_models
+    """Build ordered neutral fields including intermediate response options."""
+    fms: list[FieldModel | Spec] = list(field_models or ())
 
     if intermediate_response_options:
 
-        def create_intermediate_response_field_model():
-            from lionagi.models import OperableModel
+        def create_intermediate_response_spec() -> Spec:
+            from lionagi.adapters.spec_adapters import PydanticSpecAdapter
 
             _iro = intermediate_response_options
             iro = [_iro] if not isinstance(_iro, list) else _iro
-            opm = OperableModel()
-
-            for i in iro:
-                type_ = validate_model_to_type(None, i)
-                opm.add_field(
-                    str(type_.__name__).lower(),
-                    annotation=type_ | None,
-                    # Remove lambda validator to avoid Pydantic serialization errors
+            option_specs = []
+            for option in iro:
+                option_type = validate_model_to_type(None, option)
+                option_specs.append(
+                    Spec(
+                        option_type | None,
+                        name=str(option_type.__name__).lower(),
+                    )
                 )
 
-            m_ = opm.new_model(name="IntermediateResponseOptions")
-            irfm = FieldModel(
+            declaration = Operable(
+                tuple(option_specs),
+                name="IntermediateResponseOptions",
+            )
+            model_type = PydanticSpecAdapter.materialize(
+                declaration,
+                model_name="IntermediateResponseOptions",
+            )
+            return Spec(
+                model_type,
                 name="intermediate_response_options",
-                base_type=m_,
                 description="Intermediate deliverable outputs. fill as needed ",
-                # Remove lambda validator to avoid Pydantic serialization errors
+                listable=intermediate_listable,
+                nullable=intermediate_nullable,
             )
 
-            if intermediate_listable:
-                irfm = irfm.as_listable()
-
-            if intermediate_nullable:
-                irfm = irfm.as_nullable()
-
-            return irfm
-
-        fms = [fms] if not isinstance(fms, list) else fms
-        fms += [create_intermediate_response_field_model()]
+        fms.append(create_intermediate_response_spec())
 
     return fms
 
 
 async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
-    branch: "Branch",
+    branch: Branch,
     instruction: str,
     chat_param: ChatParam,
     action_param: ActionParam | None = None,
@@ -367,7 +369,7 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
     resp_ctx: dict | None = None,
     reasoning_effort: Literal["low", "medium", "high"] | None = None,
     reason: bool = False,
-    field_models: list[FieldModel] | None = None,
+    field_models: list[FieldModel | Spec] | None = None,
     handle_validation: HandleValidation = "raise",
     invoke_actions: bool = True,
     clear_messages=False,
@@ -380,7 +382,7 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
     display_as: Literal["yaml", "json"] = "yaml",
     verbose_length: int | None = None,
     continue_after_failed_response: bool = False,
-    between_rounds: Callable[["Branch", int], Awaitable[str | None]] | None = None,
+    between_rounds: Callable[[Branch, int], Awaitable[str | None]] | None = None,
 ) -> AsyncGenerator:
     """Core ReAct streaming implementation with context-based architecture."""
 
