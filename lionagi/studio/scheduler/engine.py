@@ -737,16 +737,21 @@ class SchedulerEngine:
         is a shutdown that hangs.
         """
         passes = asyncio.ensure_future(self._startup_recovery_passes())
-        try:
-            await asyncio.shield(passes)
-        except asyncio.CancelledError:
-            if self._stopping:
-                passes.cancel()
-                raise
-            _log.warning(
-                "Scheduler startup recovery cancelled without a stop; letting the pass finish"
-            )
-            await passes
+        while True:
+            try:
+                await asyncio.shield(passes)
+                return
+            except asyncio.CancelledError:
+                if self._stopping:
+                    passes.cancel()
+                    raise
+                # Re-shield rather than await the task directly: a bare await is itself
+                # cancellable, so the second cancel would tear the pass in half exactly
+                # as the first one would have. Every non-stop cancel costs one more wait
+                # and nothing else, and the loop ends when the pass does.
+                _log.warning(
+                    "Scheduler startup recovery cancelled without a stop; letting the pass finish"
+                )
 
     async def _tick_loop(self) -> None:
         await self._run_startup_recovery()

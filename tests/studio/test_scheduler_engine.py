@@ -3462,6 +3462,45 @@ async def test_a_cancel_aimed_at_the_loop_lets_the_recovery_pass_in_flight_finis
 
 
 @pytest.mark.asyncio
+async def test_repeated_cancels_aimed_at_the_loop_still_let_the_recovery_pass_finish(monkeypatch):
+    """One absorbed cancel is not the guarantee; the pass has to survive every one of them.
+
+    Absorbing the first and then awaiting the task directly leaves the second cancel free to
+    interrupt exactly the repair the first was absorbed to protect, so this fires three.
+    """
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    entered = asyncio.Event()
+    ran: list = []
+
+    async def _slow_first():
+        ran.append("entered")
+        entered.set()
+        await asyncio.sleep(0.15)
+        ran.append("finished")
+
+    monkeypatch.setattr(engine, "_recover_undispatched_fires", _slow_first)
+    monkeypatch.setattr(
+        engine, "_reconcile_dispatched_orphans", AsyncMock(side_effect=lambda: ran.append("second"))
+    )
+    monkeypatch.setattr(
+        engine, "_check_missed_fires", AsyncMock(side_effect=lambda: ran.append("third"))
+    )
+
+    await engine.start()
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        for _ in range(3):
+            engine._task.cancel()
+            await asyncio.sleep(0)
+        await _until(lambda: len(ticks) >= 1)
+        assert "finished" in ran, f"a later cancel abandoned the pass: {ran}"
+        assert ran == ["entered", "finished", "second", "third"]
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
 async def test_a_stop_during_recovery_does_not_wait_for_the_pass_in_flight(monkeypatch):
     """Control: a shutdown that cannot interrupt recovery is a shutdown that hangs."""
     ticks: list = []
