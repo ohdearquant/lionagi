@@ -207,8 +207,13 @@ class ModelConfig:
 @dataclass(slots=True, frozen=True, init=False)
 class Params:
     def __init__(self, **kwargs: Any): ...
-    def to_dict(self, exclude: set[str] = None) -> dict[str, str]: ...
-    def with_updates(self, **kwargs: Any) -> DataClass: ...
+    def to_dict(
+        self,
+        exclude: Collection[str] | None = None,
+        *,
+        mode: Literal["python", "json"] = "python",
+    ) -> dict[str, Any]: ...
+    def with_updates(self, **kwargs: Any) -> Self: ...
 ```
 
 Pydantic-side serializers preserve the same omission meaning:
@@ -274,12 +279,12 @@ to the Pydantic adapter lazily.
 ```python
 @dataclass(frozen=True, slots=True, init=False)
 class Spec:
-    base_type: type
+    base_type: MaybeSentinel[type[Any]]
     metadata: tuple[Meta, ...]
 
     def __init__(
         self,
-        base_type: type = None,
+        base_type: MaybeSentinel[type[Any]] = Undefined,
         *args,
         metadata: tuple[Meta, ...] = None,
         **kw,
@@ -300,16 +305,16 @@ class Operable:
     def get_specs(
         self,
         *,
-        include: set[str] | None = None,
-        exclude: set[str] | None = None,
+        include: Collection[str] | None = None,
+        exclude: Collection[str] | None = None,
     ) -> tuple[Spec, ...]: ...
 
     def create_model(
         self,
         adapter: Literal["pydantic"] = "pydantic",
         model_name: str | None = None,
-        include: set[str] | None = None,
-        exclude: set[str] | None = None,
+        include: Collection[str] | None = None,
+        exclude: Collection[str] | None = None,
         **kw,
     ): ...
 ```
@@ -330,8 +335,8 @@ class PydanticSpecAdapter(SpecAdapter):
         cls,
         op: Operable,
         model_name: str,
-        include: set[str] | None = None,
-        exclude: set[str] | None = None,
+        include: Collection[str] | None = None,
+        exclude: Collection[str] | None = None,
         base_type: type[BaseModel] | None = None,
         doc: str | None = None,
     ) -> type[BaseModel]: ...
@@ -343,7 +348,7 @@ class PydanticSpecAdapter(SpecAdapter):
 @dataclass(slots=True, frozen=True, init=False)
 class FieldModel(Params):
     _config = ModelConfig(prefill_unset=True, none_as_sentinel=True)
-    base_type: type[Any]
+    base_type: MaybeSentinel[type[Any]] | None
     metadata: tuple[Meta, ...]
 
     def create_field(self) -> Any: ...
@@ -358,12 +363,16 @@ class FieldModel(Params):
   `default_factory`, a non-callable default factory, a non-callable validator,
   and a `base_type` that is not a type or type annotation. An async default
   factory is accepted with a compatibility warning.
+- An omitted or explicit `Undefined` base type remains `Undefined`; explicit `Unset`
+  remains unresolved, and explicit `None` is invalid. The Pydantic compatibility
+  adapter materializes either sentinel as `Any`, but that does not resolve `Unset`
+  for persistence or policy adapters. `FieldModel(annotation=None)` retains its
+  legacy unspecified-input behavior by mapping to `Unset` in `to_spec()`.
 - `Operable` converts an input list to a tuple, rejects non-`Spec` items, and
-  rejects duplicate non-`None` spec names. Multiple unnamed specs are allowed.
+  rejects duplicate resolved spec names. Multiple `None`/`Undefined`/`Unset` names are allowed.
 - `Operable.get()` returns `Unset` on a miss unless another default is supplied.
-  Supplying both `include` and `exclude` is an error. `exclude` preserves original
-  spec order; `include` iterates the caller's set and therefore does not promise
-  original order.
+  Supplying both `include` and `exclude` is an error. Both filters treat their
+  collection as membership and retain the declarations' original order.
 - `create_model()` supports only the key `"pydantic"`. An unknown key raises
   `ValueError`. Import failure is re-raised with the explicit Pydantic installation
   message. The default generated class name is `model_name`, then `Operable.name`,
@@ -371,7 +380,8 @@ class FieldModel(Params):
 - `PydanticSpecAdapter` converts each named spec to a `FieldInfo`, collects one
   Pydantic field validator per spec carrying `validator` metadata, calls
   `build_model_type(..., inherit_base=True)`, then calls `model_rebuild()`.
-  Unnamed specs do not become model fields.
+  Materialization rejects an unnamed or non-string spec before emitting any model;
+  neutral `Operable` storage continues to allow multiple unnamed declarations.
 - `FieldModel` accepts the legacy aliases `annotation -> base_type` and
   `field -> name`. A callable `default` becomes a Pydantic `default_factory`.
   Unknown Pydantic field metadata is placed in `json_schema_extra`, except type

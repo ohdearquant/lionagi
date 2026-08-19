@@ -144,6 +144,24 @@ def test_spec_module_does_not_eagerly_load_concurrency():
     assert out == "False False"
 
 
+def test_lightweight_types_do_not_pull_in_target_or_composition_layers():
+    code = (
+        "import sys\n"
+        "import lionagi.ln.types\n"
+        "prefixes = (\n"
+        "    'pydantic', 'sqlalchemy', 'lionagi.state', 'lionagi.studio',\n"
+        "    'lionagi.cli', 'lionagi.providers', 'openai', 'anthropic',\n"
+        ")\n"
+        "loaded = sorted(\n"
+        "    name for name in sys.modules\n"
+        "    if any(name == prefix or name.startswith(prefix + '.') for prefix in prefixes)\n"
+        ")\n"
+        "print(loaded)\n"
+    )
+    out = _run_and_report(code)
+    assert out == "[]"
+
+
 def test_to_list_functional_through_lazy_attribute():
     assert ln.to_list([1, [2, 3], None], flatten=True, dropna=True) == [1, 2, 3]
 

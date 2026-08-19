@@ -116,9 +116,6 @@ LEGACY_SENTINEL_COLLAPSE_ALLOWLIST: Final[frozenset[tuple[str, _CollapseAxis]]] 
         ("lionagi.protocols.messages.instruction.InstructionContent._config", "none"),
         ("lionagi.protocols.messages.instruction.InstructionContent._config", "empty"),
         ("lionagi.protocols.messages.message.MessageContent._config", "none"),
-        ("lionagi.ln.types.spec.Spec.__init__", "none"),
-        ("lionagi.ln.types.spec.Spec.annotation", "none"),
-        ("lionagi.ln.types.spec.Spec.annotated", "none"),
     }
 )
 

@@ -104,7 +104,12 @@ class InstructionContent(MessageContent):
             _build_structure(self.response_format, _resolve_structure_cls(self.structure)),
         )
 
-    def to_dict(self, exclude: set[str] | frozenset[str] | None = None) -> dict[str, Any]:
+    def to_dict(
+        self,
+        exclude: set[str] | frozenset[str] | None = None,
+        *,
+        mode: Literal["python", "json"] = "python",
+    ) -> dict[str, Any]:
         # Include response_format only when it's a plain (JSON-serializable)
         # dict; type/BaseModel forms can't round-trip through from_dict.
         base_exclude = set(_INSTRUCTION_SERIALIZE_EXCLUDE)
@@ -115,7 +120,11 @@ class InstructionContent(MessageContent):
         # Use explicit class reference for Python 3.10 slots-dataclass compat.
         from lionagi.ln.types import DataClass
 
-        return DataClass.to_dict(self, exclude=frozenset(base_exclude))
+        return DataClass.to_dict(
+            self,
+            exclude=frozenset(base_exclude),
+            mode=mode,
+        )
 
     @property
     def role(self) -> MessageRole:
