@@ -594,3 +594,65 @@ async def test_a_failed_loss_record_does_not_cost_the_deferred_leg_its_handoff(
     row = await _session_row(path, sid)
     assert row["status"] == "running", "the deferred leg still writes no terminal status"
     assert any("lost message event" in r.getMessage() for r in caplog.records)
+
+
+# The carried loss payload crosses a persistence boundary, so its shape is an
+# assumption. These pin what a drifted one is allowed to do to the count.
+
+
+def _carry(payload: Any) -> dict[str, Any]:
+    """A session row whose node metadata carries `payload` as the loss JSON."""
+    from json import dumps
+
+    return {"message_persist_loss_json": dumps(payload)}
+
+
+def test_a_carried_payload_with_a_non_list_queues_field_is_dropped_not_walked():
+    from lionagi.cli._runs import _merge_message_loss
+
+    # list("ab") would otherwise yield character entries and q.get() would raise.
+    merged = _merge_message_loss(_carry({"lost": 9, "queues": "ab"}), None)
+    assert merged is None
+
+
+def test_a_queue_entry_with_a_non_numeric_lost_is_dropped_rather_than_summed():
+    from lionagi.cli._runs import _merge_message_loss
+
+    merged = _merge_message_loss(
+        _carry({"lost": 5, "queues": [{"owner": "a", "lost": "many"}, {"owner": "b", "lost": 2}]}),
+        None,
+    )
+    assert merged == {"lost": 2, "queues": [{"owner": "b", "lost": 2}]}
+
+
+def test_a_carried_total_that_disagrees_with_its_entries_is_recomputed_not_believed():
+    from lionagi.cli._runs import _merge_message_loss
+
+    merged = _merge_message_loss(_carry({"lost": 999, "queues": [{"owner": "a", "lost": 3}]}), None)
+    assert merged["lost"] == 3, "the total must agree with the entries it claims to sum"
+
+
+def test_a_boolean_lost_does_not_pass_as_a_count():
+    from lionagi.cli._runs import _merge_message_loss
+
+    assert _merge_message_loss(_carry({"queues": [{"owner": "a", "lost": True}]}), None) is None
+
+
+def test_node_metadata_that_parses_to_a_non_mapping_does_not_raise():
+    from lionagi.cli._runs import _merge_message_loss
+
+    current = {"lost": 1, "queues": [{"owner": "live", "lost": 1}]}
+    assert _merge_message_loss("[1, 2]", current) == current
+
+
+def test_a_well_formed_carry_still_sums_with_this_legs_own_loss():
+    from lionagi.cli._runs import _merge_message_loss
+
+    merged = _merge_message_loss(
+        _carry({"lost": 4, "queues": [{"owner": "deferred", "lost": 4}]}),
+        {"lost": 1, "queues": [{"owner": "live", "lost": 1}]},
+    )
+    assert merged == {
+        "lost": 5,
+        "queues": [{"owner": "deferred", "lost": 4}, {"owner": "live", "lost": 1}],
+    }

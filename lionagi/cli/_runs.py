@@ -1292,6 +1292,32 @@ class MessageLoss(TypedDict):
     queues: list[QueueLoss]
 
 
+def _as_message_loss(value: Any) -> MessageLoss | None:
+    """Coerce a payload parsed from the session row into a ``MessageLoss``.
+
+    The carried value crossed a persistence boundary and may have been written by
+    a leg running different code, so its shape is an assumption rather than a
+    guarantee. Entries that do not fit are dropped instead of partly trusted: the
+    total feeds a lost-event count a reader treats as exact, and an unchecked one
+    reaches ``queue["owner"]`` indexing further on. The total is recomputed here
+    rather than read, so it agrees with the entries it claims to sum.
+    """
+    if not isinstance(value, dict):
+        return None
+    raw = value.get("queues")
+    queues: list[QueueLoss] = [
+        {"owner": str(q["owner"]), "lost": q["lost"]}
+        for q in (raw if isinstance(raw, list) else [])
+        if isinstance(q, dict)
+        and q.get("owner") is not None
+        and isinstance(q.get("lost"), int)
+        and not isinstance(q["lost"], bool)
+    ]
+    if not queues:
+        return None
+    return {"lost": sum(q["lost"] for q in queues), "queues": queues}
+
+
 def _merge_message_loss(node_metadata: Any, current: MessageLoss | None) -> MessageLoss | None:
     """This teardown's loss plus any a deferred earlier leg left on the session."""
     if isinstance(node_metadata, str):
@@ -1299,18 +1325,21 @@ def _merge_message_loss(node_metadata: Any, current: MessageLoss | None) -> Mess
             node_metadata = json.loads(node_metadata)
         except (TypeError, ValueError):
             node_metadata = None
-    carried = (node_metadata or {}).get("message_persist_loss_json") if node_metadata else None
+    carried = (
+        node_metadata.get("message_persist_loss_json") if isinstance(node_metadata, dict) else None
+    )
     if isinstance(carried, str):
         try:
             carried = json.loads(carried)
         except (TypeError, ValueError):
             carried = None
-    if not isinstance(carried, dict):
+    carried = _as_message_loss(carried)
+    if not carried:
         return current
     if not current:
         return carried
-    queues = list(carried.get("queues") or []) + list(current.get("queues") or [])
-    return {"lost": sum(q.get("lost", 0) for q in queues), "queues": queues}
+    queues = carried["queues"] + current["queues"]
+    return {"lost": sum(q["lost"] for q in queues), "queues": queues}
 
 
 async def _flush_pending_message_events(ctx: dict) -> MessageLoss | None:
