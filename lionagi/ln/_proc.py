@@ -8,7 +8,7 @@ import os
 import signal
 from typing import Any
 
-from .concurrency import move_on_after
+from .concurrency import move_on_after, sleep
 
 # Two reads of a kernel tick clock for one process can differ in the last
 # place, so a recorded start time is compared to a live one within this. Two
@@ -254,6 +254,34 @@ def terminate_process_group(
         proc.terminate()
 
 
+# How often the exit poll below re-reads the child's status. Short enough that
+# terminating a cooperative child still looks instant.
+_CHILD_EXIT_POLL_SECONDS = 0.02
+
+
+async def _await_child_exit(proc: Any) -> None:
+    """Wait for the child itself to exit, not for everything holding its pipes.
+
+    ``proc.wait()`` cannot be used for this. On some interpreters it completes
+    only once every inherited pipe has closed, so a descendant that escaped with
+    the child's stderr decides when the wait returns: the caller trying to give
+    up on a process ends up bounded by a process it never started, and by the
+    time it looks, evidence it was about to report as missing has been resolved
+    behind its back. ``returncode`` is set when the child is reaped, whatever
+    still holds a pipe.
+
+    Objects that do not model ``returncode`` as a subprocess does (None until
+    exit, then an int) fall back to ``wait()``, which is the only thing they
+    offer.
+    """
+    rc = getattr(proc, "returncode", object())
+    if not (rc is None or isinstance(rc, int)):
+        await proc.wait()
+        return
+    while proc.returncode is None:
+        await sleep(_CHILD_EXIT_POLL_SECONDS)
+
+
 async def aterminate_process_group(
     proc: Any,
     *,
@@ -280,12 +308,15 @@ async def aterminate_process_group(
     # wait_for raises "no running event loop" on an AnyIO/Trio task before the
     # timeout policy can apply, so the forced-kill escalation never fires.
     with move_on_after(grace) as scope:
-        await proc.wait()
+        await _await_child_exit(proc)
     if scope.cancelled_caught:
         if pgid is not None:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pgid, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        # Bounded too: a caller that has already escalated to SIGKILL is done
+        # negotiating, and the same pipe holder that can stall the wait above
+        # can stall this one, with no timeout left to catch it.
+        with move_on_after(grace), contextlib.suppress(Exception):
+            await _await_child_exit(proc)

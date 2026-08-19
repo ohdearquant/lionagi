@@ -66,6 +66,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Giving up on a stuck CLI subprocess no longer waits for processes outside it. The wait used
+  to be `proc.wait()`, which on some interpreters completes only once every inherited pipe has
+  closed, so a descendant that escaped the child's process group holding its stderr decided how
+  long the caller waited. Two things followed. The caller trying to abandon a child was bounded
+  by a process it never started, and by the time it looked at the pipe the holder had usually
+  gone, so an unread pipe was reported as a child that said nothing rather than as unknown. The
+  wait now reads the child's own exit status, which is set when the child is reaped whatever
+  still holds a pipe, and the post-kill wait is bounded as well instead of being able to hang
+  indefinitely.
+
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
   and `DataClass` now discover inherited instance fields through one ordered dataclass path,
