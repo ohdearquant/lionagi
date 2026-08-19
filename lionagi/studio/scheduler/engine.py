@@ -17,7 +17,12 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from lionagi.ln.concurrency import ExceptionGroup
-from lionagi.state.db import SESSION_TERMINAL_STATUSES, TERMINAL_RUN_STATUSES
+from lionagi.state.db import (
+    NO_CURSOR_CLAIM,
+    SESSION_TERMINAL_STATUSES,
+    TERMINAL_RUN_STATUSES,
+    CursorClaim,
+)
 from lionagi.state.lifecycle.callbacks import DEFAULT_TERMINAL_CALLBACKS, RunTerminalEnvelope
 from lionagi.state.lifecycle.notify_settings import build_handler, resolve_notify_config
 from lionagi.state.reasons import RunReasons, ScheduleReasons
@@ -621,6 +626,9 @@ class SchedulerEngine:
                 rate_limit_claim=rate_claim,
                 max_runs_claim=claim,
                 global_slot_claim=slot_claim,
+                # A manual trigger is not competing for a due instant. Claiming the cursor here
+                # would refuse the trigger whenever a scheduled fire landed alongside it.
+                expect_next_fire_at=NO_CURSOR_CLAIM,
             )
             handed_off = True
             return run_id
@@ -742,6 +750,9 @@ class SchedulerEngine:
                 new_run_id,
                 trigger_context=row.get("trigger_context") or {},
                 supersedes_run_id=run_id,
+                # The occurrence this replaces already advanced the cursor. Its own claim is the
+                # CAS-tombstone of the orphan row, which is what stops two recoveries of one.
+                expect_next_fire_at=NO_CURSOR_CLAIM,
             )
 
     async def _tombstone_orphan_only(self, run_id: str, *, sid: str | None, log_note: str) -> None:
@@ -913,6 +924,7 @@ class SchedulerEngine:
                         trigger_context=chain_ctx,
                         chain_parent_id=run_id,
                         chain_depth=chain_depth + 1,
+                        expect_next_fire_at=NO_CURSOR_CLAIM,
                     )
 
     async def _check_missed_fires(self) -> None:
@@ -977,9 +989,16 @@ class SchedulerEngine:
             # _next_fire_field, not a bare not-None check: an 'at' trigger's terminal None must be
             # reserved too, or the next tick still sees the past-due instant and queues a duplicate.
             fields = self._next_fire_field(schedule, next_at)
+            # This path reserves the cursor before dispatching, so the reserve is where it claims
+            # the missed instant. The fire that follows claims the value the reserve WROTE: the
+            # local snapshot still holds the pre-reserve value, and claiming that would refuse the
+            # recovery against its own reservation.
+            claimed = schedule.get("next_fire_at")
             if fields:
                 try:
-                    await self._svc.update_schedule(schedule["id"], **fields)
+                    reserved = await self._svc.update_schedule(
+                        schedule["id"], expect_next_fire_at=claimed, **fields
+                    )
                 except Exception:
                     # Reserve didn't land: skip recovery and let the normal
                     # tick own this cycle's fire instead of double-running it.
@@ -989,6 +1008,14 @@ class SchedulerEngine:
                         schedule.get("id"),
                     )
                     return
+                if not reserved:
+                    _log.info(
+                        "Missed-fire recovery for schedule %s stood down: another scheduler "
+                        "reserved the same missed instant",
+                        schedule.get("id"),
+                    )
+                    return
+                claimed = fields.get("next_fire_at", claimed)
             run_id = uuid.uuid4().hex[:12]
             _log.info(
                 "Missed fire recovery for schedule %s (%s)",
@@ -1002,6 +1029,7 @@ class SchedulerEngine:
                 rate_limit_claim=rate_claim,
                 max_runs_claim=claim,
                 global_slot_claim=slot_claim,
+                expect_next_fire_at=claimed,
             )
             handed_off = True
         finally:
@@ -1213,6 +1241,17 @@ class SchedulerEngine:
             cursor = schedule.get("github_cursor")
             drop_reason: str | None = None
             dropped_prs: list[Any] = []
+            # One poll cycle is one due instant, however many events it carries. The first event
+            # to dispatch claims that instant on behalf of the whole batch; the rest are already
+            # inside a cycle this scheduler won, and every event of a batch resolves to the same
+            # next_fire_at, so re-claiming it would either refuse every event after the first or,
+            # since the value does not change between them, match twice and separate nothing.
+            # github_cursor is what distinguishes one event of a batch from the next: it advances
+            # per event, in the same transaction as that event's occurrence. Claiming it per event
+            # is what stops a second scheduler that polled after this one committed an earlier
+            # event from dispatching a later one this scheduler has not reached yet.
+            unclaimed_poll_cycle = True
+            claimed_cursor = schedule.get("github_cursor")
 
             for idx, item in enumerate(polled):
                 if not item.dispatchable:
@@ -1274,7 +1313,19 @@ class SchedulerEngine:
                         # occurrence insert, durably before the action runs, closing the double-fire
                         # hazard of batching the cursor write until after the loop.
                         extra_schedule_fields={"github_cursor": item.updated_at},
+                        expect_next_fire_at=(
+                            schedule.get("next_fire_at")
+                            if unclaimed_poll_cycle
+                            else NO_CURSOR_CLAIM
+                        ),
+                        expect_github_cursor=claimed_cursor,
                     )
+                    if fired:
+                        unclaimed_poll_cycle = False
+                        # Only a written advance moves the claim. Skipped events move the local
+                        # read position below without writing, so following that instead would
+                        # claim a value no transaction ever put in the row.
+                        claimed_cursor = item.updated_at
                     if not fired:
                         # A refusal before a process started means nothing ran, so re-offering the
                         # event is not a re-execution. Bounded, because a refusal can be a property
@@ -1723,6 +1774,7 @@ class SchedulerEngine:
                 max_runs_claim=claim,
                 global_slot_claim=slot_claim,
                 threshold_cooldown_claim=threshold_claim,
+                expect_next_fire_at=schedule.get("next_fire_at"),
             )
             # Flipped only after _tracked_fire() returns, so even a synchronous task-launch failure
             # releases the claims below. Release is idempotent, so there is no double-free against
@@ -1822,8 +1874,16 @@ class SchedulerEngine:
         threshold_cooldown_claim: _ThresholdCooldownClaim | None = None,
         extra_schedule_fields: dict[str, Any] | None = None,
         supersedes_run_id: str | None = None,
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
     ) -> bool:
-        """Thin wrapper that releases every admission claim on all exit paths."""
+        """Thin wrapper that releases every admission claim on all exit paths.
+
+        *expect_next_fire_at* is the due instant this fire claims, and it has no default: only
+        the caller knows whether its schedule dict still holds the cursor it decided on, and a
+        caller that already reserved the instant itself claims the value it reserved. Fires that
+        do not stand for a due instant, such as chain children, pass ``NO_CURSOR_CLAIM``.
+        """
         try:
             return await self._fire_inner(
                 schedule,
@@ -1835,6 +1895,8 @@ class SchedulerEngine:
                 max_runs_claim=max_runs_claim,
                 extra_schedule_fields=extra_schedule_fields,
                 supersedes_run_id=supersedes_run_id,
+                expect_next_fire_at=expect_next_fire_at,
+                expect_github_cursor=expect_github_cursor,
             )
         finally:
             if rate_limit_claim is not None:
@@ -1861,6 +1923,8 @@ class SchedulerEngine:
         schedule_id: str,
         schedule_fields: dict[str, Any],
         supersedes_run_id: str | None,
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
     ) -> bool:
         """Durably record one occurrence row: the choke point both write sites take."""
         if supersedes_run_id is not None:
@@ -1885,10 +1949,48 @@ class SchedulerEngine:
                     actor="scheduler_startup_recovery",
                 )
             return applied
-        await self._svc.create_schedule_run_and_advance(
-            run, schedule_id=schedule_id, schedule_fields=schedule_fields
+        # The cursor this fire was selected on is the claim: if another scheduler already advanced
+        # it, that scheduler owns this occurrence and nothing is written here.
+        return await self._svc.create_schedule_run_and_advance(
+            run,
+            schedule_id=schedule_id,
+            schedule_fields=schedule_fields,
+            expect_next_fire_at=expect_next_fire_at,
+            expect_github_cursor=expect_github_cursor,
         )
-        return True
+
+    async def _abandon_refused_fire(
+        self, inv_id: str, schedule_id: str, *, orphan_id: str | None
+    ) -> None:
+        """Route a refused occurrence write to the reason that actually refused it."""
+        if orphan_id is not None:
+            await self._abandon_superseded_recovery_fire(inv_id, orphan_id=orphan_id)
+        else:
+            await self._abandon_lost_cursor_claim(inv_id, schedule_id=schedule_id)
+
+    async def _abandon_lost_cursor_claim(self, inv_id: str, *, schedule_id: str) -> None:
+        """Clean up a fire whose occurrence write lost the cursor claim to another scheduler."""
+        _log.info(
+            "Abandoning fire for invocation %s: schedule %s was already advanced past "
+            "this occurrence by another scheduler",
+            inv_id,
+            schedule_id,
+        )
+        await self._guarded_terminal_status(
+            "invocation",
+            inv_id,
+            new_status="cancelled",
+            reason_code=RunReasons.CANCELLED_STALE_AUTO,
+            reason_summary=(
+                f"Fire abandoned: another scheduler advanced schedule {schedule_id} "
+                "past this occurrence before this fire's own write landed, so that "
+                "scheduler owns it."
+            ),
+            evidence_refs=[{"kind": "schedule", "id": schedule_id}],
+            source="system",
+            actor="scheduler_cursor_claim",
+            extra_fields={"ended_at": time.time()},
+        )
 
     async def _abandon_superseded_recovery_fire(self, inv_id: str, *, orphan_id: str) -> None:
         """Clean up a recovery re-fire whose occurrence write was refused."""
@@ -1926,6 +2028,8 @@ class SchedulerEngine:
         max_runs_claim: _MaxRunsClaim | None = None,
         extra_schedule_fields: dict[str, Any] | None = None,
         supersedes_run_id: str | None = None,
+        expect_next_fire_at: CursorClaim,
+        expect_github_cursor: CursorClaim = NO_CURSOR_CLAIM,
     ) -> bool:
         """Fire one occurrence of *schedule*; False only if it refused before anything committed."""
         sid = schedule["id"]
@@ -2035,13 +2139,13 @@ class SchedulerEngine:
                     schedule_id=sid,
                     schedule_fields=failed_schedule_fields,
                     supersedes_run_id=supersedes_run_id,
+                    expect_next_fire_at=expect_next_fire_at,
+                    expect_github_cursor=expect_github_cursor,
                 )
                 if not written_occurrence:
                     # Abandon writes the invocation's cancelled terminal status, and the finally
                     # unregisters only after it, so a declared notify still fires.
-                    await self._abandon_superseded_recovery_fire(
-                        inv_id, orphan_id=supersedes_run_id
-                    )
+                    await self._abandon_refused_fire(inv_id, sid, orphan_id=supersedes_run_id)
                     return False
                 if rate_limit_claim is not None:
                     # The durable row now accounts for this fire across process
@@ -2147,9 +2251,11 @@ class SchedulerEngine:
                 schedule_id=sid,
                 schedule_fields=update_fields,
                 supersedes_run_id=supersedes_run_id,
+                expect_next_fire_at=expect_next_fire_at,
+                expect_github_cursor=expect_github_cursor,
             )
             if not written_occurrence:
-                await self._abandon_superseded_recovery_fire(inv_id, orphan_id=supersedes_run_id)
+                await self._abandon_refused_fire(inv_id, sid, orphan_id=supersedes_run_id)
                 return False
             occurrence_committed = True
             if rate_limit_claim is not None:
@@ -2304,6 +2410,7 @@ class SchedulerEngine:
                         trigger_context=chain_ctx,
                         chain_parent_id=run_id,
                         chain_depth=chain_depth + 1,
+                        expect_next_fire_at=NO_CURSOR_CLAIM,
                     )
             return dispatched
 

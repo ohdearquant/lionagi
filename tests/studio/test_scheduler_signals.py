@@ -25,6 +25,7 @@ from lionagi.studio.scheduler.signals import (
     build_schedule_run_signal,
     record_handler_failure,
 )
+from tests._scheduler_claims import fire_with_claim
 
 # Helpers (mirrors tests/studio/test_scheduler_engine.py's fixtures)
 
@@ -714,7 +715,7 @@ async def test_fire_happy_path_mints_schedule_run_succeeded():
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
-        await engine._fire(schedule, "run-001", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-001", trigger_context={"scheduled": True})
 
     assert len(captured) == 1
     sig = captured[0]
@@ -744,7 +745,7 @@ async def test_fire_nonzero_exit_mints_schedule_run_failed():
             new=AsyncMock(return_value=(1, "error text")),
         ),
     ):
-        await engine._fire(schedule, "run-002", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-002", trigger_context={"scheduled": True})
 
     assert len(captured) == 1
     assert captured[0].reason_code == RunReasons.FAILED_EXIT_NONZERO
@@ -779,7 +780,7 @@ async def test_fire_inner_exception_mints_schedule_run_failed():
             new=AsyncMock(side_effect=_raise_after_launch),
         ),
     ):
-        await engine._fire(schedule, "run-005", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-005", trigger_context={"scheduled": True})
 
     assert len(captured) == 1
     assert captured[0].reason_code == RunReasons.FAILED_EXCEPTION
@@ -815,7 +816,7 @@ async def test_fire_cancellation_mints_schedule_run_cancelled():
         ),
     ):
         with pytest.raises(asyncio.CancelledError):
-            await engine._fire(schedule, "run-004", trigger_context={"scheduled": True})
+            await fire_with_claim(engine, schedule, "run-004", trigger_context={"scheduled": True})
 
     assert len(captured) == 1
     assert captured[0].reason_code == RunReasons.CANCELLED_SYSTEM
@@ -846,7 +847,7 @@ async def test_fire_does_not_mint_when_guarded_write_loses_race():
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
-        await engine._fire(schedule, "run-006", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-006", trigger_context={"scheduled": True})
 
     assert captured == []
 
@@ -870,7 +871,7 @@ async def test_fire_build_argv_exception_mints_schedule_run_failed():
         "lionagi.studio.scheduler.subprocess.build_argv",
         side_effect=ValueError("bad action_kind"),
     ):
-        await engine._fire(schedule, "run-010", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-010", trigger_context={"scheduled": True})
 
     assert len(captured) == 1
     sig = captured[0]
@@ -899,7 +900,7 @@ async def test_fire_build_argv_exception_does_not_mint_when_write_lost_race():
         "lionagi.studio.scheduler.subprocess.build_argv",
         side_effect=ValueError("bad action_kind"),
     ):
-        await engine._fire(schedule, "run-011", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-011", trigger_context={"scheduled": True})
 
     assert captured == []
 
@@ -939,7 +940,7 @@ async def test_broken_handler_surfaces_admin_event_and_fire_completes(tmp_path, 
         ),
     ):
         # Must not raise -- the handler bug is contained at the mint call site.
-        await engine._fire(schedule, "run-007", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-007", trigger_context={"scheduled": True})
 
     # The schedule_run's own bookkeeping (invocation/run rows, status writes,
     # max_runs check) still ran normally despite the broken handler.
@@ -985,8 +986,8 @@ async def test_handler_cancelled_error_at_exit_mint_does_not_cancel_completed_ru
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
-        await engine._fire(
-            _minimal_schedule(), "run-handler-cancel", trigger_context={"scheduled": True}
+        await fire_with_claim(
+            engine, _minimal_schedule(), "run-handler-cancel", trigger_context={"scheduled": True}
         )
 
     terminal_statuses = [
@@ -1071,7 +1072,7 @@ async def test_broken_predicate_does_not_block_sibling_handler_and_surfaces_admi
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
-        await engine._fire(schedule, "run-012", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-012", trigger_context={"scheduled": True})
 
     assert len(healthy) == 1  # sibling handler ran despite the raising predicate
 
@@ -1117,10 +1118,10 @@ async def test_unrelated_fire_still_succeeds_after_a_prior_handler_failure(tmp_p
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
-        await engine._fire(schedule, "run-008", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-008", trigger_context={"scheduled": True})
         # Second, unrelated fire on the same engine/bus must still complete
         # normally -- the handler exception from the first fire must not
         # have crashed the tick loop or left the bus/engine in a bad state.
-        await engine._fire(schedule, "run-009", trigger_context={"scheduled": True})
+        await fire_with_claim(engine, schedule, "run-009", trigger_context={"scheduled": True})
 
     assert svc.create_schedule_run_and_advance.await_count == 2

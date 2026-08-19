@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests._scheduler_claims import fire_with_claim
+
 
 def _minimal_schedule(**overrides) -> dict:
     base = {
@@ -455,7 +457,8 @@ async def test_fire_releases_global_slot_on_completion(monkeypatch):
             new=AsyncMock(return_value=(0, "")),
         ),
     ):
-        await engine._fire(
+        await fire_with_claim(
+            engine,
             schedule,
             "run-001",
             trigger_context={"scheduled": True},
@@ -482,7 +485,8 @@ async def test_fire_releases_global_slot_on_exception(monkeypatch):
         "lionagi.studio.scheduler.subprocess.build_argv",
         side_effect=ValueError("bad action_kind"),
     ):
-        await engine._fire(
+        await fire_with_claim(
+            engine,
             schedule,
             "run-002",
             trigger_context={"scheduled": True},
