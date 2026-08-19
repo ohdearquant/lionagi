@@ -446,11 +446,12 @@ export interface RunOutcome {
   summary_reported: boolean;
 }
 
+/** One run as the single-run route serves it. Wider than the slice row by the raw
+ * failure text; the trigger payload that produced the run is not served at all. */
 export interface ScheduleRunSummary {
   id: string;
   schedule_id: string;
   invocation_id: string | null;
-  trigger_context: Record<string, unknown>;
   action_kind: string;
   status: "running" | "completed" | "failed" | "skipped" | "cancelled";
   exit_code: number | null;
@@ -463,8 +464,8 @@ export interface ScheduleRunSummary {
 
 /**
  * A run as the /schedules/summary slice serves it. Narrower than ScheduleRunSummary on
- * purpose: the summary surface carries no trigger_context and no error_detail, only a
- * translatable classification of the failure.
+ * purpose: the summary surface carries no error_detail, only a translatable
+ * classification of the failure.
  */
 export interface ScheduleRunSliceRow {
   id: string;
