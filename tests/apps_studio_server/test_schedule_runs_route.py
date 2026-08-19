@@ -963,8 +963,10 @@ def test_the_single_run_record_serves_no_private_run_column(tmp_path, monkeypatc
     client = _make_client()
 
     for run_id in (parent_id, child_id):
-        body = client.get(f"/api/schedules/runs/{run_id}").json()
-        leaked = sorted(_keys_anywhere(body) & set(_PRIVATE_RUN_COLUMNS))
+        resp = client.get(f"/api/schedules/runs/{run_id}")
+        # A 404 body carries no private key either, so it would pass the sweep below.
+        assert resp.status_code == 200, run_id
+        leaked = sorted(_keys_anywhere(resp.json()) & set(_PRIVATE_RUN_COLUMNS))
         assert not leaked, f"the record for {run_id} serves {leaked}"
 
 
@@ -974,36 +976,39 @@ def test_the_single_run_record_serves_no_trigger_payload(tmp_path, monkeypatch):
     that the web client still declared, so dropping it is a client-visible decision."""
     parent_id, _ = _seed_chained_run_with_private_columns(monkeypatch, tmp_path / "state.db")
 
-    body = _make_client().get(f"/api/schedules/runs/{parent_id}").json()
+    resp = _make_client().get(f"/api/schedules/runs/{parent_id}")
 
-    assert "trigger_context" not in _keys_anywhere(body)
+    assert resp.status_code == 200
+    assert "trigger_context" not in _keys_anywhere(resp.json())
 
 
-def test_the_run_allow_list_serves_everything_the_client_declares():
-    """Every field the web client declares on a run must survive the record projection.
+def test_the_record_serves_every_field_the_client_declares(tmp_path, monkeypatch):
+    """Asserted against a real response, not against the field list.
 
-    Containment rather than equality: the served set is wider, because the CLI renders a
-    duration and artifact paths that no web view reads.
+    Comparing the client's names to the projection's names says only that the two lists
+    agree; a projection that names a field and never emits it passes that. Optional
+    fields are excluded: the client marks them optional because a run need not have one.
     """
     import re as _re
     from pathlib import Path as _Path
 
-    from lionagi.studio.services.schedules import _RUN_RECORD_FIELDS
-
     source = _Path("apps/studio/frontend/src/lib/types.ts")
     if not source.exists():  # the frontend is not vendored into every checkout
         pytest.skip("frontend source not present")
-
     block = _re.search(
         r"^export interface ScheduleRunSummary[^{]*\{(.*?)^\}", source.read_text(), _re.S | _re.M
     )
     assert block, "ScheduleRunSummary interface not found"
-    declared = _re.findall(r"^\s{2}(\w+)\??:", block.group(1), _re.M)
-    assert declared, "no fields parsed from the client interface"
+    declared = _re.findall(r"^\s{2}(\w+)(\??):", block.group(1), _re.M)
+    required = [name for name, optional in declared if not optional]
+    assert required, "no required fields parsed from the client interface"
 
-    # outcome and error_class are computed by the projection rather than named in it.
-    served = set(_RUN_RECORD_FIELDS) | {"outcome", "error_class"}
-    assert not [name for name in declared if name not in served]
+    parent_id, _ = _seed_chained_run_with_private_columns(monkeypatch, tmp_path / "state.db")
+    resp = _make_client().get(f"/api/schedules/runs/{parent_id}")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert not [name for name in required if name not in body]
 
 
 def test_the_single_run_record_keeps_a_session_reported_summary(tmp_path, monkeypatch):

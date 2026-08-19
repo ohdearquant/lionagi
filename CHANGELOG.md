@@ -171,6 +171,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   later release. It remains available and functional on `li agent`, which is
   the surface that implements it.
 
+### Removed
+
+- `trigger_context` from every run object the schedule surfaces serve, and from the
+  run type the web client declares. It held the whole external event body that
+  produced a run, no client read it, and the single-run route was the last surface
+  still sending it.
+
 ## [0.35.0] - 2026-08-12
 
 A broad correctness release across the orchestration engine, the MCP surface,
