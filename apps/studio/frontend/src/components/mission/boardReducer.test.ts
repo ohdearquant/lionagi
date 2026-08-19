@@ -865,6 +865,33 @@ describe("boardReducer — disposition join and active/discharged split", () => 
     expect(s.attentionItems.every((i) => i.legacyId === undefined)).toBe(true);
   });
 
+  it("a session whose id equals its run_id still blocks another session's legacy claim", () => {
+    const nowSec = 1_000_000;
+    // The first row has no legacy key of its own — id and run_id are the same
+    // value — but it occupies "run:shared-run" as its *current* key. Counting
+    // only legacy keys sees one claimant and hands the key to the second row,
+    // rejoining the two rows the guard exists to keep apart.
+    const runs = [
+      makeRun({
+        run_id: "shared-run",
+        id: "shared-run",
+        status: "failed",
+        started_at: nowSec - 600,
+      }),
+      makeRun({ run_id: "shared-run", id: "sess-e", status: "failed", started_at: nowSec - 600 }),
+    ];
+    const dispositions = {
+      "run:shared-run": makeDisposition({ item_id: "run:shared-run", state: "resolved" }),
+    };
+    const s = dispatchOk(initialBoardState(), runs, [], nowSec, null, dispositions);
+    // The row that genuinely owns the key still reads its own disposition.
+    expect(s.dischargedAttentionItems.map((i) => i.id)).toEqual(["run:shared-run"]);
+    // The other one must not have borrowed it, by disposition or by legacy key.
+    const other = s.attentionItems.find((i) => i.id === "run:sess-e");
+    expect(other).toBeDefined();
+    expect(other?.legacyId).toBeUndefined();
+  });
+
   it("an unshared legacy key is still claimed, so the collision guard is not a blanket refusal", () => {
     const nowSec = 1_000_000;
     const runs = [

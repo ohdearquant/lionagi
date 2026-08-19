@@ -215,10 +215,18 @@ function buildAttentionItems(
   // key at all; once those are distinct values, nothing guarantees run_id is
   // unique across sessions, and a shared one would join two rows to a single
   // stored disposition — one row's undo would then clear the other's.
-  const legacyKeyCounts = new Map<string, number>();
+  //
+  // Both keys a row can present are counted, not just its legacy one: a row
+  // whose id and run_id are the same value has no legacy key, yet it still
+  // occupies that value as its current key, and a second session naming it as
+  // run_id would otherwise claim it as unshared.
+  const keyCounts = new Map<string, number>();
+  const countKey = (key: string | null) => {
+    if (key) keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+  };
   for (const run of runs) {
-    const legacy = legacyRunId(run);
-    if (legacy) legacyKeyCounts.set(legacy, (legacyKeyCounts.get(legacy) ?? 0) + 1);
+    countKey(runSessionId(run) || null);
+    countKey(legacyRunId(run));
   }
 
   for (const run of runs) {
@@ -252,7 +260,7 @@ function buildAttentionItems(
     }
     if (reason == null) continue;
     const legacy = legacyRunId(run);
-    const runLegacyId = legacy && legacyKeyCounts.get(legacy) === 1 ? legacy : null;
+    const runLegacyId = legacy && keyCounts.get(legacy) === 1 ? legacy : null;
     items.push({
       id: `run:${runSessionId(run)}`,
       ...(runLegacyId ? { legacyId: `run:${runLegacyId}` } : {}),
