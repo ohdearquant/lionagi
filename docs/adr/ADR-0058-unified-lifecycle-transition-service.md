@@ -734,3 +734,12 @@ remaining migration phases, are what is still open. Implementation is complete o
 phase gates pass. `Status: Accepted` records that the one-policy/one-service
 decision already has dependent implementation on main; `Implementation-status: partial` records
 the remaining work without violating the corpus status lifecycle.
+
+The current seven-policy edge contract is executable rather than inferred from
+the live registry. `tests/state/lifecycle/test_transition_matrix_contract.py`
+carries an independent golden, drives every allowed edge through the public
+service, exercises a fail-closed exit from every terminal status while retaining
+the two declared dispatch recovery edges, and proves that a selected same-status
+append refreshes current reason fields and history. It also pins that status,
+companion fields, and history share the expected-version CAS. Canonical Run is a
+later eighth policy and is not claimed by this baseline slice.
