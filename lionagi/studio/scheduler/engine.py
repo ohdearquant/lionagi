@@ -33,6 +33,7 @@ from lionagi.studio.scheduler.signals import (
 )
 from lionagi.studio.services.scheduler_state import (
     SchedulerStateService,
+    _DBSchedulerStateService,
     create_skipped_run,
     default_scheduler_state,
     flush_run_telemetry,
@@ -566,6 +567,8 @@ class SchedulerEngine:
                 ft.cancel()
             await asyncio.gather(*self._fire_tasks, return_exceptions=True)
             self._fire_tasks.clear()
+        if isinstance(self._svc, _DBSchedulerStateService):
+            await self._svc.close()
 
     def _tracked_fire(self, *args: Any, **kwargs: Any) -> asyncio.Task:
         """Create a tracked _fire task; prevents orphans surviving shutdown."""
@@ -2390,22 +2393,36 @@ class SchedulerEngine:
                     run_id,
                 )
                 return True
-            if isinstance(exc, SchedulerCwdInheritRefusedError):
+            if isinstance(exc, _subprocess.SubprocessDeadlineExceededError):
+                _fire_terminal_status = "timed_out"
+                _fire_exc_reason = RunReasons.TIMED_OUT_DEADLINE
+                _fire_reason_summary = str(exc)
+                _log.warning(
+                    "Schedule fire %s (run %s) exceeded its execution deadline: %s",
+                    schedule.get("name"),
+                    run_id,
+                    exc,
+                )
+            elif isinstance(exc, SchedulerCwdInheritRefusedError):
                 # A deliberate fail-closed refusal, not an internal error: the message already names
                 # the configured root and the daemon directory that would have been substituted, so
                 # log it without a stack trace.
+                _fire_terminal_status = "failed"
                 _fire_exc_reason = RunReasons.FAILED_CWD_INHERIT_REFUSED
+                _fire_reason_summary = f"{type(exc).__name__}: {exc}"
                 _log.warning("Schedule fire %s (run %s): %s", schedule.get("name"), run_id, exc)
             else:
+                _fire_terminal_status = "failed"
                 _fire_exc_reason = RunReasons.FAILED_EXCEPTION
+                _fire_reason_summary = f"{type(exc).__name__}: {exc}"
                 _log.exception("Error in schedule fire %s (run %s)", schedule.get("name"), run_id)
             _end_time = time.time()
             written = await self._guarded_terminal_status(
                 "schedule_run",
                 run_id,
-                new_status="failed",
+                new_status=_fire_terminal_status,
                 reason_code=_fire_exc_reason,
-                reason_summary=f"{type(exc).__name__}: {exc}",
+                reason_summary=_fire_reason_summary,
                 evidence_refs=[{"kind": "schedule", "id": sid}],
                 source="executor",
                 actor=run_id,
@@ -2419,7 +2436,7 @@ class SchedulerEngine:
                 await self._dispatch_signal(
                     build_schedule_run_signal(
                         entity_id=run_id,
-                        new_status="failed",
+                        new_status=_fire_terminal_status,
                         reason_code=_fire_exc_reason,
                         schedule_id=sid,
                         action_kind=schedule.get("action_kind", ""),
@@ -2429,7 +2446,10 @@ class SchedulerEngine:
                     )
                 )
             inv_status, inv_rc, inv_rs, inv_ev, inv_meta = await resolve_invocation_terminal(
-                self._svc, inv_id, fallback_status="failed", exception=exc
+                self._svc,
+                inv_id,
+                fallback_status=_fire_terminal_status,
+                exception=exc,
             )
             inv_written = await self._guarded_terminal_status(
                 "invocation",
@@ -2506,5 +2526,5 @@ class SchedulerEngine:
         return None
 
 
-scheduler = SchedulerEngine()
+scheduler = SchedulerEngine(svc=_DBSchedulerStateService(persistent=True))
 register_default_handlers(scheduler._signal_bus)

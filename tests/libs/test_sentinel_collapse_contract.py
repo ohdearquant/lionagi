@@ -46,9 +46,6 @@ _EXPECTED_ALLOWLIST = frozenset(
         ("lionagi.protocols.messages.instruction.InstructionContent._config", "none"),
         ("lionagi.protocols.messages.instruction.InstructionContent._config", "empty"),
         ("lionagi.protocols.messages.message.MessageContent._config", "none"),
-        ("lionagi.ln.types.spec.Spec.__init__", "none"),
-        ("lionagi.ln.types.spec.Spec.annotation", "none"),
-        ("lionagi.ln.types.spec.Spec.annotated", "none"),
     }
 )
 
@@ -77,11 +74,9 @@ _PRIVATE_IMPORT_OWNERS = {
     "lionagi.ln.types._sentinel._SentinelPolicy": {_BASE_MODULE},
     "lionagi.ln.types._sentinel._compat_is_sentinel": {
         "lionagi.casts.pattern",
-        "lionagi.ln.types.spec",
         "lionagi.models.note",
     },
     "lionagi.ln.types._sentinel._compat_not_sentinel": {
-        "lionagi.ln.types.spec",
         "lionagi.operations.fields",
     },
 }
@@ -1296,9 +1291,11 @@ def test_note_keeps_legacy_recursive_omission_without_collapsing_false_or_zero()
     }
 
 
-def test_spec_legacy_none_projection_remains_until_nested_json_migration():
+def test_spec_omits_unresolved_base_type_through_the_explicit_json_projection():
     spec = Spec()
 
-    assert spec.base_type is None
+    assert spec.base_type is Undefined
     assert spec.annotation is Any
-    assert json_dumps(spec, as_loaded=True) == {"base_type": None, "metadata": []}
+    assert spec.to_dict(mode="json") == {"metadata": []}
+    with pytest.raises(TypeError, match="UndefinedType"):
+        json_dumps(spec, as_loaded=True)

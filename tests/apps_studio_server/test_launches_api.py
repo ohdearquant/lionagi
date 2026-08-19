@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import lionagi.state.db as state_db_mod
+from lionagi.studio.scheduler.subprocess import SubprocessDeadlineExceededError
 
 fastapi = pytest.importorskip("fastapi", reason="studio extra not installed")
 from fastapi.testclient import TestClient  # noqa: E402
@@ -489,6 +490,14 @@ class TestSpawnDetachedTerminalUpdate:
             (0, None, "completed"),
             (3, None, "failed"),
             (None, RuntimeError("spawn blew up"), "failed"),
+            (
+                None,
+                SubprocessDeadlineExceededError(
+                    invocation_id="inv1",
+                    deadline_seconds=2,
+                ),
+                "timed_out",
+            ),
         ],
     )
     def test_reason_code_is_registered(self, exit_code, spawn_exc, want_status):

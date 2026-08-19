@@ -85,10 +85,9 @@ async def test_run_flow_stamps_depth_before_setup(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ndjson_from_cli_inherits_stamped_depth(monkeypatch):
-    """The CLI engine spawn (shared by claude_code/codex/gemini_code) must
-    pass env=None to create_subprocess_exec while LIONAGI_AGENT_DEPTH is
-    already set in this process's os.environ — that combination is what
-    makes the child inherit the stamp with zero endpoint changes."""
+    """The CLI engine spawn (shared by claude_code/codex/gemini_code) hands
+    create_subprocess_exec the whole of this process's os.environ, so a
+    variable stamped here reaches the child with zero endpoint changes."""
     import asyncio
 
     from lionagi.providers._cli_subprocess import ndjson_from_cli
@@ -112,5 +111,11 @@ async def test_ndjson_from_cli_inherits_stamped_depth(monkeypatch):
     async for obj in ndjson_from_cli(["true"]):
         chunks.append(obj)
 
-    assert captured_kwargs["env"] is None
+    # Every variable this process holds reaches the child, so anything an
+    # endpoint stamps is inherited without further wiring. Compared by name
+    # only: the spawn env also carries resolved secrets, and a failure here
+    # must not print their values.
+    spawn_env = captured_kwargs["env"]
+    assert not {key for key, value in os.environ.items() if spawn_env.get(key) != value}
+    assert spawn_env[DEPTH_ENV] == "1"
     assert captured_kwargs["_depth_at_spawn"] == "1"

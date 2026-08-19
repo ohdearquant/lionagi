@@ -3,6 +3,7 @@
 import pytest
 from pydantic.fields import FieldInfo
 
+from lionagi.ln.types import Undefined, Unset
 from lionagi.models import FieldModel
 
 
@@ -266,6 +267,29 @@ def test_to_spec_preserves_explicit_none_default():
     """An explicit default=None must survive to_spec() (not treated as absent)."""
     spec = FieldModel(base_type=int, default=None).to_spec()
     assert spec.default is None
+
+
+def test_to_spec_normalizes_legacy_none_annotation_to_unset():
+    """FieldModel owns its legacy None-as-unspecified adapter behavior."""
+    spec = FieldModel(annotation=None).to_spec()
+
+    assert spec.base_type is Unset
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"base_type": None},
+        {"base_type": Undefined},
+        {"base_type": Unset},
+        {"annotation": None},
+    ],
+)
+def test_to_spec_preserves_the_legacy_unspecified_base_type_matrix(kwargs):
+    spec = FieldModel(**kwargs).to_spec()
+
+    assert spec.base_type is Unset
 
 
 def test_to_spec_does_not_flatten_json_schema_extra():

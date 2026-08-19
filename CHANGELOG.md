@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Changed
 
+- Lightweight `Params`, `DataClass`, `Role`, and `InstructionContent` projections now accept a
+  keyword-only `mode="json"` while preserving positional `exclude` and the existing shallow
+  Python-mode output. JSON mode delegates nested LionAGI/Pydantic/dataclass values to the internal
+  serializer, preserves explicit null and falsey values, and rejects unresolved sentinels in raw
+  containers, non-finite numbers, and unversioned bytes instead of coercing them to null or text.
+  `Spec()` now records an omitted base type as `Undefined`; explicit `Spec(None)` is rejected, while
+  the legacy `FieldModel(annotation=None)` adapter normalizes its input to `Unset` before creating a
+  `Spec`. Callers that previously handed an unresolved lightweight dataclass directly to
+  `json_dumps()` must use its owner projection first (`to_dict(mode="json")`); raw dataclass
+  traversal cannot omit a field and now fails rather than encoding absence as null. Resolved
+  Python types and callable metadata also remain fail-closed until a target adapter or versioned
+  snapshot reference supplies their wire identity.
 - ADR-0070 now records the shipped one-shot `at` schedule trigger alongside
   `cron`, `interval`, and `github_poll`; a schema-parity guard keeps that
   persisted vocabulary and the documented trigger set aligned. It also records

@@ -24,9 +24,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+from lionagi.providers import _secret_resolution
 from lionagi.providers._cli_subprocess import ndjson_from_cli
 from lionagi.providers._secret_resolution import (
     fill_declared_secrets,
+    fill_declared_secrets_and_names,
     resolve_secret_lookup_config,
 )
 
@@ -361,3 +363,32 @@ class TestTheSpawnSeamActuallyUsesIt:
         ]
         seen = [obj async for obj in ndjson_from_cli(cmd)]
         assert seen == [{"marker": "inherited", "seen": None}]
+
+
+class TestOneConfigReadPerSpawn:
+    """Filling and redacting must agree about which names are secrets.
+
+    The config is re-read from disk on every resolve, and filling awaits a
+    lookup, so two resolves around that await can disagree: the child gets a
+    value the redactor was never told to remove.
+    """
+
+    async def test_filling_and_naming_come_from_a_single_resolve(self, lionagi_home, monkeypatch):
+        _write_global(lionagi_home, _block(_PRINTS_A_VALUE))
+        calls = []
+        real = _secret_resolution.resolve_secret_lookup_config
+
+        def counting(**kwargs):
+            calls.append(kwargs)
+            return real(**kwargs)
+
+        monkeypatch.setattr(_secret_resolution, "resolve_secret_lookup_config", counting)
+
+        env, names = await fill_declared_secrets_and_names({})
+
+        assert len(calls) == 1, f"config resolved {len(calls)} times, so the two reads can disagree"
+        assert names == (NAME,), names
+        assert env is not None and env[NAME] == f"resolved::{NAME}"
+        # The names describe the fill that actually happened, which is the
+        # property a second resolve cannot guarantee.
+        assert set(names) <= set(env)

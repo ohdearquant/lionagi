@@ -4,7 +4,7 @@ import dataclasses
 
 import pytest
 
-from lionagi.ln.types import CommonMeta, Meta, Spec
+from lionagi.ln.types import CommonMeta, Meta, Spec, Undefined, Unset
 
 
 class TestCommonMeta:
@@ -328,6 +328,63 @@ class TestSpecBaseTypeValidation:
         Spec(typing.Annotated[int, "meta"])
         Spec(typing.Callable[[int], str])
         Spec(dict[str, int])
+
+    def test_omitted_base_type_is_undefined_and_materializes_as_any(self):
+        from typing import Any
+
+        spec = Spec()
+
+        assert spec.base_type is Undefined
+        assert spec.annotation is Any
+        assert spec.annotated() is Any
+        assert spec.with_updates(name="field").base_type is Undefined
+        assert spec == Spec(Undefined)
+        assert spec != Spec(Unset)
+
+    def test_explicit_sentinels_remain_distinct(self):
+        from typing import Any
+
+        undefined = Spec(Undefined)
+        unresolved = Spec(Unset)
+
+        assert undefined.base_type is Undefined
+        assert unresolved.base_type is Unset
+        assert undefined.annotation is Any
+        assert unresolved.annotation is Any
+        assert undefined.with_updates(name="undefined").base_type is Undefined
+        assert unresolved.with_updates(name="unresolved").base_type is Unset
+
+    def test_explicit_null_is_not_an_omitted_base_type(self):
+        with pytest.raises(ValueError, match="base_type must be a type"):
+            Spec(None)
+
+    def test_resolved_none_type_remains_a_valid_annotation(self):
+        spec = Spec(type(None))
+
+        assert spec.base_type is type(None)
+        assert spec.annotation is type(None)
+
+    def test_explicit_null_metadata_default_remains_present(self):
+        spec = Spec(str, default=None)
+
+        assert spec.default is None
+        assert spec.to_dict()["metadata"][0] == Meta("default", None)
+
+    def test_resolved_python_type_requires_a_target_or_snapshot_adapter_for_json(self):
+        with pytest.raises(TypeError, match="type"):
+            Spec(str).to_dict(mode="json")
+
+    def test_callable_metadata_requires_a_versioned_adapter_for_json(self):
+        spec = Spec(str, validator=lambda value: value)
+
+        with pytest.raises(TypeError, match="function"):
+            spec.to_dict({"base_type"}, mode="json")
+
+    def test_nested_sentinel_metadata_fails_closed(self):
+        spec = Spec(Unset, name="field", default=Unset)
+
+        with pytest.raises(TypeError, match="UnsetType"):
+            spec.to_dict(mode="json")
 
     def test_rejects_origin_attribute_spoof(self):
         # Any object can define __origin__, so attribute presence cannot stand

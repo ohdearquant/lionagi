@@ -4,7 +4,7 @@ from collections.abc import Callable, Collection, MutableMapping
 from dataclasses import MISSING, dataclass, fields
 from enum import Enum as _Enum
 from functools import lru_cache
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from weakref import WeakKeyDictionary
 
 from typing_extensions import Self, TypedDict, override
@@ -133,6 +133,19 @@ def _declared_field_state(instance: Any) -> dict[str, Any]:
     }
 
 
+def _apply_serialization_mode(
+    data: dict[str, Any],
+    mode: Literal["python", "json"],
+) -> dict[str, Any]:
+    if mode == "python":
+        return data
+    if mode == "json":
+        from .._json_dump import _to_json_value
+
+        return _to_json_value(data)
+    raise ValueError(f"Unsupported serialization mode: {mode!r}")
+
+
 @lru_cache(maxsize=256)
 def _config_sentinel_policy(
     owner: type[Any],
@@ -230,8 +243,16 @@ class Params:
         dict_.update(kw_)
         return dict_
 
-    def to_dict(self, exclude: Collection[str] | None = None) -> dict[str, Any]:
-        return _declared_fields_to_dict(self, exclude)
+    def to_dict(
+        self,
+        exclude: Collection[str] | None = None,
+        *,
+        mode: Literal["python", "json"] = "python",
+    ) -> dict[str, Any]:
+        return _apply_serialization_mode(
+            _declared_fields_to_dict(self, exclude),
+            mode,
+        )
 
     def __hash__(self) -> int:
         from .._hash import hash_dict
@@ -277,8 +298,16 @@ class DataClass:
     def _validate(self) -> None:
         _validate_declared_fields(self, setattr)
 
-    def to_dict(self, exclude: Collection[str] | None = None) -> dict[str, Any]:
-        return _declared_fields_to_dict(self, exclude)
+    def to_dict(
+        self,
+        exclude: Collection[str] | None = None,
+        *,
+        mode: Literal["python", "json"] = "python",
+    ) -> dict[str, Any]:
+        return _apply_serialization_mode(
+            _declared_fields_to_dict(self, exclude),
+            mode,
+        )
 
     @classmethod
     def _is_sentinel(cls, value: Any) -> bool:

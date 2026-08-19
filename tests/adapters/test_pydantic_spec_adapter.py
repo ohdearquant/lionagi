@@ -1,10 +1,12 @@
 """End-to-end tests for PydanticSpecAdapter: Spec → FieldInfo → Model → Validation."""
 
+from typing import Any
+
 import pytest
 from pydantic import BaseModel, ValidationError
 
 from lionagi.adapters.spec_adapters import PydanticSpecAdapter
-from lionagi.ln.types import Operable, Spec
+from lionagi.ln.types import Operable, Spec, Undefined, Unset
 
 
 class TestProtocolConformance:
@@ -327,3 +329,63 @@ class TestEdgeCases:
         assert model_type.model_validate({"": "value"}).model_dump() == {"": "value"}
         with pytest.raises(ValidationError, match="bad value"):
             model_type.model_validate({"": "bad"})
+
+    def test_unresolved_specs_materialize_as_required_any_fields(self):
+        operable = Operable(
+            (
+                Spec(Undefined, name="missing"),
+                Spec(Unset, name="unresolved"),
+            )
+        )
+
+        model_type = PydanticSpecAdapter.create_model(
+            operable,
+            "UnresolvedAnyFields",
+        )
+        marker = object()
+        instance = model_type(missing={"nested": True}, unresolved=marker)
+
+        for field in model_type.model_fields.values():
+            assert field.annotation is Any
+            assert field.is_required()
+        with pytest.raises(ValidationError):
+            model_type()
+        assert instance.missing == {"nested": True}
+        assert instance.unresolved is marker
+
+    def test_unresolved_base_identity_is_preserved_in_model_cache_keys(self):
+        class CacheBase(BaseModel):
+            pass
+
+        undefined = Operable((Spec(Undefined, name="value"),))
+        unresolved = Operable((Spec(Unset, name="value"),))
+
+        first = PydanticSpecAdapter.create_model(
+            undefined,
+            "UnresolvedCacheModel",
+            base_type=CacheBase,
+        )
+        repeated = PydanticSpecAdapter.create_model(
+            undefined,
+            "UnresolvedCacheModel",
+            base_type=CacheBase,
+        )
+        distinct = PydanticSpecAdapter.create_model(
+            unresolved,
+            "UnresolvedCacheModel",
+            base_type=CacheBase,
+        )
+
+        assert repeated is first
+        assert distinct is not first
+
+    def test_unresolved_listable_nullable_projection_is_adapter_owned(self):
+        operable = Operable((Spec(Unset, name="items", listable=True, nullable=True),))
+
+        model_type = PydanticSpecAdapter.create_model(
+            operable,
+            "UnresolvedNullableList",
+        )
+
+        assert model_type(items=[1, "two"]).items == [1, "two"]
+        assert model_type(items=None).items is None

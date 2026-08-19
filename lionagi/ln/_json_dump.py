@@ -9,6 +9,7 @@ import contextlib
 import dataclasses
 import datetime as dt
 import decimal
+import inspect
 import math
 import re
 import sys
@@ -34,6 +35,11 @@ __all__ = [
 # Types orjson serializes natively; routed through default() only when passthrough is requested.
 _NATIVE = (dt.datetime, dt.date, dt.time, UUID)
 _SERIALIZATION_METHODS = ("model_dump", "to_dict", "dict")
+# Same methods, different priority: the projection prefers an owner's own
+# to_dict, which is the more specific rendering (an Element's carries the
+# lion_class that generic deserialization needs and model_dump drops).
+# Derived rather than restated so the two cannot disagree on membership.
+_PROJECTION_METHODS = ("to_dict", *(m for m in _SERIALIZATION_METHODS if m != "to_dict"))
 
 # helpers
 
@@ -172,6 +178,198 @@ def _cached_default(
         safe_fallback=safe_fallback,
         fallback_clip=fallback_clip,
     )
+
+
+def _inspect_accepts_keyword(method: Callable[..., Any], name: str) -> bool:
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        or (
+            parameter.name == name
+            and parameter.kind
+            in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        )
+        for parameter in parameters
+    )
+
+
+@lru_cache(maxsize=256)
+def _cached_accepts_keyword(method: Callable[..., Any], name: str) -> bool:
+    return _inspect_accepts_keyword(method, name)
+
+
+def _accepts_keyword(method: Callable[..., Any], name: str) -> bool:
+    """Return whether a callable explicitly or generically accepts *name*."""
+    target = getattr(method, "__func__", method)
+    try:
+        hash(target)
+    except TypeError:
+        return _inspect_accepts_keyword(method, name)
+    return _cached_accepts_keyword(target, name)
+
+
+def _overrides_substrate_to_dict(obj: Any, substrate_types: tuple[type[Any], ...]) -> bool:
+    """Whether *obj*'s type replaced the to_dict it inherited from its substrate base."""
+    for base in substrate_types:
+        base_method = getattr(base, "to_dict", None)
+        if base_method is not None and isinstance(obj, base):
+            return getattr(type(obj), "to_dict", None) is not base_method
+    return False
+
+
+def _json_projection_default(obj: Any) -> Any:
+    """Finish non-native leaves after the projection traversal."""
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {
+            field_info.name: getattr(obj, field_info.name) for field_info in dataclasses.fields(obj)
+        }
+
+    fallback = _cached_default(False, False, False, False, False, 2048)
+    return fallback(obj)
+
+
+def _project_json_value(
+    obj: Any,
+    substrate_types: tuple[type[Any], ...],
+    active: set[int],
+    path: str,
+) -> Any:
+    """Invoke each owner adapter once before handing native leaves to orjson."""
+    if isinstance(obj, float) and not math.isfinite(obj):
+        _raise_non_finite(path)
+    if isinstance(obj, Enum):
+        return _project_json_value(obj.value, substrate_types, active, path)
+
+    if isinstance(obj, Mapping):
+        identity = _enter_json_projection(obj, active)
+        try:
+            return {
+                key: _project_json_value(
+                    value,
+                    substrate_types,
+                    active,
+                    f"{path}.{key}",
+                )
+                for key, value in obj.items()
+            }
+        finally:
+            active.remove(identity)
+    if isinstance(obj, list | tuple):
+        identity = _enter_json_projection(obj, active)
+        try:
+            return [
+                _project_json_value(
+                    value,
+                    substrate_types,
+                    active,
+                    f"{path}[{index}]",
+                )
+                for index, value in enumerate(obj)
+            ]
+        finally:
+            active.remove(identity)
+    if isinstance(obj, set | frozenset):
+        identity = _enter_json_projection(obj, active)
+        try:
+            return [
+                _project_json_value(
+                    value,
+                    substrate_types,
+                    active,
+                    f"{path}[{index}]",
+                )
+                for index, value in enumerate(obj)
+            ]
+        finally:
+            active.remove(identity)
+
+    if isinstance(obj, substrate_types):
+        identity = _enter_json_projection(obj, active)
+        try:
+            projection_owner: Any = obj
+            to_dict = projection_owner.to_dict
+            # A subclass that renders per mode only gets that rendering if the
+            # mode reaches it, so pass it. Inherited implementations are skipped
+            # deliberately: their json mode is a value projection this walk
+            # repeats anyway, and asking for it would round-trip every nested
+            # owner through the serializer instead of once at the root.
+            projected = (
+                to_dict(mode="json")
+                if _overrides_substrate_to_dict(obj, substrate_types)
+                and _accepts_keyword(to_dict, "mode")
+                else to_dict()
+            )
+            return _project_json_value(
+                projected,
+                substrate_types,
+                active,
+                path,
+            )
+        finally:
+            active.remove(identity)
+
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        identity = _enter_json_projection(obj, active)
+        try:
+            return {
+                field_info.name: _project_json_value(
+                    getattr(obj, field_info.name),
+                    substrate_types,
+                    active,
+                    f"{path}.{field_info.name}",
+                )
+                for field_info in dataclasses.fields(obj)
+            }
+        finally:
+            active.remove(identity)
+
+    for method_name in _PROJECTION_METHODS:
+        method = getattr(obj, method_name, None)
+        if not callable(method):
+            continue
+        identity = _enter_json_projection(obj, active)
+        try:
+            value = (
+                method(mode="json")
+                if method_name != "dict" and _accepts_keyword(method, "mode")
+                else method()
+            )
+            return _project_json_value(value, substrate_types, active, path)
+        finally:
+            active.remove(identity)
+    return obj
+
+
+def _enter_json_projection(obj: Any, active: set[int]) -> int:
+    identity = id(obj)
+    if identity in active:
+        raise TypeError("Circular reference in JSON projection")
+    active.add(identity)
+    return identity
+
+
+def _to_json_value(obj: Any) -> Any:
+    """Return a JSON-compatible value through the internal orjson boundary."""
+    from .types import DataClass, Params, Spec
+
+    projected = _project_json_value(
+        obj,
+        (Params, DataClass, Spec),
+        set(),
+        "$",
+    )
+    output = _dumpb(
+        projected,
+        _json_projection_default,
+        orjson.OPT_PASSTHROUGH_DATACLASS,
+    )
+    return orjson.loads(output)
 
 
 # defaults & options

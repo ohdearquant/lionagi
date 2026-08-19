@@ -9,12 +9,15 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+import sys
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from lionagi.libs.path_safety import contain_and_resolve, has_traversal
 from lionagi.libs.schema.as_readable import as_readable
@@ -25,7 +28,7 @@ from lionagi.ln._proc import (
 )
 from lionagi.ln.concurrency.utils import maybe_await
 
-from ._secret_resolution import fill_declared_secrets
+from ._secret_resolution import fill_declared_secrets_and_names
 
 log = logging.getLogger(__name__)
 
@@ -294,6 +297,269 @@ def _no_stderr_reason(
     return f"{exited} and wrote nothing to stderr"
 
 
+# Enough to carry a CLI's error banner without pasting a whole session into the
+# log line; the cap is on what is logged, not on what was captured.
+_ABANDONED_STDERR_LOG_CAP = 4096
+
+# Backstop against a wedged reader draining a closed pipe to EOF, not a budget
+# for the child to keep talking, so it is shorter than the exit-code path's wait.
+_ABANDONED_STDERR_DRAIN_TIMEOUT = 0.5
+
+
+# A credential reaches a child either from the environment we build for it or
+# from its own config, so the log path strips both what we injected and what
+# merely looks like a secret.
+# "sig" is bounded because it is short enough to sit inside ordinary words
+# (assignee, design, signal); the rest are long enough to stand alone.
+_SECRET_ENV_KEY_RE = re.compile(
+    r"(?i)key|token|secret|password|passwd|credential|auth|signature|bearer"
+    r"|(?<![a-z])sig(?![a-z])"
+)
+_SECRET_SHAPE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"Bearer\s+\S+"
+    # To end of line, plus folded continuations: a scheme word ("Bearer x")
+    # otherwise ends the match early, and a value wrapped onto an indented
+    # continuation line leaves its tail behind.
+    r"|(?:Authorization|X-Api-Key|Api-Key)\s*:[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*"
+    r"|(?:sk|rk)-[a-z0-9_-]{8,}"
+    r"|(?:ghp|gho|ghu|ghs|github_pat)_[a-z0-9_]{8,}"
+    r"|xox[abprs]-[a-z0-9-]{8,}"
+    r"|AKIA[0-9A-Z]{12,}"
+    r"|eyJ[a-z0-9_-]{8,}\.[a-z0-9_-]+\.[a-z0-9_-]+"
+    r")"
+)
+# A credential inside a connection string is invisible to both the name rule and
+# the token shapes. Only the password is replaced, so the host stays diagnostic.
+_URL_CREDENTIAL_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/?#@]*:)[^\s/?#@]+(@)")
+# The same credential passed as a query parameter has no "@" and so is invisible
+# to the rule above. Every parameter is matched and the name decides, so this
+# reads the name vocabulary above rather than restating it.
+_URL_QUERY_PARAM_RE = re.compile(r"([?&])([^=&\s]+)=([^&\s]+)")
+
+# The same credential written as a plain assignment has no "?" either, and may
+# be too short or too word-like to have become a candidate. Anchoring to the
+# name is what lets these two rules skip the length floor the guesses need.
+_ASSIGNMENT_RE = re.compile(r"([\w.\-]+)=([^\s&]+)")
+# And the space-separated form, which is how a child echoes its own argv back.
+# The value must not itself start with "-", or a bare flag eats the next one.
+_FLAG_VALUE_RE = re.compile(r"(--[\w.\-]+)(\s+)([^\s\-][^\s]*)")
+
+# Short values collide with ordinary words, which is the only reason either rule
+# below has a floor, so both use the same one. A declared name needs none.
+_MIN_REDACTABLE_VALUE_LEN = 8
+
+
+def _secret_candidates(
+    env: Mapping[str, str] | None, declared: Iterable[str] = ()
+) -> dict[str, str]:
+    """The environment values a log redactor must remove.
+
+    Declared names come first because the operator saying a variable holds a
+    secret is authority; the name pattern is only a guess, and it is what let a
+    secret named for its purpose rather than its kind through.
+    """
+    if not env:
+        return {}
+    named = frozenset(declared)
+    return {
+        key: value
+        for key, value in env.items()
+        if isinstance(key, str)
+        and isinstance(value, str)
+        # Empty would splice "[redacted]" between every character of the log.
+        and value
+        and (
+            key in named
+            or (len(value) >= _MIN_REDACTABLE_VALUE_LEN and _SECRET_ENV_KEY_RE.search(key))
+        )
+    }
+
+
+def _cmd_secret_values(cmd: Iterable[str] | None) -> dict[str, str]:
+    """Credentials passed as arguments, which no environment mapping holds.
+
+    A name or a flag is what makes an argument tellable from a path or a
+    subcommand, so a credential passed as a bare positional stays outside this:
+    nothing distinguishes it from the arguments the message needs to stay
+    useful. The environment is the supported channel for one, and it is covered
+    whatever the value looks like.
+
+    The anchored text rules already cover an echoed flag; this covers the child
+    printing the value alone, where nothing in the text says what it is. Same
+    length floor as the environment guesses, for the same reason: the flag name
+    is a guess, and a short value is not tellable from an ordinary word.
+
+    A caller that does need a bare positional covered declares the literal value
+    to remove, because it is the one that knows which argument is the credential.
+    Widening this to guess at positionals is not the extension: it would strip
+    the paths and subcommands the failure message exists to carry.
+    """
+    found: dict[str, str] = {}
+    awaiting: str | None = None
+    for token in cmd or ():
+        if not isinstance(token, str):
+            awaiting = None
+            continue
+        name, sep, value = token.partition("=")
+        if sep and _name_reads_as_credential(name):
+            if len(value) >= _MIN_REDACTABLE_VALUE_LEN:
+                found[name.lstrip("-")] = value
+            awaiting = None
+        elif awaiting is not None and not token.startswith("-"):
+            if len(token) >= _MIN_REDACTABLE_VALUE_LEN:
+                found[awaiting] = token
+            awaiting = None
+        else:
+            awaiting = token.lstrip("-") if _name_reads_as_credential(token) else None
+    return found
+
+
+def _bounded_env_values(
+    env: Mapping[str, str] | None, already_secret: Mapping[str, str]
+) -> dict[str, str]:
+    """Name-matched values under the floor, replaceable only as whole tokens.
+
+    The name is evidence the value is a credential, so length must not excuse
+    it entirely. What length does decide is the replacement: a short value can
+    sit inside an ordinary word, so it gets a bounded replacement while longer
+    values keep the stronger substring one.
+    """
+    if not env:
+        return {}
+    return {
+        key: value
+        for key, value in env.items()
+        if isinstance(key, str)
+        and isinstance(value, str)
+        and value
+        and key not in already_secret
+        and len(value) < _MIN_REDACTABLE_VALUE_LEN
+        and _SECRET_ENV_KEY_RE.search(key)
+    }
+
+
+def _opaque_env_values(
+    env: Mapping[str, str] | None, already_secret: Mapping[str, str]
+) -> dict[str, str]:
+    """Values the log will not echo even though nothing marks them secret.
+
+    A secret can sit in a variable whose name says nothing, so length is the
+    only signal left.
+    """
+    if not env:
+        return {}
+    return {
+        key: value
+        for key, value in env.items()
+        if isinstance(key, str)
+        and isinstance(value, str)
+        and key not in already_secret
+        and len(value) >= _MIN_REDACTABLE_VALUE_LEN
+    }
+
+
+def _name_reads_as_credential(name: str) -> bool:
+    """Whether a parameter, variable or flag name announces that it holds a secret."""
+    # Decoded before the test: `p%61ssword` is the same parameter to the server
+    # that reads it, and would otherwise carry its value past every rule.
+    return bool(_SECRET_ENV_KEY_RE.search(unquote(name)))
+
+
+def _redact_query_value(match: re.Match[str]) -> str:
+    """Replace a query parameter's value when its name reads as a credential."""
+    separator, name, value = match.groups()
+    if not _name_reads_as_credential(name):
+        return match.group(0)
+    return f"{separator}{name}=[redacted]"
+
+
+def _redact_assignment_value(match: re.Match[str]) -> str:
+    """Replace a bare NAME=value pair when the name reads as a credential."""
+    name, value = match.groups()
+    if not _name_reads_as_credential(name):
+        return match.group(0)
+    return f"{name}=[redacted]"
+
+
+def _redact_flag_value(match: re.Match[str]) -> str:
+    """Replace the value after a credential-named flag, as echoed argv shows it."""
+    flag, gap, value = match.groups()
+    if not _name_reads_as_credential(flag):
+        return match.group(0)
+    return f"{flag}{gap}[redacted]"
+
+
+def _escape_control_characters(text: str) -> str:
+    """Show control bytes rather than let child output forge a log record."""
+    return "".join(
+        character if character == " " or character.isprintable() else repr(character)[1:-1]
+        for character in text
+    )
+
+
+def _redact_secrets_for_log(
+    text: str,
+    secrets: Mapping[str, str] | None,
+    opaque: Mapping[str, str] | None = None,
+    bounded: Mapping[str, str] | None = None,
+) -> str:
+    """Strip credentials out of child output before any of it reaches a log.
+
+    Both arguments are already the sets to remove, not environments to filter:
+    one selection site, so the spawn path and the log path cannot drift apart.
+    A known secret becomes ``[redacted]`` because naming it adds nothing; an
+    unclassified value becomes its variable's name, which keeps the message
+    diagnostic without printing what the variable held.
+    """
+    if not text:
+        return text
+    replacements: dict[str, str] = {}
+    for key, value in (opaque or {}).items():
+        if isinstance(value, str) and value:
+            replacements[value] = f"[${key}]"
+    # Second, so a value in both classes is redacted rather than named.
+    for value in (secrets or {}).values():
+        if isinstance(value, str) and value:
+            replacements[value] = "[redacted]"
+    # Longest first, so a value containing another is not left half-revealed.
+    for value in sorted(replacements, key=len, reverse=True):
+        text = text.replace(value, replacements[value])
+    for value in sorted({v for v in (bounded or {}).values() if v}, key=len, reverse=True):
+        # Whole token only: a substring pass would splice into ordinary words.
+        text = re.sub(rf"(?<!\w){re.escape(value)}(?!\w)", "[redacted]", text)
+    text = _URL_CREDENTIAL_RE.sub(r"\1[redacted]\2", text)
+    text = _URL_QUERY_PARAM_RE.sub(_redact_query_value, text)
+    text = _ASSIGNMENT_RE.sub(_redact_assignment_value, text)
+    text = _FLAG_VALUE_RE.sub(_redact_flag_value, text)
+    # Escape last: the redaction patterns are written against the real text.
+    return _escape_control_characters(_SECRET_SHAPE_RE.sub("[redacted]", text))
+
+
+def _abandoned_without_output_note(
+    captured: str,
+    unavailable: str | None,
+    drain_error: str | None,
+    drain_incomplete: bool = False,
+) -> str:
+    """What to say about a child abandoned before it produced output; keeps ``_no_stderr_reason``'s three-way split so a broken capture cannot read as a quiet subprocess."""
+    if captured:
+        clipped = captured[:_ABANDONED_STDERR_LOG_CAP]
+        suffix = " [truncated]" if len(captured) > _ABANDONED_STDERR_LOG_CAP else ""
+        if drain_incomplete:
+            suffix += " [stderr drain did not finish]"
+        return f"its stderr said: {clipped}{suffix}"
+    if drain_error is not None:
+        return f"reading its stderr failed with {drain_error}, so no output was captured"
+    if drain_incomplete:
+        # An unfinished drain leaves the pipe unread, so silence here is
+        # unknown rather than a quiet child.
+        return "its stderr could not be drained in time, so whether it wrote anything is unknown"
+    if unavailable is not None:
+        return unavailable
+    return "it wrote nothing to stderr either"
+
+
 async def ndjson_from_cli(
     cmd: list[str],
     *,
@@ -316,10 +582,22 @@ async def ndjson_from_cli(
     # from its own environment is filled in one place rather than four. Purely
     # additive: with nothing configured this returns ``env`` unchanged, and a
     # lookup that fails leaves the child to fail the way it already failed.
-    child_env = await fill_declared_secrets(env)
+    # One config read for both: re-resolving after the fill's await would let a
+    # settings edit in that window hand the child a value the redactor is not
+    # told to remove.
+    child_env, declared = await fill_declared_secrets_and_names(env)
+    # One mapping for both the child and the redactor: with env=None the child
+    # reads os.environ at exec, later than any snapshot taken here.
+    spawn_env: dict[str, str] = dict(child_env) if child_env is not None else dict(os.environ)
+    redaction_env: Mapping[str, str] = {
+        **_secret_candidates(spawn_env, declared),
+        **_cmd_secret_values(cmd),
+    }
+    opaque_env: Mapping[str, str] = _opaque_env_values(spawn_env, redaction_env)
+    bounded_env: Mapping[str, str] = _bounded_env_values(spawn_env, redaction_env)
     kwargs: dict[str, Any] = dict(
         cwd=str(cwd) if cwd else None,
-        env=dict(child_env) if child_env is not None else None,
+        env=spawn_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
@@ -395,6 +673,17 @@ async def ndjson_from_cli(
 
     stderr_task = asyncio.create_task(_drain_stderr())
 
+    def captured_stderr() -> str:
+        """The child's stderr as anything outside this process may see it."""
+        # Both the non-zero-exit error and the abandoned-child warning surface
+        # these same bytes, so they are redacted here rather than at each.
+        return _redact_secrets_for_log(
+            b"".join(stderr_chunks).decode(errors="replace").strip(),
+            redaction_env,
+            opaque_env,
+            bounded_env,
+        )
+
     async def _write_stdin(payload: bytes) -> None:
         if proc.stdin is None:
             return
@@ -466,6 +755,13 @@ async def ndjson_from_cli(
                 return b""
         return await read_task
 
+    # Set before each yield, never after: GeneratorExit lands at the yield, so a
+    # later assignment never runs and a child that spoke reads as one that did not.
+    produced_output = False
+    # Whether the exit-code path below already quoted stderr to the caller, so
+    # the teardown does not repeat it into the log.
+    stderr_already_surfaced = False
+
     try:
         while True:
             chunk = await _read_next()
@@ -480,6 +776,7 @@ async def ndjson_from_cli(
                     break
                 try:
                     obj, idx = json_decoder.raw_decode(buffer)
+                    produced_output = True
                     yield obj
                     buffer = buffer[idx:]
                 except json.JSONDecodeError:
@@ -490,12 +787,14 @@ async def ndjson_from_cli(
         if buffer:
             try:
                 obj, idx = json_decoder.raw_decode(buffer)
+                produced_output = True
                 yield obj
             except json.JSONDecodeError:
                 if tail_repair is not None:
                     try:
                         repaired = tail_repair(buffer)
                         if repaired is not None:
+                            produced_output = True
                             yield repaired
                             log.warning("Repaired malformed JSON fragment at stream end")
                         else:
@@ -516,7 +815,7 @@ async def ndjson_from_cli(
                 drain_truncated = True
             except asyncio.CancelledError:
                 raise
-            err = b"".join(stderr_chunks).decode(errors="replace").strip()
+            err = captured_stderr()
             # Emptiness decided on what was captured, before the drain note is
             # appended, so a truncated drain that captured nothing still gets
             # a message instead of the note masquerading as output.
@@ -524,10 +823,41 @@ async def ndjson_from_cli(
                 err = _no_stderr_reason(rc, stderr_unavailable, stderr_drain_error)
             if drain_truncated:
                 err += " [stderr drain timed out]"
+            stderr_already_surfaced = True
             raise RuntimeError(err)
 
     finally:
+        # Neither stderr-quoting path covers this, and it is decided before any
+        # await, since awaiting in a finally can change sys.exc_info().
+        abandoned_silently = (
+            sys.exc_info()[1] is not None and not produced_output and not stderr_already_surfaced
+        )
+
         await end_child_group(proc)
+
+        if abandoned_silently:
+            # Drain first, or the warning reports "said nothing" about a child
+            # that spoke; shielded so a timeout cannot cancel it mid-buffer.
+            abandon_drain_incomplete = False
+            if stderr_task is not None:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(stderr_task), timeout=_ABANDONED_STDERR_DRAIN_TIMEOUT
+                    )
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    # Whatever it captured stays in the buffer, but the drain
+                    # did not finish, so an empty buffer is unknown rather than
+                    # evidence the child was quiet.
+                    abandon_drain_incomplete = True
+            log.warning(
+                "CLI subprocess produced no output before it was abandoned; %s",
+                _abandoned_without_output_note(
+                    captured_stderr(),
+                    stderr_unavailable,
+                    stderr_drain_error,
+                    abandon_drain_incomplete,
+                ),
+            )
 
         # Reap the helper tasks — contextlib.suppress(Exception) does NOT
         # catch CancelledError (BaseException), so we suppress it explicitly.

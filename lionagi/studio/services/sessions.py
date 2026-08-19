@@ -849,17 +849,18 @@ async def _fetch_role_counts(db: aiosqlite.Connection, msg_ids: list[str]) -> di
     counts: dict[str, int] = {}
     if not msg_ids:
         return counts
-    for chunk_start in range(0, len(msg_ids), 500):
-        chunk = msg_ids[chunk_start : chunk_start + 500]
-        placeholders = ",".join("?" for _ in chunk)
-        cur = await db.execute(
-            f"SELECT role, COUNT(*) AS n FROM messages WHERE id IN ({placeholders}) GROUP BY role",  # noqa: S608
-            chunk,
-        )
-        for row in await cur.fetchall():
-            role = row["role"] or ""
-            if role:
-                counts[role] = counts.get(role, 0) + row["n"]
+    # One statement over the whole progression rather than one per 500 ids.
+    cur = await db.execute(
+        """SELECT m.role, COUNT(*) AS n
+           FROM json_each(?) AS ids
+           JOIN messages m ON m.id = ids.value
+           GROUP BY m.role""",
+        (json.dumps(msg_ids),),
+    )
+    for row in await cur.fetchall():
+        role = row["role"] or ""
+        if role:
+            counts[role] = row["n"]
     return counts
 
 

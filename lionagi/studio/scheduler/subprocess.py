@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import re
 import shutil
@@ -627,6 +628,28 @@ def build_argv(
 
 
 _TAIL_BYTES = 2048
+_PROCESS_TERMINATION_GRACE_SECONDS = 5.0
+
+
+class SubprocessDeadlineExceededError(TimeoutError):
+    """The owned subprocess group did not finish within its execution deadline."""
+
+    def __init__(self, *, invocation_id: str, deadline_seconds: float) -> None:
+        self.invocation_id = invocation_id
+        self.deadline_seconds = deadline_seconds
+        super().__init__(
+            f"invocation {invocation_id} exceeded its {deadline_seconds:g}s execution deadline"
+        )
+
+
+def _validated_deadline_seconds(value: str | int | float) -> float:
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"deadline_seconds must be a positive number, got {value!r}") from exc
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(f"deadline_seconds must be positive and finite, got {value!r}")
+    return seconds
 
 
 async def _drain_tail(stream: asyncio.StreamReader | None, limit: int) -> bytes:
@@ -672,6 +695,7 @@ async def spawn_and_wait(
     cwd: str | None = None,
     action_kind: str | None = None,
     on_launched: Callable[[], Awaitable[None]] | None = None,
+    deadline_seconds: float | None = None,
 ) -> tuple[int, str]:
     """Spawn subprocess and wait for completion. Returns (exit_code, output_tail).
 
@@ -685,7 +709,17 @@ async def spawn_and_wait(
     to fail an already-launched process. See docs/internals/studio.md for
     the allow-list re-check race this closes and why streams can't drain
     sequentially.
+
+    *deadline_seconds* defaults to the validated global/per-action-kind
+    Studio setting; expiry terminates the owned process group before
+    raising :class:`SubprocessDeadlineExceededError`.
     """
+    if deadline_seconds is None:
+        from lionagi.studio.config import invocation_deadline_seconds
+
+        deadline_seconds = invocation_deadline_seconds(action_kind)
+    deadline_seconds = _validated_deadline_seconds(deadline_seconds)
+
     if action_kind == "command":
         command = argv[0] if argv else ""
         _validate_action_command(command)
@@ -707,23 +741,41 @@ async def spawn_and_wait(
     )
     # Pgid == proc.pid; pid-guard and platform check live in aterminate_process_group.
 
-    if on_launched is not None:
-        try:
-            await on_launched()
-        except Exception:
-            _log.exception(
-                "on_launched callback failed for invocation %s; the process "
-                "is already running regardless",
-                invocation_id,
-            )
-
     drain = asyncio.gather(
         _drain_tail(proc.stdout, _TAIL_BYTES),
         _drain_tail(proc.stderr, _TAIL_BYTES),
     )
     try:
-        stdout, stderr = await drain
-        await proc.wait()
+
+        async def _wait_for_exit() -> tuple[bytes, bytes]:
+            if on_launched is not None:
+                try:
+                    await on_launched()
+                except Exception:
+                    _log.exception(
+                        "on_launched callback failed for invocation %s; the process "
+                        "is already running regardless",
+                        invocation_id,
+                    )
+            stdout_tail, stderr_tail = await drain
+            await proc.wait()
+            return stdout_tail, stderr_tail
+
+        stdout, stderr = await asyncio.wait_for(_wait_for_exit(), timeout=deadline_seconds)
+    except asyncio.TimeoutError as exc:
+        _log.warning(
+            "spawn_and_wait deadline exceeded; terminating child for %s after %ss",
+            invocation_id,
+            deadline_seconds,
+        )
+        drain.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await drain
+        await aterminate_process_group(proc, grace=_PROCESS_TERMINATION_GRACE_SECONDS)
+        raise SubprocessDeadlineExceededError(
+            invocation_id=invocation_id,
+            deadline_seconds=deadline_seconds,
+        ) from exc
     except asyncio.CancelledError:
         # SIGTERM then SIGKILL the whole group before re-raising, so a
         # cancelled poll doesn't leave the spawned tree detached. The readers
@@ -733,7 +785,7 @@ async def spawn_and_wait(
         drain.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await drain
-        await aterminate_process_group(proc, grace=5.0)
+        await aterminate_process_group(proc, grace=_PROCESS_TERMINATION_GRACE_SECONDS)
         raise
     finally:
         if tmp_path is not None:

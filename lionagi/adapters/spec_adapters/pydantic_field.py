@@ -57,7 +57,7 @@ def _model_type_cache_key(
         return None
 
     if not all(
-        _is_cache_safe_value(spec.base_type)
+        (is_sentinel(spec.base_type) or _is_cache_safe_value(spec.base_type))
         and all(_is_cache_safe_value(meta.value) for meta in spec.metadata)
         for spec in specs
     ):
