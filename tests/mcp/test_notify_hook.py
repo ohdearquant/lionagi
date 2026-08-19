@@ -696,6 +696,15 @@ from lionagi.state.lifecycle.callbacks import (
 )
 
 
+def _write_manifest(manifest, payload):
+    # Atomic, because the test polls this file from another process while this one
+    # writes it. write_text truncates on open, so a poll landing in that window reads
+    # an empty file. The CLI this shim stands in for writes its manifest the same way.
+    tmp = manifest.parent / (manifest.name + ".tmp")
+    tmp.write_text(json.dumps(payload))
+    os.replace(tmp, manifest)
+
+
 async def main():
     argv = sys.argv[1:]
     template = argv[argv.index("--notify") + 1]
@@ -703,7 +712,7 @@ async def main():
     run_dir = config.run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     manifest = run_dir / "run.json"
-    manifest.write_text(json.dumps({"status": "running"}))
+    _write_manifest(manifest, {"status": "running"})
 
     registry = TerminalCallbackRegistry(budget_seconds=1.0)
     register_flow_notify_scope(
@@ -728,7 +737,7 @@ async def main():
             occurred_at=time.time(),
         )
     )
-    manifest.write_text(json.dumps({"status": "completed"}))
+    _write_manifest(manifest, {"status": "completed"})
     print("terminal manifest written", flush=True)
 
 
