@@ -364,3 +364,29 @@ def test_json_projection_rejects_model_returning_itself():
 
     with pytest.raises(TypeError, match="Circular reference"):
         value.to_dict(mode="json")
+
+
+@dataclass(frozen=True)
+class _OwnerToDictHolder(Params):
+    inner: object = None
+
+
+def test_a_nested_owner_keeps_its_own_to_dict_projection():
+    """model_dump drops what an owner's to_dict adds, so the more specific one wins."""
+    from lionagi.protocols.generic.element import Element
+
+    element = Element()
+    assert "lion_class" in element.to_dict()["metadata"], "control: to_dict carries it"
+    assert "lion_class" not in element.model_dump(mode="json")["metadata"], (
+        "control: model_dump drops it, which is what makes the ordering matter"
+    )
+
+    projected = _OwnerToDictHolder(inner=element).to_dict(mode="json")
+    assert "lion_class" in projected["inner"]["metadata"], projected
+
+
+def test_a_nested_model_omits_an_unset_rather_than_failing_to_serialize():
+    from lionagi.models.note import Note
+
+    projected = _OwnerToDictHolder(inner=Note(**{"a": Unset, "b": 1})).to_dict(mode="json")
+    assert projected["inner"] == {"b": 1}, projected

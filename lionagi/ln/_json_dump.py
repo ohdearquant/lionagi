@@ -35,6 +35,11 @@ __all__ = [
 # Types orjson serializes natively; routed through default() only when passthrough is requested.
 _NATIVE = (dt.datetime, dt.date, dt.time, UUID)
 _SERIALIZATION_METHODS = ("model_dump", "to_dict", "dict")
+# Same methods, different priority: the projection prefers an owner's own
+# to_dict, which is the more specific rendering (an Element's carries the
+# lion_class that generic deserialization needs and model_dump drops).
+# Derived rather than restated so the two cannot disagree on membership.
+_PROJECTION_METHODS = ("to_dict", *(m for m in _SERIALIZATION_METHODS if m != "to_dict"))
 
 # helpers
 
@@ -303,7 +308,7 @@ def _project_json_value(
         finally:
             active.remove(identity)
 
-    for method_name in _SERIALIZATION_METHODS:
+    for method_name in _PROJECTION_METHODS:
         method = getattr(obj, method_name, None)
         if not callable(method):
             continue
