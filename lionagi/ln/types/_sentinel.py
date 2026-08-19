@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Final, Literal, TypeVar, Union
 
+from .._structural import _IdentityKey
+
 __all__ = (
     "Undefined",
     "Unset",
@@ -24,12 +26,13 @@ T = TypeVar("T")
 class _SingletonMeta(type):
     """Metaclass that guarantees exactly one instance per subclass."""
 
-    _cache: dict[type, SingletonType] = {}
+    _cache: dict[_IdentityKey, SingletonType] = {}
 
     def __call__(cls, *a, **kw):
-        if cls not in cls._cache:
-            cls._cache[cls] = super().__call__(*a, **kw)
-        return cls._cache[cls]
+        key = _IdentityKey(cls)
+        if key not in cls._cache:
+            cls._cache[key] = super().__call__(*a, **kw)
+        return cls._cache[key]
 
 
 class SingletonType(metaclass=_SingletonMeta):

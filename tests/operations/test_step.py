@@ -150,28 +150,92 @@ def test_operative_model_type_cache_size_zero_restores_per_call_classes(
     assert first.request_type is not second.request_type
 
 
-def test_is_cache_safe_value_classifies_mutable_and_immutable_metadata():
-    """Lists, dicts, bound methods, and arbitrary objects are never cache-safe; scalars, tuples, frozensets, and plain functions are."""
-    from lionagi.adapters.spec_adapters import pydantic_field
+# Bound at module scope, so both resolve from the module they name. The tests below
+# turn on that and nothing else about them.
+MODULE_LEVEL_TYPE = type("MODULE_LEVEL_TYPE", (), {})
+
+
+def module_level_fn(v):
+    return v
+
+
+def test_structural_cache_admission_classifies_mutable_and_immutable_metadata():
+    """Lists, dicts, bound methods, partials and arbitrary objects are never cache-safe;
+    scalars, tuples, frozensets, types and plain functions are.
+
+    Admission asks two things: whether the value can be keyed soundly, and whether an entry
+    keyed on it would outlive the name it was declared under. A locally built function or
+    type fails the second even though it passes the first, because the caches behind this
+    gate hold their built value strongly and that value holds the callable.
+    """
+    from functools import partial
+
+    from lionagi.ln._structural import _try_stable_cache_key
 
     class Validators:
         def check(self, v):
             return v
 
-    def plain_fn(v):
+    def local_fn(v):
         return v
 
-    unsafe_values = [[1, 2], {"a": 1}, Validators().check, Validators()]
+    class CallableValidator:
+        def __call__(self, value):
+            return value
+
+    unsafe_values = [
+        [1, 2],
+        {"a": 1},
+        Validators().check,
+        [].append,
+        partial(module_level_fn),
+        CallableValidator(),
+        Validators(),
+        # Keyable, and refused anyway: neither resolves from the module it names.
+        local_fn,
+        type("LocalType", (), {}),
+    ]
     for value in unsafe_values:
-        assert pydantic_field._is_cache_safe_value(value) is False
+        assert _try_stable_cache_key(value) is None
 
-    safe_values = [1, "s", True, 1.5, None, int, (1, 2), frozenset({1, 2}), plain_fn]
+    safe_values = [
+        1,
+        "s",
+        True,
+        1.5,
+        None,
+        int,
+        len,
+        (1, 2),
+        frozenset({1, 2}),
+        module_level_fn,
+        MODULE_LEVEL_TYPE,
+    ]
     for value in safe_values:
-        assert pydantic_field._is_cache_safe_value(value) is True
+        assert _try_stable_cache_key(value) is not None
 
 
-def test_model_type_cache_key_opts_out_for_bound_method_validator(monkeypatch):
-    """A bound-method validator is hashable (so the hash() fallback alone would not catch it) -- the opt-out relies specifically on _is_cache_safe_value rejecting it."""
+def test_the_refusal_tracks_reachability_by_name_not_the_kind_of_callable():
+    """A function and a `type()` result are refused for being unreachable, not for being built.
+
+    The module-scope pair is the arm that makes this a statement about reachability: an
+    admission rule that simply refused every function and every dynamic type would satisfy
+    the first half of this test and be a different rule.
+    """
+    from lionagi.ln._structural import _try_stable_cache_key
+
+    def local_fn(v):
+        return v
+
+    assert _try_stable_cache_key(local_fn) is None
+    assert _try_stable_cache_key(type("LocalType", (), {})) is None
+
+    assert _try_stable_cache_key(module_level_fn) is not None
+    assert _try_stable_cache_key(MODULE_LEVEL_TYPE) is not None
+
+
+def test_model_type_cache_key_opts_out_for_bound_method_validator():
+    """Hashable, so the hash fallback alone misses it: the opt-out is _try_stable_cache_key rejecting it."""
     from lionagi.adapters.spec_adapters import pydantic_field
 
     class Validators:
@@ -182,21 +246,17 @@ def test_model_type_cache_key_opts_out_for_bound_method_validator(monkeypatch):
 
     def build_key():
         return pydantic_field._model_type_cache_key(
+            adapter_type=pydantic_field.PydanticSpecAdapter,
             base_type=BaseModel,
             model_name="Payload",
-            specs=(spec,),
-            include=None,
-            exclude=None,
+            declaration=(spec,),
             doc=None,
         )
 
     assert build_key() is None
 
-    # Simulate a regression where _is_cache_safe_value stops flagging this
-    # value as unsafe: the hash() fallback does not save us here (bound
-    # methods hash cleanly), so the key would silently become cacheable.
-    monkeypatch.setattr(pydantic_field, "_is_cache_safe_value", lambda value: True)
-    assert build_key() is not None
+    # Bound methods are hashable, but retaining one would pin the receiver and
+    # cache mutable method state. Admission therefore must not use hashability.
 
 
 def test_model_type_cache_key_opts_out_for_list_and_dict_metadata():
@@ -214,11 +274,10 @@ def test_model_type_cache_key_opts_out_for_list_and_dict_metadata():
 
     for spec in (list_validator_spec, dict_metadata_spec):
         key = pydantic_field._model_type_cache_key(
+            adapter_type=pydantic_field.PydanticSpecAdapter,
             base_type=BaseModel,
             model_name="Payload",
-            specs=(spec,),
-            include=None,
-            exclude=None,
+            declaration=(spec,),
             doc=None,
         )
         assert key is None
