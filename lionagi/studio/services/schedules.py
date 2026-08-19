@@ -58,32 +58,38 @@ def _svc_validate_identifier(value: str | None, field_name: str) -> None:
     _validate_identifier(value, field_name)
 
 
-_GITHUB_CURSOR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-
-
 def _svc_validate_github_cursor(cursor: str | None) -> None:
-    """Service-boundary check: a github_cursor must be a UTC ISO-8601 instant
-    spelled exactly as GitHub spells it, ``YYYY-MM-DDTHH:MM:SSZ``.
+    """Service-boundary check: a github_cursor must be spelled the way the poller
+    writes one -- a UTC ISO-8601 instant as GitHub spells it, optionally followed
+    by the pull request that instant belongs to.
 
     The poller compares cursors as STRINGS against the API's own timestamps, so
     the format is a correctness contract rather than a presentation choice: a
     space separator, a fractional part, or a ``+00:00`` offset all denote the
     right instant and all order wrongly against ``2026-07-20T15:21:57Z``, which
-    silently makes the poller skip or replay events.
+    silently makes the poller skip or replay events. The trailing number is
+    fixed-width for that same reason.
+
+    The grammar is the poller's own, imported rather than restated: this
+    validator previously spelled a form the engine had stopped writing, so the
+    system succeeded at persisting a cursor its API then refused to accept, and
+    an operator replaying a stored value got an error on the scheduler's own
+    output.
 
     ``None`` is allowed and clears the cursor, meaning "no bookmark". That is a
     legitimate operator action and a consequential one -- an unbookmarked
-    merged-mode poll dispatches everything its scan reaches.
+    merged-mode poll dispatches everything its scan reaches -- and widening the
+    accepted spellings above does not widen it.
     """
     if cursor is None:
         return
-    if not isinstance(cursor, str) or not _GITHUB_CURSOR_RE.match(cursor):
-        raise ValueError(
-            "github_cursor must be a UTC ISO-8601 timestamp of the form "
-            f"YYYY-MM-DDTHH:MM:SSZ (got {cursor!r})"
-        )
+    from lionagi.studio.scheduler.github import CURSOR_FORM, CURSOR_RE
+
+    matched = CURSOR_RE.match(cursor) if isinstance(cursor, str) else None
+    if matched is None:
+        raise ValueError(f"github_cursor must be of the form {CURSOR_FORM} (got {cursor!r})")
     try:
-        datetime.strptime(cursor, "%Y-%m-%dT%H:%M:%SZ")
+        datetime.strptime(matched.group("instant"), "%Y-%m-%dT%H:%M:%SZ")
     except ValueError as exc:
         raise ValueError(f"github_cursor is not a real timestamp: {cursor!r}") from exc
 
