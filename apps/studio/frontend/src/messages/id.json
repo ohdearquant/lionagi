@@ -874,6 +874,7 @@
       "permission": "izin ditolak",
       "missingDependency": "dependensi hilang",
       "notFound": "berkas tidak ditemukan",
+      "unclassified": "kesalahan tidak terklasifikasi",
       "showDetails": "Tampilkan error lengkap",
       "hideDetails": "Sembunyikan error lengkap"
     }
