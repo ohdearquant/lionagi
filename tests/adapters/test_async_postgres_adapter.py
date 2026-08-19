@@ -40,7 +40,11 @@ async def test_async_postgres_to_obj_ensures_table_for_dsn_before_delegating(
     monkeypatch,
 ):
     """Requires lionagi[postgres] extra (pydapter[postgres], sqlalchemy, asyncpg)."""
-    pytest.importorskip("sqlalchemy", reason="requires lionagi[postgres] extra")
+    # The module the body imports, not one of its dependencies: sqlalchemy is
+    # present without the extra, so guarding on it lets the import below raise.
+    pytest.importorskip(
+        "pydapter.extras.async_postgres_", reason="requires lionagi[postgres] extra"
+    )
 
     from unittest.mock import AsyncMock
 
