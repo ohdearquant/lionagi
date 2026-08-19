@@ -318,22 +318,24 @@ function buildAttentionItems(
   // stale disposition is reachable forever — a genuine gate would silently
   // vanish from the default queue with no path back except editing the
   // store directly. A gated item only ever discharges via "acknowledged".
-  // A legacy key only identifies a row while exactly one row claims it. Two
-  // sessions can carry the same `run_id`, and the disposition stored under that
-  // id records one human decision about the single row the old projection
-  // showed, so spending it on both would discharge a session nobody looked at.
-  // The ambiguous key is dropped from the item itself rather than skipped at the
-  // read, so every consumer inherits the guard -- the join below and the Undo
-  // that deletes by this key both stop seeing it, instead of each having to
-  // remember. Those rows stay in the queue, which is the recoverable direction.
-  const legacyClaims = new Map<string, number>();
+  // A legacy key identifies a row only while exactly one row claims it, by
+  // either route: both keys have the `run:<id>` shape, so two sessions can
+  // share a `run_id` and one session's current id can be another's. The stored
+  // disposition records one decision about the single row the old projection
+  // showed, so spending it twice would discharge a session nobody looked at. A
+  // current id is the row's own identity and keeps its claim; the ambiguous
+  // legacy key is dropped from the item, so the join below and the Undo that
+  // deletes by it both inherit the guard. Those rows stay in the queue, which
+  // is the recoverable direction.
+  const claims = new Map<string, number>();
   for (const item of deduped) {
+    claims.set(item.id, (claims.get(item.id) ?? 0) + 1);
     if (item.legacyId) {
-      legacyClaims.set(item.legacyId, (legacyClaims.get(item.legacyId) ?? 0) + 1);
+      claims.set(item.legacyId, (claims.get(item.legacyId) ?? 0) + 1);
     }
   }
   const resolved = deduped.map((item): AttentionItem => {
-    if (!item.legacyId || legacyClaims.get(item.legacyId) === 1) return item;
+    if (!item.legacyId || claims.get(item.legacyId) === 1) return item;
     const unkeyed = { ...item };
     delete unkeyed.legacyId;
     return unkeyed;

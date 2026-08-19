@@ -826,6 +826,38 @@ describe("boardReducer — disposition join and active/discharged split", () => 
     expect(s.attentionItems.every((i) => i.legacyId === undefined)).toBe(true);
   });
 
+  it("does not spend a legacy discharge on a key that is another session's current id", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        // Both keys have the `run:<id>` shape, so this session's own id is the
+        // key the other one reaches through its `run_id`.
+        makeRun({
+          id: "shared-run",
+          run_id: "shared-run",
+          status: "failed",
+          started_at: nowSec - 600,
+        }),
+        makeRun({
+          id: "session-2",
+          run_id: "shared-run",
+          status: "failed",
+          started_at: nowSec - 500,
+        }),
+      ],
+      [],
+      nowSec,
+      null,
+      { "run:shared-run": makeDisposition({ item_id: "run:shared-run", state: "resolved" }) },
+    );
+    // The first row owns that id and discharges. The second only ever reached
+    // it through the now-ambiguous legacy key.
+    expect(s.dischargedAttentionItems.map((i) => i.id)).toEqual(["run:shared-run"]);
+    expect(s.attentionItems.map((i) => i.id)).toEqual(["run:session-2"]);
+    expect(s.attentionItems[0].legacyId).toBeUndefined();
+  });
+
   it("still claims an unshared legacy key, so the collision guard is not a blanket refusal", () => {
     const nowSec = 1_000_000;
     const s = dispatchOk(
