@@ -110,7 +110,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   and ignoring the termination signal ran on past the timeout while the caller was told the
   group had been ended. Escalation is now keyed on the group still holding someone. A pipe
   holder that left the group is unaffected, since it is already absent from the group by the
-  time the group is read, so it still cannot extend the wait.
+  time the group is read, so it still cannot extend the wait. The kill is aimed by identity
+  rather than by the group number: a group id becomes reusable the moment its group empties, so
+  the members seen at the start are re-checked against their recorded start times before any
+  group-wide signal, and a membership read that fails is waited on rather than reported as an
+  ended group.
 
 - The studio scheduler's tick loop is now supervised rather than merely guarded. It caught
   `Exception`, which does not include `asyncio.CancelledError`, so a cancel escaping from anything

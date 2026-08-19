@@ -488,3 +488,96 @@ async def test_a_pipe_holder_outside_the_group_does_not_extend_the_wait(tmp_path
             os.kill(int(pid_file.read_text()), signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pgid, signal.SIGKILL)
+
+
+# The escalation is aimed by identity, not by the group number: a pgid is free to
+# name a different group the moment the original empties.
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="requires process groups")
+@pytest.mark.asyncio
+async def test_a_witness_whose_start_time_moved_is_not_the_process_it_named():
+    """A recycled pid must not pass as the member that was recorded.
+
+    The must-match half runs first against a real process, because a predicate
+    that answers False for everything would satisfy the reuse half on its own.
+    """
+    from lionagi.ln._proc import _witness_still_in_group, process_create_time
+
+    proc = await _spawn_group_leader("import time; time.sleep(30)")
+    pgid = os.getpgid(proc.pid)
+    try:
+        state, created = process_create_time(proc.pid)
+        assert state == "found" and created is not None, "could not read the child's start time"
+
+        assert _witness_still_in_group(pgid, [(proc.pid, created)]) is True
+        assert _witness_still_in_group(pgid, [(proc.pid, created + 5.0)]) is False, (
+            "a pid whose start time no longer matches was accepted as the recorded member, "
+            "which is how a reissued group id gets signalled"
+        )
+    finally:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGKILL)
+
+
+def test_an_unreaped_child_pins_its_group_without_needing_a_witness():
+    """While the child is unreaped it is itself a member, so the number is not reusable."""
+    from lionagi.ln._proc import _group_still_this_childs
+
+    unreaped = SimpleNamespace(returncode=None)
+    assert _group_still_this_childs(unreaped, 4444, []) is True
+
+    reaped = SimpleNamespace(returncode=-15)
+    assert _group_still_this_childs(reaped, 4444, []) is False, (
+        "a reaped child with nothing left to identify the group still authorised a "
+        "group-wide kill on the bare number"
+    )
+
+
+@pytest.mark.parametrize("backend", ["asyncio", "trio"])
+def test_an_unreadable_membership_scan_is_not_an_ended_group(backend, monkeypatch):
+    """A scan that failed and saw nobody must not be reported as an empty group.
+
+    Reporting it as empty returns without escalating, so a descendant that merely
+    could not be resolved is left running under a caller told the group ended.
+    """
+    import anyio
+
+    if backend == "trio":
+        pytest.importorskip("trio")
+
+    from lionagi.ln import _proc
+
+    monkeypatch.setattr(_proc, "_group_has_member", lambda pgid: True)
+    monkeypatch.setattr(_proc, "group_members_with_start_times", lambda pgid: ([], False))
+
+    async def _run():
+        with anyio.move_on_after(0.3) as scope:
+            await _proc._await_group_exit(SimpleNamespace(returncode=-15), 4444, [])
+        assert scope.cancelled_caught, (
+            "the wait returned on an unreadable scan, so an unresolved group reads "
+            "the same as a drained one"
+        )
+
+    anyio.run(_run, backend=backend)
+
+
+@pytest.mark.parametrize("backend", ["asyncio", "trio"])
+def test_a_scan_that_completes_and_finds_nobody_ends_the_wait(backend, monkeypatch):
+    """The paired arm: proven-empty must still return, or every termination pays the grace."""
+    import anyio
+
+    if backend == "trio":
+        pytest.importorskip("trio")
+
+    from lionagi.ln import _proc
+
+    monkeypatch.setattr(_proc, "_group_has_member", lambda pgid: True)
+    monkeypatch.setattr(_proc, "group_members_with_start_times", lambda pgid: ([], True))
+
+    async def _run():
+        with anyio.move_on_after(0.3) as scope:
+            await _proc._await_group_exit(SimpleNamespace(returncode=-15), 4444, [])
+        assert not scope.cancelled_caught, "a proven-empty group was waited on anyway"
+
+    anyio.run(_run, backend=backend)
