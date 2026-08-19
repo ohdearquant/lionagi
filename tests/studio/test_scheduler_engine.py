@@ -3276,6 +3276,67 @@ async def test_a_cancel_inside_startup_recovery_does_not_cost_the_later_passes(m
 
 
 @pytest.mark.asyncio
+async def test_a_cancel_aimed_at_the_loop_lets_the_recovery_pass_in_flight_finish(monkeypatch):
+    """A pass interrupted after it has finalized a run has no successor to finish the job.
+
+    Every later scan selects rows that are still running, which such a row no longer is, so
+    tearing a pass in half leaves durable state nothing repairs. Absorbing the cancel and
+    moving to the next pass is not enough; the pass in flight has to complete.
+    """
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    entered = asyncio.Event()
+    ran: list = []
+
+    async def _slow_first():
+        ran.append("entered")
+        entered.set()
+        await asyncio.sleep(0.05)
+        ran.append("finished")
+
+    monkeypatch.setattr(engine, "_recover_undispatched_fires", _slow_first)
+    monkeypatch.setattr(
+        engine, "_reconcile_dispatched_orphans", AsyncMock(side_effect=lambda: ran.append("second"))
+    )
+    monkeypatch.setattr(
+        engine, "_check_missed_fires", AsyncMock(side_effect=lambda: ran.append("third"))
+    )
+
+    await engine.start()
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        engine._task.cancel()
+        await _until(lambda: len(ticks) >= 1)
+        assert "finished" in ran, f"the interrupted pass was abandoned: {ran}"
+        assert ran == ["entered", "finished", "second", "third"]
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_during_recovery_does_not_wait_for_the_pass_in_flight(monkeypatch):
+    """Control: a shutdown that cannot interrupt recovery is a shutdown that hangs."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    entered = asyncio.Event()
+    ran: list = []
+
+    async def _very_slow_first():
+        entered.set()
+        await asyncio.sleep(30)
+        ran.append("finished")
+
+    monkeypatch.setattr(engine, "_recover_undispatched_fires", _very_slow_first)
+
+    await engine.start()
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    started = time.monotonic()
+    await asyncio.wait_for(engine.stop(), timeout=5)
+    assert time.monotonic() - started < 5
+    assert ran == []
+
+
+@pytest.mark.asyncio
 async def test_a_cancel_during_the_inter_tick_wait_neither_ends_the_loop_nor_skips_the_delay(
     monkeypatch,
 ):
