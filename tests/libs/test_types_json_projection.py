@@ -390,3 +390,25 @@ def test_a_nested_model_omits_an_unset_rather_than_failing_to_serialize():
 
     projected = _OwnerToDictHolder(inner=Note(**{"a": Unset, "b": 1})).to_dict(mode="json")
     assert projected["inner"] == {"b": 1}, projected
+
+
+@dataclass(frozen=True)
+class _PerModeParams(Params):
+    """A subclass that renders one field differently per mode, as the contract allows."""
+
+    token: str = ""
+
+    def to_dict(self, exclude=None, *, mode="python"):
+        data = super().to_dict(exclude, mode=mode)
+        if mode == "json":
+            data["token"] = "[redacted]"
+        return data
+
+
+def test_a_nested_owner_gets_the_same_mode_the_top_level_call_would():
+    secret = _PerModeParams(token="TOP-SECRET")
+    # Control: the rendering the nested case must not lose.
+    assert secret.to_dict(mode="json")["token"] == "[redacted]"
+
+    projected = _OwnerToDictHolder(inner=secret).to_dict(mode="json")
+    assert projected["inner"]["token"] == "[redacted]", projected

@@ -214,6 +214,15 @@ def _accepts_keyword(method: Callable[..., Any], name: str) -> bool:
     return _cached_accepts_keyword(target, name)
 
 
+def _overrides_substrate_to_dict(obj: Any, substrate_types: tuple[type[Any], ...]) -> bool:
+    """Whether *obj*'s type replaced the to_dict it inherited from its substrate base."""
+    for base in substrate_types:
+        base_method = getattr(base, "to_dict", None)
+        if base_method is not None and isinstance(obj, base):
+            return getattr(type(obj), "to_dict", None) is not base_method
+    return False
+
+
 def _json_projection_default(obj: Any) -> Any:
     """Finish non-native leaves after the projection traversal."""
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
@@ -284,8 +293,20 @@ def _project_json_value(
         identity = _enter_json_projection(obj, active)
         try:
             projection_owner: Any = obj
+            to_dict = projection_owner.to_dict
+            # A subclass that renders per mode only gets that rendering if the
+            # mode reaches it, so pass it. Inherited implementations are skipped
+            # deliberately: their json mode is a value projection this walk
+            # repeats anyway, and asking for it would round-trip every nested
+            # owner through the serializer instead of once at the root.
+            projected = (
+                to_dict(mode="json")
+                if _overrides_substrate_to_dict(obj, substrate_types)
+                and _accepts_keyword(to_dict, "mode")
+                else to_dict()
+            )
             return _project_json_value(
-                projection_owner.to_dict(),
+                projected,
                 substrate_types,
                 active,
                 path,
