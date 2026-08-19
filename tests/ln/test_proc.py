@@ -4,7 +4,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
 import signal
+import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -324,3 +328,163 @@ def test_aterminate_grace_escalates_to_kill_on_backend(backend):
     anyio.run(_run, backend=backend)
     assert proc.terminated is True
     assert proc.killed is True
+
+
+@pytest.mark.parametrize("backend", ["asyncio", "trio"])
+def test_the_grace_wait_ends_with_the_child_not_with_whatever_holds_its_pipes(backend):
+    """A descendant that kept the child's pipes must not decide when this returns.
+
+    The fake splits two facts a real process reports together on some
+    interpreters and separately on others: ``returncode`` is set when the child
+    is reaped, while ``wait()`` completes only once every inherited pipe closes.
+    Waiting on the second means a caller giving up on a child is bounded by a
+    process it never started, and callers use this wait to decide whether the
+    child's output is still arriving or genuinely absent.
+
+    The deadline here is well inside ``grace``, so waiting on ``wait()`` fails
+    this outright rather than merely making it slow.
+    """
+    import anyio
+
+    if backend == "trio":
+        pytest.importorskip("trio")
+
+    class _PipesHeldOpen:
+        def __init__(self):
+            self.pid = -1  # _safe_pgid -> None: no real killpg on a fake pid
+            self.returncode = None
+            self.killed = False
+
+        def terminate(self):
+            self.returncode = -15  # the child is reaped here
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            await anyio.sleep_forever()  # the holder never lets go
+
+    proc = _PipesHeldOpen()
+
+    async def _run():
+        with anyio.fail_after(2):
+            await aterminate_process_group(proc, grace=5.0)
+
+    anyio.run(_run, backend=backend)
+    assert proc.returncode == -15
+    assert proc.killed is False, (
+        "the child had already exited, so escalating to SIGKILL means the wait "
+        "was reading something other than the child's own status"
+    )
+
+
+# Real processes: the fakes above split reaping from pipe closure, which is the
+# distinction the wait is about, but a fake has no process group, and that is
+# where a descendant outlives the child.
+
+_IGNORES_SIGTERM = (
+    "import os,pathlib,signal,sys,time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "hb = pathlib.Path(sys.argv[1])\n"
+    "for i in range(400):\n"
+    "    hb.write_text(str(i))\n"
+    "    time.sleep(0.02)\n"
+)
+
+
+async def _spawn_group_leader(child_src: str, *args: str):
+    """A child in its own group, so its pid is the group id."""
+    return await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        child_src,
+        *args,
+        start_new_session=True,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="requires process groups")
+@pytest.mark.asyncio
+async def test_a_descendant_ignoring_the_signal_does_not_outlive_the_group(tmp_path):
+    """The direct child exiting is not the group being empty.
+
+    The child here dies on SIGTERM and its same-group descendant does not, which
+    is the ordinary shape: whatever ignores the signal is what is left. Keying
+    the SIGKILL escalation on the child alone skips it exactly then, and the
+    caller is told the group was terminated while it still holds someone.
+    """
+    hb = tmp_path / "heartbeat"
+    child = (
+        "import subprocess,sys;"
+        "subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]]);"
+        "import time;time.sleep(300)"
+    )
+    proc = await _spawn_group_leader(child, _IGNORES_SIGTERM, str(hb))
+    pgid = os.getpgid(proc.pid)
+    try:
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if hb.exists() and hb.read_text() not in ("", "0"):
+                break
+        assert hb.exists() and hb.read_text() not in ("", "0"), (
+            "no descendant ever ran, so this asserts nothing about surviving one"
+        )
+
+        await aterminate_process_group(proc, grace=0.25)
+
+        settled = hb.read_text()
+        await asyncio.sleep(0.3)
+        assert hb.read_text() == settled, (
+            "the descendant is still running after its group was terminated"
+        )
+    finally:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGKILL)
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="requires process groups")
+@pytest.mark.asyncio
+async def test_a_pipe_holder_outside_the_group_does_not_extend_the_wait(tmp_path):
+    """The group read must not re-import the wait this helper exists to avoid.
+
+    The holder has the child's stderr but its own session, so it is gone from
+    the group the moment the child is reaped. Waiting on it would put the caller
+    back to being bounded by a process it never started.
+    """
+    pid_file = tmp_path / "holder.pid"
+    holder_src = (
+        "import os,pathlib,sys,time;"
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()));"
+        "time.sleep(60)"
+    )
+    child = (
+        "import subprocess,sys,time;"
+        "subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]],"
+        "start_new_session=True,stderr=sys.stderr);"
+        "time.sleep(300)"
+    )
+    proc = await _spawn_group_leader(child, holder_src, str(pid_file))
+    pgid = os.getpgid(proc.pid)
+    try:
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if pid_file.exists():
+                break
+        assert pid_file.exists(), "no pipe holder was recorded, so nothing held the pipe"
+        holder = int(pid_file.read_text())
+        assert os.getpgid(holder) != pgid, "the holder was supposed to leave the group"
+
+        started = time.monotonic()
+        await aterminate_process_group(proc, grace=5.0)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 2.0, (
+            f"took {elapsed:.1f}s of a 5s grace with only an escaped pipe holder left, "
+            "so the wait was bounded by a process this never started"
+        )
+    finally:
+        with contextlib.suppress(ValueError, OSError):
+            os.kill(int(pid_file.read_text()), signal.SIGKILL)
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGKILL)

@@ -8,7 +8,7 @@ import os
 import signal
 from typing import Any
 
-from .concurrency import move_on_after
+from .concurrency import move_on_after, sleep
 
 # Two reads of a kernel tick clock for one process can differ in the last
 # place, so a recorded start time is compared to a live one within this. Two
@@ -254,14 +254,92 @@ def terminate_process_group(
         proc.terminate()
 
 
+# How often the polls below re-read status. The first is short so terminating a
+# cooperative child still looks instant; it backs off because the long waits are
+# the ones where something is refusing to leave, and those do not need watching
+# fifty times a second.
+_CHILD_EXIT_POLL_SECONDS = 0.005
+_CHILD_EXIT_POLL_MAX_SECONDS = 0.05
+
+
+async def _await_child_exit(proc: Any) -> None:
+    """Wait for the child itself to exit, not for everything holding its pipes.
+
+    ``proc.wait()`` cannot be used for this. On some interpreters it completes
+    only once every inherited pipe has closed, so a descendant that escaped with
+    the child's stderr decides when the wait returns: the caller trying to give
+    up on a process ends up bounded by a process it never started, and by the
+    time it looks, evidence it was about to report as missing has been resolved
+    behind its back. ``returncode`` is set when the child is reaped, whatever
+    still holds a pipe.
+
+    Objects that do not model ``returncode`` as a subprocess does (None until
+    exit, then an int) fall back to ``wait()``, which is the only thing they
+    offer.
+    """
+    rc = getattr(proc, "returncode", object())
+    if not (rc is None or isinstance(rc, int)):
+        await proc.wait()
+        return
+    delay = _CHILD_EXIT_POLL_SECONDS
+    while proc.returncode is None:
+        await sleep(delay)
+        delay = min(delay * 2, _CHILD_EXIT_POLL_MAX_SECONDS)
+
+
+def _group_has_member(pgid: int) -> bool:
+    """Whether group *pgid* still holds someone, in one syscall (this polls).
+
+    Signal 0 reads membership without disturbing it. Anything but "no such
+    group" counts as occupied: a group that exists but is not ours to signal is
+    still occupied, and reading a failed probe as empty would skip the
+    escalation in the one case that needs it.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+async def _await_group_exit(proc: Any, pgid: int | None) -> None:
+    """Wait for the child and for anything left in its group.
+
+    Two different facts. The direct child usually exits first, so returning when
+    it does leaves a descendant that ignored the signal running while the caller
+    is told the group was terminated. A pipe holder that escaped the group is
+    not that case: it is what the child wait refuses to be bounded by, and it is
+    already absent from the group by the time the group is asked.
+    """
+    await _await_child_exit(proc)
+    if pgid is None:
+        return
+    # Establish occupancy with the read that can establish it: signal 0 cannot
+    # separate a group that exists from one this process may not signal, and
+    # cannot bracket pid reuse. A scan that failed and saw nobody is not an
+    # occupied group, and is left alone here for the same reason it is not
+    # signalled elsewhere. Past this point the cheap probe is only watching a
+    # group already known to hold someone drain.
+    members, _ = group_member_pids(pgid)
+    if not members:
+        return
+    delay = _CHILD_EXIT_POLL_SECONDS
+    while _group_has_member(pgid):
+        await sleep(delay)
+        delay = min(delay * 2, _CHILD_EXIT_POLL_MAX_SECONDS)
+
+
 async def aterminate_process_group(
     proc: Any,
     *,
     grace: float | None = None,
     sig_first: signal.Signals = signal.SIGTERM,
 ) -> None:
-    """Async: signal the process group AND the direct child, wait up to grace, then
-    SIGKILL; grace=None sends SIGKILL immediately with no prior signal."""
+    """Async: signal the process group AND the direct child, wait up to grace for
+    the GROUP to empty, then SIGKILL; grace=None sends SIGKILL immediately with
+    no prior signal."""
     pgid = _safe_pgid(proc)
     if grace is None:
         # No prior SIGTERM/wait: signal group AND direct child directly.
@@ -280,12 +358,15 @@ async def aterminate_process_group(
     # wait_for raises "no running event loop" on an AnyIO/Trio task before the
     # timeout policy can apply, so the forced-kill escalation never fires.
     with move_on_after(grace) as scope:
-        await proc.wait()
+        await _await_group_exit(proc, pgid)
     if scope.cancelled_caught:
         if pgid is not None:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pgid, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        # Bounded too: a caller that has already escalated to SIGKILL is done
+        # negotiating, and the same pipe holder that can stall the wait above
+        # can stall this one, with no timeout left to catch it.
+        with move_on_after(grace), contextlib.suppress(Exception):
+            await _await_group_exit(proc, pgid)
