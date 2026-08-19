@@ -6,11 +6,12 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 import struct
 import sys
 import types
 import typing
-from collections.abc import Callable, Hashable, Mapping
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PosixPath, PurePosixPath, PureWindowsPath, WindowsPath
@@ -65,6 +66,7 @@ class _StructuralKey:
     _sort_token: bytes = field(compare=False, hash=False, repr=False)
     _unsafe_path: str | None = field(compare=False, hash=False, repr=False, default=None)
     _unsafe_type: type[Any] | None = field(compare=False, hash=False, repr=False, default=None)
+    _weight: int = field(compare=False, hash=False, repr=False, default=1)
     _hash_value: int = field(init=False, compare=False, hash=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -115,6 +117,9 @@ _stable_dataclass_keys: BoundedLRUCache[_IdentityKey, _StructuralKey] = BoundedL
     "LIONAGI_STRUCTURAL_CACHE_SIZE",
     10000,
 )
+# An entry count alone does not bound bytes: one cached key strongly retains its
+# whole target, so a projection that carries a large payload is not cached at all.
+_MAX_CACHED_WEIGHT = int(os.environ.get("LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT", "8192"))
 _PATH_TYPES = (PurePosixPath, PureWindowsPath, PosixPath, WindowsPath)
 _TYPING_SINGLETONS = tuple(
     (name, singleton)
@@ -168,6 +173,7 @@ def _combine(
         _sort_token=_frame(token_tag, *(part._sort_token for part in parts)),
         _unsafe_path=unsafe._unsafe_path if unsafe else None,
         _unsafe_type=unsafe._unsafe_type if unsafe else None,
+        _weight=1 + sum(part._weight for part in parts),
     )
 
 
@@ -240,7 +246,13 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
     if value_type is bool:
         return _StructuralKey((_BOOL, value), True, True, b"b1" if value else b"b0")
     if value_type is int:
-        return _StructuralKey((_INT, value), True, True, _frame(b"i", _encode_text(str(value))))
+        return _StructuralKey(
+            (_INT, value),
+            True,
+            True,
+            _frame(b"i", _encode_text(str(value))),
+            _weight=1 + (value.bit_length() >> 3),
+        )
     if value_type is float:
         encoded = struct.pack(">d", value)
         return _StructuralKey((_FLOAT, encoded), True, True, _frame(b"f", encoded))
@@ -248,9 +260,13 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         encoded = struct.pack(">dd", value.real, value.imag)
         return _StructuralKey((_COMPLEX, encoded), True, True, _frame(b"c", encoded))
     if value_type is str:
-        return _StructuralKey((_STR, value), True, True, _frame(b"s", _encode_text(value)))
+        return _StructuralKey(
+            (_STR, value), True, True, _frame(b"s", _encode_text(value)), _weight=1 + len(value)
+        )
     if value_type is bytes:
-        return _StructuralKey((_BYTES, value), True, True, _frame(b"y", value))
+        return _StructuralKey(
+            (_BYTES, value), True, True, _frame(b"y", value), _weight=1 + len(value)
+        )
 
     sentinel_name = _lion_sentinel_name(value)
     if sentinel_name is not None:
@@ -332,7 +348,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
             ),
         )
 
-    if isinstance(value, Mapping):
+    if value_type is dict:
         identity = _enter(value, path, active)
         try:
             entries: list[tuple[_StructuralKey, _StructuralKey]] = []
@@ -356,6 +372,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
                 _sort_token=token,
                 _unsafe_path=(unsafe._unsafe_path if unsafe else path),
                 _unsafe_type=(unsafe._unsafe_type if unsafe else value_type),
+                _weight=1 + sum(key._weight + item._weight for key, item in ordered),
             )
         finally:
             active.remove(identity)
@@ -434,7 +451,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
                         combined._sort_token,
                     ),
                 )
-                if result.cache_stable:
+                if result.cache_stable and result._weight <= _MAX_CACHED_WEIGHT:
                     _stable_dataclass_keys.put(identity_key, result)
                 return result
             return dataclasses.replace(
@@ -537,7 +554,9 @@ def _try_stable_cache_key(value: Any) -> _StructuralKey | None:
         key = _structural_key(value)
     except UnhashableStructuralValueError:
         return None
-    return key if key.cache_stable else None
+    if not key.cache_stable or key._weight > _MAX_CACHED_WEIGHT:
+        return None
+    return key
 
 
 def _structural_hash(value: Any) -> int:

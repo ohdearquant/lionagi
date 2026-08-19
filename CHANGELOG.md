@@ -20,7 +20,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   arbitrary user equality/hash implementations. The two former 10,000-entry
   annotation caches are one shared 10,000-entry cache under the same environment setting; a
   separate stable-declaration projection cache is bounded by
-  `LIONAGI_STRUCTURAL_CACHE_SIZE` (10,000 by default).
+  `LIONAGI_STRUCTURAL_CACHE_SIZE` (10,000 by default) and, because each entry strongly retains its
+  target, by a summed projected-size ceiling `LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT` (8,192 by
+  default) above which a value is not retained but stays comparable and hashable. Mappings other
+  than an exact `dict` are opaque and compare by identity, matching the existing treatment of
+  `tuple`, `frozenset`, `pathlib`, and UUID subclasses, since a `Mapping` implementation may carry
+  state that `items()` does not expose.
 - Lightweight `Params`, `DataClass`, `Role`, and `InstructionContent` projections now accept a
   keyword-only `mode="json"` while preserving positional `exclude` and the existing shallow
   Python-mode output. JSON mode delegates nested LionAGI/Pydantic/dataclass values to the internal

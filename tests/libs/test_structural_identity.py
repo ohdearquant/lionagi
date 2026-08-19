@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
@@ -302,6 +302,116 @@ def test_immutable_builtin_subclasses_are_opaque_and_cache_ineligible(base):
     assert _try_stable_cache_key(child) is None
     assert owner._key() == before
     assert owner == ValueParams(payload=child)
+
+
+class _StatefulDict(dict):
+    """A dict subclass whose extra state items() cannot see."""
+
+    def __init__(self, *args, tag=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tag = tag
+
+
+class _StatefulMapping(Mapping):
+    """The same hazard on a Mapping that is deliberately not a dict subclass."""
+
+    def __init__(self, data, tag=None):
+        self._data = dict(data)
+        self.tag = tag
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self):
+        return len(self._data)
+
+    def __repr__(self) -> str:
+        return f"_StatefulMapping({self._data!r})"
+
+
+@pytest.mark.parametrize("factory", (_StatefulDict, _StatefulMapping))
+def test_mapping_subclasses_are_opaque_rather_than_projected_by_items(factory):
+    left = ValueParams(payload=factory({"k": 1}, tag="a"))
+    right = ValueParams(payload=factory({"k": 1}, tag="b"))
+
+    assert left != right
+
+
+def test_a_mapping_subclass_stays_opaque_even_when_all_of_its_state_matches():
+    """Opacity is a property of the type, so a matching instance is unequal too."""
+    assert ValueParams(payload=_StatefulDict({"k": 1}, tag="a")) != ValueParams(
+        payload=_StatefulDict({"k": 1}, tag="a")
+    )
+
+
+def test_an_opaque_mapping_still_compares_equal_to_itself():
+    shared = _StatefulMapping({"k": 1}, tag="a")
+    assert ValueParams(payload=shared) == ValueParams(payload=shared)
+
+
+def test_exact_dicts_are_still_projected_structurally():
+    """The control: opacity must not be reached by breaking plain mappings."""
+    assert ValueParams(payload={"k": 1}) == ValueParams(payload={"k": 1})
+    assert ValueParams(payload={"k": 1}) != ValueParams(payload={"k": 2})
+
+
+@dataclass(frozen=True, slots=True)
+class _Payload:
+    body: Any
+
+
+def test_a_large_payload_is_not_retained_by_the_substrate_cache():
+    """One cached key strongly retains its whole target, so size has to gate retention."""
+    from lionagi.ln._structural import _MAX_CACHED_WEIGHT, _try_stable_cache_key
+
+    assert _try_stable_cache_key(_Payload("x" * (_MAX_CACHED_WEIGHT + 1))) is None
+
+
+def test_a_small_payload_is_still_retained():
+    """The control: the ceiling must not be reached by disabling the cache."""
+    from lionagi.ln._structural import _try_stable_cache_key
+
+    assert _try_stable_cache_key(_Payload("x")) is not None
+
+
+def test_the_ceiling_accumulates_rather_than_measuring_one_scalar():
+    """Many small values retain as much as one large one, so the cost is summed."""
+    from lionagi.ln._structural import _MAX_CACHED_WEIGHT, _try_stable_cache_key
+
+    many = tuple("x" * 64 for _ in range((_MAX_CACHED_WEIGHT // 64) + 2))
+    assert all(len(part) < _MAX_CACHED_WEIGHT for part in many)
+    assert _try_stable_cache_key(_Payload(many)) is None
+
+
+def test_an_unretained_value_is_still_comparable_and_hashable():
+    """Withholding a cache entry bounds retention; it must not change what compares equal."""
+    from lionagi.ln._structural import _MAX_CACHED_WEIGHT
+
+    body = "x" * (_MAX_CACHED_WEIGHT + 1)
+    left = ValueParams(payload=_Payload(body))
+    right = ValueParams(payload=_Payload(body))
+
+    assert left == right
+    assert hash(left) == hash(right)
+    assert left != ValueParams(payload=_Payload(body + "y"))
+
+
+def test_a_large_payload_never_enters_the_dataclass_cache():
+    from lionagi.ln._structural import (
+        _MAX_CACHED_WEIGHT,
+        _stable_dataclass_keys,
+        _structural_key,
+    )
+
+    before = len(_stable_dataclass_keys._cache)
+    _structural_key(_Payload("x" * (_MAX_CACHED_WEIGHT + 1)))
+    assert len(_stable_dataclass_keys._cache) == before
+
+    _structural_key(_Payload("x"))
+    assert len(_stable_dataclass_keys._cache) == before + 1
 
 
 def test_cycles_fail_with_a_typed_path():

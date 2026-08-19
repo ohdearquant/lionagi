@@ -316,9 +316,11 @@ The projection rules are:
 
 - every scalar carries an exact type tag, so `True`, `1`, and `1.0` are distinct; floats use their
   IEEE-754 bits, including signed zero and NaN payload; `Ellipsis` remains an immutable singleton;
-- mappings become key/value projections sorted by framed structural order tokens; lists and tuples
-  preserve order and retain their different collection kinds; sets and frozensets are sorted by
-  those same tokens and retain their different kinds;
+- exact `dict` values become key/value projections sorted by framed structural order tokens, while
+  a mapping of any other type is opaque, because nothing about a `Mapping` implementation says
+  whether `items()` is all of it; lists and tuples preserve order and retain their different
+  collection kinds; sets and frozensets are sorted by those same tokens and retain their different
+  kinds;
 - a live `dict`, `list`, or `set` remains structurally comparable but makes its owner unhashable
   and cache-ineligible. A tuple or frozenset is safe only when every descendant is safe. This
   prevents a shallow-frozen `Params` from changing hash after a nested mutation. User collection
@@ -368,7 +370,12 @@ custom metaclasses. Python 3.10–3.14 contract tests pin that isolated private 
 model keys include adapter-class identity, base-model identity, model name, the final ordered
 declaration projection, and documentation; the already-projected spec order makes raw
 `include`/`exclude` selectors redundant. A separate bounded stable-declaration projection cache
-keeps those recursive checks off hot cache-hit paths. Field-layout, sentinel-policy, and
+keeps those recursive checks off hot cache-hit paths. A cached entry keys on strong identity, so it
+retains its whole target for as long as it lives, and an entry count alone would leave the retained
+bytes unbounded. Admission therefore also has a projected-size ceiling
+(`LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT`) that is summed across the projection rather than measured
+on any one value. Exceeding it withholds caching only: the value stays structurally comparable and
+hashable, because size is a retention question and never a correctness one. Field-layout, sentinel-policy, and
 sentinel-singleton caches likewise wrap class objects in strong identity keys so permissive
 metaclass equality cannot cross-wire their values.
 
