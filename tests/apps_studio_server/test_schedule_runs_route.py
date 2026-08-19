@@ -867,3 +867,47 @@ def test_the_record_route_serves_the_persisted_execution_root(tmp_path, monkeypa
     assert '_studio(f"/{_quote(schedule_id)}")' in create.group(0), (
         "the read-back moved; re-derive which route this test is about"
     )
+
+
+# The run-side counterpart to the private-schedule-column sweep above. The run join
+# carries more than the view names, and the routes that serve a view returned the joined
+# row verbatim before the view existed, so the allow-list is the only thing standing
+# between these columns and the wire.
+_PRIVATE_RUN_COLUMNS = ("action_args", "resume_packet")
+
+
+def _seed_run_with_private_columns(monkeypatch, db_path: Path) -> str:
+    _patch_db(monkeypatch, db_path)
+
+    async def seed():
+        schedule_id = await _seed_schedule()
+        run_id = await _seed_run(schedule_id, status="completed", fired_at=time.time())
+        async with StateDB() as db:
+            await db.update_schedule_run(run_id, resume_packet={"cursor": "/private/host/state"})
+        return schedule_id
+
+    return asyncio.run(seed())
+
+
+def test_the_seeded_run_really_carries_the_private_run_columns(tmp_path, monkeypatch):
+    """Positive control: without this the sweep below passes on a run that never had
+    the columns, which is the shape a broken seeder fails in."""
+    schedule_id = _seed_run_with_private_columns(monkeypatch, tmp_path / "state.db")
+
+    from lionagi.studio.services.schedules import list_schedule_run_views
+
+    rows = asyncio.run(list_schedule_run_views(schedule_id))
+    assert len(rows) == 1
+    unset = sorted(name for name in _PRIVATE_RUN_COLUMNS if not rows[0].get(name))
+    assert not unset, f"the join did not carry {unset}; the sweep would prove nothing"
+
+
+def test_no_list_surface_serves_a_private_run_column(tmp_path, monkeypatch):
+    schedule_id = _seed_run_with_private_columns(monkeypatch, tmp_path / "state.db")
+    client = _make_client()
+
+    for path in _list_surfaces(schedule_id):
+        resp = client.get(path)
+        assert resp.status_code == 200, path
+        leaked = sorted(_keys_anywhere(resp.json()) & set(_PRIVATE_RUN_COLUMNS))
+        assert not leaked, f"{path} serves {leaked}"

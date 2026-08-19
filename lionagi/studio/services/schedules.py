@@ -557,6 +557,12 @@ def _run_summary(row: dict[str, Any]) -> dict[str, Any]:
 # A run view adds the reconciled outcome and the joined session facts on top of the
 # occurrence row. These are the additions any list surface serves; the rest of the join
 # (leases, capabilities, library references, resume packets) stays private.
+#
+# `artifacts` and `session_ids` carry host paths and raw session ids, and they are here
+# because `li schedule runs` and `li schedule status` print them (studio/cli.py). They
+# reach the wire on these routes either way -- before this list existed the routes
+# returned the joined row verbatim -- so naming them is what turns a pass-through into
+# a decision, and what makes withholding them later a one-line change in one place.
 _RUN_VIEW_FIELDS = _RUN_SUMMARY_FIELDS + ("duration_ms", "artifacts", "session_ids")
 
 
