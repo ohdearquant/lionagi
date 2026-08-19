@@ -1403,7 +1403,7 @@ class SchedulerEngine:
                 if not item.dispatchable:
                     # Filtered-out PRs consume no budget, and the cursor can always advance past
                     # them so they are not re-listed forever.
-                    cursor = item.updated_at
+                    cursor = item.cursor
                     continue
 
                 rate_claim: _RateLimitClaim | None = None
@@ -1458,7 +1458,7 @@ class SchedulerEngine:
                         # Advances github_cursor inside the same atomic transaction as this event's
                         # occurrence insert, durably before the action runs, closing the double-fire
                         # hazard of batching the cursor write until after the loop.
-                        extra_schedule_fields={"github_cursor": item.updated_at},
+                        extra_schedule_fields={"github_cursor": item.cursor},
                         expect_next_fire_at=(
                             schedule.get("next_fire_at")
                             if unclaimed_poll_cycle
@@ -1471,13 +1471,13 @@ class SchedulerEngine:
                         # Only a written advance moves the claim. Skipped events move the local
                         # read position below without writing, so following that instead would
                         # claim a value no transaction ever put in the row.
-                        claimed_cursor = item.updated_at
+                        claimed_cursor = item.cursor
                     if not fired:
                         # A refusal before a process started means nothing ran, so re-offering the
                         # event is not a re-execution. Bounded, because a refusal can be a property
                         # of this one event rather than the schedule, and holding the cursor forever
                         # would block every later event.
-                        refusals = await self._record_predispatch_refusal(schedule, item.updated_at)
+                        refusals = await self._record_predispatch_refusal(schedule, item.cursor)
                         if refusals < _MAX_PREDISPATCH_REFUSALS:
                             # Stop rather than trying the rest: if the cause is the schedule, later
                             # events refuse identically and each burns a budget unit doing so.
@@ -1500,7 +1500,7 @@ class SchedulerEngine:
                             item.updated_at,
                             refusals,
                         )
-                        cursor = item.updated_at
+                        cursor = item.cursor
                         await self._clear_predispatch_refusals(schedule)
                         # The advance rides the trailing batched write below, since the refusing
                         # fire wrote its failed run row without a cursor advance; a crash here just
@@ -1509,7 +1509,7 @@ class SchedulerEngine:
                     await self._clear_predispatch_refusals(schedule)
                     # Tracked locally for the batched trailing write below, and idempotent if this
                     # event's own fire already persisted the same cursor value.
-                    cursor = item.updated_at
+                    cursor = item.cursor
                 finally:
                     if not admission_handed_off:
                         if rate_claim is not None:

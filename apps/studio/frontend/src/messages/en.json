@@ -874,6 +874,7 @@
       "permission": "permission denied",
       "missingDependency": "missing dependency",
       "notFound": "file not found",
+      "unclassified": "unclassified error",
       "showDetails": "Show full error",
       "hideDetails": "Hide full error"
     }

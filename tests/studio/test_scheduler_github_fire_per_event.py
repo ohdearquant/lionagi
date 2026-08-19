@@ -20,7 +20,7 @@ import pytest
 from lionagi.state.db import NO_CURSOR_CLAIM
 from lionagi.studio.scheduler import github as gh_mod
 from lionagi.studio.scheduler.engine import SchedulerEngine
-from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult
+from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult, _cursor_for
 
 
 def _minimal_schedule(**overrides) -> dict:
@@ -79,6 +79,7 @@ def _item(pr_number, updated_at, *, dispatchable=True):
         },
         updated_at=updated_at,
         dispatchable=dispatchable,
+        cursor=_cursor_for(updated_at, pr_number),
     )
 
 
@@ -139,16 +140,16 @@ async def test_multi_event_poll_fires_once_per_dispatchable_event():
         for call in svc.create_schedule_run_and_advance.await_args_list
     ]
     assert github_cursors == [
-        "2026-07-07T10:00:00Z",
-        "2026-07-07T11:00:00Z",
-        "2026-07-07T12:00:00Z",
+        _cursor_for("2026-07-07T10:00:00Z", 1),
+        _cursor_for("2026-07-07T11:00:00Z", 2),
+        _cursor_for("2026-07-07T12:00:00Z", 3),
     ]
 
     # Trailing safety-net batched write still lands on the newest event too
     # (harmless re-write of what the last event's own atomic call already
     # persisted).
     svc.update_schedule.assert_any_call(
-        "sched-001", github_cursor="2026-07-07T12:00:00Z", guard_cursor_forward=True
+        "sched-001", github_cursor=_cursor_for("2026-07-07T12:00:00Z", 3), guard_cursor_forward=True
     )
     assert engine._global_inflight == 0
 
@@ -179,9 +180,9 @@ async def test_single_event_poll_behavior_unchanged():
     (run_payload,), kwargs = svc.create_schedule_run_and_advance.await_args
     assert [e["pr_number"] for e in run_payload["trigger_context"]["github_events"]] == [7]
     assert run_payload["trigger_context"]["repo"] == "acme/widgets"
-    assert kwargs["schedule_fields"]["github_cursor"] == "2026-07-07T10:00:00Z"
+    assert kwargs["schedule_fields"]["github_cursor"] == _cursor_for("2026-07-07T10:00:00Z", 7)
     svc.update_schedule.assert_any_call(
-        "sched-001", github_cursor="2026-07-07T10:00:00Z", guard_cursor_forward=True
+        "sched-001", github_cursor=_cursor_for("2026-07-07T10:00:00Z", 7), guard_cursor_forward=True
     )
     assert engine._global_inflight == 0
 
@@ -236,10 +237,12 @@ async def test_max_runs_exhaustion_mid_batch_stops_cursor_before_undispatched(ca
 
     # Cursor stops at PR 2's updated_at, not PR 3's -- PR 3 was never dispatched.
     svc.update_schedule.assert_any_call(
-        "sched-001", github_cursor="2026-07-07T11:00:00Z", guard_cursor_forward=True
+        "sched-001", github_cursor=_cursor_for("2026-07-07T11:00:00Z", 2), guard_cursor_forward=True
     )
     cursor_calls = [c for c in svc.update_schedule.await_args_list if "github_cursor" in c.kwargs]
-    assert all(c.kwargs["github_cursor"] != "2026-07-07T12:00:00Z" for c in cursor_calls)
+    assert all(
+        c.kwargs["github_cursor"] != _cursor_for("2026-07-07T12:00:00Z", 3) for c in cursor_calls
+    )
 
     # The drop is logged with schedule id and the deferred PR number.
     assert any(
@@ -286,7 +289,7 @@ async def test_global_slot_exhaustion_mid_batch_stops_cursor_before_undispatched
 
     assert svc.create_invocation.await_count == 1
     svc.update_schedule.assert_any_call(
-        "sched-001", github_cursor="2026-07-07T10:00:00Z", guard_cursor_forward=True
+        "sched-001", github_cursor=_cursor_for("2026-07-07T10:00:00Z", 1), guard_cursor_forward=True
     )
     assert any(
         "sched-001" in r.message and "2" in r.message and "concurrent-fire" in r.message
@@ -323,7 +326,7 @@ async def test_filtered_event_between_dispatched_events_still_advances_cursor():
 
     assert svc.create_invocation.await_count == 2
     svc.update_schedule.assert_any_call(
-        "sched-001", github_cursor="2026-07-07T12:00:00Z", guard_cursor_forward=True
+        "sched-001", github_cursor=_cursor_for("2026-07-07T12:00:00Z", 3), guard_cursor_forward=True
     )
 
 
@@ -435,7 +438,7 @@ async def test_undispatched_event_is_relisted_on_next_poll(monkeypatch, caplog):
     for call in svc.update_schedule.await_args_list:
         if "github_cursor" in call.kwargs:
             persisted_cursor = call.kwargs["github_cursor"]
-    assert persisted_cursor == "2026-07-07T10:00:00Z"
+    assert persisted_cursor == _cursor_for("2026-07-07T10:00:00Z", 1)
 
     # Simulate the next tick's poll with the persisted cursor.
     schedule_next = {**schedule, "github_cursor": persisted_cursor}
@@ -527,7 +530,7 @@ async def test_merged_mode_truncated_scan_no_skip_no_duplicate_across_two_ticks(
     for call in svc.update_schedule.await_args_list:
         if "github_cursor" in call.kwargs:
             persisted_cursor = call.kwargs["github_cursor"]
-    assert persisted_cursor == "2020-01-01T00:00:00Z"
+    assert persisted_cursor == _cursor_for("2020-01-01T00:00:00Z", 1410)
 
     # Tick 2: the underlying data has moved on (real GitHub would no longer
     # surface the now-stale closed-unmerged noise ahead of PR 1405) -- a
@@ -707,7 +710,7 @@ async def test_every_event_in_a_batch_is_written_though_each_one_advances_the_cu
         await engine._tick_github(schedule, now=10_000.0)
 
     assert len(written) == 3, f"expected one occurrence per event, wrote {len(written)}"
-    assert stored["github_cursor"] == "2026-01-01T00:00:03Z"
+    assert stored["github_cursor"] == _cursor_for("2026-01-01T00:00:03Z", 3)
 
 
 @pytest.mark.asyncio
@@ -752,7 +755,7 @@ async def test_a_concurrent_advance_between_events_refuses_the_later_write():
                 schedule_id=schedule["id"],
                 schedule_fields={"github_cursor": "2026-01-01T00:00:02Z"},
                 expect_next_fire_at=NO_CURSOR_CLAIM,
-                expect_github_cursor="2026-01-01T00:00:01Z",
+                expect_github_cursor=_cursor_for("2026-01-01T00:00:01Z", 1),
             )
             writer = "first"
             assert other_won, "the second scheduler was refused, so the race never happened"

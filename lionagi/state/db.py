@@ -3803,8 +3803,10 @@ class StateDB:
         bind_params = []
         for k in fields:
             if k == "github_cursor" and guarded_cursor:
-                # Cursors are compared as strings everywhere, since the poller compares them against
-                # GitHub's own timestamps, so plain lexical order IS the ordering.
+                # Cursors are compared as strings everywhere, since the poller compares them
+                # against GitHub's own timestamps, so plain lexical order IS the ordering. The
+                # PR number a cursor carries after its timestamp is zero-padded to keep that
+                # true within one second.
                 sets_parts.append(
                     '"github_cursor" = CASE WHEN github_cursor IS NULL '
                     "OR github_cursor < :github_cursor "

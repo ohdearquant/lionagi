@@ -239,14 +239,15 @@ describe("messages — leaf-key parity across all 16 locales", () => {
   // against. Natively translated in all 16, so unlike its two siblings it adds
   // nothing to the identity-leak baseline below.
   //
-  // 1104, measured from en.json rather than carried from either side: main
+  // 1105, measured from en.json rather than carried from either side: main
   // dropped fleet.detail.engineRuns with the link bar that was its only caller
   // and added runCard.outputWithheld and history.detail.filesUnionBounded,
   // while this branch added three schedules.detail leaves for the
-  // discard-changes confirmation. All five additions are natively translated in
+  // discard-changes confirmation and schedules.error.unclassified for a failure
+  // the server could not classify. All six additions are natively translated in
   // all 16 locales, so they add nothing to the identity-leak baseline.
-  it("en.json has 1104 leaves", () => {
-    expect(EN_LEAVES.size).toBe(1104);
+  it("en.json has 1105 leaves", () => {
+    expect(EN_LEAVES.size).toBe(1105);
   });
 
   it.each(LOCALES.map((l) => l.code))(

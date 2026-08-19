@@ -38,12 +38,9 @@ function schedule(overrides: Partial<ScheduleSummary> = {}): ScheduleSummary {
     poll_interval_sec: null,
     action_kind: "agent",
     action_model: null,
-    action_prompt: null,
     action_agent: null,
     action_playbook: null,
     action_project: null,
-    on_success: null,
-    on_fail: null,
     last_fired_at: null,
     next_fire_at: null,
     missed_fire_policy: "skip",
@@ -133,9 +130,9 @@ describe("SchedulesTable — source contract", () => {
     expect(SRC).toContain('taxonomy="session"');
   });
 
-  it("classifies failed-run errors instead of rendering the raw error_detail inline", () => {
-    expect(SRC).toContain("classifyError(run.error_detail");
-    expect(SRC).not.toMatch(/\{run\.error_detail\}/);
+  it("renders the server's classification and never a raw error_detail", () => {
+    expect(SRC).toContain("run.error_class");
+    expect(SRC).not.toContain("run.error_detail");
   });
 
   it("never leaks the raw error_detail into a hover title — only the classified line", () => {

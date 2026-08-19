@@ -277,12 +277,19 @@ async def test_tick_github_releases_slot_when_max_runs_reservation_raises(monkey
 
     monkeypatch.setattr(engine, "_reserve_max_runs_budget", _boom)
 
-    from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult
+    from lionagi.studio.scheduler.github import (
+        GithubPollItem,
+        GithubPollResult,
+        _cursor_for,
+    )
 
     poll_result = GithubPollResult(
         items=[
             GithubPollItem(
-                event={"pr_number": 1}, updated_at="2026-07-07T10:00:00Z", dispatchable=True
+                event={"pr_number": 1},
+                updated_at="2026-07-07T10:00:00Z",
+                dispatchable=True,
+                cursor=_cursor_for("2026-07-07T10:00:00Z", 1),
             )
         ],
         scan_complete=True,
@@ -319,12 +326,19 @@ async def test_tick_github_max_runs_refusal_does_not_crash_when_cap_unlimited(mo
 
     monkeypatch.setattr(engine, "_reserve_max_runs_budget", _refuse)
 
-    from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult
+    from lionagi.studio.scheduler.github import (
+        GithubPollItem,
+        GithubPollResult,
+        _cursor_for,
+    )
 
     poll_result = GithubPollResult(
         items=[
             GithubPollItem(
-                event={"pr_number": 1}, updated_at="2026-07-07T10:00:00Z", dispatchable=True
+                event={"pr_number": 1},
+                updated_at="2026-07-07T10:00:00Z",
+                dispatchable=True,
+                cursor=_cursor_for("2026-07-07T10:00:00Z", 1),
             )
         ],
         scan_complete=True,
@@ -360,12 +374,19 @@ async def test_tick_github_fires_and_releases_slot_on_completion(monkeypatch):
         trigger_type="github_poll", github_repo="acme/widgets", last_fired_at=0
     )
 
-    from lionagi.studio.scheduler.github import GithubPollItem, GithubPollResult
+    from lionagi.studio.scheduler.github import (
+        GithubPollItem,
+        GithubPollResult,
+        _cursor_for,
+    )
 
     poll_result = GithubPollResult(
         items=[
             GithubPollItem(
-                event={"pr_number": 1}, updated_at="2026-07-07T10:00:00Z", dispatchable=True
+                event={"pr_number": 1},
+                updated_at="2026-07-07T10:00:00Z",
+                dispatchable=True,
+                cursor=_cursor_for("2026-07-07T10:00:00Z", 1),
             )
         ],
         scan_complete=True,
