@@ -151,7 +151,7 @@ def to_list(
     return processed
 
 
-@dataclass(slots=True, frozen=True, init=False)
+@dataclass(slots=True, frozen=True, init=False, eq=False)
 class ToListParams(Params):
     _func: ClassVar[Any] = to_list
 

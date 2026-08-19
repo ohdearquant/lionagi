@@ -6,10 +6,10 @@
 from __future__ import annotations
 
 from collections.abc import Collection
-from types import FunctionType, GenericAlias, UnionType
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from lionagi.ln._cache import BoundedLRUCache
+from lionagi.ln._structural import _IdentityKey, _structural_key, _try_stable_cache_key
 from lionagi.ln.types import is_sentinel
 
 from ._protocol import SpecAdapter
@@ -25,59 +25,37 @@ if TYPE_CHECKING:
 
 # Shared across identical constructions — callers must not mutate a returned model class.
 # LIONAGI_OPERATIVE_MODEL_CACHE_SIZE=0 disables sharing entirely.
-_model_type_cache: BoundedLRUCache[tuple[type[BaseModel], tuple], type[BaseModel]] = (
-    BoundedLRUCache("LIONAGI_OPERATIVE_MODEL_CACHE_SIZE", 512)
+# Weakly, so the entry shares a model that something is using and never keeps one
+# alive on its own. A declaration's callables are reachable from the model it built,
+# so an entry holding the model strongly outlives every name they had.
+_model_type_cache: BoundedLRUCache[Any, type[BaseModel]] = BoundedLRUCache(
+    "LIONAGI_OPERATIVE_MODEL_CACHE_SIZE", 512, weak_values=True
 )
-
-
-def _is_cache_safe_value(value: object) -> bool:
-    """Return whether a Spec metadata value is immutable enough for a shared model type."""
-    if value is None or isinstance(value, (bool, bytes, float, int, str, type)):
-        return True
-    if isinstance(value, (FunctionType, GenericAlias, UnionType)):
-        return True
-    if isinstance(value, tuple):
-        return all(_is_cache_safe_value(item) for item in value)
-    if isinstance(value, frozenset):
-        return all(_is_cache_safe_value(item) for item in value)
-    return False
 
 
 def _model_type_cache_key(
     *,
+    adapter_type: type,
     base_type: type[BaseModel] | None,
     model_name: str,
-    specs: tuple[Spec, ...],
-    include: Collection[str] | None,
-    exclude: Collection[str] | None,
+    declaration: object,
     doc: str | None,
-) -> tuple[type[BaseModel], tuple] | None:
+) -> Any | None:
     """Build an identity-safe cache key, or opt out for mutable field metadata."""
     if base_type is None:
         return None
 
-    if not all(
-        (is_sentinel(spec.base_type) or _is_cache_safe_value(spec.base_type))
-        and all(_is_cache_safe_value(meta.value) for meta in spec.metadata)
-        for spec in specs
-    ):
+    declaration_key = _try_stable_cache_key(declaration)
+    if declaration_key is None:
         return None
-
-    spec_options = tuple(
-        (spec.base_type, tuple((meta.key, meta.value) for meta in spec.metadata)) for spec in specs
+    return (
+        "pydantic-model-v1",
+        _IdentityKey(adapter_type),
+        _IdentityKey(base_type),
+        _structural_key(model_name),
+        declaration_key,
+        _structural_key(doc),
     )
-    options = (
-        model_name,
-        spec_options,
-        frozenset(include) if include is not None else None,
-        frozenset(exclude) if exclude is not None else None,
-        doc,
-    )
-    try:
-        hash((base_type, options))
-    except TypeError:
-        return None
-    return base_type, options
 
 
 class PydanticSpecAdapter(SpecAdapter):
@@ -124,41 +102,38 @@ class PydanticSpecAdapter(SpecAdapter):
                     f"unnamed or non-string Spec found at index {index}"
                 )
         cache_key = _model_type_cache_key(
+            adapter_type=cls,
             base_type=base_type,
             model_name=model_name,
-            specs=use_specs,
-            include=include,
-            exclude=exclude,
+            declaration=op if use_specs is op.__op_fields__ else use_specs,
             doc=doc,
         )
-        if cache_key is not None:
-            cached = _model_type_cache.get(cache_key)
-            if cached is not None:
-                if not cached.__pydantic_complete__:
-                    cached.model_rebuild()
-                return cached
 
-        use_fields = {cast(str, i.name): cls.create_field(i) for i in use_specs}
+        def build() -> type[BaseModel]:
+            use_fields = {cast(str, i.name): cls.create_field(i) for i in use_specs}
 
-        # Collect validators from specs
-        validators = {}
-        for spec in use_specs:
-            v = cls.create_validator(spec)
-            if v:
-                validators.update(v)
+            validators = {}
+            for spec in use_specs:
+                validator = cls.create_validator(spec)
+                if validator:
+                    validators.update(validator)
 
-        model_cls = build_model_type(
-            name=model_name,
-            parameter_fields=use_fields,
-            base_type=base_type,
-            inherit_base=True,
-            doc=doc,
-            validators=validators,
+            result = build_model_type(
+                name=model_name,
+                parameter_fields=use_fields,
+                base_type=base_type,
+                inherit_base=True,
+                doc=doc,
+                validators=validators,
+            )
+            result.model_rebuild()
+            return result
+
+        model_cls = (
+            build() if cache_key is None else _model_type_cache.get_or_create(cache_key, build)
         )
-
-        model_cls.model_rebuild()
-        if cache_key is not None:
-            _model_type_cache.put(cache_key, model_cls)
+        if not model_cls.__pydantic_complete__:
+            model_cls.model_rebuild()
         return model_cls
 
     @classmethod

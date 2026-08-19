@@ -14,9 +14,13 @@ if TYPE_CHECKING:
 __all__ = ("Operable",)
 
 
-@dataclass(frozen=True, slots=True, init=False)
+# Slots are written out rather than generated so `__weakref__` is among them; see
+# Meta for why the projection cache needs that.
+@dataclass(frozen=True, init=False)
 class Operable:
     """Immutable ordered Spec collection; use create_model() to emit a Pydantic model."""
+
+    __slots__ = ("__op_fields__", "name", "__weakref__")
 
     __op_fields__: tuple[Spec, ...]
     name: str | None
