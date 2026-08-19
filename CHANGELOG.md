@@ -22,7 +22,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   separate stable-declaration projection cache is bounded by
   `LIONAGI_STRUCTURAL_CACHE_SIZE` (10,000 by default) and, because each entry strongly retains its
   target, by a summed projected-size ceiling `LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT` (8,192 by
-  default) above which a value is not retained but stays comparable and hashable. Mappings other
+  default) measured on the ordering token, above which a value is not retained but stays comparable
+  and hashable. Integers are projected as width-minimal two's complement instead of decimal digits,
+  so an integer wider than the interpreter's integer-to-string limit compares and hashes rather than
+  raising `ValueError`. Mappings other
   than an exact `dict` are opaque and compare by identity, matching the existing treatment of
   `tuple`, `frozenset`, `pathlib`, and UUID subclasses, since a `Mapping` implementation may carry
   state that `items()` does not expose.

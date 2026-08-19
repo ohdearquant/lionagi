@@ -66,11 +66,14 @@ class _StructuralKey:
     _sort_token: bytes = field(compare=False, hash=False, repr=False)
     _unsafe_path: str | None = field(compare=False, hash=False, repr=False, default=None)
     _unsafe_type: type[Any] | None = field(compare=False, hash=False, repr=False, default=None)
-    _weight: int = field(compare=False, hash=False, repr=False, default=1)
+    _weight: int = field(init=False, compare=False, hash=False, repr=False)
     _hash_value: int = field(init=False, compare=False, hash=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "_hash_value", hash(self.value))
+        # The ordering token already frames every descendant's token, so its length
+        # is the one retained-cost estimate no branch can forget to supply.
+        object.__setattr__(self, "_weight", len(self._sort_token))
 
     def __hash__(self) -> int:
         return self._hash_value
@@ -132,6 +135,11 @@ def _encode_text(value: str) -> bytes:
     return value.encode("utf-8", "surrogatepass")
 
 
+def _encode_int(value: int) -> bytes:
+    """Width-minimal two's complement, which unlike str() has no digit ceiling."""
+    return value.to_bytes((value.bit_length() + 8) // 8, "big", signed=True)
+
+
 def _lion_sentinel_name(value: object) -> str | None:
     """Resolve the two Lion sentinels by object identity without an import cycle."""
     module = sys.modules.get("lionagi.ln.types._sentinel")
@@ -173,7 +181,6 @@ def _combine(
         _sort_token=_frame(token_tag, *(part._sort_token for part in parts)),
         _unsafe_path=unsafe._unsafe_path if unsafe else None,
         _unsafe_type=unsafe._unsafe_type if unsafe else None,
-        _weight=1 + sum(part._weight for part in parts),
     )
 
 
@@ -246,13 +253,7 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
     if value_type is bool:
         return _StructuralKey((_BOOL, value), True, True, b"b1" if value else b"b0")
     if value_type is int:
-        return _StructuralKey(
-            (_INT, value),
-            True,
-            True,
-            _frame(b"i", _encode_text(str(value))),
-            _weight=1 + (value.bit_length() >> 3),
-        )
+        return _StructuralKey((_INT, value), True, True, _frame(b"i", _encode_int(value)))
     if value_type is float:
         encoded = struct.pack(">d", value)
         return _StructuralKey((_FLOAT, encoded), True, True, _frame(b"f", encoded))
@@ -260,13 +261,9 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
         encoded = struct.pack(">dd", value.real, value.imag)
         return _StructuralKey((_COMPLEX, encoded), True, True, _frame(b"c", encoded))
     if value_type is str:
-        return _StructuralKey(
-            (_STR, value), True, True, _frame(b"s", _encode_text(value)), _weight=1 + len(value)
-        )
+        return _StructuralKey((_STR, value), True, True, _frame(b"s", _encode_text(value)))
     if value_type is bytes:
-        return _StructuralKey(
-            (_BYTES, value), True, True, _frame(b"y", value), _weight=1 + len(value)
-        )
+        return _StructuralKey((_BYTES, value), True, True, _frame(b"y", value))
 
     sentinel_name = _lion_sentinel_name(value)
     if sentinel_name is not None:
@@ -372,7 +369,6 @@ def _project(value: Any, path: str, active: set[int]) -> _StructuralKey:
                 _sort_token=token,
                 _unsafe_path=(unsafe._unsafe_path if unsafe else path),
                 _unsafe_type=(unsafe._unsafe_type if unsafe else value_type),
-                _weight=1 + sum(key._weight + item._weight for key, item in ordered),
             )
         finally:
             active.remove(identity)

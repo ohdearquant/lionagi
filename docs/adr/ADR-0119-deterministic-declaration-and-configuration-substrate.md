@@ -315,7 +315,9 @@ def __hash__(self) -> int:
 The projection rules are:
 
 - every scalar carries an exact type tag, so `True`, `1`, and `1.0` are distinct; floats use their
-  IEEE-754 bits, including signed zero and NaN payload; `Ellipsis` remains an immutable singleton;
+  IEEE-754 bits, including signed zero and NaN payload; integers use width-minimal two's complement
+  rather than their digits, because the interpreter caps integer-to-string conversion and a
+  declaration must compare rather than raise; `Ellipsis` remains an immutable singleton;
 - exact `dict` values become key/value projections sorted by framed structural order tokens, while
   a mapping of any other type is opaque, because nothing about a `Mapping` implementation says
   whether `items()` is all of it; lists and tuples preserve order and retain their different
@@ -373,8 +375,8 @@ declaration projection, and documentation; the already-projected spec order make
 keeps those recursive checks off hot cache-hit paths. A cached entry keys on strong identity, so it
 retains its whole target for as long as it lives, and an entry count alone would leave the retained
 bytes unbounded. Admission therefore also has a projected-size ceiling
-(`LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT`) that is summed across the projection rather than measured
-on any one value. Exceeding it withholds caching only: the value stays structurally comparable and
+(`LIONAGI_STRUCTURAL_CACHE_VALUE_LIMIT`) measured on the ordering token, which already frames every
+descendant's token and so accumulates without any branch having to remember to report its own size. Exceeding it withholds caching only: the value stays structurally comparable and
 hashable, because size is a retention question and never a correctness one. Field-layout, sentinel-policy, and
 sentinel-singleton caches likewise wrap class objects in strong identity keys so permissive
 metaclass equality cannot cross-wire their values.

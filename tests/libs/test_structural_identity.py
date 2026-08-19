@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Annotated, Any, NoReturn, get_args, get_origin
 from uuid import UUID
 
@@ -412,6 +412,69 @@ def test_a_large_payload_never_enters_the_dataclass_cache():
 
     _structural_key(_Payload("x"))
     assert len(_stable_dataclass_keys._cache) == before + 1
+
+
+def _oversized(limit: int) -> str:
+    return "x" * (limit + 1)
+
+
+_UNBOUNDED_SHAPES = {
+    "str": lambda limit: _oversized(limit),
+    "bytes": lambda limit: _oversized(limit).encode(),
+    "int": lambda limit: 1 << (limit * 8),
+    "pure_posix_path": lambda limit: PurePosixPath(*(_oversized(limit),)),
+    "pure_windows_path": lambda limit: PureWindowsPath(*(_oversized(limit),)),
+    "concrete_path": lambda limit: Path(*(_oversized(limit),)),
+    "enum_value": lambda limit: Enum("_SizedEnum", {"BODY": _oversized(limit)}).BODY,
+    "tuple_of_small_parts": lambda limit: tuple("x" * 64 for _ in range((limit // 64) + 2)),
+    "frozenset_of_small_parts": lambda limit: frozenset(
+        str(index) * 64 for index in range((limit // 64) + 2)
+    ),
+    "nested_dataclass": lambda limit: _Payload(_Payload(_oversized(limit))),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(_UNBOUNDED_SHAPES))
+def test_no_shape_that_carries_unbounded_content_is_retained(shape):
+    """Every branch that materializes its content has to be counted, not the ones remembered."""
+    from lionagi.ln._structural import _MAX_CACHED_WEIGHT, _try_stable_cache_key
+
+    value = _UNBOUNDED_SHAPES[shape](_MAX_CACHED_WEIGHT)
+    assert _try_stable_cache_key(_Payload(value)) is None
+
+
+def test_the_unbounded_shape_enumeration_is_not_empty():
+    """The parametrization above asserts nothing if its source is."""
+    assert len(_UNBOUNDED_SHAPES) >= 8
+
+
+def test_a_small_value_of_every_unbounded_shape_is_still_retained():
+    """The control: the ceiling must not be reached by refusing everything."""
+    from lionagi.ln._structural import _try_stable_cache_key
+
+    for factory in _UNBOUNDED_SHAPES.values():
+        assert _try_stable_cache_key(_Payload(factory(1))) is not None
+
+
+def test_an_int_wider_than_the_decimal_conversion_limit_still_projects():
+    """A decimal token would raise here, and a declaration must compare rather than explode."""
+    wide = 1 << 70000
+
+    assert ValueParams(payload=wide) == ValueParams(payload=wide)
+    assert ValueParams(payload=wide) != ValueParams(payload=wide + 1)
+    assert hash(ValueParams(payload=wide)) == hash(ValueParams(payload=wide))
+
+
+@pytest.mark.parametrize("value", (0, 1, -1, 255, -255, 256, -256, 1 << 63, -(1 << 63)))
+def test_int_tokens_stay_distinct_across_widths_and_signs(value):
+    from lionagi.ln._structural import _structural_key
+
+    others = (0, 1, -1, 255, -255, 256, -256, 1 << 63, -(1 << 63))
+    same = _structural_key(value)._sort_token
+    for other in others:
+        if other == value:
+            continue
+        assert _structural_key(other)._sort_token != same
 
 
 def test_cycles_fail_with_a_typed_path():
