@@ -851,6 +851,7 @@
       "colLastRun": "son çalışma",
       "colNextFire": "sonraki çalışma",
       "colActions": "eylemler",
+      "historyUnavailable": "Kullanılamıyor",
       "neverRun": "hiç çalışmadı",
       "notScheduled": "—",
       "editAction": "düzenle"

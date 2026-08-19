@@ -2168,7 +2168,9 @@ export default function RunDetail({ id }: RunDetailProps) {
       try {
         const invocation = await getInvocationStatus(resumeWatch.invocation_id);
         if (cancelled) return;
-        if (isEffectivelyActive(invocation)) {
+        // Terminal first. A status that belongs to no display bucket derives to
+        // "running", so asking liveness alone polls a finished run forever.
+        if (!isTerminalSessionStatus(invocation.status) && isEffectivelyActive(invocation)) {
           setDone(false);
           setLive(true);
           delayMs = RESUME_FALLBACK_INITIAL_MS;

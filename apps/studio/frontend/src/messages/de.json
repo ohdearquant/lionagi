@@ -851,6 +851,7 @@
       "colLastRun": "Letzter Lauf",
       "colNextFire": "Nächster Lauf",
       "colActions": "Aktionen",
+      "historyUnavailable": "Nicht verfügbar",
       "neverRun": "Nie",
       "notScheduled": "—",
       "editAction": "Bearbeiten"

@@ -851,6 +851,7 @@
       "colLastRun": "آخر تشغيل",
       "colNextFire": "التشغيل القادم",
       "colActions": "الإجراءات",
+      "historyUnavailable": "غير متاح",
       "neverRun": "لم يُشغَّل قط",
       "notScheduled": "—",
       "editAction": "تعديل"

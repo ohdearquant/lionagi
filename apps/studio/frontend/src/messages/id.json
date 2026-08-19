@@ -851,6 +851,7 @@
       "colLastRun": "Terakhir dijalankan",
       "colNextFire": "Berikutnya",
       "colActions": "Tindakan",
+      "historyUnavailable": "Tidak tersedia",
       "neverRun": "Belum pernah",
       "notScheduled": "—",
       "editAction": "Edit"

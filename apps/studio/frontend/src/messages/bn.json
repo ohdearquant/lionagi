@@ -851,6 +851,7 @@
       "colLastRun": "শেষ রান",
       "colNextFire": "পরবর্তী রান",
       "colActions": "ক্রিয়া",
+      "historyUnavailable": "পাওয়া যায়নি",
       "neverRun": "কখনও না",
       "notScheduled": "—",
       "editAction": "সম্পাদনা করুন"

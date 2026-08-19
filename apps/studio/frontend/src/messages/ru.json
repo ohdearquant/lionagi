@@ -851,6 +851,7 @@
       "colLastRun": "Последний запуск",
       "colNextFire": "Следующий запуск",
       "colActions": "Действия",
+      "historyUnavailable": "Недоступно",
       "neverRun": "Никогда",
       "notScheduled": "—",
       "editAction": "Изменить"

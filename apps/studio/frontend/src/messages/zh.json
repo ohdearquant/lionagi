@@ -851,6 +851,7 @@
       "colLastRun": "上次运行",
       "colNextFire": "下次触发",
       "colActions": "操作",
+      "historyUnavailable": "无法获取",
       "neverRun": "从未运行",
       "notScheduled": "—",
       "editAction": "编辑"

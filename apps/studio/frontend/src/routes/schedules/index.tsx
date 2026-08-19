@@ -104,7 +104,7 @@ function TableSkeleton() {
 function SchedulesSpace() {
   const t = useTranslations("schedules");
   const tDaemon = useTranslations("daemon");
-  const { schedules, runs, nowMs, loading, error, refresh } = useSchedulesData();
+  const { schedules, runs, nowMs, loading, error, runSummaryErrors, refresh } = useSchedulesData();
   const [view, setView] = useState<View>("cards");
   const [showModal, setShowModal] = useState(false);
   const search = Route.useSearch();
@@ -190,6 +190,7 @@ function SchedulesSpace() {
         <ScheduleCards
           schedules={schedules}
           runs={runs}
+          runSummaryErrors={runSummaryErrors}
           nowMs={nowMs}
           onChanged={refresh}
           onOpen={openSchedule}
@@ -198,6 +199,7 @@ function SchedulesSpace() {
         <SchedulesTable
           schedules={schedules}
           runs={runs}
+          runSummaryErrors={runSummaryErrors}
           nowMs={nowMs}
           onChanged={refresh}
           onOpen={openSchedule}

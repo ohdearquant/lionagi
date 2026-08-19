@@ -851,6 +851,7 @@
       "colLastRun": "前回の実行",
       "colNextFire": "次回の実行",
       "colActions": "操作",
+      "historyUnavailable": "取得できません",
       "neverRun": "未実行",
       "notScheduled": "—",
       "editAction": "編集"

@@ -185,7 +185,7 @@ describe("SchedulesTable — keyboard interaction (mounted)", () => {
     vi.unstubAllGlobals();
   });
 
-  async function mount() {
+  async function mount(runSummaryErrors: ReadonlySet<string> = new Set()) {
     await act(async () => {
       root?.render(
         <IntlProvider locale="en" messages={enMessages}>
@@ -193,6 +193,7 @@ describe("SchedulesTable — keyboard interaction (mounted)", () => {
             <SchedulesTable
               schedules={[schedule({ id: "sched-1", name: "nightly-build" })]}
               runs={[]}
+              runSummaryErrors={runSummaryErrors}
               nowMs={1_700_000_000_000}
               onChanged={onChanged}
               onOpen={onOpen}
@@ -202,6 +203,22 @@ describe("SchedulesTable — keyboard interaction (mounted)", () => {
       );
     });
   }
+
+  it("says a schedule has never run when its run slice loaded and was empty", async () => {
+    await mount();
+
+    expect(container.textContent).toContain(enMessages.schedules.table.neverRun);
+    expect(container.textContent).not.toContain(enMessages.schedules.table.historyUnavailable);
+  });
+
+  it("says the history is unavailable, not never-run, when the slice failed to load", async () => {
+    // Both render zero runs. Without the distinction a fetch failure reads as a
+    // fact about the schedule rather than about the request.
+    await mount(new Set(["sched-1"]));
+
+    expect(container.textContent).toContain(enMessages.schedules.table.historyUnavailable);
+    expect(container.textContent).not.toContain(enMessages.schedules.table.neverRun);
+  });
 
   function keydown(el: Element, key: string) {
     act(() => {

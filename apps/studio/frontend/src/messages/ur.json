@@ -851,6 +851,7 @@
       "colLastRun": "آخری اجراء",
       "colNextFire": "اگلا اجراء",
       "colActions": "اعمال",
+      "historyUnavailable": "دستیاب نہیں",
       "neverRun": "کبھی نہیں",
       "notScheduled": "—",
       "editAction": "ترمیم کریں"

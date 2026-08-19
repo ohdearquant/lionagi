@@ -851,6 +851,7 @@
       "colLastRun": "अंतिम रन",
       "colNextFire": "अगला रन",
       "colActions": "कार्रवाइयाँ",
+      "historyUnavailable": "अनुपलब्ध",
       "neverRun": "कभी नहीं",
       "notScheduled": "—",
       "editAction": "संपादित करें"

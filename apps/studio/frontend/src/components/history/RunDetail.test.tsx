@@ -609,6 +609,54 @@ describe("history/RunDetail.tsx — hidden-count badge and show-implied toggle, 
     }
   });
 
+  it("stops the fallback on a terminal status that belongs to no display bucket", async () => {
+    // completed_empty derives to "running", so a liveness-only check polls a
+    // finished run forever and never performs the terminal refresh.
+    vi.useFakeTimers();
+    const { getInvocationStatus, getSession, streamSession, streamSignals } =
+      await import("@/lib/api");
+    let setSessionConnection: ((state: "connecting" | "open" | "disconnected") => void) | undefined;
+    vi.mocked(getSession).mockReset();
+    vi.mocked(getInvocationStatus).mockReset();
+    vi.mocked(getInvocationStatus).mockResolvedValue({
+      id: "inv-1",
+      status: "completed_empty",
+      ended_at: 1,
+      updated_at: 1,
+    } as never);
+    vi.mocked(getSession).mockResolvedValue(minimalSession(null, "completed_empty") as never);
+    vi.mocked(streamSession).mockImplementation((_id, _listener, onConnectionState) => {
+      setSessionConnection = onConnectionState;
+      onConnectionState?.("open");
+      return () => {};
+    });
+    vi.mocked(streamSignals).mockImplementation((_id, _listener, onConnectionState) => {
+      onConnectionState?.("open");
+      return () => {};
+    });
+
+    const { unmount } = await mountRunDetail(null, "running");
+    try {
+      await act(async () => {
+        await resumeHarness.onResumed?.({ run_id: "run-mount-1", invocation_id: "inv-1" });
+        setSessionConnection?.("disconnected");
+      });
+
+      await act(async () => vi.advanceTimersByTimeAsync(750));
+      expect(getInvocationStatus).toHaveBeenCalledTimes(1);
+
+      // The whole point: no rescheduled poll after a terminal answer.
+      await act(async () => vi.advanceTimersByTimeAsync(60_000));
+      expect(getInvocationStatus).toHaveBeenCalledTimes(1);
+      expect(getSession).toHaveBeenCalled();
+    } finally {
+      unmount();
+      vi.useRealTimers();
+      vi.mocked(streamSession).mockImplementation(() => () => {});
+      vi.mocked(streamSignals).mockImplementation(() => () => {});
+    }
+  });
+
   it("performs one final detail refresh and stops fallback work on a terminal frame", async () => {
     vi.useFakeTimers();
     const { getInvocationStatus, getSession, streamSession, streamSignals } =

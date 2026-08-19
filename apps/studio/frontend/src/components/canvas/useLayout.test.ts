@@ -134,6 +134,8 @@ describe("Dagre rank pinning — large-graph dummy-node budget (#3012)", () => {
     })),
   ];
 
+  const issueRanks = computeNodeDepths(issueNodes, issueEdges);
+
   it("keeps exact ASAP gaps for ordinary graphs", () => {
     const gaps = [1, 6, 5, 4, 3, 2];
     expect(boundPinnedMinlens(gaps, 18)).toEqual(gaps);
@@ -164,6 +166,38 @@ describe("Dagre rank pinning — large-graph dummy-node budget (#3012)", () => {
 
     expect(estimatePinnedDummyNodes(bounded)).toBeLessThanOrEqual(198);
     expect(bounded.some((gap, index) => gap < gaps[index])).toBe(true);
+  });
+
+  it("cannot move a rank, however hard the budget caps the gaps", () => {
+    // Why getLayoutedElements can return the ASAP map beside a Dagre run that
+    // was handed rescaled gaps: the edge that SET a node's rank always has gap
+    // 1, the cap never reduces a gap below 1, so it can never touch a
+    // rank-determining edge. Capping only releases reserved dummy ranks. If a
+    // future cap ever returns 0, or the gap floor moves, this goes red and the
+    // returned rank map stops describing what was drawn.
+    const gaps = issueEdges.map((e) =>
+      Math.max(1, issueRanks.get(e.target)! - issueRanks.get(e.source)!),
+    );
+    const bounded = boundPinnedMinlens(gaps, issueNodes.length);
+
+    expect(gaps.filter((gap, index) => bounded[index] < gap).length).toBeGreaterThan(0);
+    expect(Math.min(...bounded)).toBe(1);
+    expect(gaps.filter((gap, index) => bounded[index] < gap && gap === 1)).toEqual([]);
+
+    for (const target of new Set(issueEdges.map((e) => e.target))) {
+      const inbound = issueEdges
+        .filter((e) => e.target === target)
+        .map((e) => issueRanks.get(target)! - issueRanks.get(e.source)!);
+      expect(Math.min(...inbound)).toBe(1);
+    }
+  });
+
+  it("keeps the returned rank map equal to the ASAP ranks on a capped graph", () => {
+    const layout = getLayoutedElements(issueNodes, issueEdges, "LR");
+
+    for (const node of issueNodes) {
+      expect(layout.ranks.get(node.id)).toBe(issueRanks.get(node.id));
+    }
   });
 
   it("lays out the measured fixture with finite positions and dependency-ordered ranks", () => {
