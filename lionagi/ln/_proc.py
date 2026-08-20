@@ -254,9 +254,26 @@ def terminate_process_group(
         proc.terminate()
 
 
-# How often the exit poll below re-reads the child's status. Short enough that
-# terminating a cooperative child still looks instant.
-_CHILD_EXIT_POLL_SECONDS = 0.02
+# How often the polls below re-read state. The first look is fast, so
+# terminating a cooperative child still looks instant; the interval then backs
+# off, so waiting out a child that is taking its time costs little.
+_POLL_MIN_SECONDS = 0.0005
+_POLL_MAX_SECONDS = 0.02
+
+
+def _group_has_members(pgid: int) -> bool:
+    """Whether any process remains in the group. Signal 0 tests delivery only."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Something is there, we may just not be allowed to signal it. Calling
+        # that present keeps the escalation on the side of cleaning up.
+        return True
+    except OSError:
+        return False
+    return True
 
 
 async def _await_child_exit(proc: Any) -> None:
@@ -278,8 +295,10 @@ async def _await_child_exit(proc: Any) -> None:
     if not (rc is None or isinstance(rc, int)):
         await proc.wait()
         return
+    delay = _POLL_MIN_SECONDS
     while proc.returncode is None:
-        await sleep(_CHILD_EXIT_POLL_SECONDS)
+        await sleep(delay)
+        delay = min(delay * 2, _POLL_MAX_SECONDS)
 
 
 async def aterminate_process_group(
@@ -309,6 +328,15 @@ async def aterminate_process_group(
     # timeout policy can apply, so the forced-kill escalation never fires.
     with move_on_after(grace) as scope:
         await _await_child_exit(proc)
+        # The child is gone; the rest of grace belongs to whatever shared its
+        # process group. Waiting on the child alone is what keeps a pipe holder
+        # from deciding when the child's own status is known, but the forced
+        # kill below exists for group members that ignored the first signal, and
+        # reaching it by way of a stalled wait was incidental: that happened
+        # only where wait() is pipe-bound, and only when a survivor happened to
+        # be holding a pipe. Timing out here is what drives the escalation.
+        while pgid is not None and _group_has_members(pgid):
+            await sleep(_POLL_MAX_SECONDS)
     if scope.cancelled_caught:
         if pgid is not None:
             with contextlib.suppress(ProcessLookupError, PermissionError):
