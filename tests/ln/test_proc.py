@@ -475,3 +475,70 @@ def test_a_group_member_that_ignores_the_first_signal_is_still_killed(
         finally:
             with contextlib.suppress(OSError):
                 os.kill(descendant, signal.SIGKILL)
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups only")
+def test_cleanup_is_not_bounded_by_a_descendant_that_escaped_with_the_pipes():
+    """The other half of the same contract, and the one this pair exists to keep.
+
+    Here the descendant leaves the child's process group and keeps the child's
+    stderr. Nothing in this cleanup can signal it and nothing should wait for
+    it: the child's own exit is the entire question being asked. Where ``wait()``
+    is pipe-bound, waiting on it instead returns only once grace has expired, so
+    the bound asserted here sits well inside grace rather than merely under it.
+
+    Its sibling above asserts that a group member which ignored the first signal
+    is still killed. The two pull in opposite directions -- one says do not wait
+    for a foreign process, the other says do not stop waiting while the group is
+    populated -- and satisfying either alone is easy, which is why they are kept
+    together.
+    """
+    grandchild = (
+        "import os, pathlib, sys, time; "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+        "time.sleep(300)"
+    )
+
+    async def _run(ready_path):
+        child = (
+            "import subprocess, sys, time; "
+            f"subprocess.Popen([sys.executable, '-c', {grandchild!r}, "
+            f"{str(ready_path)!r}], stderr=sys.stderr, start_new_session=True); "
+            "time.sleep(300)"
+        )
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            child,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 20
+        while not ready_path.exists():
+            if time.monotonic() > deadline:
+                proc.kill()
+                pytest.fail("the descendant never reported itself ready")
+            await asyncio.sleep(0.02)
+        descendant = int(ready_path.read_text())
+        # Asserted premises: the holder is alive, and it really did leave the
+        # group. If it had stayed, the sibling test's rule would apply instead
+        # and waiting for it would be correct.
+        os.kill(descendant, 0)
+        assert os.getpgid(descendant) != os.getpgid(proc.pid)
+
+        started = time.monotonic()
+        await aterminate_process_group(proc, grace=5.0)
+        return descendant, time.monotonic() - started, proc.returncode
+
+    with tempfile.TemporaryDirectory() as td:
+        ready_path = pathlib.Path(td) / "descendant.pid"
+        descendant, elapsed, returncode = asyncio.run(_run(ready_path))
+        try:
+            assert returncode is not None, "the child had not been reaped"
+            assert elapsed < 1.0, (
+                f"cleanup took {elapsed:.2f}s of a 5s grace: it was waiting on "
+                "the escaped pipe holder rather than on the child"
+            )
+        finally:
+            with contextlib.suppress(OSError):
+                os.kill(descendant, signal.SIGKILL)
