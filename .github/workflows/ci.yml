@@ -18,9 +18,17 @@ on:
   # PR that has since changed state, and if a job is ever made conditional on
   # draft it will not have run at all. Listing the defaults back is mandatory:
   # naming types replaces them rather than adding to them.
+  #
+  # And no branches filter, the same principle a third time. A PR based on any
+  # branch other than main or develop raised no event, so nothing here ever ran
+  # on it. Its
+  # base is unprotected, so the required checks do not apply either: the PR reads
+  # mergeable with no suite behind it, and merging it carries never-tested code
+  # into the parent branch, where the parent's own suite structurally cannot see
+  # it. That failure is silent, which is why the filter goes rather than the
+  # branch list growing.
   pull_request:
     types: [ opened, synchronize, reopened, ready_for_review ]
-    branches: [ main, develop ]
   workflow_dispatch:
     inputs:
       python-matrix:
