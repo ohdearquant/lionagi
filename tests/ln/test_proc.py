@@ -324,3 +324,51 @@ def test_aterminate_grace_escalates_to_kill_on_backend(backend):
     anyio.run(_run, backend=backend)
     assert proc.terminated is True
     assert proc.killed is True
+
+
+@pytest.mark.parametrize("backend", ["asyncio", "trio"])
+def test_the_grace_wait_ends_with_the_child_not_with_whatever_holds_its_pipes(backend):
+    """A descendant that kept the child's pipes must not decide when this returns.
+
+    The fake splits two facts a real process reports together on some
+    interpreters and separately on others: ``returncode`` is set when the child
+    is reaped, while ``wait()`` completes only once every inherited pipe closes.
+    Waiting on the second means a caller giving up on a child is bounded by a
+    process it never started, and callers use this wait to decide whether the
+    child's output is still arriving or genuinely absent.
+
+    The deadline here is well inside ``grace``, so waiting on ``wait()`` fails
+    this outright rather than merely making it slow.
+    """
+    import anyio
+
+    if backend == "trio":
+        pytest.importorskip("trio")
+
+    class _PipesHeldOpen:
+        def __init__(self):
+            self.pid = -1  # _safe_pgid -> None: no real killpg on a fake pid
+            self.returncode = None
+            self.killed = False
+
+        def terminate(self):
+            self.returncode = -15  # the child is reaped here
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            await anyio.sleep_forever()  # the holder never lets go
+
+    proc = _PipesHeldOpen()
+
+    async def _run():
+        with anyio.fail_after(2):
+            await aterminate_process_group(proc, grace=5.0)
+
+    anyio.run(_run, backend=backend)
+    assert proc.returncode == -15
+    assert proc.killed is False, (
+        "the child had already exited, so escalating to SIGKILL means the wait "
+        "was reading something other than the child's own status"
+    )
