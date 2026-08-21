@@ -22,6 +22,7 @@
  * construction end to end and there is nothing stored to disagree with.
  */
 import type { RunSummary } from "./types";
+import { runSessionId } from "./runIdentity";
 
 function localHHMM(startedAt: number | null | undefined): string | null {
   if (startedAt == null) return null;
@@ -50,5 +51,5 @@ export function resolveRunLabel(run: RunSummary): string {
     return local ? `${agentName} · ${local}` : agentName;
   }
 
-  return run.run_id.slice(-12);
+  return runSessionId(run).slice(-12);
 }

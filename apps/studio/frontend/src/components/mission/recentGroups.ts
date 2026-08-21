@@ -16,6 +16,7 @@
 
 import type { RunSummary } from "@/lib/types";
 import { resolveRunLabel } from "@/lib/runLabel";
+import { runSessionId } from "@/lib/runIdentity";
 import { deriveDisplayStatus, type DisplayStatus } from "@/lib/runStatus";
 
 export interface RecentGroup {
@@ -46,7 +47,7 @@ export function groupConsecutiveRecentRuns(runs: RunSummary[]): RecentGroup[] {
     if (last && last.name === name && last.displayStatus === displayStatus) {
       last.runs.push(run);
     } else {
-      groups.push({ key: run.run_id, runs: [run], name, displayStatus });
+      groups.push({ key: runSessionId(run), runs: [run], name, displayStatus });
     }
   }
 

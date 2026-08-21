@@ -701,3 +701,70 @@ def test_codex_cost_projects_as_null_until_tracked(tmp_path, monkeypatch):
 
     detail = client.get(f"/api/runs/{codex_id}").json()
     assert detail["total_cost_usd"] is None
+
+
+_IDENTITY_CONTRACT = (
+    "run_id and id no longer name the same value.\n\n"
+    "The attention board keys its items, its routes, and its persisted dispositions on the "
+    "session id. Every disposition stored until now was written while these two were the same "
+    "value, so an item discharged under the old key is found today only because the old key "
+    "and the new one are equal. The moment they differ, those dispositions stop being found "
+    "and items a human already discharged come back as active.\n\n"
+    "The board's disposition join and its undo already read both keys. This is the change that "
+    "finally makes an input able to exercise them, so land that test with it, and give any "
+    "other consumer of a stored key the same treatment. Relaxing or deleting this assertion is "
+    "not the fix."
+)
+
+
+def _identity_expressions() -> tuple[str, str]:
+    """The source expressions the canonical run row assigns to ``run_id`` and ``id``."""
+    import ast
+    import inspect
+    import textwrap
+
+    from lionagi.studio.services import runs
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(runs._run_row)))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        named = {
+            key.value: value
+            for key, value in zip(node.keys, node.values)
+            if isinstance(key, ast.Constant)
+        }
+        if "run_id" in named and "id" in named:
+            return ast.unparse(named["run_id"]), ast.unparse(named["id"])
+    raise AssertionError(
+        "_run_row no longer assigns run_id and id in one dict literal, so this can no longer\n"
+        "read the contract it guards. Re-point it at wherever the two are assigned now; a\n"
+        "row built here cannot replace it, for the reason in the test below.\n\n"
+        + _IDENTITY_CONTRACT
+    )
+
+
+def test_the_canonical_run_row_derives_both_identities_from_one_expression():
+    """A tripwire, not a description: it exists to fail the day the two stop matching.
+
+    Asserted on the expressions rather than on a built row, because the change this guards
+    against gives some rows a distinct run_id and leaves the rest alone. A row built here
+    would not carry whatever field that change keys on, so it would still come back equal
+    and this would pass while the projection had already broken the contract.
+    """
+    run_id_expr, id_expr = _identity_expressions()
+
+    assert run_id_expr == id_expr, f"{_IDENTITY_CONTRACT}\n\n{run_id_expr!r} != {id_expr!r}"
+
+
+def test_a_built_run_row_reports_one_identity_under_both_names():
+    """The readable half of the same contract, and the control that both names are emitted."""
+    from lionagi.studio.services.runs import _run_row
+
+    row = _run_row({"id": "session-1", "status": "completed"}, 0.0)
+
+    assert {"id", "run_id"} <= set(row), (
+        "the canonical run row stopped carrying both names, so the assertion below can no "
+        "longer see the thing it guards"
+    )
+    assert row["id"] == row["run_id"], _IDENTITY_CONTRACT
