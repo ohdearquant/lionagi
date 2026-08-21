@@ -4,7 +4,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import errno
+import os
+import pathlib
 import signal
+import sys
+import tempfile
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -191,7 +198,15 @@ async def test_aterminate_sigterm_then_sigkill_on_timeout():
 
 @pytest.mark.asyncio
 async def test_aterminate_sigterm_no_sigkill_when_exits_fast():
-    """grace path: no SIGKILL if process exits before timeout."""
+    """grace path: no SIGKILL when the child exits and its group empties.
+
+    Signal 0 is a delivery test rather than a signal, and it is how the code
+    asks whether anything is left in the group. A recorder that accepts every
+    signal answers "still populated" forever, which is not what the kernel does
+    once the group has emptied, so the double models that here. Without it this
+    test would report a forced kill that a real exited-and-empty group never
+    provokes.
+    """
     proc = _fake_async_proc(pid=4444, wait_delay=0.0)
     import os as real_os
 
@@ -203,6 +218,12 @@ async def test_aterminate_sigterm_no_sigkill_when_exits_fast():
     calls = []
 
     def _record_killpg(pgid, sig):
+        if sig == 0:
+            # Nothing else was ever put in this group, so it is empty exactly
+            # when the child has been reaped.
+            if proc.returncode is None:
+                return
+            raise ProcessLookupError(3, "No such process")
         calls.append((pgid, sig))
 
     with patch.object(proc_mod.os, "killpg", side_effect=_record_killpg):
@@ -324,3 +345,246 @@ def test_aterminate_grace_escalates_to_kill_on_backend(backend):
     anyio.run(_run, backend=backend)
     assert proc.terminated is True
     assert proc.killed is True
+
+
+@pytest.mark.parametrize("backend", ["asyncio", "trio"])
+def test_the_grace_wait_ends_with_the_child_not_with_whatever_holds_its_pipes(backend):
+    """A descendant that kept the child's pipes must not decide when this returns.
+
+    The fake splits two facts a real process reports together on some
+    interpreters and separately on others: ``returncode`` is set when the child
+    is reaped, while ``wait()`` completes only once every inherited pipe closes.
+    Waiting on the second means a caller giving up on a child is bounded by a
+    process it never started, and callers use this wait to decide whether the
+    child's output is still arriving or genuinely absent.
+
+    The deadline here is well inside ``grace``, so waiting on ``wait()`` fails
+    this outright rather than merely making it slow.
+    """
+    import anyio
+
+    if backend == "trio":
+        pytest.importorskip("trio")
+
+    class _PipesHeldOpen:
+        def __init__(self):
+            self.pid = -1  # _safe_pgid -> None: no real killpg on a fake pid
+            self.returncode = None
+            self.killed = False
+
+        def terminate(self):
+            self.returncode = -15  # the child is reaped here
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            await anyio.sleep_forever()  # the holder never lets go
+
+    proc = _PipesHeldOpen()
+
+    async def _run():
+        with anyio.fail_after(2):
+            await aterminate_process_group(proc, grace=5.0)
+
+    anyio.run(_run, backend=backend)
+    assert proc.returncode == -15
+    assert proc.killed is False, (
+        "the child had already exited, so escalating to SIGKILL means the wait "
+        "was reading something other than the child's own status"
+    )
+
+
+# A real subprocess, not a fake. The behaviour under test is one where the two
+# differ: whether ``wait()`` returns when the child is reaped or when the last
+# inherited pipe closes is decided by the interpreter, and a hand-written double
+# can only assert whichever of those its author already believed.
+_DESCENDANT = (
+    "import os, pathlib, signal, sys, time; "
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+    "time.sleep(300)"
+)
+
+
+def _terminate_with_a_descendant(*, escapes_group: bool, holds_pipe: bool, grace: float):
+    """Run cleanup against a child that has a descendant, and report what happened.
+
+    Returns ``(descendant_survived, elapsed, returncode)``. The descendant is
+    killed on every exit path including setup failures, so a failed premise
+    cannot leave a 300-second process behind on whatever machine ran the suite.
+    """
+
+    async def _still_alive(pid: int, settle: float) -> bool:
+        deadline = time.monotonic() + settle
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return False
+            await asyncio.sleep(0.02)
+        return True
+
+    async def _run(ready_path):
+        proc = None
+        descendant = None
+        try:
+            stderr_arg = "sys.stderr" if holds_pipe else "subprocess.DEVNULL"
+            own_session = ", start_new_session=True" if escapes_group else ""
+            child = (
+                "import subprocess, sys, time; "
+                f"subprocess.Popen([sys.executable, '-c', {_DESCENDANT!r}, "
+                f"{str(ready_path)!r}], stderr={stderr_arg}{own_session}); "
+                "time.sleep(300)"
+            )
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                child,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+            deadline = time.monotonic() + 20
+            while not ready_path.exists():
+                if time.monotonic() > deadline:
+                    pytest.fail("the descendant never reported itself ready")
+                await asyncio.sleep(0.02)
+            descendant = int(ready_path.read_text())
+            # Asserted premises. Without them a pass says nothing: a descendant
+            # that never started, or that landed on the wrong side of the group
+            # boundary, would look handled here whatever the code under test did.
+            os.kill(descendant, 0)
+            shares_group = os.getpgid(descendant) == os.getpgid(proc.pid)
+            assert shares_group is not escapes_group, (
+                f"descendant group placement is wrong for this case: "
+                f"shares_group={shares_group}, escapes_group={escapes_group}"
+            )
+
+            started = time.monotonic()
+            await aterminate_process_group(proc, grace=grace)
+            elapsed = time.monotonic() - started
+            survived = await _still_alive(descendant, settle=2.0)
+            return survived, elapsed, proc.returncode
+        finally:
+            if descendant is not None:
+                with contextlib.suppress(OSError):
+                    os.kill(descendant, signal.SIGKILL)
+            if proc is not None and proc.returncode is None:
+                with contextlib.suppress(Exception):
+                    proc.kill()
+
+    with tempfile.TemporaryDirectory() as td:
+        return asyncio.run(_run(pathlib.Path(td) / "descendant.pid"))
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups only")
+@pytest.mark.parametrize("descendant_holds_pipe", [True, False], ids=["holds-pipe", "no-pipe"])
+def test_a_group_member_that_ignores_the_first_signal_is_still_killed(
+    descendant_holds_pipe,
+):
+    """Grace belongs to the group, not only to the direct child.
+
+    The direct child leads its own process group and exits promptly on SIGTERM.
+    A descendant in that same group ignores SIGTERM. Once grace is spent the
+    forced kill exists precisely for that descendant, so reaching it must not
+    depend on the direct child being slow.
+
+    Both parameters matter and they fail differently. When the descendant holds
+    the child's stderr, ``wait()`` is pipe-bound on some interpreters, so the
+    escalation used to fire for an incidental reason -- the wait stalled -- and
+    the descendant died there without anything having asked about the group.
+    When it holds no pipe nothing ever stalled, and it survived everywhere.
+    """
+    survived, _, _ = _terminate_with_a_descendant(
+        escapes_group=False, holds_pipe=descendant_holds_pipe, grace=0.5
+    )
+    assert not survived, (
+        "a process-group member that ignored the first signal outlived cleanup: "
+        "grace expired and the forced kill never reached it"
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups only")
+def test_cleanup_is_not_bounded_by_a_descendant_that_escaped_with_the_pipes():
+    """The other half of the same contract, and the one this pair exists to keep.
+
+    Here the descendant leaves the child's process group and keeps the child's
+    stderr. Nothing in this cleanup can signal it and nothing should wait for
+    it: the child's own exit is the entire question being asked. Where ``wait()``
+    is pipe-bound, waiting on it instead returns only once grace has expired, so
+    the bound asserted here sits well inside grace rather than merely under it.
+
+    Its sibling above asserts that a group member which ignored the first signal
+    is still killed. The two pull in opposite directions -- one says do not wait
+    for a foreign process, the other says do not stop waiting while the group is
+    populated -- and satisfying either alone is easy, which is why they are kept
+    together.
+    """
+    _, elapsed, returncode = _terminate_with_a_descendant(
+        escapes_group=True, holds_pipe=True, grace=5.0
+    )
+    assert returncode is not None, "the child had not been reaped"
+    assert elapsed < 1.0, (
+        f"cleanup took {elapsed:.2f}s of a 5s grace: it was waiting on the "
+        "escaped pipe holder rather than on the child"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("probe_error", "expect_forced_kill"),
+    [
+        (OSError(errno.EINTR, "Interrupted system call"), True),
+        (ProcessLookupError(errno.ESRCH, "No such process"), False),
+    ],
+    ids=["unreadable-probe", "genuinely-empty"],
+)
+async def test_an_unreadable_group_probe_does_not_read_as_an_empty_group(
+    probe_error, expect_forced_kill
+):
+    """Only "no such group" is evidence of an empty group.
+
+    Signal 0 can fail for reasons that say nothing about membership. Answering
+    "nobody there" to those ends grace early and skips the forced kill, which
+    turns the guard off in precisely the situation it exists for, and does so
+    silently. The second case is the control: a probe that really does report an
+    empty group must still take the quiet path, otherwise this test would pass
+    on an implementation that force-kills unconditionally.
+    """
+    import lionagi.ln._proc as proc_mod
+
+    if not hasattr(os, "killpg"):
+        pytest.skip("os.killpg not available on this platform")
+
+    class _ExitsPromptly:
+        """Models what a real proc reports: returncode is None until it is reaped."""
+
+        def __init__(self):
+            self.pid = 7777
+            self.returncode = None
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+        async def wait(self):
+            return self.returncode
+
+    proc = _ExitsPromptly()
+    calls = []
+
+    def _killpg(pgid, sig):
+        if sig == 0:
+            raise probe_error
+        calls.append((pgid, sig))
+
+    with patch.object(proc_mod.os, "killpg", side_effect=_killpg):
+        await aterminate_process_group(proc, grace=0.05)
+
+    assert (7777, signal.SIGTERM) in calls
+    assert ((7777, signal.SIGKILL) in calls) is expect_forced_kill, (
+        f"probe raised {type(probe_error).__name__} and the forced kill was "
+        f"{'skipped' if expect_forced_kill else 'sent'}"
+    )

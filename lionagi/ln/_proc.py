@@ -8,7 +8,7 @@ import os
 import signal
 from typing import Any
 
-from .concurrency import move_on_after
+from .concurrency import move_on_after, sleep
 
 # Two reads of a kernel tick clock for one process can differ in the last
 # place, so a recorded start time is compared to a live one within this. Two
@@ -254,6 +254,57 @@ def terminate_process_group(
         proc.terminate()
 
 
+# How often the polls below re-read state. The first look is fast, so
+# terminating a cooperative child still looks instant; the interval then backs
+# off, so waiting out a child that is taking its time costs little.
+_POLL_MIN_SECONDS = 0.0005
+_POLL_MAX_SECONDS = 0.02
+
+
+def _group_has_members(pgid: int) -> bool:
+    """Whether any process remains in the group. Signal 0 tests delivery only.
+
+    Only ``ProcessLookupError`` is evidence of an empty group. Everything else is
+    a probe that failed to answer, including the permission case where something
+    is plainly there but not ours to signal. A failed probe reported as "empty"
+    would end grace early and skip the forced kill, and that is the one direction
+    this must not fail in: the caller asked for the group to be gone, so an
+    unreadable answer keeps the escalation rather than cancelling it.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+async def _await_child_exit(proc: Any) -> None:
+    """Wait for the child itself to exit, not for everything holding its pipes.
+
+    ``proc.wait()`` cannot be used for this. On some interpreters it completes
+    only once every inherited pipe has closed, so a descendant that escaped with
+    the child's stderr decides when the wait returns: the caller trying to give
+    up on a process ends up bounded by a process it never started, and by the
+    time it looks, evidence it was about to report as missing has been resolved
+    behind its back. ``returncode`` is set when the child is reaped, whatever
+    still holds a pipe.
+
+    Objects that do not model ``returncode`` as a subprocess does (None until
+    exit, then an int) fall back to ``wait()``, which is the only thing they
+    offer.
+    """
+    rc = getattr(proc, "returncode", object())
+    if not (rc is None or isinstance(rc, int)):
+        await proc.wait()
+        return
+    delay = _POLL_MIN_SECONDS
+    while proc.returncode is None:
+        await sleep(delay)
+        delay = min(delay * 2, _POLL_MAX_SECONDS)
+
+
 async def aterminate_process_group(
     proc: Any,
     *,
@@ -280,12 +331,37 @@ async def aterminate_process_group(
     # wait_for raises "no running event loop" on an AnyIO/Trio task before the
     # timeout policy can apply, so the forced-kill escalation never fires.
     with move_on_after(grace) as scope:
-        await proc.wait()
+        await _await_child_exit(proc)
+        # The child is gone; the rest of grace belongs to whatever shared its
+        # process group. Waiting on the child alone is what keeps a pipe holder
+        # from deciding when the child's own status is known, but the forced
+        # kill below exists for group members that ignored the first signal, and
+        # reaching it by way of a stalled wait was incidental: that happened
+        # only where wait() is pipe-bound, and only when a survivor happened to
+        # be holding a pipe. Timing out here is what drives the escalation.
+        while pgid is not None and _group_has_members(pgid):
+            await sleep(_POLL_MAX_SECONDS)
     if scope.cancelled_caught:
         if pgid is not None:
+            # Why this is not signalling some unrelated group that inherited the
+            # id: a process group id is not recycled while the group still has
+            # members, and control only reaches here with members present, since
+            # an empty group ends the wait above and returns without any kill at
+            # all. That is a platform guarantee rather than something checked
+            # here, and it is recorded because the code cannot show it.
+            #
+            # It is not a proof that the id is current at this instant. Nothing
+            # portable can assert group identity beyond membership, so a
+            # revalidating probe would carry the same gap it looks like it
+            # removes.
+            # The note is here to say why that probe is absent, not to claim the
+            # question does not exist.
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pgid, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        # Bounded too: a caller that has already escalated to SIGKILL is done
+        # negotiating, and the same pipe holder that can stall the wait above
+        # can stall this one, with no timeout left to catch it.
+        with move_on_after(grace), contextlib.suppress(Exception):
+            await _await_child_exit(proc)
