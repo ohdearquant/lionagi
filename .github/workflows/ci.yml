@@ -185,10 +185,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # PRs: oldest + newest only. Full matrix on main/develop pushes. This
-        # saves runner minutes rather than wall-clock time, because the legs run
-        # in parallel and the ones dropped were not the slowest.
-        python-version: ${{ fromJSON((github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints')) && '["3.10","3.14"]' || '["3.10","3.11","3.12","3.13","3.14"]') }}
+        # The full supported set on every event, pull_request included. This
+        # used to be oldest + newest on PRs, which made the gate's population a
+        # strict subset of the supported population: a failure exclusive to
+        # 3.11, 3.12 or 3.13 could not be seen before merge and reached main by
+        # construction, which is what happened. It is the same silent-population
+        # defect the paths-ignore, types and branches notes above each describe,
+        # and it survived those three passes because it was shaped like a cost
+        # decision rather than a filter. The cost it saved was runner minutes,
+        # which are free for a public repository on standard runners; the legs
+        # run in parallel, so wall-clock is the slowest leg either way. The
+        # `endpoints` choice stays, as an explicit manual diagnostic.
+        python-version: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.python-matrix == 'endpoints') && '["3.10","3.14"]' || '["3.10","3.11","3.12","3.13","3.14"]') }}
     # Force every `uv` call (venv, sync, run) onto the matrix interpreter; the
     # repo's .python-version (3.10) otherwise pins all legs to 3.10.
     env:
