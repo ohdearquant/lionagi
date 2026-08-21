@@ -262,17 +262,21 @@ _POLL_MAX_SECONDS = 0.02
 
 
 def _group_has_members(pgid: int) -> bool:
-    """Whether any process remains in the group. Signal 0 tests delivery only."""
+    """Whether any process remains in the group. Signal 0 tests delivery only.
+
+    Only ``ProcessLookupError`` is evidence of an empty group. Everything else is
+    a probe that failed to answer, including the permission case where something
+    is plainly there but not ours to signal. A failed probe reported as "empty"
+    would end grace early and skip the forced kill, and that is the one direction
+    this must not fail in: the caller asked for the group to be gone, so an
+    unreadable answer keeps the escalation rather than cancelling it.
+    """
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
         return False
-    except PermissionError:
-        # Something is there, we may just not be allowed to signal it. Calling
-        # that present keeps the escalation on the side of cleaning up.
-        return True
     except OSError:
-        return False
+        return True
     return True
 
 
