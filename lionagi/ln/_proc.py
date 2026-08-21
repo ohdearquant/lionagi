@@ -343,6 +343,19 @@ async def aterminate_process_group(
             await sleep(_POLL_MAX_SECONDS)
     if scope.cancelled_caught:
         if pgid is not None:
+            # Why this is not signalling some unrelated group that inherited the
+            # id: a process group id is not recycled while the group still has
+            # members, and control only reaches here with members present, since
+            # an empty group ends the wait above and returns without any kill at
+            # all. That is a platform guarantee rather than something checked
+            # here, and it is recorded because the code cannot show it.
+            #
+            # It is not a proof that the id is current at this instant. Nothing
+            # portable can assert group identity beyond membership, so a
+            # revalidating probe would carry the same gap it looks like it
+            # removes.
+            # The note is here to say why that probe is absent, not to claim the
+            # question does not exist.
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(pgid, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError, OSError):
