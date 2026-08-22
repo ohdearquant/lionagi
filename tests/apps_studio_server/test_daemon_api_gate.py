@@ -699,6 +699,10 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "interval_sec",
         "last_evaluated_at",
         "last_fired_at",
+        # The poller's own liveness gauges: stamped on every healthy poll
+        # including an empty one, so they are what separates a github_poll
+        # schedule still reading a quiet repo from one that stopped.
+        "last_healthy_poll_at",
         "last_status",
         "max_runs",
         "missed_fire_policy",
@@ -708,6 +712,7 @@ _SCHEDULE_DETAIL_KEYS = sorted(
         "on_success",
         "overlap_policy",
         "poll_interval_sec",
+        "poller_consecutive_401",
         "project",
         "recent_runs",
         "trigger_type",
