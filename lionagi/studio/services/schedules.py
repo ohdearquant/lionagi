@@ -639,6 +639,11 @@ def _run_record(row: dict[str, Any]) -> dict[str, Any]:
 # reader in the app, and the API answers without a token when LIONAGI_STUDIO_AUTH_TOKEN
 # is unset, so records are projected onto this list rather than passed through -- which
 # also means a column added to the table later stays private until someone names it here.
+# That default is why the two github_poll self-health gauges are named below: they are
+# the poller's own liveness evidence, not its bookkeeping, and a caller that cannot read
+# them has no way to tell a poller still reading a quiet repo from one that stopped.
+# github_cursor stays unserved -- it is where the poll got to, which answers a different
+# question and is the bookkeeping this projection deliberately withholds.
 _SCHEDULE_SUMMARY_FIELDS = (
     "id",
     "name",
@@ -650,6 +655,8 @@ _SCHEDULE_SUMMARY_FIELDS = (
     "github_repo",
     "github_filter",
     "poll_interval_sec",
+    "last_healthy_poll_at",
+    "poller_consecutive_401",
     "action_kind",
     "action_model",
     "action_agent",
