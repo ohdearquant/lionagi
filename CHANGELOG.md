@@ -171,6 +171,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   event of one batch resolves to the same `next_fire_at` and a claim on an unchanging value matches
   twice; `github_cursor` advances per event and is what separates them, so a second scheduler that
   polls after this one commits an earlier event can no longer dispatch a later one twice.
+- `/api/admin/readiness` now reports whether the scheduler is advancing, beside the store probe
+  rather than folded into it. `status` keeps its existing meaning and describes the store alone; a
+  new `scheduler` object carries the verdict, when a tick last completed, the stall threshold and
+  the tick-loop restart count; and a new `ready` boolean is true only when both subjects are. The
+  store answering a bounded indexed read was never evidence that anything fires, and `li doctor`
+  now warns instead of reporting the daemon ready when the daemon does not report itself ready, so
+  a scheduler state this build has never heard of cannot read as healthy either. A daemon that does
+  not report the field at all is treated as before. The recorded failure is reported as its
+  exception class rather than its message, since readiness is served to anyone who can reach the
+  port and a message can carry paths and connection details. The stall verdict is scoped to the
+  running generation of the loop: the engine is a module-level singleton, so a stop-and-start
+  leaves the previous generation's tick timestamp in place, and reading that as the current one
+  reported a stall the new loop had inherited rather than one it was in.
 - `Params` subclasses now receive their declared dataclass defaults, including a fresh value
   from each `default_factory`, instead of replacing every omitted field with `Unset`. `Params`
   and `DataClass` now discover inherited instance fields through one ordered dataclass path,

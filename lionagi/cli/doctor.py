@@ -135,6 +135,20 @@ def _readiness_verdict(target: str, body: bytes) -> dict[str, str]:
         )
 
     detail = payload.get("detail") or ""
+    sched = payload.get("scheduler")
+    if state == "healthy" and payload.get("ready") is False:
+        # The store answering is what made this check say ready through an incident where
+        # nothing fired for hours. Keyed on the daemon's own ready verdict rather than on a
+        # list of scheduler states, so one this build has never heard of still cannot read as
+        # ready; a daemon too old to report the field has no verdict and falls through.
+        reported = sched.get("status") if isinstance(sched, dict) else None
+        why = (sched.get("detail") if isinstance(sched, dict) else "") or "no detail"
+        return _result(
+            "warn",
+            f"Studio daemon is up at {target} and its store is healthy, but the daemon does "
+            f"not report itself ready (scheduler {reported or 'unreported'}: {why}) — nothing "
+            "scheduled will fire until it recovers.",
+        )
     if state == "healthy":
         return _result("ok", f"Studio daemon ready at {target} ({detail})")
     if state in ("slow", "unavailable"):

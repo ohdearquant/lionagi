@@ -3550,6 +3550,27 @@ async def test_a_cancel_during_the_inter_tick_wait_neither_ends_the_loop_nor_ski
         await engine.stop()
 
 
+@pytest.mark.asyncio
+async def test_a_tick_loop_failure_reports_its_class_without_its_message(monkeypatch):
+    """Readiness serves this to anyone who can reach the port, and messages carry paths."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+
+    async def _exploding_loop():
+        raise RuntimeError("/Users/someone/.lionagi/state.db is unreachable at host:5432")
+
+    monkeypatch.setattr(engine, "_tick_loop", _exploding_loop)
+
+    await engine.start()
+    try:
+        await _until(lambda: engine._tick_loop_restarts >= 1)
+        failure = engine.liveness()["last_failure"]
+        assert failure == "RuntimeError"
+        assert "state.db" not in failure
+    finally:
+        await engine.stop()
+
+
 @pytest.mark.parametrize("death", ("returns", "raises"))
 @pytest.mark.asyncio
 async def test_a_tick_loop_that_ends_while_running_is_replaced(monkeypatch, death):
@@ -3650,6 +3671,39 @@ async def test_a_raising_tick_does_not_end_the_loop(monkeypatch):
     await engine.start()
     try:
         await _until(lambda: len(ticks) >= 3)
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_completed_tick_is_recorded_where_readiness_reads_it(monkeypatch):
+    """The probe reads liveness(), so the loop has to write it; a mocked probe cannot show that."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+    assert engine.liveness()["last_tick_completed_at"] is None
+    await engine.start()
+    try:
+        assert engine.liveness()["started_at"] is not None
+        await _until(lambda: engine.liveness()["last_tick_completed_at"] is not None)
+    finally:
+        await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_tick_that_raises_does_not_count_as_an_advance(monkeypatch):
+    """Recording the attempt rather than the completion would report a stuck loop as advancing."""
+    ticks: list = []
+    engine = await _supervised_engine(monkeypatch, ticks)
+
+    async def _tick():
+        ticks.append(time.monotonic())
+        raise RuntimeError("tick blew up")
+
+    monkeypatch.setattr(engine, "_tick", _tick)
+    await engine.start()
+    try:
+        await _until(lambda: len(ticks) >= 3)
+        assert engine.liveness()["last_tick_completed_at"] is None
     finally:
         await engine.stop()
 
