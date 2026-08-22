@@ -93,6 +93,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- A run whose live-message persistence gave up now records that on its terminal row.
+  Under database-lock contention the retry queue defers and then abandons its pending
+  events at teardown; the count reached one line in one console tail while the session
+  closed as a clean success, so the loss was invisible to every reader of the run. The
+  session now carries a `run.completed.message_loss` reason, a summary naming how many
+  events were lost, and evidence refs naming each queue that lost them, with the
+  structured counts in the transition record. The completion-trust gate also no longer
+  demotes such a run to `completed_empty`: that conclusion is read off the transcript, and
+  this run's transcript is known to be missing part of itself.
+
+  The loss survives every way a run's terminal row is written by someone other than the
+  leg that saw it. A leg that hands its terminal write to a resuming leg now leaves the loss
+  on the session, and the write that eventually happens adds up every deferred leg's count
+  rather than reporting only its own, because each leg that observed a loss is gone by then and
+  its queue with it. A session that defers twice before anything terminal accumulates across
+  both deferrals rather than the second replacing the first, and so does a session whose legs
+  tear down at the same time: each leg records what it saw under a key of its own instead of
+  rewriting a shared one, so no leg's record can replace a sibling's. And a run that failed on its own keeps its own failure: the loss is appended to the
+  evidence either way and claims the reason code only when nothing else has.
+  Recording that carried loss cannot cost the handoff: the deferred path's job is to defer, and
+  the caller reads the status it returns to decide whether to resume, so a bookkeeping write that
+  fails is logged and the status stands rather than leaving a timed-out run unresumed. The carried
+  payload is validated where it is read back rather than trusted for its shape, since it was written
+  by whatever code the earlier leg was running; entries that do not fit are dropped, and the total is
+  recomputed from the entries that survive so it agrees with what it claims to sum. One rule decides
+  that, shared by the reader that asks whether a row lost anything and the reader that sums how many,
+  so a payload one rejects cannot still produce a loss verdict from the other. A leg
+  whose own terminal write never lands, because a concurrent teardown won the race or the row
+  was already terminal, keeps the loss on the session rather than discarding it with the status
+  it was about to write: the winner's record stands and the loss stays where its readers look.
+
+  An invocation whose child lost messages no longer reports a clean success, on the flow path
+  and the scheduled path alike. The loss is read off the child's evidence before the terminal
+  status is decided rather than inside the all-completed arm, so a child that lost messages and
+  also failed is still named on the invocation row, and a scheduled run with an incomplete
+  transcript carries `run.completed.message_loss` instead of flattening to a clean pass. That
+  holds for a flow whose children have not all reached a terminal status either, where no arm of
+  the precedence ladder claims the outcome and the clean-pass fallback used to decide it.
 - The studio scheduler's tick loop is now supervised rather than merely guarded. It caught
   `Exception`, which does not include `asyncio.CancelledError`, so a cancel escaping from anything
   the tick awaited ended the loop permanently while the process and its HTTP surface kept

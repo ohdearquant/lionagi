@@ -4,7 +4,8 @@
 
 from __future__ import annotations
 
-from typing import Final
+import json
+from typing import Any, Final
 
 # Canonical singular entity types (ADR-0057); validated at write time in
 # StateDB.update_status().
@@ -77,6 +78,10 @@ class RunReasons:
     # unlike COMPLETED_FINALIZE_ERROR, a raised write failure is a real failure
     # (status -> failed); distinct from FAILED_MISSING_ARTIFACT's post-hoc gap
     FAILED_ARTIFACT_WRITE = "run.failed.artifact_write"
+    # live-message persistence gave up at teardown: the run's own work stands,
+    # but its transcript is missing messages it produced, so every later read
+    # of that transcript is reading an incomplete record
+    COMPLETED_MESSAGE_LOSS = "run.completed.message_loss"
     TIMED_OUT_DEADLINE = "run.timed_out.deadline"
     ABORTED_USER = "run.aborted.user"
     CANCELLED_SIGINT = "run.cancelled.sigint"
@@ -246,3 +251,78 @@ def entity_table(entity_type: str) -> str:
     """Resolve entity_type (including aliases) to its SQLite table name."""
     canonical = validate_entity_type(entity_type)
     return ENTITY_TYPE_TO_TABLE[canonical]
+
+
+#: Prefix for the node_metadata keys a teardown writes when it observed live-message
+#: loss but does not own the session's terminal row. One key per observing leg, never a
+#: shared one: legs tear down concurrently, and the database merges a patch key by key,
+#: so a leg that rewrote a shared value would replace a sibling's record instead of
+#: adding to it. Keys are left in place once folded into a terminal row -- clearing them
+#: would race the next leg's write -- and their number is bounded by how many teardowns
+#: one session has.
+MESSAGE_LOSS_KEY_PREFIX: Final = "message_persist_loss:"
+
+
+def is_countable_queue_loss(entry: Any) -> bool:
+    """Whether one queue-loss entry can be counted.
+
+    The entry crossed a persistence boundary and may have been written by a leg running
+    different code, so its shape is an assumption. Shared rather than repeated per reader:
+    a reader that decides a row lost messages and a reader that sums how many have to
+    agree, or a payload one rejects still produces a loss verdict from the other.
+    """
+    return (
+        isinstance(entry, dict)
+        and entry.get("owner") is not None
+        and isinstance(entry.get("lost"), int)
+        and not isinstance(entry["lost"], bool)
+        # Zero or negative is malformed, not a small loss: summing it produces totals
+        # like "-3 event(s) lost", and counting it makes a clean run report a loss.
+        and entry["lost"] > 0
+    )
+
+
+def carried_message_loss_queues(node_metadata: Any) -> list[Any]:
+    """Every countable queue loss left on a session row, across the legs that recorded them."""
+    if isinstance(node_metadata, str):
+        try:
+            node_metadata = json.loads(node_metadata)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(node_metadata, dict):
+        return []
+    queues: list[Any] = []
+    for key, value in node_metadata.items():
+        if not (isinstance(key, str) and key.startswith(MESSAGE_LOSS_KEY_PREFIX)):
+            continue
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                continue
+        if isinstance(value, dict) and isinstance(value.get("queues"), list):
+            queues.extend(q for q in value["queues"] if is_countable_queue_loss(q))
+    return queues
+
+
+def has_message_loss_evidence(session: Any) -> bool:
+    """Whether a session row records that it lost live message events.
+
+    Reads the evidence refs rather than the reason code: a row carries one reason and
+    a session that lost messages may have failed for something else entirely.
+    """
+    if not isinstance(session, dict):
+        return False
+    refs = session.get("status_evidence_refs")
+    if isinstance(refs, str):
+        try:
+            refs = json.loads(refs)
+        except (TypeError, ValueError):
+            return False
+    if isinstance(refs, list) and any(
+        isinstance(ref, dict) and ref.get("kind") == "message_persist_loss" for ref in refs
+    ):
+        return True
+    # A leg whose own terminal write never landed -- it deferred, or lost the race to a
+    # concurrent teardown -- leaves the loss here instead, and no evidence ref exists.
+    return bool(carried_message_loss_queues(session.get("node_metadata")))

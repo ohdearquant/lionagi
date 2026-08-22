@@ -548,13 +548,19 @@ async def _resolve_invocation_terminal_flow(
     fallback_status: str,
 ) -> tuple[str, str, str, list[dict], dict]:
     from lionagi.state.db import StateDB
-    from lionagi.state.reasons import RunReasons
+    from lionagi.state.reasons import RunReasons, has_message_loss_evidence
 
     async with StateDB() as db:
         sessions = await db.list_sessions_for_invocation(invocation_id)
         child_statuses = [str(s.get("status") or "") for s in sessions]
         evidence_refs = [{"kind": "session", "id": s["id"]} for s in sessions if s.get("id")]
         metadata: dict = {"child_statuses": child_statuses}
+        # Named ahead of the precedence ladder, not inside its all-completed arm: a
+        # child that lost messages and also failed carries the other status, and the
+        # loss has to survive that. Only the reason code defers, because a row has one.
+        lost_messages = [s for s in sessions if has_message_loss_evidence(s)]
+        if lost_messages:
+            metadata["message_loss_session_ids"] = [s["id"] for s in lost_messages if s.get("id")]
 
         # Precedence: timed_out > failed > aborted > cancelled > completed_empty
         # > completed. completed_empty outranks completed so one silently
@@ -671,6 +677,21 @@ async def _resolve_invocation_terminal_flow(
                         [{"kind": "session", "id": s["id"]} for s in degraded if s.get("id")],
                         degraded_metadata,
                     )
+                # A "completed" child may still carry COMPLETED_MESSAGE_LOSS: its work
+                # stands, but part of its transcript was never written. Last of these
+                # branches because it is the only one not about work the flow failed to
+                # do -- and still ahead of a clean pass, which is what this would
+                # otherwise flatten to.
+                if lost_messages:
+                    return (
+                        "completed",
+                        RunReasons.COMPLETED_MESSAGE_LOSS,
+                        "All child sessions completed, but at least one lost live "
+                        "message events at teardown, so its transcript is incomplete "
+                        "and anything read from it is reading a partial record.",
+                        [{"kind": "session", "id": s["id"]} for s in lost_messages if s.get("id")],
+                        metadata,
+                    )
                 return (
                     "completed",
                     RunReasons.COMPLETED_OK,
@@ -680,6 +701,19 @@ async def _resolve_invocation_terminal_flow(
                 )
 
         if fallback_status == "completed":
+            # Reached with children that exist but have not all reached a terminal status,
+            # so none of the arms above claimed the outcome. The loss is still real and this
+            # is still the clean-pass reason code, which is the one place it can hide.
+            if lost_messages:
+                return (
+                    "completed",
+                    RunReasons.COMPLETED_MESSAGE_LOSS,
+                    "Flow completed, but at least one child session lost live message "
+                    "events at teardown, so its transcript is incomplete and anything "
+                    "read from it is reading a partial record.",
+                    [{"kind": "session", "id": s["id"]} for s in lost_messages if s.get("id")],
+                    metadata,
+                )
             return (
                 "completed",
                 RunReasons.COMPLETED_OK,

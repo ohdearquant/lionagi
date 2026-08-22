@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -97,6 +98,58 @@ async def test_resolve_terminal_completed_ok():
         svc, "inv-1", fallback_status="completed"
     )
     assert status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_resolve_terminal_message_loss_child_is_not_a_clean_pass():
+    """A scheduled run whose child lost part of its transcript reported that all child
+    sessions completed successfully. The flow reducer names this reason; this one, which
+    is what scheduled runs go through, mapped every all-completed set to a clean pass."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.studio.services.scheduler_state import resolve_invocation_terminal
+
+    svc = _make_svc()
+    svc.list_sessions_for_invocation.return_value = [
+        {"id": "s1", "status": "completed"},
+        {
+            "id": "s2",
+            "status": "completed",
+            "status_evidence_refs": [{"kind": "message_persist_loss", "id": "branch s2"}],
+        },
+    ]
+    status, rc, rs, refs, meta = await resolve_invocation_terminal(
+        svc, "inv-1", fallback_status="completed"
+    )
+    assert status == "completed", "the work stands"
+    assert rc == RunReasons.COMPLETED_MESSAGE_LOSS
+    assert "incomplete" in rs
+    assert [r["id"] for r in refs] == ["s2"]
+    assert meta["message_loss_session_ids"] == ["s2"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_terminal_names_a_losing_child_when_a_sibling_fails():
+    """The precedence ladder returns on the first match, so the loss has to be read
+    before it, not inside the all-completed arm. Evidence refs arrive serialized from
+    some readers, which is the form this row uses."""
+    from lionagi.state.reasons import RunReasons
+    from lionagi.studio.services.scheduler_state import resolve_invocation_terminal
+
+    svc = _make_svc()
+    svc.list_sessions_for_invocation.return_value = [
+        {
+            "id": "s1",
+            "status": "completed",
+            "status_evidence_refs": json.dumps([{"kind": "message_persist_loss", "id": "b"}]),
+        },
+        {"id": "s2", "status": "failed"},
+    ]
+    status, rc, _rs, _refs, meta = await resolve_invocation_terminal(
+        svc, "inv-1", fallback_status="completed"
+    )
+    assert status == "failed"
+    assert rc == RunReasons.FAILED_EXCEPTION, "the failure outranks the record"
+    assert meta["message_loss_session_ids"] == ["s1"]
 
 
 @pytest.mark.asyncio

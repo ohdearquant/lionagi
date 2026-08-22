@@ -1840,6 +1840,56 @@ async def test_stop_no_artifact_no_commits_flips_to_completed_empty(
     assert v is None
 
 
+async def test_lost_messages_stop_the_gate_calling_a_run_empty(
+    temp_db_path: Path,
+    tmp_path: Path,
+):
+    """The gate reads "no assistant response recorded" off the transcript, and a
+    run that lost messages has a transcript missing exactly that. Concluding
+    emptiness from it states a fact about the run that is really a fact about
+    our record, so the loss carries the reason instead."""
+    import logging
+
+    from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
+
+    class _RefusingDB:
+        async def _persist_live_message(self, message, **kwargs):
+            raise RuntimeError("database is locked")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    env = _minimal_env()
+    env.cwd = str(repo)
+    await start_live_persist(env, invocation_kind="flow")
+    ctx = env._live_persist
+    assert ctx is not None
+
+    queue = MessagePersistRetryQueue(
+        _RefusingDB(), logger=logging.getLogger("test"), owner="branch b-1"
+    )
+    for i in range(4):
+        await queue.submit(
+            PendingMessageEvent(
+                message={"id": f"m{i}", "role": "assistant", "content": "x"},
+                session_id=ctx["session_id"],
+            )
+        )
+    ctx["message_retry_queues"].append(queue)
+
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        s = await db.get_session(ctx["session_id"])
+    assert s is not None
+    assert s["status"] == "completed", (
+        "same repo state as the demotion test above; the only difference is "
+        "that the transcript this conclusion would rest on is known incomplete"
+    )
+    assert s["status_reason_code"] == "run.completed.message_loss"
+
+
 async def test_stop_failed_operation_evidence_wins_over_completed_empty_demotion(
     temp_db_path: Path,
     tmp_path: Path,
@@ -4613,3 +4663,354 @@ async def test_execute_dag_bounds_control_log_drain_on_hanging_update_session(
         monkeypatch.setattr(ctx["db"], "update_session", real_update_session)
         monkeypatch.setattr(ctx["db"], "merge_session_node_metadata", real_merge)
         await stop_live_persist(env, status="completed")
+
+
+def _dead_queue_events(session_id: str, count: int = 4):
+    """A retry queue driven past its limit against a database that never accepts."""
+    import logging
+
+    from lionagi.hooks._message_retry import MessagePersistRetryQueue, PendingMessageEvent
+
+    class _RefusingDB:
+        async def _persist_live_message(self, message, **kwargs):
+            raise RuntimeError("database is locked")
+
+    async def build():
+        queue = MessagePersistRetryQueue(
+            _RefusingDB(), logger=logging.getLogger("test"), owner=f"branch {session_id}"
+        )
+        for i in range(count):
+            await queue.submit(
+                PendingMessageEvent(
+                    message={"id": f"m{i}", "role": "assistant", "content": "x"},
+                    session_id=session_id,
+                )
+            )
+        return queue
+
+    return build()
+
+
+async def test_child_message_loss_surfaces_at_invocation_not_flattened_to_ok(
+    temp_db_path: Path,
+):
+    """A completed child carrying COMPLETED_MESSAGE_LOSS must not read as a clean pass
+    at the invocation. The reducer names every other completed-but-degraded reason and
+    named none for this one, so a flow whose child lost its transcript reported that all
+    child sessions completed successfully."""
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-child-message-loss"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    ctx["message_retry_queues"].append(await _dead_queue_events(ctx["session_id"]))
+
+    assert await stop_live_persist(env, status="completed") == "completed"
+
+    async with StateDB() as db:
+        child = await db.get_session(ctx["session_id"])
+    assert child["status_reason_code"] == RunReasons.COMPLETED_MESSAGE_LOSS
+
+    status, reason_code, summary, evidence, metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+
+    assert status == "completed", "the child's work stands"
+    assert reason_code == RunReasons.COMPLETED_MESSAGE_LOSS
+    assert "incomplete" in summary
+    assert metadata["message_loss_session_ids"] == [ctx["session_id"]]
+    assert {e["id"] for e in evidence} == {ctx["session_id"]}
+
+
+async def test_a_leg_that_loses_the_terminal_write_race_still_records_its_loss(
+    temp_db_path: Path,
+    monkeypatch,
+):
+    """The winner's row says the run is clean and knows nothing about this leg's loss.
+
+    Recording it only inside the guarded transition means a concurrent teardown winning
+    the compare-and-swap discards it, and the terminal row reads clean while part of the
+    transcript is gone. The status still belongs to the winner; only the loss is kept.
+    """
+    from lionagi.state.reasons import RunReasons, has_message_loss_evidence
+
+    invocation_id = "inv-cas-loser"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    ctx["message_retry_queues"].append(await _dead_queue_events(ctx["session_id"]))
+
+    real_update_status = ctx["db"].update_status
+
+    async def lose_the_race(entity_type, entity_id, **kwargs):
+        if entity_type == "session" and entity_id == ctx["session_id"]:
+            return False
+        return await real_update_status(entity_type, entity_id, **kwargs)
+
+    monkeypatch.setattr(ctx["db"], "update_status", lose_the_race)
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        row = await db.get_session(ctx["session_id"])
+    assert row["status_reason_code"] != RunReasons.COMPLETED_MESSAGE_LOSS, (
+        "the winner's record stands"
+    )
+    assert has_message_loss_evidence(row), "and the loss is still on the row"
+
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+
+    _status, _rc, _summary, _evidence, metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+    assert metadata["message_loss_session_ids"] == [ctx["session_id"]]
+
+
+async def test_concurrent_losing_teardowns_keep_both_losses(
+    temp_db_path: Path,
+    monkeypatch,
+):
+    """Two teardowns of one session, both losing the terminal write, each holding a
+    different loss. Both read the row before either writes, so a merge that rewrites
+    one shared value replaces the other leg's loss instead of adding to it."""
+    from lionagi.cli._runs import _merge_message_loss, _teardown_common
+
+    invocation_id = "inv-two-losers"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    db = ctx["db"]
+    session_id = ctx["session_id"]
+
+    real_update_status = db.update_status
+
+    async def lose_the_race(entity_type, entity_id, **kwargs):
+        if entity_type == "session" and entity_id == session_id:
+            return False
+        return await real_update_status(entity_type, entity_id, **kwargs)
+
+    monkeypatch.setattr(db, "update_status", lose_the_race)
+
+    # Hold each leg at its write until the other arrives: by then both have read the
+    # row, and neither read can see the loss the other is about to record.
+    real_merge = db.merge_session_node_metadata
+    both_arrived = asyncio.Event()
+    arrivals = 0
+
+    async def gated_merge(sid, patch):
+        nonlocal arrivals
+        arrivals += 1
+        if arrivals >= 2:
+            both_arrived.set()
+        await asyncio.wait_for(both_arrived.wait(), timeout=10)
+        await real_merge(sid, patch)
+
+    monkeypatch.setattr(db, "merge_session_node_metadata", gated_merge)
+
+    async def teardown(owner: str, lost: int):
+        return await _teardown_common(
+            db,
+            session_id=session_id,
+            session_prog_id=ctx["session_prog_id"],
+            status="completed",
+            exception=None,
+            artifacts_path=ctx["artifacts_path"],
+            artifact_contract=ctx["artifact_contract"],
+            message_loss={"lost": lost, "queues": [{"owner": owner, "lost": lost}]},
+        )
+
+    await asyncio.gather(teardown("branch one", 4), teardown("branch two", 7))
+    assert arrivals == 2, "both legs must reach the write or the race is not exercised"
+
+    async with StateDB() as reader:
+        row = await reader.get_session(session_id)
+    carried = _merge_message_loss(row["node_metadata"], None)
+    assert carried is not None, "neither leg's loss survived"
+    assert sorted(q["owner"] for q in carried["queues"]) == ["branch one", "branch two"]
+    assert carried["lost"] == 11, carried
+
+
+async def test_a_losing_teardown_does_not_double_count_an_earlier_legs_loss(
+    temp_db_path: Path,
+    monkeypatch,
+):
+    """A deferred leg's loss is already on the row under its own key, and the terminal
+    write folds it into what it reports. A teardown that then loses the terminal write
+    has to record only what it saw, or the carried loss is written a second time."""
+    from lionagi.cli._runs import _merge_message_loss, _teardown_common
+
+    invocation_id = "inv-no-double-count"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    db = ctx["db"]
+    session_id = ctx["session_id"]
+
+    async def teardown(owner: str, lost: int, **kwargs):
+        return await _teardown_common(
+            db,
+            session_id=session_id,
+            session_prog_id=ctx["session_prog_id"],
+            status="completed",
+            exception=None,
+            artifacts_path=ctx["artifacts_path"],
+            artifact_contract=ctx["artifact_contract"],
+            message_loss={"lost": lost, "queues": [{"owner": owner, "lost": lost}]},
+            **kwargs,
+        )
+
+    await teardown("deferred", 4, defer_terminal=True)
+
+    real_update_status = db.update_status
+
+    async def lose_the_race(entity_type, entity_id, **kwargs):
+        if entity_type == "session" and entity_id == session_id:
+            return False
+        return await real_update_status(entity_type, entity_id, **kwargs)
+
+    monkeypatch.setattr(db, "update_status", lose_the_race)
+    await teardown("live", 7)
+
+    async with StateDB() as reader:
+        row = await reader.get_session(session_id)
+    carried = _merge_message_loss(row["node_metadata"], None)
+    assert sorted(q["owner"] for q in carried["queues"]) == ["deferred", "live"], carried
+    assert carried["lost"] == 11, carried
+
+
+async def test_a_nonterminal_child_that_lost_messages_is_not_a_clean_pass(
+    temp_db_path: Path,
+):
+    """No arm of the ladder claims an outcome when a child is still running, so the
+    fallback decides it. That fallback is the clean-pass reason code, which is the one
+    place a loss can be reported as a run that went fine."""
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-loss-under-a-nonterminal-child"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    ctx["message_retry_queues"].append(await _dead_queue_events(ctx["session_id"]))
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        await db.create_progression("prog-still-running")
+        await db.create_session(
+            {
+                "id": "sess-still-running",
+                "progression_id": "prog-still-running",
+                "invocation_id": invocation_id,
+                "status": "running",
+            }
+        )
+
+    status, reason_code, _summary, evidence, metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+
+    assert status == "completed"
+    assert reason_code == RunReasons.COMPLETED_MESSAGE_LOSS, (
+        "the fallback must not report a clean pass over an incomplete transcript"
+    )
+    assert metadata["message_loss_session_ids"] == [ctx["session_id"]]
+    assert [e["id"] for e in evidence] == [ctx["session_id"]]
+
+
+async def test_a_losing_child_is_named_when_a_sibling_fails(
+    temp_db_path: Path,
+):
+    """The precedence ladder returns on the first status that matches, and every arm
+    above the all-completed one used to return before the loss was ever looked for. A
+    failure alongside an incomplete transcript is the case that most needs both."""
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-loss-beside-a-failure"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    ctx["message_retry_queues"].append(await _dead_queue_events(ctx["session_id"]))
+    await stop_live_persist(env, status="completed")
+
+    async with StateDB() as db:
+        await db.create_progression("prog-failed-sibling")
+        await db.create_session(
+            {
+                "id": "sess-failed-sibling",
+                "progression_id": "prog-failed-sibling",
+                "invocation_id": invocation_id,
+                "status": "failed",
+            }
+        )
+
+    status, reason_code, _summary, _evidence, metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+
+    assert status == "failed"
+    assert reason_code == RunReasons.FAILED_EXCEPTION, "the failure outranks the record"
+    assert metadata["message_loss_session_ids"] == [ctx["session_id"]]
+
+
+async def test_a_losing_child_is_named_even_when_another_reason_wins(
+    temp_db_path: Path,
+):
+    """Only one branch can claim the reason code. The child that lost its transcript is
+    still named in the metadata, or the reason that wins buries it."""
+    from lionagi.cli.orchestrate.flow import _resolve_invocation_terminal_flow
+    from lionagi.state.reasons import RunReasons
+
+    invocation_id = "inv-loss-and-finalize-error"
+
+    async with StateDB() as db:
+        await db.create_invocation({"id": invocation_id, "skill": "flow", "started_at": 0.0})
+
+    env = _minimal_env()
+    await start_live_persist(env, invocation_kind="flow", invocation_id=invocation_id)
+    ctx = env._live_persist
+    assert ctx is not None
+    ctx["message_retry_queues"].append(await _dead_queue_events(ctx["session_id"]))
+    env._finalize_error = {"error_class": "TimeoutError", "error": "team lock timed out"}
+
+    await stop_live_persist(env, status="completed")
+
+    _status, reason_code, _summary, _evidence, metadata = await _resolve_invocation_terminal_flow(
+        invocation_id, fallback_status="completed"
+    )
+
+    assert reason_code == RunReasons.COMPLETED_FINALIZE_ERROR, "the work outranks the record"
+    assert metadata["message_loss_session_ids"] == [ctx["session_id"]], (
+        "and the loss is still findable"
+    )

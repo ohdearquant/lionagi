@@ -22,7 +22,7 @@ from lionagi.state.db import (
     CursorClaim,
     StateDB,
 )
-from lionagi.state.reasons import RunReasons
+from lionagi.state.reasons import RunReasons, has_message_loss_evidence
 from lionagi.studio.scheduler import coordination as _coordination
 
 _log = logging.getLogger(__name__)
@@ -386,6 +386,11 @@ async def resolve_invocation_terminal(
         metadata["exit_code"] = exit_code
     if exception is not None:
         metadata["exception_class"] = type(exception).__name__
+    # Same placement as the flow reducer: ahead of the ladder, so a child that lost
+    # messages and also failed still reports the loss on the invocation row.
+    lost_messages = [s for s in sessions if has_message_loss_evidence(s)]
+    if lost_messages:
+        metadata["message_loss_session_ids"] = [s["id"] for s in lost_messages if s.get("id")]
 
     # Precedence: timed_out > failed > aborted > cancelled > completed_empty
     # > completed. completed_empty outranks completed so one silently empty
@@ -444,6 +449,18 @@ async def resolve_invocation_terminal(
                 metadata,
             )
         if all(s == "completed" for s in child_statuses):
+            # Ahead of the clean pass this would otherwise flatten to: the work stands,
+            # but part of a transcript was never written and anything read from it is
+            # reading a partial record.
+            if lost_messages:
+                return (
+                    "completed",
+                    RunReasons.COMPLETED_MESSAGE_LOSS,
+                    "All child sessions completed, but at least one lost live message "
+                    "events at teardown, so its transcript is incomplete.",
+                    [{"kind": "session", "id": s["id"]} for s in lost_messages if s.get("id")],
+                    metadata,
+                )
             return (
                 "completed",
                 RunReasons.COMPLETED_OK,
