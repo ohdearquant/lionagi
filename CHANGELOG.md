@@ -6,6 +6,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.35.1] - 2026-08-24
+
+Fixes three startup and connectivity defects reported against the 0.35.0 PyPI
+install.
+
+### Fixed
+
+- `li studio` and `li studio --no-frontend` start from a pip install. The
+  backend app lives inside the installed package; startup no longer requires
+  the repository's `apps/` tree, which the wheel never ships. `--dev` still
+  requires a repository checkout.
+- System timezone resolution no longer refuses to start when the
+  `/etc/localtime` target sits outside every `TZPATH` root — a Python whose
+  `TZPATH` points elsewhere (conda-style builds), or macOS mid tzdata-update
+  with the localtime chain and the `/usr/share/zoneinfo` chain in different
+  versioned trees. The zone name is read from the link path itself and
+  accepted only when the stdlib can load it; unloadable or lookalike
+  (`zoneinfo.backup`) targets still refuse, and `LIONAGI_SCHEDULER_TZ` still
+  wins.
+- The hosted Studio page accepts a `?api=` query parameter naming a loopback
+  daemon origin (for example `?api=http://127.0.0.1:8766`), so a daemon on a
+  non-default port is reachable without a rebuild. Non-loopback origins are
+  ignored; the override persists per tab.
+
 ## [0.35.0] - 2026-08-12
 
 A broad correctness release across the orchestration engine, the MCP surface,

@@ -51,11 +51,70 @@ export function resolveAuthToken(): string | undefined {
   return undefined;
 }
 
+const API_OVERRIDE_STORAGE_KEY = "studio.apiBaseOverride";
+
+/**
+ * A viewer-supplied `?api=` override for the daemon address, restricted to
+ * loopback origins. The hosted page bakes its API base at build time, so
+ * without this a daemon on a non-default port (`li studio --port 8766`) is
+ * unreachable from the hosted page. Loopback-only keeps the override from
+ * turning a shared link into a way to point someone's session at a foreign
+ * API. Persisted per-tab so SPA navigation that rewrites the query string
+ * does not drop it.
+ */
+function resolveApiOverride(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  let fromQuery: string | null = null;
+  try {
+    fromQuery = new URLSearchParams(window.location.search).get("api");
+  } catch {
+    fromQuery = null;
+  }
+  const validated = (raw: string | null): string | undefined => {
+    if (!raw) return undefined;
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      return undefined;
+    }
+    const loopback =
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "[::1]" ||
+      parsed.hostname === "::1";
+    if (!loopback || (parsed.protocol !== "http:" && parsed.protocol !== "https:")) {
+      return undefined;
+    }
+    return parsed.origin;
+  };
+  const fresh = validated(fromQuery);
+  if (fresh) {
+    try {
+      window.sessionStorage.setItem(API_OVERRIDE_STORAGE_KEY, fresh);
+    } catch {
+      // Storage unavailable (private mode etc.) — the query param still wins
+      // for this load.
+    }
+    return fresh;
+  }
+  try {
+    return validated(window.sessionStorage.getItem(API_OVERRIDE_STORAGE_KEY));
+  } catch {
+    return undefined;
+  }
+}
+
 export function resolveApiBase(): string {
-  // Priority: window.__STUDIO_API_BASE__ (runtime injection) >
+  // Priority: ?api= loopback override (per-tab) >
+  // window.__STUDIO_API_BASE__ (runtime injection) >
   // VITE_STUDIO_API_BASE (build-time env) > origin logic.
   // Treat empty string as "not configured" — defense against baking an empty
   // env var that silently produced same-origin /api/* requests.
+  const override = resolveApiOverride();
+  if (override) {
+    return override;
+  }
   if (typeof window !== "undefined" && window.__STUDIO_API_BASE__) {
     return window.__STUDIO_API_BASE__;
   }

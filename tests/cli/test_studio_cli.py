@@ -1098,3 +1098,19 @@ def test_launch_vite_dev_selects_the_local_url_for_a_non_default_loopback_host(
     assert result is not None
     proc, url = result
     assert url == "http://127.0.0.2:4001"
+
+
+def test_backend_starts_from_a_pip_install_without_apps_tree(monkeypatch, capsys):
+    """A wheel install has no apps/ tree next to the package. The backend app
+    lives inside the package itself, so backend-only startup (the default
+    hosted mode and --no-frontend) must not be gated on finding the repo."""
+    import lionagi.studio.cli as studio_mod
+
+    monkeypatch.setattr(studio_mod, "_find_repo_root", lambda: None)
+    with _stubbed_serve() as mock_run:
+        result = studio_mod._start_backend_only("127.0.0.1", 8765)
+
+    assert result == 0
+    mock_run.assert_called_once()
+    captured = capsys.readouterr()
+    assert "studio backend not found" not in captured.err
