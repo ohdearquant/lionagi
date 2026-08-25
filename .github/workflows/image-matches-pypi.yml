@@ -1,0 +1,236 @@
+name: Image matches PyPI
+
+# The release workflow already verifies that it pushed an image, and it does that
+# correctly. What it cannot do is be noticed: it reports at the end of a release
+# run, minutes-to-hours after anyone stopped watching, and a release that half
+# succeeded reads as finished from every other angle. Three versions reached the
+# registry-missing state that way and none was ever repaired, because nothing
+# asked again afterwards.
+#
+# So this asks a question about STATE rather than about a run: does the registry
+# have an image for the version PyPI is currently serving? That is answerable at
+# any moment by anyone, it does not depend on catching a failure as it happens,
+# and it stays red until someone fixes it instead of scrolling away.
+#
+# Every run writes its readings to the job summary, pass or fail. That is
+# deliberate. An alarm whose only output is silence-on-success cannot be told
+# apart from an alarm that stopped running, so the run history carries a dated
+# sequence of readings and a gap in it is a missed run rather than a quiet one.
+#
+# Three outcomes, kept distinguishable on purpose:
+#   green          the registry matches PyPI
+#   red + issue    the registry is behind, and the issue names both versions read
+#   red, no issue  a read failed, so the question was not answered either way
+
+on:
+  schedule:
+    # Daily, off the :00 mark to stay clear of the global cron thundering herd.
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  image-matches-pypi:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read the version PyPI is serving
+        id: pypi
+        run: |
+          set -euo pipefail
+          version="$(curl -sSf --retry 3 --retry-delay 5 https://pypi.org/pypi/lionagi/json \
+            | jq -r '.info.version // empty')"
+          if [ -z "${version}" ]; then
+            echo "::error::PyPI answered but named no version, so this check is broken rather than clean"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "PyPI is serving ${version}"
+
+      - name: Read the image tags and digests from the registry
+        id: registry
+        env:
+          VERSION: ${{ steps.pypi.outputs.version }}
+        run: |
+          set -euo pipefail
+          repo=ohdearquant/lion-studio
+
+          token="$(curl -sSf --retry 3 --retry-delay 5 \
+            "https://ghcr.io/token?scope=repository:${repo}:pull" | jq -r '.token // empty')"
+          if [ -z "${token}" ]; then
+            echo "::error::could not obtain a registry pull token, so the registry was not read"
+            exit 1
+          fi
+
+          tags="$(curl -sSf --retry 3 --retry-delay 5 -H "Authorization: Bearer ${token}" \
+            "https://ghcr.io/v2/${repo}/tags/list" | jq -r '.tags[]?')"
+          count="$(printf '%s\n' "${tags}" | grep -c . || true)"
+          # An empty tag list from a repository that demonstrably has published
+          # images is a failed read, not an empty registry. Treating it as the
+          # latter would report every version missing at once, which is the
+          # loudest possible way to be wrong.
+          if [ "${count}" -eq 0 ]; then
+            echo "::error::the registry returned no tags at all, so this is a failed read rather than a missing image"
+            exit 1
+          fi
+
+          has_tag() { printf '%s\n' "${tags}" | grep -qx "$1"; }
+
+          # Only version-shaped tags, so that moving labels like `latest` cannot
+          # show up in a row whose heading says "newest versions".
+          version_tags="$(printf '%s\n' "${tags}" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | sort -V || true)"
+
+          present=no
+          if has_tag "${VERSION}"; then present=yes; fi
+
+          # Publishing the version tag while leaving :latest behind still leaves
+          # every `docker pull` on the old image, so the two are separate
+          # questions and get separate answers.
+          digest_for() {
+            curl -sS --retry 3 --retry-delay 5 -o /dev/null -D - \
+              -H "Authorization: Bearer ${token}" \
+              -H "Accept: application/vnd.oci.image.index.v1+json" \
+              -H "Accept: application/vnd.docker.distribution.manifest.list.v2+json" \
+              -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
+              "https://ghcr.io/v2/${repo}/manifests/$1" \
+              | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:"{print $2}'
+          }
+
+          # Whether a tag EXISTS is already settled by the tag list above, so an
+          # unreadable digest for a tag that is listed can only be an instrument
+          # failure. Keeping those two apart is the whole point: a missing tag is
+          # a finding to file, a missing answer is not an answer.
+          latest_matches=not-applicable
+          latest_digest=absent
+          version_digest=absent
+          if has_tag latest; then
+            latest_digest="$(digest_for latest)"
+            if [ -z "${latest_digest}" ]; then
+              echo "::error::the tag list contains 'latest' but its manifest digest could not be read, so latest was not checked"
+              exit 1
+            fi
+          fi
+          if [ "${present}" = "yes" ]; then
+            version_digest="$(digest_for "${VERSION}")"
+            if [ -z "${version_digest}" ]; then
+              echo "::error::the tag list contains '${VERSION}' but its manifest digest could not be read, so the image was not checked"
+              exit 1
+            fi
+          fi
+          if [ "${latest_digest}" != "absent" ] && [ "${version_digest}" != "absent" ]; then
+            if [ "${latest_digest}" = "${version_digest}" ]; then
+              latest_matches=yes
+            else
+              latest_matches=no
+            fi
+          elif [ "${latest_digest}" = "absent" ]; then
+            latest_matches=no-latest-tag
+          fi
+
+          # What you actually get when you pull :latest, resolved by digest
+          # against the recent version tags rather than assumed. When the version
+          # tag is missing entirely this is the row that makes the report
+          # actionable, because "does not match" does not say what users are on.
+          latest_points_at=unresolved
+          if [ "${latest_digest}" != "absent" ]; then
+            for t in $(printf '%s\n' "${version_tags}" | sort -rV | head -8); do
+              if [ "$(digest_for "${t}")" = "${latest_digest}" ]; then
+                latest_points_at="${t}"
+                break
+              fi
+            done
+          else
+            latest_points_at=no-latest-tag
+          fi
+
+          {
+            echo "present=${present}"
+            echo "count=${count}"
+            echo "latest_matches=${latest_matches}"
+            echo "latest_points_at=${latest_points_at}"
+            echo "latest_digest=${latest_digest}"
+            echo "version_digest=${version_digest}"
+            echo "newest=$(printf '%s\n' "${version_tags}" | tail -3 | tr '\n' ' ')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Record the readings, then open or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.pypi.outputs.version }}
+          PRESENT: ${{ steps.registry.outputs.present }}
+          COUNT: ${{ steps.registry.outputs.count }}
+          NEWEST: ${{ steps.registry.outputs.newest }}
+          LATEST_MATCHES: ${{ steps.registry.outputs.latest_matches }}
+          LATEST_POINTS_AT: ${{ steps.registry.outputs.latest_points_at }}
+          LATEST_DIGEST: ${{ steps.registry.outputs.latest_digest }}
+          VERSION_DIGEST: ${{ steps.registry.outputs.version_digest }}
+        run: |
+          set -euo pipefail
+          title="Container image is behind PyPI"
+
+          readings="$(cat <<EOF
+          | | |
+          |---|---|
+          | PyPI is serving | \`${VERSION}\` |
+          | Registry has a \`${VERSION}\` tag | ${PRESENT} |
+          | Registry tags counted | ${COUNT} |
+          | Newest version tags | ${NEWEST} |
+          | \`latest\` resolves to | ${LATEST_POINTS_AT} |
+          | \`latest\` points at \`${VERSION}\` | ${LATEST_MATCHES} |
+          | \`latest\` digest | \`${LATEST_DIGEST}\` |
+          | \`${VERSION}\` digest | \`${VERSION_DIGEST}\` |
+          EOF
+          )"
+
+          # Written on every run, including the green ones. This is the record
+          # that tells "checked, matched" apart from "never checked".
+          {
+            echo "### Readings"
+            echo
+            echo "${readings}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Listed rather than searched, and filtered here: the issue search
+          # index lags creation by a while, and an alarm that files a duplicate
+          # every morning teaches people to ignore it.
+          existing="$(gh issue list --state open --limit 500 --json number,title \
+            --jq "map(select(.title == \"${title}\")) | .[0].number // empty")"
+
+          if [ "${PRESENT}" = "yes" ] && [ "${LATEST_MATCHES}" = "yes" ]; then
+            echo "::notice::registry carries ${VERSION} and latest points at it"
+            if [ -n "${existing}" ]; then
+              # Closed by the same job that opens it, so an open issue always
+              # means currently-behind rather than behind-at-some-point.
+              gh issue close "${existing}" \
+                --comment "Registry now carries \`${VERSION}\` and \`latest\` points at it. Closing automatically."
+            fi
+            exit 0
+          fi
+
+          body="$(cat <<EOF
+          The container image published to \`ghcr.io/ohdearquant/lion-studio\` does not
+          match what PyPI is serving.
+
+          ${readings}
+
+          Anyone running \`li studio --docker\`, or pulling \`:latest\`, is on the older
+          image until this is repaired.
+
+          To repair: dispatch the Release workflow at a ref carrying any needed fix,
+          with \`version\` set to the version above.
+
+          This issue is opened and closed by the \`Image matches PyPI\` workflow, so it
+          being open means the registry is behind right now, not that it once was.
+          EOF
+          )"
+
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "${body}"
+          else
+            gh issue create --title "${title}" --body "${body}"
+          fi
+
+          echo "::error::registry does not match PyPI ${VERSION} (version tag present=${PRESENT}, latest matches=${LATEST_MATCHES})"
+          exit 1
