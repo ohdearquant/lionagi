@@ -260,13 +260,12 @@ def _start_hosted(host: str, port: int, no_open: bool) -> int:
 def _start_backend_only(host: str, port: int) -> int:
     import uvicorn
 
-    if not _ensure_apps_importable():
-        print(
-            "Error: studio backend not found. Run from the lionagi repo root or install "
-            "the full studio package.",
-            file=sys.stderr,
-        )
-        return 1
+    # The backend app lives inside the installed package
+    # (lionagi.studio.app); it does not import anything from the repo's
+    # apps/ tree, so a pip install must not be gated on finding one. The
+    # repo root is still added to sys.path when present, purely as a
+    # convenience for repo checkouts.
+    _ensure_apps_importable()
 
     print(f"Lion Studio API: http://{host}:{port}")
     # Set before uvicorn.run: the app is loaded via import string and reads this from env.

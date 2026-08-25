@@ -923,3 +923,56 @@ describe("normalizeSignalEvent", () => {
     expect(Math.abs(asBackendSends.ts - now)).toBeGreaterThan(1_000_000_000);
   });
 });
+
+describe("resolveApiBase ?api= override", () => {
+  beforeEach(() => {
+    delete (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__;
+    window.sessionStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  afterEach(() => {
+    window.sessionStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  const stubLocation = (search: string) => {
+    vi.stubGlobal("window", {
+      ...window,
+      sessionStorage: window.sessionStorage,
+      location: {
+        ...window.location,
+        port: "",
+        hostname: "studio.example",
+        protocol: "https:",
+        search,
+      },
+    });
+  };
+
+  it("a loopback ?api= wins over the baked base", () => {
+    stubLocation("?api=http://127.0.0.1:8766");
+    (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__ =
+      "http://127.0.0.1:8765";
+    expect(resolveApiBase()).toBe("http://127.0.0.1:8766");
+  });
+
+  it("a non-loopback ?api= is ignored", () => {
+    stubLocation("?api=https://evil.example");
+    (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__ =
+      "http://127.0.0.1:8765";
+    expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
+  });
+
+  it("a malformed ?api= is ignored", () => {
+    stubLocation("?api=notaurl");
+    expect(resolveApiBase()).toBe("");
+  });
+
+  it("the override persists for the tab after the query param is gone", () => {
+    stubLocation("?api=http://localhost:8766");
+    expect(resolveApiBase()).toBe("http://localhost:8766");
+    stubLocation("");
+    expect(resolveApiBase()).toBe("http://localhost:8766");
+  });
+});
