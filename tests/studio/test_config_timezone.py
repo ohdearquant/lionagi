@@ -132,6 +132,70 @@ def test_zone_follows_the_resolved_path_not_the_link_text(tz_host, tmp_path):
     assert config._system_local_tz_name() == "Asia/Tokyo"
 
 
+def test_link_structure_fallback_also_prefers_the_resolved_spelling(tz_host, tmp_path):
+    """The fallback answers the same question as the primary path, so it has to
+    answer it the same way.
+
+    Reached only when no search root contains the target, this derives a name
+    from the shape of the path instead. An alias link is where the two spellings
+    diverge: ``US/Eastern`` and ``America/New_York`` both load, but the second is
+    the zone the host is actually using, and the primary path already reports it
+    that way. Two code paths disagreeing about which spelling wins is worse than
+    either answer, because which one you get depends on whether the search root
+    happened to contain the file.
+    """
+    link, set_roots, zone_file = tz_host
+    # The search root carries both spellings as real files, so the loadability
+    # check inside the fallback accepts either and cannot be what decides this.
+    zone_file("roots", "America/New_York")
+    zone_file("roots", "US/Eastern", data_from="America/New_York")
+    # The host's actual chain lives in a tree that is NOT a search root, which
+    # is what makes the primary path come up empty and hands the question to the
+    # link-structure fallback. This is the macOS shape: /etc/localtime resolving
+    # into a versioned tree beside the one TZPATH points at.
+    outside = tmp_path / "outside" / "zoneinfo"
+    (outside / "America").mkdir(parents=True, exist_ok=True)
+    (outside / "America" / "New_York").write_bytes(_host_zone_bytes("America/New_York"))
+    (outside / "US").mkdir(parents=True, exist_ok=True)
+    (outside / "US" / "Eastern").symlink_to(outside / "America" / "New_York")
+    link.symlink_to(outside / "US" / "Eastern")
+    set_roots("roots")
+
+    # Precondition: the primary path really does fail here, or this test would
+    # pass while measuring the wrong code.
+    assert config._zone_name_from_path(link.resolve(), config._tz_search_roots()) is None
+
+    assert config._system_local_tz_name() == "America/New_York"
+
+
+def test_link_structure_fallback_still_uses_link_text_when_resolving_yields_no_name(
+    tz_host, tmp_path
+):
+    """The arm that keeps link text as a candidate rather than dropping it.
+
+    When the resolved path lands outside any component named ``zoneinfo`` it
+    yields no name, and the link's own text is the only thing left that does.
+    Without this the reordering above would turn a host that resolves fine today
+    into a refusal.
+    """
+    link, set_roots, zone_file = tz_host
+    zone_file("roots", "America/New_York")
+    # Resolves to a file under no component named zoneinfo, so the resolved
+    # candidate yields nothing and only the link's own text names a zone.
+    (tmp_path / "opaque").mkdir(parents=True, exist_ok=True)
+    real = tmp_path / "opaque" / "tzfile"
+    real.write_bytes(_host_zone_bytes("America/New_York"))
+    outside = tmp_path / "outside" / "zoneinfo"
+    (outside / "America").mkdir(parents=True, exist_ok=True)
+    (outside / "America" / "New_York").symlink_to(real)
+    link.symlink_to(outside / "America" / "New_York")
+    set_roots("roots")
+
+    assert config._zone_name_from_path(link.resolve(), config._tz_search_roots()) is None
+
+    assert config._system_local_tz_name() == "America/New_York"
+
+
 def test_shadowed_key_is_refused_rather_than_loading_another_zone(tz_host):
     """Two roots can hold the same key with different rules. The name derived
     from the root that contains localtime would be reopened from the earlier
