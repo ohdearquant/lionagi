@@ -6,6 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.35.2] - 2026-08-25
+
+Also the first release published as a container image since 0.35.0; 0.35.1 reached
+PyPI but never produced one.
+
 ### Changed
 
 - `Params`, `Meta`, and `Spec` now compare through one exact-type structural projection instead of
