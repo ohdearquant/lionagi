@@ -7,11 +7,18 @@
 #   docker run -p 8765:8765 -v ~/.lionagi:/root/.lionagi -v "$PWD:/workspace" lion-studio
 
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
-FROM node:22-alpine AS frontend-build
+# Pinned to BUILDPLATFORM on purpose. This stage emits /build/dist, a static
+# SPA bundle that is identical whatever the target architecture, so under a
+# multi-arch build an unpinned stage gets built a second time under QEMU for
+# no benefit. npm under emulation is slow enough to exceed the job timeout,
+# which is how a release lost its image.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS frontend-build
 
 WORKDIR /build
 COPY apps/studio/frontend/package.json apps/studio/frontend/package-lock.json* ./
-RUN npm ci --legacy-peer-deps 2>/dev/null || npm install --legacy-peer-deps
+# stderr is npm's progress channel; discarding it makes a stalled install
+# indistinguishable from a slow one for as long as the build is allowed to run.
+RUN npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 COPY apps/studio/frontend/ ./
 RUN npm run build
 
