@@ -988,3 +988,111 @@ describe("resolveApiBase ?api= override", () => {
     expect(resolveApiBase()).toBe("http://localhost:8766");
   });
 });
+
+describe("the shell token does not follow a ?api= override to another daemon", () => {
+  // The override is loopback-only, which bounds who can receive a redirected
+  // request but says nothing about whether they should be trusted with the
+  // shell's credential: anything able to bind a local port qualifies.
+  const storage = new Map<string, string>();
+  const storageStub = {
+    getItem: (k: string) => storage.get(k) ?? null,
+    setItem: (k: string, v: string) => void storage.set(k, String(v)),
+    removeItem: (k: string) => void storage.delete(k),
+    clear: () => void storage.clear(),
+  } as unknown as Storage;
+
+  const stubLocation = (search: string) => {
+    vi.stubGlobal("window", {
+      ...window,
+      sessionStorage: storageStub,
+      location: {
+        ...window.location,
+        port: "",
+        hostname: "studio.example",
+        protocol: "https:",
+        search,
+      },
+    });
+  };
+
+  const setInjected = (base?: string, token?: string) => {
+    const w = window as Window & {
+      __STUDIO_API_BASE__?: string;
+      __STUDIO_AUTH_TOKEN__?: string;
+    };
+    if (base === undefined) delete w.__STUDIO_API_BASE__;
+    else w.__STUDIO_API_BASE__ = base;
+    if (token === undefined) delete w.__STUDIO_AUTH_TOKEN__;
+    else w.__STUDIO_AUTH_TOKEN__ = token;
+  };
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    setInjected(undefined, undefined);
+    storage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setInjected(undefined, undefined);
+    storage.clear();
+  });
+
+  it("withholds the token when the override names a different daemon", () => {
+    stubLocation("?api=http://127.0.0.1:8766");
+    setInjected("http://127.0.0.1:8765", "shell-token");
+    // Precondition, so this is not asserting against a base that never moved.
+    expect(resolveApiBase()).toBe("http://127.0.0.1:8766");
+    expect(resolveAuthToken()).toBeUndefined();
+  });
+
+  it("still sends the token when the override names the issuing origin", () => {
+    // The documented workaround: a viewer pasting the address of the very
+    // daemon the shell started must not be punished for it.
+    stubLocation("?api=http://127.0.0.1:8765");
+    setInjected("http://127.0.0.1:8765", "shell-token");
+    expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
+    expect(resolveAuthToken()).toBe("shell-token");
+  });
+
+  it("withholds the token when no issuing origin was injected", () => {
+    // Fail closed: with nothing declaring which daemon the token belongs to,
+    // an override cannot be shown to be that daemon.
+    stubLocation("?api=http://127.0.0.1:8766");
+    setInjected(undefined, "shell-token");
+    expect(resolveAuthToken()).toBeUndefined();
+  });
+
+  it("withholds the token when the injected base is unparseable", () => {
+    stubLocation("?api=http://127.0.0.1:8766");
+    setInjected("not a url", "shell-token");
+    expect(resolveAuthToken()).toBeUndefined();
+  });
+
+  it("is unchanged when no override is active", () => {
+    // The arm that would catch this fix over-reaching into the ordinary path.
+    stubLocation("");
+    setInjected("http://127.0.0.1:8765", "shell-token");
+    expect(resolveAuthToken()).toBe("shell-token");
+  });
+
+  it("is unchanged when a rejected override leaves the baked base in place", () => {
+    // A non-loopback ?api= never becomes the base, so nothing was redirected
+    // and there is no reason to withhold.
+    stubLocation("?api=https://evil.example");
+    setInjected("http://127.0.0.1:8765", "shell-token");
+    expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
+    expect(resolveAuthToken()).toBe("shell-token");
+  });
+
+  it("keeps withholding after the query param is gone", () => {
+    // The override persists per-tab, so the suppression has to persist with it
+    // rather than lapsing on the next SPA navigation.
+    stubLocation("?api=http://127.0.0.1:8766");
+    setInjected("http://127.0.0.1:8765", "shell-token");
+    expect(resolveAuthToken()).toBeUndefined();
+    stubLocation("");
+    expect(resolveApiBase()).toBe("http://127.0.0.1:8766");
+    expect(resolveAuthToken()).toBeUndefined();
+  });
+});

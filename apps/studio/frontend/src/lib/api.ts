@@ -43,12 +43,42 @@ declare global {
   }
 }
 
-/** Return the per-launch bearer token injected by the desktop shell, if any. */
+/**
+ * Return the per-launch bearer token injected by the desktop shell, if any.
+ *
+ * The token authenticates against the daemon the shell started, and the shell
+ * names that daemon in `__STUDIO_API_BASE__` when it injects the token. A
+ * `?api=` override takes priority over that base, so without a check here the
+ * page would keep sending the token after being pointed at a *different*
+ * daemon. Restricting the override to loopback bounds who that can be; it does
+ * not make them trusted, since any process able to listen on a local port would
+ * then be handed the credential by the next request.
+ *
+ * So the token travels only to the origin it was issued for. If an override is
+ * active and that origin cannot be established, the token is withheld:
+ * withholding costs an unauthenticated request against a daemon the viewer
+ * redirected the page to deliberately, and sending costs the credential itself.
+ *
+ * Decided here rather than at the call sites because there are several of them,
+ * and a rule about where a credential may travel should not be re-implemented
+ * once per request builder.
+ */
 export function resolveAuthToken(): string | undefined {
-  if (typeof window !== "undefined" && window.__STUDIO_AUTH_TOKEN__) {
-    return window.__STUDIO_AUTH_TOKEN__;
+  if (typeof window === "undefined") return undefined;
+  const token = window.__STUDIO_AUTH_TOKEN__;
+  if (!token) return undefined;
+
+  const override = resolveApiOverride();
+  if (!override) return token;
+
+  const issuedFor = window.__STUDIO_API_BASE__;
+  if (!issuedFor) return undefined;
+  try {
+    // resolveApiOverride already returns a bare origin, so both sides normalize.
+    return new URL(issuedFor).origin === override ? token : undefined;
+  } catch {
+    return undefined;
   }
-  return undefined;
 }
 
 const API_OVERRIDE_STORAGE_KEY = "studio.apiBaseOverride";
