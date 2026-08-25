@@ -263,3 +263,58 @@ def test_missing_localtime_falls_back_to_utc_with_a_warning(tz_host, caplog):
         assert config._system_local_tz_name() == "UTC"
 
     assert "LIONAGI_SCHEDULER_TZ" in caplog.text
+
+
+def test_target_outside_every_root_still_names_the_zone(tz_host):
+    """The localtime target can live in a tree no search root contains — a
+    Python whose TZPATH points elsewhere (conda-style builds), or macOS mid
+    tzdata-update with the two chains in different versioned trees. The link
+    path itself still names the zone, and the name is accepted because the
+    configured roots can load it."""
+    link, set_roots, zone_file = tz_host
+    link.symlink_to(zone_file("zoneinfo"))
+    zone_file("other-tree")
+    set_roots("other-tree")
+
+    resolution = config._resolve_system_local_tz()
+    assert resolution.name == "America/New_York"
+    assert resolution.source == config.TZ_SOURCE_SYSTEM_LOCALTIME
+    assert "link path" in resolution.detail
+
+
+def test_macos_version_skew_between_chains_resolves(tz_host, tmp_path):
+    """macOS layout: /etc/localtime resolves through a middle symlink into one
+    versioned tree while the search root points at another. Containment fails
+    on the version mismatch; the link's own path still says which zone."""
+    link, set_roots, zone_file = tz_host
+    zone_file("tz/2025a/zoneinfo")
+    middle = tmp_path / "var-zoneinfo"
+    middle.symlink_to(tmp_path / "tz" / "2025a" / "zoneinfo")
+    link.symlink_to(middle / "America" / "New_York")
+    zone_file("tz/2025b/zoneinfo")
+    set_roots("tz/2025b/zoneinfo")
+
+    assert config._system_local_tz_name() == "America/New_York"
+
+
+def test_link_named_zone_that_no_root_can_load_still_raises(tz_host):
+    """The link-path fallback never invents a zone: a name the configured
+    roots cannot load keeps the refusal, exactly as before."""
+    link, set_roots, zone_file = tz_host
+    link.symlink_to(zone_file("zoneinfo", "Nowhere/Fake", data_from="America/New_York"))
+    set_roots("empty-tree")
+
+    with pytest.raises(config.SystemTimezoneUnreadableError):
+        config._system_local_tz_name()
+
+
+def test_suffixed_lookalike_tree_still_refuses_after_fallback(tz_host):
+    """The fallback keys on a component spelled exactly ``zoneinfo``; a
+    lookalike such as ``zoneinfo.backup`` stays a refusal (the containment
+    rule's judgment, unchanged)."""
+    link, set_roots, zone_file = tz_host
+    link.symlink_to(zone_file("zoneinfo.backup"))
+    set_roots("zoneinfo")
+
+    with pytest.raises(config.SystemTimezoneUnreadableError):
+        config._system_local_tz_name()

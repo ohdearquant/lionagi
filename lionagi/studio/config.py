@@ -125,6 +125,42 @@ def _zone_name_from_path(path: Path, roots: list[Path]) -> str | None:
     return None
 
 
+def _zone_name_from_link_structure(link: Path, resolved: Path | None) -> str | None:
+    """Zone name read from the shape of the localtime link itself.
+
+    Reached only after no search root contains the target: a Python whose
+    ``TZPATH`` points elsewhere (conda and similar builds), or macOS mid
+    tzdata-update, where the ``/etc/localtime`` chain and the
+    ``/usr/share/zoneinfo`` chain resolve into different versioned trees.
+    The name is whatever follows a component spelled exactly ``zoneinfo`` —
+    a suffixed directory like ``zoneinfo.backup`` stays a refusal, keeping
+    the containment rule's judgment that unrelated lookalike trees are not
+    zone sources — and it is accepted only if the stdlib can load it, so
+    this never invents a zone.
+    """
+    candidates: list[Path] = []
+    try:
+        candidates.append(link.readlink())
+    except OSError:
+        pass
+    if resolved is not None and resolved not in candidates:
+        candidates.append(resolved)
+    for target in candidates:
+        parts = target.parts
+        for index in range(len(parts) - 1, -1, -1):
+            if parts[index] != "zoneinfo":
+                continue
+            name = "/".join(parts[index + 1 :])
+            if not name:
+                break
+            try:
+                zoneinfo.ZoneInfo(name)
+            except Exception:  # noqa: BLE001
+                break
+            return name
+    return None
+
+
 def _localtime_is_readable() -> bool:
     """Whether the host's localtime file exists and can actually be read.
 
@@ -172,6 +208,14 @@ def _resolve_system_local_tz() -> TimezoneResolution:
                 return TimezoneResolution(
                     name, TZ_SOURCE_SYSTEM_LOCALTIME, str(SYSTEM_LOCALTIME_LINK)
                 )
+
+    name = _zone_name_from_link_structure(SYSTEM_LOCALTIME_LINK, localtime)
+    if name is not None:
+        return TimezoneResolution(
+            name,
+            TZ_SOURCE_SYSTEM_LOCALTIME,
+            f"{SYSTEM_LOCALTIME_LINK} (zone name from link path)",
+        )
 
     if _localtime_is_readable():
         raise SystemTimezoneUnreadableError(

@@ -923,3 +923,68 @@ describe("normalizeSignalEvent", () => {
     expect(Math.abs(asBackendSends.ts - now)).toBeGreaterThan(1_000_000_000);
   });
 });
+
+describe("resolveApiBase ?api= override", () => {
+  // Suite-owned storage: the CI runner's test environment has no
+  // window.sessionStorage (locally jsdom provides one), and the impl reads
+  // window.sessionStorage under try/catch — so without this stub the four
+  // tests below throw in CI while passing locally.
+  const storage = new Map<string, string>();
+  const storageStub = {
+    getItem: (k: string) => storage.get(k) ?? null,
+    setItem: (k: string, v: string) => void storage.set(k, String(v)),
+    removeItem: (k: string) => void storage.delete(k),
+    clear: () => void storage.clear(),
+  } as unknown as Storage;
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    delete (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__;
+    storage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    storage.clear();
+  });
+
+  const stubLocation = (search: string) => {
+    vi.stubGlobal("window", {
+      ...window,
+      sessionStorage: storageStub,
+      location: {
+        ...window.location,
+        port: "",
+        hostname: "studio.example",
+        protocol: "https:",
+        search,
+      },
+    });
+  };
+
+  it("a loopback ?api= wins over the baked base", () => {
+    stubLocation("?api=http://127.0.0.1:8766");
+    (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__ =
+      "http://127.0.0.1:8765";
+    expect(resolveApiBase()).toBe("http://127.0.0.1:8766");
+  });
+
+  it("a non-loopback ?api= is ignored", () => {
+    stubLocation("?api=https://evil.example");
+    (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__ =
+      "http://127.0.0.1:8765";
+    expect(resolveApiBase()).toBe("http://127.0.0.1:8765");
+  });
+
+  it("a malformed ?api= is ignored", () => {
+    stubLocation("?api=notaurl");
+    expect(resolveApiBase()).toBe("");
+  });
+
+  it("the override persists for the tab after the query param is gone", () => {
+    stubLocation("?api=http://localhost:8766");
+    expect(resolveApiBase()).toBe("http://localhost:8766");
+    stubLocation("");
+    expect(resolveApiBase()).toBe("http://localhost:8766");
+  });
+});
