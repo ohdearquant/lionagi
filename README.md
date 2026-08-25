@@ -18,6 +18,12 @@ since 2023.
 [PyPI](https://pypi.org/project/lionagi/) |
 [Changelog](CHANGELOG.md)
 
+## Demo
+
+[Lion Studio walkthrough (13 min)](https://www.youtube.com/watch?v=KXLlyPSvNQc):
+inspecting runs, checking agent claims against actual output, and launching
+work with approval gates. Built on lionagi, runs locally.
+
 ## Quick start
 
 ```bash
