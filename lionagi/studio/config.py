@@ -138,13 +138,25 @@ def _zone_name_from_link_structure(link: Path, resolved: Path | None) -> str | N
     zone sources — and it is accepted only if the stdlib can load it, so
     this never invents a zone.
     """
+    # Resolved first, link text second. The primary path already derives the
+    # name from where the link resolves rather than from what it says, and this
+    # fallback answers the same question, so the two must not disagree about
+    # which spelling wins. They differ whenever the link names an alias -- a
+    # localtime pointing at ``zoneinfo/US/Eastern`` that resolves to
+    # ``zoneinfo/America/New_York`` -- where both spellings load but only one is
+    # the zone the host actually uses. Link text stays as the second candidate
+    # for the case this fallback exists for, where the resolved path lands
+    # outside any component named ``zoneinfo`` and yields no name at all.
     candidates: list[Path] = []
+    if resolved is not None:
+        candidates.append(resolved)
     try:
-        candidates.append(link.readlink())
+        from_link_text = link.readlink()
     except OSError:
         pass
-    if resolved is not None and resolved not in candidates:
-        candidates.append(resolved)
+    else:
+        if from_link_text not in candidates:
+            candidates.append(from_link_text)
     for target in candidates:
         parts = target.parts
         for index in range(len(parts) - 1, -1, -1):
