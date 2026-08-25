@@ -158,6 +158,14 @@ jobs:
       - name: Record the readings, then open or close the issue
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job deliberately has no checkout: it reads PyPI and the
+          # registry over the network and needs none of the tree. That leaves
+          # the CLI with no git remote to infer a repository from, so every
+          # bare `gh issue` call below would exit with "failed to run git:
+          # fatal: not a git repository" before reaching the branch that
+          # decides whether to file, comment, or close. GH_REPO supplies what
+          # the checkout would otherwise have implied.
+          GH_REPO: ${{ github.repository }}
           VERSION: ${{ steps.pypi.outputs.version }}
           PRESENT: ${{ steps.registry.outputs.present }}
           COUNT: ${{ steps.registry.outputs.count }}
