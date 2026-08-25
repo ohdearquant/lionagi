@@ -925,21 +925,33 @@ describe("normalizeSignalEvent", () => {
 });
 
 describe("resolveApiBase ?api= override", () => {
+  // Suite-owned storage: the CI runner's test environment has no
+  // window.sessionStorage (locally jsdom provides one), and the impl reads
+  // window.sessionStorage under try/catch — so without this stub the four
+  // tests below throw in CI while passing locally.
+  const storage = new Map<string, string>();
+  const storageStub = {
+    getItem: (k: string) => storage.get(k) ?? null,
+    setItem: (k: string, v: string) => void storage.set(k, String(v)),
+    removeItem: (k: string) => void storage.delete(k),
+    clear: () => void storage.clear(),
+  } as unknown as Storage;
+
   beforeEach(() => {
-    delete (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__;
-    window.sessionStorage.clear();
     vi.unstubAllGlobals();
+    delete (window as Window & { __STUDIO_API_BASE__?: string }).__STUDIO_API_BASE__;
+    storage.clear();
   });
 
   afterEach(() => {
-    window.sessionStorage.clear();
     vi.unstubAllGlobals();
+    storage.clear();
   });
 
   const stubLocation = (search: string) => {
     vi.stubGlobal("window", {
       ...window,
-      sessionStorage: window.sessionStorage,
+      sessionStorage: storageStub,
       location: {
         ...window.location,
         port: "",
