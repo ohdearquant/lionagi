@@ -3,6 +3,22 @@ name: Release
 on:
   release:
     types: [published]
+  # Manual re-publish of the container image for a version whose release run
+  # did not push one. Three releases have lost their image and none of them
+  # could get it back, because a release-triggered run is the only thing that
+  # builds the image and a release publishes exactly once. Re-running the old
+  # run does not help: it rebuilds the tag's tree, which is the tree that
+  # failed. Dispatch at a ref that carries the fix instead.
+  #
+  # The wheel is never re-published this way -- see the deploy job's guard.
+  # Dispatch at a ref whose content matches the version being named, or the
+  # image will not match the wheel already on PyPI.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish the image for, without the leading v (e.g. 0.35.1)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -38,6 +54,13 @@ jobs:
 
   deploy:
     needs: test
+    # Publishing the wheel belongs to the release that created the version, and
+    # to nothing else. A manual dispatch exists to republish an image for a
+    # version that already shipped, so its wheel is already on PyPI; letting
+    # this job run would attempt a duplicate upload and fail the run for a
+    # reason unrelated to what was asked for. The docker job depends on test
+    # rather than on this, so skipping here does not skip the image.
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v7
@@ -94,9 +117,24 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Extract version from tag
+    # On a release, the ref name is the tag and stripping the v gives the
+    # version. On a dispatch the ref name is whatever branch was dispatched, so
+    # the input is the only thing that knows the version and it is required.
+    # Refusing an empty result matters more than it looks: an unset version
+    # silently tags the image ":" and "latest", which publishes a broken tag
+    # under a name that reads as success.
+    - name: Resolve version
       id: version
-      run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+        if [ -z "${version}" ]; then
+          echo "::error::could not resolve a version from inputs or ${GITHUB_REF_NAME}"
+          exit 1
+        fi
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
 
     - name: Build and push Docker image (multi-arch)
       uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7
@@ -121,9 +159,24 @@ jobs:
     if: ${{ always() && needs.docker.result != 'skipped' }}
     runs-on: ubuntu-latest
     steps:
-    - name: Extract version from tag
+    # On a release, the ref name is the tag and stripping the v gives the
+    # version. On a dispatch the ref name is whatever branch was dispatched, so
+    # the input is the only thing that knows the version and it is required.
+    # Refusing an empty result matters more than it looks: an unset version
+    # silently tags the image ":" and "latest", which publishes a broken tag
+    # under a name that reads as success.
+    - name: Resolve version
       id: version
-      run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+        if [ -z "${version}" ]; then
+          echo "::error::could not resolve a version from inputs or ${GITHUB_REF_NAME}"
+          exit 1
+        fi
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
 
     - name: Verify the image is in the registry
       env:
