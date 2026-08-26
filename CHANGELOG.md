@@ -76,6 +76,9 @@ PyPI but never produced one.
   matrix independently of the production registry: every allowed edge, every
   terminal status, dispatch recovery constraints, and the selected
   same-status reason refresh have executable regression coverage.
+- Studio, Operator, and VS Code run navigation now prefer the session `id`
+  over the legacy `run_id` compatibility field, while preserving fallback for
+  older rows that do not expose `id`.
 - Resuming a flow whose checkpoint recorded any operation as failed now refuses
   and names those operations, instead of replaying them as terminal state.
   Replaying a failed operation as terminal marks it failed without running it,

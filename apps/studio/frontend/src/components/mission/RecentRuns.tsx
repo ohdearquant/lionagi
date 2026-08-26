@@ -20,6 +20,7 @@ import { formatElapsed } from "@/lib/elapsed";
 import { deriveDisplayStatus } from "@/lib/runStatus";
 import { formatCostUsd } from "@/lib/usageFormat";
 import { resolveRunLabel } from "@/lib/runLabel";
+import { runSessionId } from "@/lib/runIdentity";
 import type { RunSummary } from "@/lib/types";
 import { groupConsecutiveRecentRuns, groupSpanSec } from "./recentGroups";
 import type { RecentGroup } from "./recentGroups";
@@ -161,7 +162,7 @@ function RunRow({
   return (
     <Link
       to="/fleet"
-      search={{ s: run.run_id }}
+      search={{ s: runSessionId(run) }}
       className="flex items-center gap-3 bg-surface-raised px-3 py-1.5 transition-colors duration-100 hover:bg-surface-overlay"
       style={{ borderTop: first ? undefined : "1px solid var(--edge-hairline)" }}
     >
@@ -234,7 +235,7 @@ function RecentGroupRows({
       {expanded &&
         group.runs.map((run) => (
           <RunRow
-            key={run.run_id}
+            key={runSessionId(run)}
             run={run}
             nowSec={nowSec}
             first={false}

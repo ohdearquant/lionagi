@@ -5,12 +5,14 @@ import type { ProjectGroup, Run } from "../api/types.js";
 export const NO_PROJECT = "(no project)";
 
 /**
- * Stable identifier for a run. Mirrored sessions (e.g. Claude transcripts) are
- * returned with `id` set but no `run_id`, so always resolve through both rather
- * than touching `run.run_id` directly (which would throw on those rows).
+ * Session identity for run navigation. `run_id` remains a compatibility field
+ * for older rows, so resolve through both while preferring `id` when present.
  */
 export function runId(run: Run): string {
-  return run.run_id ?? run.id ?? "";
+  // Empty counts as absent, matching the Studio helper: `??` alone would let
+  // an empty `id` suppress a usable legacy `run_id` and send the empty string
+  // on as a detail/stream identifier.
+  return run.id || run.run_id || "";
 }
 
 const TERMINAL_STATUSES = new Set([

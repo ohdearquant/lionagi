@@ -207,6 +207,25 @@ describe("boardReducer — attention queue derivation", () => {
     expect(s.attentionItems[0].kind).toBe("run");
   });
 
+  it("keys attention rows by session identity instead of a shared compatibility scalar", () => {
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({
+        id: "session-1",
+        run_id: "shared-run",
+        status: "failed",
+        started_at: 1_000_000 - 600,
+      }),
+      makeRun({
+        id: "session-2",
+        run_id: "shared-run",
+        status: "failed",
+        started_at: 1_000_000 - 600,
+      }),
+    ]);
+
+    expect(s.attentionItems.map((item) => item.id)).toEqual(["run:session-1", "run:session-2"]);
+  });
+
   it("failures older than 24h are excluded — they belong to History", () => {
     const nowSec = 1_000_000;
     const s = dispatchOk(
@@ -712,6 +731,144 @@ describe("boardReducer — disposition join and active/discharged split", () => 
     expect(s.attentionItems[0].disposition?.state).toBe("acknowledged");
     expect(s.dischargedAttentionItems).toHaveLength(0);
     expect(s.unacknowledgedAttentionCount).toBe(0);
+  });
+
+  it("finds a discharge stored under the id an earlier build wrote", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          id: "session-1",
+          run_id: "legacy-run",
+          status: "failed",
+          started_at: nowSec - 600,
+        }),
+      ],
+      [],
+      nowSec,
+      null,
+      { "run:legacy-run": makeDisposition({ item_id: "run:legacy-run", state: "resolved" }) },
+    );
+    expect(s.attentionItems).toHaveLength(0);
+    expect(s.dischargedAttentionItems).toHaveLength(1);
+    expect(s.dischargedAttentionItems[0].id).toBe("run:session-1");
+    expect(s.dischargedAttentionItems[0].legacyId).toBe("run:legacy-run");
+    expect(s.dischargedAttentionItems[0].disposition?.state).toBe("resolved");
+  });
+
+  it("carries no second key when the two names hold one value", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(initialBoardState(), [
+      makeRun({ id: "r1", run_id: "r1", status: "failed", started_at: nowSec - 600 }),
+    ]);
+    expect(s.attentionItems[0].id).toBe("run:r1");
+    expect(s.attentionItems[0].legacyId).toBeUndefined();
+  });
+
+  it("reads the current id over the older one when a row has both", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          id: "session-1",
+          run_id: "legacy-run",
+          status: "failed",
+          started_at: nowSec - 600,
+        }),
+      ],
+      [],
+      nowSec,
+      null,
+      {
+        "run:session-1": makeDisposition({ item_id: "run:session-1", state: "acknowledged" }),
+        "run:legacy-run": makeDisposition({ item_id: "run:legacy-run", state: "resolved" }),
+      },
+    );
+    expect(s.attentionItems).toHaveLength(1);
+    expect(s.attentionItems[0].disposition?.state).toBe("acknowledged");
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+  });
+
+  it("does not spend one shared legacy discharge on two sessions that carry the same run_id", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({
+          id: "session-1",
+          run_id: "shared-run",
+          status: "failed",
+          started_at: nowSec - 600,
+        }),
+        makeRun({
+          id: "session-2",
+          run_id: "shared-run",
+          status: "failed",
+          started_at: nowSec - 500,
+        }),
+      ],
+      [],
+      nowSec,
+      null,
+      { "run:shared-run": makeDisposition({ item_id: "run:shared-run", state: "resolved" }) },
+    );
+    // The stored decision was about the one row the older projection showed. It
+    // cannot say which of these two a human looked at, so it discharges neither.
+    expect(s.dischargedAttentionItems).toHaveLength(0);
+    expect(s.attentionItems.map((i) => i.id).sort()).toEqual(["run:session-1", "run:session-2"]);
+    // Dropped from the items themselves, so the Undo that deletes by this key
+    // cannot reach a disposition that belongs to the other session's history.
+    expect(s.attentionItems.every((i) => i.legacyId === undefined)).toBe(true);
+  });
+
+  it("does not spend a legacy discharge on a key that is another session's current id", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        // Both keys have the `run:<id>` shape, so this session's own id is the
+        // key the other one reaches through its `run_id`.
+        makeRun({
+          id: "shared-run",
+          run_id: "shared-run",
+          status: "failed",
+          started_at: nowSec - 600,
+        }),
+        makeRun({
+          id: "session-2",
+          run_id: "shared-run",
+          status: "failed",
+          started_at: nowSec - 500,
+        }),
+      ],
+      [],
+      nowSec,
+      null,
+      { "run:shared-run": makeDisposition({ item_id: "run:shared-run", state: "resolved" }) },
+    );
+    // The first row owns that id and discharges. The second only ever reached
+    // it through the now-ambiguous legacy key.
+    expect(s.dischargedAttentionItems.map((i) => i.id)).toEqual(["run:shared-run"]);
+    expect(s.attentionItems.map((i) => i.id)).toEqual(["run:session-2"]);
+    expect(s.attentionItems[0].legacyId).toBeUndefined();
+  });
+
+  it("still claims an unshared legacy key, so the collision guard is not a blanket refusal", () => {
+    const nowSec = 1_000_000;
+    const s = dispatchOk(
+      initialBoardState(),
+      [
+        makeRun({ id: "sess-c", run_id: "solo-run", status: "failed", started_at: nowSec - 600 }),
+        makeRun({ id: "sess-d", run_id: "other-run", status: "failed", started_at: nowSec - 600 }),
+      ],
+      [],
+      nowSec,
+      null,
+      { "run:solo-run": makeDisposition({ item_id: "run:solo-run", state: "resolved" }) },
+    );
+    expect(s.dischargedAttentionItems.map((i) => i.id)).toEqual(["run:sess-c"]);
   });
 
   it("a gated run carrying a stale resolved/expected/snoozed disposition from before gate-awareness stays active, never permanently discharged", () => {

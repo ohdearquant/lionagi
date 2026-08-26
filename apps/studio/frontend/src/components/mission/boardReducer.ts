@@ -11,6 +11,7 @@ import type { RunSummary, ScheduleSummary } from "@/lib/types";
 import type { AttentionDisposition, GatedPlaySummary, InvocationSummary } from "@/lib/api";
 import { deriveDisplayStatus, isOrphanedReason } from "@/lib/runStatus";
 import { resolveRunLabel } from "@/lib/runLabel";
+import { runSessionId } from "@/lib/runIdentity";
 
 // ─── State shape ─────────────────────────────────────────────────────────────
 
@@ -68,6 +69,8 @@ export type AttentionReason = "streak" | "failed" | "stale" | "stuck" | "gated";
 
 export interface AttentionItem {
   id: string;
+  /** The id an earlier build stored dispositions under, when it is not `id`. */
+  legacyId?: string;
   kind: "run" | "invocation" | "schedule" | "play";
   name: string;
   reason: AttentionReason;
@@ -233,13 +236,19 @@ function buildAttentionItems(
       reason = "stale";
     }
     if (reason == null) continue;
+    const sessionId = runSessionId(run);
     items.push({
-      id: `run:${run.run_id}`,
+      id: `run:${sessionId}`,
+      // Dispositions are stored server-side under whichever id the projection
+      // emitted when they were written, so a build that gives a run a session id
+      // distinct from its `run_id` leaves the older key behind on rows a human
+      // already discharged.
+      ...(run.run_id && run.run_id !== sessionId ? { legacyId: `run:${run.run_id}` } : {}),
       kind: "run",
       name: resolveRunLabel(run),
       reason,
       startedAt: run.started_at ?? null,
-      href: `/runs/${run.run_id}`,
+      href: `/runs/${sessionId}`,
       status: run.status,
       ...(reason === "failed" && run.status_reason_summary
         ? { reasonSummary: run.status_reason_summary }
@@ -309,10 +318,36 @@ function buildAttentionItems(
   // stale disposition is reachable forever — a genuine gate would silently
   // vanish from the default queue with no path back except editing the
   // store directly. A gated item only ever discharges via "acknowledged".
+  // A legacy key identifies a row only while exactly one row claims it, by
+  // either route: both keys have the `run:<id>` shape, so two sessions can
+  // share a `run_id` and one session's current id can be another's. The stored
+  // disposition records one decision about the single row the old projection
+  // showed, so spending it twice would discharge a session nobody looked at. A
+  // current id is the row's own identity and keeps its claim; the ambiguous
+  // legacy key is dropped from the item, so the join below and the Undo that
+  // deletes by it both inherit the guard. Those rows stay in the queue, which
+  // is the recoverable direction.
+  const claims = new Map<string, number>();
+  for (const item of deduped) {
+    claims.set(item.id, (claims.get(item.id) ?? 0) + 1);
+    if (item.legacyId) {
+      claims.set(item.legacyId, (claims.get(item.legacyId) ?? 0) + 1);
+    }
+  }
+  const resolved = deduped.map((item): AttentionItem => {
+    if (!item.legacyId || claims.get(item.legacyId) === 1) return item;
+    const unkeyed = { ...item };
+    delete unkeyed.legacyId;
+    return unkeyed;
+  });
+
   const active: AttentionItem[] = [];
   const discharged: AttentionItem[] = [];
-  for (const item of deduped) {
-    const disposition = dispositions[item.id];
+  for (const item of resolved) {
+    // Read the older key too: a discharge stored under it is what a human already
+    // decided about this row, and missing it puts the row back in the queue.
+    const disposition =
+      dispositions[item.id] ?? (item.legacyId ? dispositions[item.legacyId] : undefined);
     const joined = disposition ? { ...item, disposition } : item;
     // "A gated item only ever discharges via acknowledged" (see the comment
     // above) — this is that arm. Without it, acknowledged isn't in
@@ -354,7 +389,10 @@ export function invocationCreationKey(inv: InvocationSummary): number {
 function deriveActiveRuns(runs: RunSummary[]): RunSummary[] {
   return runs
     .filter((r) => deriveDisplayStatus(r) === "running")
-    .sort((a, b) => runCreationKey(a) - runCreationKey(b) || a.run_id.localeCompare(b.run_id));
+    .sort(
+      (a, b) =>
+        runCreationKey(a) - runCreationKey(b) || runSessionId(a).localeCompare(runSessionId(b)),
+    );
 }
 
 function deriveRecentRuns(runs: RunSummary[]): RunSummary[] {
