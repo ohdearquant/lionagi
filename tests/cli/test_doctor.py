@@ -205,6 +205,50 @@ def test_readiness_verdict_degraded_store_is_warn(state: str) -> None:
     assert state in result["detail"]
 
 
+@pytest.mark.parametrize(
+    ("scheduler", "expected_in_detail"),
+    [
+        ({"status": "stalled", "detail": "no tick has completed for 900s"}, "900s"),
+        ({"status": "unknown", "detail": "engine has not been started in this process"}, "unknown"),
+        ({"status": "wedged", "detail": "a state this build has never heard of"}, "wedged"),
+    ],
+)
+def test_readiness_verdict_warns_whenever_the_daemon_says_it_is_not_ready(
+    scheduler, expected_in_detail
+) -> None:
+    """Keyed on the ready verdict, so a scheduler state this build cannot name still warns."""
+    body = json.dumps(
+        {
+            "status": "healthy",
+            "detail": "store answered",
+            "scheduler": scheduler,
+            "ready": False,
+        }
+    ).encode()
+    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    assert result["status"] == "warn"
+    assert expected_in_detail in result["detail"]
+
+
+def test_readiness_verdict_is_ok_when_the_scheduler_is_advancing() -> None:
+    body = json.dumps(
+        {
+            "status": "healthy",
+            "detail": "store answered",
+            "scheduler": {"status": "advancing", "detail": "a tick completed 3s ago"},
+            "ready": True,
+        }
+    ).encode()
+    result = _readiness_verdict("http://x/api/admin/readiness", body)
+    assert result["status"] == "ok"
+
+
+def test_readiness_verdict_ignores_a_missing_scheduler_field() -> None:
+    """A daemon older than these fields reports no verdict, which is not a false one."""
+    body = json.dumps({"status": "healthy", "detail": "store answered"}).encode()
+    assert _readiness_verdict("http://x/api/admin/readiness", body)["status"] == "ok"
+
+
 def test_readiness_verdict_malformed_body_is_unknown() -> None:
     result = _readiness_verdict("http://x/api/admin/readiness", b"<html>not json</html>")
     assert result["status"] == "unknown"
