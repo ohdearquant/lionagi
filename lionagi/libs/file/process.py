@@ -91,8 +91,10 @@ def chunk(
 
         if reader_tool is None:
 
-            def reader_tool(x):
+            def read_text(x):
                 return Path(x).read_text(encoding="utf-8")
+
+            reader_tool = read_text
 
         if reader_tool == "docling":
             if not is_import_installed("docling"):
@@ -104,8 +106,10 @@ def chunk(
 
             converter = DocumentConverter()
 
-            def reader_tool(x):  # type: ignore[no-redef]
+            def read_document(x):
                 return converter.convert(x).document.export_to_markdown()
+
+            reader_tool = read_document
 
         texts = ln.lcall(files, reader_tool)
 

@@ -83,8 +83,9 @@ class iModel:  # noqa: N801
         if model:
             if not provider:
                 if "/" in model:
-                    provider = model.split("/")[0]
-                    model = model.replace(provider + "/", "")
+                    model_provider = model.split("/")[0]
+                    provider = model_provider
+                    model = model.replace(model_provider + "/", "")
                     kwargs["model"] = model
                 else:
                     from lionagi.config import settings

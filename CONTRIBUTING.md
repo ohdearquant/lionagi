@@ -86,6 +86,11 @@ guidelines and instructions for contributing to this project.
 
 ## Coding Standards
 
+Type checks use the project's dependency environment. After `uv sync --all-extras`,
+run `uvx pyright==1.1.402 --pythonpath .venv/bin/python`. The error baseline is zero;
+existing warning-level diagnostics remain visible in the CI summary and the
+`pyright-diagnostics` artifact.
+
 1. **Formatting & linting are automated by [ruff](https://docs.astral.sh/ruff/).**
    Run `uv run ruff format . && uv run ruff check --fix .`, or
    `pre-commit run -a` for the full pipeline (file sanity hooks, ruff-format,

@@ -90,7 +90,7 @@ except ImportError:
 def in_notebook() -> bool:
     """Return True if running inside a Jupyter notebook."""
     try:
-        from IPython import get_ipython
+        from IPython.core.getipython import get_ipython
 
         shell = get_ipython().__class__.__name__
         return "ZMQInteractiveShell" in shell

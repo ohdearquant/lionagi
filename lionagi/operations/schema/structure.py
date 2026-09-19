@@ -133,7 +133,7 @@ class Structure:
 
     def to_format(self, parsed: BaseModel | dict) -> BaseModel | dict:
         """Extract clean base from a parsed response."""
-        if self.is_dict_mode:
+        if self._base_dict is not None:
             if isinstance(parsed, dict):
                 return {k: parsed.get(k) for k in self._base_dict}
             return parsed
