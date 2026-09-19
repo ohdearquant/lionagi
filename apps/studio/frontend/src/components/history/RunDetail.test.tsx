@@ -3131,7 +3131,8 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
     // proposed in, and a run with no project leaves that conversation nothing
     // to be scoped to. The server rejects it before proposing anything, so an
     // enabled control here is one that can never succeed.
-    const { project: _omitted, ...withoutProject } = sessionOf("flow");
+    const withoutProject: Partial<ReturnType<typeof sessionOf>> = sessionOf("flow");
+    delete withoutProject.project;
     const { container, unmount } = await mountRunDetail(withoutProject);
     try {
       expect(
@@ -3174,7 +3175,8 @@ describe("history/RunDetail.tsx — pause/resume/steer controls, mounted", () =>
   it("a response that never carried the capability field does not enable steering", async () => {
     // Absent is not evidence of a capability: the strict compare in RunDetail
     // is what keeps a missing field from reading as permission.
-    const { has_control_consumer: _omitted, ...withoutField } = sessionOf("agent");
+    const withoutField: Partial<ReturnType<typeof sessionOf>> = sessionOf("agent");
+    delete withoutField.has_control_consumer;
     const { container, unmount } = await mountRunDetail(withoutField);
     try {
       expect(
