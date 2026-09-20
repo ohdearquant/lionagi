@@ -2,7 +2,7 @@ src/**
 test/**
 esbuild.js
 tsconfig.json
-vitest.config.ts
+vitest.config.mts
 Makefile
 .vscode/**
 node_modules/**
