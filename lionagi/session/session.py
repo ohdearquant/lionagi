@@ -250,44 +250,44 @@ class Session(Node, Relational):
         if branch not in self.branches:
             _s = str(branch) if len(str(branch)) < 10 else str(branch)[:10] + "..."
             raise ItemNotFoundError(f"Branch {_s}.. does not exist.")
-        branch: Branch = self.branches[branch]
+        resolved_branch: Branch = self.branches[branch]
 
-        self.branches.exclude(branch)
-        self.exchange.unregister(branch.id)
+        self.branches.exclude(resolved_branch)
+        self.exchange.unregister(resolved_branch.id)
 
         # Routing infra is session-owned: torn down so branch reverts to clean,
         # reparentable state. Branch data (messages/memory/logs) stays with it.
-        branch._owning_session_id = None
-        branch._observer = None
+        resolved_branch._owning_session_id = None
+        resolved_branch._observer = None
         # Routed through attach_hook_bus (not `branch._hooks = None`) so the
         # branch's handlers actually unregister from this session's bus.
-        branch.attach_hook_bus(None)
-        branch._operation_manager = OperationManager()
-        if branch.user == self.id:
-            branch.user = None
+        resolved_branch.attach_hook_bus(None)
+        resolved_branch._operation_manager = OperationManager()
+        if resolved_branch.user == self.id:
+            resolved_branch.user = None
 
-        if self.default_branch.id == branch.id:
+        if self.default_branch.id == resolved_branch.id:
             if not self.branches:
                 self.default_branch = None
             else:
                 self.default_branch = self.branches[0]
 
         if delete:
-            del branch
+            del resolved_branch
 
     async def asplit(self, branch: ID.Ref) -> Branch:
         async with self.branches:
-            branch: Branch = self.branches[branch]
+            resolved_branch: Branch = self.branches[branch]
             # Use aclone, not the sync split path: aclone holds the message
             # snapshot lock across the clone, so a concurrent sync-thread message
             # removal cannot race the copy and raise KeyError mid-clone.
-            branch_clone = await branch.aclone(sender=self.id)
+            branch_clone = await resolved_branch.aclone(sender=self.id)
             self.include_branches(branch_clone)
             return branch_clone
 
     def split(self, branch: ID.Ref) -> Branch:
-        branch: Branch = self.branches[branch]
-        branch_clone = branch.clone(sender=self.id)
+        resolved_branch: Branch = self.branches[branch]
+        branch_clone = resolved_branch.clone(sender=self.id)
         self.include_branches(branch_clone)
         return branch_clone
 

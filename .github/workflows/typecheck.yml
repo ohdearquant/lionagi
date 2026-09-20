@@ -53,10 +53,10 @@ jobs:
         uv sync --all-extras
 
     - name: Run pyright
-      run: uvx pyright==1.1.402 --outputjson > /tmp/pyright_output.json || true
+      run: uvx pyright==1.1.402 --pythonpath .venv/bin/python --outputjson > /tmp/pyright_output.json || true
 
     - name: Check Branch chat overload contract
-      run: uvx pyright==1.1.402 tests/typing/branch_chat.py
+      run: uvx pyright==1.1.402 --pythonpath .venv/bin/python tests/typing/branch_chat.py
 
     - name: Check against baseline (advisory)
       continue-on-error: true
@@ -66,9 +66,19 @@ jobs:
       if: always()
       run: |
         ERRORS=$(python3 -c "import json; d=json.load(open('/tmp/pyright_output.json')); print(d['summary']['errorCount'])" 2>/dev/null || echo "N/A")
+        WARNINGS=$(python3 -c "import json; d=json.load(open('/tmp/pyright_output.json')); print(d['summary']['warningCount'])" 2>/dev/null || echo "N/A")
         BASELINE=$(cat .github/pyright-baseline.txt)
         echo "### Pyright type-check summary" >> $GITHUB_STEP_SUMMARY
         echo "| | Count |" >> $GITHUB_STEP_SUMMARY
         echo "|---|---|" >> $GITHUB_STEP_SUMMARY
         echo "| Current errors | $ERRORS |" >> $GITHUB_STEP_SUMMARY
+        echo "| Current warnings | $WARNINGS |" >> $GITHUB_STEP_SUMMARY
         echo "| Baseline | $BASELINE |" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload type-check diagnostics
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: pyright-diagnostics
+        path: /tmp/pyright_output.json
+        retention-days: 14

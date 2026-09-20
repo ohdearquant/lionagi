@@ -458,6 +458,8 @@ def _pack_embedding(value: Any) -> bytes | None:
     if value is None:
         return None
     values = _unpack_embedding(value)
+    if values is None:
+        return None
     try:
         return struct.pack(f"<{len(values)}f", *values)
     except (OverflowError, struct.error) as exc:
