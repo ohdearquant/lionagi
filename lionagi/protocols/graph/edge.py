@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_valid
 
 from lionagi.ln import is_same_dtype
 
-from .._concepts import Condition, Relational
+from .._concepts import Condition, Observable
 from ..generic.element import ID, Element
 
 __all__ = (
@@ -45,8 +45,8 @@ class Edge(Element):
 
     def __init__(
         self,
-        head: ID[Relational].Ref,
-        tail: ID[Relational].Ref,
+        head: Observable | UUID | str,
+        tail: Observable | UUID | str,
         condition: Condition | None = None,
         label: list[str] | None = None,
         **kwargs,

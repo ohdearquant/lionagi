@@ -24,9 +24,12 @@ class ArtifactPathError(ValueError):
     """Raised when an artifact contract id/path is invalid."""
 
 
-class ExpectedArtifact(TypedDict, total=False):
+class _ArtifactIdentity(TypedDict):
     id: str
     path: str
+
+
+class ExpectedArtifact(_ArtifactIdentity, total=False):
     required: bool
     description: str
     source: str

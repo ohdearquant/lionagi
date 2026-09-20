@@ -107,6 +107,7 @@ class Processor(Observer):
         queued events have been deferred, to avoid busy-spin."""
         events_processed = 0
         deferred = 0
+        concurrency_sem = self._concurrency_sem
 
         async with create_task_group() as tg:
             while self.available_capacity > 0 and not self.queue.empty():
@@ -130,20 +131,20 @@ class Processor(Observer):
                         async for _ in event.stream():
                             pass
 
-                    if self._concurrency_sem:
+                    if concurrency_sem is not None:
 
                         async def stream_with_sem(event):
-                            async with self._concurrency_sem:
+                            async with concurrency_sem:
                                 await consume_stream(event)
 
                         tg.start_soon(stream_with_sem, next_event)
                     else:
                         tg.start_soon(consume_stream, next_event)
                 else:
-                    if self._concurrency_sem:
+                    if concurrency_sem is not None:
 
                         async def invoke_with_sem(event):
-                            async with self._concurrency_sem:
+                            async with concurrency_sem:
                                 await event.invoke()
 
                         tg.start_soon(invoke_with_sem, next_event)

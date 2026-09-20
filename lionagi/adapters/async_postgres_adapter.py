@@ -7,9 +7,11 @@ from __future__ import annotations
 
 from typing import ClassVar, TypeVar
 
+from pydantic import BaseModel
+
 from lionagi.adapters._base import AsyncAdapter
 
-T = TypeVar("T")
+T = TypeVar("T", bound=BaseModel)
 
 
 def create_lionagi_async_postgres_adapter() -> type[AsyncAdapter]:

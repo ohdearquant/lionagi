@@ -30,10 +30,10 @@ def get_handler(d_: dict, k: str | type, get: bool = False, /):
             return _func
         return handler
 
-    async def _func(*args, **_kwargs):
+    async def _passthrough(*args, **_kwargs):
         return args[0] if args else None
 
-    return _func
+    return _passthrough
 
 
 def validate_hooks(kw):
