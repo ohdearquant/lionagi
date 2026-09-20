@@ -11,7 +11,7 @@ from collections import deque
 from collections.abc import AsyncIterator, Callable, Generator, Iterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Literal, TypeVar
+from typing import Any, ClassVar, Generic, Literal, TypeVar, cast
 from uuid import UUID
 
 from pydantic import Field, PrivateAttr, field_serializer
@@ -1014,7 +1014,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
 
     def filter_by_type(
         self,
-        item_type: type[T] | list | set,
+        item_type: type[T] | list[type[T]] | set[type[T]] | tuple[type[T], ...],
         strict_type: bool = False,
         as_pile: bool = False,
         reverse: bool = False,
@@ -1024,7 +1024,7 @@ class Pile(Element, Collective[T], Generic[T], Adaptable, AsyncAdaptable):
             if is_union_type(item_type):
                 item_type = set(union_members(item_type))
             else:
-                item_type = {item_type}
+                item_type = {cast(type[T], item_type)}
 
         if isinstance(item_type, list | tuple):
             item_type = set(item_type)

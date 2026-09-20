@@ -25,11 +25,11 @@ _HAS_DATAMODEL_CODE_GENERATOR = is_import_installed("datamodel_code_generator")
 
 try:
     from datamodel_code_generator import (  # type: ignore[import]
-        DataModelType,
         InputFileType,
         PythonVersion,
         generate,
     )
+    from datamodel_code_generator.enums import DataModelType
 except ImportError:
     DataModelType = None
     InputFileType = None
