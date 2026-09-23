@@ -137,7 +137,7 @@ jobs:
         echo "version=${version}" >> "$GITHUB_OUTPUT"
 
     - name: Build and push Docker image (multi-arch)
-      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7
       with:
         context: .
         file: apps/studio/Dockerfile
