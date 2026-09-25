@@ -1,7 +1,7 @@
 ---
 adr: ADR-0009
 status: draft
-liveness: partial (the router and both shapes of the session CLI operate and report the count; the subscription CLI hands back no count; the mixed-response refusal is owed)
+liveness: partial (the router and both shapes of the session CLI operate and report the count; the subscription CLI hands back no count; the mixed-response refusal and the session CLI's failed-call envelope are owed)
 date: "2026-09-25"
 area: backend
 kind: new
@@ -231,3 +231,6 @@ anchor.
 - **S9**: A backend that raises ends the run by its exception ([[ADR-0002-the-run#^c4|ADR-0002/C4]])
   with the notification already on the record ([[ADR-0006-the-notification#^d1|ADR-0006/D1]]); the
   reap of a cancelled call at the run's end is owed there ([[ADR-0002-the-run|ADR-0002]] S4).
+- **S10**: The session CLI appends no envelope when its call fails, against C5: the failure raises
+  before the call is kept, so a spend row misses it whole ([[ADR-0016-the-lion-command|ADR-0016]]
+  S2); the fix is owed.

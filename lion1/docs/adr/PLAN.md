@@ -33,14 +33,14 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0010 | Delegation between actors: `queue`, the handle, the answer as a settled command, the reply, no graph object | draft (2026-09-25); no bench exercises the path | principals and mail; in-process peers are one layer, the long-running agent another |
 | ADR-0011 | The box: one shape for three boxes, the coding tools over a tree, the watch and its gate, the patch | draft (2026-09-25); the real-box tests opt-in | the sandboxed executor: content-addressed trees, declared write paths, receipts |
 | ADR-0013 | The long-running agent: the wake, the send gate and the hop count, the caps, the cursor and posture, the lock, the continuous run and its checkpoint | draft (2026-09-25) | the process: one identity per process, lease by turn activity, one supervisor |
-| ADR-0012 | The bench as the instrument | unwritten | the instrument contract |
+| ADR-0012 | The bench as the instrument: the grade in the box, the row, the run id, unaided by default, what compares with what, the cited figures | draft (2026-09-25); one carried figure not reproduced | the instrument contract |
 | ADR-0014 | The instrument contract: the measurement and its proof, the refusals, the dead instrument, first sight then transitions, the floors | draft (2026-09-25); the command-line check unvetted and untested | none |
-| ADR-0015 | Chores | unwritten | none |
-| ADR-0016 | The lion command and the spend row | unwritten | none |
+| ADR-0015 | Chores: three endings chosen by code, twelve chores from one file, ticks as store reminders, the bounded client, print and save | draft (2026-09-25); no test drives a positive hand-run check | the scheduled run of a process |
+| ADR-0016 | The lion command and the spend row: one entry, the shared lock, the row from the envelopes, the readers | draft (2026-09-25); the unknown-cost mark owed | none |
 | ADR-0017 | The desk: front desk, record answers, areas and chairs | unwritten | mail settlement by keyed replay |
 | ADR-0018 | Chat in a box: one run that waits for the person, the flags, the person's tree or a copy, the patch home, the resume | draft (2026-09-25); no test interrupts a boxed chat | none |
 
-Order of writing: 0012 and 0014 to 0018, product-side. Each record is written
+Order of writing: 0017 last. Each record is written
 from the code first; the vocabulary below is fixed before any of them. 0009 landed 2026-09-25 and
 amended 0004 D2, 0006 C4 and S3, and 0007 C2 to the code of 2026-09-24: the fold measures the
 estimate plus the reported context above the run's floor, `fold_inputs` folds earlier inputs, and a
@@ -51,7 +51,8 @@ holds them, with the executor over content-addressed trees named as the boundary
 0010 C4 (mail is the wake's input, or one inbound while a run continues) and 0007 S2 (the continuous run's
 checkpoint is built and replays as history). 0014 landed 2026-09-25 and amended nothing; twelve
 instruments build from one config. 0018 landed 2026-09-25 and amended 0007 C4 (a changed renderer is not
-detected) and 0008 S4 (the continuous run's checkpoint exists).
+detected) and 0008 S4 (the continuous run's checkpoint exists). 0012, 0015 and 0016 landed 2026-09-25;
+0016 amended 0009 (S10: the session CLI lands no envelope on a failed call, owed).
 
 ## Decided in the records (2026-09-23)
 
@@ -134,8 +135,25 @@ detected) and 0008 S4 (the continuous run's checkpoint exists).
   copy; the copy's diff comes back printed and saved and `--apply` lands it whole or not at all; a copy
   whose patch was not taken whole is kept and named; a resumed chat replays its log and nothing runs
   again (0018 C1 to C6).
+- The bench number is the official grade of the tree's diff taken in the box it was written in; a row
+  says what the instance cost and an unmeasured spend is unknown, never zero; a run id is one bench run
+  and a disagreeing launch is refused; the bench runs unaided unless a launch says otherwise, and
+  unaided is the number; cited figures belong to named bench runs (0012 C1 to C5, C9).
+- A chore ends quiet, reported or escalated and code picks the ending; the chores are the twelve the
+  file names; a chore runs on its tick, a trusted question or a missed tick, inside a wake, as the
+  agent's actor behind the gate, reaching the store only through the bounded client; a report names
+  its prior and the steward hears only what the owner left (0015 C1 to C5, C7).
+- One command holds every entry; every form but the read holds the directory's lock; the agent writes
+  its spend row from its backend's envelopes and every reader reads what it wrote; the command
+  supervises nothing and estimates no tokens (0016 C1 to C5).
 
 ## Open
+
+- Figures the early records cite whose bench run the bench record could not find in the ledgers: 1722
+  commands in 733 turns (0005 S7), 4,240 calls (0006 A3, 0009 A1), the 90.6% cache hit (0007 A1), 9 of 50
+  thinking-off runs (0004 C4), 109 `<lvar>` and 6 notes (0004 S3, 0007 S3), 3 of 125 turns cut (0009 D1).
+  They stand as the earlier records cited them; re-derive from the run dumps or drop.
+- The mail watch (`hub/agent/mail.py`) has no record: 0013 S8 and 0015 S9 both leave it.
 
 - A hard ceiling above `extend`: the kernel's admission; the in-process `extend` stays as written (0003).
 - The before-hook `guard` flag: a guard may not replace; the loader refuses a replacing hook after a guard
@@ -175,9 +193,9 @@ area) · steward (who hears instrument failures).
   carries the agent's side: one inbound per wake, `send` under `comm.send`, the hop count at one gate.
 - The bench actor's report (0013, done): every send goes through `Agent.deliver`; the two bypasses are
   named as a limit in 0013 S4.
-- Citations (0001 A1, 0009): bench numbers belong with the run they came from (1976 calls / 952 turns /
-  3 output errors), never with the 50-instance table; thinking-budget rows are in the bench record or not
-  cited.
+- Citations (0001 A1, 0009; 0012 C9 done): bench numbers belong with the run they came from (952 turns /
+  3 output errors; the 1976 calls were not reproduced from the record dumps, which hold 1,775 settled
+  results), never with the 50-instance table; thinking-budget rows are in the bench record (0012 C7).
 - The desk (0017): the reader is a second client inside the agent's process, bound to the agent's
   identity, read-only; the agent's wake marks mail read, the desk's sweep reads by cursor and never
   marks; `desk_pending` and the ledger row: a failed wake re-lists the message. Unknown-send settlement
@@ -185,5 +203,5 @@ area) · steward (who hears instrument failures).
   gate; code-only escalations separately. `Agent.admit` drops untrusted senders before any model call.
 - Posture (0013, done): `OUT{posture}` is written to the notes by the agent's own code, not by the runtime
   (0013 C6).
-- Serving prohibitions since lifted are not carried (0014, 0016).
-- The diff-landing fork is closed by "print and save, `--apply`" (0011 C6 done, 0015).
+- Serving prohibitions since lifted are not carried (0014, 0016, done).
+- The diff-landing fork is closed by "print and save, `--apply`" (0011 C6, 0015 C6, done).
