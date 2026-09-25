@@ -12,6 +12,7 @@
 | [ADR-0008](008-program/ADR-0008-the-program.md) | 008-program | draft | unimplemented | ADR-0004, ADR-0005, ADR-0007 |
 | [ADR-0009](009-backend/ADR-0009-backends.md) | 009-backend | draft | partial (the router and both shapes of the session CLI operate and report the count; the subscription CLI hands back no count; the mixed-response refusal is owed) | ADR-0002, ADR-0004, ADR-0006, ADR-0007 |
 | [ADR-0010](010-delegation/ADR-0010-delegation.md) | 010-delegation | draft | operating (the round trip, a peer ending without answering, a peer whose backend raises and an answer landing early are pinned by tests; no bench exercises the path) | ADR-0001, ADR-0002, ADR-0005, ADR-0006 |
+| [ADR-0011](011-box/ADR-0011-the-box.md) | 011-box | draft | operating (three boxes under tests and live runs, the coding tools under tests and one live console run, the watch under tests and on the bench; the real-box tests are opt-in) | ADR-0002, ADR-0003, ADR-0005, ADR-0006, ADR-0007 |
 
 ## By topic
 
@@ -25,3 +26,4 @@
 - **008-program**, ADR-0008: The program
 - **009-backend**, ADR-0009: Backends and the context figure
 - **010-delegation**, ADR-0010: Delegation between actors
+- **011-box**, ADR-0011: The box, the coding tools and the watch
