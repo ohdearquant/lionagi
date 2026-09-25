@@ -14,6 +14,7 @@
 | [ADR-0010](010-delegation/ADR-0010-delegation.md) | 010-delegation | draft | operating (the round trip, a peer ending without answering, a peer whose backend raises and an answer landing early are pinned by tests; no bench exercises the path) | ADR-0001, ADR-0002, ADR-0005, ADR-0006 |
 | [ADR-0011](011-box/ADR-0011-the-box.md) | 011-box | draft | operating (three boxes under tests and live runs, the coding tools under tests and one live console run, the watch under tests and on the bench; the real-box tests are opt-in) | ADR-0002, ADR-0003, ADR-0005, ADR-0006, ADR-0007 |
 | [ADR-0013](013-agent/ADR-0013-the-agent.md) | 013-agent | draft | operating (the wake, the gate, the caps, the hop count, the cursor, the lock and the continuous run with its checkpoint are pinned by tests; supervision and the lease are not in the process) | ADR-0001, ADR-0002, ADR-0003, ADR-0007, ADR-0010 |
+| [ADR-0014](014-instrument/ADR-0014-the-instrument.md) | 014-instrument | draft | operating (twelve instruments build from one config and run under tests against scripted commands and stores; the command-line check prints a measurement unvetted and has no test) | ADR-0005, ADR-0007 |
 
 ## By topic
 
@@ -29,3 +30,4 @@
 - **010-delegation**, ADR-0010: Delegation between actors
 - **011-box**, ADR-0011: The box, the coding tools and the watch
 - **013-agent**, ADR-0013: The long-running agent
+- **014-instrument**, ADR-0014: The instrument contract

@@ -34,7 +34,7 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0011 | The box: one shape for three boxes, the coding tools over a tree, the watch and its gate, the patch | draft (2026-09-25); the real-box tests opt-in | the sandboxed executor: content-addressed trees, declared write paths, receipts |
 | ADR-0013 | The long-running agent: the wake, the send gate and the hop count, the caps, the cursor and posture, the lock, the continuous run and its checkpoint | draft (2026-09-25) | the process: one identity per process, lease by turn activity, one supervisor |
 | ADR-0012 | The bench as the instrument | unwritten | the instrument contract |
-| ADR-0014 | The instrument contract | unwritten | none |
+| ADR-0014 | The instrument contract: the measurement and its proof, the refusals, the dead instrument, first sight then transitions, the floors | draft (2026-09-25); the command-line check unvetted and untested | none |
 | ADR-0015 | Chores | unwritten | none |
 | ADR-0016 | The lion command and the spend row | unwritten | none |
 | ADR-0017 | The desk: front desk, record answers, areas and chairs | unwritten | mail settlement by keyed replay |
@@ -49,7 +49,8 @@ amended nothing: it names the long-running agent's mail as the other layer and l
 boundary to 0013. 0011 landed 2026-09-25 and amended nothing: the box, the tools and the watch as the code
 holds them, with the executor over content-addressed trees named as the boundary. 0013 landed 2026-09-25 and amended
 0010 C4 (mail is the wake's input, or one inbound while a run continues) and 0007 S2 (the continuous run's
-checkpoint is built and replays as history).
+checkpoint is built and replays as history). 0014 landed 2026-09-25 and amended nothing; twelve
+instruments build from one config.
 
 ## Decided in the records (2026-09-23)
 
@@ -120,6 +121,13 @@ checkpoint is built and replays as history).
   (0013 C4, C5, C6, C7).
 - The identity and its grants, the lease by turn activity, the supervisor and the durable record are below
   the boundary; the agent holds a lock and nothing more (0013 S10).
+- A measurement names its population, predicate and count and what its known-positive read, or is
+  refused before anything is sent; a failed control voids the answer and escalates to the owner and the
+  steward; an empty population is a finding unless declared expected; an instrument that never answers
+  is a finding about the instrument (0014 C1 to C4).
+- A snapshot instrument reports first sight whole, then transitions, a crossing once; a floor is read by
+  name once per device with its budget; an instrument reads and acts on nothing; the model sees one line
+  and the owner the measurement (0014 C5 to C8).
 
 ## Open
 
