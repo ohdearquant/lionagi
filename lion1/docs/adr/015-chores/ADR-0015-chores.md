@@ -128,9 +128,9 @@ creates no tick.
   outside it or a thread the wake did not admit, or a second process acts as the same identity.
 
 The store client signs as the actor `chores.toml` names, from a directory whose config must resolve
-to it, and asserts that actor on every call. One process holds the identity at a time (ADR-0013, not
-yet written). The agent's gate drops mail from outside the trusted set after marking it read: the
-cursor names it, and it never reaches a run or a model call.
+to it, and asserts that actor on every call. One process holds the identity at a time
+([[ADR-0013-the-agent|ADR-0013]]). The agent's gate drops mail from outside the trusted set after
+marking it read: the cursor names it, and it never reaches a run or a model call.
 
 A question names its asker; the handler refuses an asker outside the trusted set and a thread no
 admitted message from that asker carries. `daemon-passes` reads the owner's box through a second
@@ -273,8 +273,8 @@ bypasses the handler: no refusals, no row, no send.
 - **S7**: The chore ledger is read whole on every check and never rotated, so a check's cost grows
   with the agent's age; its stamps are local time without a zone.
 - **S8**: A front desk runs a chore's instrument through the same refusals to answer the owner's
-  mail, and the digest's period becomes the desk's brief, every 12 hours unless set (ADR-0017, not
-  yet written).
+  mail, and the digest's period becomes the desk's brief, every 12 hours unless set
+  ([[ADR-0017-the-desk|ADR-0017]]).
 - **S9**: A mail watch configured under `[mail]` rides the same profile and ticks, but it is not a
   chore: `check` never runs it, and its code settles rows through its tracker's own commands, which
   write. This record does not cover it.
