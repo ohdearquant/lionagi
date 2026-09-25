@@ -76,18 +76,18 @@ none.
 
 In order:
 
-- `context:` C4's figure against `context_budget` and the fold line `view_budget`; each bound's
-  remainder;
-- "your last message could not be read", the error, its repeat count, a repair's note
-  ([[ADR-0004-the-language#^c3|ADR-0004/C3]]);
-- the idle note, and the identical-message note;
+- the header: turn against `max_rounds`, time against `time_budget`, sequence;
+- `context:`, C4's figure against `context_budget`;
+- `folded:`, the fold event against `view_budget` (ADR-0007);
+- "your last turn could not be read", the error and its repeat count;
+- the idle and identical-turn notes;
 - `settled:` with alias, record name, Spec, type and preview;
 - `failed after starting:` and `completion unknown:`, by the RESULT's `execution` mark
   (ADR-0005/C1);
-
-- `out of view now`, what left the view since the last render;
-- `folded:`, the fold event, the span hidden and its size (ADR-0007);
-- `not executed:` with alias and reason;
+- `still running:` (S5);
+- `out of view now`, what left the view;
+- `not executed:` with alias and reason, a repair's note among them
+  ([[ADR-0004-the-language#^c3|ADR-0004/C3]]);
 - `notes written:`;
 - `hooks failed`, after hooks that raised (ADR-0005/C5);
 - `inbound:` with origin and handle;

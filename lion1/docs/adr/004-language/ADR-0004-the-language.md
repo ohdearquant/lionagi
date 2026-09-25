@@ -108,8 +108,9 @@ value; a value in its own `<lvar>` passed by pointer is the second.
 Readings, first to parse wins: as written; line breaks inside string literals escaped, triple-quoted
 literals untouched (quotes and braces inside them included, in `OUT{}` as in a call); the call's
 missing closers supplied; a missing comma between arguments supplied, looking back across line
-breaks. A repair rides the next notification's error line as "<lact a>: the closers were missing and
-were supplied; if that is not the call you meant, write it again" (ADR-0006).
+breaks. A repair's note, naming what was supplied and inviting a rewrite, rides the next
+notification's `not executed:` list under `turn`, though the repaired call ran
+([[ADR-0006-the-notification#^c2|ADR-0006/C2]]).
 
 A `<lact>` whose body is not call-shaped is kept as an `<lvar>` under its alias and the model is
 told. A call still unreadable names the heredoc route. Measured on the recorded unreadable messages:

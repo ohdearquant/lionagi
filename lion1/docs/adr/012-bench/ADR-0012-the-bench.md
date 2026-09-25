@@ -257,9 +257,9 @@ model has no cost.
   manifest's set digest, head and arguments. How a set file is drawn is not in the code.
 - **S5**: Mini-50 does not exercise the context layer: the 952-turn bench run issued 9 context
   commands.
-- **S6**: The host-side baseline in `bench/swe/run_naked.py` runs the session CLI with its own tools
-  over a copied tree and grades with the harness's own evaluation. It has no ledger, manifest or
-  closure, and it writes an unreported cost as zero.
+- **S6**: The host-side baseline in `bench/swe/run_naked.py` runs the CLI with its own tools, one
+  whole task per call (`ClaudeCodeAgentic`), over a copied tree and grades with the harness's own
+  evaluation. It has no ledger, manifest or closure, and it writes an unreported cost as zero.
 - **S7**: A CLI row's `outcome` is read off the exec's exit code and names no run outcome; only a
   loop row's is one.
 - **S8**: The boundary: what any instrument declares, returns and reports when it fails, and who

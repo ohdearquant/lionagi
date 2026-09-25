@@ -1,7 +1,7 @@
 ---
 adr: ADR-0003
 status: draft
-liveness: partial (max_rounds, time_budget, max_refusals and accept operate; max_idle, cost_budget, the context check and its job error, run.more, extend, the profile's defaults, out as a command and accept as its last hook are decided here and owed)
+liveness: partial (max_rounds, time_budget, max_refusals and accept operate; the re-check between commands, max_idle, cost_budget, the context check and its job error, run.more, extend, the profile's defaults, out as a command and accept as its last hook are decided here and owed)
 
 date: "2026-09-23"
 area: bounds

@@ -1,7 +1,7 @@
 ---
 adr: ADR-0009
 status: draft
-liveness: partial (the router and both shapes of the session CLI operate and report the count; the subscription CLI hands back no count; the mixed-response refusal and the session CLI's failed-call envelope are owed)
+liveness: partial (the router and both shapes of the session CLI operate and report the count; the subscription CLI hands back no count; the mixed-response refusal, the session CLI's failed-call envelope and the gate over an acting session are owed)
 date: "2026-09-25"
 area: backend
 kind: new
@@ -38,7 +38,7 @@ name and answers with text. Source: `Backend`, `Reply` and the anchor in `lionag
 ## Definitions
 
 - **backend**: a function from the view, as messages, to the model's text; the caller's argument to
-  `run`. It acts on nothing.
+  `run`. It acts on nothing unless it is given tools of its own (C6).
 - **call**: one invocation of the backend: one per turn, awaited when it is awaitable.
 - **attempt**: one request a call sends; a call retries on a transient failure and answers from its
   last attempt.
@@ -65,7 +65,7 @@ name and answers with text. Source: `Backend`, `Reply` and the anchor in `lionag
 
 ### C1: A backend is a function from the view to the model's text, and acts on nothing _(enforced: mechanical)_ ^c1
 
-- **Subject**: every backend handed to `run`.
+- **Subject**: every backend handed to `run` without its own tools (C6).
 - **Violated when**: a backend acts on the world, forwards a tool schema, executes a native tool
   call, or hands back anything but the model's text.
 
@@ -146,6 +146,18 @@ Cancelling a call kills and reaps the CLI child before the cancellation goes on.
 
 ## Decisions
 
+### C6: A session CLI given tools of its own acts, outside every gate of the runtime _(enforced: process)_ ^c6
+
+A served run's `[claude_code] tools` hands the session CLI its own tools: inside each turn it runs
+shell commands, reads and edits files and calls its one MCP in the agent's directory, up to
+`max_turns` of them, before it answers. Those acts pass no subset, privilege, hook or bus, and land
+nowhere on the record; they live in the CLI's session, which a fold cuts.
+
+Nothing in the runtime bounds them but the table that names the tools: an acting session is trusted
+like a handler, by review of its configuration, and its gate is owed (S11). The bench's host-side
+baseline runs the same CLI with its own tools, one whole task per call, and is no backend of `run`
+([[ADR-0012-the-bench|ADR-0012]] S6).
+
 ### D1: The router backend in `hub/harness/openrouter.py` ^d1
 
 Serves C1, C2 and C5. `OpenRouter(model, ...)` posts the view with usage included and `max_tokens`
@@ -160,11 +172,11 @@ native call when the content is empty; `calls` keeps the envelopes.
 
 ### D2: The two CLI shapes in `hub/harness/claude_code.py` ^d2
 
-Serves C1, C2, C4 and C5. `ClaudeCode` runs the CLI once per turn: tools off, one turn, no settings
-loaded, strict MCP config. `ClaudeCodeSession` resumes one CLI session per run and restarts it on a
-directive or the fold mark; for a served run it may hand the CLI its own tools, a working directory
-and one MCP. Both hand back the last turn's count from the CLI's per-turn usage when printed.
-Cancellation kills and reaps the child.
+Serves C1, C2, C4, C5 and C6. `ClaudeCode` runs the CLI once per turn: tools off, one turn, no
+settings loaded, strict MCP config. `ClaudeCodeSession` resumes one CLI session per run and restarts
+it on a directive or the fold mark; for a served run it may hand the CLI its own tools, a working
+directory and one MCP. Both hand back the last turn's count from the CLI's per-turn usage when
+printed. Cancellation kills and reaps the child.
 
 - **Landing evidence**: `tests/test_claude_code.py`: both shapes hand back this call's count, the
   last turn's when several ran, the session resumed with only the new entries, restarted by a
@@ -234,3 +246,7 @@ anchor.
 - **S10**: The session CLI appends no envelope when its call fails, against C5: the failure raises
   before the call is kept, so a spend row misses it whole ([[ADR-0016-the-lion-command|ADR-0016]]
   S2); the fix is owed.
+- **S11**: The gate over an acting session is owed: the CLI's pre-tool hook asks the runtime's
+  privilege check ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]) and before hooks
+  ([[ADR-0005-command-handling#^c4|ADR-0005/C4]]) for each tool call, and each act lands on the
+  record. Until then C6 is the whole of it.

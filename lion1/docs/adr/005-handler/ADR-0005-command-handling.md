@@ -1,7 +1,7 @@
 ---
 adr: ADR-0005
 status: draft
-liveness: operating (the replacement rebuilt from its fields, the three captures, the effect wait and the `get` refusal are owed)
+liveness: operating (the replacement rebuilt from its fields, the three captures and the effect wait are owed)
 date: "2026-09-23"
 area: handler
 kind: new
@@ -90,7 +90,7 @@ Each command runs as its own task; the turn settles by gathering them. The bus i
 observer: `emit` records the event, calls each matching subscriber in turn, schedules any coroutine
 a subscriber returns as a tracked task, and keeps a subscriber's exception in `errors`. A subscriber
 that blocks holds the emitter, so a subscriber returns at once or hands back a coroutine; the log is
-bounded, the tracked tasks are bounded only by `drain`.
+bounded, and a tracked task leaves the set when it finishes; `drain` awaits the rest.
 
 Patterns match exactly, by prefix (`command.`), or everything (`*`). Events: `run.started`,
 `round.started`, `round.retry`, `command.requested`, `command.settled`, `inbox.queued`,
@@ -105,11 +105,12 @@ Patterns match exactly, by prefix (`command.`), or everything (`*`). Events: `ru
 `actor.handler(Spec)` registers a function; any object with a `spec` attribute and a callable
 `(request, context)` registers directly.
 
-Everything a handler can do to the run it does through `Context`: `get` waits for a pending pointer,
-`direct` moves the view (ADR-0007), `emit` is observed by the bus, and the note store is the
-profile's. `Context` is the supported interface, not a sandbox: a handler is trusted Python, and the
-claim is over what the runtime hands it, not over what Python lets it reach. The privilege gate that
-precedes the hooks is [[ADR-0001-the-actor#^c4|ADR-0001/C4]], the fourth step of C1.
+Everything a handler can do to the run it does through `Context`: `get` reads a settled pointer and
+raises `KeyError` for any other, `direct` moves the view (ADR-0007), `emit` is observed by the bus,
+and the note store is the profile's. `Context` is the supported interface, not a sandbox: a handler
+is trusted Python, and the claim is over what the runtime hands it, not over what Python lets it
+reach. The privilege gate that precedes the hooks is [[ADR-0001-the-actor#^c4|ADR-0001/C4]], the
+fourth step of C1.
 
 ### C4: A before hook decides for the command, and a gate that fails admits nothing _(enforced: mechanical)_ ^c4
 
@@ -222,11 +223,11 @@ under `-I` with lion's own interpreter.
 - **S5**: A directory's `hooks.toml` is executable configuration: `lion chat` runs what the
   directory holds, so opening a directory is trusting its hooks, as with any tool that reads a local
   config.
-- **S6**: `Context.get` on a pending alias waits without the cycle check `_deref` applies to a
-  command's arguments, and time is read only at the turn's start, so two handlers waiting on each
-  other through `get` hold the run for good. Decided: `get` reaches settled entries and the
-  command's own pointers; a pending alias the command did not point at is refused, so every wait is
-  an edge the check at dispatch has seen. Owed, with a deadline beside the wait (ADR-0003/S3).
+- **S6**: `Context.get` reads only what is settled: an alias's value, a record name or a note. A
+  pending alias raises `KeyError` at once, as an unknown name does, so no handler waits on another
+  through `get`; a value a handler needs from a pending command reaches it as a pointer in its call,
+  where the check at dispatch sees the edge. A command that never returns holds the turn's settle,
+  since time is read only at the turn's start; a deadline beside the settle is owed (ADR-0003/S3).
 - **S7**: On the 50-instance bench, 1722 commands in 733 turns: `run` 982, ordered whichever way,
   and 609 reads; three classes save 253 of 1458 serial steps over two on the 469 turns with two or
   more commands, 17%. One turn wrote 81 commands.

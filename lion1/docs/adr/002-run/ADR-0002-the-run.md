@@ -92,13 +92,13 @@ because the model never chose it.
 
 - **Subject**: every turn.
 - **Violated when**: the same error on consecutive turns is told without its count, an identical
-  message is not named, or `stop()` is consulted before the turn's sections have run.
+  turn is not named, or `stop()` is consulted before the turn's sections have run.
 
-The notification says "the same error N turns running" and "your last message was identical to the
-one before it (N times now)", so the next turn has a reason to differ. The sections have just looked
-at the world, and what they saw is what a stop decides on; asked before, the model got one more turn
-after every notice that the run was over. The run ends `Stopped(n)` with n the turns completed; the
-stopped iteration called no backend and is not a turn.
+The notification says "the same error N turns running" and "your last turn was identical to the one
+before it (N times now)", so the next turn has a reason to differ. The sections have just looked at
+the world, and what they saw is what a stop decides on; asked before, the model got one more turn
+after every notice that the run was over. The run ends `Stopped(n)` with n the turn that did not
+run: the stopped iteration called no backend and is not a turn.
 
 ### C4: A run ends in one of four values, and nothing else is an outcome _(enforced: mechanical)_ ^c4
 
@@ -106,10 +106,10 @@ stopped iteration called no backend and is not a turn.
 - **Violated when**: `run.outcome` holds a value outside the four, or a retry, a refusal or a fold
   is reported as one.
 
-`Success(output)`, `Exhausted(reason)` with the reason one of turns, idle, time, cost or context,
-`Refused(why, times)` and `Stopped(round)`. `Continue`, a state and not an outcome, is what a
-settled turn without `OUT{}` leaves; a retry shows as `retry_error` and the `round.retry` event,
-never as an outcome.
+`Success(output)`, `Exhausted(rounds, reason)` with the reason rounds or time today (idle, cost and
+context land with their bounds, [[ADR-0003-the-bounds#^c2|ADR-0003/C2]]), `Refused(why, times)` and
+`Stopped(round)`. `Continue`, a state and not an outcome, is what a settled turn without `OUT{}`
+leaves; a retry shows as `retry_error` and the `round.retry` event, never as an outcome.
 
 Pending tasks and open asks are cancelled when the run ends, whichever value it ends in, and awaited
 before `run` returns, so every admitted command has its RESULT when the caller reads the record. An
@@ -144,8 +144,9 @@ dispatched, and the turn settles. The caller reads `run.outcome` after the loop 
   never sees it.
 - **S2**: The idle row keeps a talking model alive; `max_idle` (ADR-0003) is what ends it.
 - **S3**: The code still says round where this corpus says turn: `max_rounds`, `Exhausted(rounds)`,
-  `<system round=`, the `round.*` events, `Stopped(round)`. The rename is owed with the first change
-  that touches them.
+  `<system round=`, "rounds running", the `round.*` events, `Stopped(round)`. The rename is owed
+  with the first change that touches them; the `Retry` class the code defines and never constructs
+  goes with it.
 - **S4**: The loop today gathers every command of the turn before `OUT{}` assembles; the design
   waits for the references only, and the gather goes with the first change that touches it. A wait
   for the whole turn is at most an opt-in, later. The end of the run cancels without awaiting today,

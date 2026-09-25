@@ -107,15 +107,15 @@ hidden unseen.
 
 The handler calls `Context.direct`; the directive rides the command's RESULT, dated at its sequence.
 The runtime's ride the notification or the closure, dated at their event. The fold applies
-directives by date, so a `context.show` after a consumption stands over its hide, and a directive
-reaches only entries earlier than its date.
+directives by date (today record order, C2), so a `context.show` after a consumption stands over its
+hide, and a directive reaches only entries earlier than its date.
 
 A directive pins its targets' sequences when made; the fold reads those, never the names. A summary
 stands where the span began and keeps the names it replaced. Hiding changes the rendering only;
 `*name` and `context.show` still reach the entry.
 
-A hide applies when asked; the guidance asks for hides in one batch at a phase boundary, since each
-moves the provider's prefix.
+A hide applies when asked; the guidance batches hides at a phase boundary, since each moves the
+provider's prefix.
 
 ### C4: A resumed chat folds the same directives over the same record _(enforced: mechanical)_ ^c4
 

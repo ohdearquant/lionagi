@@ -267,7 +267,9 @@ come from `[desk]`.
 Serves C1. `build` in `apps/cli/lion_cli/agent.py` makes one `Reader` over a khive client of the
 owner's directory and actor, and hands it to the desk and to the instruments that read the owner's
 box. The agent's own client is `Bounded` over the agent's directory, its recipients the trusted set
-and the routed desks. Two clients, two identities, one process.
+and the routed desks. Two clients, two identities, one process. The reader stands in until the store
+lets an actor read a namespace it can see; then the agent's own client reads the owner's box, and
+nothing else here changes.
 
 - **Landing evidence**: `test_reader_helpers_cannot_write` (mark, grant, send and six JSON-form ops
   refused before the transport) and `test_agent_marks_only_own_mail`, both in `tests/test_desk.py`.
@@ -347,7 +349,7 @@ adding a name it answers to; the phone shell is `hub/app.py`. The registry defau
 | -------- | ---------------- |
 | The model writes the reply | a cheap model cannot judge what a reply commits the owner to; code composes it from the outcome |
 | The desk marks what it handled as read | the owner loses sight of its own mail; the desk ledger and the brief say what the desk did |
-| The agent's own client reads the owner's box | a client reads as the identity its directory resolves to, asserted on every call; the reader holds the owner's identity and nothing to act with |
+| The agent's own client reads the owner's box | the store does not yet let an actor read a namespace it can see; when it does, this replaces the reader (D2) |
 | Settling an unknown send by the thread's order or a clock | an older message of the desk's on the thread retires a send that never landed; only the key names the message |
 | A timed sweep | an idle box would still wake the model; the watch wakes nothing while nothing is pending |
 | Three lookups, the model picks one | `answer` takes a message once, so a second lookup after a miss is refused; one chore reads all three |

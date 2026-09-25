@@ -56,6 +56,16 @@ detected) and 0008 S4 (the continuous run's checkpoint exists). 0012, 0015 and 0
 2026-09-25 and corrected the desk fact below: the reader is bound to the owner's identity, as the
 code binds it.
 
+A comparison against the earlier records (2026-09-25) found sentences the code contradicts, now
+corrected to the code of 2026-09-24: `Stopped(n)` names the turn that did not run (0002 C3);
+`Exhausted` carries its rounds and a reason of rounds or time (0002 C4); the re-check between
+commands is owed (0003); `run.more` is not yet a default handler (0001 C2); `Context.get` never
+waits, a pending alias raises (0005 C3, S6); a repair's note rides `not executed:` (0004 C3); the
+notification's order and wording (0006 C2); the fold applies directives in record order today
+(0007 C3); a session CLI given its own tools acts outside every gate, its gate owed (0009 C6, S11;
+0001 C5); the serve wrapper decides whether to start (0013 S12); the owner-bound reader stands in
+until the store lets an actor read a namespace it can see (0017 D2).
+
 ## Decided in the records (2026-09-23)
 
 - A validator is shape only and stable on canonical fields; a replacement, dict or instance, is rebuilt

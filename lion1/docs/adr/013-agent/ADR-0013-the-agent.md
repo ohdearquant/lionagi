@@ -272,7 +272,12 @@ the process's first run.
   among the agent's errors and the run starts fresh.
 - **S10**: The boundary: the identity and its grants, the lease that says a process is alive by its
   turn activity, the one supervisor that starts and restarts it, killing it, and the durable record
-  are the kernel's. The agent holds a lock and nothing more; `scripts/serve_agent.sh` is an entry
-  point a host supervisor calls and decides none of these.
+  are the kernel's. The agent holds a lock and nothing more; the entry point that starts it is S12.
 - **S11**: A profile named `agent` would share the agent's own note file, since a profile's notes
   are filed by its name; nothing refuses the name.
+- **S12**: `scripts/serve_agent.sh`, the entry point a host supervisor calls, decides only whether
+  to start. A missing or uncommitted checkout, a missing agent directory or token file, or a config
+  it cannot read is refused: one line lands in `landing/serve-refusals.log`, the owner is told, and
+  the exit is 0, so a supervisor that restarts on failure leaves the job down. A git read that fails
+  exits 1 with its error kept, and the supervisor retries. The agent starts on the subscription
+  CLI's token file, never an API key.
