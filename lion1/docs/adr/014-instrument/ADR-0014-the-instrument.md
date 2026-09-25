@@ -1,7 +1,7 @@
 ---
 adr: ADR-0014
 status: draft
-liveness: operating (twelve instruments build from one config and run under tests against scripted commands and stores; the command-line check prints a measurement unvetted and has no test)
+liveness: operating (twelve instruments build from one config and run under tests against scripted commands and stores; the command-line check prints a measurement unvetted and has no test; a lock-holder and a scheduled-job instrument are owed)
 date: "2026-09-25"
 area: instrument
 kind: new
@@ -170,6 +170,18 @@ known-positive, the evidence capped at `evidence_cap` characters with the cap st
 rows are neither sent nor kept. The model's system text lists each instrument's `about`, error
 direction, cadence and question.
 
+### C9: `daemon-passes` counts mail, and a thin window is a finding only against a declared period _(enforced: mechanical)_ ^c9
+
+- **Subject**: the `daemon-passes` instrument.
+- **Violated when**: a run with `period_min` unset reports a cadence finding, or a run with it set
+  passes a window short of half its expected passes without one.
+
+The producer mails only when a pass has news, so the instrument's count is of mail and never of
+passes, and its evidence says so. `period_min`, 0 by default, declares the producer's period in
+minutes. When it is set, the window's minutes over it are the passes expected, and fewer than half
+of them, rounded down, is a finding, `daemon cadence`, naming both numbers. It reports and does not
+escalate.
+
 ## Decisions
 
 ### D1: One builder names the instruments from the config ^d1
@@ -246,6 +258,19 @@ Nothing is sent, no ledger row is written, and `_vet` is not called.
 
 - **Landing evidence**: none; no test drives `--check`, `render` or `land` (S3).
 
+### D7: `DaemonPasses` over the desk's reader ^d7
+
+Serves C9. `DaemonPasses.run` pages the owner's box from its cursor through the desk's reader, keeps
+the mail whose subject and sender match exactly, counts each once however many pages carry it, and
+finds a signal only at the start of a line. A line opening with a `known` prefix is a standing
+condition, counted and never a finding.
+
+- **Landing evidence**: in `tests/test_instruments.py`,
+  `test_daemon_passes_three_mails_in_twelve_hours_are_a_cadence_finding_only_with_a_period_set`,
+  `test_daemon_passes_a_pass_carrying_only_the_known_prefix_is_clean_and_standing`,
+  `test_daemon_passes_a_subject_that_merely_contains_the_pass_subject_is_excluded`,
+  `test_daemon_passes_two_pages_are_read_whole_and_a_pass_seen_twice_counts_once`.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -286,3 +311,11 @@ Nothing is sent, no ledger row is written, and `_vet` is not called.
 - **S8**: The boundary: this record is product-side and names no kernel concern. An instrument reads
   with the credentials and namespace its process was started with; a read they deny is a failed
   control, or an empty answer the control must catch (A1).
+- **S9**: Two instrument shapes are decided and owed, and no code builds them. A lock holder is read
+  as a pid resolved to its full command line beside a lock known to be held, never by matching text
+  or by taking the lock. A scheduled job is read by its artifact's freshness first and its
+  supervisor's exit second, as `served` reads a served agent: its last-wake note before its pid and
+  its launchd row.
+- **S10**: `comm.probe` returns a page of at most 100 rows and caps its stale count at 1000, where
+  1000 means at least that many. `inbox-sla` prints the count as it came, so a capped count reads as
+  exact; its population is the rows on the probe pages.

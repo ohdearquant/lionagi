@@ -51,8 +51,6 @@ and `agent_main` in `apps/cli/lion_cli/agent.py`, `examples/echo_agent.py`,
   in the profile's notes.
 - **continuous run**: one run that carries many wakes, the next batch queued into it each time the
   model's reply ends a burst of mail.
-- **checkpoint**: a continuous run's record written to disk with its named state, which the next
-  process's first run replays as history.
 
 ## Assumptions
 
@@ -137,6 +135,10 @@ The cost is summed from the backend's own envelopes (`total_cost_usd`); a backen
 spends 0. A continuous run also ends at a burst past `max_rounds` turns, or at the day's cap with
 the burst's own calls counted.
 
+A per-wake run is bounded at `max_rounds` turns, 6 by default and as `lion agent` builds it. At the
+bound it ends exhausted: the cursor names that outcome and no posture is written. No test pins the
+six.
+
 ### C6: The agent writes the posture, and a per-wake run starts new _(enforced: mechanical)_ ^c6
 
 - **Subject**: the posture note, and the first INPUT of every wake.
@@ -162,9 +164,26 @@ wake (spend, cursor, posture, the log line), polls under the same caps, and queu
 into the same run, whose view folds. A batch that maps to another profile ends the run and runs
 fresh.
 
-At a fold, and when a burst's turn bound or the day's cap ends the run, it writes a checkpoint in
-the agent's directory, only where git ignores it; the next process's first run replays it as
-history.
+At a fold, and when a burst's turn bound or the day's cap ends the run, it writes a checkpoint
+([[ADR-0019-the-checkpoint|ADR-0019]]) in the agent's directory, only where git ignores it; the next
+process's first run replays it as history.
+
+### C8: The bench example answers a typed ask through its typed pair only, and the row goes back as JSON _(enforced: mechanical)_ ^c8
+
+- **Subject**: the agent `examples/bench_agent.py` builds.
+- **Violated when**: its acting profile offers a command beside `launch` and `report`, a wake waits
+  for a run, the row reaches the asker other than as JSON on the ask's thread, or a job is reported
+  twice.
+
+A batch whose every sender is trusted runs the acting profile, which holds `launch` and `report` and
+no `send`, so a typed ask is never answered in prose; any other batch runs a profile with no
+command. `launch` starts the run as a detached child, notes the asker and the thread under `jobs`,
+and the wake ends.
+
+The child's finish arrives as mail (S4). `report` reads the run's ledger, sends the row as JSON
+through `Agent.deliver` on the asker's thread, and notes the receipt before it writes the row to
+memory under the tag `agent:bench`. A failed memory write is retried by the next report, and the row
+is not sent again.
 
 ## Decisions
 
@@ -229,6 +248,19 @@ the process's first run.
   `test_mail_for_another_profile_ends_the_conversation_and_runs_fresh`; `tests/test_checkpoint.py`:
   the fold, stop and failed-restore tests.
 
+### D6: The bench example: two typed handlers on one `Agent` ^d6
+
+Serves C8. `build` gives the agent `max_rounds` 4 and a policy that maps a batch to the acting or
+the reader profile by its senders. `launch` runs the job line through `sh -c` in a new session and
+refuses a run id already launched. `report` holds a lock, so a job is reported once, and `row_for`
+refuses a run with no ledger.
+
+- **Landing evidence**: `tests/test_bench_agent.py`:
+  `test_the_acting_profile_is_the_typed_pair_and_has_no_prose_send`,
+  `test_an_ask_launches_a_child_and_its_finish_mail_reports_the_row_on_the_thread`,
+  `test_a_report_goes_through_the_agents_counted_send_and_a_reported_job_is_not_reported_again`,
+  `test_delivery_receipt_precedes_remember_failure`.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -275,9 +307,12 @@ the process's first run.
   are the kernel's. The agent holds a lock and nothing more; the entry point that starts it is S12.
 - **S11**: A profile named `agent` would share the agent's own note file, since a profile's notes
   are filed by its name; nothing refuses the name.
-- **S12**: `scripts/serve_agent.sh`, the entry point a host supervisor calls, decides only whether
-  to start. A missing or uncommitted checkout, a missing agent directory or token file, or a config
-  it cannot read is refused: one line lands in `landing/serve-refusals.log`, the owner is told, and
-  the exit is 0, so a supervisor that restarts on failure leaves the job down. A git read that fails
-  exits 1 with its error kept, and the supervisor retries. The agent starts on the subscription
-  CLI's token file, never an API key.
+- **S12**: `scripts/serve_agent.sh`, the host supervisor's entry point, decides only whether to
+  start. It refuses with exit 0, so a supervisor that restarts on failure leaves the job down: a
+  checkout that is missing, dirty, unbuilt or not under git, a missing agent directory, an unusable
+  named token file, or a config without a readable actor and owner. Each refusal lands one line, in
+  `landing/serve-refusals.log` or else on standard error, saying whether the owner was told. A
+  failed git read exits 1, error kept, for a retry. It unsets `ANTHROPIC_API_KEY`.
+- **S13**: When the khive CLI exits non-zero, the client's error quotes each failed op's own error
+  from standard output; with none, standard error without its warning and database lines, then the
+  raw output, the last 600 characters kept. No test pins it.

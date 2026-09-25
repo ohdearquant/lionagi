@@ -238,9 +238,9 @@ with no RESULT.
   left unapplied is not in the new copy.
 - **S3**: A run ended mid-turn does not resume ([[ADR-0007-the-record#^c4|ADR-0007/C4]]). Beside the
   chat, `lionagi/checkpoint.py` and `lion context` take and restore checkpoints of named values and
-  a folded view. A new process of the long-running agent ([[ADR-0013-the-agent|ADR-0013]]) replays
-  its last checkpointed record as history, and refuses one that no longer folds to the checkpoint's
-  view.
+  a folded view ([[ADR-0019-the-checkpoint|ADR-0019]]). A new process of the long-running agent
+  ([[ADR-0013-the-agent|ADR-0013]]) replays its last checkpointed record as history, and refuses one
+  that no longer folds to the checkpoint's view.
 - **S4**: The chat log holds every value whole; the console prints a result as one line. The closing
   line sums the cost on every call's envelope, failed attempts included; a call whose envelope
   carries no cost adds nothing and is not flagged.

@@ -15,11 +15,12 @@
 | [ADR-0011](011-box/ADR-0011-the-box.md) | 011-box | draft | operating (three boxes under tests and live runs, the coding tools under tests and one live console run, the watch under tests and on the bench; the real-box tests are opt-in) | ADR-0002, ADR-0003, ADR-0005, ADR-0006, ADR-0007 |
 | [ADR-0012](012-bench/ADR-0012-the-bench.md) | 012-bench | draft | operating (the set runner, the in-box grader, the closure, the run identity and both arms are under tests; that compared bench runs share instances, head and budgets is the reader's check; no CLI-arm bench run on the hard set has the package indexes closed) | ADR-0002, ADR-0003, ADR-0006, ADR-0009 |
 | [ADR-0013](013-agent/ADR-0013-the-agent.md) | 013-agent | draft | operating (the wake, the gate, the caps, the hop count, the cursor, the lock and the continuous run with its checkpoint are pinned by tests; supervision and the lease are not in the process) | ADR-0001, ADR-0002, ADR-0003, ADR-0007, ADR-0010 |
-| [ADR-0014](014-instrument/ADR-0014-the-instrument.md) | 014-instrument | draft | operating (twelve instruments build from one config and run under tests against scripted commands and stores; the command-line check prints a measurement unvetted and has no test) | ADR-0005, ADR-0007 |
-| [ADR-0015](015-chores/ADR-0015-chores.md) | 015-chores | draft | operating (the handler, the gate, the store boundary, the ticks and the catch-up are pinned by tests with scripted backends and a fake store; no test drives a positive hand-run check) | ADR-0001, ADR-0005, ADR-0007, ADR-0010 |
+| [ADR-0014](014-instrument/ADR-0014-the-instrument.md) | 014-instrument | draft | operating (twelve instruments build from one config and run under tests against scripted commands and stores; the command-line check prints a measurement unvetted and has no test; a lock-holder and a scheduled-job instrument are owed) | ADR-0005, ADR-0007 |
+| [ADR-0015](015-chores/ADR-0015-chores.md) | 015-chores | draft | operating (the handler, the gate, the store boundary, the ticks and the catch-up are pinned by tests with scripted backends and a fake store; no test drives a positive hand-run check; the catch-up's store-side filters are owed) | ADR-0001, ADR-0005, ADR-0007, ADR-0010 |
 | [ADR-0016](016-command/ADR-0016-the-lion-command.md) | 016-command | draft | partial (the command tree, the shared lock and the spend row are under tests; the text `--stats` prints has no test; a mark for an unknown or partial cost is owed) | ADR-0007, ADR-0009, ADR-0010 |
-| [ADR-0017](017-desk/ADR-0017-the-desk.md) | 017-desk | draft | operating (every claim is pinned by tests with scripted backends and a stubbed store; no bench exercises the desk) | ADR-0001, ADR-0002, ADR-0003, ADR-0010 |
+| [ADR-0017](017-desk/ADR-0017-the-desk.md) | 017-desk | draft | operating (every claim is pinned by tests with scripted backends and a stubbed store; no bench exercises the desk; the gate for a clarify's answer mailed to the desk is owed, S8) | ADR-0001, ADR-0002, ADR-0003, ADR-0010 |
 | [ADR-0018](018-chat/ADR-0018-chat-in-a-box.md) | 018-chat | draft | operating (the chat, its resume and the boxed chat are pinned by tests against scripted backends and a stubbed box; the one real-box test runs only when enabled; no test interrupts a boxed chat) | ADR-0002, ADR-0003, ADR-0005, ADR-0007 |
+| [ADR-0019](019-checkpoint/ADR-0019-the-checkpoint.md) | 019-checkpoint | draft | operating (the take, the transcript scan, the restore, the files and both transports are pinned by tests; the take's own checks of kind, reason and injected text have no test; lanes from pull requests and threads are owed; nothing in the code starts a Claude Code session's checkpoint) | ADR-0006, ADR-0007, ADR-0009, ADR-0013, ADR-0016, ADR-0017 |
 
 ## By topic
 
@@ -41,3 +42,4 @@
 - **016-command**, ADR-0016: The lion command and the spend row
 - **017-desk**, ADR-0017: The desk: front desk, record answers, areas and chairs
 - **018-chat**, ADR-0018: Chat in a box
+- **019-checkpoint**, ADR-0019: The checkpoint and the restore

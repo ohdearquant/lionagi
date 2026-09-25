@@ -70,7 +70,7 @@ neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 | `lion agent --dir D --stats` | a read of the notes and the ledgers (C4) | nothing |
 | `lion chat` | a console actor over a directory ([[ADR-0018-chat-in-a-box|ADR-0018]]) | `.lion/chats/<id>.jsonl` with a usage row per call; notes under `.lion/notes`; a box's patch, applied only under `--apply` |
 | `lion areas [--serve PORT]` | the residents by area, or a page and its API ([[ADR-0017-the-desk|ADR-0017]]) | nothing without `--serve`; with it, a resident's `hold`, `wake-now`, `[budget]` keys, `landing/controls.log`, mail, a launchd restart, and checkpoints through the `lion context` functions |
-| `lion context` `set`, `checkpoint`, `restore`, `status`, `show` | a Claude Code session's checkpoint and restore, no model call | `.khive/context/pending.jsonl`, `<id>.json` and `latest.json` |
+| `lion context` `set`, `checkpoint`, `restore`, `status`, `show` | a Claude Code session's checkpoint and restore, no model call ([[ADR-0019-the-checkpoint|ADR-0019]]) | `.khive/context/pending.jsonl`, `<id>.json` and `latest.json` |
 
 The gate is code review of any second console script beside `lion`.
 
@@ -233,3 +233,8 @@ the chat log keeps each envelope's cost as it came, null included.
   the tests of D4.
 - **S8**: The serve log is standard output; `lion areas` reads it as `serve.log` in the agent
   directory, so a served agent's output has to land there. `lion agent` does not redirect it.
+- **S9**: An agent directory is whatever `--dir` names, and only a checkpoint written there checks
+  where it sits: inside a git work tree whose ignore rules miss `.khive/context/`, the write refuses
+  ([[ADR-0013-the-agent#^c7|ADR-0013/C7]]). The lock, notes, ledgers and landing files are written
+  wherever the directory is, so it belongs where no checkout tracks it. The implementation's own
+  repository ignores `.khive/`, where the bench example keeps its directory.

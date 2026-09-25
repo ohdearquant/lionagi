@@ -1,7 +1,7 @@
 ---
 adr: ADR-0017
 status: draft
-liveness: operating (every claim is pinned by tests with scripted backends and a stubbed store; no bench exercises the desk)
+liveness: operating (every claim is pinned by tests with scripted backends and a stubbed store; no bench exercises the desk; the gate for a clarify's answer mailed to the desk is owed, S8)
 date: "2026-09-25"
 area: desk
 kind: new
@@ -67,6 +67,9 @@ Source: `hub/agent/desk.py`, `hub/agent/lookups.py`, `hub/agent/verdicts.py`; `A
 | A2 | The box's `since` is an inclusive bound on a row's arrival stamp, to the microsecond. | `_discover` and `after` in `hub/agent/desk.py`; `test_after_is_one_microsecond_past_the_stamp_as_since_reads_it` | the cursor skips or repeats a row at its edge (C2) |
 | A3 | A cheap model maps a listed message to one command and copies the ask's words, and nothing more. | `hub/guidance/desk.md`; no bench measures the routing (assumption) | a sender can get another chore's report, still composed by code; the brief names every answer (C9) |
 | A4 | A serving agent holds an exclusive lock on its `agent.pid` for its life. | `Agent._claim`; `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file` | a row reads a dead resident as serving, or a live one as stopped (C10) |
+| A5 | An actor may send on a thread it never received, and the message lands on that thread for its sender. | `_deliver` in `hub/agent/desk.py` replies as the agent on a thread of the owner's box; the tests stand in for the store (assumption) | no answer or clarify reaches its sender, and the desk only escalates, routes, files and leaves (C12) |
+| A6 | The owner's box listing carries each message's content, so the desk reads no thread to list a message. | `_discover` in `hub/agent/desk.py` keeps a row's `content`, its first 2,000 characters, and `sweep` lists it; the tests' reader stands in for the store (assumption) | the sweep lists subjects with empty bodies, the model routes on subjects, and a clarify can quote only the subject (C5) |
+| A7 | A cheap model may write `OUT{}` in the round that called `sweep()`, before the listing is in front of it. | observed on one live wake, as the docstring of `Desk._accept` says; no bench measures it (assumption) | the gate on `OUT{}` in C6 never fires and costs nothing |
 
 ## Claims
 
@@ -152,6 +155,10 @@ the profile, and every send passes the hop count of `Agent.deliver`. Code compos
 answer is the instrument's report, which echoes the arguments the model gave it; a clarify is a
 template around two readings taken from the message; a route is the message word for word. Beyond
 that echo, the model's own words reach the owner only as a task title or a leave reason.
+
+A task is one write to the store's task list that code composes: the owner's namespace and assignee,
+the `inbox` lane, priority p2, the message word for word, and tags that include `desk`, `from-mail`
+and `from:<sender>`.
 
 ### C6: A message stays pending until its row, so a failed wake lists it again _(enforced: mechanical)_ ^c6
 
@@ -240,13 +247,61 @@ notes; a spend row of another day counts as none. What could not be read is name
 
 `/` is a page with a meta refresh and `/api/areas` the rows as JSON. `/r` and `/api/resident` give
 one resident with its wakes, log tail and conversation; `/events` streams rows and logs; `/app` is a
-phone shell over those; the checkpoint routes sit under `/api/context/`.
+phone shell over those; the checkpoint routes sit under `/api/context/`
+([[ADR-0019-the-checkpoint|ADR-0019]]).
 
 `POST /send` mails the resident's own actor, read from its `chores.toml`, as the `--as` identity,
 the page's token as the idempotency key. `POST /control` holds, resumes, wakes, restarts or rewrites
 `[budget]`, and answers a replayed token, among the last 100, with the first result. Every request
 that reads or changes a resident re-reads the registry and the files; `/events` re-reads them each
 second.
+
+### C12: A reply is one send, on the thread of the message it answers _(enforced: mechanical)_ ^c12
+
+- **Subject**: every answer and clarify the desk sends to a sender outside the agent's recipients.
+- **Violated when**: such a sender is reached on another thread, twice under one grant, or for a
+  message that names no thread.
+
+`_deliver` sends an answer or a clarify inside `Bounded.reply`, a grant of one send to the message's
+sender on the message's thread. `Bounded.send` spends the grant before the transport, so that send
+spends it whether it is delivered or refused, and the grant ends with the block. A message that
+names no thread gets no grant, and nothing is sent.
+
+The grant is the one way the bounded client reaches a recipient it was not built with (C3). A later
+attempt at the same message holds a grant of its own. A route and an escalation go to recipients the
+client was built with and take no grant.
+
+### C13: A cap counts every request that may have landed, and is read and reserved in one step _(enforced: mechanical)_ ^c13
+
+- **Subject**: `answers_per_hour`, `escalations_per_day` and `tasks_per_day`.
+- **Violated when**: two commands of one turn both take a cap's last slot, or a send or task whose
+  outcome is unknown holds no place in its cap.
+
+A cap counts the rows of its classes in its window, each by the row's time, and every request of
+those classes whose outcome is unknown: a send, pending or left, by the time it started; a task
+still pending, or one left unresolved today. A send refused before it went out, or a task the store
+refused, holds no place.
+
+`_send` reads the hour's count and records the request with no await between them, and `_file` does
+the same with the day's tasks, so two commands of one turn never both take the last slot.
+
+### C14: A record answer passes no verdict in code's words, and each lookup's control is its own read _(enforced: mechanical)_ ^c14
+
+- **Subject**: the text code writes into every `answer(msg, chore="record")`, and each lookup's
+  control.
+- **Violated when**: that text passes a verdict, an Alternatives hit is unlabelled or one ADR
+  carries more than two, `Adrs` passes its control having read no file, or a lookup runs with no
+  `args.query`.
+
+The text code writes into a record answer, its first line, the lead, the report's labels and the
+tail, never says "decided against", "already exists" or "duplicate"; what it quotes is the record's
+words and the ask's. An ADR's finding carries at most two matching headings and two matching
+Alternatives rows, the rows after "alternatives:", since a word match cannot judge what an ADR chose
+not to do.
+
+`Adrs` names how many files it read and the first of them; an empty corpus fails its control. A
+lookup given no `args.query` raises, `Record` counts a part that raises as a failed control, and the
+desk leaves the message.
 
 ## Decisions
 
@@ -256,7 +311,8 @@ Serves C2, C5 and C6. `lion agent` builds `Desk` when `chores.toml` has a `[desk
 is not false. It registers `sweep`, `answer`, `leave`, `clarify`, `route` and `task` on the agent's
 actor, each requiring `comm.send`, adds them and the desk guidance to the chores profile, and sets
 the agent's `accept` and `watch`. No tick is scheduled: the watch wakes the desk. Caps and routes
-come from `[desk]`.
+come from `[desk]`. `build` gives a wake six rounds: sweep, route and `OUT{}` take three, and each
+slip one more; no test pins the six.
 
 - **Landing evidence**: `tests/test_desk.py` (89 tests), among them
   `test_build_wires_the_desk_from_chores_toml_with_a_reader_that_only_reads` (the nine-command
@@ -337,11 +393,42 @@ Serves C10 and C11. `load_areas`, `resident`, `status`, `table` and `page` read 
 `controls_info` adds a process check, which a restart reads before it acts. The server in
 `apps/cli/lion_cli/areas.py` is a stdlib `ThreadingHTTPServer` on `127.0.0.1` by default, `--allow`
 adding a name it answers to; the phone shell is `hub/app.py`. The registry defaults to
-`.lionagi/areas.toml` under the home directory.
+`.lionagi/areas.toml` under the home directory. `--file` names the registry, `--host` the address,
+`--refresh` the pages' reload in seconds (5), and `--json` prints the areas and rows as JSON.
 
 - **Landing evidence**: `tests/test_areas.py` (22 tests), among them
   `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file` and
   `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`.
+
+### D9: `Bounded.reply` grants a reply; `_spent` counts every cap ^d9
+
+Serves C12 and C13. `_deliver` opens the grant for an answer or a clarify only. `_spent` sums the
+rows of its classes since a time and the sends of those classes whose outcome is unknown.
+`_answered_last_hour` asks it for answers and routes, `_escalate` for escalations since the local
+midnight, and `_file` adds the tasks still pending and those left unresolved today.
+
+- **Landing evidence**: `test_reply_authority_is_one_message_one_thread`,
+  `test_a_refused_reply_spends_only_its_own_attempt` and
+  `test_two_tasks_of_one_turn_share_the_last_slot_of_the_day` in `tests/test_desk.py`;
+  `test_two_answers_in_one_turn_never_both_take_the_last_slot_of_the_hour` and
+  `test_an_answer_whose_delivery_is_unresolved_holds_its_place_in_the_hourly_cap` in
+  `tests/test_desk_residuals.py`.
+
+### D10: The query: the ask's content words, stemmed; five go to `gh`, and an ADR needs a third ^d10
+
+Serves C8 and C14. `terms` lowercases the ask and keeps, in order and once each, its words of three
+or more characters outside `STOP`, the ask's furniture. `stem` drops an `ing`, `es`, `ed` or `s`
+ending when three characters remain. `Issues` sends the first five terms, since GitHub search wants
+every word. `Adrs` matches stems and keeps a record carrying a third of the terms, rounded up, at
+least two and at most all of them.
+
+- **Landing evidence**: in `tests/test_lookups.py`,
+  `test_terms_drop_the_asks_furniture_and_keep_its_words_once`,
+  `test_a_stem_drops_a_plural_or_tense_ending_of_a_long_word_only`,
+  `test_adrs_score_titles_headings_and_rejected_alternatives_by_the_asks_words` (the third, the
+  empty corpus) and
+  `test_issues_search_both_lists_after_resolving_the_repo_and_an_unresolved_repo_fails_the_control`
+  (five words, no query).
 
 ## Alternatives
 
@@ -380,3 +467,24 @@ adding a name it answers to; the phone shell is `hub/app.py`. The registry defau
   store: 267 tests across `tests/test_desk.py`, `tests/test_desk_residuals.py`,
   `tests/test_areas.py`, `tests/test_lookups.py`, `tests/test_verdicts.py`, `tests/test_chores.py`
   and `tests/test_agent.py` pass on the code of 2026-09-24.
+- **S8**: Owed: a gate, `Desk.admit` under `[desk] admit_replies`, that lets through a clarify's
+  answer mailed to the desk's own actor, from the actor the clarify addressed, on a thread whose
+  clarify is still open. The next sweep would list the clarified message again with the answer under
+  it. Until it lands, S3 holds.
+- **S9**: `Record` reads no memory: a decision kept only in khive memory, in no note of the kinds
+  `Decisions` searches, is missed.
+- **S10**: A resident whose directory the registry does not list is not counted; adding it is one
+  line in the file. A page shows the residents whose files this machine holds, and a directory it
+  cannot read is a row with its problem. A reader of another machine's rows is later work.
+- **S11**: `lion areas --serve` runs in the foreground until it is stopped, and no job in the code
+  keeps it serving; a resident that serves the page is later work.
+- **S12**: The help text of `--file` names keys `home` and `agents`, which `load_areas` does not
+  read; the registry's keys are `chair` and `desks`. No test drives `--json`, `--host` or
+  `--refresh`.
+- **S13**: `Record.senders` and `CLARIFY_SENDERS` are actor-id prefixes set in code, named here by
+  constant. A record answer carries the record back and the ask's words drive `gh` and store
+  searches, so `record` answers only senders under `Record.senders`, where another chore answers any
+  listed sender.
+- **S14**: No test drives a second send inside one reply grant, an ADR finding past two headings or
+  two Alternatives rows, a `Record` part that raises, or an unknown send that started before its
+  cap's window.

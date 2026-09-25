@@ -1,7 +1,7 @@
 ---
 adr: ADR-0015
 status: draft
-liveness: operating (the handler, the gate, the store boundary, the ticks and the catch-up are pinned by tests with scripted backends and a fake store; no test drives a positive hand-run check)
+liveness: operating (the handler, the gate, the store boundary, the ticks and the catch-up are pinned by tests with scripted backends and a fake store; no test drives a positive hand-run check; the catch-up's store-side filters are owed)
 date: "2026-09-25"
 area: chores
 kind: new
@@ -149,7 +149,8 @@ one shaped as JSON or as an option, and `comm.send` as an op are refused whole.
 
 Every send goes through `Agent.deliver`, which charges the thread's hop count before the transport;
 a check's send over the cap lands on its row as undelivered. `Bounded.send` refuses a recipient
-outside the trusted set and the desk's routes.
+outside the trusted set and the desk's routes, but for the one reply a desk sends on the thread it
+answers ([[ADR-0017-the-desk#^c12|ADR-0017/C12]]).
 
 ### C6: A chore changes no tree, so its result lands by print and save _(enforced: process)_ ^c6
 
@@ -189,7 +190,8 @@ Serves C1, C3 and C7. `Chores` registers `check`, `digest` and `aged` on the age
 requiring `comm.send`, and offers them as the `chores` profile. `check` runs the missed ticks first,
 then the instrument, the refusals, the sends, the row, the commit of what the run consumed, and the
 dead-instrument check. The defaults: aged after 2 periods, dead after 3 runs, the digest daily, the
-aged pass hourly.
+aged pass hourly. The digest's line per chore names the last ending and counts the day's runs,
+answered, quiet, report, escalate and instrument-failed.
 
 - **Landing evidence**: `tests/test_chores.py`, 30 tests: the three endings, each refusal, the
   standing state per recipient, the dead instrument, the digest, the aged pass, the missed tick,
@@ -258,9 +260,12 @@ bypasses the handler: no refusals, no row, no send.
   as mail, and a chore is the in-process form: one handler call inside a wake of the long-running
   agent ([[ADR-0013-the-agent|ADR-0013]]).
 - **S2**: The store boundary is enforced in the process: a client run by hand from the agent
-  directory is not bounded, and no store-side refusal is relied on.
+  directory is not bounded, and no store-side refusal is relied on. A refusal in the store of any
+  write by the agent's own actor is the kernel's to give, with the identity's grants
+  ([[ADR-0013-the-agent|ADR-0013]] S10).
 - **S3**: The missed-tick read takes one page of 200 scheduled rows and filters to the actor in
-  code; a busy namespace can push a missed row past the page.
+  code; a busy namespace can push a missed row past the page. The store's `list` filters scheduled
+  rows by creator and by status before the page, and the code passes neither; passing them is owed.
 - **S4**: A standing state is told once until it changes, a standing failure included: a chore that
   recovers quietly and fails again the same way is not resent. The digest carries the counts, and an
   owner who wants a state again asks.
@@ -278,3 +283,7 @@ bypasses the handler: no refusals, no row, no send.
 - **S9**: A mail watch configured under `[mail]` rides the same profile and ticks, but it is not a
   chore: `check` never runs it, and its code settles rows through its tracker's own commands, which
   write. This record does not cover it.
+- **S10**: The owner's own ask counts as the owner's receipt, whichever thread carried it: the
+  answer's message and thread go on the row. A later tick names that answer as its prior and does
+  not resend the same findings, and the aged pass waits for the owner's reply on the ask's thread.
+  `test_the_owners_own_ask_keeps_its_receipt_so_the_report_ages_and_is_not_repeated` pins it.
