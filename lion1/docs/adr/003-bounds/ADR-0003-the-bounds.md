@@ -34,8 +34,8 @@ record ([[ADR-0007-the-record|ADR-0007]]). Source: `RunRequest` and the bound ch
 ## Definitions
 
 - **job**: what the caller hands to `run`: `inputs`, `emits` (the Spec of the output), `accept`,
-  `extend`, the bounds, and for a conversation `wait` and `history` (ADR-0018, chat, not yet
-  written); `RunRequest` in code.
+  `extend`, the bounds, and for a conversation `wait` and `history`
+  ([[ADR-0018-chat-in-a-box|ADR-0018]]); `RunRequest` in code.
 - **bound**: a limit the run is checked against: `max_rounds`, `max_idle`, `time_budget`,
   `cost_budget`, `context_budget`, `max_refusals`.
 

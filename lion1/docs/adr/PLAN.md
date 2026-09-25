@@ -38,7 +38,7 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0015 | Chores | unwritten | none |
 | ADR-0016 | The lion command and the spend row | unwritten | none |
 | ADR-0017 | The desk: front desk, record answers, areas and chairs | unwritten | mail settlement by keyed replay |
-| ADR-0018 | Chat in a box | unwritten | none |
+| ADR-0018 | Chat in a box: one run that waits for the person, the flags, the person's tree or a copy, the patch home, the resume | draft (2026-09-25); no test interrupts a boxed chat | none |
 
 Order of writing: 0012 and 0014 to 0018, product-side. Each record is written
 from the code first; the vocabulary below is fixed before any of them. 0009 landed 2026-09-25 and
@@ -50,7 +50,8 @@ boundary to 0013. 0011 landed 2026-09-25 and amended nothing: the box, the tools
 holds them, with the executor over content-addressed trees named as the boundary. 0013 landed 2026-09-25 and amended
 0010 C4 (mail is the wake's input, or one inbound while a run continues) and 0007 S2 (the continuous run's
 checkpoint is built and replays as history). 0014 landed 2026-09-25 and amended nothing; twelve
-instruments build from one config.
+instruments build from one config. 0018 landed 2026-09-25 and amended 0007 C4 (a changed renderer is not
+detected) and 0008 S4 (the continuous run's checkpoint exists).
 
 ## Decided in the records (2026-09-23)
 
@@ -128,6 +129,11 @@ instruments build from one config.
 - A snapshot instrument reports first sight whole, then transitions, a crossing once; a floor is read by
   name once per device with its budget; an instrument reads and acts on nothing; the model sees one line
   and the owner the measurement (0014 C5 to C8).
+- A chat is one run that waits for the person, logged entry by entry, its `OUT{}` always refused; the
+  flags choose the tools and the guidance; without a box the tools work the person's tree, with one a
+  copy; the copy's diff comes back printed and saved and `--apply` lands it whole or not at all; a copy
+  whose patch was not taken whole is kept and named; a resumed chat replays its log and nothing runs
+  again (0018 C1 to C6).
 
 ## Open
 

@@ -243,8 +243,9 @@ any hidden one, a placeholder.
 - **S3**: The symbolic grammar gains what it lacks today: an evaluator, an executor (the dispatcher)
   and a consumer. `DEF` and the remaining semantic operators land in the next record, same profile
   option.
-- **S4**: A resumed chat replays programs by folding, as it replays directives; a run checkpoint is
-  still not built.
+- **S4**: A resumed chat replays programs by folding, as it replays directives; the long-running
+  agent's continuous run has a checkpoint ([[ADR-0013-the-agent#^c7|ADR-0013/C7]]), no other run
+  does.
 - **S5**: The raw message is what the model wrote; the normalised program and the repairs applied
   ride the TEXT entry's `meta`, so the admitted reading can be audited after the catalogue changes.
   A version stamp names a parser and keeps nothing.

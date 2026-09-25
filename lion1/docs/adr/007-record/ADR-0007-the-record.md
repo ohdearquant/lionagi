@@ -127,9 +127,9 @@ A chat's record is logged entry by entry and read back as the next session's his
 included, so the fold lands where it did. Each logged turn's values are folded in order by the live
 loop's admission rule; no note is written and no command runs.
 
-The guarantee is over the same fold: a session whose renderer changed says so, and never passes its
-view off as the logged one. That is chat history, not a run checkpoint: a run ended mid-turn does
-not resume, its unsettled commands are named and not rerun.
+The guarantee is over the same fold; a session whose renderer changed is not detected
+([[ADR-0018-chat-in-a-box#^c6|ADR-0018/C6]]). That is chat history, not a run checkpoint: a run
+ended mid-turn does not resume, its unsettled commands are named and not rerun.
 
 ### C5: A `note.` value is in the store after the turn, per profile, and told _(enforced: mechanical)_ ^c5
 
