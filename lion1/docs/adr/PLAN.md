@@ -37,10 +37,10 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0014 | The instrument contract: the measurement and its proof, the refusals, the dead instrument, first sight then transitions, the floors | draft (2026-09-25); the command-line check unvetted and untested | none |
 | ADR-0015 | Chores: three endings chosen by code, twelve chores from one file, ticks as store reminders, the bounded client, print and save | draft (2026-09-25); no test drives a positive hand-run check | the scheduled run of a process |
 | ADR-0016 | The lion command and the spend row: one entry, the shared lock, the row from the envelopes, the readers | draft (2026-09-25); the unknown-cost mark owed | none |
-| ADR-0017 | The desk: front desk, record answers, areas and chairs | unwritten | mail settlement by keyed replay |
+| ADR-0017 | The desk: the read-only reader, the cursor that never marks, the gate, code escalations, every model-facing command with its gate, pending until its row, keyed replay, record answers, the brief, areas and chairs | draft (2026-09-25); no bench exercises the desk | mail settlement by keyed replay |
 | ADR-0018 | Chat in a box: one run that waits for the person, the flags, the person's tree or a copy, the patch home, the resume | draft (2026-09-25); no test interrupts a boxed chat | none |
 
-Order of writing: 0017 last. Each record is written
+Every record is drafted. Each record is written
 from the code first; the vocabulary below is fixed before any of them. 0009 landed 2026-09-25 and
 amended 0004 D2, 0006 C4 and S3, and 0007 C2 to the code of 2026-09-24: the fold measures the
 estimate plus the reported context above the run's floor, `fold_inputs` folds earlier inputs, and a
@@ -52,7 +52,9 @@ holds them, with the executor over content-addressed trees named as the boundary
 checkpoint is built and replays as history). 0014 landed 2026-09-25 and amended nothing; twelve
 instruments build from one config. 0018 landed 2026-09-25 and amended 0007 C4 (a changed renderer is not
 detected) and 0008 S4 (the continuous run's checkpoint exists). 0012, 0015 and 0016 landed 2026-09-25;
-0016 amended 0009 (S10: the session CLI lands no envelope on a failed call, owed).
+0016 amended 0009 (S10: the session CLI lands no envelope on a failed call, owed). 0017 landed
+2026-09-25 and corrected the desk fact below: the reader is bound to the owner's identity, as the
+code binds it.
 
 ## Decided in the records (2026-09-23)
 
@@ -146,6 +148,12 @@ detected) and 0008 S4 (the continuous run's checkpoint exists). 0012, 0015 and 0
 - One command holds every entry; every form but the read holds the directory's lock; the agent writes
   its spend row from its backend's envelopes and every reader reads what it wrote; the command
   supervises nothing and estimates no tokens (0016 C1 to C5).
+- The desk reads the owner's box through a read-only reader bound to the owner and never marks it;
+  the agent's gate drops untrusted senders before any model call; what cannot wait is escalated by
+  code; every command the model may call is one table with its gate and code composes every text; a
+  message stays pending until its row; an unknown send settles by keyed replay or a leave, never by
+  chronology; a record answer is code's words and a miss is no answer; the brief moves only once
+  delivered; an area is one chair and its residents (0017 C1 to C11).
 
 ## Open
 
@@ -154,6 +162,10 @@ detected) and 0008 S4 (the continuous run's checkpoint exists). 0012, 0015 and 0
   thinking-off runs (0004 C4), 109 `<lvar>` and 6 notes (0004 S3, 0007 S3), 3 of 125 turns cut (0009 D1).
   They stand as the earlier records cited them; re-derive from the run dumps or drop.
 - The mail watch (`hub/agent/mail.py`) has no record: 0013 S8 and 0015 S9 both leave it.
+- The `lion areas --file` help text names `chair, home, agents`; the loader reads `chair` and `desks`
+  (0017 C10). The `--apply` help text says `git apply --3way`; the chat runs plain `git apply` (0018).
+- The model's `args.query` reaches a sender verbatim through a record answer's population line (0017
+  C5 names it); quoting only the terms would close it.
 
 - A hard ceiling above `extend`: the kernel's admission; the in-process `extend` stays as written (0003).
 - The before-hook `guard` flag: a guard may not replace; the loader refuses a replacing hook after a guard
@@ -196,7 +208,7 @@ area) · steward (who hears instrument failures).
 - Citations (0001 A1, 0009; 0012 C9 done): bench numbers belong with the run they came from (952 turns /
   3 output errors; the 1976 calls were not reproduced from the record dumps, which hold 1,775 settled
   results), never with the 50-instance table; thinking-budget rows are in the bench record (0012 C7).
-- The desk (0017): the reader is a second client inside the agent's process, bound to the agent's
+- The desk (0017, done): the reader is a second client inside the agent's process, bound to the owner's
   identity, read-only; the agent's wake marks mail read, the desk's sweep reads by cursor and never
   marks; `desk_pending` and the ledger row: a failed wake re-lists the message. Unknown-send settlement
   is keyed replay or leave, never chronology. Every model-facing command is listed in one claim with its
