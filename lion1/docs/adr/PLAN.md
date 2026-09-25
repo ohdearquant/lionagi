@@ -23,11 +23,11 @@ sandboxed executor are the published side of that boundary; the rest is named by
 |---|---|---|---|
 | ADR-0001 | The actor and its privileges: Spec, Operable, profile | operating; `defaults` owed | identity, grants, a gate that narrows and never widens |
 | ADR-0002 | The run: the turn table, repeats, stop, four outcomes, the closure | operating; reference-only wait and reap owed | process lifecycle: admission, turn as the unit, terminal states |
-| ADR-0003 | The bounds: the job, run.more, extend, `OUT{}` as a command | partial; extend, run.more, cost, context check owed | admission and budgets: minted at spawn, inherited, exhaustion refuses the next call |
+| ADR-0003 | The bounds: the job, run.more, extend, `OUT{}` as a command | partial; the re-check between commands, extend, run.more, cost, context check owed | admission and budgets: minted at spawn, inherited, exhaustion refuses the next call |
 | ADR-0004 | The language: LNDL, commands, values, pointers, lenient reading | operating; mixed-response refusal owed | the request program |
 | ADR-0005 | Command handling: order, the bus, hooks, effect classes | operating; captures, rebuilt replacement, effect wait owed | the tool protocol: declared effects, denial as data, receipts |
 | ADR-0006 | The notification, and the closure | operating; closure owed | context assembly: the runtime's typed section |
-| ADR-0007 | The record, the view, the fold, context commands, notes | operating; captures, dated directives, consumed mark owed | the durable record, visibility directives, the store families |
+| ADR-0007 | The record, the view, the fold, context commands, notes | operating; captures, dated directives, consumed mark, cross-profile note read owed | the durable record, visibility directives, the store families |
 | ADR-0008 | The program: compile then run, control results, curated view | unimplemented | the request program |
 | ADR-0009 | Backends and the context figure: three shapes, the `Reply` count, the floor, the session restart | draft (2026-09-25); the subscription CLI's count and the mixed-response refusal owed | the inference driver: a binding row, the served model read from the response; here the envelope keeps the response's model and compares nothing |
 | ADR-0010 | Delegation between actors: `queue`, the handle, the answer as a settled command, the reply, no graph object | draft (2026-09-25); no bench exercises the path | principals and mail; in-process peers are one layer, the long-running agent another |
@@ -40,6 +40,7 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0017 | The desk: the read-only reader, the cursor that never marks, the gate, code escalations, every model-facing command with its gate, pending until its row, keyed replay, record answers, the brief, areas and chairs | draft (2026-09-25); no bench exercises the desk | mail settlement by keyed replay |
 | ADR-0018 | Chat in a box: one run that waits for the person, the flags, the person's tree or a copy, the patch home, the resume | draft (2026-09-25); no test interrupts a boxed chat | none |
 | ADR-0019 | The checkpoint and the restore: named values and a folded view with no model call, the transcript scan, half the budget and eight of the person's words, the re-arm first, the ignored directory, one `latest.json` for both arms | draft (2026-09-25); lanes from pull requests and threads owed; nothing in the code starts a Claude Code session's checkpoint | the durable record and a session's continuity across processes: which checkpoint a new process starts from, who starts it, how long a checkpoint is kept |
+| ADR-0020 | The mail watch: one call per listed row, code settles from the tracker's class, one thread per tracked row, the ledger before the mark, the backlog once, the code-only pass | draft (2026-09-25); no test builds the watch from `[mail]` | an effect on an outside system: a declared write, its receipt, applied once |
 
 Every record is drafted. Each record is written
 from the code first; the vocabulary below is fixed before any of them. 0009 landed 2026-09-25 and
@@ -66,6 +67,11 @@ notification's order and wording (0006 C2); the fold applies directives in recor
 (0007 C3); a session CLI given its own tools acts outside every gate, its gate owed (0009 C6, S11;
 0001 C5); the serve wrapper decides whether to start (0013 S12); the owner-bound reader stands in
 until the store lets an actor read a namespace it can see (0017 D2).
+
+The same comparison found mechanisms the code enforces that no record stated, and items the earlier
+records owed that the new ones had dropped; both are now in their records (0001 to 0003, 0005 to
+0007, 0011 to 0017). Two subjects without a record got one: the checkpoint (0019, its definition
+moved from 0013) and the mail watch (0020, which 0013 S8 and 0015 S9 had left).
 
 ## Decided in the records (2026-09-23)
 
@@ -165,6 +171,12 @@ until the store lets an actor read a namespace it can see (0017 D2).
   message stays pending until its row; an unknown send settles by keyed replay or a leave, never by
   chronology; a record answer is code's words and a miss is no answer; the brief moves only once
   delivered; an area is one chair and its residents (0017 C1 to C11).
+- A checkpoint is named values and a folded view taken with no model call; a restore starts from
+  the latest one, re-arms first, and a checkpoint lives in an ignored directory (0019 C1 to C7).
+- The mail watch asks the model for one call per listed row; code settles only a settleable class
+  pinned to one tracked row, and everything else reaches the owner as one message on its thread;
+  the mail ledger records an escalation before its mark; the backlog is reported once and never
+  acted on (0020 C1 to C8).
 
 ## Open
 
@@ -172,7 +184,6 @@ until the store lets an actor read a namespace it can see (0017 D2).
   commands in 733 turns (0005 S7), 4,240 calls (0006 A3, 0009 A1), the 90.6% cache hit (0007 A1), 9 of 50
   thinking-off runs (0004 C4), 109 `<lvar>` and 6 notes (0004 S3, 0007 S3), 3 of 125 turns cut (0009 D1).
   They stand as the earlier records cited them; re-derive from the run dumps or drop.
-- The mail watch (`hub/agent/mail.py`) has no record: 0013 S8 and 0015 S9 both leave it.
 - The `lion areas --file` help text names `chair, home, agents`; the loader reads `chair` and `desks`
   (0017 C10). The `--apply` help text says `git apply --3way`; the chat runs plain `git apply` (0018).
 - The model's `args.query` reaches a sender verbatim through a record answer's population line (0017

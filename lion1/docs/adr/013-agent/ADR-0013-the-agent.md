@@ -297,8 +297,8 @@ refuses a run with no ledger.
 - **S7**: The watch is a second box polled beside the agent's own for the same wait; its notices are
   named apart on the cursor and never rerun, and a failed watch costs the agent's own mail nothing.
   The front desk sets it ([[ADR-0017-the-desk|ADR-0017]], the desk).
-- **S8**: The mail watch, a chore that confirms a script's class on tracked mail each tick
-  (`hub/agent/mail.py`), sends through `Agent.deliver` and is not decided here.
+- **S8**: The mail watch (`hub/agent/mail.py`) sends through `Agent.deliver`; it is not a chore, and
+  [[ADR-0020-the-mail-watch|ADR-0020]] decides it.
 - **S9**: The first run of any process replays the directory's latest checkpoint when it is a
   continuous run's and its record still folds to the view taken; for any other the failure is kept
   among the agent's errors and the run starts fresh.

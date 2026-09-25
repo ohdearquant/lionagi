@@ -112,10 +112,9 @@ and what it keeps between runs in the agent's notes:
   a question is answered off its thread, or a chair's agent creates a tick.
 
 At start the agent creates each missing tick: one per chore with a period, the digest's, the aged
-pass's when it has a steward, and those a front desk or a mail watch adds. A tick arrives as mail
-from the agent itself and wakes it; no chore runs on a clock inside the process. Once per run,
-before its first check, the agent runs its own ticks the store marked missed or failed and not yet
-seen.
+pass's when it has a steward, and the one a mail watch adds. A tick arrives as mail from the agent
+itself and wakes it; no chore runs on a clock inside the process. Once per run, before its first
+check, the agent runs its own ticks the store marked missed or failed and not yet seen.
 
 A trusted sender's question is answered on its own thread, whatever the ending; `record` has no
 period and runs only when asked. A chair's agent runs no chore: its profile offers no `check` and it
@@ -282,7 +281,7 @@ bypasses the handler: no refusals, no row, no send.
   ([[ADR-0017-the-desk|ADR-0017]]).
 - **S9**: A mail watch configured under `[mail]` rides the same profile and ticks, but it is not a
   chore: `check` never runs it, and its code settles rows through its tracker's own commands, which
-  write. This record does not cover it.
+  write. [[ADR-0020-the-mail-watch|ADR-0020]] decides it.
 - **S10**: The owner's own ask counts as the owner's receipt, whichever thread carried it: the
   answer's message and thread go on the row. A later tick names that answer as its prior and does
   not resend the same findings, and the aged pass waits for the owner's reply on the ask's thread.

@@ -115,20 +115,19 @@ fourth step of C1.
 ### C4: A before hook decides for the command, and a gate that fails admits nothing _(enforced: mechanical)_ ^c4
 
 - **Subject**: every command past validation and privilege.
-- **Violated when**: a handler runs after a hook refused, raised, or timed out, or a refusal reaches
-  the model without its reason.
+- **Violated when**: a handler runs after a hook refused, raised, or timed out, a refusal reaches
+  the model without its reason, or a shell hook's exit 0 without a JSON object refuses the command.
 
 Hooks run in registration order, each seeing the request as those before it left it: a guard after a
 rewriting hook judges the rewrite; the order is the operator's.
 
-None lets the command run; a string refuses it (`refused: <reason>`). A dict or an instance of the
-Spec replaces the arguments, either rebuilt from its fields, since a class is no receipt and a
-stable validator ([[ADR-0001-the-actor|ADR-0001]] S4) makes the build count immaterial; another
-class is refused. Changing the request in place changes nothing; a returned replacement counts (C5).
-A hook that raises, exits non-zero or times out refuses the command.
+None lets the command run; a string refuses it (`refused: <reason>`). Today a Pydantic model of any
+class replaces the arguments as returned; any other value, a dict too, changes nothing; a change in
+place reaches the handler. S8 owes the rebuild and the copy. A hook that raises, exits non-zero or
+times out refuses the command.
 
-A hook runs in its own process group; a timeout or a cancelled run ends it. `OUT{}` is the `out`
-command, `accept` its last before hook (ADR-0003).
+A hook runs in its own process group; a timeout or a cancelled run ends it. Today no hook sees
+`OUT{}`; it becomes the `out` command with [[ADR-0003-the-bounds#^d3|ADR-0003/D3]].
 
 ### C5: An after hook sees what ran, ok or not, and cannot undo it _(enforced: mechanical)_ ^c5
 
@@ -163,6 +162,34 @@ The rule orders one run's commands, not transactions: a read-modify-write across
 isolated, and two runs on one directory share nothing. The class is the author's word; A2's
 measurement is what checks it.
 
+### C7: A bundled hook runs only code from outside the directory the model writes _(enforced: mechanical)_ ^c7
+
+- **Subject**: every `install` of hooks carrying a `python -m hub.hooks.scripts.<name>` row.
+- **Violated when**: such a row is installed while its interpreter, that interpreter's prefix, the
+  `hub` or `lionagi` it would import, or one of its import paths lies inside the directory.
+
+`load` rewrites a bundled row to lion's own interpreter under `-I`, so neither the directory nor
+`PYTHONPATH` supplies its code. `install` checks that interpreter and its prefix, then asks it,
+without importing, where `hub` and `lionagi` resolve and what its import paths are. When one of
+those places lies inside the directory, it refuses every hook before registering any: the model
+writes there, and the hook runs on this machine. A probe that cannot answer refuses too. Hooks with
+no bundled row install without the check.
+
+### C8: The reference guard refuses what it cannot read, and the tree hook names what moved _(enforced: mechanical)_ ^c8
+
+- **Subject**: the `guard-bash` and `tree-changed` rows of the reference `hub/hooks/hooks.toml`.
+- **Violated when**: `guard-bash` lets a push or a discard through behind a git option, or, where
+  git has a HEAD, `tree-changed` leaves out a moved HEAD, or a file git lists whose content changed,
+  between two turns of one run.
+
+`guard-bash` reads only the git options S4 names; any other option ahead of a push or a discard
+makes the line a refusal (`git --no-pager push`), since a pattern match is no shell parser.
+
+`tree-changed` says nothing on a run's first turn, or where git has no HEAD. After that turn it
+names, sorted, the files whose content changed since that run's previous turn, tracked or untracked
+and not ignored, `.lion/` aside, then a moved HEAD. Its state is `.lion/tree_state.json`, keyed by
+run, so two runs never compare against each other.
+
 ## Decisions
 
 ### D1: Dispatch as one task per command; `Actor.before` and `Actor.after` beside `Actor.section` ^d1
@@ -185,14 +212,19 @@ Serves C2. One class, three operations: `subscribe`, `emit`, `drain`; a bounded 
 
 ### D3: `hub/hooks/`: `hooks.toml`, shell commands, JSON on stdin, the exit code as the verdict ^d3
 
-Serves C4 and C5 for a person. Three array tables, `before`, `after` and `round`, each row with
-`run`, optional `name`, `match` (fnmatch over the command name) and `timeout`. Exit 0 lets a command
-run and a JSON object on stdout replaces its arguments; exit 2 refuses with stdout as the reason; a
-turn hook's stdout is a notification line. `lion chat` reads `.lion/hooks.toml` in its directory,
-`lion agent` the agent directory's `hooks.toml`. A `python -m hub.hooks.scripts.<name>` row runs
-under `-I` with lion's own interpreter.
+Serves C4, C5, C7 and C8 for a person. Three array tables, `before`, `after` and `round`, each row
+with `run`, optional `name`, `match` (fnmatch over the command name) and `timeout`. Exit 0 lets a
+command run, a JSON object on stdout replacing its arguments and other stdout a log line; exit 2
+refuses with stdout as the reason; a turn hook's stdout is a notification line. `lion chat` reads
+`.lion/hooks.toml` in its directory, `lion agent` the agent directory's `hooks.toml`. A bundled row
+runs under `-I` with lion's own interpreter (C7).
 
-- **Landing evidence**: `tests/test_hooks.py`; the console test that installs a directory's hooks.
+- **Landing evidence**: `tests/test_hooks.py`, among them
+  `test_a_before_hook_that_exits_zero_with_text_on_stdout_lets_the_command_run` (C4),
+  `test_writable_editable_hook_origin_is_refused` (C7),
+  `test_git_global_options_cannot_hide_push_or_destructive_subcommand` and
+  `test_the_tree_hook_names_the_files_that_changed_and_the_head_that_moved` (C8); the console test
+  that installs a directory's hooks.
 
 ## Alternatives
 
@@ -218,8 +250,8 @@ under `-I` with lion's own interpreter.
 - **S4**: The reference file `hub/hooks/hooks.toml` carries `no-secrets` over `read*` and `search`,
   `guard-bash`, `audit`, `clock` and `tree-changed`. A path or glob that looks like a secret is
   refused unless git tracks it. The bash guard refuses the network into a shell, a recursive delete
-  of the tree or above it, and `git checkout .` with its kin, reading git's `-C`, `-c`, `--git-dir`,
-  `--work-tree` and `--` before the subcommand.
+  of the tree or above it, `sudo`, a push, and `git checkout .` with its kin, reading git's `-C`,
+  `-c`, `--git-dir`, `--work-tree` and `--` before the subcommand (C8).
 - **S5**: A directory's `hooks.toml` is executable configuration: `lion chat` runs what the
   directory holds, so opening a directory is trusting its hooks, as with any tool that reads a local
   config.
@@ -231,3 +263,8 @@ under `-I` with lion's own interpreter.
 - **S7**: On the 50-instance bench, 1722 commands in 733 turns: `run` 982, ordered whichever way,
   and 609 reads; three classes save 253 of 1458 serial steps over two on the 469 turns with two or
   more commands, 17%. One turn wrote 81 commands.
+- **S8**: Owed with D1: a before hook's replacement is a dict or an instance of the Spec, either
+  rebuilt from its fields, since a class is no receipt and a stable validator
+  ([[ADR-0001-the-actor|ADR-0001]] S4) makes the build count immaterial; another class is refused.
+  Each hook then works on a copy (C5), so a change in place changes nothing and only a returned
+  replacement counts.

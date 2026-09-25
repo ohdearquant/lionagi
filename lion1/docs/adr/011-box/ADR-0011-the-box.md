@@ -59,6 +59,7 @@ size control ([[ADR-0007-the-record#^c2|ADR-0007/C2]]). Source: `hub/tools/box.p
 | A2 | An `old` that occurs once is the right unit of an edit.                          | 952 bench turns; ambiguous edits refused ([[ADR-0012-the-bench|ADR-0012]], the bench)    | line-number edits, which drift after one edit  |
 | A3 | A command run after a change is the model's verification, whatever it ran.       | on the bench the run that ran nothing after its edits was wrong; resolved runs ran tests | the gate names the tests it wants         |
 | A4 | The threat a sandbox answers is the host, not the network.                       | a VM with no egress cannot install anything; a console over a project needs to      | the network is off by default                  |
+| A5 | A new file outside a tracked top-level directory is scaffolding, never the fix. | django-12273 in the 952-turn Mini-50 bench run ([[ADR-0012-the-bench#^c9\|ADR-0012/C9]]): a root `repro.py` and a new `tt/` package counted as the fix, and the settle rule stopped the run unresolved after 15 turns | a fix that adds such a file starts no clock, and the gate refuses a finish that holds nothing else |
 
 ## Claims
 
@@ -86,9 +87,9 @@ through a lossy decode would rewrite every bad byte.
 
 `bash` runs one line under `bash -o pipefail -c` from the directory, so `pytest | tail` still fails
 when pytest does; `python` runs source through the box's own environment. The VM mounts the
-console's directory at its own path and a named volume at `/opt` for the environment and its cache;
-the host's home is not there. Each command runs under the guest's `timeout -s KILL`; the host waits
-fifteen seconds longer, then ends its own client.
+console's directory at its own path and a named volume at `/opt` for the environment and its cache,
+and takes the host's time zone as `TZ`; the host's home is not there. Each command runs under the
+guest's `timeout -s KILL`; the host waits fifteen seconds longer, then ends its own client.
 
 The result is rc, stdout, stderr and elapsed, whole. The network is on by default; `--offline`
 attaches an internal network with no DNS, no egress and no reach to the host.
@@ -160,10 +161,11 @@ idle stop.
 ### D1: `hub/tools/box.py` and three boxes ^d1
 
 Serves C1, C2 and C6. `Box`, `BoxBase`, `git_diff`, `inside` and `BoxTree` in `box.py`. The VM
-(`shell.py`) is one container per conversation over the mounted directory. The docker box runs any
-image under `sleep infinity`. The remote box sends stderr to a file behind a per-call marker and
-splits its one stream on it. It is replaced up to three times when it never comes up; a box that
-dies later is named in `dead`, and the bench retries once on a fresh box.
+(`shell.py`) is one container per conversation over the mounted directory. The docker box, named
+`lion-` and eight hex characters, runs any image under `sleep infinity`. The remote box sends stderr
+to a file behind a per-call marker and splits its one stream on it. It is replaced up to three times
+when it never comes up; a box that dies later is named in `dead`, and the bench retries once on a
+fresh box.
 
 - **Landing evidence**: `tests/test_box.py` (the derived verbs, the timeout seam on both transports,
   no deadline reaching `exec` bare), `tests/test_shell.py` and `tests/test_daytona.py` (stubs; the
@@ -173,17 +175,22 @@ dies later is named in `dead`, and the bench retries once on a fresh box.
 
 Serves C3. `code(actor, tree)` registers the three handlers and `files(actor, root)` the two
 readers; the console passes a tree of its directory or of the box, the bench a tree of the box. The
-tools do not know which.
+tools do not know which. Both trees list a directory alike: every entry, hidden ones included,
+sorted, `/` after a directory. An edit gives a new line the ending of the line before it, so a file
+with mixed endings stays mixed.
 
 - **Landing evidence**: `tests/test_code_tools.py` (nine: exactness, the single-file filename, the
-  empty file, CRLF and mixed endings, hidden files, paths that leave the tree).
+  empty file, CRLF and mixed endings, hidden files, paths that leave the tree, the listing);
+  `tests/test_daytona.py`, the box tree's listing.
 
 ### D3: `hub/tools/watch.py`: `Watch`, `Criteria`, `criteria`, `accept` ^d3
 
 Serves C4 and C5. The bench installs `watch.section`, `criteria` under a flag, `accept` as the job's
 gate and the watch's `stop` as the stop rule, asked after the section has looked
-([[ADR-0002-the-run#^c3|ADR-0002/C3]]); a console over a box can do the same. The state the section
-keeps (source, since, stable, checks, passed) is written into the bench's row.
+([[ADR-0002-the-run#^c3|ADR-0002/C3]]); no console path installs it (S11). The state the section
+keeps (source, since, stable, checks, passed) is written into the bench's row. The default
+classifier calls a path a test under a `tests` directory, as a `conftest.py`, or by a `test_*` or
+`*_test.py` name; no caller passes another.
 
 - **Landing evidence**: `tests/test_watch.py` (the classifier, the notice then the stop, checks
   refused and rerun, the finish refused until a command ran, the racing declarations) and the solve
@@ -224,7 +231,8 @@ to; the person picks `--offline` when the directory holds what the network must 
   The gate cannot tell a test the model edited from one it did not; naming the edited test in the
   refusal is the next candidate if that shape repeats.
 - **S6**: The box itself reads and writes anywhere; only the model's tools are bound to the tree.
-  The bench's grader writes its patch through the box.
+  The bench's grader writes its patch through the box. The remote box passes each call's stderr and
+  any stdin, and the push's archive, through files under its own `/tmp`.
 - **S7**: The evaluation image's prelude activates one environment for the model's `bash` and the
   grader's `run`, so both see the same tree state; a timed-out `run` reads 124 where `exec` reads
   137.
@@ -232,3 +240,18 @@ to; the person picks `--offline` when the directory holds what the network must 
   receipts is the kernel's. A box here is a process the model's commands run in apart from this
   machine, its patch the only thing that comes back, and nothing here is a receipt. Two sandboxes
   with receipts neither can see is the fork the kernel's port closes, not this record.
+- **S9**: The gate answers neither of two other miss shapes: a finish it accepts whose fix the
+  grader passes only in part, and a run that reaches its time budget with no accepted finish. Both
+  occur in the two unaided loop bench runs on these tools ([[ADR-0012-the-bench#^c5|ADR-0012/C5]]),
+  where 15 and 18 of 29 misses ended at the time budget.
+- **S10**: The VM's image, `lion-sandbox`, is built from `hub/tools/sandbox/Dockerfile` when a chat
+  starts the VM without it; a failed build ends the chat with the build's tail. It is
+  `python:3.12-slim` with git, ripgrep, jq, curl and `uv`, whose project environment is `/opt/venv`
+  on the `/opt` volume, never the directory's own `.venv`.
+- **S11**: No console path installs the watch. A chat over its own directory whose hooks carry the
+  `tree-changed` round hook ([[ADR-0005-command-handling|ADR-0005]] S4) hears the files changed
+  since the last turn and a moved HEAD; in a boxed chat that hook reads this machine's tree, which
+  the model's tools do not change.
+- **S12**: The derived `read` carries a file out of the box as base64. `git_diff` lists the new
+  files NUL-separated, so a name git would quote reaches the diff as it is; no test pins such a
+  name.

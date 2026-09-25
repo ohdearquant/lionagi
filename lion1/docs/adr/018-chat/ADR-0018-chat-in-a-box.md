@@ -166,7 +166,8 @@ its own.
 
 What the box isolates and may reach, its content-addressed trees, declared write paths and receipts
 belong to the sandboxed executor ([[ADR-0011-the-box|ADR-0011]], the box). The gate is code review
-of anything that gives the chat its own scheduling, or its own path into a box.
+of anything that gives the chat its own scheduling, or its own path into a box. A change to the
+coding guidance, `hub/guidance/code.md`, names the run it was tried on.
 
 ## Decisions
 
@@ -184,11 +185,12 @@ directive as data; `load_log` reads rows back through `entry_of`, the reader the
 
 ### D2: `console()` and the flags on `lion chat` ^d2
 
-Serves C2 and C3. `console` takes the sandbox, the coding flag and a tree, and registers the tools
-over the `Tree`: `LocalTree` of the directory, or a `BoxTree` of the box. `chat_main` builds a
-`Sandbox` VM for `--shell` or `--code`, or for a boxed chat a `DaytonaSandbox` whose workdir is the
-directory's own path, with `--image` defaulting to `python:3.12`. `--model` picks the backend
-([[ADR-0009-backends|ADR-0009]]).
+Serves C2 and C3. `console` takes the sandbox, the coding flag, a tree and `about_box`, and
+registers the tools over the `Tree`: `LocalTree` of the directory, or a `BoxTree` of the box.
+`--box` is `vm` by default, or `daytona`. Under `vm`, `chat_main` builds a `Sandbox` VM for
+`--shell` or `--code`; for a boxed chat, a `DaytonaSandbox` whose workdir is the directory's own
+path, `--image` defaulting to `python:3.12`, and as `about_box` the box guidance naming its kind and
+image. `--model` picks the backend ([[ADR-0009-backends|ADR-0009]]).
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py` (khive only in an actor's directory,
   the root rules, the hooks);
@@ -251,3 +253,14 @@ with no RESULT.
   start fails on import before any box exists.
 - **S7**: The code guidance names the branch of the person's tree and calls the box a VM; in a boxed
   chat the copy's repository starts from the baseline commit alone.
+- **S8**: With `--code` the root's `AGENTS.md` and `CLAUDE.md` enter the guidance whole, and the
+  guidance goes out with every turn's call, so a long rules file adds its length to every turn's
+  input.
+- **S9**: A resumed chat takes its box from the new command's flags, since the chat log records
+  none: `-c` without `--box daytona` continues a boxed chat's record over the person's own tree.
+  With it, edits from an unapplied chat patch stand in the record and not in the copy, and nothing
+  tells the model so; no test resumes a boxed chat. Starting the new copy from the saved chat patch
+  is an open choice, not built.
+- **S10**: Nothing in the chat installs `uv` in a box: the default `python:3.12` is used as
+  published, while the VM's own image copies `uv` into `python:3.12-slim`. The box guidance tells
+  the model to install what the image lacks.

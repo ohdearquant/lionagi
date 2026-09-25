@@ -68,6 +68,10 @@ runtime's: `max_rounds` 100, `max_idle` 3, `max_refusals` 3, no time or cost bud
 and the checks read those. A chair's profile may default to a long context and a desk's to a short
 one; the caller of `run` still sizes the task.
 
+Today the job's field defaults are the only ones: `max_rounds` 10, `max_refusals` 3, no time budget,
+`context_budget` 200,000 and `view_budget` 60,000 ([[ADR-0007-the-record|ADR-0007]]). Nothing is
+resolved or recorded; the checks read the job's fields (D1).
+
 ### C2: Every bound is checked at the turn's start; time and cost also between commands _(enforced: mechanical)_ ^c2
 
 - **Subject**: every turn and every dispatched command.
@@ -76,8 +80,7 @@ one; the caller of `run` still sizes the task.
 
 The turn's first act is the check: turns, idle turns, elapsed time, reported cost and the context
 figure against their bounds. Time and cost are re-read before each handler starts, after its pointer
-waits; handlers already running finish, so a turn overruns by at most those. The check admits and
-reserves nothing: handlers admitted together can each spend the one remainder. `max_idle` counts
+waits; handlers already running finish, so a turn overruns by at most those. `max_idle` counts
 consecutive idle turns; any turn that is not idle resets it.
 
 `context_budget` compares the anchored figure ([[ADR-0006-the-notification#^c4|ADR-0006/C4]]) as the
@@ -85,6 +88,8 @@ last notification left it; over it, the run ends `Exhausted(context)`. A job ove
 backend call is refused as a job error, not a run that ended. The fold runs in the next
 notification, after this check; `view_budget` below the budget ([[ADR-0007-the-record|ADR-0007]])
 keeps a crossing rare.
+
+Today the turn's start checks turns and time alone (S3); the rest is owed.
 
 ### C3: A bound is not an ambush: the model is told what is left, and may ask for more _(enforced: mechanical)_ ^c3
 
@@ -169,7 +174,8 @@ refused and listed under `hooks failed`, so the caller receives the value `accep
 
 - **S1**: A bench instance once ran 23 commands a turn and exited at 1225 s on a 1200 s budget; with
   the between-commands check the overrun is what was already running when the bound was spent: for
-  time, about one command's duration.
+  time, about one command's duration. The check admits and reserves nothing: handlers admitted
+  together can each spend the one remainder.
 - **S2**: The default grant is trust, not a gate: the granting `extend` belongs to an actor with the
   authority once one exists, never to a human on call.
 - **S3**: The remainder is reported, not a final warning: a bound spent inside a backend call or a

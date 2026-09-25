@@ -85,11 +85,13 @@ The default handlers arrive with the actor: the context commands, the note comma
 
 
 `Actor.check` refuses, with `ProfileError`, one whose Specs are not in the Operable or whose
-privileges are not a subset of the actor's; the check runs before any turn. The profile has no
-address, no credentials and no model; the backend is the caller's argument to `run`. Two profiles
-running at once are two concurrent runs of one actor: they share its registry, its bus and its note
-stores, and nothing serialises them. A job value set explicitly overrides the profile's `defaults`
-([[ADR-0003-the-bounds|ADR-0003]]).
+privileges are not a subset of the actor's; the check runs before any turn. A profile whose `specs`
+is None presents the actor's whole Operable, so only its privileges are checked.
+
+The profile has no address, no credentials and no model; the backend is the caller's argument to
+`run`. Two profiles running at once are two concurrent runs of one actor: they share its registry,
+its bus and its note stores, and nothing serialises them. A job value set explicitly overrides the
+profile's `defaults` ([[ADR-0003-the-bounds|ADR-0003]]).
 
 ### C4: A handler runs only under a profile holding what it requires _(enforced: mechanical)_ ^c4
 
@@ -126,7 +128,10 @@ Serves C2 and C3. `Operable.add` refuses name collisions, `Operable.subset` buil
 registry in registration order, and `Actor.check` raises `ProfileError` for over-asking profiles
 before any turn.
 
-- **Landing evidence**: `tests/test_actor.py` and `tests/test_spec.py` in the v1 implementation.
+- **Landing evidence**: `tests/test_actor.py`, `test_a_subset_named_by_a_generator_is_read_once`;
+  its one `ProfileError` case is a name. Owed: a test that a profile naming a Spec outside the
+  Operable, or a privilege beyond the actor, raises `ProfileError` before any turn, and one that
+  `Operable.add` refuses a taken name.
 
 ### D2: The system prompt is generated in four parts ^d2
 
@@ -169,4 +174,4 @@ compares `requires` with the profile's privileges, then runs the before hooks.
   outside its arguments; whether a path exists, an id is the caller's or a service answers is the
   handler's question, behind the gate. A validator is also stable: built again from a canonical
   instance's fields it yields the same fields, so how many times a Spec was built changes nothing
-  (ADR-0005/C4).
+  (ADR-0005/C4, S8).

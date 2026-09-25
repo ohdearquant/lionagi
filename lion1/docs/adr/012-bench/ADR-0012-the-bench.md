@@ -92,6 +92,10 @@ A box that dies is replaced once, and the first attempt's spend stays on the row
 only known cost and counts the rows that are not whole. The ledger keeps the row without its calls
 and patch; the instance's own file keeps both.
 
+A CLI row's `usage_complete` is false when the exec failed in transport, a started turn went
+unmetered, or the budget killed the run, whose last turn never reports; no test pins the budget
+kill.
+
 ### C3: A run id is one bench run, and a launch that disagrees is refused before anything is written _(enforced: mechanical)_ ^c3
 
 - **Subject**: every launch of the set runner.
@@ -132,8 +136,8 @@ fix. With the code hosts closed, the same instances resolved 21 and 24.
 Those first closed bench runs could still reach the package indexes, and 8 loop runs and 4 CLI runs
 asked them for a later release; their rows carry no `aided` field. With both closed, on the box's
 tools in place of the bench's earlier commands, the loop resolved 16 of 45 in each of two bench
-runs; the drop is not attributed to either change. The gate: a count quoted as a harness result
-names bench runs whose rows say `aided: false`.
+runs, the second with `--tdd`; the drop is not attributed to either change. The gate: a count quoted
+as a harness result names bench runs whose rows say `aided: false`.
 
 ### C6: The settle and criteria stops are off by default; the gate on `OUT{}` is always on _(enforced: mechanical)_ ^c6
 
@@ -167,7 +171,8 @@ rows names its own.
 
 Two bench runs are compared only on the same instances, the same model name and the same budgets,
 and a change to the loop is read against the bench run before it, with the head each ran at. The
-manifests carry all of it; the runner checks none of it across run ids.
+manifests carry all of it; the runner checks none of it across run ids. One bench run on each side
+does not judge a change.
 
 The recorded unaided pair on the hard set shares one head but ran the loop under a 2400 s budget and
 the CLI under 3600 s. A CLI arm's `rounds` counts the commands it ran, and its calls are one entry

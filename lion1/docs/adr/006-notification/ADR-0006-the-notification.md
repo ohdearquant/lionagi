@@ -129,7 +129,7 @@ fold measures the estimate plus the reported context above the run's floor
 
 Serves C1 to C4. The view is folded once for the size estimate and the out-of-view diff, then the
 lines are joined; the context line is written after the fold has settled the view; `settled`,
-`refused`, `failed`, `unknown`, `notes_written` and `hooks_failed` are emptied in the same call. The
+`refused`, `failed`, `unknown`, `notes_written` and `hook_errors` are emptied in the same call. The
 entry is on the record before the backend is called, so a backend that raises ends the run with the
 diagnostics on the record (ADR-0002/C4).
 
@@ -156,5 +156,9 @@ diagnostics on the record (ADR-0002/C4).
   next reported count corrects it.
 - **S4**: A section has no timeout: one that hangs holds the turn, where a hook is cut at its
   `timeout` (ADR-0005/A4).
-- **S5**: The `still running:` line cannot appear while a turn gathers its commands before the next
-  notification (ADR-0005/C2); it stays until the turn's wait is decided (ADR-0002/S4).
+- **S5**: The `still running:` line is written when a command is pending at the notification, and
+  none is today: each turn gathers every command it dispatched before the next notification
+  ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]), and a command leaves `pending` on every exit
+  ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]).
+  `test_a_reused_alias_is_refused_and_never_reads_as_still_running` pins the absence. The line
+  becomes reachable when a turn waits for its references only ([[ADR-0002-the-run|ADR-0002]] S4).

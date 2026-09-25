@@ -1,7 +1,7 @@
 ---
 adr: ADR-0007
 status: draft
-liveness: operating (the note read pinned per command, the captures on the entry, the consumed directive and the fold by date are owed)
+liveness: operating (the note read pinned per command, the captures on the entry, the consumed directive, the fold by date and the cross-profile note read are owed)
 date: "2026-09-23"
 area: record
 kind: new
@@ -37,13 +37,14 @@ any command ([[ADR-0005-command-handling|ADR-0005]]). Source: `lionagi/record.py
 - **fold**: the pass that applies the directives in record order and renders the view.
 - **fold event**: the runtime's own hide directive, made when the view crosses `view_budget`.
 
-- **placeholder**: how a hidden RESULT renders: its name and size.
+- **placeholder**: the line a hidden entry renders as: its name and size, with a RESULT's alias and
+  Spec or another entry's kind.
 - **`view_budget`**: the view size past which the runtime folds by itself (ADR-0003).
 - **context commands**: `context.hide(refs)`, `context.show(refs)`, `context.summarize(refs, text)`;
   default handlers of every actor.
 - **note**: a value written under a `note.` key that outlives the run, per profile.
-- **note store**: the notes' carrier: memory for the actor's lifetime, or one JSON file per profile
-  under `notes_dir`.
+- **note store**: the notes' carrier: the store a profile brings, else memory for the actor's
+  lifetime, or one JSON file per profile under `notes_dir`.
 - **note commands**: `note.list(prefix)`, `note.find(query)`, `note.get(key)`, `note.delete(key)`;
   default handlers of every actor.
 
@@ -54,6 +55,7 @@ any command ([[ADR-0005-command-handling|ADR-0005]]). Source: `lionagi/record.py
 | A1 | An append-only view keeps the provider's prefix cache warm; a fold moves the prefix, so traffic saved is not spend saved. | on the bench: cache hit 90.6% through the loop; uncached input 1 to 2k tokens per call; an outside study where a condensed run cost more | C2's event should fold earlier, or never |
 | A2 | Hiding an old result behind a placeholder costs no success.                                                | SWE-agent on SWE-bench Verified: raw 53.4% at $1.29, masked 54.8% at $0.61, summarized 53.8% at $0.64 per trajectory | the fold event owes a summary, and a model call to write it |
 | A3 | One JSON file per profile is enough for the note volumes an actor writes.                                  | assumption; a 50-instance bench run wrote 6 notes in 952 turns                                                          | C5's carrier is replaced, the interface kept    |
+| A4 | The model curates its own view once a task is long enough to need it. | assumption; 9 context commands in 952 turns of short bench tasks (S3) | the runtime owes a summarizer of its own |
 
 ## Claims
 
@@ -89,8 +91,8 @@ pointer reaches (ADR-0005/C5).
 
 Every entry stays in view where it landed: one render adds to the last and the provider's prefix
 holds. INPUT is never hidden (`fold_inputs` excepted, [[ADR-0009-backends#^c3|ADR-0009/C3]]).
-Directives apply in record order. A hidden RESULT renders as a placeholder (name, size), one
-summarised as its summary. A value is never truncated: it stays whole on the record, a pointer away.
+Directives apply in record order. A hidden entry renders as a placeholder, one summarised as its
+summary. A value is never truncated: it stays whole on the record, a pointer away.
 
 Past `view_budget` (60,000 tokens, ADR-0009/C3) the runtime hides the oldest RESULTs the model has
 seen until the view is near half the budget, by one directive on the notification per crossing. With
@@ -148,6 +150,30 @@ carries the run and sequence that wrote it and its version. The carrier is memor
 `note.list` returns key, size, run and version for an exact prefix; `note.find` refuses a blank
 query. Reading another profile's notes is not built.
 
+### C6: A context command names only entries on the record _(enforced: mechanical)_ ^c6
+
+- **Subject**: the refs of every `context.hide`, `context.show` and `context.summarize`.
+- **Violated when**: a context command naming anything not on the record stores a directive or
+  settles ok.
+
+One ref that names no entry, a result of the same turn not yet landed included, fails the whole
+command with the names it could not find, and no directive is stored, so none stands that hides
+nothing. The fold skips a name that resolves to nothing, which a directive read back from a log row
+without `seqs` can carry, so no directive crashes it; no test pins the skip.
+
+### C7: A note is kept as given, and found without regard to case _(enforced: mechanical)_ ^c7
+
+- **Subject**: every put to a note store, and every `note.find`.
+- **Violated when**: an overwrite removes a key, the file store writes or coerces a value JSON
+  cannot carry, or `note.find` misses a note whose key or value holds the query in another case.
+
+A put replaces the value whole and raises the note's version, an empty value included, so a key
+leaves the store only by a delete, `note.delete` for the model. The file store refuses a value JSON
+cannot carry before it writes anything. `note.find` returns each hit's first 120 characters as its
+preview, with its size, run and version. A store the profile brings (`Profile.notes`) replaces the
+actor's for every run of that profile. No test pins the empty overwrite, the 120-character cut or a
+brought store.
+
 ## Decisions
 
 ### D1: `record.py` and `fold` ^d1
@@ -162,11 +188,13 @@ summary text; `_notify` calls it once per turn for the size, the out-of-view dif
 
 ### D2: Directives ride the entry that made them ^d2
 
-Serves C3 and C4. The RESULT for a command; the notification for the fold event and the consumed
+Serves C3, C4 and C6. The RESULT for a command; the notification for the fold event and the consumed
 marks, the closure for the marks of a last turn; no separate directive log, because each carries its
-date and a resumed chat replays them by folding.
+date and a resumed chat replays them by folding. `_perform` pins the targets' sequences as it stores
+a command's directive, and stores none when a ref names nothing on the record.
 
-- **Landing evidence**: `test_a_hidden_result_is_a_placeholder_and_a_summarized_one_is_not`.
+- **Landing evidence**: `test_a_hidden_result_is_a_placeholder_and_a_summarized_one_is_not`,
+  `test_a_directive_naming_nothing_on_the_record_is_refused_not_stored_empty`.
 
 ### D3: `notes.py` with a memory store and a file store ^d3
 
@@ -178,6 +206,16 @@ the `note.` declaration, a program's assignment and `note.delete`, is one put on
 gate on writing, when decided, is one place.
 
 - **Landing evidence**: `tests/test_notes.py`; the bench records carry the live writes.
+
+### D4: The stores take a value as given, and `_note_find` cuts the preview ^d4
+
+Serves C7. `put` on either store keeps the value it is handed; the file store first tries
+`json.dumps` on it and raises `ValueError` before it takes its lock. `_note_find` slices the value's
+text at 120 characters, and `Actor.notes_for` returns `Profile.notes` before it looks for a store of
+its own.
+
+- **Landing evidence**: `test_a_file_note_store_refuses_a_value_the_file_cannot_carry` and
+  `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`.
 
 ## Alternatives
 
@@ -207,3 +245,12 @@ gate on writing, when decided, is one place.
 - **S5**: A single RESULT larger than the view budget has no rule: it renders whole, the fold never
   hides what the model has not seen, and the backend's own limit is what ends the run. A sized
   preview with the value kept whole is proposed in review and not decided.
+- **S6**: Reading another profile's notes is decided as its own default command, naming the profile
+  and gated by a privilege ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]); it is owed, with a test that a
+  profile lacking the privilege is refused.
+- **S7**: A fold event makes the provider re-read, once, what stays in view after the first entry it
+  hides, and spares every later turn the hidden tokens. Folding to half the budget keeps that
+  re-read no larger than about what was hidden, so the event pays for itself within about r turns, r
+  being the provider's price for re-read input over its price for cached input.
+- **S8**: Hidden entries in a row render as one placeholder line naming each of them; no test pins
+  the grouping.

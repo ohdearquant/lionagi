@@ -38,7 +38,8 @@ symbolic LNDL design are not part of this runtime; the program form is
 - **value declaration**: `<lvar>`: names a value under an alias; with `spec.field` before the alias
   it fills one output field.
 - **command**: a request dispatched to a handler: a `<lact>`, naming one Spec with its arguments, or
-  `OUT{}` lowered to the `out` command ([[ADR-0003-the-bounds|ADR-0003]]).
+  `OUT{}`, lowered to the `out` command once [[ADR-0003-the-bounds#^d3|ADR-0003/D3]] lands; today
+  the loop assembles it itself.
 - **`OUT{}`**: the declaration of done: names the aliases and literals that fill the output's
   fields.
 - **alias**: the name the model gives a value or a command's result.
