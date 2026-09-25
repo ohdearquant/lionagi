@@ -193,7 +193,9 @@ gate on writing, when decided, is one place.
 
 - **S1**: One render differs from the last by what was appended, so the provider's prefix holds
   until a directive moves it.
-- **S2**: A run checkpoint (sequence plus note store version) is not built; only a chat resumes.
+- **S2**: A run checkpoint exists only for the long-running agent's continuous run, replayed as
+  history ([[ADR-0013-the-agent#^c7|ADR-0013/C7]]); any other run keeps only its note store and does
+  not resume; a chat does.
 - **S3**: The context layer is barely exercised on short tasks (109 `<lvar>`, 6 notes, 9 context
   commands in 952 bench turns); long tasks are where it is measured.
 - **S4**: A `note.` declaration is a write no hook and no privilege gates: the store is the

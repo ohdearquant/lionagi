@@ -32,7 +32,7 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0009 | Backends and the context figure: three shapes, the `Reply` count, the floor, the session restart | draft (2026-09-25); the subscription CLI's count and the mixed-response refusal owed | the inference driver: a binding row, the served model read from the response; here the envelope keeps the response's model and compares nothing |
 | ADR-0010 | Delegation between actors: `queue`, the handle, the answer as a settled command, the reply, no graph object | draft (2026-09-25); no bench exercises the path | principals and mail; in-process peers are one layer, the long-running agent another |
 | ADR-0011 | The box: one shape for three boxes, the coding tools over a tree, the watch and its gate, the patch | draft (2026-09-25); the real-box tests opt-in | the sandboxed executor: content-addressed trees, declared write paths, receipts |
-| ADR-0013 | The long-running agent | unwritten | the process: one identity per process, lease by turn activity, one supervisor |
+| ADR-0013 | The long-running agent: the wake, the send gate and the hop count, the caps, the cursor and posture, the lock, the continuous run and its checkpoint | draft (2026-09-25) | the process: one identity per process, lease by turn activity, one supervisor |
 | ADR-0012 | The bench as the instrument | unwritten | the instrument contract |
 | ADR-0014 | The instrument contract | unwritten | none |
 | ADR-0015 | Chores | unwritten | none |
@@ -40,14 +40,16 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0017 | The desk: front desk, record answers, areas and chairs | unwritten | mail settlement by keyed replay |
 | ADR-0018 | Chat in a box | unwritten | none |
 
-Order of writing: 0013 next, then 0012 and 0014 to 0018, product-side. Each record is written
+Order of writing: 0012 and 0014 to 0018, product-side. Each record is written
 from the code first; the vocabulary below is fixed before any of them. 0009 landed 2026-09-25 and
 amended 0004 D2, 0006 C4 and S3, and 0007 C2 to the code of 2026-09-24: the fold measures the
 estimate plus the reported context above the run's floor, `fold_inputs` folds earlier inputs, and a
 session-keeping backend starts over from the folded view. 0010 landed 2026-09-25 from the same code and
 amended nothing: it names the long-running agent's mail as the other layer and leaves the process
 boundary to 0013. 0011 landed 2026-09-25 and amended nothing: the box, the tools and the watch as the code
-holds them, with the executor over content-addressed trees named as the boundary.
+holds them, with the executor over content-addressed trees named as the boundary. 0013 landed 2026-09-25 and amended
+0010 C4 (mail is the wake's input, or one inbound while a run continues) and 0007 S2 (the continuous run's
+checkpoint is built and replays as history).
 
 ## Decided in the records (2026-09-23)
 
@@ -109,6 +111,15 @@ holds them, with the executor over content-addressed trees named as the boundary
   ran against it; the patch is printed and saved and lands only on `--apply` (0011 C3, C4, C5, C6).
 - An executor over content-addressed trees with declared write paths and receipts is below the boundary;
   a box here is a process apart from this machine whose patch is the only thing that comes back (0011 S8).
+- One identity per process held by a kernel lock on the agent's directory; a wake takes its mail as one
+  batch, marked read before anything acts, and runs it once; the cursor is written running before the run
+  and a lost batch is told to the owner (0013 C1, C2, C3).
+- Every send a handler makes goes through one gate that charges the hop count first, under a lock, a key
+  charged once; the caps hold a wake and the mail waits unread; the agent writes the posture, never the
+  runtime; a continuous run carries many wakes and its checkpoint carries the record across a restart
+  (0013 C4, C5, C6, C7).
+- The identity and its grants, the lease by turn activity, the supervisor and the durable record are below
+  the boundary; the agent holds a lock and nothing more (0013 S10).
 
 ## Open
 
@@ -145,11 +156,11 @@ area) · steward (who hears instrument failures).
   calling" means no schema is forwarded, not that a rewritten call is inert.
 - The sandbox (0011, done): network on by default, `--offline` for none; the VM has egress.
 - The watch (0011, done): an edited test still counts as a command run (0011 S5).
-- Delegation vs the agent (0010 done, 0013): in-process peers (one process, several actors, the bench) and
+- Delegation vs the agent (0010, 0013, done): in-process peers (one process, several actors, the bench) and
   the long-running agent (one identity per process) are two layers; 0010 says which applies where, 0013
   carries the agent's side: one inbound per wake, `send` under `comm.send`, the hop count at one gate.
-- The bench actor's report (0013): every send goes through `Agent.deliver`; if code bypasses it, the
-  record says so as a limit, not a claim.
+- The bench actor's report (0013, done): every send goes through `Agent.deliver`; the two bypasses are
+  named as a limit in 0013 S4.
 - Citations (0001 A1, 0009): bench numbers belong with the run they came from (1976 calls / 952 turns /
   3 output errors), never with the 50-instance table; thinking-budget rows are in the bench record or not
   cited.
@@ -158,6 +169,7 @@ area) · steward (who hears instrument failures).
   marks; `desk_pending` and the ledger row: a failed wake re-lists the message. Unknown-send settlement
   is keyed replay or leave, never chronology. Every model-facing command is listed in one claim with its
   gate; code-only escalations separately. `Agent.admit` drops untrusted senders before any model call.
-- Posture (0013): `OUT{posture}` is written to the notes by the agent's handler, not by the runtime.
+- Posture (0013, done): `OUT{posture}` is written to the notes by the agent's own code, not by the runtime
+  (0013 C6).
 - Serving prohibitions since lifted are not carried (0014, 0016).
 - The diff-landing fork is closed by "print and save, `--apply`" (0011 C6 done, 0015).

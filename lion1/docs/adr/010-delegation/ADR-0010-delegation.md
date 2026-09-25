@@ -112,11 +112,11 @@ A group of actors is a set of handlers that queue to each other; no scheduler st
 actors, and delegation is one round trip on two records. Nothing in this record reaches another
 process.
 
-The long-running agent (ADR-0013, not yet written) is the other layer. Mail arrives on its run's
-inbox as one inbound from "the inbox"; an answer goes out as a `send` command that requires the
-`comm.send` privilege; every send goes through `Agent.deliver`, which charges the thread's hop count
-before the transport. The gate is code review of anything that proposes a scheduler above the
-actors, or a second send path.
+The long-running agent ([[ADR-0013-the-agent|ADR-0013]]) is the other layer. Mail arrives as one
+INPUT, the wake's input or one inbound from "the inbox" while a run continues; an answer goes out as
+a `send` command that requires the `comm.send` privilege; every send goes through `Agent.deliver`,
+which charges the thread's hop count before the transport. The gate is code review of anything that
+proposes a scheduler above the actors, or a second send path.
 
 ## Decisions
 
@@ -163,7 +163,7 @@ long-running agent is the something outside the loop that runs the actor.
 - **S5**: The boundary: who may ask whom, the lineage of an ask, ending a peer with the asker,
   authority that narrows as it passes down, and delivery across processes are not decided here.
   In-process peers are a test and bench convenience; the long-running agent's mail is the
-  process-side form (ADR-0013, not yet written).
+  process-side form ([[ADR-0013-the-agent#^c2|ADR-0013/C2]]).
 - **S6**: An answer whose origin actor is not in the registry is dropped with no event; a reply to
   an actor that never runs again waits on its inbox for the process's life.
 - **S7**: The ask stays on the table until read only since 2026-09-20; before, a handler that
