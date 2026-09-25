@@ -155,7 +155,7 @@ the program's problems.
 ### D2: Native tool calls are rebuilt at the backend boundary ^d2
 
 Serves C4. `tool_calls_text` is applied by the OpenRouter backend when the message content is empty
-(ADR-0009, backends, not yet written); the refusal of a mixed response lands at the same boundary
+([[ADR-0009-backends#^d1|ADR-0009/D1]]); the refusal of a mixed response lands at the same boundary
 and is owed; `normalize` handles DeepSeek markup and swallowed closers.
 
 - **Landing evidence**: `tests/test_openrouter.py` and `tests/test_lndl.py`.

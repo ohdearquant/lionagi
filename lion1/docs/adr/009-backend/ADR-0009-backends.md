@@ -1,0 +1,233 @@
+---
+adr: ADR-0009
+status: draft
+liveness: partial (the router and both shapes of the session CLI operate and report the count; the subscription CLI hands back no count; the mixed-response refusal is owed)
+date: "2026-09-25"
+area: backend
+kind: new
+depends_on:
+  - "[[ADR-0002-the-run|ADR-0002]]"
+  - "[[ADR-0004-the-language|ADR-0004]]"
+  - "[[ADR-0006-the-notification|ADR-0006]]"
+  - "[[ADR-0007-the-record|ADR-0007]]"
+tags:
+  - adr
+  - runtime
+  - backend
+---
+
+# ADR-0009: Backends and the context figure
+
+## Context
+
+The runtime has to run on whatever program runs the model: an API reached through a router, a CLI on
+a subscription with its acting features switched off, a CLI that keeps its own conversation and may
+run its own tools inside a turn. The loop knows none of this. This record fixes what a backend is,
+what it hands back beside the text, what it keeps for whoever reads the spend, and the one number
+the runtime derives from it: the context figure [[ADR-0006-the-notification|ADR-0006]] prints and
+[[ADR-0003-the-bounds|ADR-0003]] bounds on.
+
+The backend is the caller's argument to `run` ([[ADR-0001-the-actor|ADR-0001]]), called once per
+turn ([[ADR-0002-the-run|ADR-0002]]); a native tool call in its answer is read back as text
+([[ADR-0004-the-language|ADR-0004]]); the fold it must follow is [[ADR-0007-the-record|ADR-0007]].
+Which model a name resolves to, through which route and on whose key, and whether the model that
+answered is the one named, are decided below this boundary: here a backend is built with a model
+name and answers with text. Source: `Backend`, `Reply` and the anchor in `lionagi/actor.py`;
+`hub/harness/openrouter.py`, `hub/harness/claude_code.py`, `hub/harness/codex.py`.
+
+## Definitions
+
+- **backend**: a function from the view, as messages, to the model's text; the caller's argument to
+  `run`. It acts on nothing.
+- **call**: one invocation of the backend: one per turn, awaited when it is awaitable.
+- **attempt**: one request a call sends; a call retries on a transient failure and answers from its
+  last attempt.
+- **prompt count**: the provider's own count of the prompt an attempt sent: fresh input, cache read
+  and cache write together.
+- **`Reply`**: the text a backend hands back with the prompt count of the attempt that answered, or
+  none when the provider did not say.
+- **envelope**: what a backend keeps per call beside the text: usage, cost, attempts, timing, the
+  provider's finish reason; a failed call keeps one too.
+- **session**: a CLI conversation a backend keeps across calls, one per run, each call sending only
+  what the view gained.
+- **floor**: the least a run's prompt count has stood above the view estimate sent with it: the
+  backend's own fixed context, which no fold takes off.
+
+## Assumptions
+
+| #  | statement                                                                                                                         | source                                                                                                                                                                                                    | if false                                                                                              |
+| -- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| A1 | A provider's prompt count is the size of the context the model saw on that attempt.                                               | the router's `usage.prompt_tokens`; the session CLI's input, cache read and cache write per turn; on 4,240 bench calls the count read 1.20 times the view estimate plus 1,695 ([[ADR-0006-the-notification#Assumptions\|ADR-0006/A3]]) | the anchor is exact about the wrong prompt; the figure returns to the estimate                        |
+| A2 | A CLI with its acting features switched off is a chat completion.                                                                 | with the flags in `hub/harness/codex.py` the CLI cannot run a command, search or spawn, measured on its 0.153 release; the session CLI under `--tools ""` and one turn                                    | C1's CLI backends are agents, and their acts pass no gate ([[ADR-0005-command-handling\|ADR-0005]])   |
+| A3 | What a count stands above the view at its least is fixed context; what it later stands above that is history the record never saw. | the session CLI reads 34k cached input per call with its settings loaded against 3.9k without; on a served run one call read 14.8M tokens over its tool turns while the estimate never moved (2026-09-24) | the fold fires every turn past a budget the fixed context exceeds, or never sees the tool turns       |
+
+## Claims
+
+### C1: A backend is a function from the view to the model's text, and acts on nothing _(enforced: mechanical)_ ^c1
+
+- **Subject**: every backend handed to `run`.
+- **Violated when**: a backend acts on the world, forwards a tool schema, executes a native tool
+  call, or hands back anything but the model's text.
+
+The loop renders the view, calls the backend once per turn, awaits the result when it is awaitable,
+and reads the text; a `Reply` is text. Three shapes are built. The router sends the view as a real
+message array, the head as system and later notifications as user, so the provider's prefix cache
+holds.
+
+The subscription CLI takes the view as one transcript with its roles marked, every acting feature
+off by flag and a chat framing in place of its agent instructions. The session CLI keeps one
+conversation per run (C4). A native tool call in a router answer with empty content is rebuilt as
+the tag text ([[ADR-0004-the-language#^c4|ADR-0004/C4]]); beside content it is dropped today, and
+the refusal is owed.
+
+### C2: A backend hands back the prompt count of the attempt that answered _(enforced: mechanical)_ ^c2
+
+- **Subject**: every backend response, and the loop's reading of it.
+- **Violated when**: the count handed back is a sum over attempts, a boolean or a non-positive value
+  anchors the figure, or the record keeps anything but plain text.
+
+The count rides the `Reply`; the loop reads it and the record keeps the text as a plain string. The
+router hands back the answering attempt's `usage.prompt_tokens`; its envelope sums every attempt for
+the bill, and a sum of two prompts is the size of neither.
+
+The session CLI hands back the last model turn's input, cache read and cache write when the CLI
+prints per-turn usage, else the call's sum over its turn count, an average that reads low. The
+subscription CLI keeps its usage on the envelope and hands back no count (S3). A boolean is an
+integer in Python, so a value that is not a positive integer is ignored.
+
+### C3: The fold measures the estimate plus the reported context above the floor _(enforced: mechanical)_ ^c3
+
+- **Subject**: the fold event and the context figure of every notification.
+- **Violated when**: the fold fires on the estimate alone while a count stands above the view beyond
+  the floor, or the floor is folded, scaled or measured.
+
+Per run the runtime keeps the last count with the estimate sent beside it, the summed growths, and
+the floor. What the count stands above the estimate beyond the floor is history the record never
+saw: a session CLI's tool turns.
+
+The fold event ([[ADR-0007-the-record#^c2|ADR-0007/C2]]) compares the estimate plus that excess
+against `view_budget`. Under `fold_inputs` earlier inputs and replies fold too, the latest input
+stays. Over the budget with nothing older to fold, the event still rides the notification and a
+session starts over (C4). The figure is the count plus the estimated growth since, or on a shrink
+the count less what left at the run's rate ([[ADR-0006-the-notification#^c4|ADR-0006/C4]]); the
+floor stays in the figure, out of the measure.
+
+### C4: A session sends only what the view gained, and starts over from the folded view on a directive or the fold event _(enforced: mechanical)_ ^c4
+
+- **Subject**: every call on a session backend.
+- **Violated when**: a call after a context directive or a fold resumes the old conversation, a view
+  that only shrank without one restarts it, or two runs share a session.
+
+Every message names its run; the backend keeps a session per run id, so two runs through one backend
+never share a conversation. A caller naming no run falls back to content: a first entry with other
+content, or another system prompt, is another run. A call sends the entries not yet sent; a view
+that only shrank resends the notification.
+
+When a new entry is a context directive's result or the notification carrying the fold event, the
+session starts over from the folded view: one cache miss, and the CLI's tool-turn history goes with
+the old session. That restart bounds a run whose CLI runs its own tools (A3). Cost accumulates over
+a session; the envelope keeps this call's delta.
+
+### C5: Every call lands an envelope, failed ones too, and only a transient failure is retried _(enforced: mechanical)_ ^c5
+
+- **Subject**: every backend call.
+- **Violated when**: a billed attempt's usage is lost, a failed call lands no envelope, a 401 or 403
+  is retried, or a subscription's cost is written as a number.
+
+The router retries with backoff on a 429, a 5xx, a transport failure and an errored choice; a 200
+carrying the provider's error is retried only by that error's code. An empty finished answer is
+sampled again, then handed over blank. Usage sums every attempt; the cost is the known subtotal,
+flagged when an attempt is missing from it; a call that fails after a billed attempt lands a failed
+envelope carrying the bill.
+
+The subscription CLI retries a transport failure or an empty answer, keeps every attempt's usage,
+and writes its cost as unknown, never zero. A refused CLI turn rides its cost on the error.
+Cancelling a call kills and reaps the CLI child before the cancellation goes on.
+
+## Decisions
+
+### D1: The router backend in `hub/harness/openrouter.py` ^d1
+
+Serves C1, C2 and C5. `OpenRouter(model, ...)` posts the view with usage included and `max_tokens`
+32768: at 8192, 3 of 125 turns that wrote 40 to 52 actions were cut mid-tag. Temperature, provider
+routing, reasoning control and stop sequences are the caller's options; the thinking budget and the
+stop on the notification frame are ruled on in the bench record (ADR-0012, not yet written). The key
+comes from the environment or the keychain, never logged. `tool_calls_text` rebuilds a native call
+when the content is empty; `calls` keeps the envelopes.
+
+- **Landing evidence**: `tests/test_openrouter.py`: the count of the attempt that answered, the
+  retried errored choice, the billed failure kept, the native call handed back as text.
+
+### D2: The two CLI shapes in `hub/harness/claude_code.py` ^d2
+
+Serves C1, C2, C4 and C5. `ClaudeCode` runs the CLI once per turn: tools off, one turn, no settings
+loaded, strict MCP config. `ClaudeCodeSession` resumes one CLI session per run and restarts it on a
+directive or the fold mark; for a served run it may hand the CLI its own tools, a working directory
+and one MCP. Both hand back the last turn's count from the CLI's per-turn usage when printed.
+Cancellation kills and reaps the child.
+
+- **Landing evidence**: `tests/test_claude_code.py`: both shapes hand back this call's count, the
+  last turn's when several ran, the session resumed with only the new entries, restarted by a
+  directive and by the fold, one session per run, cancellation stopping the child.
+
+### D3: The subscription CLI backend in `hub/harness/codex.py` ^d3
+
+Serves C1 and C5. `Codex` runs the CLI once per turn in a scratch directory with every acting
+feature disabled: spawning removed by `agents.max_depth=0` (the feature flag alone does not), web
+search off, a chat framing replacing the base instructions, the environment context dropped. A
+private home holding a symlinked login is used when given. The view goes in as one transcript; usage
+comes from the `turn.completed` event; cost is unknown. It hands back plain text (S3).
+
+- **Landing evidence**: `tests/test_codex.py`: the transcript in and the usage shaped, the transient
+  retry with attempts recorded, the empty answer retried with both attempts counted, the failed
+  envelope, cancellation joining the child.
+
+### D4: The anchor at the call site and the floor in `_notify` ^d4
+
+Serves C2 and C3. After each call `Actor.run` reads `prompt_tokens` off the reply, keeps the pair
+(count, estimate sent) as the run's anchor, adds to the summed growths when the view grew, lowers
+the floor to the least excess seen, and hands the record `str(text)`. `_notify` measures the folded
+view, adds the excess above the floor, folds on that measure, then writes the figure from the
+anchor.
+
+- **Landing evidence**: `tests/test_actor.py`: the figure as the last count plus the view added
+  since, the fold at the measured rate, the fold deciding on the reported context and folding old
+  inputs, a plain string on the record, a boolean not a count.
+
+## Alternatives
+
+| approach                                                        | rejected because                                                                                                                       |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| The provider's tool schema as the channel                       | a wire format per provider and an await per call; the language carries the requests instead (ADR-0004)                               |
+| One backend                                                     | the bench needs the same model through two harnesses, and a served run works on a subscription CLI                                    |
+| Counting the prompt in the runtime with a tokenizer             | a dependency per provider; the provider's count is exact for the prompt it saw, and free (ADR-0006)                                   |
+| Anchoring on the envelope's summed usage                        | a retried call bills two prompts; the sum is the size of neither                                                                       |
+| Resending the whole transcript to the CLI each turn             | the prefix never caches: 160k tokens in for one five-round exchange, measured 2026-09-23                                               |
+| Scaling a shrunk count by the view's ratio                      | it scales the fixed context too, which never shrinks: up to 96% off at a fold in simulation, 5% by the run's rate                      |
+| Folding by editing the CLI's history                            | the conversation is the CLI's; only a restart from the folded view applies the fold, at one cache miss                                 |
+| Reading the served model off the response and refusing a mismatch | which model a name binds to is decided below the boundary; the envelope keeps the response's model and compares nothing (S5)         |
+
+## Consequences
+
+- **S1**: A subscription CLI has no cost figure: the spend is unknown, never zero, and a reader that
+  sums it says so.
+- **S2**: The same model through the loop and through its own CLI is comparable in one box
+  (ADR-0012, the bench, not yet written).
+- **S3**: The subscription CLI hands back no count, so a run on it keeps the view estimate as its
+  figure and folds on the estimate alone; handing back the input count of its `turn.completed` event
+  is owed.
+- **S4**: A session call whose CLI ran several tool turns reports the last turn's context only when
+  the CLI prints per-turn usage; otherwise the average reads low, and the figure with it, until the
+  next call.
+- **S5**: The boundary: which model a name resolves to, through which route, on whose key, and
+  whether the model that answered is the one named, are not decided here. The router's envelope
+  keeps the response's `model`; the subscription CLI's keeps the name requested; nothing compares
+  them.
+- **S7**: The session CLI's default model emits thinking on the language path, about 330 output
+  tokens for a 30-token turn; a dollar figure is read from a run's envelopes, never from a price
+  table.
+- **S8**: The figure is an estimate for one turn after a session starts over from the folded view
+  (C4); the next count corrects it ([[ADR-0006-the-notification|ADR-0006]] S3).
+- **S9**: A backend that raises ends the run by its exception ([[ADR-0002-the-run#^c4|ADR-0002/C4]])
+  with the notification already on the record ([[ADR-0006-the-notification#^d1|ADR-0006/D1]]); the
+  reap of a cancelled call at the run's end is owed there ([[ADR-0002-the-run|ADR-0002]] S4).

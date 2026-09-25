@@ -29,7 +29,7 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0006 | The notification, and the closure | operating; closure owed | context assembly: the runtime's typed section |
 | ADR-0007 | The record, the view, the fold, context commands, notes | operating; captures, dated directives, consumed mark owed | the durable record, visibility directives, the store families |
 | ADR-0008 | The program: compile then run, control results, curated view | unimplemented | the request program |
-| ADR-0009 | Backends and the context figure (the token anchor of 2026-09-23) | unwritten | the inference driver: a binding row, the served model read from the response |
+| ADR-0009 | Backends and the context figure: three shapes, the `Reply` count, the floor, the session restart | draft (2026-09-25); the subscription CLI's count and the mixed-response refusal owed | the inference driver: a binding row, the served model read from the response; here the envelope keeps the response's model and compares nothing |
 | ADR-0010 | Delegation between actors | unwritten | principals and mail; in-process peers are one layer, the long-running agent another |
 | ADR-0011 | The box: sandbox, boxes, coding tools, the watch | unwritten | the sandboxed executor: content-addressed trees, declared write paths, receipts |
 | ADR-0013 | The long-running agent | unwritten | the process: one identity per process, lease by turn activity, one supervisor |
@@ -40,9 +40,12 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0017 | The desk: front desk, record answers, areas and chairs | unwritten | mail settlement by keyed replay |
 | ADR-0018 | Chat in a box | unwritten | none |
 
-Order of writing: 0009, 0010, 0011, 0013 next, in that order, because each is the in-process side of a
+Order of writing: 0010, 0011, 0013 next, in that order, because each is the in-process side of a
 kernel concern the port has to read; 0012 and 0014 to 0018 after, product-side. Each record is written
-from the code first; the vocabulary below is fixed before any of them.
+from the code first; the vocabulary below is fixed before any of them. 0009 landed 2026-09-25 and
+amended 0004 D2, 0006 C4 and S3, and 0007 C2 to the code of 2026-09-24: the fold measures the
+estimate plus the reported context above the run's floor, `fold_inputs` folds earlier inputs, and a
+session-keeping backend starts over from the folded view.
 
 ## Decided in the records (2026-09-23)
 
@@ -77,6 +80,17 @@ from the code first; the vocabulary below is fixed before any of them.
   check covers reference, control and effect edges (0008 C1, C7, D1).
 - A run that reads a profile's notes and writes none is a read-only view of the same store, refusing at
   the one put; not built (0007 S4).
+- A backend is a function from the view to the model's text and acts on nothing; it hands back the
+  prompt count of the attempt that answered, never a sum over attempts, and the record keeps plain
+  text; every call lands an envelope, failed ones too, only a transient failure is retried, and a
+  subscription's spend is unknown, never zero (0009 C1, C2, C5).
+- The fold measures the estimate plus what the last count stands above it beyond the run's floor; the
+  floor, the backend's fixed context, stays in the figure and out of the measure; a session-keeping
+  backend starts over from the folded view on a directive or the fold event, one session per run
+  (0009 C3, C4).
+- Which model a name binds to, through which route and on whose key, and whether the served model is
+  the one named, are below the boundary; the envelope keeps the response's model and compares nothing
+  (0009 S5).
 
 ## Open
 
@@ -108,9 +122,9 @@ area) · steward (who hears instrument failures).
 
 - Notes (0007, done): the commands are `note.list`, `note.find`, `note.get`, `note.delete` and the
   `note.` prefix write; a blank find matches nothing.
-- Backends and the turn (0004, 0009): a native tool call is read back as the LNDL tag the model wrote, or
-  as an `auto_` lact, and is then dispatched like any command; "never depends on native tool calling"
-  means no schema is forwarded, not that a rewritten call is inert.
+- Backends and the turn (0004, 0009, done): a native tool call is read back as the LNDL tag the model
+  wrote, or as an `auto_` lact, and is then dispatched like any command; "never depends on native tool
+  calling" means no schema is forwarded, not that a rewritten call is inert.
 - The sandbox (0011): network on by default, `--offline` for none; the VM has egress.
 - The watch (0011): an edited test still counts as a command run.
 - Delegation vs the agent (0010, 0013): in-process peers (one process, several actors, the bench) and the

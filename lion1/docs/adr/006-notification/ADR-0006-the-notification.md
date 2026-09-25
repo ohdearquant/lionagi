@@ -113,14 +113,15 @@ that raises is told as `section failed:` and the turn goes on.
   while a count for this run exists.
 
 A backend may hand back a `Reply` carrying the provider's prompt count for the call (fresh input,
-cache read and cache write together; ADR-0009, backends, not yet written). The runtime pairs that
+cache read and cache write together; [[ADR-0009-backends#^c2|ADR-0009/C2]]). The runtime pairs that
 count with the view estimate it sent. While the view grows, the figure is the last count plus the
 estimated growth since.
 
 When the view shrinks (a fold or a `context.hide`), the figure takes off what left at the run's
 measured rate, the reported growth over the estimated growth summed across the run's calls, and
 never below the estimate. A backend that reports nothing leaves the figure at the view estimate; the
-fold budget (ADR-0007) always uses the estimate.
+fold measures the estimate plus the reported context above the run's floor
+([[ADR-0009-backends#^c3|ADR-0009/C3]]).
 
 ## Decisions
 
@@ -150,8 +151,9 @@ diagnostics on the record (ADR-0002/C4).
 - **S1**: A name is told once when it leaves the view, and the model can bring it back by name.
 - **S2**: The notification is the one place a section can steer the model; the bench's settle and
   criteria lines live there (ADR-0012, the bench, not yet written).
-- **S3**: The figure dips for one turn after a fold on a backend that keeps its own conversation and
-  ignores the fold (ADR-0009, backends, not yet written); the next reported count corrects it.
+- **S3**: The figure is an estimate for one turn after a fold on a backend that keeps its own
+  conversation, which starts over from the folded view ([[ADR-0009-backends#^c4|ADR-0009/C4]]); the
+  next reported count corrects it.
 - **S4**: A section has no timeout: one that hangs holds the turn, where a hook is cut at its
   `timeout` (ADR-0005/A4).
 - **S5**: The `still running:` line cannot appear while a turn gathers its commands before the next

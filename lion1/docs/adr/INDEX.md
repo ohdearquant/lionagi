@@ -10,6 +10,7 @@
 | [ADR-0006](006-notification/ADR-0006-the-notification.md) | 006-notification | draft | operating (the closure entry is owed) | ADR-0003, ADR-0002, ADR-0005 |
 | [ADR-0007](007-record/ADR-0007-the-record.md) | 007-record | draft | operating (the note read pinned per command, the captures on the entry, the consumed directive and the fold by date are owed) | ADR-0002, ADR-0006 |
 | [ADR-0008](008-program/ADR-0008-the-program.md) | 008-program | draft | unimplemented | ADR-0004, ADR-0005, ADR-0007 |
+| [ADR-0009](009-backend/ADR-0009-backends.md) | 009-backend | draft | partial (the router and both shapes of the session CLI operate and report the count; the subscription CLI hands back no count; the mixed-response refusal is owed) | ADR-0002, ADR-0004, ADR-0006, ADR-0007 |
 
 ## By topic
 
@@ -21,3 +22,4 @@
 - **006-notification**, ADR-0006: The notification
 - **007-record**, ADR-0007: The record, the view and the notes
 - **008-program**, ADR-0008: The program
+- **009-backend**, ADR-0009: Backends and the context figure

@@ -88,15 +88,15 @@ pointer reaches (ADR-0005/C5).
   budget or twice per crossing, a directive crashes the fold, or a value is truncated.
 
 Every entry stays in view where it landed: one render adds to the last and the provider's prefix
-holds. INPUT is never hidden. Directives apply in record order. A hidden RESULT renders as a
-placeholder (name, size), one summarised as its summary. A value is never truncated: it stays whole
-on the record, a pointer away.
+holds. INPUT is never hidden (`fold_inputs` excepted, [[ADR-0009-backends#^c3|ADR-0009/C3]]).
+Directives apply in record order. A hidden RESULT renders as a placeholder (name, size), one
+summarised as its summary. A value is never truncated: it stays whole on the record, a pointer away.
 
-Past `view_budget` (60,000 estimated tokens) the runtime hides the oldest RESULTs the model has seen
-until the view is near half the budget, by one directive on the notification per crossing. With none
-left the fold stops short (ADR-0003/C2). A RESULT a program consumed is hidden the same way, by a
-directive dated at the consumption ([[ADR-0008-the-program#^c5|ADR-0008/C5]]): the one value hidden
-unseen.
+Past `view_budget` (60,000 tokens, ADR-0009/C3) the runtime hides the oldest RESULTs the model has
+seen until the view is near half the budget, by one directive on the notification per crossing. With
+none left the fold stops short (ADR-0003/C2). A RESULT a program consumed is hidden the same way, by
+a directive dated at the consumption ([[ADR-0008-the-program#^c5|ADR-0008/C5]]): the one value
+hidden unseen.
 
 ### C3: The context commands move the view and never the record _(enforced: mechanical)_ ^c3
 
