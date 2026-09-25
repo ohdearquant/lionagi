@@ -151,9 +151,9 @@ Cancelling a call kills and reaps the CLI child before the cancellation goes on.
 Serves C1, C2 and C5. `OpenRouter(model, ...)` posts the view with usage included and `max_tokens`
 32768: at 8192, 3 of 125 turns that wrote 40 to 52 actions were cut mid-tag. Temperature, provider
 routing, reasoning control and stop sequences are the caller's options; the thinking budget and the
-stop on the notification frame are ruled on in the bench record (ADR-0012, not yet written). The key
-comes from the environment or the keychain, never logged. `tool_calls_text` rebuilds a native call
-when the content is empty; `calls` keeps the envelopes.
+stop on the notification frame are ruled on in the bench record ([[ADR-0012-the-bench|ADR-0012]]).
+The key comes from the environment or the keychain, never logged. `tool_calls_text` rebuilds a
+native call when the content is empty; `calls` keeps the envelopes.
 
 - **Landing evidence**: `tests/test_openrouter.py`: the count of the attempt that answered, the
   retried errored choice, the billed failure kept, the native call handed back as text.
@@ -212,7 +212,7 @@ anchor.
 - **S1**: A subscription CLI has no cost figure: the spend is unknown, never zero, and a reader that
   sums it says so.
 - **S2**: The same model through the loop and through its own CLI is comparable in one box
-  (ADR-0012, the bench, not yet written).
+  ([[ADR-0012-the-bench|ADR-0012]], the bench).
 - **S3**: The subscription CLI hands back no count, so a run on it keeps the view estimate as its
   figure and folds on the estimate alone; handing back the input count of its `turn.completed` event
   is owed.

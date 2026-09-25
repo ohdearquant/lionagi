@@ -30,7 +30,7 @@ A chat is one run ([[ADR-0002-the-run|ADR-0002]]) whose job carries a `wait` and
 ([[ADR-0003-the-bounds|ADR-0003]]); its record and its fold are those of
 [[ADR-0007-the-record|ADR-0007]], and its directory's hooks run as
 [[ADR-0005-command-handling|ADR-0005]] says. The box, the trees the tools work and the executor that
-isolates them are the kernel's concern, reached through ADR-0011 (the box, not yet written). The
+isolates them are the kernel's concern, reached through [[ADR-0011-the-box|ADR-0011]] (the box). The
 chat is a console over the loop and decides none of them. Source: `hub/chat.py`; `console`,
 `prepare_box`, `take_patch`, `unsettled` and `chat_main` in `apps/cli/lion_cli/chat.py`; the `chat`
 parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`; `hub/guidance/`.
@@ -165,8 +165,8 @@ hooks are the loop's, unchanged. The console composes tools the hub already has;
 its own.
 
 What the box isolates and may reach, its content-addressed trees, declared write paths and receipts
-belong to the sandboxed executor (ADR-0011, the box, not yet written). The gate is code review of
-anything that gives the chat its own scheduling, or its own path into a box.
+belong to the sandboxed executor ([[ADR-0011-the-box|ADR-0011]], the box). The gate is code review
+of anything that gives the chat its own scheduling, or its own path into a box.
 
 ## Decisions
 
@@ -230,16 +230,16 @@ with no RESULT.
 ## Consequences
 
 - **S1**: The boundary: the sandboxed executor, its content-addressed trees, the write paths a box
-  declares, its receipts and what it may reach are the kernel's (ADR-0011, the box, not yet
-  written). The chat reaches them only through the tools the console registers.
+  declares, its receipts and what it may reach are the kernel's ([[ADR-0011-the-box|ADR-0011]], the
+  box). The chat reaches them only through the tools the console registers.
 - **S2**: What resumes is the record. The notes outlive every chat anyway, one file per profile
   under `.lion/notes/`. The VM is new per chat, the round budget and the spend count start again,
   and a boxed chat starts from a fresh push of the directory as it stands: an earlier chat patch
   left unapplied is not in the new copy.
 - **S3**: A run ended mid-turn does not resume ([[ADR-0007-the-record#^c4|ADR-0007/C4]]). Beside the
   chat, `lionagi/checkpoint.py` and `lion context` take and restore checkpoints of named values and
-  a folded view. A new process of the long-running agent (ADR-0013, not yet written) replays its
-  last checkpointed record as history, and refuses one that no longer folds to the checkpoint's
+  a folded view. A new process of the long-running agent ([[ADR-0013-the-agent|ADR-0013]]) replays
+  its last checkpointed record as history, and refuses one that no longer folds to the checkpoint's
   view.
 - **S4**: The chat log holds every value whole; the console prints a result as one line. The closing
   line sums the cost on every call's envelope, failed attempts included; a call whose envelope

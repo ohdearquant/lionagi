@@ -181,7 +181,7 @@ form, the pointer rule, and the turn rule; it is the second part of every system
 ## Consequences
 
 - **S1**: The syntax tax is under 1% of messages; the remaining misses on the bench are time budget
-  and declared-done-wrong (ADR-0012, the bench, not yet written).
+  and declared-done-wrong ([[ADR-0012-the-bench|ADR-0012]], the bench).
 - **S2**: A repaired reading can be wrong; the model is told and can rewrite, and the record keeps
   the raw message.
 - **S3**: The context layer is barely exercised on short tasks: 109 `<lvar>`, 6 notes and 9 context

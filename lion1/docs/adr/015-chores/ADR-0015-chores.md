@@ -28,8 +28,8 @@ measurement says. A quiet chore sends the owner nothing.
 
 This record fixes what a chore is, which chores the code holds, when one runs and as whom, what it
 may not do, and how its result lands. What an instrument hands back is the instrument contract
-(ADR-0014, not yet written); the wake a chore runs inside, the process and its identity lock belong
-to the long-running agent (ADR-0013, not yet written).
+([[ADR-0014-the-instrument|ADR-0014]]); the wake a chore runs inside, the process and its identity
+lock belong to the long-running agent ([[ADR-0013-the-agent|ADR-0013]]).
 
 The handlers run only under a profile holding `comm.send` ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]),
 and mail between processes is the layer [[ADR-0010-delegation#^c4|ADR-0010/C4]] names. Source:
@@ -77,7 +77,7 @@ leaves the run unanswered.
 
 No findings is quiet: a row, and no mail beyond the answer a question is owed. Findings are a report
 to the owner. An escalation, marked so, goes to the owner and the steward; the agent never performs
-the remedy. A chore runs as one command inside a wake (ADR-0013, not yet written).
+the remedy. A chore runs as one command inside a wake ([[ADR-0013-the-agent|ADR-0013]]).
 
 ### C2: The chores are the ones `chores.toml` names, from a fixed set of twelve _(enforced: mechanical)_ ^c2
 
@@ -162,8 +162,8 @@ handler reads and writes the agent's notes by key. A chore has no diff to land.
 Its hand-run form is print and save: `lion agent --check <chore>` runs the instrument alone, prints
 it and saves the same text in the agent directory's `landing` folder, one file per chore and day; it
 sends nothing and writes no row. Where the product does make a diff, the box's copy, the diff is
-printed and saved, and `--apply` writes it (ADR-0011, not yet written). The gate is code review of
-an instrument's argv and of any tool the chores profile gains.
+printed and saved, and `--apply` writes it ([[ADR-0011-the-box|ADR-0011]]). The gate is code review
+of an instrument's argv and of any tool the chores profile gains.
 
 ### C7: A report names its prior, is told once per recipient, and the steward hears only what the owner did not answer _(enforced: mechanical)_ ^c7
 
@@ -256,7 +256,7 @@ bypasses the handler: no refusals, no row, no send.
 - **S1**: The boundary: a scheduled run of a process, its timer, lifetime, identity and supervisor,
   is the kernel's and is not decided here. Here the period is a reminder in the store that arrives
   as mail, and a chore is the in-process form: one handler call inside a wake of the long-running
-  agent (ADR-0013, not yet written).
+  agent ([[ADR-0013-the-agent|ADR-0013]]).
 - **S2**: The store boundary is enforced in the process: a client run by hand from the agent
   directory is not bounded, and no store-side refusal is relied on.
 - **S3**: The missed-tick read takes one page of 200 scheduled rows and filters to the actor in

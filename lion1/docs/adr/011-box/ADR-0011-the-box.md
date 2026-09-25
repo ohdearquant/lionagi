@@ -56,7 +56,7 @@ size control ([[ADR-0007-the-record#^c2|ADR-0007/C2]]). Source: `hub/tools/box.p
 | #  | statement                                                                        | source                                                                              | if false                                       |
 | -- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------- |
 | A1 | Every box has bash, coreutils `timeout`, git and `cat`.                          | the evaluation images, `python:3.12-slim`, the console's own image                  | `exec` needs a per-box guard and a file API    |
-| A2 | An `old` that occurs once is the right unit of an edit.                          | 952 bench turns; ambiguous edits refused (ADR-0012, the bench, not yet written)    | line-number edits, which drift after one edit  |
+| A2 | An `old` that occurs once is the right unit of an edit.                          | 952 bench turns; ambiguous edits refused ([[ADR-0012-the-bench|ADR-0012]], the bench)    | line-number edits, which drift after one edit  |
 | A3 | A command run after a change is the model's verification, whatever it ran.       | on the bench the run that ran nothing after its edits was wrong; resolved runs ran tests | the gate names the tests it wants         |
 | A4 | The threat a sandbox answers is the host, not the network.                       | a VM with no egress cannot install anything; a console over a project needs to      | the network is off by default                  |
 
@@ -217,7 +217,7 @@ to; the person picks `--offline` when the directory holds what the network must 
   fast and a broken one is cleared by removing the volume. A chat that dies without `stop` leaves a
   VM named after the chat; a leaked remote box stops after sixty idle minutes and is then deleted.
 - **S3**: A bench run on these tools measures these tools: a change to `code` or `shell` moves the
-  bench number (ADR-0012, the bench, not yet written).
+  bench number ([[ADR-0012-the-bench|ADR-0012]], the bench).
 - **S4**: `search` in an image without `rg` falls back to `grep -rE`, which reads no ignore files;
   the evaluation images are such.
 - **S5**: A model that edits and finishes in one turn pays one more turn, and the refusal says why.

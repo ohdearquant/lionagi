@@ -27,11 +27,12 @@ clearance, a count whose population nobody can check, and a value hovering under
 news every time. This record fixes what an instrument is, what its measurement carries, what it may
 do, and how a failure is told and to whom.
 
-The chore that schedules an instrument and delivers what it says is ADR-0015 (chores, not yet
-written); the desk answers mail with instruments (ADR-0017, the desk, not yet written); the bench
-has its own record (ADR-0012, the bench, not yet written). Source: `hub/agent/instruments.py`;
-`Instrument`, `Outcome`, `Chores._vet` and `Chores._dead` in `hub/agent/chores.py`; `Record` in
-`hub/agent/lookups.py`; `build`, `render` and `land` in `apps/cli/lion_cli/agent.py`.
+The chore that schedules an instrument and delivers what it says is [[ADR-0015-chores|ADR-0015]]
+(chores); the desk answers mail with instruments ([[ADR-0017-the-desk|ADR-0017]], the desk); the
+bench has its own record ([[ADR-0012-the-bench|ADR-0012]], the bench). Source:
+`hub/agent/instruments.py`; `Instrument`, `Outcome`, `Chores._vet` and `Chores._dead` in
+`hub/agent/chores.py`; `Record` in `hub/agent/lookups.py`; `build`, `render` and `land` in
+`apps/cli/lion_cli/agent.py`.
 
 ## Definitions
 
@@ -148,10 +149,10 @@ one default floor of 300 GiB; an empty list declines every floor.
 ### C7: An instrument reads and acts on nothing _(enforced: process)_ ^c7
 
 An instrument reads: `gh` reads, `git` reads, `ps`, `launchctl print`, `df`, `find` and `du`, and
-the store through the agent's bounded client, which admits only the verbs on its list (ADR-0015,
-chores, not yet written). It writes only its snapshot or cursor to the agent's note store
-([[ADR-0007-the-record#^d3|ADR-0007/D3]]) and sends nothing; the report is the handler's. A remedy,
-a restart or a removal, is the owner's.
+the store through the agent's bounded client, which admits only the verbs on its list
+([[ADR-0015-chores|ADR-0015]], chores). It writes only its snapshot or cursor to the agent's note
+store ([[ADR-0007-the-record#^d3|ADR-0007/D3]]) and sends nothing; the report is the handler's. A
+remedy, a restart or a removal, is the owner's.
 
 The command runner has no read list of its own, and `verdict-freshness` may run an enumerator
 command from the config as given. The gate is review of each instrument's commands.
@@ -262,7 +263,7 @@ Nothing is sent, no ledger row is written, and `_vet` is not called.
 
 - **S1**: A chore is an instrument with a cadence and a delivery path. The tick, the ledger row, the
   three ends (quiet, report, escalate), the thread of the day, the repeat rule, the digest and the
-  aged pass are ADR-0015's (chores, not yet written); this record owns what the instrument hands
+  aged pass are [[ADR-0015-chores|ADR-0015]]'s (chores); this record owns what the instrument hands
   over and what is refused.
 - **S2**: A snapshot instrument writes its snapshot inside its run, before any report lands. A
   transition is not reported to the owner again when its report was not delivered, or when a run off
@@ -281,7 +282,7 @@ Nothing is sent, no ledger row is written, and `_vet` is not called.
   `source_event` over whatever the args name.
 - **S7**: The bench's scripts hand back no measurement of this shape. The instrument that touches
   the bench is `bench-jobs`, which reads the jobs the bench actor noted; whether the bench meets
-  this contract is ADR-0012's (the bench, not yet written).
+  this contract is [[ADR-0012-the-bench|ADR-0012]]'s (the bench).
 - **S8**: The boundary: this record is product-side and names no kernel concern. An instrument reads
   with the credentials and namespace its process was started with; a read they deny is a failed
   control, or an empty answer the control must catch (A1).

@@ -48,7 +48,7 @@ reports are [[ADR-0003-the-bounds|ADR-0003]]; the hook failures it lists come fr
 | #  | statement                                                                             | source                                                                                            | if false                                   |
 | -- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------ |
 | A1 | A settled value is read once, in full, in its RESULT; the notification only names it. | the view keeps a new RESULT in full for the turn it arrives (ADR-0007)                          | C2 must carry values, and the view doubles |
-| A2 | The state of the thing being worked on is what a long run needs most from the system. | on the bench, the watch's line turned settled-wrong misses into resolved runs (ADR-0011 and ADR-0012, the box and the bench, not yet written) | C3's sections are decoration               |
+| A2 | The state of the thing being worked on is what a long run needs most from the system. | on the bench, the watch's line turned settled-wrong misses into resolved runs ([[ADR-0011-the-box|ADR-0011]] and [[ADR-0012-the-bench|ADR-0012]], the box and the bench) | C3's sections are decoration               |
 | A3 | Four characters per token is a good enough estimate for what the view added since the last call. | measured on 4,240 bench calls: the provider's prompt count read 1.20 times the view estimate plus 1,695, so the anchored figure's median error is 0.7% against 24.6% unanchored | C4 needs a tokenizer |
 
 ## Claims
@@ -150,7 +150,7 @@ diagnostics on the record (ADR-0002/C4).
 
 - **S1**: A name is told once when it leaves the view, and the model can bring it back by name.
 - **S2**: The notification is the one place a section can steer the model; the bench's settle and
-  criteria lines live there (ADR-0012, the bench, not yet written).
+  criteria lines live there ([[ADR-0012-the-bench|ADR-0012]], the bench).
 - **S3**: The figure is an estimate for one turn after a fold on a backend that keeps its own
   conversation, which starts over from the folded view ([[ADR-0009-backends#^c4|ADR-0009/C4]]); the
   next reported count corrects it.

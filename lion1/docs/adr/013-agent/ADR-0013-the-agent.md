@@ -264,7 +264,7 @@ the process's first run.
   keeps the values in force.
 - **S7**: The watch is a second box polled beside the agent's own for the same wait; its notices are
   named apart on the cursor and never rerun, and a failed watch costs the agent's own mail nothing.
-  The front desk sets it (ADR-0017, the desk, not yet written).
+  The front desk sets it ([[ADR-0017-the-desk|ADR-0017]], the desk).
 - **S8**: The mail watch, a chore that confirms a script's class on tracked mail each tick
   (`hub/agent/mail.py`), sends through `Agent.deliver` and is not decided here.
 - **S9**: The first run of any process replays the directory's latest checkpoint when it is a

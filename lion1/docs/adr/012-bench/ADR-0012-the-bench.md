@@ -27,7 +27,7 @@ comparison arm runs a coding CLI inside the same box, as the whole harness, on t
 
 This record fixes what the bench measures, what it keeps per instance, how a bench run is named and
 repeated, what may be read against what, and why the number is unaided. The box, its tools and the
-watch over the tree are ADR-0011's (the box, not yet written); the backend and its envelope are
+watch over the tree are [[ADR-0011-the-box|ADR-0011]]'s (the box); the backend and its envelope are
 [[ADR-0009-backends|ADR-0009]]. Source: `bench/swe/run_set.py`, `bench/swe/run_swe.py`,
 `bench/swe/codex_cli.py` and `bench/swe/sandbox.py`; `bench/swe/run_naked.py` for the older
 host-side baseline.
@@ -263,6 +263,7 @@ model has no cost.
 - **S7**: A CLI row's `outcome` is read off the exec's exit code and names no run outcome; only a
   loop row's is one.
 - **S8**: The boundary: what any instrument declares, returns and reports when it fails, and who
-  hears it, is the instrument contract (ADR-0014, the instrument contract, not yet written). The
-  bench is one instrument: it returns rows and a ledger, never a run's outcome. Asking for a bench
-  run by mail belongs to the long-running agent (ADR-0013, not yet written).
+  hears it, is the instrument contract ([[ADR-0014-the-instrument|ADR-0014]], the instrument
+  contract). The bench is one instrument: it returns rows and a ledger, never a run's outcome.
+  Asking for a bench run by mail belongs to the long-running agent
+  ([[ADR-0013-the-agent|ADR-0013]]).

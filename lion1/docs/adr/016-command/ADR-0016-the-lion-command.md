@@ -27,7 +27,7 @@ how a one-shot form shares the serving process's lock, and what the command leav
 
 The spend comes from the envelopes a backend keeps per call ([[ADR-0009-backends#^c5|ADR-0009/C5]]);
 the row lives in a note store ([[ADR-0007-the-record#^d3|ADR-0007/D3]]); the wake, the caps and the
-supervision are the long-running agent's (ADR-0013, not yet written). Source:
+supervision are the long-running agent's ([[ADR-0013-the-agent|ADR-0013]]). Source:
 `apps/cli/pyproject.toml`; `main.py`, `agent.py`, `chat.py`, `view.py`, `areas.py` and `context.py`
 in `apps/cli/lion_cli/`; `Agent._claim`, `Agent._usage`, `Agent._spend` and `_line` in
 `hub/agent/agent.py`; `resident` and `wakes` in `hub/areas.py`.
@@ -68,8 +68,8 @@ neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 | `lion agent --dir D --ticks` | the chores' missing reminders | the reminders on the khive schedule; none for a chair |
 | `lion agent --dir D --arm` | the identity read and the boundary probes (D2) | a landing file; exit 0 only when every probe holds |
 | `lion agent --dir D --stats` | a read of the notes and the ledgers (C4) | nothing |
-| `lion chat` | a console actor over a directory (ADR-0018, not yet written) | `.lion/chats/<id>.jsonl` with a usage row per call; notes under `.lion/notes`; a box's patch, applied only under `--apply` |
-| `lion areas [--serve PORT]` | the residents by area, or a page and its API (ADR-0017, not yet written) | nothing without `--serve`; with it, a resident's `hold`, `wake-now`, `[budget]` keys, `landing/controls.log`, mail, a launchd restart, and checkpoints through the `lion context` functions |
+| `lion chat` | a console actor over a directory ([[ADR-0018-chat-in-a-box|ADR-0018]]) | `.lion/chats/<id>.jsonl` with a usage row per call; notes under `.lion/notes`; a box's patch, applied only under `--apply` |
+| `lion areas [--serve PORT]` | the residents by area, or a page and its API ([[ADR-0017-the-desk|ADR-0017]]) | nothing without `--serve`; with it, a resident's `hold`, `wake-now`, `[budget]` keys, `landing/controls.log`, mail, a launchd restart, and checkpoints through the `lion context` functions |
 | `lion context` `set`, `checkpoint`, `restore`, `status`, `show` | a Claude Code session's checkpoint and restore, no model call | `.khive/context/pending.jsonl`, `<id>.json` and `latest.json` |
 
 The gate is code review of any second console script beside `lion`.
@@ -119,7 +119,7 @@ its `serve.log`; what cannot be read lands as a problem.
 
 The agent reads its own row for its caps: the hour's wakes, the day's cost, the spent fraction a
 `[wake]` rule tests, and a continuous run's stop (ADR-0013). The chores digest prints the day's line
-to the owner (ADR-0015, not yet written). `lion chat` sums its own backend's envelopes for its
+to the owner ([[ADR-0015-chores|ADR-0015]]). `lion chat` sums its own backend's envelopes for its
 closing line.
 
 ### C5: What the command leaves alone _(enforced: process)_ ^c5
@@ -210,9 +210,10 @@ the chat log keeps each envelope's cost as it came, null included.
 ## Consequences
 
 - **S1**: The boundary: the command is product-side and the in-process form of no kernel concern.
-  The process it starts, its identity and its supervision are the long-running agent's (ADR-0013,
-  not yet written); which model a name binds to, through which route and on whose key, stay below
-  [[ADR-0009-backends|ADR-0009]] S5. Two directories naming one actor (A3) are not caught here.
+  The process it starts, its identity and its supervision are the long-running agent's
+  ([[ADR-0013-the-agent|ADR-0013]]); which model a name binds to, through which route and on whose
+  key, stay below [[ADR-0009-backends|ADR-0009]] S5. Two directories naming one actor (A3) are not
+  caught here.
 - **S2**: An unknown cost adds nothing to the row and leaves no mark: a router call whose attempts
   carry no cost figure reads as zero in `cost` while its call counts. The router's `cost_complete`
   flag is not read, and the day's cost cap compares the known sum. A failed session CLI call lands
