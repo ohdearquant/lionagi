@@ -138,8 +138,11 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
     if fm.get("kind") not in KIND:
         out.append(f"kind {fm.get('kind')!r}")
     for dep in fm.get("depends_on") or []:
-        if not _LINK.fullmatch(dep):
+        m = _LINK.fullmatch(dep)
+        if not m:
             out.append(f"depends_on entry is not a wikilink: {dep}")
+        elif m.group(1) not in corpus:
+            out.append(f"depends_on names an unknown record {m.group(1)}")
 
     if not re.search(rf"^# {re.escape(adr)}: ", body, re.M):
         out.append(f"title line is not '# {adr}: ...'")
@@ -210,7 +213,9 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
         if anchor and anchor != "Assumptions":
             if not anchor.startswith("^"):
                 out.append(f"link anchor {anchor!r} is not an item anchor")
-            elif f" {anchor}" not in target.read_text():
+            elif not re.search(
+                rf"^###? .* {re.escape(anchor)}\s*$", target.read_text(), re.M
+            ):
                 out.append(f"link {stem}#{anchor} names no item")
         if alias and not alias.startswith(
             stem.split("-", 2)[0] + "-" + stem.split("-", 2)[1]

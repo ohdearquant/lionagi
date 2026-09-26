@@ -73,7 +73,7 @@ def fmt(text: str) -> str:
 
 
 def main(argv: list[str]) -> int:
-    files = [Path(a) for a in argv] or sorted(ROOT.glob("*/ADR-*.md"))
+    files = [Path(a).resolve() for a in argv] or sorted(ROOT.glob("*/ADR-*.md"))
     changed = 0
     for p in files:
         before = p.read_text()
