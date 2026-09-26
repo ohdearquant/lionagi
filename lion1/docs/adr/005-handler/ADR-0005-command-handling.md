@@ -63,7 +63,7 @@ Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Ha
 
 ## Claims
 
-### C1: One order per command _(enforced: mechanical)_ ^c1
+### C1: One order per command _(enforced: mechanical; owed, S9)_ ^c1
 
 - **Subject**: every `<lact>` the loop dispatches.
 - **Violated when**: a step is skipped, or a refusal carries no reason from the closed set.
