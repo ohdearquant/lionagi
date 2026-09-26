@@ -1,5 +1,7 @@
 import asyncio
 import dataclasses
+import inspect
+import signal
 import time
 
 import pytest
@@ -86,6 +88,27 @@ def test_unsubscribe_stops_delivery_and_a_second_call_changes_nothing():
     bus.emit("c")
     assert seen == ["a"]
     assert others == ["a", "b", "c"]
+
+
+@pytest.mark.xfail(strict=True, reason="known defect: unsubscribe removes an equal registration, not its own")
+@pytest.mark.parametrize("resubscribe", [False, True], ids=["held-twice", "resubscribed"])
+def test_an_unsubscribe_removes_only_its_own_registration_and_then_nothing(resubscribe):
+    bus = Bus()
+    seen = []
+
+    def handler(e):
+        seen.append(e.kind)
+
+    first = bus.subscribe("*", handler)
+    if resubscribe:
+        first()
+    second = bus.subscribe("*", handler)
+    first()
+    first()
+    bus.emit("a")
+    second()
+    bus.emit("b")
+    assert seen == ["a"]
 
 
 def test_a_handler_subscribed_during_an_emit_first_hears_the_next_event():
@@ -216,6 +239,94 @@ def test_drain_returns_when_a_tracked_task_was_cancelled_and_records_no_error():
         assert bus.errors == []
 
     asyncio.run(main())
+
+
+@pytest.mark.xfail(strict=True, reason="known defect: an early cancel leaves the handler's task running")
+def test_cancelling_a_tracked_task_before_it_starts_cancels_the_task_the_handler_returned():
+    async def main():
+        bus = Bus()
+        gate = asyncio.Event()
+        made, ran = [], []
+
+        async def work():
+            await gate.wait()
+            ran.append(True)
+
+        def handler(e):
+            made.append(asyncio.get_running_loop().create_task(work()))
+            return made[0]
+
+        bus.subscribe("*", handler)
+        bus.emit("x")
+        (task,) = bus.tasks
+        task.cancel()  # no await since the emit: the loop has not stepped the task
+        await bus.drain()
+        cancelled = made[0].cancelled()
+        gate.set()
+        await asyncio.gather(*made, return_exceptions=True)
+        assert cancelled and ran == []
+
+    asyncio.run(main())
+
+
+@pytest.mark.xfail(strict=True, reason="known defect: an early cancel leaves the handler's coroutine open")
+def test_cancelling_a_tracked_task_before_it_starts_closes_the_coroutine_the_handler_returned():
+    async def main():
+        bus = Bus()
+        made = []
+
+        async def work():
+            pass
+
+        def handler(e):
+            made.append(work())
+            return made[0]
+
+        bus.subscribe("*", handler)
+        bus.emit("x")
+        (task,) = bus.tasks
+        task.cancel()
+        await bus.drain()
+        state = inspect.getcoroutinestate(made[0])
+        made[0].close()  # the test leaves no unawaited coroutine behind, whatever the bus did
+        assert state == inspect.CORO_CLOSED
+
+    asyncio.run(main())
+
+
+@pytest.mark.skipif(not hasattr(asyncio, "eager_task_factory"), reason="eager tasks arrive in Python 3.12")
+@pytest.mark.xfail(
+    strict=True, raises=TimeoutError, reason="known defect: drain spins on a task that finished early"
+)
+def test_drain_returns_after_a_handler_that_ran_to_its_end_inside_emit():
+    # An eager task runs until its first suspension inside create_task, so a handler with none is
+    # finished before the bus tracks it, and the callback that drops it from `tasks` is still queued
+    # when `drain` looks. From Python 3.12, gathering finished tasks returns without yielding, so that
+    # callback never runs and `drain` loops without end. The alarm bounds the test; a cancel cannot.
+    async def main():
+        asyncio.get_running_loop().set_task_factory(asyncio.eager_task_factory)
+        bus = Bus()
+        seen = []
+
+        async def quick(e):
+            seen.append(e.kind)
+
+        bus.subscribe("*", quick)
+        bus.emit("x")
+        assert seen == ["x"]
+        await bus.drain()
+        assert bus.tasks == set()
+
+    def out_of_time(signum, frame):
+        raise TimeoutError("drain did not return")
+
+    previous = signal.signal(signal.SIGALRM, out_of_time)
+    signal.setitimer(signal.ITIMER_REAL, 2)
+    try:
+        asyncio.run(main())
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def test_drain_with_nothing_scheduled_returns_at_once():
