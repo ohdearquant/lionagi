@@ -154,6 +154,10 @@ def test_a_field_type_is_rendered_the_way_it_is_written(annotation, text):
     assert rendered_type(annotation) == text
 
 
+def test_an_unbound_type_variable_rendering_carries_its_name():
+    assert render_guidance(Box).splitlines()[1].endswith("T")
+
+
 @pytest.mark.xfail(strict=True, reason="known defect: a TypeVar renders with its repr's leading ~")
 def test_an_unbound_type_variable_is_rendered_by_its_name():
     assert render_guidance(Box) == "box\n  item: T"

@@ -61,4 +61,6 @@ skip_covered = true
 
 [tool.mutmut]
 paths_to_mutate = ["lionagi/"]
-tests_dir = ["tests/"]
+pytest_add_cli_args_test_selection = ["tests/"]
+# the exports test reads module source, which mutmut rewrites
+pytest_add_cli_args = ["--ignore=tests/test_exports.py"]
