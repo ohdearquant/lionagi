@@ -20,7 +20,7 @@ import re
 import sys
 from pathlib import Path
 
-from _md import mask_fenced_code
+from _md import mask_fenced_code, physical_lines
 
 ROOT = Path(__file__).resolve().parent.parent  # docs/adr: the scripts live inside the corpus they lint
 STATUS = {
@@ -88,7 +88,7 @@ def frontmatter(text: str) -> tuple[dict[str, object], str]:
     head, _, body = text[4:].partition("\n---\n")
     fm: dict[str, object] = {}
     key = None
-    for line in head.splitlines():
+    for line in physical_lines(head):
         if line.startswith("  - "):
             fm.setdefault(key, []).append(line[4:].strip().strip('"'))  # type: ignore[union-attr]
         elif ":" in line:
@@ -105,7 +105,7 @@ def inventory(body: str) -> tuple[set[str], set[str], set[str]]:
     anchors: set[str] = set()
     consequences: set[str] = set()
     section = None
-    for line in mask_fenced_code(body).splitlines():
+    for line in physical_lines(mask_fenced_code(body)):
         if line.startswith("## "):
             section = line[3:].strip()
             sections.add(section)
@@ -203,7 +203,7 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
     anchors: set[str] = set()
     ids: dict[str, list[int]] = {"C": [], "D": []}
     section = None
-    lines = body.splitlines()
+    lines = physical_lines(body)
     for i, line in enumerate(lines):
         if line.startswith("## "):
             section = line[3:].strip()
@@ -264,7 +264,7 @@ WIDTH = 100
 def fresh_format(body: str) -> list[str]:
     out: list[str] = []
     body = mask_fenced_code(body)
-    lines = body.splitlines()
+    lines = physical_lines(body)
     section = None
     defined: list[tuple[int, str]] = []
     rest: list[str] = []
@@ -317,7 +317,7 @@ def prose(body: str, fm: dict[str, object]) -> list[str]:
             units.setdefault(key, []).append(" ".join(para))
         para.clear()
 
-    for line in body.splitlines():
+    for line in physical_lines(body):
         if line.startswith("## "):
             flush()
             section = line[3:].strip()
