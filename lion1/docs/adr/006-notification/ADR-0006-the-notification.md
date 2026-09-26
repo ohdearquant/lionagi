@@ -160,5 +160,7 @@ diagnostics on the record (ADR-0002/C4).
   none is today: each turn gathers every command it dispatched before the next notification
   ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]), and a command leaves `pending` on every exit
   ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]).
-  `test_a_reused_alias_is_refused_and_never_reads_as_still_running` pins the absence. The line
-  becomes reachable when a turn waits for its references only ([[ADR-0002-the-run|ADR-0002]] S4).
+  `test_a_reused_alias_is_refused_and_never_reads_as_still_running` pins the absence. The decided
+  turn keeps it so: every command settles before the next notification unless an accepted `OUT{}`
+  ends the run ([[ADR-0002-the-run#^c1|ADR-0002/C1]]), so only a path carrying a command into the
+  next turn, which no record decides, would reach it.

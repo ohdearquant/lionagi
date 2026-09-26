@@ -174,10 +174,11 @@ and a change to the loop is read against the bench run before it, with the head 
 manifests carry all of it; the runner checks none of it across run ids. One bench run on each side
 does not judge a change.
 
-The recorded unaided pair on the hard set shares one head but ran the loop under a 2400 s budget and
-the CLI under 3600 s. A CLI arm's `rounds` counts the commands it ran, and its calls are one entry
-per exec, so turns and calls compare within an arm only. The gate: a quoted comparison names both
-bench runs and states every difference their manifests show.
+The recorded pair on the hard set with the code hosts closed, not unaided since the CLI arm could
+reach the package indexes (S2), shares one head but ran the loop under a 2400 s budget and the CLI
+under 3600 s. A CLI arm's `rounds` counts the commands it ran, and its calls are one entry per exec,
+so turns and calls compare within an arm only. The gate: a quoted comparison names both bench runs
+and states every difference their manifests show.
 
 ### C9: The figures other records cite belong to named bench runs, never to the Mini-50 table _(enforced: process)_ ^c9
 

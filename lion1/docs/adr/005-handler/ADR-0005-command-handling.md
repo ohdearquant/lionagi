@@ -68,11 +68,11 @@ Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Ha
 - **Subject**: every `<lact>` the loop dispatches.
 - **Violated when**: a step is skipped, or a refusal carries no reason from the closed set.
 
-The name is in the profile's subset, else `unknown`. Pointers are dereferenced, waiting on any still
-running, then the effect wait (C6); a pointer to nothing is `invalid`, so is one leading back to its
-own command. The arguments validate against the Spec, else `invalid`. The handler's `requires` is
-within the profile's privileges, else `privilege`. The before hooks run (C4), else `refused`. The
-handler runs, and the after hooks see its result.
+The name is in the profile's subset, else `unknown`. After the effect wait (C6), pointers are
+dereferenced, waiting on any still running; a pointer to nothing is `invalid`, so is one leading
+back to its own command. The arguments validate against the Spec, else `invalid`. The handler's
+`requires` is within the profile's privileges, else `privilege`. The before hooks run (C4), else
+`refused`. The handler runs, and the after hooks see its result.
 
 The return lands on the record as `RESULT` under the command's alias, with its `execution` mark; a
 handler that raises produces a failed `RESULT` (`failed`, with the exception) and never breaks the
