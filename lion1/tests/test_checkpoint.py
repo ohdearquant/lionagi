@@ -421,6 +421,32 @@ def test_a_line_that_is_not_a_record_row_is_named_and_nothing_replays(plain, raw
         to_history(c)
 
 
+def test_a_row_whose_text_carries_a_separator_is_one_row_and_a_var_with_one_round_trips(plain):
+    odd = "one\u2028two\x85three\u2029four"  # legal unescaped in a JSON string; str.splitlines breaks at each
+    rec = Record("r0")
+    rec.append(Kind.INPUT, odd, inbound="actor:two")
+    rec.append(Kind.TEXT, "hi back", round=1)
+    path = plain / "r0.jsonl"
+    path.write_text("".join(json.dumps(row_of(e), ensure_ascii=False) + "\n" for e in rec))
+    text = path.read_text()
+    assert odd in text and text.count("\n") == 2 and len(text.splitlines()) == 5
+    c = take(
+        {"record": str(path)},
+        [var("note", "fact", odd)],
+        actor=ACTOR,
+        why="end",
+        budget=100,
+        record=rec,
+        now=AT,
+    )
+    history = to_history(c)
+    assert history == tuple(rec) and history[0].content == odd
+    save(c, plain)
+    again = load(plain)
+    assert again.id == c.id and again.vars[0].value == odd
+    assert to_history(again) == history
+
+
 def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
     turns = [turn(1, "t" * 400), turn(2, "text two"), turn(3, "", kind="event"), turn(4, "text four")]
     view = fold_turns(turns, 100)  # 102 + 4 + 2 + 4: the first goes

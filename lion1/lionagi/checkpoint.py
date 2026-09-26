@@ -431,7 +431,9 @@ def to_history(checkpoint: Checkpoint) -> tuple[Entry, ...]:
         )
     path, n = Path(str(src.get("record"))), int(src.get("seq", 0))
     try:
-        rows = path.read_text().splitlines()
+        # a row ends at a line feed: a JSON string may carry U+2028 or U+0085 unescaped, where
+        # str.splitlines would break the row in two
+        rows = path.read_text().split("\n")
     except OSError as e:
         raise CheckpointError(f"{checkpoint.id}: its record {path} cannot be read: {e}") from None
     entries: list[Entry] = []
