@@ -72,8 +72,8 @@ size control ([[ADR-0007-the-record#^c2|ADR-0007/C2]]). Source: `hub/tools/box.p
 `Box`: `workdir`, `prelude`, `dead`; `start`, `exec(argv, stdin, timeout, env)`, `run(cmd, timeout,
 env)`, `read`, `write`, `diff`, `stop`. `exec` is one argv after the prelude, once, with the streams
 apart, ended in the box at its timeout: rc 137 with `timed_out` set by the clock; no timeout is no
-deadline. `run` is a shell line from `workdir` under `bash -o pipefail`, its combined output, rc 124
-at the timeout.
+deadline but in the VM (S13). `run` is a shell line from `workdir` under `bash -o pipefail`, its
+combined output, rc 124 at the timeout.
 
 `BoxBase` derives `run`, `read` and `write` from `exec` and `diff` from git; a box with a file API
 of its own overrides the two file verbs. `read` refuses a file that is not UTF-8, since an edit
@@ -255,3 +255,6 @@ to; the person picks `--offline` when the directory holds what the network must 
 - **S12**: The derived `read` carries a file out of the box as base64. `git_diff` lists the new
   files NUL-separated, so a name git would quote reaches the diff as it is; no test pins such a
   name.
+- **S13**: The VM box's `exec`, and the `run` derived from it, take a timeout in seconds only: a
+  missing one fails while the in-VM `timeout` guard is formatted, before any command runs, where the
+  docker and remote boxes run with no deadline. No caller passes none today, and no test pins it.

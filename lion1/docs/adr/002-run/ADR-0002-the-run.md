@@ -60,6 +60,7 @@ Source: `Actor.run` in `lionagi/actor.py`.
 | `stop()` is true after the notification                   | nothing                                             | `Stopped(n)`                                                     |
 | the message carries the loop's own `<system round=` frame, or two `OUT{}` | nothing                             | a retry; the error rides the next notification                   |
 | the message has no LNDL                                   | nothing                                             | the run continues, with an idle note                             |
+| the message has `OUT{}` and its fields do not assemble | every command; `OUT{}` waits, then fails to assemble | a retry; the error rides the next notification, a repeat counted (C3) |
 | the message has `OUT{}` and `accept` refuses it | every command; `OUT{}` refused; the turn settles | a retry with the reason; `Refused` after `max_refusals` in a row |
 | the message has `OUT{}` | every command; `OUT{}` waits for what it references, then assembles | `Success` when the fields assemble and `accept` has nothing to say; the rest cancelled and reaped |
 | the message has no `OUT{}`                                | every command                                       | the run continues once they settle                               |

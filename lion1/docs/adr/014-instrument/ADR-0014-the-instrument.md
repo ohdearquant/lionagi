@@ -112,8 +112,9 @@ expect empty by default, the rest do not, and `expect_empty` in the config overr
 
 `Chores._dead` counts the chore's unanswered rows back from the newest. At `dead_after`, three by
 default, it tells the owner and the steward once that the instrument is dead, and marks the chore
-told. An answered run clears the mark, so the next crossing is told again. The desk writes no chore
-ledger row, so a measurement it received does not count here.
+told whether or not either send landed (S11). An answered run clears the mark, so the next crossing
+is told again. The desk writes no chore ledger row, so a measurement it received does not count
+here.
 
 ### C5: First sight is the whole row, then transitions, and a crossing is told once _(enforced: mechanical)_ ^c5
 
@@ -319,3 +320,6 @@ condition, counted and never a finding.
 - **S10**: `comm.probe` returns a page of at most 100 rows and caps its stale count at 1000, where
   1000 means at least that many. `inbox-sla` prints the count as it came, so a capped count reads as
   exact; its population is the rows on the probe pages.
+- **S11**: A dead-instrument notice that reached neither the owner nor the steward still marks the
+  chore told, so that crossing is never told until an answered run clears the mark. Marking the
+  chore only once a send lands is owed; no test sends the notice undelivered.
