@@ -1,7 +1,7 @@
 ---
 adr: ADR-0004
 status: draft
-liveness: operating (the refusal of a mixed response is owed)
+liveness: operating (the refusal of a mixed response and the move of DeepSeek markup into the backend are owed)
 date: "2026-09-23"
 area: language
 kind: new
@@ -29,7 +29,8 @@ dispatch ([[ADR-0005-command-handling|ADR-0005]]) and its reading errors to the 
 ([[ADR-0006-the-notification|ADR-0006]]). `DO`, `if`, `DEF` and the semantic operators of the
 symbolic LNDL design are not part of this runtime; the program form is
 [[ADR-0008-the-program|ADR-0008]]. Source: `lionagi/lndl.py` and the reading half of `Actor.run` in
-`lionagi/actor.py`.
+`lionagi/actor.py`; a provider's own formats are read in the backend
+([[ADR-0009-backends|ADR-0009]]).
 
 ## Definitions
 
@@ -57,7 +58,7 @@ symbolic LNDL design are not part of this runtime; the program form is
 
 | #  | statement                                                                             | source                                                                                                                                    | if false                                |
 | -- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| A1 | A model trained on JSON function calling writes strings the JSON way.                 | the 52 unreadable messages by shape: 21 native tool calls, 16 quotes or line breaks in a literal, 7 bare shell, 4 values written as `<lact>`, 3 OUT errors | C2 buys nothing; the tax is elsewhere   |
+| A1 | A model trained on JSON function calling writes strings the JSON way.                 | 51 of the 52 unreadable messages by shape: 21 native tool calls, 16 quotes or line breaks in a literal, 7 bare shell, 4 values written as `<lact>`, 3 OUT errors | C2 buys nothing; the tax is elsewhere   |
 | A2 | A slip at a call's closers is the call the model meant, short of its closers.         | all 7 closer slips in the residual set finished with `finish_reason=stop`                                                                | C3's repairs execute wrong calls        |
 
 ## Claims
@@ -88,13 +89,14 @@ cannot reads it as a literal.
 ### C2: A heredoc body is verbatim, and its closing line is recognised in four positions _(enforced: mechanical)_ ^c2
 
 - **Subject**: every `<lact>` argument.
-- **Violated when**: text between the opening and closing lines is interpreted, or a closing line in
-  one of the four legal positions is not recognised.
+- **Violated when**: text between the opening and closing lines is interpreted beyond its line
+  endings, or a closing line in one of the four legal positions is not recognised.
 
 The closing line starts with `TAG` and holds nothing else but, optionally, a comma, a closing
-parenthesis, the next `name=`, or the call's closing tag; a longer name is not `TAG`. A heredoc
-never closed ends at its call's first closing tag. An opening in prose or in a string literal is
-text; a closing line right after the opening is an empty body.
+parenthesis, the next `name=`, or the call's closing tag; a longer name is not `TAG`. A CRLF body
+reads as its lines, LF-ended. A heredoc never closed ends at its call's first closing tag. An
+opening in prose or in a string literal is text; a closing line right after the opening is an empty
+body.
 
 Heredocs are lifted before anything else in the call is read, so a script, a shell line or a code
 block needs no escaping. The guidance names this as the first form for a multi-line or quote-bearing
@@ -156,11 +158,13 @@ the program's problems.
 
 ### D2: Native tool calls are rebuilt at the backend boundary ^d2
 
-Serves C4. `tool_calls_text` is applied by the OpenRouter backend when the message content is empty
-([[ADR-0009-backends#^d1|ADR-0009/D1]]); the refusal of a mixed response lands at the same boundary
-and is owed; `normalize` handles DeepSeek markup and swallowed closers.
+Serves C4. The backend adapts a provider's output before `parse` reads it, so `lionagi/lndl.py`
+reads LNDL and knows no provider. `tool_calls_text` is applied by the OpenRouter backend when the
+message content is empty ([[ADR-0009-backends#^d1|ADR-0009/D1]]). `normalize`, which reads DeepSeek
+markup and closes a swallowed closer, moves from the parser into the same backend and is owed there,
+as is the refusal of a mixed response.
 
-- **Landing evidence**: `tests/test_openrouter.py` and `tests/test_lndl.py`.
+- **Landing evidence**: `tests/test_openrouter.py`; the markup tests move with `normalize`.
 
 ### D3: The guidance text names the heredoc first ^d3
 

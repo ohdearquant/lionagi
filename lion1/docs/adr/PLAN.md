@@ -24,7 +24,7 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0001 | The actor and its privileges: Spec, Operable, profile | operating; `defaults` owed | identity, grants, a gate that narrows and never widens |
 | ADR-0002 | The run: the turn table, repeats, stop, four outcomes, the closure | operating; reference-only wait and reap owed | process lifecycle: admission, turn as the unit, terminal states |
 | ADR-0003 | The bounds: the job, run.more, extend, `OUT{}` as a command | partial; the re-check between commands, extend, run.more, cost, context check owed | admission and budgets: minted at spawn, inherited, exhaustion refuses the next call |
-| ADR-0004 | The language: LNDL, commands, values, pointers, lenient reading | operating; mixed-response refusal owed | the request program |
+| ADR-0004 | The language: LNDL, commands, values, pointers, lenient reading | operating; mixed-response refusal and the markup move owed | the request program |
 | ADR-0005 | Command handling: order, the bus, hooks, effect classes | operating; captures, rebuilt replacement, effect wait owed | the tool protocol: declared effects, denial as data, receipts |
 | ADR-0006 | The notification, and the closure | operating; closure owed | context assembly: the runtime's typed section |
 | ADR-0007 | The record, the view, the fold, context commands, notes | operating; captures, dated directives, consumed mark, cross-profile note read owed | the durable record, visibility directives, the store families |
