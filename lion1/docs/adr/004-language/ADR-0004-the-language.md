@@ -48,7 +48,8 @@ symbolic LNDL design are not part of this runtime; the program form is
 - **heredoc**: `field=<<TAG` in a call's arguments, then the lines verbatim, then a closing line
   that starts with `TAG`; the second form of a string argument.
 - **reading**: one attempt to parse a call's body.
-- **repair**: what a reading past the first changed.
+- **repair**: what a reading past the first supplied; escaping a line break inside a string literal
+  changes nothing the model would rewrite, so it is not one.
 - **native tool call**: a provider's structured call in the response, emitted although no tool
   schema was sent.
 - **program**: the same requests written as a script; a profile option
