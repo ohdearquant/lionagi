@@ -54,4 +54,4 @@ def test_every_module_declares_its_exports_as_a_tuple_right_below_its_imports():
         else:
             assert declared == names, f"{f}: __all__ names every public top-level name in source order"
         checked.append(f.name)
-    assert {"__init__.py", "record.py", "spec.py", "bus.py"} <= set(checked)  # both shapes
+    assert {"__init__.py", "record.py", "spec.py", "bus.py", "lndl.py"} <= set(checked)  # both shapes
