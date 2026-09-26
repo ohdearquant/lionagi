@@ -352,7 +352,15 @@ def test_showing_the_first_entry_of_a_summarized_span_keeps_the_rest_of_the_span
 )
 @pytest.mark.parametrize(
     "name",
-    ["_r\u00b2", "_r" + "1" * (sys.get_int_max_str_digits() + 1)],
+    [
+        "_r\u00b2",
+        pytest.param(
+            "_r" + "1" * (sys.get_int_max_str_digits() + 1),
+            marks=pytest.mark.skipif(
+                sys.get_int_max_str_digits() == 0, reason="the interpreter has no int digit limit"
+            ),
+        ),
+    ],
     ids=["superscript-digit", "past-the-int-digit-limit"],
 )
 def test_a_name_whose_digits_int_refuses_resolves_to_nothing_and_cannot_crash_the_fold(name):
@@ -360,6 +368,27 @@ def test_a_name_whose_digits_int_refuses_resolves_to_nothing_and_cannot_crash_th
     direct(r, "hide", name)
     assert r.get(name) is None
     assert shape(fold(r)) == ["_in0", "_r1", "_r2"]
+
+
+@pytest.mark.xfail(
+    strict=True, raises=IndexError, reason="known defect: a negative pinned seq indexes from the end"
+)
+def test_a_pinned_seq_that_names_no_entry_is_skipped_and_cannot_crash_the_fold():
+    r = make(Kind.RESULT)
+    direct(r, "hide", seqs=(-3,))
+    assert shape(fold(r)) == ["_r0", "_r1"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="known defect: a negative pinned seq is taken as the anchor and the target loses its summary",
+)
+def test_a_summary_pinned_beside_a_seq_that_names_no_entry_still_stands_in_front_of_its_target():
+    r = make(Kind.RESULT)
+    direct(r, "summarize", text="kept", seqs=(-1, 0))
+    view = fold(r)
+    assert [v for v in view if v.summary is not None] == [ViewEntry(entry=r.by_seq(0), summary="kept")]
 
 
 # the view, as properties over generated records and directives

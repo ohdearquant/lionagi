@@ -1,4 +1,4 @@
-"""The bus: commands are emitted, never awaited by the loop (ADR-0005/C2).
+"""The bus: events are emitted, and no handler is awaited inline (ADR-0005/C2).
 
 An in-process observer on one event loop. `emit` records the event, calls every matching handler,
 and schedules any coroutine a handler returns as a task the bus tracks. A handler that raises is

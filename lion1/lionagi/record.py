@@ -52,14 +52,14 @@ class Entry:
 
 @dataclass(frozen=True)
 class Directive:
-    """One context command's effect on the view, read off its RESULT entry at fold time."""
+    """One view directive, carried by a context command's RESULT or by a fold event's SYSTEM entry."""
 
     op: str  # hide | show | summarize
     refs: tuple[str, ...]
     text: str = ""
     at: int = 0  # the seq of the entry that carried it: a command's RESULT, or a fold event's SYSTEM
-    seqs: tuple[int, ...] | None = None  # the targets, resolved once when the directive was made; a fold
-    # never resolves a name again
+    seqs: tuple[int, ...] | None = None  # the targets, resolved once when the directive was made; None,
+    # from a log row written before pins existed, makes the fold resolve `refs` by name
 
 
 class Record:
@@ -129,11 +129,11 @@ class Record:
 class ViewEntry:
     entry: Entry
     summary: str | None = None  # when this entry stands in front of a hidden span
-    hidden: bool = False  # a hidden RESULT: rendered as a placeholder that names it, never its value
+    hidden: bool = False  # a hidden entry: rendered as a placeholder that names it, never its value
 
 
 def directives(record: Record) -> list[Directive]:
-    """Context directives in record order: RESULT entries of the context commands carry them."""
+    """Directives in record order, off the RESULT of a context command or the SYSTEM entry of a fold."""
     out = []
     for e in record:
         if e.kind in (Kind.RESULT, Kind.SYSTEM) and isinstance(e.meta.get("directive"), Directive):
