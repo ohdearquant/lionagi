@@ -1,3 +1,4 @@
+import re
 import sys
 
 import pytest
@@ -673,17 +674,23 @@ def test_a_string_spelled_like_the_heredoc_placeholder_beside_a_heredoc_is_a_str
     assert parse_call(f"echo(text={literal}, body=<<EOF\nhi\nEOF)") == ("echo", {"text": value, "body": "hi"})
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: a pointer inside a set literal reaches the arguments as the internal "
-    "placeholder string",
-)
-def test_a_pointer_inside_a_set_literal_never_reaches_the_arguments_as_a_placeholder():
-    try:
-        _, args = parse_call("f(x={*b, 1})")
-    except LNDLError:
-        return
-    assert not any(isinstance(v, str) and v.startswith("\x00") for v in args["x"])
+@pytest.mark.parametrize("literal", ["{*a: 1}", "{'k': 1, *a: 2}", "{*a}", "{1, *a}"])
+def test_a_pointer_where_a_key_or_a_set_member_stands_is_refused(literal):
+    why = "*a: a pointer stands where a value stands, not as a key or a set member"
+    with pytest.raises(LNDLError, match=re.escape(why)):
+        parse_call(f"f(x={literal})")
+    with pytest.raises(LNDLError, match=re.escape(why)):
+        parse(f"<lact a>f(x={literal})</lact>")
+    p = parse(f"OUT{{x: {literal}}}")
+    assert p.out is None
+    assert p.problems == [f"OUT{{...}} could not be read, so this turn ran without it: {why}"]
+
+
+@pytest.mark.parametrize("key", ["*a", "\x00ptr:a"])
+def test_a_quoted_key_spelled_like_a_pointer_or_its_placeholder_is_a_string(key):
+    name, args = parse_call(f"f(x={{{key!r}: 1}})")
+    assert (name, args) == ("f", {"x": {key: 1}})
+    assert pointers_in(args) == []
 
 
 @pytest.mark.xfail(
@@ -780,3 +787,58 @@ def test_deeply_nested_input_is_an_lndl_error_or_a_program(text):
 )
 def test_plain_is_the_prose_the_parser_leaves(text, prose):
     assert plain(text) == prose
+
+
+@pytest.mark.parametrize("closed", [True, False], ids=["closed", "unclosed"])
+@pytest.mark.parametrize("nl", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_a_heredoc_body_reads_as_lf_lines_whether_or_not_its_closing_line_is_there(nl, closed):
+    """ADR-0004/C2: a CRLF body reads as its lines, LF-ended; a body never closed runs to the call's
+    closing tag and reads the same way."""
+    text = (
+        f"<lact a>f(x=<<EOF{nl}one{nl}two{nl}EOF)</lact>"
+        if closed
+        else f"<lact a>f(x=<<EOF{nl}one{nl}two</lact>"
+    )
+    p = parse(text)
+    assert p.lacts[0].args == {"x": "one\ntwo"}
+    assert p.problems == ([] if closed else [_repaired("a", CLOSERS)])
+
+
+@pytest.mark.parametrize("bad", ["\ud800", "\x00"], ids=["lone-surrogate", "nul"])
+def test_text_the_interpreter_refuses_is_an_lndl_error(bad):
+    """A lone surrogate or a NUL byte in a string argument: the interpreter's own refusal becomes the
+    call's LNDLError, `spans` still bounds the call, and inside `OUT{}` it is a problem, not a crash."""
+    text = f'<lact a>f(x="{bad}")</lact>'
+    with pytest.raises(LNDLError, match="cannot read the call"):
+        parse(text)
+    with pytest.raises(LNDLError, match="cannot read the call"):
+        parse_call(f'f(x="{bad}")')
+    assert spans(text) == [(0, len(text))]
+    p = parse(f'OUT{{answer: "{bad}"}}')
+    assert p.out is None
+    assert len(p.problems) == 1 and p.problems[0].startswith("OUT{...} could not be read")
+
+
+@pytest.mark.parametrize(
+    "sep", ["\u2028", "\u2029", "\x85", "\x0c", "\x0b"], ids=["u2028", "u2029", "nel", "ff", "vt"]
+)
+def test_a_separator_inside_a_string_does_not_move_what_stands_on_a_later_line(sep):
+    """`str.splitlines` breaks at these; the tokenizer's lines break at `\\n` only. Positions on the
+    lines after the string are the tokenizer's, so a pointer or a missing comma there is found where
+    it stands."""
+    p = parse(f'<lact a>f(text="a{sep}b",\n ref=*x)</lact>')
+    assert p.lacts[0].args == {"text": f"a{sep}b", "ref": Pointer(name="x")}
+    assert p.problems == []
+    p = parse(f'<lact b>g(text="a{sep}b",\n n=1 m=2)</lact>')
+    assert p.lacts[0].args == {"text": f"a{sep}b", "n": 1, "m": 2}
+    assert p.problems == [_repaired("b", COMMA)]
+
+
+def test_a_quoted_out_is_text():
+    """`OUT{}` inside markdown code is the model talking about the syntax, like a quoted tag: it is
+    not the turn's output, and it does not make a real one beside it a second OUT."""
+    assert parse("`OUT{answer: 1}`").out is None
+    assert parse("```\nOUT{answer: 1}\n```").out is None
+    p = parse("say `OUT{answer: 1}` then\nOUT{answer: 2}")
+    assert p.out is not None and p.out.fields == {"answer": 2}
+    assert p.problems == []

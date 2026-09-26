@@ -210,7 +210,7 @@ def _lift_heredocs(source: str) -> tuple[str, list[str]]:
             continue
         end = re.compile(_HEREDOC_END.format(tag=m.group(1), end=r"\Z"), re.MULTILINE).search(source, m.end())
         if end is None:
-            docs.append(source[m.end() :])
+            docs.append(source[m.end() :].replace("\r\n", "\n"))  # the lines, here too (C2)
             i = len(source)
         else:
             body = source[m.end() : end.start()]
@@ -223,23 +223,36 @@ def _lift_heredocs(source: str) -> tuple[str, list[str]]:
     return "".join(out), docs
 
 
+def _line_offsets(source: str) -> list[int]:
+    """Where each line starts, lines as `readline` splits them: at `\\n` only. `str.splitlines` also
+    breaks at U+2028, U+2029, a lone `\\r` and the other separators, so a string argument holding one
+    would shift every position the tokenizer reports on the lines after it."""
+    offsets = [0]
+    for line in source.split("\n")[:-1]:
+        offsets.append(offsets[-1] + len(line) + 1)
+    return offsets
+
+
 def _mark_pointers(source: str) -> str:
     """Rewrite each `*name` that stands as a value into a string literal the walker turns back into a
-    Pointer. Token level, so a `*` inside a string literal is left alone."""
+    Pointer. Token level, so a `*` inside a string literal is left alone. A `*name` where a key or a
+    set member stands is refused: a pointer stands where a value stands, and the resolver walks values."""
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (tokenize.TokenError, SyntaxError):
         return source
-    lines = source.splitlines(keepends=True)
-    offsets = [0]
-    for line in lines:
-        offsets.append(offsets[-1] + len(line))
+    offsets = _line_offsets(source)
 
     def at(pos: tuple[int, int]) -> int:
         return offsets[pos[0] - 1] + pos[1]
 
     spans: list[tuple[int, int, str]] = []
+    opened: list[str] = []  # the brackets around the token: `,` inside `{` starts a key or a member
     for i, tok in enumerate(tokens):
+        if tok.type == tokenize.OP and tok.string in ("(", "[", "{"):
+            opened.append(tok.string)
+        elif tok.type == tokenize.OP and tok.string in (")", "]", "}") and opened:
+            opened.pop()
         if tok.type == tokenize.OP and tok.string == "*" and i + 1 < len(tokens):
             nxt = tokens[i + 1]
             if nxt.type != tokenize.NAME or at(nxt.start) != at(tok.end):
@@ -255,6 +268,10 @@ def _mark_pointers(source: str) -> str:
             ):
                 end += 2
             name = "".join(t.string for t in tokens[i + 1 : end + 1])
+            if prev is not None and (prev.string == "{" or (prev.string == "," and opened[-1:] == ["{"])):
+                raise LNDLError(
+                    f"*{name}: a pointer stands where a value stands, not as a key or a set member"
+                )
             spans.append((at(tok.start), at(tokens[end].end), repr(_PTR_MARK + name)))
     for start, end, repl in reversed(spans):
         source = source[:start] + repl + source[end:]
@@ -343,10 +360,7 @@ def _insert_commas(source: str) -> str | None:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (tokenize.TokenError, SyntaxError):
         return None
-    lines = source.splitlines(keepends=True)
-    offsets = [0]
-    for line in lines:
-        offsets.append(offsets[-1] + len(line))
+    offsets = _line_offsets(source)
     spots = []
     skip = (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT)
     for i in range(1, len(tokens) - 1):
@@ -406,7 +420,7 @@ def parse_call_noting(body: str) -> tuple[str, dict[str, Any], str | None]:
     for text, repair in _readings(source):
         try:
             node = _parse_expr(_mark_pointers(text))
-        except SyntaxError as e:
+        except (SyntaxError, ValueError) as e:  # ValueError: a lone surrogate or a NUL byte
             first = first or e
             continue
         note = repair
@@ -414,7 +428,7 @@ def parse_call_noting(body: str) -> tuple[str, dict[str, Any], str | None]:
     if node is None:
         assert first is not None
         hint = ""
-        msg = first.msg
+        msg = getattr(first, "msg", str(first))
         if "\n" in source or "unterminated" in msg or "EOL" in msg or "never closed" in msg:
             hint = (
                 ". A multi-line value, or one with quotes in it, is written as a heredoc argument: "
@@ -545,6 +559,8 @@ def parse_out(body: str) -> Out:
             continue
         try:  # a literal, in which `*alias` stands for the value it names, as in a call's arguments
             fields[key] = _restore_pointers(ast.literal_eval(_quote_bare_keys(_mark_pointers(value))))
+        except LNDLError:
+            raise  # a pointer where a key or a set member stands: the message names the position
         except (ValueError, TypeError, SyntaxError):
             raise LNDLError(
                 f"OUT{{{key}: ...}}: {value!r} is neither aliases like [a, b] nor a literal like 3, "
@@ -650,12 +666,12 @@ def _constructs(text: str):
     code = _code_spans(text)
     i = 0
     while (m := _OPEN.search(text, i)) is not None:
+        if _in(code + docs, m.start()):  # quoted: `<lvar x>` or `OUT{}` in a sentence about them
+            i = m.end()
+            continue
         if m.group(1):
             opener = _OPEN_TAG.match(text, m.start())
             kind, header = opener.group(1), opener.group(2)
-            if _in(code + docs, m.start()):  # quoted: `<lvar x>` in a sentence about tags
-                i = m.end()
-                continue
             try:
                 _header(header, kind)
             except LNDLError as e:  # tag-shaped prose (`<lact …>` in a sentence): not a tag
@@ -841,5 +857,6 @@ def guidance(outputs: tuple[str, ...] = (), commands: Iterable[str] | None = Non
         "A turn without OUT{} runs every <lact> and continues; their results arrive in the next system "
         "notification under their aliases. A turn with OUT{} runs every <lact> too, waits for them and for "
         "anything still running that OUT{} points at, then ends.\n"
-        "Aliases are unique within a turn. Tags are siblings, never nested."
+        "Aliases are unique within a turn. Tags are siblings; a complete tag quoted inside a value stays "
+        "text."
     )

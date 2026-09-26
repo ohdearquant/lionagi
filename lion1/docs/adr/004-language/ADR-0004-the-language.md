@@ -44,7 +44,8 @@ symbolic LNDL design are not part of this runtime; the program form is
 - **`OUT{}`**: the declaration of done: names the aliases and literals that fill the output's
   fields.
 - **alias**: the name the model gives a value or a command's result.
-- **pointer**: `*alias`: a reference to a value or a result, dereferenced when the command executes.
+- **pointer**: `*alias`: a reference to a value or a result, dereferenced when the command executes;
+  it stands where a value stands, never as a key or a set member.
 - **heredoc**: `field=<<TAG` in a call's arguments, then the lines verbatim, then a closing line
   that starts with `TAG`; the second form of a string argument.
 - **reading**: one attempt to parse a call's body.
@@ -77,10 +78,10 @@ symbolic LNDL design are not part of this runtime; the program form is
 OUT{spec: [alias, ...], other: literal}          finish with typed output
 ```
 
-Bare names inside `OUT{}` brackets are aliases; anything else is a literal; a one-field output takes
-a literal directly, or one bare result named in a list; any output takes a dict literal of its
-fields. Tags are siblings, never nested; an inner closing tag closes the outer one. An alias used
-twice in one turn keeps the first use and names the second.
+Bare names inside `OUT{}` are aliases; anything else is a literal; a one-field output takes a
+literal, or one bare result in a list; any output takes a dict literal of its fields. Tags are
+siblings: a tag quoted whole in a value stays text; else the first closer ends the value. An alias
+used twice in one turn keeps the first use and names the second.
 
 A string's contents are never read for tags, `OUT{}` or heredocs: one pass finds the constructs in
 order and each owns its span, so `OUT{answer: "<lact a>x()</lact>"}` is a string. A quoted string in
