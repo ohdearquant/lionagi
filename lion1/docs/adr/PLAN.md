@@ -7,8 +7,9 @@ repository of the earlier prototype at revision `63da864a`, package `lionagi/`, 
 amended history it was distilled from is not in this repository. A record says what is, why,
 and what it costs, in the register the tooling in `docs/adr/_scripts/` enforces: Context, Definitions,
 Assumptions, Claims, Decisions, Alternatives, Consequences, with anchors on the C and D items. A fact the
-code does not show is not asserted; a claim marked mechanical has a landed decision behind it, else it is
-marked process or dropped.
+code does not show is not asserted; a claim marked mechanical has a landed decision behind it or says
+which consequence row carries the debt (`_(enforced: mechanical; owed, S8)_`); else it is marked process
+or dropped.
 
 The frame since 2026-09-23: the loop is the inside of one process, and every record here is the
 in-process form of a concern the larger system's kernel owns: identity and grants, admission and
