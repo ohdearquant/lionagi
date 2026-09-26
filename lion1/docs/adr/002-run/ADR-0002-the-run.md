@@ -49,7 +49,7 @@ Source: `Actor.run` in `lionagi/actor.py`.
 
 ## Claims
 
-### C1: The turn rules are a closed table _(enforced: mechanical)_ ^c1
+### C1: The turn rules are a closed table _(enforced: mechanical; owed, S4)_ ^c1
 
 - **Subject**: every turn of every run.
 - **Violated when**: a turn executes or ends in a way that is not a row below.
