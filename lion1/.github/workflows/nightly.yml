@@ -1,0 +1,70 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_COLOR: "1"
+
+jobs:
+  deep:
+    name: property tests, deep profile
+    runs-on: ubuntu-latest
+    env:
+      HYPOTHESIS_PROFILE: deep
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+      - run: uv run --locked pytest
+
+  newest:
+    name: newest dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.14"
+      - name: resolve everything to its newest release
+        run: uv lock --upgrade && git diff --stat uv.lock
+      - run: uv run --frozen --python 3.14 pytest
+
+  mutation:
+    name: mutation testing (report)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+      - name: mutate lionagi/ and run the suite against every mutant
+        run: uv run --locked --with "mutmut>=3.8" mutmut run
+      - name: summary
+        if: always()
+        run: |
+          uv run --locked --with "mutmut>=3.8" mutmut export-cicd-stats
+          {
+            echo "## Mutation testing"
+            echo
+            echo '```json'
+            cat mutants/mutmut-cicd-stats.json
+            echo '```'
+            echo
+            echo "Surviving mutants, first 300:"
+            echo
+            echo '```'
+            uv run --locked --with "mutmut>=3.8" mutmut results | head -300
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: mutation-stats
+          path: mutants/mutmut-cicd-stats.json

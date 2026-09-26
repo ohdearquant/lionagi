@@ -1,0 +1,123 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  HYPOTHESIS_PROFILE: ci
+  FORCE_COLOR: "1"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+      - name: pre-commit (ruff, ruff format, the ADR register)
+        run: uvx pre-commit run --all-files --show-diff-on-failure
+
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        python: ["3.12", "3.13", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - name: the interpreter is the matrix's
+        run: uv run --locked --python ${{ matrix.python }} python -c "import sys; assert sys.version.startswith('${{ matrix.python }}.'), sys.version; print(sys.version)"
+      - name: pytest
+        run: uv run --locked --python ${{ matrix.python }} pytest --cov --cov-report=term-missing --cov-report=xml
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-${{ matrix.os }}-py${{ matrix.python }}
+          path: coverage.xml
+
+  lowest:
+    name: lowest declared dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+      - name: install at the floor
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/lowest"
+          uv pip install --python "$RUNNER_TEMP/lowest" --resolution lowest-direct -e . "pytest>=8.3" "hypothesis>=6.100"
+      - name: pydantic is the declared floor
+        run: |
+          "$RUNNER_TEMP/lowest/bin/python" - <<'PY'
+          import re, tomllib
+          import pydantic
+          deps = tomllib.load(open("pyproject.toml", "rb"))["project"]["dependencies"]
+          floor = next(re.search(r">=([0-9.]+)", d).group(1) for d in deps if d.startswith("pydantic"))
+          want = tuple(int(x) for x in floor.split("."))
+          got = tuple(int(x) for x in pydantic.VERSION.split(".")[: len(want)])
+          assert got == want, (pydantic.VERSION, floor)
+          print("pydantic", pydantic.VERSION, "at the declared floor", floor)
+          PY
+      - name: pytest
+        run: '"$RUNNER_TEMP/lowest/bin/python" -m pytest'
+
+  wheel:
+    name: built wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+      - name: build
+        run: uv build
+      - name: the wheel holds exactly the tracked package files
+        run: |
+          uv run --no-project python - <<'PY'
+          import glob, subprocess, zipfile
+          (whl,) = glob.glob("dist/*.whl")
+          names = {n for n in zipfile.ZipFile(whl).namelist() if not n.split("/")[0].endswith(".dist-info")}
+          out = subprocess.run(["git", "ls-files", "lionagi"], capture_output=True, text=True, check=True)
+          tracked = set(out.stdout.split())
+          assert tracked, "git ls-files saw no package files"
+          assert names == tracked, sorted(names ^ tracked)
+          print(whl, len(names), "files")
+          PY
+      - name: test the installed wheel, away from the source tree
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/wheel"
+          uv pip install --python "$RUNNER_TEMP/wheel" dist/*.whl "pytest>=8.3" "hypothesis>=6.100"
+          mkdir "$RUNNER_TEMP/suite"
+          cp -R tests "$RUNNER_TEMP/suite/"
+          cd "$RUNNER_TEMP/suite"
+          "$RUNNER_TEMP/wheel/bin/python" -c "import lionagi; assert 'site-packages' in lionagi.__file__, lionagi.__file__; print(lionagi.__file__)"
+          "$RUNNER_TEMP/wheel/bin/python" -m pytest -W error --ignore=tests/test_exports.py tests
+
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [lint, test, lowest, wheel]
+    runs-on: ubuntu-latest
+    steps:
+      - name: every job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: echo "$NEEDS" | jq -e 'to_entries | length == 4 and all(.value.result == "success")'

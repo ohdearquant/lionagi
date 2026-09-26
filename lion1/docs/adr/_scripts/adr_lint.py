@@ -7,9 +7,9 @@ every decision carries Landing evidence; an optional Definitions section after C
 `- **term**: ...` bullets; every wikilink resolves to a file and, when it names an anchor, to an item; no
 em dash; and the prose limits of the register (Context 200 words, definition 50, assumption 50, claim
 160, decision 90 plus 40 of evidence, paragraph 90, sentence 45, table cell 45). Trigger is legacy, merged
-into Context, and flagged. Format: prose lines wrap at 100 columns; a definition ends with a period, is used in
-its own record outside the Definitions section, and no term is defined by two records; Context ends with
-a `Source:` sentence; a consequence bullet is `- **S1**: ...`.
+into Context, and flagged. Format: prose lines wrap at 100 columns; a definition ends with a period, is
+used in its own record outside the Definitions section, and no term is defined by two records; Context
+ends with a `Source:` sentence; a consequence bullet is `- **S1**: ...`.
 
     uv run python scripts/adr_lint.py [files...]      # no files: the whole corpus
 """
@@ -20,9 +20,7 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = (
-    Path(__file__).resolve().parent.parent
-)  # docs/adr: the scripts live inside the corpus they lint
+ROOT = Path(__file__).resolve().parent.parent  # docs/adr: the scripts live inside the corpus they lint
 STATUS = {
     "draft",
     "proposed",
@@ -73,9 +71,7 @@ PARA, SENT, CELL = 90, 45, 45
 
 # a link inside a table cell escapes its pipe as `\|`; the backslash is not part of the stem or anchor
 _LINK = re.compile(r"\[\[([^\]|#\\]+)(?:#([^\]|\\]+))?\\?(?:\|([^\]]+))?\]\]")
-_ITEM = re.compile(
-    r"^### ([CD])(\d+): (.+?)(?: _\(enforced: ([a-z]+)\)_)? \^([cd]\d+)\s*$"
-)
+_ITEM = re.compile(r"^### ([CD])(\d+): (.+?)(?: _\(enforced: ([a-z]+)\)_)? \^([cd]\d+)\s*$")
 
 
 def words(s: str) -> int:
@@ -122,14 +118,10 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
     adr = str(fm.get("adr", ""))
     if not path.stem.startswith(adr + "-"):
         out.append(f"file name does not start with {adr}")
-    if path.parent.parent != ROOT or not re.match(
-        r"^\d{3}-[a-z0-9-]+$", path.parent.name
-    ):
+    if path.parent.parent != ROOT or not re.match(r"^\d{3}-[a-z0-9-]+$", path.parent.name):
         out.append("not in a topic folder NNN-<topic>")
     elif fm.get("area") != path.parent.name[4:]:
-        out.append(
-            f"area {fm.get('area')!r} is not the folder suffix {path.parent.name[4:]!r}"
-        )
+        out.append(f"area {fm.get('area')!r} is not the folder suffix {path.parent.name[4:]!r}")
     if fm.get("status") not in STATUS:
         out.append(f"status {fm.get('status')!r}")
     liveness = str(fm.get("liveness", "")).split(" (")[0]
@@ -161,22 +153,16 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
             continue
         if section == "Definitions" and line.strip() and not line.startswith("  "):
             if not _DEFN.match(line):
-                out.append(
-                    f"line {i + 1}: a definition is '- **term**: ...', nothing else in the section"
-                )
+                out.append(f"line {i + 1}: a definition is '- **term**: ...', nothing else in the section")
             continue
         if line.startswith("### ") and section in ("Claims", "Decisions"):
             m = _ITEM.match(line)
             if not m:
-                out.append(
-                    f"line {i + 1}: item heading not '### C1: name _(enforced: x)_ ^c1'"
-                )
+                out.append(f"line {i + 1}: item heading not '### C1: name _(enforced: x)_ ^c1'")
                 continue
             letter, num, _name, enforced, anchor = m.groups()
             if anchor != f"{letter.lower()}{num}":
-                out.append(
-                    f"line {i + 1}: anchor ^{anchor} does not match {letter}{num}"
-                )
+                out.append(f"line {i + 1}: anchor ^{anchor} does not match {letter}{num}")
             anchors.add(anchor)
             ids[letter].append(int(num))
             block = "\n".join(lines[i + 1 : next_heading(lines, i + 1)])
@@ -186,9 +172,7 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
                 if enforced == "mechanical" and (
                     "- **Subject**:" not in block or "- **Violated when**:" not in block
                 ):
-                    out.append(
-                        f"C{num}: mechanical claim lacks Subject or Violated when"
-                    )
+                    out.append(f"C{num}: mechanical claim lacks Subject or Violated when")
             else:
                 if enforced is not None:
                     out.append(f"D{num}: a decision carries no enforcement marker")
@@ -212,9 +196,7 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
                 out.append(f"link anchor {anchor!r} is not an item anchor")
             elif f" {anchor}" not in target.read_text():
                 out.append(f"link {stem}#{anchor} names no item")
-        if alias and not alias.startswith(
-            stem.split("-", 2)[0] + "-" + stem.split("-", 2)[1]
-        ):
+        if alias and not alias.startswith(stem.split("-", 2)[0] + "-" + stem.split("-", 2)[1]):
             out.append(f"link alias {alias!r} does not name {stem}")
 
     out.extend(prose(body, fm))
@@ -252,11 +234,7 @@ def fresh_format(body: str) -> list[str]:
                     out.append(f"line {i + 1}: definition does not end with a period")
         else:
             rest.append(line)
-        if (
-            section == "Consequences"
-            and line.startswith("- ")
-            and not re.match(r"^- \*\*S\d+\*\*: ", line)
-        ):
+        if section == "Consequences" and line.startswith("- ") and not re.match(r"^- \*\*S\d+\*\*: ", line):
             out.append(f"line {i + 1}: consequence bullet is not '- **S1**: ...'")
     text = "\n".join(rest).lower()
     for n, term in defined:
@@ -307,9 +285,7 @@ def prose(body: str, fm: dict[str, object]) -> list[str]:
                 continue
             if section == "Assumptions" and cells and re.fullmatch(r"A\d+", cells[0]):
                 if words(cells[1]) > LIMITS["assumption"]:
-                    out.append(
-                        f"{cells[0]} statement {words(cells[1])} words > {LIMITS['assumption']}"
-                    )
+                    out.append(f"{cells[0]} statement {words(cells[1])} words > {LIMITS['assumption']}")
                 continue
             for c in cells:
                 if words(c) > CELL:
@@ -335,9 +311,7 @@ def prose(body: str, fm: dict[str, object]) -> list[str]:
         if k == "Definitions":
             for p in rest:
                 if words(p) > LIMITS["definition"]:
-                    out.append(
-                        f"definition {words(p)} words > {LIMITS['definition']}: {p[:40]!r}"
-                    )
+                    out.append(f"definition {words(p)} words > {LIMITS['definition']}: {p[:40]!r}")
         if " / C" in k and total > LIMITS["claim"]:
             out.append(f"{k} {total} words > {LIMITS['claim']}")
         if " / D" in k:
@@ -345,9 +319,7 @@ def prose(body: str, fm: dict[str, object]) -> list[str]:
                 out.append(f"{k} {total} words > {LIMITS['decision']}")
             for e in evidence:
                 if words(e) - 3 > LIMITS["evidence"]:
-                    out.append(
-                        f"{k} landing evidence {words(e) - 3} words > {LIMITS['evidence']}"
-                    )
+                    out.append(f"{k} landing evidence {words(e) - 3} words > {LIMITS['evidence']}")
         for p in rest:
             if words(p) > PARA:
                 out.append(f"{k}: paragraph {words(p)} words > {PARA}: {p[:50]!r}")
