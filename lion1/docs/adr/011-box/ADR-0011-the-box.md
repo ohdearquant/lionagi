@@ -107,7 +107,7 @@ files and skip `.git`. `edit(path, old, new)` replaces exactly one verbatim occu
 other count with the count named, and keeps each line's own ending. Edits serialise on one lock.
 
 A tree on this machine refuses a path that resolves outside it: `..`, an absolute path elsewhere, a
-symlink out. A tree in a box binds every path to `workdir` before the box sees it. `read` and
+symlink out. A tree in a box checks every path against `workdir` by its text (S14). `read` and
 `list_dir` go over the same tree.
 
 ### C4: The watch reports the change as the tree shows it; the model's own checks end the run _(enforced: mechanical)_ ^c4
@@ -258,3 +258,7 @@ to; the person picks `--offline` when the directory holds what the network must 
 - **S13**: The VM box's `exec`, and the `run` derived from it, take a timeout in seconds only: a
   missing one fails while the in-VM `timeout` guard is formatted, before any command runs, where the
   docker and remote boxes run with no deadline. No caller passes none today, and no test pins it.
+- **S14**: The box tree's bound reads the path's text only, so a symlink inside `workdir` that
+  points elsewhere in the box is read and written through, where the tree on this machine refuses
+  it. The box holds nothing of this machine (C2), so what it reaches is the box's own; no test pins
+  it.

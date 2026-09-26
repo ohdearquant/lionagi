@@ -1,7 +1,7 @@
 ---
 adr: ADR-0020
 status: draft
-liveness: operating (the calls, the settle and escalation paths, the threads, the mark retry, the failure told once, the backlog and the code-only pass are pinned by tests with a stand-in tracker and a fake store; no test builds the watch from `[mail]` or drives a real tracker)
+liveness: operating (the calls, the settle and escalation paths, the threads, the mark retry, the failure not retold, the backlog and the code-only pass are pinned by tests with a stand-in tracker and a fake store; no test builds the watch from `[mail]` or drives a real tracker)
 date: "2026-09-25"
 area: mail
 kind: new
@@ -112,7 +112,7 @@ row, its status and the match; and what the tracker holds on file for that row.
 Then come the class, ask and risk; the dates, deadline, links, attachments and flags the tracker
 found; the action the code's table gives the class; who confirmed the class, or the model's
 contesting reason; and the excerpt, cut to `excerpt_cap` (800) characters. No test pins the cut. The
-first escalation on a thread key opens a thread, kept in `mail_threads`; later ones ride it.
+first escalation on a thread key opens a thread, kept in `mail_threads`; later ones ride it (S14).
 
 ### C4: The mail ledger records each action, an escalation before its mark, and a row acted on is not listed again _(enforced: mechanical)_ ^c4
 
@@ -127,8 +127,8 @@ row handled.
 
 A triage first retries the mark of each row whose last row is a failed mark after an escalated,
 settled or closed row, with the first note and no send. It then lists each row with no settled,
-escalated or closed row. A row held past `escalations_per_day` (40), or refused by the hop count and
-logged undelivered, is listed again at the next tick; no test pins either path.
+escalated or closed row. A row held past `escalations_per_day` (40, S14), or refused by the hop
+count and logged undelivered, is listed again at the next tick; no test pins either path.
 
 ### C5: The watch mails only the owner and the steward, and gives the model no send _(enforced: mechanical)_ ^c5
 
@@ -146,11 +146,11 @@ The watch adds `triage`, `confirm` and `edge` to the chores profile and no `send
 set. The model's own words reach the owner and the tracker only as an edge's reason: in the owner's
 message, and as the note of a noise close.
 
-### C6: A failed listing is an instrument failure, told once per distinct error in a process, and the model gets nothing _(enforced: mechanical)_ ^c6
+### C6: A failed listing is an instrument failure, not told again while it recurs, and the model gets nothing _(enforced: mechanical)_ ^c6
 
 - **Subject**: every triage.
 - **Violated when**: a failed, unreadable or dead listing, or one whose account control is false,
-  reads as a quiet tick; a row is shown the model after one; or one error is told twice in a process
+  reads as a quiet tick; a row is shown the model after one; or the error last told is told again
   with no healthy triage between.
 
 The tracker's listing prints a control line first: the pending, handled and backlog counts, the last
@@ -262,8 +262,8 @@ over-report and declares an empty population expected. Only `lion agent --check`
 - **S3**: A noise close writes the model's reason, up to 160 characters, into the mail ledger's note
   and the tracker's note, and the edge asks the model to quote the phrase that decides it. Mail text
   can reach the mail ledger that way.
-- **S4**: "Told once per distinct error" lasts one process: the error last told is held in memory,
-  so a restart tells a standing failure again, once.
+- **S4**: The watch holds only the error it last told, in memory: a different error in between makes
+  the first new again, and a restart tells a standing failure again, once.
 - **S5**: An escalation and the backlog report are sent with no idempotency key. When a send's
   outcome is unknown, or the process dies before its row or `mail_backlog` is written, the next tick
   sends it again. No test pins it.
@@ -286,3 +286,8 @@ over-report and declares an empty population expected. Only `lion agent --check`
 - **S13**: Each triage reads up to `limit` bodies through the tracker, a number the model may pass
   to `triage` in place of the config's. The model sees each excerpt cut to twice `excerpt_cap`,
   1,600 characters, and the owner's message carries 800; no test pins either cut.
+- **S14**: Calls in one turn run at once, and `_escalate` reads `mail_threads` and the day's count
+  before its send and writes the whole map after it. Two escalations on one thread key can open two
+  threads, two on different keys can lose one key's entry, and a turn can pass
+  `escalations_per_day`. The code-only pass confirms every row in one turn. Serialising the
+  escalation is owed; no test runs two at once.

@@ -201,9 +201,9 @@ a command's directive, and stores none when a ref names nothing on the record.
 Serves C5. `FileNoteStore` subclasses `MemoryNoteStore`; a put re-reads the file, replaces the whole
 value and rewrites the file atomically, under a lock every process on the directory shares. Two runs
 writing one key: the later put wins, and `version` says a write happened, never which was lost. The
-four note Specs and the three context Specs are the default handlers every actor gets. Every write,
-the `note.` declaration, a program's assignment and `note.delete`, is one put on the store, so a
-gate on writing, when decided, is one place.
+four note Specs and the three context Specs are the default handlers every actor gets. Every write
+is a put, from the `note.` declaration or a program's assignment, or `note.delete`'s delete; a gate
+on writing, when decided, sits on those two.
 
 - **Landing evidence**: `tests/test_notes.py`; the bench records carry the live writes.
 
@@ -239,8 +239,8 @@ its own.
 - **S4**: A `note.` declaration is a write no hook and no privilege gates: the store is the
   profile's own, and a profile whose subset omits the note commands still writes when the model
   declares one. A run that must read the profile's notes and write none, an evaluation against a
-  fixed baseline, has no answer today. Every write path is one put (D3), so a read-only view of the
-  same store, same names and versions, refusing at that put, is the shape; it needs no new
+  fixed baseline, has no answer today. Every write path is a put or a delete (D3), so a read-only
+  view of the same store, same names and versions, refusing at both, is the shape; it needs no new
   privilege.
 - **S5**: A single RESULT larger than the view budget has no rule: it renders whole, the fold never
   hides what the model has not seen, and the backend's own limit is what ends the run. A sized

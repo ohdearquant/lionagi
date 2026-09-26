@@ -178,10 +178,10 @@ direction, cadence and question.
   passes a window short of half its expected passes without one.
 
 The producer mails only when a pass has news, so the instrument's count is of mail and never of
-passes, and its evidence says so. `period_min`, 0 by default, declares the producer's period in
-minutes. When it is set, the window's minutes over it are the passes expected, and fewer than half
-of them, rounded down, is a finding, `daemon cadence`, naming both numbers. It reports and does not
-escalate.
+passes, and its window line says so (S12). `period_min`, 0 by default, declares the producer's
+period in minutes. When it is set, the window's minutes over it are the passes expected, and fewer
+than half of them, rounded down, is a finding, `daemon cadence`, naming both numbers. It reports and
+does not escalate.
 
 ## Decisions
 
@@ -323,3 +323,7 @@ condition, counted and never a finding.
 - **S11**: A dead-instrument notice that reached neither the owner nor the steward still marks the
   chore told, so that crossing is never told until an answered run clears the mark. Marking the
   chore only once a send lands is owed; no test sends the notice undelivered.
+- **S12**: The cadence rule compares mail, sent on news only, with the passes a period implies, so a
+  healthy producer with nothing to report reads as a thin window, and the finding calls the mails
+  passes. A pass count the producer emits, or a period declared only for a producer that mails every
+  pass, is owed.
