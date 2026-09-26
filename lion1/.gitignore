@@ -217,6 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# mutation testing
+mutants/
+
 # local workspaces, never published
 .khive/
 .codex/

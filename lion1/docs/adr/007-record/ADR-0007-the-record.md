@@ -159,7 +159,8 @@ query. Reading another profile's notes is not built.
 One ref that names no entry, a result of the same turn not yet landed included, fails the whole
 command with the names it could not find, and no directive is stored, so none stands that hides
 nothing. The fold skips a name that resolves to nothing, which a directive read back from a log row
-without `seqs` can carry, so no directive crashes it; no test pins the skip.
+without `seqs` can carry, so no directive crashes it;
+`test_a_name_that_resolves_to_nothing_is_skipped` pins the skip.
 
 ### C7: A note is kept as given, and found without regard to case _(enforced: mechanical)_ ^c7
 

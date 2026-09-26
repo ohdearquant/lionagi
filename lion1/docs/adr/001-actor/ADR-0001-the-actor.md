@@ -125,13 +125,14 @@ outside them ([[ADR-0009-backends#^c6|ADR-0009/C6]]).
 ### D1: Specs enter the Operable by handler registration; profiles are checked at run start ^d1
 
 Serves C2 and C3. `Operable.add` refuses name collisions, `Operable.subset` builds a profile's
-registry in registration order, and `Actor.check` raises `ProfileError` for over-asking profiles
-before any turn.
+registry in the order the names are asked, and `Actor.check` raises `ProfileError` for over-asking
+profiles before any turn.
 
-- **Landing evidence**: `tests/test_actor.py`, `test_a_subset_named_by_a_generator_is_read_once`;
-  its one `ProfileError` case is a name. Owed: a test that a profile naming a Spec outside the
-  Operable, or a privilege beyond the actor, raises `ProfileError` before any turn, and one that
-  `Operable.add` refuses a taken name.
+- **Landing evidence**: `tests/test_spec.py`,
+  `test_a_second_class_under_a_taken_name_is_refused_and_the_first_stays`,
+  `test_a_subset_holds_the_named_specs_in_the_order_asked`, `test_a_subset_reads_a_generator_once`.
+  Owed with the actor: a test that a profile naming a Spec outside the Operable, or a privilege
+  beyond the actor, raises `ProfileError` before any turn.
 
 ### D2: The system prompt is generated in four parts ^d2
 
