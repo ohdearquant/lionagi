@@ -38,9 +38,9 @@ from lionagi.checkpoint import (
 )
 from lionagi.record import Directive, Entry, Kind, Record
 
-ACTOR = "lambda:x"
+ACTOR = "actor:one"
 AT = datetime(2026, 9, 24, 10, 5, tzinfo=UTC)
-ID = "ckpt-20260924-100500-lambda-x"
+ID = "ckpt-20260924-100500-actor-one"
 FAILED = Result("note.get", False, error="no note 'absent'", reason="failed")
 
 
@@ -136,9 +136,7 @@ def test_a_take_names_itself_keeps_var_order_and_lets_a_later_var_of_a_name_stan
     ]
     assert c.view == {"budget": 100, "kept": [], "hidden": [], "summaries": []}
     # the slug: anything but a letter or a digit becomes one dash, none at the ends
-    assert take({}, [], actor="actor:two:echo/", why="end", budget=1, now=AT).id.endswith(
-        "-actor-two-echo"
-    )
+    assert take({}, [], actor="actor:two:echo/", why="end", budget=1, now=AT).id.endswith("-actor-two-echo")
     # no clock given: now, with a zone
     fresh = take({}, [], actor=ACTOR, why="manual", budget=1)
     assert fresh.id.startswith("ckpt-") and datetime.fromisoformat(fresh.taken_at).tzinfo is not None
@@ -146,13 +144,13 @@ def test_a_take_names_itself_keeps_var_order_and_lets_a_later_var_of_a_name_stan
 
 def test_a_take_refuses_a_why_or_a_kind_outside_the_lists_a_nameless_actor_and_a_hooks_frame():
     with pytest.raises(
-        CheckpointError, match="why 'seat': one of threshold, end, rotate, precompact, manual"
+        CheckpointError, match="why 'later': one of threshold, end, rotate, precompact, manual"
     ):
-        take({}, [], actor=ACTOR, why="seat", budget=1)
+        take({}, [], actor=ACTOR, why="later", budget=1)
     with pytest.raises(CheckpointError, match="no actor: a checkpoint is the actor's"):
         take({}, [], actor="", why="manual", budget=1)
-    with pytest.raises(CheckpointError, match="var 'v': kind 'leg' is not one of fact, watch, spawn, lane"):
-        take({}, [var("v", "leg", {"id": "a1"})], actor=ACTOR, why="manual", budget=1)
+    with pytest.raises(CheckpointError, match="var 'v': kind 'blob' is not one of fact, watch, spawn, lane"):
+        take({}, [var("v", "blob", {"id": "a1"})], actor=ACTOR, why="manual", budget=1)
     framed = (
         "<system-reminder>injected</system-reminder> and then the words",
         "  <command-name>/compact</command-name>",
@@ -429,7 +427,7 @@ def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
     source = {
         "session_id": "s1",
         "transcript": "/t/x.jsonl",
-        "lanes": "gtd.tasks active",
+        "lanes": "tasks active",
         "context": {"used": 900, "window": 1000, "pct": 90},
     }
     inbox = {
@@ -453,14 +451,14 @@ def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
             {"kind": "task", "id": "t1", "title": "placeholder lane", "awaiting": None},
             "khive",
         ),
-        var("spawn.a1", "spawn", {"id": "a1", "task": "leg one", "state": "running-at-take"}, "transcript"),
+        var("spawn.a1", "spawn", {"id": "a1", "task": "job one", "state": "running-at-take"}, "transcript"),
         var("topic", "topic", "placeholder-topic", "registry"),
         var("posture", "posture", "quiet now", "transcript"),
         var("loop.posture", "posture", "holding", "notes"),
     ]
     c = take(source, given, actor=ACTOR, why="threshold", budget=100, view=view, now=AT)
     expected = [
-        f"Checkpoint {ID} of lambda:x, taken 2026-09-24T10:05:00+00:00 (threshold); context at the take "
+        f"Checkpoint {ID} of actor:one, taken 2026-09-24T10:05:00+00:00 (threshold); context at the take "
         "~900 of 1000 tokens (90%). Before any other work, re-arm these 3 watch(es) with the Monitor tool, "
         "each command exactly as written:",
         "1. the inbox (timeout_ms 1800000, persistent True):",
@@ -483,11 +481,11 @@ def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
         "The person's words, verbatim, oldest first (8):",
         *[line for i in range(1, 9) for line in (f"[10:0{i}]", "```", f"placeholder word {i}", "```")],
         "",
-        "Lanes (gtd.tasks active):",
+        "Lanes (tasks active):",
         '- {"kind": "task", "id": "t1", "title": "placeholder lane", "awaiting": null}',
         "",
         "Spawned agents the transcript shows running at the take:",
-        '- {"id": "a1", "task": "leg one", "state": "running-at-take"}',
+        '- {"id": "a1", "task": "job one", "state": "running-at-take"}',
         "",
         "Topic: placeholder-topic",
         "",
@@ -539,7 +537,7 @@ def test_a_bare_checkpoint_renders_what_it_lacks_as_such_and_a_lazy_posture_by_i
     )
     assert render_prompt(c) == "\n".join(
         [
-            f"Checkpoint {ID} of lambda:x, taken 2026-09-24T10:05:00+00:00 (manual); context at the take "
+            f"Checkpoint {ID} of actor:one, taken 2026-09-24T10:05:00+00:00 (manual); context at the take "
             "not known. There is no watch to re-arm.",
             "",
             "Lanes (not read):",
@@ -635,7 +633,7 @@ def test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands
     isolated_git(monkeypatch, tmp_path)
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
-    below = repo / "seats" / "x"
+    below = repo / "sub" / "x"
     below.mkdir(parents=True)
     c = take({}, [], actor=ACTOR, why="manual", budget=100, now=AT)
     for d in (repo, below):
