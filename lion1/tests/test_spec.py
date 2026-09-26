@@ -2,7 +2,7 @@ import typing
 from typing import Generic, Literal, TypeVar
 
 import pytest
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
 
 from lionagi.spec import Operable, render_guidance, spec_name
 
@@ -34,6 +34,23 @@ class OtherGrep(BaseModel):
     __spec_name__ = "grep"
     pattern: str
     flags: str = ""
+
+
+class Aliased(BaseModel):
+    path: str = Field(alias="file_path")
+
+
+class ValidationAliased(BaseModel):
+    path: str = Field(validation_alias="file_path")
+
+
+class BothAliases(BaseModel):
+    path: str = Field(alias="path_out", validation_alias="file_path")
+
+
+class GeneratedAlias(BaseModel):
+    model_config = ConfigDict(alias_generator=lambda name: f"file_{name}")
+    path: str
 
 
 T = TypeVar("T")
@@ -161,6 +178,18 @@ def test_an_unbound_type_variable_rendering_carries_its_name():
 @pytest.mark.xfail(strict=True, reason="known defect: a TypeVar renders with its repr's leading ~")
 def test_an_unbound_type_variable_is_rendered_by_its_name():
     assert render_guidance(Box) == "box\n  item: T"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=ValidationError,
+    reason="known defect: guidance names a field by its attribute, not the key validation accepts",
+)
+@pytest.mark.parametrize("spec", [Aliased, ValidationAliased, BothAliases, GeneratedAlias])
+def test_guidance_names_each_field_by_the_key_validation_accepts(spec):
+    assert spec.model_validate({"file_path": "a.md"}).path == "a.md"
+    key = render_guidance(spec).splitlines()[1].split(":")[0].strip()
+    assert spec.model_validate({key: "a.md"}).path == "a.md"
 
 
 # the Operable

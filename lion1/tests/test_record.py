@@ -1,4 +1,5 @@
 import dataclasses
+import sys
 
 import pytest
 from hypothesis import assume, given
@@ -347,12 +348,17 @@ def test_showing_the_first_entry_of_a_summarized_span_keeps_the_rest_of_the_span
 
 
 @pytest.mark.xfail(
-    strict=True, raises=ValueError, reason="known defect: a non-ASCII digit in a name crashes it"
+    strict=True, raises=ValueError, reason="known defect: a name whose digits int() refuses crashes it"
 )
-def test_a_name_with_a_superscript_digit_resolves_to_nothing_and_cannot_crash_the_fold():
+@pytest.mark.parametrize(
+    "name",
+    ["_r\u00b2", "_r" + "1" * (sys.get_int_max_str_digits() + 1)],
+    ids=["superscript-digit", "past-the-int-digit-limit"],
+)
+def test_a_name_whose_digits_int_refuses_resolves_to_nothing_and_cannot_crash_the_fold(name):
     r = make(Kind.INPUT, Kind.RESULT)
-    direct(r, "hide", "_r\u00b2")
-    assert r.get("_r\u00b2") is None
+    direct(r, "hide", name)
+    assert r.get(name) is None
     assert shape(fold(r)) == ["_in0", "_r1", "_r2"]
 
 
