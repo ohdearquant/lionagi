@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.12"
+          python-version: "3.11"
       - name: pre-commit (ruff, ruff format, the ADR register)
         run: uvx pre-commit run --all-files --show-diff-on-failure
 
@@ -35,7 +35,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
-        python: ["3.12", "3.13", "3.14"]
+        python: ["3.11", "3.12", "3.13", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,10 +59,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.12"
+          python-version: "3.11"
       - name: install at the floor
         run: |
-          uv venv --python 3.12 "$RUNNER_TEMP/lowest"
+          uv venv --python 3.11 "$RUNNER_TEMP/lowest"
           uv pip install --python "$RUNNER_TEMP/lowest" --resolution lowest-direct -e . "pytest>=8.3" "hypothesis>=6.100"
       - name: pydantic is the declared floor
         run: |
@@ -86,7 +86,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.12"
+          python-version: "3.11"
       - name: build
         run: uv build
       - name: the wheel holds exactly the tracked package files
@@ -103,7 +103,7 @@ jobs:
           PY
       - name: test the installed wheel, away from the source tree
         run: |
-          uv venv --python 3.12 "$RUNNER_TEMP/wheel"
+          uv venv --python 3.11 "$RUNNER_TEMP/wheel"
           uv pip install --python "$RUNNER_TEMP/wheel" dist/*.whl "pytest>=8.3" "hypothesis>=6.100"
           mkdir "$RUNNER_TEMP/suite"
           cp -R tests "$RUNNER_TEMP/suite/"
