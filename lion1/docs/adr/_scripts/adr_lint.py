@@ -152,6 +152,7 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
     ids: dict[str, list[int]] = {"C": [], "D": []}
     section = None
     lines = body.splitlines()
+    rows = consequence_rows(lines)
     for i, line in enumerate(lines):
         if line.startswith("## "):
             section = line[3:].strip()
@@ -181,8 +182,8 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
                     "- **Subject**:" not in block or "- **Violated when**:" not in block
                 ):
                     out.append(f"C{num}: mechanical claim lacks Subject or Violated when")
-                if owed is not None and not re.search(rf"^- \*\*{owed}\*\*:", body, re.M):
-                    out.append(f"C{num}: owed row {owed} is not in the record")
+                if owed is not None and owed not in rows:
+                    out.append(f"C{num}: owed row {owed} is not a Consequences bullet")
             else:
                 if enforced is not None:
                     out.append(f"D{num}: a decision carries no enforcement marker")
@@ -255,6 +256,28 @@ def fresh_format(body: str) -> list[str]:
     if ctx and "Source:" not in ctx.group(1):
         out.append("Context has no Source: sentence")
     return out
+
+
+def consequence_rows(lines: list[str]) -> set[str]:
+    """The ids of the `- **Sn**:` bullets in Consequences, outside fenced code."""
+    rows: set[str] = set()
+    section = None
+    fence = ""
+    for line in lines:
+        bare = line.lstrip()
+        if fence:
+            if bare.startswith(fence):
+                fence = ""
+            continue
+        run = re.match(r"(`{3,}|~{3,})", bare)
+        if run:
+            fence = run.group(1)
+            continue
+        if line.startswith("## "):
+            section = line[3:].strip()
+        elif section == "Consequences" and (m := re.match(r"^- \*\*(S\d+)\*\*:", line)):
+            rows.add(m.group(1))
+    return rows
 
 
 def next_heading(lines: list[str], start: int) -> int:
