@@ -12,6 +12,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+from _md import fenced_code_mask
+
 ROOT = Path(__file__).resolve().parent.parent  # docs/adr
 WIDTH = 100
 
@@ -39,7 +41,7 @@ def fmt(text: str) -> str:
         out.extend(lines[: j + 1])
         i = j + 1
     unit: list[str] = []
-    in_code = False
+    code = [False] * i + fenced_code_mask(lines[i:])
 
     def flush() -> None:
         if unit:
@@ -48,12 +50,8 @@ def fmt(text: str) -> str:
 
     while i < len(lines):
         line = lines[i]
+        in_code = code[i]
         i += 1
-        if line.startswith("```"):
-            flush()
-            in_code = not in_code
-            out.append(line)
-            continue
         if in_code or not line.strip() or line.startswith(("#", "|", ">")):
             flush()
             out.append(line)
