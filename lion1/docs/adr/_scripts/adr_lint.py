@@ -71,7 +71,9 @@ PARA, SENT, CELL = 90, 45, 45
 
 # a link inside a table cell escapes its pipe as `\|`; the backslash is not part of the stem or anchor
 _LINK = re.compile(r"\[\[([^\]|#\\]+)(?:#([^\]|\\]+))?\\?(?:\|([^\]]+))?\]\]")
-_ITEM = re.compile(r"^### ([CD])(\d+): (.+?)(?: _\(enforced: ([a-z]+)\)_)? \^([cd]\d+)\s*$")
+_ITEM = re.compile(
+    r"^### ([CD])(\d+): (.+?)(?: _\(enforced: ([a-z]+)(?:; owed, (S\d+))?\)_)? \^([cd]\d+)\s*$"
+)
 
 
 def words(s: str) -> int:
@@ -161,9 +163,12 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
         if line.startswith("### ") and section in ("Claims", "Decisions"):
             m = _ITEM.match(line)
             if not m:
-                out.append(f"line {i + 1}: item heading not '### C1: name _(enforced: x)_ ^c1'")
+                out.append(
+                    f"line {i + 1}: item heading not '### C1: name _(enforced: x)_ ^c1'"
+                    " (an owed mechanism: '_(enforced: x; owed, S1)_')"
+                )
                 continue
-            letter, num, _name, enforced, anchor = m.groups()
+            letter, num, _name, enforced, owed, anchor = m.groups()
             if anchor != f"{letter.lower()}{num}":
                 out.append(f"line {i + 1}: anchor ^{anchor} does not match {letter}{num}")
             anchors.add(anchor)
@@ -176,6 +181,8 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
                     "- **Subject**:" not in block or "- **Violated when**:" not in block
                 ):
                     out.append(f"C{num}: mechanical claim lacks Subject or Violated when")
+                if owed is not None and not re.search(rf"^- \*\*{owed}\*\*:", body, re.M):
+                    out.append(f"C{num}: owed row {owed} is not in the record")
             else:
                 if enforced is not None:
                     out.append(f"D{num}: a decision carries no enforcement marker")
@@ -197,9 +204,7 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
         if anchor and anchor != "Assumptions":
             if not anchor.startswith("^"):
                 out.append(f"link anchor {anchor!r} is not an item anchor")
-            elif not re.search(
-                rf"^###? .* {re.escape(anchor)}\s*$", target.read_text(), re.M
-            ):
+            elif not re.search(rf"^###? .* {re.escape(anchor)}\s*$", target.read_text(), re.M):
                 out.append(f"link {stem}#{anchor} names no item")
         if alias and not alias.startswith(stem.split("-", 2)[0] + "-" + stem.split("-", 2)[1]):
             out.append(f"link alias {alias!r} does not name {stem}")

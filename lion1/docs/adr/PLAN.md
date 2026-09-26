@@ -2,8 +2,9 @@
 
 ## What the records are
 
-`docs/adr/` is the design of the loop written once, in the present tense, from `lionagi-v1` as it
-stands; the amended history it was distilled from is not in this repository. A record says what is, why,
+`docs/adr/` is the design of the loop written once, in the present tense, from the private
+repository of the earlier prototype at revision `63da864a`, package `lionagi/`, as it stands; the
+amended history it was distilled from is not in this repository. A record says what is, why,
 and what it costs, in the register the tooling in `docs/adr/_scripts/` enforces: Context, Definitions,
 Assumptions, Claims, Decisions, Alternatives, Consequences, with anchors on the C and D items. A fact the
 code does not show is not asserted; a claim marked mechanical has a landed decision behind it, else it is
