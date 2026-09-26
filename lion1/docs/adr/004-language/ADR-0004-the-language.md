@@ -57,7 +57,7 @@ symbolic LNDL design are not part of this runtime; the program form is
 
 | #  | statement                                                                             | source                                                                                                                                    | if false                                |
 | -- | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| A1 | A model trained on JSON function calling writes strings the JSON way.                 | the 52 unreadable messages by shape: 21 native tool calls, 16 quotes or line breaks in a literal, 7 bare shell, 4 values written as `<lact>`, 3 OUT errors | C2 buys nothing; the tax is elsewhere   |
+| A1 | A model trained on JSON function calling writes strings the JSON way.                 | the 52 unreadable messages by shape (51 classified): 21 native tool calls, 16 quotes or line breaks in a literal, 7 bare shell, 4 values written as `<lact>`, 3 OUT errors | C2 buys nothing; the tax is elsewhere   |
 | A2 | A slip at a call's closers is the call the model meant, short of its closers.         | all 7 closer slips in the residual set finished with `finish_reason=stop`                                                                | C3's repairs execute wrong calls        |
 
 ## Claims
