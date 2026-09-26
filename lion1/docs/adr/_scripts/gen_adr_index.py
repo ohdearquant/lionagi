@@ -24,9 +24,7 @@ def read(path: Path) -> dict[str, str]:
     for line in head.splitlines():
         if line.startswith("  - ") and key == "depends_on":
             m = _LINK.search(line)
-            deps.append(
-                (m.group(2) or m.group(1)) if m else line[4:].strip().strip('"')
-            )
+            deps.append((m.group(2) or m.group(1)) if m else line[4:].strip().strip('"'))
         elif ":" in line:
             key, _, value = line.partition(":")
             fm[key.strip()] = value.strip().strip('"')
