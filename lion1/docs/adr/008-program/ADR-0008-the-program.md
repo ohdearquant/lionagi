@@ -105,8 +105,8 @@ applied repair rides the next notification ([[ADR-0006-the-notification#^c2|ADR-
   call anything that is not a command node.
 
 The expression language is the symbolic grammar's: a pointer `*a`, field access `.title`, index
-`[0]`, `+ - * /`, comparisons, `and`, `or`, `not`, literals, `note["key"]`, an inline `if c: a;
-else: b`. One comprehension form is added, `(x for x in *r if x.score > 0.8)`.
+`[0]`, `+ - * /`, comparisons, `and`, `or`, `not`, literals, `note["key"]`, an inline `a if c else
+b`. One comprehension form is added, `(x for x in *r if x.score > 0.8)`.
 
 The runtime's own evaluator (never `eval`) computes it when its node executes; a pending reference
 waits. Values are data (scalars, strings, lists, dicts, a Spec's fields); access and indexing read,

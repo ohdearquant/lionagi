@@ -144,8 +144,6 @@ The subscription CLI retries a transport failure or an empty answer, keeps every
 and writes its cost as unknown, never zero. A refused CLI turn rides its cost on the error.
 Cancelling a call kills and reaps the CLI child before the cancellation goes on.
 
-## Decisions
-
 ### C6: A session CLI given tools of its own acts, outside every gate of the runtime _(enforced: process)_ ^c6
 
 A served run's `[claude_code] tools` hands the session CLI its own tools: inside each turn it runs
@@ -157,6 +155,8 @@ Nothing in the runtime bounds them but the table that names the tools: an acting
 like a handler, by review of its configuration, and its gate is owed (S11). The bench's host-side
 baseline runs the same CLI with its own tools, one whole task per call, and is no backend of `run`
 ([[ADR-0012-the-bench|ADR-0012]] S6).
+
+## Decisions
 
 ### D1: The router backend in `hub/harness/openrouter.py` ^d1
 

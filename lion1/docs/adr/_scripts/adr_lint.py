@@ -71,7 +71,9 @@ PARA, SENT, CELL = 90, 45, 45
 
 # a link inside a table cell escapes its pipe as `\|`; the backslash is not part of the stem or anchor
 _LINK = re.compile(r"\[\[([^\]|#\\]+)(?:#([^\]|\\]+))?\\?(?:\|([^\]]+))?\]\]")
-_ITEM = re.compile(r"^### ([CD])(\d+): (.+?)(?: _\(enforced: ([a-z]+)\)_)? \^([cd]\d+)\s*$")
+_ITEM = re.compile(
+    r"^### ([CD])(\d+): (.+?)(?: _\(enforced: ([a-z]+)(?:; owed, (S\d+))?\)_)? \^([cd]\d+)\s*$"
+)
 
 
 def words(s: str) -> int:
@@ -130,8 +132,11 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
     if fm.get("kind") not in KIND:
         out.append(f"kind {fm.get('kind')!r}")
     for dep in fm.get("depends_on") or []:
-        if not _LINK.fullmatch(dep):
+        m = _LINK.fullmatch(dep)
+        if not m:
             out.append(f"depends_on entry is not a wikilink: {dep}")
+        elif m.group(1) not in corpus:
+            out.append(f"depends_on names an unknown record {m.group(1)}")
 
     if not re.search(rf"^# {re.escape(adr)}: ", body, re.M):
         out.append(f"title line is not '# {adr}: ...'")
@@ -147,6 +152,7 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
     ids: dict[str, list[int]] = {"C": [], "D": []}
     section = None
     lines = body.splitlines()
+    rows = consequence_rows(lines)
     for i, line in enumerate(lines):
         if line.startswith("## "):
             section = line[3:].strip()
@@ -158,9 +164,12 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
         if line.startswith("### ") and section in ("Claims", "Decisions"):
             m = _ITEM.match(line)
             if not m:
-                out.append(f"line {i + 1}: item heading not '### C1: name _(enforced: x)_ ^c1'")
+                out.append(
+                    f"line {i + 1}: item heading not '### C1: name _(enforced: x)_ ^c1'"
+                    " (an owed mechanism: '_(enforced: x; owed, S1)_')"
+                )
                 continue
-            letter, num, _name, enforced, anchor = m.groups()
+            letter, num, _name, enforced, owed, anchor = m.groups()
             if anchor != f"{letter.lower()}{num}":
                 out.append(f"line {i + 1}: anchor ^{anchor} does not match {letter}{num}")
             anchors.add(anchor)
@@ -173,6 +182,8 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
                     "- **Subject**:" not in block or "- **Violated when**:" not in block
                 ):
                     out.append(f"C{num}: mechanical claim lacks Subject or Violated when")
+                if owed is not None and owed not in rows:
+                    out.append(f"C{num}: owed row {owed} is not a Consequences bullet")
             else:
                 if enforced is not None:
                     out.append(f"D{num}: a decision carries no enforcement marker")
@@ -194,7 +205,7 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
         if anchor and anchor != "Assumptions":
             if not anchor.startswith("^"):
                 out.append(f"link anchor {anchor!r} is not an item anchor")
-            elif f" {anchor}" not in target.read_text():
+            elif not re.search(rf"^###? .* {re.escape(anchor)}\s*$", target.read_text(), re.M):
                 out.append(f"link {stem}#{anchor} names no item")
         if alias and not alias.startswith(stem.split("-", 2)[0] + "-" + stem.split("-", 2)[1]):
             out.append(f"link alias {alias!r} does not name {stem}")
@@ -245,6 +256,28 @@ def fresh_format(body: str) -> list[str]:
     if ctx and "Source:" not in ctx.group(1):
         out.append("Context has no Source: sentence")
     return out
+
+
+def consequence_rows(lines: list[str]) -> set[str]:
+    """The ids of the `- **Sn**:` bullets in Consequences, outside fenced code."""
+    rows: set[str] = set()
+    section = None
+    fence = ""
+    for line in lines:
+        bare = line.lstrip()
+        if fence:
+            if bare.startswith(fence):
+                fence = ""
+            continue
+        run = re.match(r"(`{3,}|~{3,})", bare)
+        if run:
+            fence = run.group(1)
+            continue
+        if line.startswith("## "):
+            section = line[3:].strip()
+        elif section == "Consequences" and (m := re.match(r"^- \*\*(S\d+)\*\*:", line)):
+            rows.add(m.group(1))
+    return rows
 
 
 def next_heading(lines: list[str], start: int) -> int:

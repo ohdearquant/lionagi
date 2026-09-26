@@ -129,7 +129,7 @@ times out refuses the command.
 A hook runs in its own process group; a timeout or a cancelled run ends it. Today no hook sees
 `OUT{}`; it becomes the `out` command with [[ADR-0003-the-bounds#^d3|ADR-0003/D3]].
 
-### C5: An after hook sees what ran, ok or not, and cannot undo it _(enforced: mechanical)_ ^c5
+### C5: An after hook sees what ran, ok or not, and cannot undo it _(enforced: mechanical; owed, S8)_ ^c5
 
 - **Subject**: every command whose handler was called.
 - **Violated when**: a refused command reaches an after hook, or an after hook's failure changes the
@@ -146,7 +146,7 @@ pointer dereferences; the first two ride the entry as provenance, out of the mod
 capture shares an immutable value and copies a list or dict
 ([[ADR-0007-the-record#^c1|ADR-0007/C1]]).
 
-### C6: A handler's effect class orders the turn _(enforced: mechanical)_ ^c6
+### C6: A handler's effect class orders the turn _(enforced: mechanical; owed, S9)_ ^c6
 
 - **Subject**: every command dispatched in one turn, hooks included.
 - **Violated when**: a command runs before one its class waits for has settled, a `pure` command
@@ -268,3 +268,6 @@ runs under `-I` with lion's own interpreter (C7).
   ([[ADR-0001-the-actor|ADR-0001]] S4) makes the build count immaterial; another class is refused.
   Each hook then works on a copy (C5), so a change in place changes nothing and only a returned
   replacement counts.
+
+- **S9**: Owed with D1: the effect wait of C6, with the class on `Handler`; until it lands, every
+  command waits on its pointers only, as C6 says a `pure` one does.
