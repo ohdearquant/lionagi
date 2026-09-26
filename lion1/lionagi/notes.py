@@ -101,7 +101,7 @@ def _text(value: Any) -> str:
         return value
     try:
         return json.dumps(value, ensure_ascii=False, default=str)
-    except TypeError:
+    except (TypeError, ValueError):  # ValueError: a value that refers to itself
         return str(value)
 
 
@@ -151,8 +151,10 @@ class FileNoteStore(MemoryNoteStore):
 
     def put(self, key: str, value: Any, *, run: str, seq: int) -> Note:
         try:
-            json.dumps(value)  # a value the file cannot carry is refused before the write, never coerced
-        except TypeError as e:
+            # a value the file cannot carry is refused before the write, never coerced: JSON, and UTF-8
+            # (a lone surrogate passes `json.dumps` escaped and fails at the file)
+            json.dumps(value, ensure_ascii=False).encode("utf-8")
+        except (TypeError, ValueError) as e:
             raise ValueError(f"note {key!r}: {e}; the file store carries JSON values only") from None
         with self._locked():
             note = super().put(key, value, run=run, seq=seq)

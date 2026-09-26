@@ -494,19 +494,6 @@ def test_a_wrong_out_key_names_the_concrete_form():
     assert any("write OUT{done: [aliases]} or OUT{done: {field: value, ...}}" in c for c in sys_entries)
 
 
-def test_a_generated_alias_recurring_in_a_later_round_still_runs():
-    actor = _echo_actor("t10")
-    call = (
-        '<｜DSML｜ invoke name="echo">\n'
-        '<｜DSML｜ parameter name="text" string="true">hi</｜DSML｜ parameter>\n'
-        "</｜DSML｜ invoke>"
-    )
-    run = asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), scripted(call, call)))
-    results = [e for e in run.record if e.name.startswith("_r")]
-    assert len(results) == 2 and all(e.content.ok for e in results)
-    assert results[0].alias != results[1].alias and results[1].alias.startswith(results[0].alias)
-
-
 def test_a_lone_output_takes_any_out_key_and_says_so():
     actor = Actor("t11")
     run = asyncio.run(

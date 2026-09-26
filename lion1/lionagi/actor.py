@@ -775,9 +775,6 @@ class Actor:
             self._deliver(run, error=e)
             raise
         finally:
-            for task in run.pending.values():
-                if not task.done():
-                    task.cancel()
             for _alias, answer in run.asked.values():
                 if not answer.done():
                     answer.cancel()
@@ -855,9 +852,30 @@ class Actor:
                 run.fields[la.alias] = la.field
             run.pointing[la.alias] = {p.name for p in la.pointers()}
             task = asyncio.create_task(self._perform(run, la, subset))
+            task.add_done_callback(functools.partial(self._never_started, run, la))
             run.pending[la.alias] = task
             tasks.append(task)
         return tasks
+
+    def _never_started(self, run: Run, la: Lact, task: asyncio.Task) -> None:
+        """A command cancelled before its coroutine ran: none of `_perform`'s exits happened, so the
+        alias would stay in `pending` and no RESULT would land. One cancelled before it entered is
+        recorded by the loop (ADR-0002/C1) and `pending` drops the alias on every exit (ADR-0005/C1)."""
+        if run.pending.get(la.alias) is not task:
+            return  # `_perform` ran and settled the command itself
+        run.pending.pop(la.alias)
+        result = Result(la.name, False, error="cancelled before it started", reason="cancelled")
+        run.record.append(Kind.RESULT, result, alias=la.alias, round=run.round, execution="not executed")
+        run.refused.append((la.alias, result.error))
+        self.bus.emit(
+            "command.settled",
+            run=run.id,
+            alias=la.alias,
+            name=la.name,
+            ok=False,
+            reason="cancelled",
+            execution="not executed",
+        )
 
     async def _perform(self, run: Run, la: Lact, subset: Operable) -> None:
         """One command, from request to RESULT. Every exit takes the alias out of `pending` and leaves
@@ -1221,8 +1239,6 @@ class Actor:
             if told:  # the handler was called: what it did before it failed or was stopped stands
                 lines.append(header)
                 lines.extend(f"  {alias}: {why}" for alias, why in told)
-        if run.pending:
-            lines.append("still running: " + ", ".join(sorted(run.pending)))
         visible = _shown(view)
         gone = [r.by_seq(seq) for seq in sorted(run.viewed - visible)]
         if gone:
@@ -1262,18 +1278,16 @@ class Actor:
         run.hook_errors.clear()
         return "\n".join(lines), folded
 
-    def _render(self, run: Run, subset: Operable, *, with_system: bool = True) -> list[Message]:
-        messages: list[Message] = []
-        if with_system:
-            outputs = tuple(spec_name(s) for s in run.request.emits)
-            parts = [
-                run.profile.system.strip(),
-                lndl.guidance(outputs, commands=subset),
-                "COMMANDS\n" + subset.guidance(),
-            ]
-            if run.request.emits:
-                parts.append(_output_guidance(run.request.emits))
-            messages.append(Message("system", "\n\n".join(p for p in parts if p)))
+    def _render(self, run: Run, subset: Operable) -> list[Message]:
+        outputs = tuple(spec_name(s) for s in run.request.emits)
+        parts = [
+            run.profile.system.strip(),
+            lndl.guidance(outputs, commands=subset),
+            "COMMANDS\n" + subset.guidance(),
+        ]
+        if run.request.emits:
+            parts.append(_output_guidance(run.request.emits))
+        messages = [Message("system", "\n\n".join(p for p in parts if p))]
         view = self._fold(run)
         messages.extend(_messages(view))
         run.viewed = _shown(view)
@@ -1404,7 +1418,7 @@ def _coerce(spec: Spec, fld: str, value: Any) -> Any:
     for reader in (json.loads, ast.literal_eval):
         try:
             return reader(value)
-        except (ValueError, SyntaxError):
+        except (ValueError, SyntaxError, TypeError):  # TypeError: a literal with an unhashable key
             continue
     return value
 

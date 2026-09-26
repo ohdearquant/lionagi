@@ -84,7 +84,6 @@ In order:
 - `settled:` with alias, record name, Spec, type and preview;
 - `failed after starting:` and `completion unknown:`, by the RESULT's `execution` mark
   (ADR-0005/C1);
-- `still running:` (S5);
 - `out of view now`, what left the view;
 - `not executed:` with alias and reason, a repair's note among them
   ([[ADR-0004-the-language#^c3|ADR-0004/C3]]);
@@ -156,11 +155,10 @@ diagnostics on the record (ADR-0002/C4).
   next reported count corrects it.
 - **S4**: A section has no timeout: one that hangs holds the turn, where a hook is cut at its
   `timeout` (ADR-0005/A4).
-- **S5**: The `still running:` line is written when a command is pending at the notification, and
-  none is today: each turn gathers every command it dispatched before the next notification
-  ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]), and a command leaves `pending` on every exit
-  ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]).
-  `test_a_reused_alias_is_refused_and_never_reads_as_still_running` pins the absence. The decided
-  turn keeps it so: every command settles before the next notification unless an accepted `OUT{}`
-  ends the run ([[ADR-0002-the-run#^c1|ADR-0002/C1]]), so only a path carrying a command into the
-  next turn, which no record decides, would reach it.
+- **S5**: A `still running:` line, for a command pending at the notification, was in this list and
+  went with the code that wrote it. None is ever pending: each turn gathers every command it
+  dispatched before the next notification ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]), and a
+  command leaves `pending` on every exit ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]), the one
+  cancelled before it entered included ([[ADR-0002-the-run#^c1|ADR-0002/C1]]).
+  `test_a_reused_alias_is_refused_and_never_reads_as_still_running` pins the absence. Only a path
+  carrying a command into the next turn, which no record decides, would need the line back.

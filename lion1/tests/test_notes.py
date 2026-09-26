@@ -4,6 +4,9 @@ through note.get; list prefixes are exact while find is case-insensitive."""
 
 import asyncio
 import json
+import os
+from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -114,3 +117,104 @@ def test_the_guidance_names_get_and_delete_only_when_the_profile_has_them():
     full = guidance(commands=["note.list", "note.find", "note.get", "note.delete"])
     assert 'note.get(key="...") reads one whole, note.delete(key="...") removes one, and' in full
     assert "note.get" not in guidance(commands=["note.list", "note.find"])
+
+
+def test_a_memory_store_counts_every_write_and_an_empty_overwrite_keeps_the_key():
+    store = MemoryNoteStore()
+    assert store.version == 0
+    store.put("plan", "draft", run="r1", seq=1)
+    kept = store.put("plan", "", run="r2", seq=5)
+    # an empty value is still a value: a key leaves the store only by a delete (ADR-0007/C7)
+    assert (kept.value, kept.version, kept.run, kept.seq) == ("", 2, "r2", 5)
+    assert store.get("plan") == kept and [n.key for n in store.list()] == ["plan"] and store.version == 2
+    assert store.delete("absent") is None and store.version == 2
+    assert store.delete("plan") == kept and store.get("plan") is None and store.version == 3
+
+
+def test_find_reads_a_structured_value_as_its_json_text_with_accents_kept_and_a_date_as_text():
+    store = MemoryNoteStore()
+    store.put("menu", {"dish": "Crème Brûlée", "served": date(2026, 9, 26)}, run="r", seq=1)
+    store.put("count", 30, run="r", seq=2)
+    assert [n.key for n in store.find("CRÈME BRÛLÉE")] == ["menu"]
+    assert [n.key for n in store.find("2026-09-26")] == ["menu"] and store.find("datetime") == []
+    assert [n.key for n in store.find("30")] == ["count"]
+
+
+def test_find_falls_back_to_the_values_own_text_where_json_cannot_render_it():
+    store = MemoryNoteStore()
+    # JSON object keys are text only, so a map keyed by tuples has no JSON text at all
+    store.put("grid", {(0, 1): "Wall"}, run="r", seq=1)
+    assert [n.key for n in store.find("wall")] == ["grid"]
+    assert [n.key for n in store.find("(0, 1)")] == ["grid"]
+
+
+class Interrupted(BaseException):
+    pass
+
+
+def test_a_file_write_interrupted_before_the_rename_leaves_the_file_as_it_was_and_no_temp_file(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)
+    store.put("plan", "one", run="r", seq=1)
+    before = path.read_bytes()
+    temps = []
+
+    def interrupted(src, dst):
+        temps.append((Path(src), json.loads(Path(src).read_text())["notes"]["plan"]["value"]))
+        raise Interrupted
+
+    with monkeypatch.context() as m:
+        m.setattr("lionagi.notes.os.replace", interrupted)
+        with pytest.raises(Interrupted):
+            store.put("plan", "two", run="r", seq=2)
+    assert len(temps) == 1 and temps[0][1] == "two"  # the new payload had reached the temp file
+    assert not temps[0][0].exists() and path.read_bytes() == before
+    assert store.get("plan").value == "one" and store.version == 1
+
+
+def test_a_file_write_interrupted_after_the_rename_keeps_the_new_file_and_raises_the_interrupt(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)
+    store.put("plan", "one", run="r", seq=1)
+    real_replace = os.replace
+    temps = []
+
+    def replaced_then_interrupted(src, dst):
+        temps.append(Path(src))
+        real_replace(src, dst)
+        raise Interrupted
+
+    with monkeypatch.context() as m:
+        m.setattr("lionagi.notes.os.replace", replaced_then_interrupted)
+        with pytest.raises(Interrupted):
+            store.put("plan", "two", run="r", seq=2)
+    assert len(temps) == 1 and not temps[0].exists()
+    reloaded = FileNoteStore(path)
+    assert reloaded.get("plan").value == "two" and reloaded.version == 2
+
+
+def test_a_value_the_file_cannot_carry_is_refused_before_the_store_takes_its_lock(tmp_path):
+    store = FileNoteStore(tmp_path / "n.json")
+    circular: list = []
+    circular.append(circular)
+    for value, said in (("a\ud800b", "surrogates not allowed"), (circular, "Circular reference")):
+        with pytest.raises(
+            ValueError, match=f"note 'k': .*{said}.*; the file store carries JSON values only"
+        ):
+            store.put("k", value, run="r", seq=1)
+    assert store.get("k") is None and store.version == 0
+    assert list(tmp_path.iterdir()) == []  # no file, and no lock file: the refusal came first
+
+
+def test_find_reads_every_note_when_one_value_cannot_be_rendered_as_json():
+    store = MemoryNoteStore()
+    circular: list = ["loop"]
+    circular.append(circular)
+    store.put("ring", circular, run="r", seq=1)
+    store.put("plan", "ship it", run="r", seq=2)
+    assert [n.key for n in store.find("ship")] == ["plan"]
+    assert [n.key for n in store.find("LOOP")] == ["ring"]  # the value's own text stands in for its JSON
