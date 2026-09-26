@@ -97,18 +97,18 @@ attaches an internal network with no DNS, no egress and no reach to the host.
 ### C3: Three tools over a tree, the tree may be anywhere, and an edit lands once _(enforced: mechanical)_ ^c3
 
 - **Subject**: every `read_lines`, `search` and `edit` call.
-- **Violated when**: a tool reads a path outside the tree, an edit lands more than once or where
-  `old` was absent, or a later write carries an earlier read.
+- **Violated when**: a tool reads a path outside the tree, in a box one whose text leaves `workdir`
+  (S14), an edit lands more than once or where `old` was absent, or a later write carries an earlier
+  read.
 
 `read_lines(path, start, end)` returns numbered lines with the file's length, or says the file is
-empty. `search(pattern, path, include)` returns `file:line:text` rows, every match, `(no matches)`
-for none, and raises on a bad pattern; `rg` when the tree has it, else `grep -rE`; both read hidden
-files and skip `.git`. `edit(path, old, new)` replaces exactly one verbatim occurrence, refuses any
-other count with the count named, and keeps each line's own ending. Edits serialise on one lock.
+empty. `search(pattern, path, include)` returns `file:line:text` rows, `(no matches)` for none, and
+raises on a bad pattern; `rg` when the tree has it, else `grep -rE`; both read hidden files and skip
+`.git`. `edit(path, old, new)` replaces one verbatim occurrence, refuses any other count with the
+count named, and keeps each line's own ending. Edits serialise on one lock.
 
 A tree on this machine refuses a path that resolves outside it: `..`, an absolute path elsewhere, a
-symlink out. A tree in a box checks every path against `workdir` by its text (S14). `read` and
-`list_dir` go over the same tree.
+symlink out. In a box the check reads the text only. `read` and `list_dir` go over the same tree.
 
 ### C4: The watch reports the change as the tree shows it; the model's own checks end the run _(enforced: mechanical)_ ^c4
 
@@ -260,5 +260,5 @@ to; the person picks `--offline` when the directory holds what the network must 
   docker and remote boxes run with no deadline. No caller passes none today, and no test pins it.
 - **S14**: The box tree's bound reads the path's text only, so a symlink inside `workdir` that
   points elsewhere in the box is read and written through, where the tree on this machine refuses
-  it. The box holds nothing of this machine (C2), so what it reaches is the box's own; no test pins
-  it.
+  it. The box holds nothing of this machine (C2), so what it reaches is the box's own. Resolving the
+  path in the box before the check is owed; no test pins it.
