@@ -423,7 +423,7 @@ def test_a_line_that_is_not_a_record_row_is_named_and_nothing_replays(plain, raw
         to_history(c)
 
 
-def test_the_first_prompt_re_arms_each_watch_verbatim_then_carries_the_words_lanes_view_and_posture():
+def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
     turns = [turn(1, "t" * 400), turn(2, "text two"), turn(3, "", kind="event"), turn(4, "text four")]
     view = fold_turns(turns, 100)  # 102 + 4 + 2 + 4: the first goes
     source = {
@@ -720,7 +720,7 @@ def test_load_says_what_is_missing_or_malformed_and_takes_only_a_name(plain):
         load(plain, "ckpt-absent")
 
 
-def test_concurrent_saves_of_one_id_each_land_and_latest_names_one_of_them(plain):
+def test_concurrent_saves_each_land_and_latest_names_one_of_them(plain):
     c = take({}, [], actor=ACTOR, why="manual", budget=100, now=AT)
     written: list[Path] = []
     threads = [threading.Thread(target=lambda: written.append(save(c, plain))) for _ in range(12)]
