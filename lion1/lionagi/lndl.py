@@ -239,7 +239,7 @@ def _mark_pointers(source: str) -> str:
     set member stands is refused: a pointer stands where a value stands, and the resolver walks values."""
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
-    except (tokenize.TokenError, SyntaxError):
+    except (tokenize.TokenError, SyntaxError, ValueError):  # ValueError: 3.12+'s tokenizer, a lone surrogate
         return source
     offsets = _line_offsets(source)
 
@@ -358,7 +358,7 @@ def _insert_commas(source: str) -> str | None:
     or the text does not tokenize."""
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
-    except (tokenize.TokenError, SyntaxError):
+    except (tokenize.TokenError, SyntaxError, ValueError):  # ValueError: 3.12+'s tokenizer, a lone surrogate
         return None
     offsets = _line_offsets(source)
     spots = []
