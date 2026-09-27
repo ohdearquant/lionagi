@@ -115,11 +115,13 @@ async def run_hook(hook: Hook, payload: dict, cwd: Path) -> tuple[int | None, st
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         await proc.wait()
+        await proc.communicate()  # drains and closes the pipes the cancelled read left open
         return None, "", ""
     except asyncio.CancelledError:  # a cancelled run takes the hook's children with it too
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         await proc.wait()
+        await proc.communicate()
         raise
     return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
 

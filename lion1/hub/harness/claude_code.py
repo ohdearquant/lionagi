@@ -21,8 +21,11 @@ cost is unknown. The error carries the CLI's whole detail.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
 import shutil
+import signal
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -291,14 +294,18 @@ async def _exec(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=str(cwd) if cwd else None,
+        start_new_session=True,  # the CLI's whole process group: a kill ends its children too
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout=timeout)
     except (TimeoutError, asyncio.CancelledError) as e:
-        # the child is this backend's to stop: a cancelled task must not leave it running
+        # the child is this backend's to stop: a cancelled task must not leave it running, nor a
+        # grandchild holding the pipes open past the loop's end
         if proc.returncode is None:
-            proc.kill()
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
             await proc.wait()
+        await proc.communicate()  # drains and closes the pipes the cancelled read left open
         if isinstance(e, asyncio.CancelledError):
             raise
         raise ClaudeCodeError(f"claude did not answer within {timeout}s") from None
