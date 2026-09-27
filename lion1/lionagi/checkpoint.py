@@ -7,6 +7,8 @@ a fresh session, its first line re-arming the watches, or a resident's record re
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import os
 import re
@@ -159,6 +161,20 @@ def _record_view(record: Record | Iterable[Entry], budget: int, fold_inputs: boo
     }
 
 
+def _digest(entries: Iterable[Entry]) -> str:
+    """The rows as the replay checks them (ADR-0019/D1): each row's seq and kind, the text of an input,
+    a turn or a notice, and a result's spec, ok, error and reason. A result's value reads back as data
+    in the form the log chose, so it is not digested."""
+    h = hashlib.sha256()
+    for e in entries:
+        c = e.content
+        said = (
+            [c.spec, c.ok, c.error, c.reason] if isinstance(c, Result) else c if isinstance(c, str) else None
+        )
+        h.update(json.dumps([e.seq, e.kind.name, said]).encode() + b"\n")
+    return h.hexdigest()
+
+
 def _hooked(text: Any) -> bool:
     s = str(text)
     return s.lstrip().startswith(_FRAMES) or _REMINDER.search(s) is not None
@@ -187,6 +203,7 @@ def take(
         raise CheckpointError("no actor: a checkpoint is the actor's, and nothing names it")
     named: dict[str, Var] = {}
     for v in vars:
+        v = replace(v, value=copy.deepcopy(v.value))  # the checkpoint's own copy: a later edit is not its
         if v.kind not in KINDS:
             raise CheckpointError(f"var {v.name!r}: kind {v.kind!r} is not one of {', '.join(KINDS)}")
         if v.kind == "directive" and _hooked(v.value):
@@ -198,11 +215,18 @@ def take(
             v = replace(v, size=len(_one(v.value)), value=None if v.ref else v.value)
         named[v.name] = v
     now = now or datetime.now().astimezone()
+    source = copy.deepcopy(source)
     if record is not None:
         view = _record_view(record, budget, fold_inputs)
-        source = {**source, "kind": "resident", "seq": record.seq, "fold_inputs": fold_inputs}
+        source = {
+            **source,
+            "kind": "resident",
+            "seq": record.seq,
+            "fold_inputs": fold_inputs,
+            "digest": _digest(record),
+        }
     else:
-        view = view if view is not None else fold_turns((), budget)
+        view = copy.deepcopy(view) if view is not None else fold_turns((), budget)
         for t in view.get("kept", []):
             if _hooked(t.get("input") or ""):
                 raise CheckpointError(f"turn {t.get('turn')}: its input carries a hook's frame")
@@ -379,7 +403,18 @@ def _replace_text(path: Path, text: str) -> None:
 
 def save(checkpoint: Checkpoint, directory: str | Path) -> Path:
     """`<dir>/.khive/context/<id>.json`, then `latest.json` pointing at it; the path written. An id
-    already on disk (two takes in one second) gets `-02`, `-03`: nothing is overwritten."""
+    already on disk (two takes in one second) gets `-02`, `-03`: nothing is overwritten. An id that is
+    not a name (`load` takes only a name; `latest` is the pointer's) and a value the file cannot carry
+    are refused before anything is written."""
+    if not _ID.fullmatch(checkpoint.id) or checkpoint.id == "latest":
+        raise CheckpointError(f"checkpoint id {checkpoint.id!r} is not a name; nothing was written")
+    doc = asdict(checkpoint)
+    try:
+        data = _bytes(doc)
+    except ValueError as e:  # a lone surrogate: JSON carries it escaped, UTF-8 refuses it
+        raise CheckpointError(
+            f"{checkpoint.id}: a value the file cannot carry ({e}); nothing was written"
+        ) from None
     d = Path(directory)
     assert_ignored(d)
     ctx = d / ".khive" / "context"
@@ -393,10 +428,15 @@ def save(checkpoint: Checkpoint, directory: str | Path) -> Path:
         except FileExistsError:
             n += 1
             cid = f"{checkpoint.id}-{n:02d}"
-    with os.fdopen(fd, "w") as f:
-        json.dump(asdict(replace(checkpoint, id=cid)), f, ensure_ascii=False, indent=1, default=str)
+            data = _bytes({**doc, "id": cid})
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
     _replace_text(ctx / "latest.json", json.dumps({"id": cid}) + "\n")
     return path
+
+
+def _bytes(doc: dict) -> bytes:
+    return json.dumps(doc, ensure_ascii=False, indent=1, default=str).encode("utf-8")
 
 
 def load(directory: str | Path, id: str | None = None) -> Checkpoint:
@@ -461,4 +501,13 @@ def to_history(checkpoint: Checkpoint) -> tuple[Entry, ...]:
             raise CheckpointError(
                 f"{path} no longer folds to the view of {checkpoint.id} ({key} differ); nothing was replayed"
             )
+    # the view compares names; a row rewritten in place folds the same, so its content is checked too
+    want = src.get("digest")
+    if not isinstance(want, str):
+        raise CheckpointError(f"{checkpoint.id} carries no digest of its record; nothing was replayed")
+    if _digest(entries) != want:
+        raise CheckpointError(
+            f"{path} to seq {n} is not the record {checkpoint.id} was taken over (its rows were rewritten); "
+            "nothing was replayed"
+        )
     return tuple(entries)

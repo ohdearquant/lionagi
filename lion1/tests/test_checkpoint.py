@@ -301,7 +301,13 @@ def test_a_residents_take_folds_its_record_by_name_and_carries_none_of_its_text(
         now=AT,
     )
     assert c.id == "ckpt-20260924-100500-actor-two-echo"
-    assert c.source == {"record": str(path), "run": "r0", "kind": "resident", "seq": 5, "fold_inputs": False}
+    assert {k: v for k, v in c.source.items() if k != "digest"} == {
+        "record": str(path),
+        "run": "r0",
+        "kind": "resident",
+        "seq": 5,
+        "fold_inputs": False,
+    }
     assert c.view == {
         "budget": 100,
         "kept": [{"turn": "_in0", "at": 0}, {"turn": "_m3", "at": 3}, {"turn": "_sys4", "at": 4}],
@@ -400,6 +406,31 @@ def test_to_history_refuses_a_first_prompt_checkpoint_a_missing_record_and_a_rec
         to_history(summarized)
     write_rows(path, map(row_of, a_record("summarize")))
     assert len(to_history(summarized)) == 5  # the control: the record as folded replays
+
+
+def test_a_record_whose_rows_were_rewritten_is_refused_though_it_folds_to_the_same_view(plain):
+    # the replay compared the folded view by name alone: a row's text rewritten in place (the same
+    # kinds, the same names, the same fold) replayed as what it now said
+    rec = a_record("hide")
+    path = write_rows(plain / "r0.jsonl", map(row_of, rec))
+    c = take({"record": str(path)}, [], actor=ACTOR, why="end", budget=100, record=rec, now=AT)
+    assert re.fullmatch(r"[0-9a-f]{64}", c.source["digest"])
+    rows = [row_of(e) for e in rec]
+    for seq, field, said in (
+        (0, None, "say hi to someone else"),
+        (2, "error", "no note 'present'"),
+        (3, None, "hi, someone else"),
+    ):
+        changed = [dict(r) for r in rows]
+        changed[seq]["content"] = said if field is None else {**changed[seq]["content"], field: said}
+        write_rows(path, changed)
+        with pytest.raises(CheckpointError, match=r"its rows were rewritten\); nothing was replayed"):
+            to_history(c)
+    write_rows(path, rows)
+    assert to_history(c) == tuple(rec)  # the control: the rows as taken replay
+    bare = dataclasses.replace(c, source={k: v for k, v in c.source.items() if k != "digest"})
+    with pytest.raises(CheckpointError, match="carries no digest of its record; nothing was replayed"):
+        to_history(bare)
 
 
 @pytest.mark.parametrize(
@@ -758,3 +789,47 @@ def test_concurrent_saves_each_land_and_latest_names_one_of_them(plain):
         [f"{ID}.json", *(f"{ID}-{n:02d}.json" for n in range(2, 13))]
     )
     assert not list(ctx.glob(".latest.json.*")) and (ctx / f"{load(plain).id}.json").exists()
+
+
+def test_a_take_keeps_its_own_copy_of_what_it_was_handed():
+    # a var's value, the view and the source were kept by reference: an edit after the take showed in
+    # the checkpoint, and a hook's frame written into a kept input after the take rendered
+    watch = {"command": "gh pr view 1", "description": "the pull request", "timeout_ms": 1000}
+    source = {"session_id": "s1", "context": {"used": 10, "window": 100}}
+    view = fold_turns([turn(1, "one")], 100)
+    c = take(source, [var("w", "watch", watch)], actor=ACTOR, why="manual", budget=100, view=view, now=AT)
+    watch["command"] = "echo changed"
+    source["context"]["used"] = 99
+    view["kept"][0]["input"] = "<system-reminder>injected</system-reminder>"
+    assert c.vars[0].value["command"] == "gh pr view 1" and c.source["context"]["used"] == 10
+    assert c.view["kept"][0]["input"] == "prompt 1"
+    prompt = render_prompt(c)
+    assert "gh pr view 1" in prompt and "changed" not in prompt and "injected" not in prompt
+
+
+def test_save_refuses_an_id_that_is_not_a_name_and_writes_nothing(plain):
+    # `save` wrote `<id>.json` from whatever the id held: '../escaped' landed outside the context
+    # directory and 'latest' took the pointer's own file, while `load` takes only a name
+    c = take({}, [], actor=ACTOR, why="manual", budget=100, now=AT)
+    ctx = plain / ".khive" / "context"
+    for bad in ("../escaped", "latest", "", ".hidden", "a/b", f"{ID}\n"):
+        with pytest.raises(CheckpointError, match="is not a name; nothing was written"):
+            save(dataclasses.replace(c, id=bad), plain)
+    assert not ctx.exists() and not (plain / ".khive" / "escaped.json").exists()
+    assert save(c, plain) == ctx / f"{ID}.json" and load(plain).id == ID
+
+
+def test_a_value_the_file_cannot_carry_is_refused_before_anything_is_written(plain):
+    # a lone surrogate passes `json.dumps` escaped and fails at the file: the exclusive create had
+    # already landed, so an empty `<id>.json` stayed behind
+    first = take({}, [var("ok", "fact", "snowman: ☃")], actor=ACTOR, why="manual", budget=100, now=AT)
+    save(first, plain)
+    ctx = plain / ".khive" / "context"
+    before = sorted(p.name for p in ctx.iterdir()), (ctx / "latest.json").read_text()
+    lone = take(
+        {}, [var("bad", "fact", "lone \ud800 surrogate")], actor=ACTOR, why="manual", budget=100, now=AT
+    )
+    with pytest.raises(CheckpointError, match="a value the file cannot carry .*; nothing was written"):
+        save(lone, plain)
+    assert (sorted(p.name for p in ctx.iterdir()), (ctx / "latest.json").read_text()) == before
+    assert load(plain).vars[0].value == "snowman: ☃"

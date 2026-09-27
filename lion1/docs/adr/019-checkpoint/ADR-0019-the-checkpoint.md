@@ -1,7 +1,7 @@
 ---
 adr: ADR-0019
 status: draft
-liveness: operating (the take, the transcript scan, the restore, the files and both transports are pinned by tests; the take's own checks of kind, reason and injected text have no test; lanes from pull requests and threads are owed; nothing in the code starts a Claude Code session's checkpoint)
+liveness: operating (the take and its refusals, the transcript scan, the restore, the files and both transports are pinned by tests; lanes from pull requests and threads are owed; nothing in the code starts a Claude Code session's checkpoint)
 date: "2026-09-25"
 area: checkpoint
 kind: new
@@ -96,8 +96,9 @@ typed prompt is cut out. The session's last text block before the next prompt is
 text.
 
 A task notification opens an exchange of its own, labelled `[event]` in 200 characters at most,
-never a `directive`. The same words again with no answer between are one exchange. The take's own
-refusal of injected text has no test.
+never a `directive`. The same words again with no answer between are one exchange. The take's
+refusal of injected text is pinned by
+`test_a_take_refuses_a_why_or_a_kind_outside_the_lists_a_nameless_actor_and_a_hooks_frame`.
 
 ### C3: The kept view is half the budget, oldest folded first, and the person's words are eight at most _(enforced: mechanical)_ ^c3
 
@@ -182,16 +183,18 @@ and a `pending.jsonl` line that is not a declared value refuse the take.
 
 Serves C1, C3, C4 and C6. `take` is pure: no model call, no file. `save` writes and `load` reads by
 id, the latest when none is named, refusing an id that is not a plain name. `to_history` is a
-resident's restore: the record it points at, read back to the seq taken, each row through
-`entry_of`, refused unless it folds again to the view taken, and refused for a Claude Code
-checkpoint, whose restore is the prompt.
+resident's restore: its record read back to the seq taken, each row through `entry_of`, refused
+unless it folds to the view taken, and refused for a Claude Code checkpoint, whose restore is the
+prompt. The replay checks content, not only names: a row's text and a result's fields, its value
+aside.
 
 - **Landing evidence**: `tests/test_checkpoint.py`:
   `test_the_first_line_re_arms_each_watch_verbatim_before_any_work`,
   `test_concurrent_saves_each_land_and_latest_names_one_of_them`,
-  `test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands`, the long-value
-  test; `tests/test_chat.py`:
-  `test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed`.
+  `test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands`,
+  `test_a_record_whose_rows_were_rewritten_is_refused_though_it_folds_to_the_same_view`,
+  `test_save_refuses_an_id_that_is_not_a_name_and_writes_nothing`, the long-value test;
+  `tests/test_chat.py`: `test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed`.
 
 ### D2: `hub/context.py`: one function per place a Claude Code session keeps state ^d2
 
