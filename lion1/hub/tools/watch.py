@@ -179,6 +179,7 @@ class Watch:
 
     async def check(self) -> list[tuple[str, int]]:
         async with self._lock:
+            self.passed = False  # a check that raises leaves no pass from an earlier tree standing
             results = await self._run(self.criteria or [], self.criteria_timeout)
             self.checks, self.checked = results, self.digest
             self.passed = bool(results) and all(rc == 0 for _, rc in results)
