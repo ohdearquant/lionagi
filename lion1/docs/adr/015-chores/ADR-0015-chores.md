@@ -79,7 +79,7 @@ No findings is quiet: a row, and no mail beyond the answer a question is owed. F
 to the owner. An escalation, marked so, goes to the owner and the steward; the agent never performs
 the remedy. A chore runs as one command inside a wake ([[ADR-0013-the-agent|ADR-0013]]).
 
-### C2: The chores are the ones `chores.toml` names, from a fixed set of twelve _(enforced: mechanical)_ ^c2
+### C2: The chores are the ones `chores.toml` names, from a fixed set of eleven _(enforced: mechanical)_ ^c2
 
 - **Subject**: every agent built from its directory.
 - **Violated when**: a chore runs that the file does not name, or one is built without its error
@@ -102,7 +102,6 @@ and what it keeps between runs in the agent's notes:
 | `disk`              | free space per volume against each named floor (`df`), and build targets over a size cap (`find`, `du`)          | nothing                                           | over-report  |
 | `worktrees`         | each repository's worktrees: branch, dirty count, head age, open pull request                                   | a snapshot per repository                         | over-report  |
 | `bench-jobs`        | the bench actor's notes, the pid of each unreported job, and that job's ledger                                  | nothing                                           | under-report |
-| `daemon-passes`     | a producer's pass mail in the owner's box, through the desk's reader                                            | a cursor, moved once the owner has the report     | under-report |
 | `record`            | issues and pull requests by word search, the ADR corpus's headings and rejected alternatives, and decision notes in the store | nothing                                           | under-report |
 
 ### C3: A chore runs on its tick, on a trusted question, or on a missed tick, inside a wake _(enforced: mechanical)_ ^c3
@@ -112,9 +111,9 @@ and what it keeps between runs in the agent's notes:
   a question is answered off its thread, or a chair's agent creates a tick.
 
 At start the agent creates each missing tick: one per chore with a period, the digest's, the aged
-pass's when it has a steward, and the one a mail watch adds. A tick arrives as mail from the agent
-itself and wakes it; no chore runs on a clock inside the process. Once per run, before its first
-check, the agent runs its own ticks the store marked missed or failed and not yet seen.
+pass's when it has a steward. A tick arrives as mail from the agent itself and wakes it; no chore
+runs on a clock inside the process. Once per run, before its first check, the agent runs its own
+ticks the store marked missed or failed and not yet seen.
 
 A trusted sender's question is answered on its own thread, whatever the ending; `record` has no
 period and runs only when asked. A chair's agent runs no chore: its profile offers no `check` and it
@@ -132,8 +131,7 @@ to it, and asserts that actor on every call. One process holds the identity at a
 marking it read: the cursor names it, and it never reaches a run or a model call.
 
 A question names its asker; the handler refuses an asker outside the trusted set and a thread no
-admitted message from that asker carries. `daemon-passes` reads the owner's box through a second
-client bound to the owner's identity, with two read verbs and no send.
+admitted message from that asker carries.
 
 ### C5: A chore reaches the store only through the bounded client, and mails only the owner, the steward or who asked _(enforced: mechanical)_ ^c5
 
@@ -155,9 +153,9 @@ answers ([[ADR-0017-the-desk#^c12|ADR-0017/C12]]).
 
 The instruments' commands read: `gh` lists, views and GETs, `git` worktree lists, status, log and
 remote lookups, `ps`, `launchctl print`, `df`, `find` and `du`. The chores profile offers `check`,
-`digest`, `aged` and the handlers a front desk or a mail watch adds; none is a file tool or a note
-command, so a blank `note.find` ([[ADR-0007-the-record#^c5|ADR-0007/C5]]) never reaches a chore. The
-handler reads and writes the agent's notes by key. A chore has no diff to land.
+`digest`, `aged` and the handlers a front desk adds; none is a file tool or a note command, so a
+blank `note.find` ([[ADR-0007-the-record#^c5|ADR-0007/C5]]) never reaches a chore. The handler reads
+and writes the agent's notes by key. A chore has no diff to land.
 
 Its hand-run form is print and save: `lion agent --check <chore>` runs the instrument alone, prints
 it and saves the same text in the agent directory's `landing` folder, one file per chore and day; it
@@ -261,28 +259,22 @@ bypasses the handler: no refusals, no row, no send.
 - **S2**: The store boundary is enforced in the process: a client run by hand from the agent
   directory is not bounded, and no store-side refusal is relied on. A refusal in the store of any
   write by the agent's own actor is the kernel's to give, with the identity's grants
-  ([[ADR-0013-the-agent|ADR-0013]] S10).
+  ([[ADR-0013-the-agent|ADR-0013]] S9).
 - **S3**: The missed-tick read takes one page of 200 scheduled rows and filters to the actor in
   code; a busy namespace can push a missed row past the page. The store's `list` filters scheduled
   rows by creator and by status before the page, and the code passes neither; passing them is owed.
 - **S4**: A standing state is told once until it changes, a standing failure included: a chore that
   recovers quietly and fails again the same way is not resent. The digest carries the counts, and an
   owner who wants a state again asks.
-- **S5**: `daemon-passes` never ends quiet: its clean run is one liveness line, because its producer
-  mails only on news and the mail cannot tell a quiet producer from a dead one. An empty window is
-  not an answered run, and `dead_after` in a row escalate as a dead instrument.
-- **S6**: The hand-run check skips the handler's refusals, so it shows the raw measurement, and no
+- **S5**: The hand-run check skips the handler's refusals, so it shows the raw measurement, and no
   test drives it past the identity claim. The `verdict-freshness` enumerator runs as the config
   gives it, outside anything that checks it only reads.
-- **S7**: The chore ledger is read whole on every check and never rotated, so a check's cost grows
+- **S6**: The chore ledger is read whole on every check and never rotated, so a check's cost grows
   with the agent's age; its stamps are local time without a zone.
-- **S8**: A front desk runs a chore's instrument through the same refusals to answer the owner's
+- **S7**: A front desk runs a chore's instrument through the same refusals to answer the owner's
   mail, and the digest's period becomes the desk's brief, every 12 hours unless set
   ([[ADR-0017-the-desk|ADR-0017]]).
-- **S9**: A mail watch configured under `[mail]` rides the same profile and ticks, but it is not a
-  chore: `check` never runs it, and its code settles rows through its tracker's own commands, which
-  write. [[ADR-0020-the-mail-watch|ADR-0020]] decides it.
-- **S10**: The owner's own ask counts as the owner's receipt, whichever thread carried it: the
+- **S8**: The owner's own ask counts as the owner's receipt, whichever thread carried it: the
   answer's message and thread go on the row. A later tick names that answer as its prior and does
   not resend the same findings, and the aged pass waits for the owner's reply on the ask's thread.
   `test_the_owners_own_ask_keeps_its_receipt_so_the_report_ages_and_is_not_repeated` pins it.
