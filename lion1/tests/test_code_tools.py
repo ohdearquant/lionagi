@@ -179,3 +179,15 @@ def test_the_local_tree_lists_a_directory_with_a_slash_after_each_directory(tmp_
     assert asyncio.run(t.list_dir("b")) == []
     with pytest.raises(PermissionError, match="outside"):
         asyncio.run(t.list_dir(".."))
+
+
+def test_an_edit_keeps_the_ending_of_a_line_holding_a_unicode_separator():
+    # the numbering split lines at U+2028 (str.splitlines) while the edit matched at LF: the line
+    # before the edited one read as two, and the ending given back to it was the LF of the edit side
+    from hub.tools.code import numbered, reend, replace_once
+
+    before = "left\u2028right\r\ntarget = 1\r\n"
+    assert numbered(before)[3] == 2 and numbered(before)[0] == "1: left\u2028right\n2: target = 1"
+    after = replace_once(before.replace("\r\n", "\n"), "target = 1", "target = 2")
+    assert reend(before, after) == "left\u2028right\r\ntarget = 2\r\n"
+    assert reend("a\x85b\r\nc\n", "a\x85b\nC\n") == "a\x85b\r\nC\n"  # NEL likewise
