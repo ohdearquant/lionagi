@@ -617,7 +617,6 @@ class Actor:
     ) -> Run:
         self.check(profile)
         run = Run(self, profile, request)
-        self.runs[run.id] = run
         subset = self.subset(profile)
         for e in request.history:
             replayed = run.record.append(e.kind, e.content, alias=e.alias, round=e.round, **e.meta)
@@ -629,6 +628,7 @@ class Actor:
                 _admit(run, program, replayed.seq)
         for text in request.inputs:
             run.record.append(Kind.INPUT, text)
+        self.runs[run.id] = run  # live from here: a history that does not replay leaves no run behind
         self.bus.emit("run.started", run=run.id, actor=self.name, profile=profile.name)
 
         try:
@@ -770,7 +770,9 @@ class Actor:
                 run.outcome = Exhausted(request.max_rounds)
         except BaseException as e:
             # a backend that raised ends this run; whoever queued work here and is waiting on the
-            # answer hears that, with the error, or its own command waits forever
+            # answer hears that, with the error, or its own command waits forever. The run has no
+            # outcome (ADR-0002/C4): the Continue a settled turn left is not its end
+            run.outcome = None
             self.runs.pop(run.id, None)
             self._deliver(run, error=e)
             raise
@@ -830,31 +832,41 @@ class Actor:
         # (declared, not run, named as such): the model writes "edit, then done" in one turn and
         # meant both, and told three times that the edit had not run it wrote the same turn again,
         # so the fix it had written never reached the tree and the run ended refused.
+        # every command of the turn is admitted before any of them runs: under an eager task factory
+        # the coroutine would otherwise run inside create_task, settle, and only then be registered as
+        # pending (a second RESULT under its alias from `_never_started`), and a pointer at a later
+        # command of the same turn would find nothing to wait for
+        admitted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         tasks = []
-        for la in program.lacts:
-            if la.alias.startswith("auto_") and (run.record.has_alias(la.alias) or la.alias in run.pending):
-                # a generated alias (native tool-call syntax, no name given) may recur verbatim in a
-                # later round; the model never chose it, so it is not held to uniqueness
-                la = dataclasses.replace(la, alias=f"{la.alias}_{run.record.seq}")
-            if la.alias.startswith("_"):
-                run.refused.append((la.alias, _OWN.format(alias=la.alias)))
-                continue
-            if run.record.has_alias(la.alias) or la.alias in run.pending or la.alias in run.values:
-                prior = run.record.get(la.alias)
-                where = (
-                    prior.name
-                    if prior is not None
-                    else ("a value" if la.alias in run.values else "a call still running")
-                )
-                run.refused.append((la.alias, _TAKEN.format(alias=la.alias, where=where)))
-                continue
-            if la.field is not None:
-                run.fields[la.alias] = la.field
-            run.pointing[la.alias] = {p.name for p in la.pointers()}
-            task = asyncio.create_task(self._perform(run, la, subset))
-            task.add_done_callback(functools.partial(self._never_started, run, la))
-            run.pending[la.alias] = task
-            tasks.append(task)
+        try:
+            for la in program.lacts:
+                if la.alias.startswith("auto_") and (
+                    run.record.has_alias(la.alias) or la.alias in run.pending
+                ):
+                    # a generated alias (native tool-call syntax, no name given) may recur verbatim in a
+                    # later round; the model never chose it, so it is not held to uniqueness
+                    la = dataclasses.replace(la, alias=f"{la.alias}_{run.record.seq}")
+                if la.alias.startswith("_"):
+                    run.refused.append((la.alias, _OWN.format(alias=la.alias)))
+                    continue
+                if run.record.has_alias(la.alias) or la.alias in run.pending or la.alias in run.values:
+                    prior = run.record.get(la.alias)
+                    where = (
+                        prior.name
+                        if prior is not None
+                        else ("a value" if la.alias in run.values else "a call still running")
+                    )
+                    run.refused.append((la.alias, _TAKEN.format(alias=la.alias, where=where)))
+                    continue
+                if la.field is not None:
+                    run.fields[la.alias] = la.field
+                run.pointing[la.alias] = {p.name for p in la.pointers()}
+                task = asyncio.create_task(self._perform(run, la, subset, admitted))
+                task.add_done_callback(functools.partial(self._never_started, run, la))
+                run.pending[la.alias] = task
+                tasks.append(task)
+        finally:
+            admitted.set_result(None)
         return tasks
 
     def _never_started(self, run: Run, la: Lact, task: asyncio.Task) -> None:
@@ -877,10 +889,11 @@ class Actor:
             execution="not executed",
         )
 
-    async def _perform(self, run: Run, la: Lact, subset: Operable) -> None:
+    async def _perform(self, run: Run, la: Lact, subset: Operable, admitted: asyncio.Future[None]) -> None:
         """One command, from request to RESULT. Every exit takes the alias out of `pending` and leaves
         a RESULT: a handler's error, a validator's own exception and a cancellation (recorded, then
         raised on) all settle the command; nothing is advertised as running after it stopped."""
+        await admitted  # set once the whole turn is in `pending`; already set under the default factory
         self.bus.emit("command.requested", run=run.id, alias=la.alias, name=la.name)
         cancelled = False
         try:
@@ -1469,7 +1482,7 @@ def _text(value: Any) -> str:
         return value.model_dump_json()
     try:
         return json.dumps(value, ensure_ascii=False, default=str)
-    except TypeError:
+    except (TypeError, ValueError):  # ValueError: a value that refers to itself
         return str(value)
 
 
