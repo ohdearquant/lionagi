@@ -5,6 +5,7 @@ import json
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -283,9 +284,10 @@ def test_a_missing_cli_is_named():
         os.environ.update(env)
 
 
-def test_cancelling_an_attempt_stops_the_child(tmp_path: Path, monkeypatch):
+def test_cancelling_an_attempt_stops_the_child_and_its_children(tmp_path: Path, monkeypatch):
+    # the CLI's grandchild holds the pipes: it goes with the group, and the pipes close with it
     cli = tmp_path / "codex"
-    cli.write_text("#!/bin/sh\nsleep 30\n")
+    cli.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {tmp_path / 'grandchild'}\nwait\n")
     cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
     procs = []
     real = asyncio.create_subprocess_exec
@@ -300,7 +302,7 @@ def test_cancelling_an_attempt_stops_the_child(tmp_path: Path, monkeypatch):
 
     async def main():
         task = asyncio.create_task(backend._attempt(b"hi", tmp_path))
-        while not procs:
+        while not (procs and (tmp_path / "grandchild").exists()):
             await asyncio.sleep(0.01)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -308,3 +310,13 @@ def test_cancelling_an_attempt_stops_the_child(tmp_path: Path, monkeypatch):
         return procs[0].returncode
 
     assert asyncio.run(main()) is not None  # reaped: the child did not outlive the cancelled task
+    assert procs[0].stdout.at_eof() and procs[0].stderr.at_eof()  # the pipes were drained and closed
+    grandchild = int((tmp_path / "grandchild").read_text())
+    for _ in range(200):  # an orphan is reaped by init; give it a moment
+        try:
+            os.kill(grandchild, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError(f"the CLI's child {grandchild} outlived the cancelled attempt")
