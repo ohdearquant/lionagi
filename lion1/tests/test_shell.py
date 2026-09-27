@@ -83,8 +83,8 @@ def test_a_real_sandbox_mounts_the_directory_runs_python_ends_a_hung_command_and
     assert not box.started
 
 
-def test_counter_tests_quality_04_every_real_box_test_is_opt_in():
-    # ported from tests-quality/test_counter_tests-quality-04.py: a test that boots a real VM or box is
+def test_every_real_box_test_is_opt_in():
+    # a test that boots a real VM or box is
     # skipped unless its opt-in variable is set (the original asserted both variables unset instead)
     import tests.test_daytona as daytona
 

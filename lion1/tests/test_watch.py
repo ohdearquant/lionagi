@@ -65,7 +65,7 @@ def test_by_file_splits_on_headers_and_names_the_b_side():
 
 
 def test_by_file_unquotes_a_git_quoted_non_ascii_header():
-    # P3-1 (hub review): `core.quotePath` (default on) wraps a non-ASCII header in quotes and
+    # `core.quotePath` (default on) wraps a non-ASCII header in quotes and
     # octal-escapes the bytes; splitting on " b/" then read the whole quoted header as one path
     quoted = (
         'diff --git "a/tests/test_\\303\\251.py" "b/tests/test_\\303\\251.py"\n'
@@ -223,7 +223,7 @@ def test_out_is_refused_until_a_command_ran_after_the_source_changed():
 
 
 def test_the_first_refusal_never_names_round_0():
-    # P3-5 (hub review): `since = run.round - 1` read round 0 when the change already stood at
+    # `since = run.round - 1` read round 0 when the change already stood at
     # round 1's own section call, and round 0 does not exist
     from hub.tools.watch import accept
 
@@ -257,7 +257,7 @@ def test_a_command_the_actor_refused_is_not_a_command_that_ran():
 
 
 def test_a_new_file_beside_an_edited_one_keeps_the_digest_the_section_computed():
-    # F01: git_diff lists the tracked edit before the new file; sorted, the new file comes first.
+    # git_diff lists the tracked edit before the new file; sorted, the new file comes first.
     # The section sorted and the gate did not, so a verified fix was refused as "changed this round".
     from hub.tools.watch import accept
 
@@ -270,7 +270,7 @@ def test_a_new_file_beside_an_edited_one_keeps_the_digest_the_section_computed()
 
 
 def test_a_change_under_tests_or_outside_the_tree_alone_is_not_a_fix():
-    # P1-4 (hub review): a tests-only edit and a scratch script passed the gate as "the source
+    # a tests-only edit and a scratch script passed the gate as "the source
     # changed" because the gate read scratch off the section's stale list; a fix edits source
     from hub.tools.watch import accept
 

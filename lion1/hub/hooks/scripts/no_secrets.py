@@ -12,10 +12,12 @@ WORDS = (".env", "secret", "credential", "id_rsa", ".pem")
 
 
 def tracked(path: str) -> bool:
-    """A file git tracks from the current directory: source, not a secret (a secret in git is a leak
-    already, not something a read gate can close). `hub/hooks/scripts/no_secrets.py` reads."""
-    done = subprocess.run(["git", "ls-files", "--error-unmatch", "--", path], capture_output=True, text=True)
-    return done.returncode == 0
+    """A file git tracks from the current directory, named exactly: source, not a secret (a secret in
+    git is a leak already, not something a read gate can close). `hub/hooks/scripts/no_secrets.py`
+    reads. A glob or a directory is not one tracked file: a tracked `public.pem` says nothing of the
+    untracked `private.pem` that `*.pem` also reaches, so either is refused."""
+    done = subprocess.run(["git", "ls-files", "-z", "--", f":(literal){path}"], capture_output=True)
+    return done.returncode == 0 and done.stdout == path.encode() + b"\0"
 
 
 def main() -> int:

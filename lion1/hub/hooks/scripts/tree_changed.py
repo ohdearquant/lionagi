@@ -3,22 +3,29 @@ and HEAD when it moved. stdin: {"event": "round", "run": ..., "round": ...}; std
 Run as `python -m hub.hooks.scripts.tree_changed` from a `hooks.toml`.
 
 The tree moves under a long conversation: a model that reads a green test as its own misread is
-reading a tree someone else edited. State lives in `.lion/tree_state.json` beside the hook, keyed by
-run id, so two runs (two chats) never compare against each other's round.
+reading a tree someone else edited. State lives under `.lion/tree_state/`, one file per run id, so
+two runs (two chats) never compare against each other's round, and two hooks running at once never
+write one file.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-__all__ = ("STATE", "IGNORED", "snapshot", "notice", "main")
+__all__ = ("STATE", "IGNORED", "state_path", "snapshot", "notice", "main")
 
-STATE = Path(".lion/tree_state.json")
+STATE = Path(".lion/tree_state")
 IGNORED = (".lion/",)
+
+
+def state_path(run: str) -> Path:
+    """The run's own state file under STATE, named by a digest of the run id (any string is safe)."""
+    return STATE / (hashlib.blake2b(run.encode(), digest_size=8).hexdigest() + ".json")
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -70,19 +77,16 @@ def main() -> int:
     if now is None:
         return 0
     head, files = now
-    path = cwd / STATE
+    path = cwd / state_path(run)
     try:
-        state = json.loads(path.read_text()) if path.is_file() else {}
+        prev = json.loads(path.read_text()) if path.is_file() else None
     except ValueError:  # a write cut short: start over rather than fail every later round
-        state = {}
-    if not isinstance(state, dict):
-        state = {}
-    for line in notice(state[run], head, files) if run in state else []:
+        prev = None
+    for line in notice(prev, head, files) if isinstance(prev, dict) else []:
         print(line)
-    state[run] = {"round": payload.get("round", 0), "head": head, "files": files}
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(state, indent=1, sort_keys=True))
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")  # this process's own: no other hook replaces it
+    tmp.write_text(json.dumps({"round": payload.get("round", 0), "head": head, "files": files}, indent=1))
     tmp.replace(path)  # whole or absent, never cut
     return 0
 

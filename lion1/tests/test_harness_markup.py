@@ -85,3 +85,41 @@ def test_text_without_the_markup_and_a_well_formed_literal_pass_through_untouche
     plain = '<lact a>run(cmd="ls")</lact>\nOUT{answer: "<｜DSML｜ invoke name="lact z>x()">"}'
     assert normalize("hello") == "hello"
     assert normalize(plain) == plain  # the markup inside an OUT string is the string's, not a tag
+
+
+INNER = (
+    "<｜DSML｜ calls>\n"
+    '<｜DSML｜ invoke name="echo">\n'
+    '<｜DSML｜ parameter name="text" string="true">'
+    '<lact inner>rm(path="x")</lact></｜DSML｜ parameter>\n'
+    "</｜DSML｜ invoke>\n"
+    "</｜DSML｜ calls>"
+)
+
+
+def test_a_tag_inside_a_native_calls_string_argument_is_that_arguments_text():
+    # the well-formed <lact inner> inside the parameter was kept as a construct of its own and the
+    # native markup around it stripped as noise: the argument became a call, the call was lost
+    p = parse(normalize(INNER))
+    assert [(la.name, la.args) for la in p.lacts] == [("echo", {"text": '<lact inner>rm(path="x")</lact>'})]
+
+
+def test_a_tag_whose_argument_holds_native_markup_is_left_as_written():
+    text = '<lact a>echo(text="<｜DSML｜ invoke name=\\"x\\"> literal")</lact>'
+    assert normalize(text) == text
+
+
+def test_two_identical_native_calls_in_one_turn_are_two_calls():
+    # the alias was a digest of the call's text alone, so two equal calls got one alias and the
+    # parser kept the first
+    one = (
+        '<｜DSML｜ invoke name="echo">\n'
+        '<｜DSML｜ parameter name="text" string="true">again</｜DSML｜ parameter>\n'
+        "</｜DSML｜ invoke>\n"
+    )
+    p = parse(normalize("<｜DSML｜ calls>\n" + one + one + "</｜DSML｜ calls>"))
+    assert [(la.name, la.args) for la in p.lacts] == [("echo", {"text": "again"})] * 2
+    assert len({la.alias for la in p.lacts}) == 2
+    call = {"function": {"name": "echo", "arguments": '{"text": "again"}'}}
+    p = parse(tool_calls_text([call, call]))  # the same for calls the provider parsed out
+    assert len(p.lacts) == 2 and len({la.alias for la in p.lacts}) == 2

@@ -36,10 +36,12 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import tempfile
 import time
+from asyncio import CancelledError
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,7 +59,9 @@ __all__ = (
     "Codex",
 )
 
-TRANSIENT = ("429", "500", "502", "503", "504", "timed out", "timeout", "overloaded")  # never 401/403
+TRANSIENT = ("429", "500", "502", "503", "504", "timed out", "timeout", "overloaded")
+# never retried, whatever else the message says ("401 Unauthorized: request timeout" is an auth failure)
+AUTH = re.compile(r"\b40[13]\b|unauthori[sz]ed|forbidden", re.IGNORECASE)
 DISABLED = (  # codex features that let the model act; `codex features list` names them
     "plugins",  # the plugin catalog and their skills would ride into every prompt
     "hooks",
@@ -163,31 +167,52 @@ class Codex:
         error: str | None = None
         # this call's own directory: its retries reuse it, and it goes once the child is joined
         scratch = Path(tempfile.mkdtemp(prefix="lionagi-codex-"))
+        answered = 0  # attempts that came back, billed whether or not they answered
         try:
             (scratch / "AGENTS.md").write_text(SCRATCH_AGENTS_MD)
             (scratch / "instructions.md").write_text(INSTRUCTIONS)
             for attempt in range(self.retries + 1):
                 text, usage, failure, seen, raw = await self._attempt(prompt, scratch)
+                answered += 1
                 usage_total.update({k: v for k, v in usage.items() if isinstance(v, int)})
                 notes += seen
                 if text is not None:
                     break
                 notes.append(f"attempt {attempt + 1} failed: {failure}")
                 if attempt < self.retries and (
-                    failure.startswith("no message") or any(t in failure for t in TRANSIENT)
+                    failure.startswith("no message")
+                    or (not AUTH.search(failure) and any(t in failure for t in TRANSIENT))
                 ):
                     await asyncio.sleep(2.0 * 2**attempt)
                     continue
                 error = f"codex {failure}"
                 break
+        except CancelledError:
+            # a cancel in a backoff, or in a later attempt, after an attempt came back: that attempt's
+            # usage still lands on `calls` (ADR-0009/C5)
+            if answered:
+                self.calls.append(
+                    {**self._envelope(usage_total, notes, t0, attempt + 1), "error": "cancelled"}
+                )
+            raise
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
+        envelope = self._envelope(usage_total, notes, t0, attempt + 1)
+        if error is not None:
+            # the billed attempts' usage and the last attempt's raw stream ride on the failed envelope
+            # (ADR-0009/C5): the scratch that held the stream is gone
+            self.calls.append({**envelope, "error": error, **raw})
+            raise CodexError(error)
+        self.calls.append(envelope)
+        return text
+
+    def _envelope(self, usage_total: Counter, notes: list[str], t0: float, attempts: int) -> dict:
         cached = usage_total.get("cached_input_tokens", 0)
-        envelope = {
+        return {
             "model": self.model,
             "effort": self.effort,
             "duration_api_ms": int((time.monotonic() - t0) * 1000),
-            "attempts": attempt + 1,
+            "attempts": attempts,
             "total_cost_usd": None,  # a subscription, not a meter
             "usage": {
                 **usage_total,
@@ -198,13 +223,6 @@ class Codex:
             },
             "notes": notes,
         }
-        if error is not None:
-            # the billed attempts' usage and the last attempt's raw stream ride on the failed envelope
-            # (ADR-0009/C5): the scratch that held the stream is gone
-            self.calls.append({**envelope, "error": error, **raw})
-            raise CodexError(error)
-        self.calls.append(envelope)
-        return text
 
     async def _attempt(self, prompt: bytes, scratch: Path) -> tuple[str | None, dict, str, list[str], dict]:
         """One `codex exec` in `scratch`: (text or None, usage, why None, notes, the raw stream and
@@ -228,10 +246,11 @@ class Codex:
         except (TimeoutError, asyncio.CancelledError) as e:
             # the child is this backend's to stop: a cancelled task must not leave it running, nor
             # a grandchild holding the pipes open past the loop's end
-            if proc.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGKILL)
-                await proc.wait()
+            # the group, whether or not its leader has exited: a child the leader left behind can
+            # hold the pipes open, and the drain below would wait on it with no deadline
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            await proc.wait()
             await proc.communicate()  # drains and closes the pipes the cancelled read left open
             if isinstance(e, asyncio.CancelledError):
                 raise
@@ -242,7 +261,7 @@ class Codex:
         failures: list[str] = []
         kinds: Counter = Counter()
         text_from_events: str | None = None  # the last non-empty message; the final one can be ""
-        for line in out.decode(errors="replace").splitlines():
+        for line in out.decode(errors="replace").split("\n"):  # an event ends at LF; its text may hold U+2028
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:

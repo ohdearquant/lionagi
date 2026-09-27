@@ -325,3 +325,78 @@ def test_the_provider_shape_hands_the_cli_its_own_tools_the_directories_and_the_
     asyncio.run(free([SYSTEM, IN0, SYS1]))
     assert "--max-turns" not in calls[3]["args"] and _after(calls[3]["args"], "--tools") == "Bash"
     assert _after(calls[3]["args"], "--effort") == "medium" and "--effort" not in calls[2]["args"]
+
+
+def test_two_runs_whose_calls_overlap_keep_their_own_session_and_bill(monkeypatch):
+    # the call switched the backend to its run, awaited the CLI, then wrote whatever run was current
+    # by then: with run B's call begun in between, A's answer landed in B's session state, B's cost
+    # delta subtracted A's, and A's next call opened a new session instead of resuming its own
+    entered = {"A": asyncio.Event(), "B": asyncio.Event()}
+    release = {"A": asyncio.Event(), "B": asyncio.Event()}
+    seen: list[tuple[str, str, str]] = []
+    runs: dict[str, str] = {}
+    cost = {("A", 1): 0.4, ("B", 1): 0.1, ("A", 2): 0.6}  # the CLI's cost accumulates per session
+
+    async def fake(cli, args, prompt, *, model, timeout, cwd=None, persist=False):
+        flag = "--session-id" if "--session-id" in args else "--resume"
+        sid = _after(args, flag)
+        run = next((r for r in ("A", "B") if f"{r}-first" in prompt), None) or runs[sid]
+        runs[sid] = run
+        n = sum(1 for r, _, _ in seen if r == run) + 1
+        seen.append((run, flag, sid))
+        if n == 1:
+            entered[run].set()
+            await release[run].wait()
+        return "ok", {"usage": {"input_tokens": 10}, "total_cost_usd": cost[(run, n)]}
+
+    monkeypatch.setattr(claude_code, "_exec", fake)
+    s = ClaudeCodeSession(cli="/bin/claude")
+
+    def view(run: str, *later: Message) -> list[Message]:
+        return [
+            Message("system", "profile", run=run),
+            Message("user", f"{run}-first", name="in0", run=run),
+            Message("system", "<system round=1/4>", name="sys1", run=run),
+            *later,
+        ]
+
+    async def main():
+        a = asyncio.create_task(s(view("A")))
+        await entered["A"].wait()
+        b = asyncio.create_task(s(view("B")))
+        await entered["B"].wait()
+        release["A"].set()
+        await a  # A comes back while B's call is out
+        release["B"].set()
+        await b
+        await s(view("A", Message("system", "<system round=2/4>", name="sys2", run="A")))
+
+    asyncio.run(asyncio.wait_for(main(), 5))
+    (a1, _, sid_a), (b1, _, sid_b), (a2, flag, sid) = seen
+    assert (a1, b1, a2) == ("A", "B", "A") and sid_a != sid_b
+    assert (flag, sid) == ("--resume", sid_a)  # A's second call resumes A's session
+    assert [round(c["total_cost_usd"], 6) for c in s.calls] == [0.4, 0.1, 0.2]  # each call's own bill
+
+
+def test_a_timeout_after_the_cli_exited_still_stops_what_it_left_holding_the_pipes(tmp_path):
+    # the group was killed only while the CLI ran; its exited leader's child still held stdout, the
+    # kill was skipped and the drain waited on that child with no deadline
+    import os
+    import time
+
+    cli = tmp_path / "claude"
+    cli.write_text(f"#!/bin/sh\ncat > /dev/null\nsleep 30 &\necho $! > {tmp_path / 'child'}\nexit 0\n")
+    cli.chmod(0o755)
+    t0 = time.monotonic()
+    with pytest.raises(claude_code.ClaudeCodeError, match="timed out|did not answer"):
+        asyncio.run(asyncio.wait_for(claude_code._exec(str(cli), [], "hi", model=None, timeout=0.5), 15))
+    assert time.monotonic() - t0 < 10
+    child = int((tmp_path / "child").read_text())
+    for _ in range(200):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError(f"the CLI's child {child} outlived the timed-out call")

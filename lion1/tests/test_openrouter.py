@@ -193,7 +193,7 @@ def test_a_call_that_fails_after_a_billed_attempt_keeps_the_bill(monkeypatch):
 
 
 def test_http200_auth_error_is_not_empty_completion_or_retry(monkeypatch):
-    # practices-12: a 200 whose body is the provider's error was read as an empty choice and sampled
+    # a 200 whose body is the provider's error was read as an empty choice and sampled
     # again; its own code says what it is, and a 401 is not transient whatever its prose says
     monkeypatch.setattr(mod, "asyncio", _NoSleep)
     posts = []
@@ -263,7 +263,7 @@ def test_a_transient_error_body_is_retried_and_its_usage_kept(monkeypatch):
 
 
 def test_the_providers_error_reaches_the_raised_error(monkeypatch):
-    # ported from the practices-12 counter-example: the provider's message was dropped
+    # the provider's message was dropped
     monkeypatch.setattr(mod, "asyncio", _NoSleep)
     monkeypatch.setattr(
         mod, "_post", lambda body, timeout: {"error": {"message": "No endpoints found for x/y", "code": 404}}
@@ -292,3 +292,31 @@ def test_the_reply_carries_the_prompt_count_of_the_attempt_that_answered(monkeyp
     assert backend.calls[-1]["usage"]["prompt_tokens"] == 1600
     monkeypatch.setattr(mod, "_post", _answers(_ok("again")))
     assert getattr(asyncio.run(backend([Message("user", "hi")])), "prompt_tokens", 0) is None
+
+
+def test_a_call_cancelled_in_its_backoff_keeps_the_bill_of_the_blank_answer(monkeypatch):
+    # a billed blank answer, then a cancel in the sleep before sampling again: the failed envelope
+    # was built only on the error paths, so that attempt's cost left no trace on `calls`
+    backing_off = asyncio.Event()
+
+    class Blocking(_NoSleep):
+        @staticmethod
+        async def sleep(_seconds):
+            backing_off.set()
+            await asyncio.Event().wait()
+
+    blank = {"choices": [{"message": {"content": ""}, "finish_reason": "stop"}], "usage": {"cost": 0.002}}
+    monkeypatch.setattr(mod, "asyncio", Blocking)
+    monkeypatch.setattr(mod, "_post", _answers(blank, _ok("never")))
+    backend = OpenRouter(model="m", retries=2)
+
+    async def main():
+        task = asyncio.create_task(backend([Message("user", "hi")]))
+        await backing_off.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    (call,) = backend.calls
+    assert call["error"] == "cancelled" and call["total_cost_usd"] == 0.002 and call["cost_complete"]
