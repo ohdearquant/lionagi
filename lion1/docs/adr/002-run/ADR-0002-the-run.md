@@ -112,11 +112,11 @@ context land with their bounds, [[ADR-0003-the-bounds#^c2|ADR-0003/C2]]), `Refus
 `Stopped(round)`. `Continue`, a state and not an outcome, is what a settled turn without `OUT{}`
 leaves; a retry shows as `retry_error` and the `round.retry` event, never as an outcome.
 
-Pending tasks and open asks are cancelled when the run ends, whichever value it ends in. Awaiting
-them before `run` returns, so every admitted command has its RESULT when the caller reads the
-record, is owed (S4). An exception the loop does not catch, a backend that raises, a store that
-cannot be written or a command task's own defect (S5), propagates from `run` to the caller with
-`run.outcome` unset; the record holds what was appended. That is an abort, not an outcome.
+Open asks are cancelled when the run ends, whichever value it ends in; no command is pending by
+then, since every turn settles its own (S4). An exception the loop does not catch, a backend that
+raises, a store that cannot be written or a command task's own defect (S5), propagates from `run` to
+the caller with `run.outcome` unset; the record holds what was appended. That is an abort, not an
+outcome.
 
 ## Decisions
 
@@ -128,7 +128,8 @@ dispatched, and the turn settles. The caller reads `run.outcome` after the loop 
 
 - **Landing evidence**: `tests/test_actor.py`; tests compare `Exhausted`, `Refused` and `Stopped` by
   value and `Success` by type. Owed: a cancelled command's RESULT is on the record when `run`
-  returns, the never-started one written by the loop; the closure entry (ADR-0006/C1).
+  returns; the closure entry (ADR-0006/C1). One cancelled before it entered is recorded by
+  `_never_started`.
 
 ## Alternatives
 
@@ -150,8 +151,9 @@ dispatched, and the turn settles. The caller reads `run.outcome` after the loop 
   goes with it.
 - **S4**: The loop today gathers every command of the turn before `OUT{}` assembles; the design
   waits for the references only, and the gather goes with the first change that touches it. A wait
-  for the whole turn is at most an opt-in, later. The end of the run cancels without awaiting today,
-  so a cancelled command's RESULT lands after `run` returned; the reap is owed with the same change.
+  for the whole turn is at most an opt-in, later. Until then nothing is pending when the run ends,
+  so there is nothing there to cancel or reap; the reap is owed with the same change.
 - **S5**: A command task that ends in neither its RESULT
   ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]) nor a cancel is the runtime's own defect: the
-  turn's settle raises it and never drops it, and the run aborts (C4). No test pins it.
+  turn's settle raises it and never drops it, and the run aborts (C4), as
+  `test_a_command_task_ending_in_neither_a_result_nor_a_cancel_aborts_the_run` pins.
