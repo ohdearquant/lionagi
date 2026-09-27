@@ -18,7 +18,8 @@ class Dropping(Khive):
     def __init__(self, tmp_path: Path, drops: int, error: str = LOST):
         (tmp_path / ".khive").mkdir(exist_ok=True)
         (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
-        super().__init__(tmp_path, "lambda:x")
+        (tmp_path / "kkernel").write_text("")  # never run: exec is replaced below
+        super().__init__(tmp_path, "lambda:x", kkernel=str(tmp_path / "kkernel"))
         self.drops, self.error, self.ops = drops, error, []
 
     async def exec(self, ops: str):
