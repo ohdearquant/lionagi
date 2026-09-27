@@ -155,4 +155,5 @@ dispatched, and the turn settles. The caller reads `run.outcome` after the loop 
   so there is nothing there to cancel or reap; the reap is owed with the same change.
 - **S5**: A command task that ends in neither its RESULT
   ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]) nor a cancel is the runtime's own defect: the
-  turn's settle raises it and never drops it, and the run aborts (C4). No test pins it.
+  turn's settle raises it and never drops it, and the run aborts (C4), as
+  `test_a_command_task_ending_in_neither_a_result_nor_a_cancel_aborts_the_run` pins.
