@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import posixpath
+import re
 import shlex
 from typing import Any, Protocol
 
@@ -104,6 +105,17 @@ class BoxBase:
         return await git_diff(self, base)  # type: ignore[arg-type]
 
 
+def bytecode(path: str) -> bool:
+    return path.endswith((".pyc", ".pyo")) or "__pycache__" in path
+
+
+def without_bytecode(patch: str) -> str:
+    """`patch` without its bytecode files: a `.pyc` the model staged or committed is in the tracked
+    diff, and the exclusion is by path, whatever git's index says of the file."""
+    chunks = re.split(r"(?m)^(?=diff --git )", patch)
+    return "".join(c for c in chunks if c and not bytecode(c.split("\n", 1)[0].rstrip('"')))
+
+
 async def git_diff(box: Box, base: str = "HEAD") -> str:
     """The changes in the repository at `workdir`: the work tree against `base`, staged or not, plus
     new source files, never bytecode (a model that ran `git add` would otherwise lose its edit). A
@@ -120,10 +132,10 @@ async def git_diff(box: Box, base: str = "HEAD") -> str:
             )
         return r["stdout"]
 
-    tracked = await git("diff", "--binary", base)
+    tracked = without_bytecode(await git("diff", "--binary", base))
     parts = [tracked] if tracked.strip() else []
     for path in (await git("ls-files", "--others", "--exclude-standard", "-z")).split("\0"):
-        if not path or path.endswith((".pyc", ".pyo")) or "__pycache__" in path:
+        if not path or bytecode(path):
             continue
         d = await git("diff", "--no-index", "--binary", "--", "/dev/null", path, ok=(0, 1))  # 1: differs
         if d.strip():

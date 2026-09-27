@@ -1,5 +1,6 @@
-"""khive as a command: ops through a `Bounded` client, so what the model may call is the client's
-allow-list and the refusal text is the client's own."""
+"""khive as a command: ops through the client handed in, so what the model may call is that client's
+allow-list and the refusal text is the client's own. The bound is the client's: `Bounded` (with the
+agent) refuses by verb name; the raw `Khive` is the transport, asserts the actor and refuses nothing."""
 
 from __future__ import annotations
 

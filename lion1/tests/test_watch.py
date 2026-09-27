@@ -2,7 +2,7 @@
 
 import asyncio
 
-from hub.tools.watch import Watch, by_file, is_test
+from hub.tools.watch import Watch, by_file, digest_of, is_test
 
 
 def _diff(*files: tuple[str, str]) -> str:
@@ -165,7 +165,8 @@ def test_checks_that_already_pass_are_refused_and_nothing_is_stored():
 
 def test_checks_rerun_only_when_the_source_changes_and_end_the_run_when_they_pass():
     fix1, fix2 = _diff(("django/a.py", "one")), _diff(("django/a.py", "two"))
-    box = FakeBox(["", fix1, fix1, fix2], rc={"python repro.py": 1, "pytest -q t.py": 0})
+    # the last diff is read twice: once by the section, once after the checks pass, to see they left it
+    box = FakeBox(["", fix1, fix1, fix2, fix2], rc={"python repro.py": 1, "pytest -q t.py": 0})
     watch = Watch(box, settle_after=6)
     text = asyncio.run(watch.declare(["python repro.py", "pytest -q t.py"], 300))
     assert text.startswith("declared 2 acceptance checks") and "`python repro.py` exit 1" in text
@@ -304,3 +305,71 @@ def test_a_refused_declaration_racing_an_accepted_one_leaves_the_accepted_one_st
     assert watch.criteria == ["python fails.py"] and watch.checks == [("python fails.py", 1)]
     assert asyncio.run(watch.declare([], 300)) == "refused: no checks given"
     assert watch.criteria == ["python fails.py"]
+
+
+def test_a_new_binary_file_outside_the_tree_is_scaffolding(tmp_path):
+    # `is_new` looked for the `--- /dev/null` hunk line; a binary file's chunk under `--binary` has
+    # `new file mode` and a `GIT binary patch` block and no hunk, so a root-level .bin read as source
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "repro.bin").write_bytes(b"\0\1binary")
+    (tmp_path / "note.txt").write_text("hi\n")
+    chunks = ""
+    for name in ("repro.bin", "note.txt"):
+        done = subprocess.run(
+            ["git", "diff", "--no-index", "--binary", "--", "/dev/null", name],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+        )
+        assert done.returncode == 1 and done.stdout.startswith("diff --git")
+        chunks += done.stdout
+    assert "GIT binary patch" in chunks and "\n--- /dev/null\n" in chunks  # one of each shape
+    watch = Watch(FakeBox([]))
+    assert asyncio.run(watch.classify(by_file(chunks))) == ([], ["repro.bin", "note.txt"], [])
+
+
+def test_a_pass_does_not_outlive_the_source_it_verified():
+    # the no-source branch cleared the digest but kept `passed`, so a reverted fix still stopped the
+    # run as done; source that comes back is checked again
+    fix = _diff(("django/a.py", "one"))
+    box = FakeBox([fix, fix, "", fix, fix], rc={"python repro.py": 1})
+    watch = Watch(box, settle_after=6)
+    asyncio.run(watch.declare(["python repro.py"], 300))
+    box.rc["python repro.py"] = 0  # the fix makes it pass
+    assert asyncio.run(watch.section(_Run(2))).endswith("all acceptance checks pass, the run ends here")
+    assert watch.passed and watch.stop()
+    assert asyncio.run(watch.section(_Run(3))) is None  # the model reverted its edit
+    assert not watch.passed and not watch.stop() and watch.state()["checks"]  # the results stay readable
+    ran = len(box.ran)
+    assert asyncio.run(watch.section(_Run(4))).endswith("all acceptance checks pass, the run ends here")
+    assert len(box.ran) == ran + 1 and watch.stop()  # checked again, not remembered
+
+
+def test_a_check_that_rewrites_the_source_does_not_pass_the_tree_it_rewrote():
+    # a formatter declared as a check exits 0 having changed the source: the pass was on the tree
+    # before it, so the section holds the run open and the gate refuses the OUT{}
+    from hub.tools.watch import accept
+
+    fix1, fix2 = _diff(("django/a.py", "one")), _diff(("django/a.py", "two"))
+
+    class Formatting(FakeBox):
+        async def run(self, cmd, *, timeout=120.0, env=None):
+            self.diffs = iter([fix2, fix2, fix2])  # the check rewrote the tree
+            return await super().run(cmd, timeout=timeout, env=env)
+
+    box = Formatting([fix1, fix1], rc={"black .": 0})
+    watch = Watch(box, settle_after=6)
+    watch.criteria, watch.criteria_timeout = ["black ."], 300
+    line = asyncio.run(watch.section(_Run(2)))
+    assert line.endswith("; a check changed the source, so the checks run again on the tree it left")
+    assert not watch.passed and not watch.stop()
+    line = asyncio.run(watch.section(_Run(3)))  # fix2 now stands; the check leaves it: the run ends
+    assert line.endswith("all acceptance checks pass, the run ends here") and watch.passed
+    box = Formatting([fix1, fix1, fix1], rc={"black .": 0})
+    watch = Watch(box, settle_after=6)
+    watch.criteria, watch.criteria_timeout = ["black ."], 300
+    watch.digest, watch.since = digest_of(by_file(fix1), ["django/a.py"]), 1
+    why = asyncio.run(accept(watch, _Run(2, ("bash", 2)), {}))
+    assert why.startswith("an acceptance check changed the source") and not watch.passed

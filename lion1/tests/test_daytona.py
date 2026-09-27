@@ -235,3 +235,21 @@ def test_a_real_box_runs_the_shell_and_code_tools_over_a_pushed_directory(tmp_pa
     )
     assert r["e1"].ok and r["b2"].value["stdout"] == "4\n"
     assert box.started is False and box._box is None
+
+
+def test_push_stops_on_a_repository_git_cannot_list(stubbed, tmp_path):
+    # any non-zero `git ls-files` selected every file: a repository with a broken index would have
+    # sent what its .gitignore keeps out; only a directory that is no repository takes that path
+    box, work, _, _ = stubbed
+    src = tmp_path / "src3"
+    src.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=src, check=True)
+    (src / "keep.py").write_text("x = 1\n")
+    (src / ".gitignore").write_text("local.env\n")
+    (src / "local.env").write_text("k=v\n")
+    subprocess.run(["git", "add", "keep.py", ".gitignore"], cwd=src, check=True)
+    assert asyncio.run(box.push(src, dest=str(work / "src3"))) == [".gitignore", "keep.py"]
+    (src / ".git" / "index").write_bytes(b"not an index")
+    with pytest.raises(OSError, match="git ls-files in .* exited 128"):
+        asyncio.run(box.push(src, dest=str(work / "src3-again")))
+    assert not (work / "src3-again").exists()  # nothing was sent

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -111,9 +112,16 @@ class LocalTree:
         return "".join(ln.removeprefix("./") + "\n" for ln in done.stdout.splitlines())  # `.` prints `./x`
 
 
+def physical(text: str) -> list[str]:
+    """`text` as the lines an editor shows, each with its own ending: a line ends at `\n` only, so
+    U+2028 or NEL inside one is text (str.splitlines would break the line there, and the numbering
+    and the ending each line keeps would disagree with what an edit matches against)."""
+    return [line for line in re.split(r"(?<=\n)", text) if line]
+
+
 def numbered(text: str, start: int = 1, end: int | None = None) -> tuple[str, int, int, int]:
     """(body, start, end, total): lines `start..end` as `n: line`, clipped to the file."""
-    lines = text.splitlines()
+    lines = [line.rstrip("\r\n") for line in physical(text)]
     total = len(lines)
     start = max(start, 1)
     end = min(end, total) if end is not None else total
@@ -126,7 +134,7 @@ def reend(before: str, after: str) -> str:
     an unchanged line keeps its own, a changed line keeps the ending of the line it replaced, a new
     line takes the ending of the line before it (the file's first line's, for a new first line). A
     file with mixed endings stays mixed."""
-    old = before.splitlines(keepends=True)
+    old = physical(before)
     bodies = [line.rstrip("\r\n") for line in old]
     ends = [line[len(body) :] for line, body in zip(old, bodies, strict=True)]
     new = after.split("\n")

@@ -40,6 +40,14 @@ class SandboxDead(RuntimeError):
 DEAD_MARKS = ("failed to resolve container ip", "is the sandbox started")
 
 
+def _in_repository(directory: Path) -> bool:
+    """Whether `directory` is inside a git work tree (read without the index: a broken one still says yes)."""
+    done = subprocess.run(
+        ["git", "-C", str(directory), "rev-parse", "--is-inside-work-tree"], capture_output=True
+    )
+    return done.returncode == 0 and done.stdout.strip() == b"true"
+
+
 @dataclass
 class DaytonaSandbox(BoxBase):
     """One box from `image`. The org's memory pool is shared across every live box, so `memory`
@@ -196,6 +204,11 @@ class DaytonaSandbox(BoxBase):
         )
         if done.returncode == 0:
             names = [n.decode("utf-8", "surrogateescape") for n in done.stdout.split(b"\0") if n]
+        elif _in_repository(directory):
+            # a repository git could not list (a broken index): every-file would send what its
+            # .gitignore keeps out, so the push stops here instead
+            said = done.stderr.decode(errors="replace").strip()[-300:]
+            raise OSError(f"git ls-files in {directory} exited {done.returncode}: {said}")
         else:
             names = [str(p.relative_to(directory)) for p in directory.rglob("*") if p.is_file()]
         buf = io.BytesIO()

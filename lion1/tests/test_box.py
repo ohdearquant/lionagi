@@ -113,10 +113,15 @@ def test_the_docker_box_derives_run_read_write_and_diff_from_exec(tmp_path, monk
         await box.write("a.py", "new\n")
         (work / "b.py").write_text("added\n")
         (work / "c.pyc").write_bytes(b"\0")
+        (work / "d" / "__pycache__").mkdir()
+        (work / "d" / "__pycache__" / "m.cpython-312.pyc").write_bytes(b"\0")
+        git(work, "add", "-f", "d/__pycache__/m.cpython-312.pyc")  # staged: in the tracked diff
+        git(work, "add", "d/f.txt")  # staged text stays in the patch
         (work / "-n.py").write_text("dash\n")  # a name that reads as an option without `--`
         patch = await git_diff(box)
         assert patch == await box.diff()
         assert "-old\n+new\n" in patch and "+added\n" in patch and "c.pyc" not in patch
+        assert "__pycache__" not in patch and "+hi\n" in patch  # the exclusion is by path, staged or not
         assert "+spaced\n" in patch and "b/new file.py" in patch and "+dash\n" in patch
         # P1-1: git's stderr is not patch text (a CRLF warning read as a change, measured)
         git(work, "config", "core.safecrlf", "warn")

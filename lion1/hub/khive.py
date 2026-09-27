@@ -9,8 +9,11 @@ arguments are JSON literals, so they go through `json.dumps`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
 import shutil
+import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -61,11 +64,20 @@ class Khive:
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,  # the CLI's whole process group: a kill ends its children too
         )
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
-        except TimeoutError:
-            proc.kill()
+        except (TimeoutError, asyncio.CancelledError) as e:
+            # the child is this client's to stop: a cancelled task must not leave it running, nor a
+            # grandchild holding the pipes open past the loop's end
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                await proc.wait()
+            await proc.communicate()  # drains and closes the pipes the cancelled read left open
+            if isinstance(e, asyncio.CancelledError):
+                raise
             raise KhiveError(f"kkernel did not answer within {self.timeout}s: {ops[:120]}") from None
         # the CLI prints a config warning and its database line on every call; keep the rest
         noise = (" WARN ", "database:")
