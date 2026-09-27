@@ -56,7 +56,7 @@ record ([[ADR-0007-the-record|ADR-0007]]). Source: `RunRequest` and the bound ch
 
 ## Claims
 
-### C1: Every bound is a field of the job, resolved once at run start _(enforced: mechanical)_ ^c1
+### C1: Every bound is a field of the job, resolved once at run start _(enforced: mechanical; owed, S4)_ ^c1
 
 - **Subject**: every run.
 - **Violated when**: a bound is enforced that the job does not carry, a carried bound is not
@@ -72,7 +72,7 @@ Today the job's field defaults are the only ones: `max_rounds` 10, `max_refusals
 `context_budget` 200,000 and `view_budget` 60,000 ([[ADR-0007-the-record|ADR-0007]]). Nothing is
 resolved or recorded; the checks read the job's fields (D1).
 
-### C2: Every bound is checked at the turn's start; time and cost also between commands _(enforced: mechanical)_ ^c2
+### C2: Every bound is checked at the turn's start; time and cost also between commands _(enforced: mechanical; owed, S4)_ ^c2
 
 - **Subject**: every turn and every dispatched command.
 - **Violated when**: a spent bound admits a new turn, or a command's handler starts after
@@ -91,7 +91,7 @@ keeps a crossing rare.
 
 Today the turn's start checks turns and time alone (S3); the rest is owed.
 
-### C3: A bound is not an ambush: the model is told what is left, and may ask for more _(enforced: mechanical)_ ^c3
+### C3: A bound is not an ambush: the model is told what is left, and may ask for more _(enforced: mechanical; owed, S4)_ ^c3
 
 - **Subject**: every turn and every `run.more`.
 - **Violated when**: a run ends `Exhausted` on a bound the notification never named, or a `run.more`
@@ -106,7 +106,7 @@ Two asks in one turn are answered in order against one total; a grant never rese
 the clock. The default grants, on A1. A profile that must never extend leaves `run.more` out of its
 subset.
 
-### C4: `OUT{}` is a command, and `accept` is its last before hook _(enforced: mechanical)_ ^c4
+### C4: `OUT{}` is a command, and `accept` is its last before hook _(enforced: mechanical; owed, S4)_ ^c4
 
 - **Subject**: every turn with `OUT{}`.
 - **Violated when**: `OUT{}` is validated or refused by a path the other commands do not go through,
@@ -150,8 +150,8 @@ grants. When an actor with the authority exists (a chair, a department head), th
 
 ### D3: `out` is registered like any handler, with `accept` appended to its before hooks ^d3
 
-Serves C4. The `out` handler assembles and validates; the run's `accept`, when set, is the last
-before hook for that command only, after the actor's, so a rewrite lands before the judgment. Hooks
+Serves C4. Dispatch assembles and validates `out` before its before hooks. The run's `accept`, when
+set, is their last hook, after the actor's, so it judges the assembled, rewritten output. Hooks
 registered on the actor see `out` like any other command; an after hook's replacement on `out` is
 refused and listed under `hooks failed`, so the caller receives the value `accept` approved.
 
@@ -182,3 +182,6 @@ refused and listed under `hooks failed`, so the caller receives the value `accep
   command ends the run at the next check, so a model that wants a last `OUT{}` asks for more while
   there is room. A command that never returns reaches no check, since time is read only at the
   turn's start; a deadline beside the wait is owed (ADR-0005/S6).
+- **S4**: Owed with D1-D3: initial bound resolution and the remaining checks (C1, C2), extension
+  requests and grants (C3), and output dispatch through hooks (C4); the current behavior and the
+  missing tests are stated in each decision's landing evidence.
