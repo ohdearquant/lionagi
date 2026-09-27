@@ -217,7 +217,7 @@ def test_failed_envelope_is_preserved(tmp_path):
 
 def test_both_chat_backends_hand_back_this_calls_prompt_count(monkeypatch):
     # fresh input, cache read and cache write together are the prompt this call sent, the CLI's own
-    # context included; the actor anchors its context figure on it (ADR-0008 A2)
+    # context included; the actor anchors its context figure on it (ADR-0009/C2)
     async def fake(cli, args, prompt, *, model, timeout, cwd=None, persist=False):
         usage = {
             "input_tokens": 100,

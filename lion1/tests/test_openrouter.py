@@ -274,7 +274,7 @@ def test_the_providers_error_reaches_the_raised_error(monkeypatch):
 
 
 def test_the_reply_carries_the_prompt_count_of_the_attempt_that_answered(monkeypatch):
-    # the actor anchors its context figure on this count (ADR-0008 A2); the envelope's bill sums every
+    # the actor anchors its context figure on this count (ADR-0009/C2); the envelope's bill sums every
     # attempt, and a sum of two prompts is not the size of either
     monkeypatch.setattr(mod, "asyncio", _NoSleep)
     nothing = {

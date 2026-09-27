@@ -1,4 +1,4 @@
-"""Codex CLI as a chat-completion harness (ADR-0001 §6): `codex exec`, one call per round.
+"""Codex CLI as a chat-completion harness (ADR-0009): `codex exec`, one call per round.
 
 The view goes in as one prompt with its roles marked, the model's final message comes out. The
 CLI is an agent, so every feature that lets the model act is switched off by flag (shell, exec,
@@ -198,7 +198,7 @@ class Codex:
         }
         if error is not None:
             # the billed attempts' usage and the last attempt's raw stream ride on the failed envelope
-            # (ADR-0011 D1): the scratch that held the stream is gone
+            # (ADR-0009/C5): the scratch that held the stream is gone
             self.calls.append({**envelope, "error": error, **raw})
             raise CodexError(error)
         self.calls.append(envelope)

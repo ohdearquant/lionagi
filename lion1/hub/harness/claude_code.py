@@ -1,4 +1,4 @@
-"""Claude Code as a harness (ADR-0001 §6), in both shapes.
+"""Claude Code as a harness (ADR-0009), in both shapes.
 
 `ClaudeCode` is the chat-completion shape: one `claude -p` per round, tools off, one turn, so the
 only way the model acts is LNDL in its text and every command goes through this runtime's handlers.
@@ -13,7 +13,7 @@ against 3.9k without. Without the second the account's claude.ai-connected MCP s
 request even under `--tools ""`, and a model with any tool defined can emit a tool_use, which a
 one-turn call then dies on (measured: Sonnet invented a `grep` tool it was never given).
 
-A call that fails lands on `calls` as a failed envelope before the error is raised (ADR-0011 D1):
+A call that fails lands on `calls` as a failed envelope before the error is raised (ADR-0009/C5):
 the CLI's own result envelope when it printed one (a refused turn carries its cost), else one whose
 cost is unknown. The error carries the CLI's whole detail.
 """

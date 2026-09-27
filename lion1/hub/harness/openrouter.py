@@ -1,4 +1,4 @@
-"""OpenRouter as a chat-completion backend (ADR-0001 §6): the view in as a real message array, text out.
+"""OpenRouter as a chat-completion backend (ADR-0009): the view in as a real message array, text out.
 
 Unlike the CLI shapes, this one sends the view as separate messages with their roles, so the
 provider's prefix cache can hit on everything that did not change since the last round. Usage and
@@ -182,7 +182,7 @@ class OpenRouter:
     def _bill_failure(self, spent: list[dict], error: str, attempts: int, t0: float) -> None:
         """A call that ends in an error after the provider billed, or may have billed, an attempt (a
         blank answer, then the transport failing) still lands on `calls`, as a failed envelope carrying
-        what was observed: the cost was spent whether or not the call returned (ADR-0011 D1)."""
+        what was observed: the cost was spent whether or not the call returned (ADR-0009/C5)."""
         if not spent:
             return
         self.calls.append(

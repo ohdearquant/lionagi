@@ -1,4 +1,4 @@
-"""Harness integrations: the programs that run a model for us (ADR-0001 §6).
+"""Harness integrations: the programs that run a model for us (ADR-0009).
 
 Two shapes. A chat-completion harness takes the view in and gives the model's text out, and this
 runtime does everything else. An agentic harness runs its own tools inside one call; the runtime
