@@ -8,7 +8,7 @@ from hub.guidance import names
 
 
 def test_each_guidance_file_is_read_by_name_and_its_fields_filled():
-    assert {"box", "chair", "chores", "code", "console", "reader", "sandbox"} <= set(names())
+    assert {"box", "chair", "chores", "code", "console", "desk", "reader", "sandbox"} <= set(names())
     text = guidance("console", model="m1", tools="read(path)")
     assert text.startswith("You are m1, talking with a person") and "Tools: read(path)." in text
     assert "OUT{}" in text and not text.endswith("\n")
@@ -20,6 +20,7 @@ def test_each_guidance_file_is_read_by_name_and_its_fields_filled():
     )
     assert "$owner" in guidance("chores", chores="- disk")
     with pytest.raises(
-        KeyError, match="no guidance 'nope'; there is box, chair, chores, code, console, reader, sandbox"
+        KeyError,
+        match="no guidance 'nope'; there is box, chair, chores, code, console, desk, reader, sandbox",
     ):
         guidance("nope")
