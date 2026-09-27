@@ -1,0 +1,1843 @@
+"""The instruments (hub/agent/instruments.py) against a scripted runner: every one runs its control
+in the same call and fails it on a dead read, a count-shaped finding names its population and
+predicate, a repo's CI channel is read as declared, the first sight of a subject is its full row and
+later runs report transitions, and a floor is read with the budget of the instrument that enforces
+it."""
+
+import asyncio
+import hashlib
+import json
+import os
+import time
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from hub.agent import instruments as instr
+from hub.agent.instruments import (
+    BenchJobs,
+    CiRed,
+    Disk,
+    GtdInbox,
+    InboxSla,
+    PrState,
+    RequiredContexts,
+    Served,
+    VerdictFreshness,
+    Worktrees,
+)
+from lionagi import MemoryNoteStore
+
+
+class FakeSh:
+    """A runner answering by the first key found in the joined argv; an argv nothing matches fails,
+    the way a missing binary does, so a control that does not run its command cannot pass."""
+
+    def __init__(self, **answers: tuple[int, str, str] | str):
+        self.answers = {
+            k.replace("__", " "): (v if isinstance(v, tuple) else (0, v, "")) for k, v in answers.items()
+        }
+        self.calls: list[list[str]] = []
+
+    def set(self, key: str, value: tuple[int, str, str] | str) -> None:
+        self.answers[key] = value if isinstance(value, tuple) else (0, value, "")
+
+    async def __call__(self, argv: list[str], *, timeout: float = 60, cwd: str | None = None):
+        self.calls.append(list(argv))
+        line = " ".join(argv)
+        for key in sorted(self.answers, key=len, reverse=True):  # the most specific key answers
+            if key in line:
+                return self.answers[key]
+        return 1, "", f"no fake for {line}"
+
+
+def iso(hours_ago: float) -> str:
+    return (datetime.now(UTC) - timedelta(hours=hours_ago)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def runs_page(rows: list[dict], total: int | None = None) -> str:
+    """The workflow runs at a head as the runs query prints them: one page and the head's total_count."""
+    return json.dumps({"total_count": len(rows) if total is None else total, "runs": rows})
+
+
+PR = {
+    "number": 7,
+    "title": "agent folder",
+    "headRefOid": "a" * 40,
+    "updatedAt": iso(1),
+    "reviewDecision": "",
+    "isDraft": False,
+    "mergeable": "MERGEABLE",
+    "url": "https://github.com/o/r/pull/7",
+}
+RUNS = runs_page(
+    [
+        {
+            "workflow_id": 501,
+            "name": "ci",
+            "event": "pull_request",
+            "status": "completed",
+            "conclusion": "failure",
+            "created_at": "2026-09-20T01:00:00Z",
+        },
+        {
+            "workflow_id": 501,
+            "name": "ci",
+            "event": "pull_request",
+            "status": "completed",
+            "conclusion": "success",
+            "created_at": "2026-09-20T02:00:00Z",
+        },
+    ]
+)
+
+
+def pr_state(sh: FakeSh, repos, **kw) -> PrState:
+    return PrState(repos, MemoryNoteStore(), every="every:30m", run=sh, **kw)
+
+
+def test_pr_state_first_sight_is_the_full_row_then_transitions_and_the_stale_crossing_once():
+    sh = FakeSh(
+        **{"api repos/o/r --jq": "o/r\n", "pr list -R o/r": json.dumps([PR]), "actions/runs?head_sha=": RUNS}
+    )
+    inst = pr_state(sh, ["o/r"])
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r: first sight, 1 open PR(s); the table is the row",)
+    assert out.evidence.startswith("control: gh resolves o/r as itself; ci channel actions\n")
+    assert (
+        "o/r#7 agent folder | aaaaaaaaaa | ci=success(pull_request) | review=- | mergeable=MERGEABLE"
+        in out.evidence
+    )
+    assert (
+        out.population == "open PRs in ['o/r']"
+        and out.predicate == "non-draft and updatedAt older than 3 days (0 match)"
+        and out.count == 1
+    )
+    assert asyncio.run(inst.run({})).findings == ()  # nothing moved: quiet
+    sh.set(
+        "pr list -R o/r",
+        json.dumps(
+            [{**PR, "headRefOid": "b" * 40, "updatedAt": iso(100)}, {**PR, "number": 8, "title": "born red"}]
+        ),
+    )
+    sh.set("actions/runs?head_sha=" + "b" * 40, runs_page([]))
+    out = asyncio.run(inst.run({}))
+    assert out.findings == (
+        "o/r#7: sha aaaaaaaaaa -> bbbbbbbbbb",
+        "o/r#7: verdict ci=success(pull_request) -> REQUIRED CHECKS DO NOT EXIST AT THIS HEAD (no runs)",
+        "o/r#7: untouched for more than 3 days",
+        "o/r#8: first sight: born red | aaaaaaaaaa | ci=success(pull_request) | review=- | "
+        "mergeable=MERGEABLE",
+    )
+    assert out.predicate == "non-draft and updatedAt older than 3 days (1 match)" and out.count == 2
+    assert asyncio.run(inst.run({})).findings == ()  # the stale crossing is told once
+
+
+def test_pr_state_verifies_a_pr_absent_from_a_full_page_before_calling_it_closed(monkeypatch):
+    monkeypatch.setattr(instr, "PR_PAGE", 2)
+    two = [PR, {**PR, "number": 8, "title": "second"}]
+    sh = FakeSh(
+        **{"api repos/o/r --jq": "o/r\n", "pr list -R o/r": json.dumps(two), "actions/runs?head_sha=": RUNS}
+    )
+    inst = pr_state(sh, ["o/r"])
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.positive.endswith(
+        "answered 2 row(s) as JSON (a full page of 2: absences read on their own)"
+    )
+    sh.set(
+        "pr list -R o/r", json.dumps([two[1], {**PR, "number": 9, "title": "third"}])
+    )  # #7 fell off the page
+    sh.set("pr view 7 -R o/r", "OPEN\n")
+    out = asyncio.run(inst.run({}))
+    assert out.control and [f for f in out.findings if "#7" in f] == []  # open beyond the page: not closed
+    assert "o/r#7: open beyond the page; its last row is kept" in out.evidence
+    assert ["pr", "view", "7", "-R", "o/r", "--json", "state", "--jq", ".state"] in [c[1:] for c in sh.calls]
+    sh.set("pr view 7 -R o/r", "MERGED\n")
+    out = asyncio.run(inst.run({}))
+    assert "o/r#7: closed or merged" in out.findings
+    sh.set("pr list -R o/r", json.dumps([{**PR, "number": 9, "title": "third"}]))  # a short page: no verify
+    out = asyncio.run(inst.run({}))
+    assert out.findings == ("o/r#8: closed or merged",) and not any("view" in c for c in sh.calls[-3:])
+    sh.set("pr list -R o/r", json.dumps(two))
+    asyncio.run(inst.run({}))
+    sh.set("pr list -R o/r", json.dumps([two[1], {**PR, "number": 9, "title": "third"}]))
+    sh.set("pr view 7 -R o/r", (1, "", "gh: HTTP 502"))
+    out = asyncio.run(inst.run({}))
+    assert (
+        not out.control
+        and "o/r#7: absent from a full page and gh pr view failed: gh: HTTP 502" in out.findings
+    )
+
+
+def test_pr_state_reads_each_repos_declared_ci_channel_and_a_statuses_read_must_be_non_empty():
+    sh = FakeSh(
+        **{
+            "api repos/o/s --jq": "o/s\n",
+            "api repos/o/n --jq": "o/n\n",
+            "pr list -R o/s": json.dumps([PR]),
+            "pr list -R o/n": json.dumps([PR]),
+            "commits/": "[]",
+        }
+    )
+    inst = pr_state(sh, [{"name": "o/s", "ci": "statuses"}, {"name": "o/n", "ci": "none"}])
+    out = asyncio.run(inst.run({}))
+    assert not out.control  # the statuses channel answers [] for a missing subject: asserted non-empty
+    assert out.findings[0].startswith("o/s#7: CI channel statuses did not answer: statuses read gave no rows")
+    assert "o/n#7 agent folder | aaaaaaaaaa | no CI by declaration" in out.evidence
+    sh.set(
+        "commits/",
+        json.dumps(
+            [{"context": "local/suites", "state": "success"}, {"context": "local/suites", "state": "pending"}]
+        ),
+    )
+    out = asyncio.run(pr_state(sh, [{"name": "o/s", "ci": "statuses"}]).run({}))
+    assert out.control and "| local/suites=success |" in out.evidence  # newest status per context wins
+    assert not any("actions/runs" in " ".join(c) for c in sh.calls)
+    with pytest.raises(ValueError, match="a repo's ci is actions, statuses or none"):
+        pr_state(sh, [{"name": "o/x", "ci": "rollup"}])
+
+
+def test_pr_state_now_reads_one_pr_from_gh_at_the_moment_of_asking_and_leaves_the_snapshot_alone():
+    head = "c" * 40
+    view = {
+        "headRefOid": head,
+        "state": "OPEN",
+        "mergeStateStatus": "BLOCKED",
+        "reviewDecision": "REVIEW_REQUIRED",
+        "isDraft": False,
+        "baseRefName": "main",
+    }
+    sh = FakeSh(
+        **{
+            "api repos/o/r --jq .full_name": "o/r\n",
+            "api repos/o/r --jq {full_name": json.dumps({"full_name": "o/r", "id": 42, "admin": True}),
+            "pr view 7 -R o/r --json": json.dumps(view),
+            f"commits/{head}/status": json.dumps([{"context": "local/suites", "state": "failure"}]),
+            "rules/branches/main": "[]",
+            "branches/main/protection/required_status_checks": json.dumps(
+                {"contexts": ["local/suites", "local/guards"], "checks": []}
+            ),
+            "pr list -R o/r": json.dumps([PR]),
+            "commits/": json.dumps([{"context": "local/suites", "state": "success"}]),
+        }
+    )
+    store = MemoryNoteStore()
+    inst = PrState([{"name": "o/r", "ci": "statuses"}], store, every="every:30m", run=sh)
+    row = asyncio.run(inst.now("o/r", 7))
+    assert set(row) == {
+        "repo",
+        "number",
+        "read_at",
+        "errors",
+        "headRefOid",
+        "state",
+        "mergeStateStatus",
+        "reviewDecision",
+        "isDraft",
+        "baseRefName",
+        "ci",
+        "ci_answered",
+        "required",
+        "required_surfaces",
+    }
+    assert row["errors"] == [] and row["headRefOid"] == head and row["mergeStateStatus"] == "BLOCKED"
+    assert row["ci"] == "local/suites=failure" and row["ci_answered"] is True  # the repo's declared channel
+    assert row["required"] == ["local/guards", "local/suites"]
+    assert row["required_surfaces"] == {"ruleset": "read (0 rule(s))", "classic": "read"}
+    assert datetime.fromisoformat(row["read_at"]).tzinfo is not None
+    assert store.get("pr-state:o/r") is None  # the snapshot is not touched
+    out = asyncio.run(inst.run({}))
+    assert out.findings == ("o/r: first sight, 1 open PR(s); the table is the row",)  # nor the transitions
+    sh.set("pr view 7 -R o/r --json", (1, "", "GraphQL: Could not resolve to a PullRequest"))
+    row = asyncio.run(inst.now("o/r", 7))
+    assert row["errors"] == ["gh pr view failed: GraphQL: Could not resolve to a PullRequest"]
+    assert row["headRefOid"] is None and row["required"] is None
+    sh.set("api repos/o/r --jq {full_name", json.dumps({"full_name": "o/moved", "id": 42, "admin": True}))
+    assert asyncio.run(inst.now("o/r", 7))["errors"][0].startswith("gh does not resolve o/r as itself")
+
+
+def test_pr_state_control_fails_when_gh_does_not_return_the_repo_as_itself():
+    sh = FakeSh(**{"api repos/o/r --jq": "other/r\n"})  # a rename redirects with rc 0
+    out = asyncio.run(pr_state(sh, ["o/r"]).run({}))
+    assert not out.control and out.findings == ("o/r: gh does not resolve it as itself: other/r",)
+    out = asyncio.run(pr_state(FakeSh(), ["o/r"]).run({}))
+    assert not out.control and "no fake for" in out.findings[0]
+
+
+def test_served_reads_the_cursor_first_then_the_pid_then_launchd_with_its_own_pid_as_control(tmp_path):
+    d = tmp_path / "bench"
+    (d / "notes").mkdir(parents=True)
+    (d / "agent.pid").write_text("999999")
+    stale = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 3 * 3600))
+    (d / "notes" / "agent.json").write_text(
+        json.dumps({"version": 1, "notes": {"cursor": {"value": {"at": stale, "outcome": "Success"}}}})
+    )
+    me = os.getpid()
+    sh = FakeSh(
+        **{f"-p {me} -o": "S+ 01:02\n", "-p 999999 -o": "", "print gui": (0, "  state = waiting\n", "")}
+    )
+    inst = Served([{"dir": str(d), "stale_min": 60, "label": "com.example.x"}], every="every:15m", run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.evidence.startswith(f"control: own pid {me} reads 'S+ 01:02'")
+    assert out.findings == (
+        "bench: pid file names 999999 and it is not running (no such process)",
+        "bench: serving but last wake 180 min ago, bound 60",
+        "bench: launchd com.example.x is loaded and waiting",
+    )
+    sh.set(f"-p {me} -o", "")
+    out = asyncio.run(inst.run({}))
+    assert not out.control and "NOT alive: read broken" in out.evidence
+
+
+def test_disk_groups_roots_by_device_reads_each_floor_once_in_gib_and_escalates_only_an_enforcing_crossing(
+    tmp_path,
+):
+    free_kib = 290 * 2**20  # 290 GiB base-1024 = 311.4 GB base-1000
+    df = (
+        "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on\n"
+        f"/dev/disk0s1 1948 1500 {free_kib} 84% 1 2 0% /\n"
+    )
+    sh = FakeSh(
+        **{"df -k": df, "find ": f"{tmp_path}/x/target\n", "du -sk": f"26000000\t{tmp_path}/x/target\n"}
+    )
+    floors = [
+        {"name": "build admission", "budget_gib": 16, "floor_gib": 280, "enforcing": True},
+        {"name": "steady", "budget_gib": 0, "floor_gib": 300},
+    ]
+    roots = [str(tmp_path), str(tmp_path / "x")]  # two roots, one device: each floor is read once
+    inst = Disk(roots, every="every:2h", floors=floors, run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.escalate and out.count == 1
+    assert out.findings == (
+        f"build admission: under the floor on /dev/disk0s1 ({tmp_path}, {tmp_path}/x)",
+        f"steady: under the floor on /dev/disk0s1 ({tmp_path}, {tmp_path}/x)",
+        f"{tmp_path}/x/target: over the 20 GiB target cap",
+    )
+    assert (
+        f"/dev/disk0s1 ({tmp_path}, {tmp_path}/x): free 290.0 GiB base-1024 / 311.4 GB base-1000"
+        in out.evidence
+    )
+    assert (
+        "  floor build admission: 274.0 GiB projected (free minus 16 GiB budget) against 280 GiB: UNDER "
+        "[enforcing]" in out.evidence
+    )
+    assert (
+        "  floor steady: 290.0 GiB projected (free minus 0 GiB budget) against 300 GiB: UNDER" in out.evidence
+    )
+    assert out.evidence.count("floor build admission") == 1  # once per device, not once per root
+    assert out.population == f"volumes under {roots}" and out.predicate.endswith("in GiB (2 match)")
+    assert (
+        out.positive
+        == "df parsed 1 device(s) for 2 root(s); floors read in GiB base-1024, the unit floors are "
+        "written in"
+    )
+    assert [c[:2] for c in sh.calls[:2]] == [["/bin/df", "-k"], ["/bin/df", "-k"]]
+    sh.set("df -k", df.replace(str(free_kib), str(297 * 2**20)))  # 281 projected: only the steady floor
+    out = asyncio.run(inst.run({}))
+    assert out.control and not out.escalate  # a steady-floor crossing reports; the owner decides
+    assert out.findings[0] == f"steady: under the floor on /dev/disk0s1 ({tmp_path}, {tmp_path}/x)"
+    sh.set("df -k", "garbage")
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings[0].endswith("df gave no free-space number: garbage")
+    assert out.positive == "" and out.count == 0
+
+
+def test_disk_fails_its_control_when_find_or_du_fail_and_absent_floors_inherit_the_default_floor(tmp_path):
+    df = (
+        "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on\n"
+        f"/dev/disk0s1 1 1 {400 * 2**20} 1% 1 2 0% /\n"
+    )
+    sh = FakeSh(
+        **{
+            "df -k": df,
+            "find ": (1, f"{tmp_path}/x/target\n", "find: permission denied"),
+            "du -sk": "26000000\t/x\n",
+        }
+    )
+    out = asyncio.run(Disk([str(tmp_path)], every=None, run=sh).run({}))
+    assert not out.control and f"{tmp_path}: find failed (rc 1): find: permission denied" in out.findings
+    assert f"{tmp_path}/x/target: over the 20 GiB target cap" in out.findings  # what it did find is sized
+    sh.set("find ", f"{tmp_path}/x/target\n")
+    sh.set("du -sk", (1, "", "du: cannot read"))
+    out = asyncio.run(Disk([str(tmp_path)], every=None, run=sh).run({}))
+    assert not out.control and out.findings == (f"{tmp_path}/x/target: du failed (rc 1): du: cannot read",)
+    assert Disk(["/"], every=None).floors == [{"name": "steady (default)", "budget_gib": 0, "floor_gib": 300}]
+    assert Disk(["/"], every=None, floors=[]).floors == []  # an empty list declines every floor
+    with pytest.raises(ValueError, match="a floor has a name and a floor_gib"):
+        Disk(["/"], every=None, floors=[{"name": "x", "floor_gb": 1}])
+
+
+class ExecKhive:
+    """A khive whose `exec` answers per verb, for the instruments that read the store."""
+
+    actor, cwd = "lambda:x:agent", None
+
+    def __init__(self, **by_verb):
+        self.by_verb, self.ops = by_verb, []
+
+    async def exec(self, ops: str):
+        self.ops.append(ops)
+        if ops.startswith("["):  # a batch: one answer per op, by verb
+            parts = [p.strip() for p in ops[1:-1].split("), ")]
+            return [self.by_verb[p.split("(")[0]].pop(0) for p in parts]
+        return [self.by_verb[ops.split("(")[0]].pop(0)]
+
+
+def test_gtd_inbox_names_its_population_and_fails_its_control_on_an_unshared_namespace():
+    old = {"id": "t1", "title": "triage me", "priority": "p1", "created_at": iso(30)}
+    new = {"id": "t2", "title": "fresh", "priority": "p2", "created_at": iso(2)}
+    k = ExecKhive(**{"gtd.tasks": [[old, new], [old]]})
+    inst = GtdInbox(k, "lambda:x", every="every:6h", max_age_h=24)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("1 gtd inbox row(s) older than 24h of 2 in inbox",)
+    assert out.population == "gtd tasks assigned to lambda:x with status inbox" and out.count == 2
+    assert out.predicate == "created_at older than 24h (1 match)" and "t1 p1 triage me (30h)" in out.evidence
+    assert k.ops[0] == (  # the control rides in the same batch: does the namespace hold any task at all
+        '[gtd.tasks(status="inbox", assignee="lambda:x", limit=100), gtd.tasks(assignee="lambda:x", limit=1)]'
+    )
+    k = ExecKhive(**{"gtd.tasks": [[], []]})  # an unshared namespace answers empty, not an error
+    out = asyncio.run(GtdInbox(k, "lambda:x", every=None).run({}))
+    assert not out.control and out.findings == () and "has NO task at all" in out.evidence
+
+
+def test_inbox_sla_probes_each_actor_and_a_dead_read_fails_the_control():
+    page = [{"id": "m1", "from_actor": "lambda:owner", "created_at_us": 1789959858375317}]
+    k = ExecKhive(
+        **{
+            "comm.probe": [
+                {"new_messages": page, "stale_unread_count": 3},
+                {"new_messages": [], "stale_unread_count": 0},
+            ]
+        }
+    )
+    inst = InboxSla(k, ["lambda:x", "lambda:x:echo"], every="every:15m", stale_minutes=20)
+    out = asyncio.run(inst.run({}))
+    assert out.findings == ("lambda:x: 3 unread message(s) older than 20 min",)
+    assert not out.control and "lambda:x:echo: empty page and zero count" in out.evidence
+    assert out.population == "messages on the probe pages of ['lambda:x', 'lambda:x:echo']"
+    assert out.predicate == "unread and older than 20 minutes (3 match)"
+    assert k.ops == [
+        '[comm.probe(actor="lambda:x", stale_minutes=20), '
+        'comm.probe(actor="lambda:x:echo", stale_minutes=20)]'
+    ]
+    k = ExecKhive(**{"comm.probe": [{"new_messages": page, "stale_unread_count": 0}]})
+    out = asyncio.run(InboxSla(k, ["lambda:x"], every=None).run({}))
+    assert out.control and out.findings == ()
+
+
+def test_worktrees_first_sight_then_a_parked_dirty_tree_without_a_pr(tmp_path):
+    porcelain = (
+        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
+        f"worktree {tmp_path}/wt\nHEAD def\nbranch refs/heads/feat\n"
+    )
+    sh = FakeSh(
+        **{
+            "worktree list --porcelain": porcelain,
+            "remote get-url origin": "https://github.com/o/r.git\n",
+            f"-C {tmp_path}/wt status --porcelain": " M a.py\n?? b\n",
+            f"-C {tmp_path}/wt log -1": f"{int(time.time()) - 5 * 86400}\n",
+            "pr list -R o/r --head feat": "[]",
+        }
+    )
+    inst = Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every="every:6h", parked_days=3, run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.evidence.startswith(
+        f"control: {tmp_path}/main lists 2 tree(s) incl. the main checkout; origin o/r\n"
+    )
+    assert out.findings == (
+        f"{tmp_path}/main: first snapshot, 1 worktree(s)",
+        f"{tmp_path}/wt (feat): parked: dirty, HEAD older than 3 days, no open PR",
+    )
+    assert f"{tmp_path}/wt | feat | dirty 2 | HEAD 5.0d | PR none | PARKED" in out.evidence and out.count == 1
+    assert asyncio.run(inst.run({})).findings == ()  # still parked: the crossing was told once
+    sh.set("pr list -R o/r --head feat", json.dumps([{"number": 9}]))
+    out = asyncio.run(inst.run({}))
+    assert out.findings == (f"{tmp_path}/wt: feat/none -> feat/#9",)
+    sh.set("pr list -R o/r --head feat", "[]")
+    out = asyncio.run(inst.run({}))  # the PR closed: parked again, and that crossing is told again
+    assert out.findings == (
+        f"{tmp_path}/wt: feat/#9 -> feat/none",
+        f"{tmp_path}/wt (feat): parked: dirty, HEAD older than 3 days, no open PR",
+    )
+    out = asyncio.run(
+        Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=FakeSh()).run({})
+    )
+    assert not out.control and "git worktree list failed" in out.findings[0]
+
+
+def test_bench_jobs_reports_an_unreported_job_whose_process_is_gone(tmp_path):
+    d = tmp_path / "bench"
+    (d / "notes").mkdir(parents=True)
+    jobs = {
+        "r1": {"pid": 4242, "started": "x", "asker": "lambda:x", "reported": False},
+        "r0": {"pid": 1, "reported": True},
+    }
+    (d / "notes" / "agent.json").write_text(json.dumps({"version": 1, "notes": {"jobs": {"value": jobs}}}))
+    (tmp_path / "results" / "r1").mkdir(parents=True)
+    (tmp_path / "results" / "r1" / "ledger.jsonl").write_text('{"a":1}\n{"b":2}\n')
+    inst = BenchJobs(str(d), str(tmp_path / "results"), every="every:1h", run=FakeSh(**{"-p 4242": ""}))
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        "job r1: unreported, pid 4242 gone, 2 ledger row(s); asked by lambda:x",
+    )
+    assert out.evidence.startswith(f"control: {d}/notes/agent.json read, 2 job(s) noted\n")
+    out = asyncio.run(BenchJobs(str(tmp_path / "nope"), str(tmp_path), every=None).run({}))
+    assert not out.control
+
+
+SHA = "a" * 40
+SEVEN = [
+    "local/admission",
+    "local/baseline",
+    "local/build",
+    "local/guards",
+    "local/lint",
+    "local/shellcheck",
+    "local/suites",
+]
+CLASSIC_SEVEN = json.dumps(
+    {"strict": False, "contexts": SEVEN, "checks": [{"context": c, "app_id": None} for c in SEVEN]}
+)
+RULESET_SEVEN = json.dumps(
+    [
+        {"type": "deletion", "ruleset_id": 1},
+        {
+            "type": "required_status_checks",
+            "parameters": {"required_status_checks": [{"context": c} for c in SEVEN]},
+            "ruleset_id": 1,
+        },
+    ]
+)
+CLASSIC_404 = (
+    1,
+    '{"message":"Branch not protected","status":"404"}',
+    "gh: Branch not protected (HTTP 404)\n",
+)
+INVENTORY_KEYS = {"repository", "repository_name", "head", "required", "observed_at", "envelope"}
+ROW_KEYS = {
+    "context",
+    "source",
+    "base",
+    "app",
+    "app_slug",
+    "required_app",
+    "workflow_id",
+    "event",
+    "run_id",
+    "conclusion",
+    "completed_at",
+}
+ENVELOPE_KEYS = {"source_identity", "source_event", "interval", "completeness", "reason", "payload_digest"}
+
+
+def statuses(*rows: tuple[str, str]) -> str:
+    return json.dumps(
+        {
+            "total": len(rows),
+            "rows": [{"context": c, "state": s, "created_at": "2026-09-22T10:00:00Z"} for c, s in rows],
+        }
+    )
+
+
+def required_sh(admin: bool | None = True, **over) -> FakeSh:
+    answers = {
+        "api repos/o/r --jq": json.dumps({"full_name": "o/r", "id": 42, "admin": admin}),
+        "pr list -R o/r": json.dumps([{"number": 7, "headRefOid": SHA, "baseRefName": "main"}]),
+        "rules/branches/main": "[]",
+        "branches/main/protection/required_status_checks": CLASSIC_SEVEN,
+        f"commits/{SHA}/status": statuses(
+            *[(c, "success") for c in SEVEN[:5]], ("local/shellcheck", "failure")
+        ),
+        f"commits/{SHA}/check-runs": json.dumps({"total": 0, "rows": []}),
+    }
+    return FakeSh(**{**answers, **over})
+
+
+def required(sh: FakeSh, classic: bool = True, state=None) -> RequiredContexts:
+    return RequiredContexts(
+        [{"name": "o/r", "classic": classic}],
+        state or MemoryNoteStore(),
+        every=None,
+        source_identity="lambda:x:desk",
+        run=sh,
+    )
+
+
+def test_required_contexts_reads_seven_classic_names_by_name_and_emits_the_check_inventory_observation():
+    out = asyncio.run(required(required_sh()).run({"source_event": "chore run r1"}))
+    assert out.control and out.count == 1
+    line = "o/r#7 aaaaaaaa: 5/7 by name; missing: [local/suites]; failing: [local/shellcheck=failure]"
+    assert out.findings == (line,)  # first sight: the full row
+    assert "o/r main: required local/admission [classic], local/baseline [classic]" in out.evidence
+    assert "ruleset read (0 rule(s)); classic read" in out.evidence
+    assert out.predicate.endswith("(1 match)") and out.positive.startswith("o/r resolved as itself (id 42)")
+    (obs,) = out.data
+    assert set(obs) == INVENTORY_KEYS and set(obs["envelope"]) == ENVELOPE_KEYS
+    assert all(set(r) == ROW_KEYS for r in obs["required"]) and len(obs["required"]) == 7
+    assert obs["repository"] == 42 and obs["repository_name"] == "o/r" and obs["head"] == SHA
+    by = {r["context"]: r for r in obs["required"]}
+    assert by["local/suites"] == {
+        "context": "local/suites",
+        "source": "classic",
+        "base": "main",
+        "app": None,
+        "app_slug": None,
+        "required_app": None,
+        "workflow_id": None,
+        "event": None,
+        "run_id": None,
+        "conclusion": "ABSENT",
+        "completed_at": None,
+    }
+    assert by["local/shellcheck"]["conclusion"] == "failure" and by["local/guards"]["conclusion"] == "success"
+    assert by["local/guards"]["completed_at"] == "2026-09-22T10:00:00Z"
+    env = obs["envelope"]
+    assert env["completeness"] == "complete" and env["reason"] is None  # complete | partial | unavailable
+    assert env["source_identity"] == "lambda:x:desk" and env["source_event"] == "chore run r1"
+    assert set(env["interval"]) == {"start", "end"} and env["interval"]["start"] <= env["interval"]["end"]
+    assert obs["observed_at"].endswith("Z") and datetime.fromisoformat(obs["observed_at"]).tzinfo is not None
+    payload = {k: obs[k] for k in ("repository", "repository_name", "head", "required")}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    assert env["payload_digest"] == hashlib.sha256(canonical).hexdigest()
+
+
+def test_required_contexts_first_sight_is_the_row_then_only_transitions():
+    sh, store = required_sh(), MemoryNoteStore()
+    inst = required(sh, state=store)
+    assert len(asyncio.run(inst.run({})).findings) == 1
+    assert asyncio.run(inst.run({})).findings == ()  # nothing moved: quiet
+    sh.set(f"commits/{SHA}/status", statuses(*[(c, "success") for c in SEVEN]))
+    sh.set(
+        "pr list -R o/r",
+        json.dumps(
+            [
+                {"number": 7, "headRefOid": SHA, "baseRefName": "main"},
+                {"number": 8, "headRefOid": SHA, "baseRefName": "main"},
+            ]
+        ),
+    )
+    out = asyncio.run(inst.run({}))
+    assert out.findings == (
+        "o/r#7 aaaaaaaa: 7/7 by name; missing: []; failing: []",
+        "o/r#8 aaaaaaaa: 7/7 by name; missing: []; failing: []",  # born green: its first row all the same
+    )
+    sh.set("pr list -R o/r", json.dumps([{"number": 8, "headRefOid": SHA, "baseRefName": "main"}]))
+    assert asyncio.run(inst.run({})).findings == ("o/r#7: no longer open",)
+    out = asyncio.run(inst.run({"prs": ["o/r#8", "o/r#9"]}))  # an ask: the named rows, snapshot untouched
+    assert out.findings == (
+        "o/r#8 aaaaaaaa: 7/7 by name; missing: []; failing: []",
+        "o/r#9: not among the open PRs read",
+    )
+    assert asyncio.run(inst.run({})).findings == ()
+
+
+def test_required_contexts_classic_404_without_admin_is_unread_and_the_required_set_is_not_empty():
+    sh = required_sh(
+        admin=False,
+        **{
+            "rules/branches/main": (1, "", "gh: Forbidden (HTTP 403)\n"),
+            "branches/main/protection/required_status_checks": CLASSIC_404,
+        },
+    )
+    out = asyncio.run(required(sh).run({}))
+    assert not out.control
+    assert "o/r main: neither surface read; the required set is UNREAD" in out.findings
+    assert "o/r#7 aaaaaaaa: required set UNREAD on main; nothing judged" in out.findings
+    assert "classic UNREAD (404 without admin reads the same as unprotected)" in out.evidence
+    assert not any(" 0/0 " in f for f in out.findings)  # never an empty required set
+    (obs,) = out.data
+    assert obs["required"] is None and obs["envelope"]["completeness"] == "unavailable"  # nothing read
+    assert not any(
+        f"commits/{SHA}" in " ".join(c) for c in sh.calls
+    )  # nothing read at a head it cannot judge
+
+
+def test_required_contexts_classic_unread_beside_a_read_ruleset_is_partial_with_its_reason():
+    sh = required_sh(
+        admin=False,
+        **{
+            "rules/branches/main": RULESET_SEVEN,
+            "branches/main/protection/required_status_checks": CLASSIC_404,
+        },
+    )
+    out = asyncio.run(required(sh, classic=False).run({}))
+    assert out.control  # the rulesets read: the set is stated, and said to be partial
+    assert out.findings[0] == (
+        "o/r main: classic UNREAD (404 without admin reads the same as unprotected); "
+        "the required set is partial"
+    )
+    (obs,) = out.data
+    assert {r["source"] for r in obs["required"]} == {"ruleset"} and len(obs["required"]) == 7
+    assert obs["envelope"]["completeness"] == "partial"
+    assert obs["envelope"]["reason"] == "classic UNREAD (404 without admin reads the same as unprotected)"
+
+
+def test_required_contexts_classic_404_with_admin_is_none_and_an_empty_set_is_a_value():
+    sh = required_sh(admin=True, **{"branches/main/protection/required_status_checks": CLASSIC_404})
+    out = asyncio.run(required(sh, classic=False).run({}))
+    assert out.control and out.findings == (
+        "o/r#7 aaaaaaaa: 0/0 by name; missing: []; failing: [] (no context required on main)",
+    )
+    assert out.data[0]["required"] == [] and out.data[0]["envelope"]["completeness"] == "complete"
+    out = asyncio.run(required(sh, classic=True).run({}))  # declared classic, and none is there
+    assert "o/r main: classic protection declared and none is there" in out.findings
+
+
+def test_required_contexts_both_surfaces_empty_at_the_head_is_required_checks_do_not_exist():
+    sh = required_sh(**{f"commits/{SHA}/status": statuses()})
+    out = asyncio.run(required(sh).run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 aaaaaaaa: 0/7 by name; missing: [{', '.join(SEVEN)}]; failing: []; "
+        "REQUIRED CHECKS DO NOT EXIST AT THIS HEAD",
+    )
+    assert {r["conclusion"] for r in out.data[0]["required"]} == {"ABSENT"}
+
+
+def test_required_contexts_names_a_check_run_by_its_actions_run_and_the_newest_row_per_name_wins():
+    rules = json.dumps(
+        [
+            {
+                "type": "required_status_checks",
+                "parameters": {
+                    "required_status_checks": [
+                        {"context": "ci", "integration_id": 15368},
+                        {"context": "lint"},
+                        {"context": "e2e"},
+                    ]
+                },
+            }
+        ]
+    )
+    runs = runs_page(
+        [
+            {
+                "id": 555,
+                "workflow_id": 9,
+                "name": "CI",
+                "event": "pull_request",
+                "status": "completed",
+                "conclusion": "success",
+                "created_at": "2026-09-22T09:00:00Z",
+            }
+        ]
+    )
+    check_runs = {
+        "total": 3,
+        "rows": [
+            {
+                "name": "ci",
+                "app": 15368,
+                "app_slug": "github-actions",
+                "status": "completed",
+                "conclusion": "success",
+                "details_url": "https://github.com/o/r/actions/runs/555/job/999",
+                "started_at": "2026-09-22T11:00:00Z",
+                "completed_at": "2026-09-22T11:05:00Z",
+            },
+            {
+                "name": "lint",
+                "app": 15368,
+                "app_slug": "github-actions",
+                "status": "completed",
+                "conclusion": "skipped",
+                "details_url": "https://github.com/o/r/actions/runs/555/job/998",
+                "started_at": "2026-09-22T11:00:00Z",
+                "completed_at": "2026-09-22T11:00:01Z",
+            },
+            {
+                "name": "e2e",
+                "app": 15368,
+                "app_slug": "github-actions",
+                "status": "in_progress",
+                "conclusion": None,
+                "details_url": "https://github.com/o/r/actions/runs/555/job/997",
+                "started_at": "2026-09-22T11:00:00Z",
+                "completed_at": None,
+            },
+        ],
+    }
+    sh = required_sh(
+        **{
+            "rules/branches/main": rules,
+            "branches/main/protection/required_status_checks": CLASSIC_404,
+            f"commits/{SHA}/status": statuses(("ci", "failure")),  # older than the check-run of the same name
+            f"commits/{SHA}/check-runs": json.dumps(check_runs),
+            "actions/runs?head_sha=": runs,
+        }
+    )
+    out = asyncio.run(required(sh, classic=False).run({}))
+    assert out.control and out.findings == (
+        "o/r#7 aaaaaaaa: 1/3 by name; missing: []; failing: [lint=skipped]; pending: [e2e=in_progress]",
+    )
+    by = {r["context"]: r for r in out.data[0]["required"]}
+    assert by["ci"] == {
+        "context": "ci",
+        "source": "ruleset",
+        "base": "main",
+        "app": 15368,
+        "app_slug": "github-actions",
+        "required_app": 15368,
+        "workflow_id": 9,
+        "event": "pull_request",
+        "run_id": 555,  # the run in details_url, not the trailing job id
+        "conclusion": "success",
+        "completed_at": "2026-09-22T11:05:00Z",
+    }
+    assert by["e2e"]["conclusion"] == "pending" and by["e2e"]["completed_at"] is None
+
+
+RULE_CI = json.dumps(
+    [{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "ci"}]}}]
+)
+
+
+def check_run(run: int, *, status: str = "completed", started: str | None = "2026-09-22T10:00:00Z") -> dict:
+    """A check-run named ci as the check-runs query prints it; `run` is the Actions run in its details_url."""
+    done = status == "completed"
+    return {
+        "name": "ci",
+        "app": 15368,
+        "app_slug": "github-actions",
+        "status": status,
+        "conclusion": "success" if done else None,
+        "details_url": f"https://github.com/o/r/actions/runs/{run}/job/{run + 1000}",
+        "started_at": started,
+        "completed_at": "2026-09-22T11:00:00Z" if done else None,
+    }
+
+
+def queued_sh(checks: list[dict], states: str) -> FakeSh:
+    """ci required by a ruleset; a queued ci check on run 2, created two hours after the 10:00 statuses."""
+    runs = [
+        {
+            "id": 2,
+            "workflow_id": 9,
+            "name": "CI",
+            "event": "pull_request",
+            "status": "queued",
+            "conclusion": None,
+            "created_at": "2026-09-22T12:00:00Z",
+        },
+        {
+            "id": 1,
+            "workflow_id": 9,
+            "name": "CI",
+            "event": "pull_request",
+            "status": "completed",
+            "conclusion": "success",
+            "created_at": "2026-09-22T09:00:00Z",
+        },
+    ]
+    return required_sh(
+        **{
+            "rules/branches/main": RULE_CI,
+            "branches/main/protection/required_status_checks": CLASSIC_404,
+            f"commits/{SHA}/status": states,
+            f"commits/{SHA}/check-runs": json.dumps({"total": len(checks), "rows": checks}),
+            "actions/runs?head_sha=": runs_page(runs),
+        }
+    )
+
+
+@pytest.mark.parametrize("arm", ["older status", "older check first", "older check last"])
+def test_required_contexts_a_queued_check_is_ordered_by_its_runs_creation_never_lost_to_an_older_green(arm):
+    """A queued check has no started_at: its run's creation orders it, so an older timestamped green (a
+    status, or a check read before or after it) never takes its name."""
+    queued, older = check_run(2, status="queued", started=None), check_run(1, started="2026-09-22T09:00:00Z")
+    checks = {
+        "older status": [queued],
+        "older check first": [older, queued],
+        "older check last": [queued, older],
+    }
+    states = statuses(("ci", "success")) if arm == "older status" else statuses()
+    out = asyncio.run(required(queued_sh(checks[arm], states), classic=False).run({}))
+    (row,) = out.data[0]["required"]
+    assert (row["conclusion"], row["run_id"], row["event"], row["workflow_id"]) == (
+        "pending",
+        2,
+        "pull_request",
+        9,
+    )
+    assert out.control and out.data[0]["envelope"]["reason"] is None
+
+
+def test_required_contexts_a_name_whose_candidates_cannot_be_ordered_is_pending_and_partial_never_green():
+    """A queued check from a producer with no Actions run (no started_at, no run creation time) beside an
+    older green status: nothing orders the two, so the name is pending and the read partial."""
+    queued = {**check_run(0, status="queued", started=None), "details_url": "https://ci.example/build/7"}
+    out = asyncio.run(required(queued_sh([queued], statuses(("ci", "success"))), classic=False).run({}))
+    (row,) = out.data[0]["required"]
+    assert row["conclusion"] == "pending" and row["run_id"] is None
+    assert not out.control and out.findings == (
+        "o/r#7 aaaaaaaa: 0/1 by name; missing: []; failing: []; pending: [ci=ordering unresolved]; "
+        "head read incomplete: ci: ordering unresolved",
+    )
+    env = out.data[0]["envelope"]
+    assert env["completeness"] == "partial" and env["reason"] == "ci: ordering unresolved"
+
+
+def test_required_contexts_a_queued_check_alone_is_pending_on_its_run():
+    """With no older status the queued check is the name's only row."""
+    queued = check_run(2, status="queued", started=None)
+    out = asyncio.run(required(queued_sh([queued], statuses()), classic=False).run({}))
+    (row,) = out.data[0]["required"]
+    assert out.control and (row["conclusion"], row["run_id"]) == ("pending", 2)
+
+
+def tie_sh(checks: list[dict], runs: list[dict]) -> FakeSh:
+    """ci required by a ruleset; a green ci status stamped 10:00 beside the given checks and runs."""
+    return required_sh(
+        **{
+            "rules/branches/main": RULE_CI,
+            "branches/main/protection/required_status_checks": CLASSIC_404,
+            f"commits/{SHA}/status": statuses(("ci", "success")),
+            f"commits/{SHA}/check-runs": json.dumps({"total": len(checks), "rows": checks}),
+            "actions/runs?head_sha=": runs_page(runs),
+        }
+    )
+
+
+def ci_run(n: int, check: dict, created: str) -> dict:
+    """The Actions run a check-run names in its details_url, in that check's state."""
+    run = {"id": n, "workflow_id": 9, "name": "CI", "event": "pull_request", "created_at": created}
+    return run | {"status": check["status"], "conclusion": check["conclusion"]}
+
+
+@pytest.mark.parametrize("mode", ["queued", "completed failure"])
+def test_required_contexts_equal_stamps_that_disagree_are_pending_and_partial_never_the_green_one(mode):
+    """A green status and a queued or failed check stamped 10:00 alike: one stamp orders neither, so the
+    status, read first, does not win the tie; the name is pending and the read partial."""
+    queued = mode == "queued"
+    check = check_run(
+        2, status="queued" if queued else "completed", started=None if queued else "2026-09-22T10:00:00Z"
+    )
+    check["conclusion"] = None if queued else "failure"
+    out = asyncio.run(
+        required(tie_sh([check], [ci_run(2, check, "2026-09-22T10:00:00Z")]), classic=False).run({})
+    )
+    (row,) = out.data[0]["required"]
+    env = out.data[0]["envelope"]
+    assert (row["conclusion"], env["completeness"], env["reason"]) == (
+        "pending",
+        "partial",
+        "ci: ordering unresolved",
+    )
+    assert not out.control and row["run_id"] is None
+
+
+@pytest.mark.parametrize("arm", ["agreeing", "tie then newer", "newer then tie"])
+def test_required_contexts_equal_stamps_that_agree_or_a_strictly_newer_row_still_order_the_name(arm):
+    """The tie rule is narrow: a check agreeing with the green status at one stamp keeps the name
+    complete, and a strictly newer row still wins over a disagreeing pair, read in either order."""
+    agreeing, failed = check_run(2), {**check_run(2), "conclusion": "failure"}
+    newer = check_run(3, started="2026-09-22T11:00:00Z")
+    checks = {"agreeing": [agreeing], "tie then newer": [failed, newer], "newer then tie": [newer, failed]}
+    tied = agreeing if arm == "agreeing" else failed
+    runs = [ci_run(2, tied, "2026-09-22T10:00:00Z"), ci_run(3, newer, "2026-09-22T11:00:00Z")]
+    out = asyncio.run(required(tie_sh(checks[arm], runs), classic=False).run({}))
+    (row,) = out.data[0]["required"]
+    env = out.data[0]["envelope"]
+    assert out.control and (row["conclusion"], env["completeness"], env["reason"]) == (
+        "success",
+        "complete",
+        None,
+    )
+    assert arm == "agreeing" or row["run_id"] == 3
+
+
+def producer_sh() -> FakeSh:
+    """A ruleset requiring integration 15368 for ci and local/suites: ci is a check-run by
+    github-actions (app id 15368) on run 555, local/suites a status only."""
+    rules = [{"context": "ci", "integration_id": 15368}, {"context": "local/suites", "integration_id": 15368}]
+    run = {"id": 555, "workflow_id": 9, "name": "CI", "event": "pull_request", "status": "completed"}
+    run |= {"conclusion": "success", "created_at": "2026-09-22T09:00:00Z"}
+    return required_sh(
+        **{
+            "rules/branches/main": json.dumps(
+                [{"type": "required_status_checks", "parameters": {"required_status_checks": rules}}]
+            ),
+            "branches/main/protection/required_status_checks": CLASSIC_404,
+            f"commits/{SHA}/status": statuses(("local/suites", "success")),
+            f"commits/{SHA}/check-runs": json.dumps({"total": 1, "rows": [check_run(555)]}),
+            "actions/runs?head_sha=": runs_page([run]),
+        }
+    )
+
+
+def test_required_contexts_app_is_the_observed_producer_and_the_rules_integration_is_required_app():
+    """A status carries no producing app, so a status-only row never claims the rule's integration
+    15368 as its producer; a check-run's app is its id, its slug beside it, as the check query asks."""
+    sh = producer_sh()
+    out = asyncio.run(required(sh, classic=False).run({}))
+    by = {r["context"]: r for r in out.data[0]["required"]}
+    assert by["local/suites"]["app"] is None  # a status carries no producing app
+    assert (by["local/suites"]["app_slug"], by["local/suites"]["required_app"]) == (None, 15368)
+    assert (by["ci"]["app"], by["ci"]["app_slug"], by["ci"]["required_app"]) == (
+        15368,
+        "github-actions",
+        15368,
+    )
+    (query,) = [" ".join(c) for c in sh.calls if "check-runs" in " ".join(c)]
+    assert "app: .app.id, app_slug: .app.slug," in query
+    assert "  local/suites [ruleset] success app=None required_app=15368 event=None run=None" in out.evidence
+
+
+def test_required_contexts_the_envelope_digest_covers_every_field_of_every_row():
+    """The payload digest is taken over the rows as emitted, so a change to any field of a row changes
+    it."""
+    (obs,) = asyncio.run(required(producer_sh(), classic=False).run({})).data
+
+    def digest(o: dict) -> str:
+        payload = {k: o[k] for k in ("repository", "repository_name", "head", "required")}
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    assert obs["envelope"]["payload_digest"] == digest(obs)
+    for i, row in enumerate(obs["required"]):
+        for field in row:
+            rows = [*obs["required"][:i], {**row, field: "changed"}, *obs["required"][i + 1 :]]
+            assert digest({**obs, "required": rows}) != obs["envelope"]["payload_digest"], field
+
+
+def test_required_contexts_control_fails_when_the_repo_does_not_resolve_as_itself():
+    sh = required_sh(**{"api repos/o/r --jq": json.dumps({"full_name": "other/r", "id": 1, "admin": True})})
+    out = asyncio.run(required(sh).run({}))
+    assert not out.control and out.findings[0].startswith("o/r: gh does not resolve it as itself")
+    assert out.data == ()
+
+
+def test_required_contexts_control_fails_when_admin_is_not_read():
+    out = asyncio.run(required(required_sh(admin=None)).run({}))
+    assert not out.control
+    assert out.findings[0] == "o/r: admin not read (None); a classic 404 cannot be told from none"
+
+
+def test_required_contexts_control_fails_when_the_prs_head_is_not_read():
+    sh = required_sh(
+        **{"pr list -R o/r": json.dumps([{"number": 7, "headRefOid": "", "baseRefName": "main"}])}
+    )
+    out = asyncio.run(required(sh).run({}))
+    assert not out.control and out.findings == ("o/r#7: head not read ('')",) and out.data == ()
+
+
+def test_required_contexts_control_fails_when_a_head_surface_does_not_read():
+    sh = required_sh(**{f"commits/{SHA}/check-runs": (1, "", "gh: HTTP 502\n")})
+    out = asyncio.run(required(sh).run({}))
+    assert not out.control
+    assert out.findings[0].endswith("; head read incomplete: check-runs unread: gh: HTTP 502")
+    env = out.data[0]["envelope"]
+    assert env["completeness"] == "partial" and env["reason"] == "check-runs unread: gh: HTTP 502"
+    with pytest.raises(ValueError, match="classic = true|false"):
+        RequiredContexts([{"name": "o/r"}], MemoryNoteStore(), every=None, source_identity="x")
+
+
+HEAD7, HEAD8, HEAD9, OLD = "7" * 40, "8" * 40, "9" * 40, "0" * 40
+
+
+def verdict(d, n: int, evaluated: str, *, head8: str, mtime: float, round_no=1, json_file=True, **kw):
+    """One review verdict pair as the review daemon writes it: <owner>-<repo>-<n>-<head8>.json and .md."""
+    blocking = kw.get("blocking", ["a finding"])
+    body = {
+        "artifact_schema_version": 11,
+        "repo": kw.get("repo", "o/r"),
+        "number": n,
+        "evaluated_head": evaluated,
+        "decision": kw.get("decision", "REQUEST-CHANGES"),
+        "blocking": blocking,
+        "asserted_blocking": kw.get("asserted", len(blocking)),
+        "degraded": kw.get("degraded", False),
+        "round_no": round_no,
+    }
+    md = (
+        f"# Review verdict \u2014 {body['repo']}#{n} @ {head8}\n"
+        f"- decision: **{body['decision']}** (hygiene: ok)\n"
+        f"- degraded: {body['degraded']} ()\n- evaluated head: {evaluated}\n- evaluated base: main\n\n"
+        "## Blocking\n" + "".join(f"- {b}\n" for b in blocking or ["none"]) + "\n## Issues (0)\n"
+    )
+    paths = [d / f"o-r-{n}-{head8}.md"]
+    paths[0].write_text(md)
+    if json_file:
+        paths.append(d / f"o-r-{n}-{head8}.json")
+        paths[1].write_text(json.dumps(body))
+    for p in paths:
+        os.utime(p, (mtime, mtime))
+
+
+def freshness_sh(prs=((7, HEAD7), (8, HEAD8), (9, HEAD9))) -> FakeSh:
+    return FakeSh(
+        **{
+            "api repos/o/r --jq": json.dumps({"full_name": "o/r", "id": 42, "admin": True}),
+            "pr list -R o/r": json.dumps([{"number": n, "headRefOid": h} for n, h in prs]),
+        }
+    )
+
+
+def test_verdict_freshness_at_head_stale_never_reviewed_newest_by_mtime_then_round(tmp_path):
+    verdict(tmp_path, 7, OLD, head8="00000000", mtime=1000, round_no=3)
+    verdict(
+        tmp_path,
+        7,
+        HEAD7,
+        head8="77777777",
+        mtime=1000,
+        round_no=4,
+        blocking=["x", "y"],
+        asserted=3,
+        degraded=True,
+    )  # same mtime as round 3: the later round is the newest
+    verdict(tmp_path, 8, HEAD8, head8="88888888", mtime=900)
+    verdict(tmp_path, 8, OLD, head8="0000aaaa", mtime=950, decision="APPROVE", blocking=[])
+    verdict(tmp_path, 7, HEAD7, head8="7777beef", mtime=2000, repo="o/other")  # its own repo is not o/r
+    inst = VerdictFreshness(
+        MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
+    )
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.count == 3
+    assert out.findings == (
+        f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 2 (asserted_blocking 3 != 2 listed), DEGRADED; "
+        f"read json: {tmp_path}/o-r-7-77777777.json",
+        f"o/r#8 88888888: STALE (verdict at 00000000), APPROVE, blocking 0; "
+        f"read json: {tmp_path}/o-r-8-0000aaaa.json",
+        "o/r#9 99999999: NEVER-REVIEWED",
+    )
+    assert out.positive.startswith(f"{tmp_path}: newest verdict o-r-7-7777beef.json parses")
+    assert out.predicate == "newest verdict not at the PR's current head, or none (2 match)"
+    assert [(r["number"], r["state"]) for r in out.data] == [
+        (7, "AT-HEAD"),
+        (8, "STALE"),
+        (9, "NEVER-REVIEWED"),
+    ]
+
+
+def test_verdict_freshness_first_sight_then_transitions(tmp_path):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    assert len(asyncio.run(inst.run({})).findings) == 1
+    assert asyncio.run(inst.run({})).findings == ()  # nothing moved: quiet
+    sh.set(
+        "pr list -R o/r",
+        json.dumps([{"number": 7, "headRefOid": "b" * 40}, {"number": 9, "headRefOid": HEAD9}]),
+    )
+    out = asyncio.run(inst.run({}))
+    assert out.findings == (
+        f"o/r#7 bbbbbbbb: STALE (verdict at 77777777), REQUEST-CHANGES, blocking 1; read json: "
+        f"{tmp_path}/o-r-7-77777777.json",
+        "o/r#9 99999999: NEVER-REVIEWED",
+    )
+    sh.set("pr list -R o/r", json.dumps([{"number": 9, "headRefOid": HEAD9}]))
+    assert asyncio.run(inst.run({})).findings == ("o/r#7: no longer open",)
+
+
+def test_verdict_freshness_an_empty_verdict_dir_fails_the_instrument_and_judges_no_pr(tmp_path):
+    inst = VerdictFreshness(
+        MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
+    )
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == (f"{tmp_path}: no verdict JSON in 0 entries; no PR is judged",)
+    assert out.data == () and not any("NEVER-REVIEWED" in f for f in out.findings)
+    out = asyncio.run(
+        VerdictFreshness(
+            MemoryNoteStore(),
+            every=None,
+            verdict_dir=str(tmp_path / "gone"),
+            repos=["o/r"],
+            run=freshness_sh(),
+        ).run({})
+    )
+    assert not out.control and out.findings[0].startswith(f"{tmp_path}/gone: unreadable")
+
+
+def test_verdict_freshness_a_newest_json_that_does_not_parse_fails_the_control(tmp_path):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    (tmp_path / "o-r-7-12345678.json").write_text("{not json")
+    inst = VerdictFreshness(
+        MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
+    )
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == (
+        f"{tmp_path}: its newest JSON o-r-7-12345678.json does not parse; no PR is judged",
+    )
+
+
+def test_verdict_freshness_reads_the_md_header_when_the_json_is_missing_and_says_so(tmp_path):
+    verdict(tmp_path, 8, HEAD8, head8="12121212", mtime=900)  # the control's known-positive
+    verdict(
+        tmp_path, 7, HEAD7, head8="77777777", mtime=1000, json_file=False, blocking=["x", "y"], degraded=True
+    )
+    inst = VerdictFreshness(
+        MemoryNoteStore(),
+        every=None,
+        verdict_dir=str(tmp_path),
+        repos=["o/r"],
+        run=freshness_sh(prs=((7, HEAD7),)),
+    )
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 2, DEGRADED; read md header (no JSON): "
+        f"{tmp_path}/o-r-7-77777777.md",
+    )
+
+
+def test_verdict_freshness_a_directory_of_md_only_verdicts_is_read_through_the_md_header(tmp_path):
+    """The directory control reads an .md-only verdict through its header too, so the .md fallback the
+    per-PR read promises is reachable without another PR's JSON."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, json_file=False)
+    inst = VerdictFreshness(
+        MemoryNoteStore(),
+        every=None,
+        verdict_dir=str(tmp_path),
+        repos=["o/r"],
+        run=freshness_sh(prs=((7, HEAD7),)),
+    )
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read md header (no JSON): "
+        f"{tmp_path}/o-r-7-77777777.md",
+    )
+    assert out.positive.startswith(f"{tmp_path}: newest verdict o-r-7-77777777.md parses (read md header)")
+
+
+def test_verdict_freshness_a_prs_malformed_json_is_never_hidden_behind_its_md_copy(tmp_path):
+    """The .md header stands in only for a missing JSON: the world's newest verdict parses, this PR's
+    JSON does not, and its healthy .md does not stand in for it."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    (tmp_path / "o-r-7-77777777.json").write_text("{incomplete json")
+    os.utime(tmp_path / "o-r-7-77777777.json", (1000, 1000))
+    verdict(tmp_path, 8, OLD, head8="88888888", mtime=2000)
+    inst = VerdictFreshness(
+        MemoryNoteStore(),
+        every=None,
+        verdict_dir=str(tmp_path),
+        repos=["o/r"],
+        run=freshness_sh(prs=((7, HEAD7),)),
+    )
+    out = asyncio.run(inst.run({}))
+    assert not out.control and [d["state"] for d in out.data] == ["UNREADABLE"]
+    assert out.findings[0].startswith(
+        f"o/r#7 77777777: newest verdict unreadable: {tmp_path}/o-r-7-77777777.json"
+    )
+
+
+def test_verdict_freshness_an_enumerator_without_a_total_line_failed(tmp_path):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    sh = FakeSh(**{"/x/my_open_prs.sh": (2, "", "ENUMERATION FAILED rc=1: HTTP 403 rate limit\n")})
+    inst = VerdictFreshness(
+        MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.count is None and out.data == ()
+    assert out.findings == (
+        "ENUMERATION FAILED (rc 2, no TOTAL line): ENUMERATION FAILED rc=1: HTTP 403 rate limit",
+    )
+    sh.set("/x/my_open_prs.sh", "o/r#7 draft=false  a title\n")  # rc 0, the list, and no TOTAL: not 1 PR
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings[0].startswith("ENUMERATION FAILED (rc 0, no TOTAL line)")
+
+
+def test_verdict_freshness_an_enumerator_whose_closed_pr_control_is_zero_is_untrusted(tmp_path):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    total = (
+        "TOTAL 0 open PRs authored by bot (control: closed-PR search returned 0, so an empty list is real)\n"
+    )
+    sh = FakeSh(**{"/x/my_open_prs.sh": total})
+    inst = VerdictFreshness(
+        MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == (
+        "ENUMERATION UNTRUSTED: the closed-PR control returned 0; the open list is UNREAD, not empty",
+    )
+
+
+@pytest.mark.parametrize("ending", ["final TOTAL with k=0", "trailing failure line"])
+def test_verdict_freshness_only_the_enumerators_last_line_is_its_total(tmp_path, ending):
+    """Only the last line is the enumerator's verdict: an earlier good TOTAL line does not validate a
+    failed enumeration, so the open PRs in the snapshot are not reported no longer open."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    store.put("verdict-freshness", {"o/r#7": "previous open row"}, run="-", seq=0)
+    total = (
+        "TOTAL 0 open PRs authored by bot (control: closed-PR search returned {k}, an empty list is real)\n"
+    )
+    last = {
+        "final TOTAL with k=0": total.format(k=0),
+        "trailing failure line": "ENUMERATION FAILED rc=1: HTTP 403 rate limit\n",
+    }
+    sh = FakeSh(**{"/x/my_open_prs.sh": total.format(k=5) + last[ending]})
+    inst = VerdictFreshness(
+        store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    out = asyncio.run(inst.run({}))
+    said = {
+        "final TOTAL with k=0": "ENUMERATION UNTRUSTED: the closed-PR control returned 0; the open list is "
+        "UNREAD, not empty",
+        "trailing failure line": "ENUMERATION FAILED (rc 0, its last line is not the TOTAL line): "
+        "ENUMERATION FAILED rc=1: HTTP 403 rate limit",
+    }
+    assert not out.control and out.findings == (said[ending],)
+    assert store.get("verdict-freshness").value == {"o/r#7": "previous open row"}  # the snapshot untouched
+
+
+def test_verdict_freshness_reads_each_enumerated_prs_head_on_its_own(tmp_path):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    out_ = (
+        "o/r#7 draft=false  a title\n"
+        "TOTAL 1 open PRs authored by bot (control: closed-PR search returned 5, so an empty list is real)\n"
+    )
+    sh = FakeSh(
+        **{"/x/my_open_prs.sh": out_, "pr view 7 -R o/r": json.dumps({"headRefOid": HEAD7, "state": "OPEN"})}
+    )
+    inst = VerdictFreshness(
+        MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings[0].startswith("o/r#7 77777777: AT-HEAD")
+    assert "enumerator TOTAL 1 open PR(s) by bot; closed-PR control 5" in out.positive
+    assert sh.calls[0] == ["/x/my_open_prs.sh"]  # run as the chores.toml names it, nothing added
+
+
+def test_verdict_freshness_control_fails_when_a_repo_does_not_resolve_as_itself(tmp_path):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    sh = FakeSh(**{"api repos/o/r --jq": json.dumps({"full_name": "o/elsewhere", "id": 1, "admin": True})})
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings[0].startswith("o/r: gh does not resolve it as itself")
+    with pytest.raises(ValueError, match="exactly one of them"):
+        VerdictFreshness(MemoryNoteStore(), every=None, repos=["o/r"], enumerator=["x"])
+
+
+WORKFLOW_IDS = {"ci": 501, "lint": 502, "docs": 503, "bench": 504}
+
+
+def ci_runs(*rows: tuple) -> str:
+    """The workflow runs at a head: (id, workflow, conclusion, created_at[, workflow_id]); a workflow's
+    id is its name's in WORKFLOW_IDS unless given."""
+    return runs_page(
+        [
+            {
+                "id": r[0],
+                "workflow_id": r[4] if len(r) > 4 else WORKFLOW_IDS[r[1]],
+                "name": r[1],
+                "event": "pull_request",
+                "status": "completed",
+                "conclusion": r[2],
+                "created_at": r[3],
+            }
+            for r in rows
+        ]
+    )
+
+
+RED_ROWS = (
+    (10, "ci", "success", "2026-09-22T09:00:00Z"),
+    (11, "ci", "failure", "2026-09-22T10:00:00Z"),
+    (12, "lint", "failure", "2026-09-22T10:00:00Z"),
+    (13, "docs", "success", "2026-09-22T10:00:00Z"),
+    (14, "bench", "timed_out", "2026-09-22T10:00:00Z"),
+)
+RED_RUNS = ci_runs(*RED_ROWS)
+BOOM = "FAILED tests/test_x.py::test_a - AssertionError: boom"
+RERUN = "error: test failed, to rerun pass --lib"
+
+
+def failed_log(job: str, *lines: str) -> str:
+    """gh run view --log-failed: <job>\\t<step>\\t<stamp> <text>, the first stamp behind a BOM."""
+    return "".join(
+        f"{job}\tRun tests\t{chr(0xFEFF) if i == 0 else ''}2026-09-22T10:00:0{i}.1234567Z {line}\n"
+        for i, line in enumerate(lines)
+    )
+
+
+def ci_sh(runs: str = RED_RUNS, sha: str = SHA, prs=((7, SHA),), **over) -> FakeSh:
+    answers = {
+        "api repos/o/r --jq": json.dumps({"full_name": "o/r", "id": 42, "admin": True}),
+        "pr list -R o/r": json.dumps([{"number": n, "headRefOid": h} for n, h in prs]),
+        f"actions/runs?head_sha={sha}": runs,
+        "run view 11 -R o/r --log-failed": failed_log(
+            "test (3.12)",
+            "Current runner version: '2.337.0'",
+            f"\x1b[31m{BOOM}\x1b[0m",
+            "thread 'main' panicked at src/lib.rs:3:5:",
+            "left != right",
+            "note: run with RUST_BACKTRACE=1 to display a backtrace",
+            RERUN,
+        ),
+        "run view 12 -R o/r --log-failed": failed_log(
+            "lint", RERUN, BOOM, "E501 Line too long", "Error: Process completed with exit code 1."
+        ),
+    }
+    return FakeSh(**{**answers, **over})
+
+
+def ci_red(sh: FakeSh, channel: str = "actions", state=None) -> CiRed:
+    return CiRed([{"name": "o/r", "channel": channel}], state or MemoryNoteStore(), every=None, run=sh)
+
+
+def test_ci_red_actions_extracts_each_failed_run_strips_ansi_and_stamps_and_counts_the_dedupe():
+    sh = ci_sh()
+    out = asyncio.run(ci_red(sh).run({}))
+    assert out.control and out.count == 1 and out.predicate.endswith("(1 match)")
+    assert out.findings == (
+        f"o/r#7 aaaaaaaa: ci run 11 red in [test (3.12)]; first: {BOOM}",
+        f"o/r#7 aaaaaaaa: lint run 12 red in [lint]; first: {RERUN}",
+    )
+    (row,) = out.data
+    assert set(row) == {"repo", "number", "head", "channel", "runs", "dropped_by_dedupe"}
+    assert all(set(r) == {"workflow", "run_id", "job", "lines"} for r in row["runs"])
+    assert (row["repo"], row["number"], row["head"], row["channel"]) == ("o/r", 7, SHA, "actions")
+    assert row["runs"] == [
+        {
+            "workflow": "ci",
+            "run_id": 11,
+            "job": "test (3.12)",
+            "lines": [BOOM, "thread 'main' panicked at src/lib.rs:3:5:", "left != right", RERUN],
+        },
+        {
+            "workflow": "lint",
+            "run_id": 12,
+            "job": "lint",
+            "lines": ["Error: Process completed with exit code 1."],
+        },
+    ]
+    assert row["dropped_by_dedupe"] == 2  # lint's copies of the two lines ci already holds
+    assert "bench=timed_out (run 14)" in out.evidence and "ci=failure (run 11)" in out.evidence
+    assert "ci run 11 job test (3.12): 4 line(s) kept of 6 read" in out.evidence
+    assert "lint run 12 job lint: 1 line(s) kept of 4 read" in out.evidence
+    assert "2 line(s) dropped by dedupe" in out.evidence
+    assert "\x1b" not in out.evidence and "2026-09-22T10:00:0" not in out.evidence
+    viewed = [c for c in sh.calls if "view" in c]
+    assert [c[3] for c in viewed] == ["11", "12"]  # never the success, never the timed_out run
+
+
+def test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed():
+    store = MemoryNoteStore()
+    sh = ci_sh()
+    first = asyncio.run(ci_red(sh, state=store).run({}))
+    assert len(first.findings) == 2
+    assert asyncio.run(ci_red(sh, state=store).run({})).findings == ()
+    sh.set(  # ci re-ran green; lint is still red and was already reported
+        f"actions/runs?head_sha={SHA}", ci_runs(*RED_ROWS, (15, "ci", "success", "2026-09-22T11:00:00Z"))
+    )
+    out = asyncio.run(ci_red(sh, state=store).run({}))
+    assert out.control and out.findings == ()
+    sh.set(f"actions/runs?head_sha={SHA}", ci_runs((15, "ci", "success", "2026-09-22T11:00:00Z")))
+    out = asyncio.run(ci_red(sh, state=store).run({}))
+    assert out.findings == ("o/r#7 aaaaaaaa: no red at this head",) and out.data == ()
+    sh.set("pr list -R o/r", json.dumps([{"number": 7, "headRefOid": "b" * 40}]))
+    sh.set("actions/runs?head_sha=" + "b" * 40, ci_runs((12, "lint", "failure", "2026-09-22T12:00:00Z")))
+    out = asyncio.run(ci_red(sh, state=store).run({}))
+    assert out.findings == (f"o/r#7 bbbbbbbb: lint run 12 red in [lint]; first: {RERUN}",)
+    sh.set("pr list -R o/r", "[]")
+    assert asyncio.run(ci_red(sh, state=store).run({})).findings == ("o/r#7: no longer open",)
+
+
+def test_ci_red_a_head_with_no_red_is_not_a_finding_and_a_named_ask_answers_every_row():
+    store = MemoryNoteStore()
+    sh = ci_sh(runs=ci_runs((13, "docs", "success", "2026-09-22T10:00:00Z")))
+    out = asyncio.run(ci_red(sh, state=store).run({}))
+    assert out.control and out.findings == () and out.data == () and out.count == 1
+    out = asyncio.run(ci_red(ci_sh(), state=store).run({"prs": ["o/r#7", "o/r#99"]}))
+    assert out.findings == (
+        f"o/r#7 aaaaaaaa: ci run 11 red in [test (3.12)]; first: {BOOM}",
+        f"o/r#7 aaaaaaaa: lint run 12 red in [lint]; first: {RERUN}",
+        "o/r#99: not among the open PRs read",
+    )
+    assert store.get("ci-red:o/r").value == {}  # the named ask left the snapshot as the last run wrote it
+
+
+def test_ci_red_control_fails_when_the_runs_read_fails():
+    sh = ci_sh(**{f"actions/runs?head_sha={SHA}": (1, "", "HTTP 502: Bad Gateway\n")})
+    out = asyncio.run(ci_red(sh).run({}))
+    assert not out.control and out.data == ()
+    assert out.findings == ("o/r#7 aaaaaaaa: the runs read failed: HTTP 502: Bad Gateway",)
+
+
+def now_sh(**over) -> FakeSh:
+    """ci_sh with what PrState.now reads besides the runs: the PR's view and both required surfaces."""
+    view = {"headRefOid": SHA, "state": "OPEN", "mergeStateStatus": "BLOCKED"}
+    view |= {"reviewDecision": "REVIEW_REQUIRED", "isDraft": False, "baseRefName": "main"}
+    return ci_sh(
+        **{
+            "pr view 7 -R o/r --json": json.dumps(view),
+            "rules/branches/main": "[]",
+            "branches/main/protection/required_status_checks": CLASSIC_404,
+            **over,
+        }
+    )
+
+
+def first_page(total: int, n: int = 50) -> FakeSh:
+    """now_sh whose head holds `total` runs and whose one page read holds n green ci runs, answered as
+    the query with total_count prints them and as the query before it printed the same page (no count)."""
+    rows = [
+        {
+            "id": i,
+            "workflow_id": 501,
+            "name": "ci",
+            "event": "pull_request",
+            "status": "completed",
+            "conclusion": "success",
+            "created_at": f"2026-09-22T10:{i:02d}:00Z",
+        }
+        for i in range(1, n + 1)
+    ]
+    return now_sh(
+        **{
+            f"actions/runs?head_sha={SHA}": runs_page(rows, total),
+            f"actions/runs?head_sha={SHA}&per_page=50 --jq [.workflow_runs": json.dumps(rows),
+        }
+    )
+
+
+def now_row(sh: FakeSh) -> dict:
+    return asyncio.run(
+        PrState([{"name": "o/r", "ci": "actions"}], MemoryNoteStore(), every=None, run=sh).now("o/r", 7)
+    )
+
+
+def test_pr_state_now_a_first_page_of_runs_short_of_its_total_count_does_not_answer_ci():
+    """One page of 50 runs without the head's count would never see a red run beyond it, so a page short
+    of the total_count does not answer CI."""
+    row = now_row(first_page(51))
+    assert row["ci_answered"] is False and row["ci"] == "runs read incomplete: 50 of 51"
+    assert row["errors"] == ["CI channel did not answer: runs read incomplete: 50 of 51"]
+
+
+@pytest.mark.parametrize(
+    ("total", "said"), [(51, "50 of 51"), (50, "50 of 50 (a full page of 50)")], ids=["short", "full"]
+)
+def test_ci_red_a_first_page_of_runs_short_of_its_total_count_fails_the_control(total, said):
+    """A page short of the head's total, or a full page, is not the head's every run."""
+    out = asyncio.run(ci_red(first_page(total)).run({}))
+    assert not out.control and out.findings == (f"o/r#7 aaaaaaaa: runs read incomplete: {said}",)
+
+
+SHARED_NAME = ci_runs(
+    (11, "CI", "failure", "2026-09-22T09:00:00Z", 501), (12, "CI", "success", "2026-09-22T10:00:00Z", 502)
+)
+
+
+def test_ci_red_two_workflows_sharing_a_name_are_two_workflows_and_the_failed_one_is_read():
+    """The newest run is chosen per workflow id, never per name: per name, workflow 502's newer green
+    run would hide workflow 501's failure and its log would never be read."""
+    sh = ci_sh(runs=SHARED_NAME)
+    out = asyncio.run(ci_red(sh).run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 aaaaaaaa: CI#501 run 11 red in [test (3.12)]; first: {BOOM}",
+    )
+    assert [(r["workflow"], r["run_id"]) for r in out.data[0]["runs"]] == [("CI#501", 11)]
+    assert [c[3] for c in sh.calls if "view" in c] == ["11"]
+    assert "CI#501=failure (run 11), CI#502=success (run 12)" in out.evidence
+
+
+def test_pr_state_now_two_workflows_sharing_a_name_each_answer_at_the_head():
+    """The same two workflows through PrState.now."""
+    row = now_row(now_sh(runs=SHARED_NAME))
+    assert (
+        row["ci_answered"] is True
+        and row["ci"] == "CI#501=failure(pull_request), CI#502=success(pull_request)"
+    )
+
+
+THREE_IDS = ci_runs(
+    (11, "CI", "failure", "2026-09-22T09:00:00Z", 501),
+    (12, "CI", "success", "2026-09-22T10:00:00Z", 502),
+    (13, "CI#501", "success", "2026-09-22T11:00:00Z", 503),
+)
+
+
+def test_pr_state_now_display_labels_cannot_collapse_three_distinct_workflow_ids():
+    """Workflow 503 is literally named CI#501, the label workflow 501 is shown under; a result keyed by
+    label would keep one of the two and drop 501's failure."""
+    row = now_row(now_sh(runs=THREE_IDS))
+    assert row["ci_answered"] is True and row["errors"] == []
+    assert row["ci"] == (
+        "CI#501=failure(pull_request), CI#501=success(pull_request), CI#502=success(pull_request)"
+    )
+
+
+def test_ci_red_a_label_collision_keeps_the_failed_workflow_and_its_red_is_not_news_again():
+    """Workflow 501's failure is read, then workflows 502 CI and 503 CI#501 appear at the head; runs
+    keyed by label would drop 501, never fetch its log and clear its red."""
+    store = MemoryNoteStore()
+    sh = ci_sh(runs=ci_runs((11, "CI", "failure", "2026-09-22T09:00:00Z", 501)))
+    inst = ci_red(sh, state=store)
+    first = f"o/r#7 aaaaaaaa: CI run 11 red in [test (3.12)]; first: {BOOM}"
+    assert asyncio.run(inst.run({})).findings == (first,)
+    before = store.get("ci-red:o/r").value
+    sh.set(f"actions/runs?head_sha={SHA}", THREE_IDS)
+    sh.calls.clear()
+    out = asyncio.run(inst.run({}))
+    assert out.control and [(r["workflow"], r["run_id"]) for d in out.data for r in d["runs"]] == [
+        ("CI#501", 11)
+    ]
+    assert [c[3] for c in sh.calls if "view" in c] == ["11"]  # its failed log is read
+    assert out.findings == ()  # the same red run under its new label is not a new red
+    assert store.get("ci-red:o/r").value == before
+    assert asyncio.run(ci_red(sh).run({})).findings == (first.replace(": CI run", ": CI#501 run"),)
+
+
+def test_pr_state_now_and_ci_red_a_literal_hash_in_a_name_without_a_collision_reads_as_named():
+    """A label collides only when names do: workflow 502 literally named CI#501 beside workflow 501
+    named CI, which no other workflow shares, so 501 shows as CI."""
+    runs = ci_runs(
+        (11, "CI", "failure", "2026-09-22T09:00:00Z", 501),
+        (12, "CI#501", "success", "2026-09-22T10:00:00Z", 502),
+    )
+    row = now_row(now_sh(runs=runs))
+    assert (
+        row["ci_answered"] is True and row["ci"] == "CI=failure(pull_request), CI#501=success(pull_request)"
+    )
+    out = asyncio.run(ci_red(ci_sh(runs=runs)).run({}))
+    assert out.control and out.findings == (f"o/r#7 aaaaaaaa: CI run 11 red in [test (3.12)]; first: {BOOM}",)
+
+
+def test_ci_red_a_workflows_newer_green_run_still_supersedes_its_older_failure():
+    """Within one workflow id the newest run still wins: its newer run is green."""
+    runs = ci_runs(
+        (11, "CI", "failure", "2026-09-22T09:00:00Z", 501), (12, "CI", "success", "2026-09-22T10:00:00Z", 501)
+    )
+    out = asyncio.run(ci_red(ci_sh(runs=runs)).run({}))
+    assert out.control and out.findings == () and out.data == ()
+    assert now_row(now_sh(runs=runs))["ci"] == "CI=success(pull_request)"
+
+
+def test_pr_state_now_and_ci_red_a_page_holding_every_run_at_the_head_answer_as_before():
+    """A page holding every run at the head answers: three runs, total_count 3."""
+    sh = first_page(3, n=3)
+    row = now_row(sh)
+    assert row["ci_answered"] is True and row["ci"] == "ci=success(pull_request)" and row["errors"] == []
+    out = asyncio.run(ci_red(sh).run({}))
+    assert out.control and out.findings == () and out.data == ()
+
+
+def test_ci_red_control_fails_when_a_red_runs_failed_log_does_not_read():
+    sh = ci_sh(**{"run view 12 -R o/r --log-failed": (1, "", "HTTP 410: logs expired\n")})
+    out = asyncio.run(ci_red(sh).run({}))
+    assert not out.control
+    assert out.findings[0] == "o/r#7 aaaaaaaa: lint run 12: --log-failed rc 1: HTTP 410: logs expired"
+    assert [r["run_id"] for r in out.data[0]["runs"]] == [11]  # the run that read is still extracted
+
+
+def test_ci_red_control_fails_when_the_repo_does_not_resolve_or_the_local_dir_is_absent(tmp_path):
+    sh = ci_sh(**{"api repos/o/r --jq": json.dumps({"full_name": "o/elsewhere", "id": 1, "admin": True})})
+    out = asyncio.run(ci_red(sh).run({}))
+    assert not out.control and out.findings[0].startswith("o/r: gh does not resolve it as itself")
+    out = asyncio.run(ci_red(ci_sh(), channel=f"local:{tmp_path / 'absent'}").run({}))
+    assert not out.control
+    assert out.findings == (
+        f"o/r: the local log dir {tmp_path / 'absent'} is not a directory; no PR is judged",
+    )
+    with pytest.raises(ValueError, match="actions or local:<log dir>"):
+        CiRed([{"name": "o/r", "channel": "statuses"}], MemoryNoteStore(), every=None)
+
+
+def transcript(sha: str, *jobs: tuple[str, str, list[str]]) -> str:
+    """A local-ci transcript: its header, then each job's section and verdict line."""
+    head = f"# ci transcript\n# repo=o/r pr=7\n# head={sha}\n# base={'c' * 40}\n\n"
+    return head + "".join(
+        f"\n===== job {name} =====\n\n"
+        + "\n".join(body)
+        + f"\n\n===== {name}: {status} -- {name} said so\n\n"
+        for name, status, body in jobs
+    )
+
+
+def test_ci_red_local_extracts_each_red_jobs_failing_step_from_the_heads_own_newest_transcript(tmp_path):
+    pr = tmp_path / "pr-7"
+    pr.mkdir()
+    rust = [
+        "$ gh api repos/o/r/pulls/7",
+        "[cwd=None rc=0 #2]",
+        '{"body":"a gate that stays green while asserting nothing"}',  # a passing step's output: no red
+        "",
+        "$ cargo test --workspace",
+        "[cwd=/t/tree rc=101 #3]",
+        "   Compiling x v0.1.0",
+        "test tests::a ... \x1b[31mFAILED\x1b[0m",
+        "thread 'tests::a' panicked at src/lib.rs:9:5:",
+        "assertion failed: left == right",
+        "  left: 1",
+        "note: run with RUST_BACKTRACE=1 to display a backtrace",
+        RERUN,
+    ]
+    older = pr / "20260922T090000Z-aaaaaaaa.log"
+    older.write_text(transcript(SHA, ("Rust", "success", ["$ true", "[cwd=/t rc=0 #1]"])))
+    newest = pr / "20260922T100000Z-aaaaaaaa.log"
+    newest.write_text(
+        transcript(
+            SHA,
+            ("Changes", "success", ["$ git merge-base x y", "[cwd=/t/tree rc=0 #1]"]),
+            ("Rust", "failure", rust),
+            ("Timeouts", "error", ["$ bash slow.sh", "[cwd=/t/tree TIMED OUT after 600s]"]),
+            ("Ready-run guard", "error", []),
+        )
+    )
+    os.utime(older, (1000, 1000))
+    other = pr / "20260922T110000Z-bbbbbbbb.log"
+    other.write_text(transcript("b" * 40, ("Rust", "failure", ["$ false", "[cwd=/t rc=1 #1]"])))
+    (pr / "latest.log").symlink_to(other.name)
+    out = asyncio.run(ci_red(ci_sh(), channel=f"local:{tmp_path}").run({}))
+    assert out.control
+    assert out.findings == (
+        "o/r#7 aaaaaaaa: local-ci run 20260922T100000Z-aaaaaaaa red in [Rust, Timeouts, Ready-run guard]; "
+        "first: test tests::a ... FAILED",
+    )
+    (row,) = out.data
+    assert row["channel"] == f"local:{tmp_path}" and row["dropped_by_dedupe"] == 0
+    assert row["runs"] == [
+        {
+            "workflow": "local-ci",
+            "run_id": "20260922T100000Z-aaaaaaaa",
+            "job": "Rust",
+            "lines": [
+                "$ cargo test --workspace",
+                "[cwd=/t/tree rc=101 #3]",
+                "test tests::a ... FAILED",
+                "thread 'tests::a' panicked at src/lib.rs:9:5:",
+                "assertion failed: left == right",
+                "  left: 1",
+                RERUN,
+                "===== Rust: failure -- Rust said so",
+            ],
+        },
+        {
+            "workflow": "local-ci",
+            "run_id": "20260922T100000Z-aaaaaaaa",
+            "job": "Timeouts",
+            "lines": [
+                "$ bash slow.sh",
+                "[cwd=/t/tree TIMED OUT after 600s]",
+                "===== Timeouts: error -- Timeouts said so",
+            ],
+        },
+        {  # a job red with no failing step of its own: its verdict line is the extract
+            "workflow": "local-ci",
+            "run_id": "20260922T100000Z-aaaaaaaa",
+            "job": "Ready-run guard",
+            "lines": ["===== Ready-run guard: error -- Ready-run guard said so"],
+        },
+    ]
+    assert (
+        "o/r#7 aaaaaaaa: 20260922T100000Z-aaaaaaaa.log: Changes=success, Rust=failure, Timeouts=error, "
+        "Ready-run guard=error" in out.evidence
+    )
+
+
+@pytest.mark.parametrize("ending", ["unfinished", "discarded"])
+def test_ci_red_local_an_unfinished_or_discarded_retry_keeps_the_prior_red_and_names_the_gap(
+    tmp_path, ending
+):
+    """The local runner creates and flushes the head's transcript before its jobs finish, and writes
+    `===== <job>: DISCARDED -- <reason>` when a run loses its lock; neither retry clears the prior red."""
+    pr = tmp_path / "pr-7"
+    pr.mkdir()
+    first = pr / "20260922T090000Z-aaaaaaaa.log"
+    first.write_text(
+        transcript(SHA, ("Rust", "failure", ["$ cargo test", "[cwd=/t rc=101 #1]", "error: a real failure"]))
+    )
+    os.utime(first, (1000, 1000))
+    store = MemoryNoteStore()
+    inst = ci_red(ci_sh(), channel=f"local:{tmp_path}", state=store)
+    assert asyncio.run(inst.run({})).data
+    red = store.get("ci-red:o/r").value
+    retry = f"# ci transcript\n# repo=o/r pr=7\n# head={SHA}\n\n===== job Rust =====\n\n$ cargo test\n"
+    if ending == "discarded":
+        retry += (
+            "[cwd=/t rc=101 #1]\n\n===== Rust: DISCARDED -- lost its lock\n"
+            "===== the run computed 'failure' / 'cargo test' and it is not trustworthy\n"
+        )
+    (pr / "20260922T100000Z-aaaaaaaa.log").write_text(retry)
+    out = asyncio.run(inst.run({}))
+    gap = {"unfinished": "job Rust: no verdict yet", "discarded": "job Rust: DISCARDED lost its lock"}
+    assert not out.control and out.findings == (f"o/r#7 aaaaaaaa: {gap[ending]}",)
+    assert store.get("ci-red:o/r").value == red  # the prior red is kept, never cleared
+
+
+def test_ci_red_local_a_header_only_retry_keeps_the_prior_red_and_names_the_gap(tmp_path):
+    """The local runner writes and flushes the transcript's header before its first job, so a retry
+    holding only that header does not clear the red."""
+    pr = tmp_path / "pr-7"
+    pr.mkdir()
+    first = pr / "20260922T090000Z-aaaaaaaa.log"
+    first.write_text(
+        transcript(SHA, ("Rust", "failure", ["$ cargo test", "[cwd=/t rc=101 #1]", "error: a real failure"]))
+    )
+    os.utime(first, (1000, 1000))
+    store = MemoryNoteStore()
+    inst = ci_red(ci_sh(), channel=f"local:{tmp_path}", state=store)
+    assert asyncio.run(inst.run({})).data
+    red = store.get("ci-red:o/r").value
+    (pr / "20260922T100000Z-aaaaaaaa.log").write_text(
+        f"# ci transcript\n# repo=o/r pr=7\n# head={SHA}\n# base=main\n# started=20260922T100000Z\n"
+        "# machine at admission: load5=3.1 swap_free=2048M free_mem_mb=4096\n"
+    )
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == ("o/r#7 aaaaaaaa: no job section yet",)
+    assert "o/r#7 aaaaaaaa: 20260922T100000Z-aaaaaaaa.log: no job verdict yet" in out.evidence
+    assert store.get("ci-red:o/r").value == red  # the prior red is kept, never cleared
+
+
+def test_ci_red_local_a_completed_green_replacement_clears_the_prior_red(tmp_path):
+    """A completed green transcript of the same head clears the prior red."""
+    pr = tmp_path / "pr-7"
+    pr.mkdir()
+    first = pr / "20260922T090000Z-aaaaaaaa.log"
+    first.write_text(transcript(SHA, ("Rust", "failure", ["$ false", "[cwd=/t rc=1 #1]"])))
+    os.utime(first, (1000, 1000))
+    store = MemoryNoteStore()
+    inst = ci_red(ci_sh(), channel=f"local:{tmp_path}", state=store)
+    assert asyncio.run(inst.run({})).data
+    (pr / "20260922T100000Z-aaaaaaaa.log").write_text(
+        transcript(SHA, ("Rust", "success", ["$ true", "[cwd=/t rc=0 #1]"]))
+    )
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r#7 aaaaaaaa: no red at this head",)
+    assert store.get("ci-red:o/r").value == {}
+
+
+def test_ci_red_local_latest_log_without_the_heads_own_log_is_no_log_for_this_head(tmp_path):
+    pr = tmp_path / "pr-7"
+    pr.mkdir()
+    other = pr / "20260922T110000Z-bbbbbbbb.log"
+    other.write_text(transcript("b" * 40, ("Rust", "failure", ["$ false", "[cwd=/t rc=1 #1]"])))
+    (pr / "latest.log").symlink_to(other.name)
+    out = asyncio.run(ci_red(ci_sh(), channel=f"local:{tmp_path}").run({}))
+    assert not out.control and out.data == ()
+    assert out.findings == ("o/r#7 aaaaaaaa: no log for this head",)
+
+
+def test_ci_red_local_a_transcript_whose_header_names_another_head_fails_the_control(tmp_path):
+    pr = tmp_path / "pr-7"
+    pr.mkdir()
+    (pr / "20260922T100000Z-aaaaaaaa.log").write_text(
+        transcript("aaaaaaaa" + "b" * 32, ("Rust", "failure", ["$ false", "[cwd=/t rc=1 #1]"]))
+    )
+    out = asyncio.run(ci_red(ci_sh(), channel=f"local:{tmp_path}").run({}))
+    assert not out.control and out.data == ()
+    assert out.findings == (
+        "o/r#7 aaaaaaaa: 20260922T100000Z-aaaaaaaa.log: its header head aaaaaaaa is not the PR's head",
+    )
+
+
+def test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_default():
+    cfg = {
+        "owner": "lambda:x",
+        "chores": {
+            "required-contexts": {"every": "every:30m", "repos": [{"name": "o/r", "classic": True}]},
+            "verdict-freshness": {"every": "every:30m", "repos": ["o/r"], "verdict_dir": "/x/verdicts"},
+            "ci-red": {"every": "every:30m", "repos": [{"name": "o/r", "channel": "local:/x"}]},
+        },
+    }
+    built = instr.instruments(cfg, None, MemoryNoteStore())
+    assert sorted(built) == ["ci-red", "required-contexts", "verdict-freshness"]
+    assert built["required-contexts"].source_identity == "lambda:x:desk"
+    assert str(built["verdict-freshness"].dir) == "/x/verdicts"
+    assert built["verdict-freshness"].repos == ["o/r"]
+    assert built["ci-red"].repos == [{"name": "o/r", "channel": "local:/x"}]
+    assert {i.every for i in built.values()} == {"every:30m"}
+    assert instr.VERDICT_DIR is None  # no default: a verdict-freshness chore names its verdict_dir
+    del cfg["chores"]["verdict-freshness"]["verdict_dir"]
+    with pytest.raises(ValueError, match="verdict-freshness reads verdicts from a verdict_dir"):
+        instr.instruments(cfg, None, MemoryNoteStore())
