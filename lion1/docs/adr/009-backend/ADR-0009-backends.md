@@ -128,7 +128,7 @@ session starts over from the folded view: one cache miss, and the CLI's tool-tur
 the old session. That restart bounds a run whose CLI runs its own tools (A3). Cost accumulates over
 a session; the envelope keeps this call's delta.
 
-### C5: Every call lands an envelope, failed ones too, and only a transient failure is retried _(enforced: mechanical)_ ^c5
+### C5: Every call lands an envelope, failed ones too, and only a transient failure is retried _(enforced: mechanical; owed, S10)_ ^c5
 
 - **Subject**: every backend call.
 - **Violated when**: a billed attempt's usage is lost, a failed call lands no envelope, a 401 or 403

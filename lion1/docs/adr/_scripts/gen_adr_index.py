@@ -10,6 +10,8 @@ import re
 import sys
 from pathlib import Path
 
+from _md import physical_lines
+
 ROOT = Path(__file__).resolve().parent.parent  # docs/adr
 INDEX = ROOT / "INDEX.md"
 _LINK = re.compile(r"\[\[([^\]|#\\]+)(?:#[^\]|\\]+)?\\?(?:\|([^\]]+))?\]\]")
@@ -21,7 +23,7 @@ def read(path: Path) -> dict[str, str]:
     fm: dict[str, str] = {"deps": ""}
     key = None
     deps: list[str] = []
-    for line in head.splitlines():
+    for line in physical_lines(head):
         if line.startswith("  - ") and key == "depends_on":
             m = _LINK.search(line)
             deps.append((m.group(2) or m.group(1)) if m else line[4:].strip().strip('"'))
