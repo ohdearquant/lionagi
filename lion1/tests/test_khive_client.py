@@ -4,7 +4,9 @@ after `--`, so nothing in it reads as an option."""
 
 import asyncio
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -65,3 +67,49 @@ def test_ops_is_one_positional_argument(tmp_path):
     argvs = [json.loads(line) for line in log.read_text().splitlines()]
     assert [a[-2:] for a in argvs] == [["--", op] for op in ops], argvs
     assert all(a[:4] == ["exec", "--strict", "--expect-actor", "lambda:x"] for a in argvs)
+
+
+def test_cancelling_a_call_stops_kkernel_and_its_children(tmp_path, monkeypatch):
+    # the child was left to the transport on cancel, and killed without a wait on timeout: its
+    # grandchild held the pipes open past the loop's end
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    stub = tmp_path / "kkernel"
+    stub.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {tmp_path / 'grandchild'}\nwait\n")
+    stub.chmod(0o755)
+    procs = []
+    real = asyncio.create_subprocess_exec
+
+    async def capturing(*args, **kwargs):
+        proc = await real(*args, **kwargs)
+        procs.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capturing)
+    k = Khive(tmp_path, "lambda:x", kkernel=str(stub), timeout=30)
+
+    async def main():
+        task = asyncio.create_task(k.exec("comm.inbox()"))
+        while not (procs and (tmp_path / "grandchild").exists()):
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return procs[0].returncode
+
+    assert asyncio.run(main()) is not None  # reaped: the child did not outlive the cancelled task
+    assert procs[0].stdout.at_eof() and procs[0].stderr.at_eof()
+    grandchild = int((tmp_path / "grandchild").read_text())
+    for _ in range(200):
+        try:
+            os.kill(grandchild, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError(f"kkernel's child {grandchild} outlived the cancelled call")
+    (tmp_path / "grandchild").unlink()
+    k.timeout = 0.2
+    with pytest.raises(KhiveError, match="did not answer within"):
+        asyncio.run(k.exec("comm.inbox()"))
+    assert procs[1].returncode is not None and procs[1].stdout.at_eof()  # the timeout path reaps too

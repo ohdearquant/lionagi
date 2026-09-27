@@ -106,8 +106,9 @@ def by_file(diff: str) -> dict[str, str]:
 
 
 def is_new(chunk: str) -> bool:
-    """A file the repository did not have: its hunk diffs against /dev/null."""
-    return "\n--- /dev/null\n" in chunk
+    """A file the repository did not have: git's `new file mode` line, or a hunk against /dev/null.
+    A binary file's chunk (`--binary`: a `GIT binary patch` block) has the mode line and no hunk."""
+    return "\nnew file mode " in chunk or "\n--- /dev/null\n" in chunk
 
 
 def is_test(path: str) -> bool:
@@ -221,7 +222,9 @@ class Watch:
                 f"{', '.join(self.scratch)} are new files outside the tracked tree, not part of the fix"
             )
         if not self.source:
-            self.digest, self.stable = None, 0
+            # a pass was on the source that stood then; with it gone there is nothing it verifies,
+            # and source that comes back is checked again
+            self.digest, self.stable, self.checked, self.passed = None, 0, None, False
             if aside:
                 return "repository: no source change yet; " + "; ".join(aside)
             return None
@@ -235,11 +238,17 @@ class Watch:
         line = f"repository: the fix touches {', '.join(self.source)}, unchanged since round {self.since}"
         for a in aside:
             line += "; " + a
+        moved = False
         if self.criteria and self.checked != digest:
             await self.check()
+            if self.passed and await self._moved(digest):
+                # a check rewrote the source (a formatter): the tree it passed on is not this one
+                self.checked, self.passed, moved = None, False, True
         if self.criteria:
             n = sum(rc == 0 for _, rc in self.checks)
             line += f"; acceptance {n}/{len(self.checks)} pass: " + checks_line(self.checks)
+            if moved:
+                line += "; a check changed the source, so the checks run again on the tree it left"
             if self.passed:
                 return line + "; all acceptance checks pass, the run ends here"
         if self.stable >= self.notice_after:
@@ -250,6 +259,12 @@ class Watch:
         if self.settle_after and self.stable + 1 >= self.settle_after:
             line += "; the run ends after this round if the fix still does not change"
         return line
+
+    async def _moved(self, digest: str | None) -> bool:
+        """Whether the source differs from `digest` now: read after the checks ran."""
+        chunks = by_file(await self.box.diff())
+        _, _, source = await self.classify(chunks)
+        return digest_of(chunks, source) != digest
 
     def stop(self) -> bool:
         if self.passed:
@@ -331,4 +346,10 @@ async def accept(watch: Watch, run: Any, output: Any) -> str | None:
         if not watch.passed:
             failing = [(c, rc) for c, rc in results if rc != 0]
             return "your own acceptance checks fail: " + checks_line(failing)
+        if await watch._moved(watch.digest):
+            watch.checked, watch.passed = None, False
+            return (
+                "an acceptance check changed the source, so the tree it passed on is not the one you "
+                "are finishing with: read the change, run the checks again, then finish"
+            )
     return None
