@@ -20,6 +20,8 @@ import re
 import sys
 from pathlib import Path
 
+from _md import mask_fenced_code, physical_lines
+
 ROOT = Path(__file__).resolve().parent.parent  # docs/adr: the scripts live inside the corpus they lint
 STATUS = {
     "draft",
@@ -86,7 +88,7 @@ def frontmatter(text: str) -> tuple[dict[str, object], str]:
     head, _, body = text[4:].partition("\n---\n")
     fm: dict[str, object] = {}
     key = None
-    for line in head.splitlines():
+    for line in physical_lines(head):
         if line.startswith("  - "):
             fm.setdefault(key, []).append(line[4:].strip().strip('"'))  # type: ignore[union-attr]
         elif ":" in line:
@@ -97,12 +99,60 @@ def frontmatter(text: str) -> tuple[dict[str, object], str]:
     return fm, body
 
 
+def inventory(body: str) -> tuple[set[str], set[str], set[str]]:
+    """Return real sections, correctly placed item anchors, and consequence rows."""
+    sections: set[str] = set()
+    anchors: set[str] = set()
+    consequences: set[str] = set()
+    section = None
+    for line in physical_lines(mask_fenced_code(body)):
+        if line.startswith("## "):
+            section = line[3:].strip()
+            sections.add(section)
+            continue
+        item = _ITEM.fullmatch(line)
+        if item:
+            letter, num, _name, _enforced, _owed, anchor = item.groups()
+            expected = "Claims" if letter == "C" else "Decisions"
+            if section == expected and anchor == f"{letter.lower()}{num}":
+                anchors.add("^" + anchor)
+        if section == "Consequences":
+            row = re.match(r"^- \*\*(S\d+)\*\*: ", line)
+            if row:
+                consequences.add(row.group(1))
+    return sections, anchors, consequences
+
+
+def link_findings(match: re.Match[str], corpus: dict[str, Path]) -> list[str]:
+    """Apply the same target/anchor rules to frontmatter and body references."""
+    stem, anchor, alias = match.groups()
+    target = corpus.get(stem)
+    if target is None:
+        return [f"link to unknown record {stem}"]
+    out: list[str] = []
+    if anchor:
+        _, target_body = frontmatter(target.read_text())
+        sections, anchors, _ = inventory(target_body)
+        if anchor == "Assumptions":
+            if anchor not in sections:
+                out.append(f"link {stem}#{anchor} names no section")
+        elif not anchor.startswith("^"):
+            out.append(f"link anchor {anchor!r} is not an item anchor")
+        elif anchor not in anchors:
+            out.append(f"link {stem}#{anchor} names no item")
+    if alias and not alias.startswith(stem.split("-", 2)[0] + "-" + stem.split("-", 2)[1]):
+        out.append(f"link alias {alias!r} does not name {stem}")
+    return out
+
+
 def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
     out: list[str] = []
     text = path.read_text()
     if "\u2014" in text:
         out.append("em dash")
     fm, body = frontmatter(text)
+    body = mask_fenced_code(body)
+    _, _, consequence_rows = inventory(body)
     if not fm:
         return ["no frontmatter"]
     for field in (
@@ -137,6 +187,8 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
             out.append(f"depends_on entry is not a wikilink: {dep}")
         elif m.group(1) not in corpus:
             out.append(f"depends_on names an unknown record {m.group(1)}")
+        else:
+            out.extend(link_findings(m, corpus))
 
     if not re.search(rf"^# {re.escape(adr)}: ", body, re.M):
         out.append(f"title line is not '# {adr}: ...'")
@@ -151,8 +203,7 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
     anchors: set[str] = set()
     ids: dict[str, list[int]] = {"C": [], "D": []}
     section = None
-    lines = body.splitlines()
-    rows = consequence_rows(lines)
+    lines = physical_lines(body)
     for i, line in enumerate(lines):
         if line.startswith("## "):
             section = line[3:].strip()
@@ -161,7 +212,7 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
             if not _DEFN.match(line):
                 out.append(f"line {i + 1}: a definition is '- **term**: ...', nothing else in the section")
             continue
-        if line.startswith("### ") and section in ("Claims", "Decisions"):
+        if line.startswith("### ") and (section in ("Claims", "Decisions") or _ITEM.match(line)):
             m = _ITEM.match(line)
             if not m:
                 out.append(
@@ -170,6 +221,9 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
                 )
                 continue
             letter, num, _name, enforced, owed, anchor = m.groups()
+            expected_section = "Claims" if letter == "C" else "Decisions"
+            if section != expected_section:
+                out.append(f"{letter}{num}: belongs in {expected_section}, not {section}")
             if anchor != f"{letter.lower()}{num}":
                 out.append(f"line {i + 1}: anchor ^{anchor} does not match {letter}{num}")
             anchors.add(anchor)
@@ -182,7 +236,7 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
                     "- **Subject**:" not in block or "- **Violated when**:" not in block
                 ):
                     out.append(f"C{num}: mechanical claim lacks Subject or Violated when")
-                if owed is not None and owed not in rows:
+                if owed is not None and owed not in consequence_rows:
                     out.append(f"C{num}: owed row {owed} is not a Consequences bullet")
             else:
                 if enforced is not None:
@@ -197,18 +251,7 @@ def lint(path: Path, corpus: dict[str, Path]) -> list[str]:
 
     # links
     for m in _LINK.finditer(body):
-        stem, anchor, alias = m.groups()
-        target = corpus.get(stem)
-        if target is None:
-            out.append(f"link to unknown record {stem}")
-            continue
-        if anchor and anchor != "Assumptions":
-            if not anchor.startswith("^"):
-                out.append(f"link anchor {anchor!r} is not an item anchor")
-            elif not re.search(rf"^###? .* {re.escape(anchor)}\s*$", target.read_text(), re.M):
-                out.append(f"link {stem}#{anchor} names no item")
-        if alias and not alias.startswith(stem.split("-", 2)[0] + "-" + stem.split("-", 2)[1]):
-            out.append(f"link alias {alias!r} does not name {stem}")
+        out.extend(link_findings(m, corpus))
 
     out.extend(prose(body, fm))
     out.extend(fresh_format(body))
@@ -220,17 +263,12 @@ WIDTH = 100
 
 def fresh_format(body: str) -> list[str]:
     out: list[str] = []
-    lines = body.splitlines()
+    body = mask_fenced_code(body)
+    lines = physical_lines(body)
     section = None
-    in_code = False
     defined: list[tuple[int, str]] = []
     rest: list[str] = []
     for i, line in enumerate(lines):
-        if line.startswith("```"):
-            in_code = not in_code
-            continue
-        if in_code:
-            continue
         if line.startswith("## "):
             section = line[3:].strip()
             continue
@@ -258,28 +296,6 @@ def fresh_format(body: str) -> list[str]:
     return out
 
 
-def consequence_rows(lines: list[str]) -> set[str]:
-    """The ids of the `- **Sn**:` bullets in Consequences, outside fenced code."""
-    rows: set[str] = set()
-    section = None
-    fence = ""
-    for line in lines:
-        bare = line.lstrip()
-        if fence:
-            if bare.startswith(fence):
-                fence = ""
-            continue
-        run = re.match(r"(`{3,}|~{3,})", bare)
-        if run:
-            fence = run.group(1)
-            continue
-        if line.startswith("## "):
-            section = line[3:].strip()
-        elif section == "Consequences" and (m := re.match(r"^- \*\*(S\d+)\*\*:", line)):
-            rows.add(m.group(1))
-    return rows
-
-
 def next_heading(lines: list[str], start: int) -> int:
     for j in range(start, len(lines)):
         if lines[j].startswith("#"):
@@ -291,7 +307,7 @@ def prose(body: str, fm: dict[str, object]) -> list[str]:
     out: list[str] = []
     if fm.get("status") == "superseded":
         return out  # the body is kept as written; only the marker was added
-    body = re.sub(r"```.*?```", "", body, flags=re.DOTALL)
+    body = mask_fenced_code(body)
     section = key = None
     units: dict[str, list[str]] = {}
     para: list[str] = []
@@ -301,7 +317,7 @@ def prose(body: str, fm: dict[str, object]) -> list[str]:
             units.setdefault(key, []).append(" ".join(para))
         para.clear()
 
-    for line in body.splitlines():
+    for line in physical_lines(body):
         if line.startswith("## "):
             flush()
             section = line[3:].strip()
@@ -369,7 +385,8 @@ def main(argv: list[str]) -> int:
     if True:
         owners: dict[str, list[str]] = {}
         for p in corpus.values():
-            sec = re.search(r"## Definitions\n(.*?)\n## ", p.read_text(), re.S)
+            _, body = frontmatter(p.read_text())
+            sec = re.search(r"## Definitions\n(.*?)\n## ", mask_fenced_code(body), re.S)
             for m in _DEFN.finditer(sec.group(1) if sec else ""):
                 owners.setdefault(m.group(1).replace("`", ""), []).append(p.stem)
         for term, who in sorted(owners.items()):
