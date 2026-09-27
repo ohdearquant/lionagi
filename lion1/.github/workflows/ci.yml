@@ -109,7 +109,8 @@ jobs:
           cp -R tests "$RUNNER_TEMP/suite/"
           cd "$RUNNER_TEMP/suite"
           "$RUNNER_TEMP/wheel/bin/python" -c "import lionagi; assert 'site-packages' in lionagi.__file__, lionagi.__file__; print(lionagi.__file__)"
-          "$RUNNER_TEMP/wheel/bin/python" -m pytest -W error --ignore=tests/test_exports.py --ignore=tests/test_hygiene.py --ignore=tests/register tests
+          # the bench's tests import bench/swe and examples/ from the source tree, which the wheel does not carry
+          "$RUNNER_TEMP/wheel/bin/python" -m pytest -W error --ignore=tests/test_exports.py --ignore=tests/test_hygiene.py --ignore=tests/register --ignore=tests/test_bench_agent.py --ignore-glob='tests/test_swe_*' tests
 
   ci-ok:
     name: ci-ok
