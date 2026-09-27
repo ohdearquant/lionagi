@@ -53,7 +53,7 @@ reports are [[ADR-0003-the-bounds|ADR-0003]]; the hook failures it lists come fr
 
 ## Claims
 
-### C1: One SYSTEM entry per turn, numbered by its sequence _(enforced: mechanical)_ ^c1
+### C1: One SYSTEM entry per turn, numbered by its sequence _(enforced: mechanical; owed, S6)_ ^c1
 
 - **Subject**: every turn.
 - **Violated when**: a turn starts without a fresh notification, two are appended in one turn, or a
@@ -162,3 +162,6 @@ diagnostics on the record (ADR-0002/C4).
   cancelled before it entered included ([[ADR-0002-the-run#^c1|ADR-0002/C1]]).
   `test_a_reused_alias_is_refused_and_never_reads_as_still_running` pins the absence. Only a path
   carrying a command into the next turn, which no record decides, would need the line back.
+- **S6**: Owed with D1: the closure entry of C1, appended after the reap
+  ([[ADR-0002-the-run|ADR-0002]] S4); until it lands, a run that ends by an outcome has no closure
+  entry.
