@@ -373,3 +373,24 @@ def test_a_check_that_rewrites_the_source_does_not_pass_the_tree_it_rewrote():
     watch.digest, watch.since = digest_of(by_file(fix1), ["django/a.py"]), 1
     why = asyncio.run(accept(watch, _Run(2, ("bash", 2)), {}))
     assert why.startswith("an acceptance check changed the source") and not watch.passed
+
+
+def test_a_check_that_raises_leaves_no_earlier_pass_standing():
+    fix1, fix2 = _diff(("django/a.py", "one")), _diff(("django/a.py", "two"))
+    box = FakeBox([fix1, fix1], rc={"python repro.py": 0})
+    watch = Watch(box, settle_after=6)
+    watch.criteria, watch.criteria_timeout = ["python repro.py"], 300
+    assert asyncio.run(watch.section(_Run(2))).endswith("all acceptance checks pass, the run ends here")
+
+    async def dead(cmd, *, timeout=120.0, env=None):
+        raise RuntimeError("the box stopped answering")
+
+    box.run = dead
+    box.diffs = iter([fix2])
+    try:
+        asyncio.run(watch.section(_Run(3)))  # a new source change; its check raises
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("the check's error was swallowed")
+    assert not watch.passed and not watch.stop()
