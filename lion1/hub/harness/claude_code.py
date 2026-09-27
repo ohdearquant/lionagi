@@ -1,0 +1,344 @@
+"""Claude Code as a harness (ADR-0001 §6), in both shapes.
+
+`ClaudeCode` is the chat-completion shape: one `claude -p` per round, tools off, one turn, so the
+only way the model acts is LNDL in its text and every command goes through this runtime's handlers.
+
+`ClaudeCodeAgentic` is the agentic shape: one `claude -p` with its own tools on for a whole task.
+It is what a user gets by running Claude Code; it is the baseline the bench compares against, and
+the place a hook-riding backend starts from.
+
+Both pass `--setting-sources ""` and `--strict-mcp-config`. Without the first the CLI loads every
+CLAUDE.md and settings file it can find, measured at 34k cached input tokens per call on this machine
+against 3.9k without. Without the second the account's claude.ai-connected MCP servers stay in the
+request even under `--tools ""`, and a model with any tool defined can emit a tool_use, which a
+one-turn call then dies on (measured: Sonnet invented a `grep` tool it was never given).
+
+A call that fails lands on `calls` as a failed envelope before the error is raised (ADR-0011 D1):
+the CLI's own result envelope when it printed one (a refused turn carries its cost), else one whose
+cost is unknown. The error carries the CLI's whole detail.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import shutil
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from lionagi.actor import Message, Reply
+
+__all__ = (
+    "ClaudeCodeError",
+    "ClaudeCode",
+    "ClaudeCodeSession",
+    "ClaudeCodeAgentic",
+)
+
+
+class ClaudeCodeError(RuntimeError):
+    def __init__(self, message: str, envelope: dict | None = None) -> None:
+        super().__init__(message)
+        self.envelope = envelope  # the CLI's result envelope, minus the text, when a failed call printed one
+
+
+@dataclass
+class ClaudeCode:
+    model: str | None = None  # None: the CLI's default
+    cli: str | None = None
+    timeout: float = 300.0
+    calls: list[dict] = field(default_factory=list)  # the CLI's result envelope per call, minus the text
+
+    def __post_init__(self) -> None:
+        self.cli = self.cli or shutil.which("claude")
+        if not self.cli:
+            raise ClaudeCodeError("claude CLI not found on PATH")
+
+    async def __call__(self, messages: list[Message]) -> str:
+        system = messages[0].content if messages and messages[0].role == "system" else ""
+        prompt = _transcript(messages[1:] if system else messages)
+        args = ["--tools", "", "--max-turns", "1"]
+        if system:
+            args += ["--system-prompt", system]
+        try:
+            text, envelope = await _exec(self.cli, args, prompt, model=self.model, timeout=self.timeout)
+        except ClaudeCodeError as e:
+            self.calls.append({**(e.envelope or {"total_cost_usd": None}), "error": str(e)})
+            raise
+        self.calls.append(envelope)
+        return Reply(text, prompt_tokens=_prompt_tokens(envelope))
+
+
+@dataclass
+class ClaudeCodeSession:
+    """The chat-completion shape on one resumed CLI session: each round sends only what the view
+    gained since the last round, and the CLI keeps the conversation, so the provider's prompt cache
+    can hit on the unchanged prefix. The model's view is then the CLI's history, tool turns included,
+    and that history is what a fold cuts: when a round brings a context.hide, context.show or
+    context.summarize result, or the runtime's own fold event (the measured context past the view
+    budget), the session is restarted with the folded view as one transcript, one cache miss, and
+    the CLI's tool-turn history is gone with the old session (the fold is what bounds a chair's
+    context; before it, one call read 14.8M tokens over its tool turns)."""
+
+    model: str | None = None
+    cli: str | None = None
+    timeout: float = 300.0
+    # the Claude Code provider: with `tools` the CLI runs its own tools inside each round (Bash, Read,
+    # Edit, Write, Grep, Glob), up to `max_turns` of them (0: no cap, the model runs its tools until it
+    # stops), in `cwd` (khive signs as that directory's
+    # actor) with `add_dirs` reachable; `allowed` adds permission rules beyond the tools (an MCP name);
+    # `mcp_config` is the only MCP the CLI loads (the exec passes --strict-mcp-config). Empty tools =
+    # the chat shape: the model answers in text and the runtime runs the tools.
+    tools: tuple[str, ...] = ()
+    allowed: tuple[str, ...] = ()
+    max_turns: int = 1
+    effort: str | None = None  # the CLI's --effort (low, medium, high, xhigh, max); None = its default
+    cwd: str | Path | None = None
+    add_dirs: tuple[str, ...] = ()
+    mcp_config: str | Path | None = None
+    calls: list[dict] = field(default_factory=list)
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    sent: dict[str, int] = field(default_factory=dict)  # entry name -> hash of what the session got
+    restarts: int = 0  # sessions started over because the model changed its view
+    _last: dict | None = field(default=None, repr=False)
+    _system: str | None = field(default=None, repr=False)
+    _run: str | None = field(default=None, repr=False)  # the record the current session serves
+    _runs: dict[str, dict] = field(default_factory=dict, repr=False)  # the other records' sessions
+
+    def __post_init__(self) -> None:
+        self.cli = self.cli or shutil.which("claude")
+        if not self.cli:
+            raise ClaudeCodeError("claude CLI not found on PATH")
+
+    async def __call__(self, messages: list[Message]) -> str:
+        system = messages[0].content if messages and messages[0].role == "system" else ""
+        body = messages[1:] if system else messages
+        run = messages[0].run if messages else None
+        if run is not None:
+            # one session per record: the actor names the run on every message, and this backend
+            # keeps a session per run id, so two runs through one backend never share a session
+            self._switch(run)
+        first = next((m for m in body if m.name is not None), None)
+        if (
+            run is None
+            and self.sent
+            and (
+                system != self._system
+                or (
+                    first is not None
+                    and first.name in self.sent
+                    and self.sent[first.name] != hash(first.content)
+                )
+            )
+        ):
+            # a caller that names no run: entry names start over at _in0 in every run, so a first
+            # entry already delivered with other content, or another system prompt, is a different
+            # run on this backend. It gets its own session; nothing is treated as sent.
+            self.session_id, self.sent, self._last = str(uuid.uuid4()), {}, None
+        self._system = system
+        new = [m for m in body if m.role != "assistant" and (m.name is None or m.name not in self.sent)]
+        if self.sent and any(m.spec in _DIRECTIVES for m in new):
+            # the model changed its own view, or the runtime folded it: start over from the folded view
+            self.session_id, self.sent, self._last = str(uuid.uuid4()), {}, None
+            self.restarts += 1
+        if not new:  # a view that only shrank: nothing new to say, resend the notification
+            new = body[-1:]
+        args = ["--tools", ",".join(self.tools)]
+        if self.max_turns > 0:
+            args += ["--max-turns", str(self.max_turns)]
+        if self.effort:
+            args += ["--effort", self.effort]
+        if self.tools or self.allowed:
+            args += ["--allowedTools", ",".join(self.tools + self.allowed)]
+        for d in self.add_dirs:
+            args += ["--add-dir", str(d)]
+        if self.mcp_config:
+            args += ["--mcp-config", str(self.mcp_config)]
+        if not self.sent:
+            args += ["--session-id", self.session_id]
+            if system:
+                args += ["--system-prompt", system]
+            prompt = _transcript(body) if any(m.role == "assistant" for m in body) else _plain(body)
+        else:
+            args += ["--resume", self.session_id]
+            prompt = _plain(new)
+        text, envelope = await _exec(
+            self.cli, args, prompt, model=self.model, timeout=self.timeout, cwd=self.cwd, persist=True
+        )
+        # over a resumed session the CLI's cost and api time accumulate, its usage does not
+        prev = self._last
+        self._last = envelope
+        self.calls.append(_delta(envelope, prev))
+        self.sent.update({m.name: hash(m.content) for m in body if m.name is not None})
+        return Reply(text, prompt_tokens=_prompt_tokens(envelope))
+
+    def _switch(self, run: str) -> None:
+        """Make `run`'s session the current one, parking the session of the run served before."""
+        if run == self._run:
+            return
+        if self._run is not None:
+            self._runs[self._run] = {
+                "session_id": self.session_id,
+                "sent": self.sent,
+                "_last": self._last,
+                "_system": self._system,
+            }
+        saved = self._runs.pop(run, None)
+        if saved is not None:
+            self.session_id, self.sent = saved["session_id"], saved["sent"]
+            self._last, self._system = saved["_last"], saved["_system"]
+        elif self._run is not None or self.sent:
+            self.session_id, self.sent, self._last, self._system = str(uuid.uuid4()), {}, None, None
+        self._run = run
+
+
+@dataclass
+class ClaudeCodeAgentic:
+    """One whole task per call, the CLI running its own tools. Returns the final text."""
+
+    model: str | None = None
+    tools: tuple[str, ...] = ("Read", "Grep", "Glob")
+    max_turns: int = 12
+    cwd: str | Path | None = None
+    system: str | None = None  # None: the CLI's own prompt; else appended to it
+    cli: str | None = None
+    timeout: float = 600.0
+    calls: list[dict] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.cli = self.cli or shutil.which("claude")
+        if not self.cli:
+            raise ClaudeCodeError("claude CLI not found on PATH")
+
+    async def __call__(self, prompt: str) -> str:
+        args = [
+            "--tools",
+            ",".join(self.tools),
+            "--allowedTools",
+            ",".join(self.tools),
+            "--max-turns",
+            str(self.max_turns),
+        ]
+        if self.system:
+            args += ["--append-system-prompt", self.system]
+        try:
+            text, envelope = await _exec(
+                self.cli, args, prompt, model=self.model, timeout=self.timeout, cwd=self.cwd
+            )
+        except ClaudeCodeError as e:
+            self.calls.append({**(e.envelope or {"total_cost_usd": None}), "error": str(e)})
+            raise
+        self.calls.append(envelope)
+        return text
+
+
+def _prompt_tokens(envelope: dict) -> int | None:
+    """The last model turn's prompt: fresh input, cache read and cache write, the CLI's own context
+    included. The envelope's `usage` sums the call's turns (what the call cost); the context the next
+    turn stands in is the last turn's, which `usage.iterations` carries when the CLI printed it (one
+    `message` entry, measured 2026-09-24: 31895 of a 188926 total over 6 turns), else the sum over
+    `num_turns`, an average that reads low by up to half the call's own growth."""
+    usage = envelope.get("usage") or {}
+    parts = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+    if not any(k in usage for k in parts):
+        return None
+    iterations = usage.get("iterations")
+    if isinstance(iterations, list) and iterations and isinstance(iterations[-1], dict):
+        last = iterations[-1]
+        if any(k in last for k in parts):
+            return sum(int(last.get(k) or 0) for k in parts)
+    turns = max(1, int(envelope.get("num_turns") or 1))
+    return sum(int(usage.get(k) or 0) for k in parts) // turns
+
+
+def _delta(envelope: dict, prev: dict | None) -> dict:
+    """What this call alone spent. Measured on a resumed session (three calls, 2026-09-20): `usage`
+    is this call's own, while `total_cost_usd`, `duration_api_ms` and `modelUsage` accumulate over
+    the session, so only those two are taken as deltas; the running totals stay under `cumulative`."""
+    out = dict(envelope)
+    out["cumulative"] = {
+        "total_cost_usd": envelope.get("total_cost_usd"),
+        "duration_api_ms": envelope.get("duration_api_ms"),
+    }
+    if prev is None:
+        return out
+    out["total_cost_usd"] = (envelope.get("total_cost_usd") or 0) - (prev.get("total_cost_usd") or 0)
+    out["duration_api_ms"] = (envelope.get("duration_api_ms") or 0) - (prev.get("duration_api_ms") or 0)
+    return out
+
+
+async def _exec(
+    cli: str,
+    args: list[str],
+    prompt: str,
+    *,
+    model: str | None,
+    timeout: float,
+    cwd: str | Path | None = None,
+    persist: bool = False,
+) -> tuple[str, dict]:
+    argv = [cli, "-p", "--output-format", "json"]
+    if not persist:
+        argv.append("--no-session-persistence")
+    argv += ["--setting-sources", "", "--strict-mcp-config"]
+    if model:
+        argv += ["--model", model]
+    argv += args
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(cwd) if cwd else None,
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), timeout=timeout)
+    except (TimeoutError, asyncio.CancelledError) as e:
+        # the child is this backend's to stop: a cancelled task must not leave it running
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        if isinstance(e, asyncio.CancelledError):
+            raise
+        raise ClaudeCodeError(f"claude did not answer within {timeout}s") from None
+    if proc.returncode != 0:
+        # the CLI reports some failures as a JSON result on stdout with nothing on stderr: a turn the
+        # model ended with stop_reason "refusal" and no text is one (seen on a code-review prompt);
+        # that result carries what the call cost, so it rides on the error
+        try:
+            data = json.loads(out.decode(errors="replace"))
+        except json.JSONDecodeError:
+            data = None
+        envelope = {k: v for k, v in data.items() if k != "result"} if isinstance(data, dict) else None
+        detail = err.decode(errors="replace").strip()
+        if not detail:
+            stop = envelope.get("stop_reason") if envelope else None
+            detail = f"stop_reason {stop}, no text" if stop else out.decode(errors="replace").strip()
+        raise ClaudeCodeError(f"claude exited {proc.returncode}: {detail}", envelope)
+    try:
+        data = json.loads(out.decode())
+    except json.JSONDecodeError as e:
+        raise ClaudeCodeError(f"unparseable claude output: {e}: {out!r}") from None
+    if data.get("is_error"):
+        envelope = {k: v for k, v in data.items() if k != "result"}
+        raise ClaudeCodeError(f"claude reported {data.get('subtype')}: {data.get('result')}", envelope)
+    text = data.pop("result", "") or ""
+    return text, data
+
+
+_DIRECTIVES = frozenset({"context.hide", "context.show", "context.summarize", "fold"})
+
+
+def _plain(messages: list[Message]) -> str:
+    return "\n\n".join(m.content for m in messages)
+
+
+def _transcript(messages: list[Message]) -> str:
+    """The view as one prompt. Each entry keeps its role, so the model reads it as the conversation it is."""
+    parts = []
+    for m in messages:
+        label = {"user": "USER", "assistant": "ASSISTANT", "system": "SYSTEM"}.get(m.role, m.role.upper())
+        parts.append(f"<{label}>\n{m.content}\n</{label}>")
+    parts.append("<ASSISTANT>")
+    return "\n\n".join(parts)

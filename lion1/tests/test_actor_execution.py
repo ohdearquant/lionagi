@@ -3,9 +3,11 @@ refused or cancelled before it, `not executed`; entered and failed, `failed afte
 while it ran, `completion unknown`. The fact rides the RESULT entry (ADR-0005/C1, ADR-0006/C2)."""
 
 import asyncio
+import json
 
 from pydantic import BaseModel
 
+from hub.chat import entry_row, load_log
 from lionagi import Actor, Kind, Profile, Result, RunRequest
 from tests.test_actor import scripted
 
@@ -200,3 +202,21 @@ def test_a_command_that_ran_and_failed_is_not_told_as_not_executed():
     notice = [e.content for e in run.record if e.kind is Kind.SYSTEM][1]
     told_not_run = notice.split("not executed:", 1)[1] if "not executed:" in notice else ""
     assert "t1:" not in told_not_run, notice
+
+
+def test_execution_fact_survives_log_round_trip(tmp_path):
+    entered: list[str] = []
+    run, _ = _exec_run(
+        _exec_actor("exec-log", entered, []),
+        '<lact t1>touch(path="a")</lact><lact m1>mark(path="b")</lact><lact g1>guarded(text="x")</lact>',
+    )
+    facts = _exec_facts(run.record)
+    assert facts == {"t1": "started", "m1": "started", "g1": "not executed"}
+    log = tmp_path / "log.jsonl"
+    log.write_text("".join(json.dumps(entry_row(e), default=str) + "\n" for e in run.record))
+    assert _exec_facts(load_log(log)) == facts
+    # a log written before the fact existed still loads, and its absence claims nothing either way
+    old = {"seq": 0, "kind": "RESULT", "name": "_r0", "round": 1, "alias": "x", "meta": {}}
+    old["content"] = {"spec": "touch", "ok": False, "value": None, "error": "boom", "reason": "failed"}
+    (tmp_path / "old.jsonl").write_text(json.dumps(old) + "\n")
+    assert _exec_facts(load_log(tmp_path / "old.jsonl")) == {"x": None}
