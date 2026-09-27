@@ -1,6 +1,6 @@
 """khive from a run: the actor's address, mailbox and store, one `kkernel exec` per call.
 
-The actor has the address (ADR-0002); khive resolves it from the cwd's `.khive/config.toml`, so a
+The actor has the address (ADR-0001); khive resolves it from the cwd's `.khive/config.toml`, so a
 Khive is bound to a directory and asserts on every call that the directory resolves to the actor it
 was built for (`--expect-actor`). Ops are the verb DSL the MCP `request` tool takes; string
 arguments are JSON literals, so they go through `json.dumps`.
