@@ -20,6 +20,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from asyncio import CancelledError  # by name: tests stand in for the module's `asyncio`
 from dataclasses import dataclass, field
 
 from lionagi.actor import Message, Reply
@@ -105,58 +106,70 @@ class OpenRouter:
             body["stop"] = self.stop
         t0 = time.monotonic()
         spent: list[dict] = []  # every response's usage, so a retried attempt's bill is not lost
-        for attempt in range(self.retries + 1):
-            try:
-                data = await asyncio.to_thread(_post, body, self.timeout)
-            except OpenRouterError as e:
-                if str(e).startswith("request failed"):
-                    spent.append({})  # it went out and no readable answer came back: billed or not is unknown
-                if attempt < self.retries and _transient(str(e)):
+        posting = False  # a request is out: cancelled there, its bill is unknown, not absent
+        try:
+            for attempt in range(self.retries + 1):
+                try:
+                    posting = True
+                    data = await asyncio.to_thread(_post, body, self.timeout)
+                except OpenRouterError as e:
+                    posting = False
+                    if str(e).startswith("request failed"):
+                        spent.append(
+                            {}
+                        )  # it went out and no readable answer came back: billed or not is unknown
+                    if attempt < self.retries and _transient(str(e)):
+                        await asyncio.sleep(2.0 * 2**attempt)
+                        continue
+                    self._bill_failure(spent, str(e), attempt + 1, t0)
+                    raise
+                posting = False
+                spent.append(data.get("usage") or {})
+                if data.get("error"):
+                    # a 200 whose body is the provider's error, not a choice: named by its own code and
+                    # retried only when that code is transient, never because its prose says timeout
+                    err = data["error"] if isinstance(data["error"], dict) else {"message": data["error"]}
+                    error = f"error {err.get('code')}: {err.get('message')}"
+                    if err.get("metadata"):
+                        error += f" {json.dumps(err['metadata'])}"
+                    if attempt < self.retries and _transient(f"HTTP {err.get('code')}"):
+                        await asyncio.sleep(2.0 * 2**attempt)
+                        continue
+                    self._bill_failure(spent, error, attempt + 1, t0)
+                    raise OpenRouterError(error)
+                choice = (data.get("choices") or [{}])[0]
+                message = choice.get("message") or {}
+                text = message.get("content") or ""
+                finish = choice.get("finish_reason")
+                if not text and message.get("tool_calls"):
+                    # No tools were offered, so the model wrote its turn in its native tool-call format
+                    # and the provider parsed it out of the content. That is the model's turn: the tag
+                    # text sits in the call's name, and it is handed back as the text the model wrote
+                    # (40 of 952 Mini-50 turns came this way; as a JSON dump 21 of them were unreadable)
+                    text = tool_calls_text(message["tool_calls"])
+                if text or finish == "length":
+                    break
+                if finish == "stop":
+                    # a finished answer with nothing in it: the provider billed 80 to 220 output tokens
+                    # and returned content, reasoning and refusal all null (about 1 call in 100 with
+                    # thinking off, mostly the second turn). There is nothing to read, so sample again;
+                    # if it stays empty the loop is told a blank turn came back and goes on
+                    if attempt < self.retries:
+                        await asyncio.sleep(1.0)
+                        continue
+                    break
+                # an errored choice: the provider's fault, not the model's turn
+                if attempt < self.retries:
                     await asyncio.sleep(2.0 * 2**attempt)
                     continue
-                self._bill_failure(spent, str(e), attempt + 1, t0)
-                raise
-            spent.append(data.get("usage") or {})
-            if data.get("error"):
-                # a 200 whose body is the provider's error, not a choice: named by its own code and retried
-                # only when that code is transient, never because its prose says timeout
-                err = data["error"] if isinstance(data["error"], dict) else {"message": data["error"]}
-                error = f"error {err.get('code')}: {err.get('message')}"
-                if err.get("metadata"):
-                    error += f" {json.dumps(err['metadata'])}"
-                if attempt < self.retries and _transient(f"HTTP {err.get('code')}"):
-                    await asyncio.sleep(2.0 * 2**attempt)
-                    continue
+                error = f"empty answer after {attempt + 1} attempts, finish_reason={finish}"
                 self._bill_failure(spent, error, attempt + 1, t0)
                 raise OpenRouterError(error)
-            choice = (data.get("choices") or [{}])[0]
-            message = choice.get("message") or {}
-            text = message.get("content") or ""
-            finish = choice.get("finish_reason")
-            if not text and message.get("tool_calls"):
-                # No tools were offered, so the model wrote its turn in its native tool-call format
-                # and the provider parsed it out of the content. That is the model's turn: the tag
-                # text sits in the call's name, and it is handed back as the text the model wrote
-                # (40 of 952 Mini-50 turns came this way; as a JSON dump 21 of them were unreadable)
-                text = tool_calls_text(message["tool_calls"])
-            if text or finish == "length":
-                break
-            if finish == "stop":
-                # a finished answer with nothing in it: the provider billed 80 to 220 output tokens
-                # and returned content, reasoning and refusal all null (about 1 call in 100 with
-                # thinking off, mostly the second turn). There is nothing to read, so sample again;
-                # if it stays empty the loop is told a blank turn came back and goes on
-                if attempt < self.retries:
-                    await asyncio.sleep(1.0)
-                    continue
-                break
-            # an errored choice: the provider's fault, not the model's turn
-            if attempt < self.retries:
-                await asyncio.sleep(2.0 * 2**attempt)
-                continue
-            error = f"empty answer after {attempt + 1} attempts, finish_reason={finish}"
-            self._bill_failure(spent, error, attempt + 1, t0)
-            raise OpenRouterError(error)
+        except CancelledError:
+            if posting:
+                spent.append({})
+            self._bill_failure(spent, "cancelled", len(spent), t0)  # nothing spent: nothing to bill
+            raise
         envelope = {k: v for k, v in data.items() if k != "choices"}
         envelope["finish_reason"] = choice.get("finish_reason")
         envelope["native_finish_reason"] = choice.get("native_finish_reason")

@@ -44,6 +44,19 @@ if "FAIL401" in prompt:
     ev(type="error", message="Reconnecting... 1/5 (unexpected status 401 Unauthorized)")
     ev(type="turn.failed", error={"message": "unexpected status 401 Unauthorized: Missing bearer"})
     sys.exit(1)
+if "AUTHTIMEOUT" in prompt:  # an auth failure whose prose also says timeout
+    ev(type="turn.started")
+    ev(type="turn.failed", error={"message": "unexpected status 401 Unauthorized: request timeout"})
+    sys.exit(1)
+if "SEPTEXT" in prompt:  # the answer carries U+2028 unescaped and only the event stream has it
+    ev(type="turn.started")
+    sys.stdout.flush()
+    item = {"type": "item.completed", "item": {"type": "agent_message", "text": "left\u2028right"}}
+    sys.stdout.buffer.write((json.dumps(item, ensure_ascii=False) + "\\n").encode())
+    sys.stdout.buffer.flush()
+    ev(type="turn.completed", usage=usage)
+    open(out, "w").write("")
+    sys.exit(0)
 if "FLAKY429" in prompt and n == 1:
     ev(type="turn.started")
     ev(type="turn.failed", error={"message": "unexpected status 429 Too Many Requests"})
@@ -117,7 +130,7 @@ def test_a_failed_turn_is_named_from_the_stream_and_is_not_retried(fake_cli, obs
 
 
 def test_codex_scratch_cleaned_on_terminal_paths(fake_cli, observed):
-    # tests-quality-13: every call's mkdtemp was left behind (1290 lionagi-codex-* dirs in TMPDIR)
+    # every call's mkdtemp was left behind (1290 lionagi-codex-* dirs in TMPDIR)
     backend = Codex(cli=fake_cli)
     assert asyncio.run(backend([Message("user", "hi")])).startswith("seen ")
     with pytest.raises(CodexError) as e:
@@ -320,3 +333,69 @@ def test_cancelling_an_attempt_stops_the_child_and_its_children(tmp_path: Path, 
         time.sleep(0.01)
     else:
         raise AssertionError(f"the CLI's child {grandchild} outlived the cancelled attempt")
+
+
+def test_an_auth_failure_is_not_retried_whatever_else_its_message_says(fake_cli, observed):
+    # "timeout" in the message made a 401 transient, against the never-401/403 rule
+    backend = Codex(cli=fake_cli)
+    with pytest.raises(CodexError, match="401 Unauthorized: request timeout"):
+        asyncio.run(backend([Message("user", "please AUTHTIMEOUT")]))
+    assert [s["attempt"] for s in observed()] == [1]
+
+
+def test_an_answer_carrying_a_unicode_line_separator_is_read_from_the_event_stream(fake_cli):
+    # events were split with str.splitlines, so an agent message holding U+2028 broke in two and
+    # was skipped; with last.txt empty the answer was lost
+    assert asyncio.run(Codex(cli=fake_cli)([Message("user", "SEPTEXT")])) == "left\u2028right"
+
+
+def test_a_timeout_after_the_cli_exited_still_stops_what_it_left_holding_the_pipes(tmp_path):
+    # the group was killed only while the leader ran; a leader that had exited with its child still
+    # holding stdout skipped the kill, and the drain then waited on that child with no deadline
+    cli = tmp_path / "codex"
+    cli.write_text(f"#!/bin/sh\ncat > /dev/null\nsleep 30 &\necho $! > {tmp_path / 'child'}\nexit 0\n")
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    backend = Codex(cli=str(cli), timeout=0.5, retries=0)
+    t0 = time.monotonic()
+    with pytest.raises(CodexError, match="timed out"):
+        asyncio.run(asyncio.wait_for(backend([Message("user", "hi")]), 15))
+    assert time.monotonic() - t0 < 10
+    child = int((tmp_path / "child").read_text())
+    for _ in range(200):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError(f"the CLI's child {child} outlived the timed-out attempt")
+
+
+def test_a_call_cancelled_in_its_backoff_keeps_the_bill_of_the_attempt_that_came_back(fake_cli, monkeypatch):
+    # the envelope was built only on success or error: a cancel in the sleep after a billed empty
+    # answer dropped that attempt's usage from `calls`
+    backend = Codex(cli=fake_cli)
+    backing_off = asyncio.Event()
+
+    real_sleep = asyncio.sleep
+
+    async def sleep(seconds):
+        if not seconds:  # asyncio's own streams yield with sleep(0); only the backoff waits
+            return await real_sleep(0)
+        backing_off.set()
+        await asyncio.Event().wait()
+
+    async def main():
+        task = asyncio.create_task(backend([Message("user", "EMPTY")]))
+        await backing_off.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    monkeypatch.setattr(codex_mod.asyncio, "sleep", sleep)
+    asyncio.run(asyncio.wait_for(main(), 15))
+    (call,) = backend.calls
+    assert call["error"] == "cancelled" and call["attempts"] == 1
+    assert call["usage"]["output_tokens"] == 900 and call["notes"][-1].startswith(
+        "attempt 1 failed: no message"
+    )

@@ -123,11 +123,9 @@ def test_exec_splits_stdout_from_stderr_carries_the_rc_and_feeds_stdin(stubbed):
     assert not list((work.parent / "tmp").iterdir())  # the stdin and stderr files are gone after
     r = asyncio.run(box.exec(["sh", "-c", "exit 137"], timeout=7))
     assert r["rc"] == 137 and r["stderr"] == "" and r["timed_out"] is False  # any SIGKILL is 137
-    r = asyncio.run(box.exec(["sleep", "5"], timeout=1))  # F12: the clock says it was the timeout
+    r = asyncio.run(box.exec(["sleep", "5"], timeout=1))  # the clock says it was the timeout
     assert r["rc"] == 137 and r["timed_out"] is True and r["stderr"] == "ended at the 1s timeout"
-    r = asyncio.run(
-        box.exec(["sh", "-c", "exit 124"], timeout=7)
-    )  # P3-6: a command's own 124 is not the clock's
+    r = asyncio.run(box.exec(["sh", "-c", "exit 124"], timeout=7))  # a command's own 124 is not the clock's
     assert r["rc"] == 124 and r["timed_out"] is False
 
 
@@ -179,7 +177,7 @@ def test_push_copies_what_git_sees_and_a_dead_box_is_named(stubbed, tmp_path):
 
 
 def test_push_counts_what_was_actually_uploaded_not_what_git_listed(stubbed, tmp_path):
-    # P3-3 (hub review): a dangling symlink is git-tracked but `is_file()` skips it when building
+    # a dangling symlink is git-tracked but `is_file()` skips it when building
     # the tar, so `len(names)` reported one more file than the box actually received
     box, work, _, _ = stubbed
     src = tmp_path / "src2"

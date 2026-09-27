@@ -228,7 +228,7 @@ def test_a_log_cut_mid_write_recovers_its_whole_lines_and_names_the_cut(tmp_path
 def test_each_entry_is_said_as_it_lands_not_at_the_next_round_boundary(tmp_path):
     # a slow tool beside an instant one: the turn and the instant result reach the log while the
     # slow one still runs; a signal in that window used to lose them and the resume notice went
-    # silent about a command that had run (core review P1-1, 2026-09-22)
+    # silent about a command that had run
     from pydantic import BaseModel
 
     from lionagi import Actor, Context, Profile
@@ -326,3 +326,34 @@ def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_pat
         assert "no longer folds to the view" in str(e)
     else:
         raise AssertionError("a record without its directives replayed")
+
+
+def _row(seq: int, content: str) -> dict:
+    return {"seq": seq, "kind": "TEXT", "content": content, "round": 1, "meta": {}}
+
+
+def test_a_log_row_holding_a_unicode_line_separator_reads_back_whole(tmp_path):
+    # a row written with ensure_ascii=False carries U+2028, U+2029 or NEL as itself; the reader split
+    # rows with str.splitlines, broke such a row in two and refused a valid log
+    log = tmp_path / "log.jsonl"
+    rows = [_row(i, f"left{sep}right") for i, sep in enumerate(("\u2028", "\u2029", "\x85"))]
+    log.write_bytes("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).encode())
+    assert [e.content for e in load_log(log)] == ["left\u2028right", "left\u2029right", "left\x85right"]
+
+
+def test_a_write_cut_inside_a_character_is_a_torn_last_row(tmp_path):
+    # the whole file was decoded first, so a write cut inside a multi-byte character raised
+    # UnicodeDecodeError before the torn last row could be dropped
+    import pytest
+
+    log = tmp_path / "log.jsonl"
+    whole = (json.dumps(_row(0, "a")) + "\n").encode()
+    log.write_bytes(whole + b'{"seq": 1, "kind": "TEXT", "content": "' + "☃".encode()[:2])
+    torn: list[str] = []
+    assert [e.content for e in load_log(log, torn=torn)] == ["a"]
+    assert len(torn) == 1 and torn[0].startswith("line 2 of") and "a write that was cut" in torn[0]
+    with pytest.raises(ValueError, match="the last line is not JSON"):
+        load_log(log)  # without `torn` the cut row is an error, as before
+    log.write_bytes(b'{"seq": 0, "kind": "TEXT", "content": "\xff"}\n' + whole)
+    with pytest.raises(ValueError, match="line 1, with 1 after it"):
+        load_log(log, torn=[])  # an unreadable row with rows after it is never a cut write

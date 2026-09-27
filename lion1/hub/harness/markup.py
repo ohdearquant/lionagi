@@ -32,7 +32,15 @@ _DSML_PARAM = re.compile(
 )
 
 
-def _dsml_call(m: re.Match) -> str:
+def _alias(key: str, seen: dict[str, int]) -> str:
+    """`auto_` and a digest of `key` and its occurrence: two identical calls in one turn are two calls,
+    and the parser keeps only the first of two equal aliases."""
+    n = seen.get(key, 0)
+    seen[key] = n + 1
+    return "auto_" + hashlib.blake2b((key if n == 0 else f"{key}\0{n}").encode(), digest_size=3).hexdigest()
+
+
+def _dsml_call(m: re.Match, seen: dict[str, int]) -> str:
     """A whole native tool call, `invoke name="run"` with `parameter` children, as one <lact>."""
     name, body = m.group(1), m.group(2)
     args = []
@@ -47,8 +55,7 @@ def _dsml_call(m: re.Match) -> str:
             args.append(f"{key}={raw!r}")
         else:
             args.append(f"{key}={raw.strip()}")
-    alias = "auto_" + hashlib.blake2b(m.group(0).encode(), digest_size=3).hexdigest()
-    return f"<lact {alias}>{name}({', '.join(args)})</lact>"
+    return f"<lact {_alias(m.group(0), seen)}>{name}({', '.join(args)})</lact>"
 
 
 def normalize(text: str) -> str:
@@ -62,30 +69,42 @@ def normalize(text: str) -> str:
         return text
     # a construct already well formed in the raw text is a literal's home (an OUT string, a call's
     # argument, a value tag's body) and is handed on untouched; the markup is rewritten only in the
-    # text between such constructs, which is where a wrapped tag stands
+    # text between such constructs, which is where a wrapped tag stands. A construct that stands
+    # inside a whole native call is that call's argument text, not a construct of its own: the call
+    # owns it and converts it as data.
+    calls = [m.span() for m in _DSML_INVOKE.finditer(text)]
+    seen: dict[str, int] = {}
     out, i = [], 0
     for what, _, (start, end) in _constructs(text):
-        if what == "problem":
+        if what == "problem" or start < i or any(s <= start and end <= e for s, e in calls):
             continue
-        out.append(_normalize_gap(text[i:start]))
+        out.append(_normalize_gap(text[i:start], seen))
         out.append(text[start:end])
         i = end
-    out.append(_normalize_gap(text[i:]))
+    out.append(_normalize_gap(text[i:], seen))
     return "".join(out)
 
 
-def _normalize_gap(text: str) -> str:
+def _normalize_gap(text: str, seen: dict[str, int]) -> str:
     if "｜DSML｜" not in text:
         return text
     text = _DSML_TAG.sub(r"<\1 \2>", text)
-    text = _DSML_INVOKE.sub(_dsml_call, text)
-    text = _UNCLOSED.sub(_close_tag, text)
-    return _DSML_NOISE.sub("", text)
+    # a whole call converts to a finished <lact> whose argument may hold tag-shaped text: it is set
+    # aside while the unclosed-tag repair runs, which would otherwise read that text as a new tag
+    whole: list[str] = []
+
+    def aside(m: re.Match) -> str:
+        whole.append(_dsml_call(m, seen))
+        return f"\0{len(whole) - 1}\0"
+
+    text = _DSML_INVOKE.sub(aside, text)
+    text = _DSML_NOISE.sub("", _UNCLOSED.sub(_close_tag, text))
+    return re.sub(r"\0(\d+)\0", lambda m: whole[int(m.group(1))], text)
 
 
 # a tag opened in native markup whose `</lact>` the provider swallowed as its own parameter close:
 # the body runs to the next native tag, the next LNDL tag or the end
-_UNCLOSED = re.compile(r"(<(lact|lvar)\s+[^>]+>)(.*?)(?=</?｜DSML｜|<(?:lact|lvar)\s|\Z)", re.DOTALL)
+_UNCLOSED = re.compile(r"(<(lact|lvar)\s+[^>]+>)(.*?)(?=</?｜DSML｜|<(?:lact|lvar)\s|\0|\Z)", re.DOTALL)
 
 
 def _close_tag(m: re.Match) -> str:
@@ -104,6 +123,7 @@ def tool_calls_text(calls: list[dict]) -> str:
     name and JSON arguments is the other shape, a whole native call, and becomes one <lact>.
     """
     parts = []
+    seen: dict[str, int] = {}
     for call in calls:
         fn = call.get("function") or {}
         name, raw = str(fn.get("name") or ""), fn.get("arguments") or ""
@@ -116,8 +136,6 @@ def tool_calls_text(calls: list[dict]) -> str:
             args = {"value": raw}
         if not isinstance(args, dict):
             args = {"value": args}
-        alias = (
-            "auto_" + hashlib.blake2b(json.dumps(call, sort_keys=True).encode(), digest_size=3).hexdigest()
-        )
+        alias = _alias(json.dumps(call, sort_keys=True), seen)
         parts.append(f"<lact {alias}>{name}({', '.join(f'{k}={v!r}' for k, v in args.items())})</lact>")
     return "\n".join(parts)

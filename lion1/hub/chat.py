@@ -152,16 +152,22 @@ def load_log(path: Path, torn: list[str] | None = None) -> tuple[Entry, ...]:
     was cut: with `torn` given it is dropped and described there, else it raises; a bad line with
     lines after it always raises."""
     entries: list[Entry] = []
-    rows = [(i, raw) for i, raw in enumerate(Path(path).read_text().splitlines(), 1) if raw.strip()]
+    # a row ends at a line feed: a row may carry U+2028 or NEL unescaped, where str.splitlines would
+    # break it, and a write cut inside a multi-byte character is a torn last row, not an unreadable file
+    rows = [(i, raw) for i, raw in enumerate(Path(path).read_bytes().split(b"\n"), 1) if raw.strip()]
     for n, (i, raw) in enumerate(rows):
         try:
-            r = json.loads(raw)
-        except json.JSONDecodeError as e:
+            r = json.loads(raw.decode())
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
             if n == len(rows) - 1 and torn is not None:
-                torn.append(f"line {i} of {path} is not JSON ({e.msg}), a write that was cut; dropped")
+                why = e.reason if isinstance(e, UnicodeDecodeError) else e.msg
+                torn.append(f"line {i} of {path} is not JSON ({why}), a write that was cut; dropped")
                 break
             where = "the last line" if n == len(rows) - 1 else f"line {i}, with {len(rows) - n - 1} after it"
-            raise ValueError(f"{path}: {where} is not JSON ({e.msg}): {raw[:80]!r}") from None
+            why = e.reason if isinstance(e, UnicodeDecodeError) else e.msg
+            raise ValueError(
+                f"{path}: {where} is not JSON ({why}): {raw.decode(errors='replace')[:80]!r}"
+            ) from None
         entry = entry_of(r)  # the row back as its entry; the one reading a checkpoint's record uses too
         if entry is not None:
             entries.append(entry)

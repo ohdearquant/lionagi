@@ -71,10 +71,11 @@ class Khive:
         except (TimeoutError, asyncio.CancelledError) as e:
             # the child is this client's to stop: a cancelled task must not leave it running, nor a
             # grandchild holding the pipes open past the loop's end
-            if proc.returncode is None:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(proc.pid, signal.SIGKILL)
-                await proc.wait()
+            # the group, whether or not its leader has exited: a child the leader left behind can
+            # hold the pipes open, and the drain below would wait on it with no deadline
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            await proc.wait()
             await proc.communicate()  # drains and closes the pipes the cancelled read left open
             if isinstance(e, asyncio.CancelledError):
                 raise
