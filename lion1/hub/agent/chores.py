@@ -279,6 +279,9 @@ class Chores:
     # a check's report, from reading the last one sent to writing its row: two checks of a turn run
     # together, and both reading "no prior" before either wrote would each send the same findings
     _reporting: LoopLock = field(default_factory=LoopLock, repr=False)
+    # an aged pass, from reading `aged_sent` to writing it back: two passes of a turn run together, and
+    # both reading the same markers would each tell the steward, or the later write drop the earlier's
+    _aging: LoopLock = field(default_factory=LoopLock, repr=False)
     _caught_up: str | None = field(default=None, repr=False)  # the run whose missed-tick sweep ran
 
     def __post_init__(self) -> None:
@@ -384,6 +387,7 @@ class Chores:
             self._append(
                 {
                     "at": _now(),
+                    "ts": time.time(),  # the instant; `at` is the local label, twice in a repeated hour
                     "chore": req.chore,
                     "args": req.args,
                     "findings": list(out.findings),
@@ -465,10 +469,11 @@ class Chores:
         """A chore that has not answered in `dead_after` consecutive runs is a finding about the
         instrument, told to the owner and the steward once at the crossing; an answer clears it."""
         told = set(_val(self.agent.state, "dead_told", []))
+        # `chore` once every copy landed; `chore|recipient` for a copy that landed while another is owed
+        mine = {t for t in told if t == chore or t.startswith(f"{chore}|")}
         if answered:
-            if chore in told:
-                told.discard(chore)
-                self.agent.state.put("dead_told", sorted(told), run=run.id, seq=run.record.seq)
+            if mine:
+                self.agent.state.put("dead_told", sorted(told - mine), run=run.id, seq=run.record.seq)
             return ""
         streak: list[dict] = []
         for r in reversed(self.rows()):
@@ -477,7 +482,9 @@ class Chores:
             if r.get("answered", r.get("control", True)):
                 break
             streak.append(r)
-        if len(streak) < self.dead_after or chore in told:
+        everyone = [self.owner] + ([self.steward] if self.steward and self.steward != self.owner else [])
+        owed = [to for to in everyone if chore not in told and f"{chore}|{to}" not in told]
+        if len(streak) < self.dead_after or not owed:
             return ""
         text = (
             f"[chore {chore}] ESCALATE, instrument dead: {len(streak)} consecutive run(s) without an answer "
@@ -485,15 +492,17 @@ class Chores:
             f"Last: {'; '.join(streak[0]['findings'])[:300]}"
         )
         sent = []
-        for to in [self.owner] + ([self.steward] if self.steward and self.steward != self.owner else []):
+        for to in owed:
             try:
                 await self._on_chore_thread(
                     chore, to, text, run, subject=f"ESCALATE {chore}: instrument dead"
                 )
                 sent.append(to)
+                told.add(f"{chore}|{to}")  # told once it landed; a refused copy is owed at the next run
             except AgentError as e:
                 sent.append(f"{to} undelivered: {e}")
-        told.add(chore)
+        if all(f"{chore}|{to}" in told for to in everyone):  # every copy landed: the chore's one mark
+            told = (told - {f"{chore}|{to}" for to in everyone}) | {chore}
         self.agent.state.put("dead_told", sorted(told), run=run.id, seq=run.record.seq)
         return f"instrument dead after {len(streak)} unanswered run(s), told {sent}"
 
@@ -561,48 +570,49 @@ class Chores:
         as unanswered and says so."""
         if not self.steward:
             return "aged: no steward"
-        now, done = time.time(), set(_val(self.agent.state, "aged_sent", []))
-        due: list[tuple[dict, float, str]] = []
-        for r in self.rows():
-            if not r.get("msg") or not r["findings"] or self.steward in (r.get("sent_to") or []):
-                continue  # only reports the owner alone received; the steward has the rest already
-            if chore and r["chore"] != chore:
-                continue
-            key = f"{r['chore']}|{r['at']}"
-            if key in done:
-                continue
-            inst = self.instruments.get(r["chore"])
-            period = period_s(inst.every if inst else None)
-            age = now - _epoch(r["at"])
-            if age < self.aged_after * period:
-                continue
-            acked, how = await self._acknowledged(r)
-            if acked:
-                done.add(key)
-                continue
-            due.append((r, age, how))
-        if due:
-            lines = [
-                f"[chores aged] {len(due)} report(s) to {self.owner} unanswered past "
-                f"{self.aged_after} period(s) of their chore; the remedy and the reply are the actor's"
-            ]
-            for r, age, how in due:
-                more = f" (+{len(r['findings']) - 1} more)" if len(r["findings"]) > 1 else ""
-                lines.append(
-                    f"- {r['chore']} {r['at']} ({age / 3600:.1f}h; {how}; thread {r.get('thread')}): "
-                    f"{r['findings'][0][:120]}{more}"
+        async with self._aging:
+            now, done = time.time(), set(_val(self.agent.state, "aged_sent", []))
+            due: list[tuple[dict, float, str]] = []
+            for r in self.rows():
+                if not r.get("msg") or not r["findings"] or self.steward in (r.get("sent_to") or []):
+                    continue  # only reports the owner alone received; the steward has the rest already
+                if chore and r["chore"] != chore:
+                    continue
+                key = _aged_key(r)
+                if key in done:
+                    continue
+                inst = self.instruments.get(r["chore"])
+                period = period_s(inst.every if inst else None)
+                age = now - _epoch(r)
+                if age < self.aged_after * period:
+                    continue
+                acked, how = await self._acknowledged(r)
+                if acked:
+                    done.add(key)
+                    continue
+                due.append((r, age, how))
+            if due:
+                lines = [
+                    f"[chores aged] {len(due)} report(s) to {self.owner} unanswered past "
+                    f"{self.aged_after} period(s) of their chore; the remedy and the reply are the actor's"
+                ]
+                for r, age, how in due:
+                    more = f" (+{len(r['findings']) - 1} more)" if len(r["findings"]) > 1 else ""
+                    lines.append(
+                        f"- {r['chore']} {r['at']} ({age / 3600:.1f}h; {how}; thread {r.get('thread')}): "
+                        f"{r['findings'][0][:120]}{more}"
+                    )
+                await self.agent.deliver(
+                    self.steward,
+                    "\n".join(lines),
+                    thread=None,
+                    run=run,
+                    subject=f"aged: {len(due)} unanswered report(s) from {self.owner}",
                 )
-            await self.agent.deliver(
-                self.steward,
-                "\n".join(lines),
-                thread=None,
-                run=run,
-                subject=f"aged: {len(due)} unanswered report(s) from {self.owner}",
-            )
-            for r, _, _ in due:
-                done.add(f"{r['chore']}|{r['at']}")
-        self.agent.state.put("aged_sent", sorted(done)[-1000:], run=run.id, seq=run.record.seq)
-        return f"aged: {len(due)} report(s) sent to {self.steward}" if due else "aged: nothing unanswered"
+                for r, _, _ in due:
+                    done.add(_aged_key(r))
+            self.agent.state.put("aged_sent", sorted(done)[-1000:], run=run.id, seq=run.record.seq)
+            return f"aged: {len(due)} report(s) sent to {self.steward}" if due else "aged: nothing unanswered"
 
     # ticks
 
@@ -726,7 +736,7 @@ class Chores:
         except Exception as e:
             return False, f"thread unreadable: {type(e).__name__}: {e}"
         msgs = t.get("messages", []) if isinstance(t, dict) else []
-        since = _epoch(row["at"])
+        since = _epoch(row)
         for m in msgs:
             if (
                 sender_of(m) == self.owner
@@ -810,8 +820,21 @@ def _now() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
 
 
-def _epoch(local: str) -> float:
-    return time.mktime(time.strptime(local, "%Y-%m-%d %H:%M:%S"))
+def _aged_key(row: dict) -> str:
+    """An aged marker: the chore and its report's label, and the instant when the row carries one, so
+    two reports in the hour a clock change repeats are two markers."""
+    ts = row.get("ts")
+    key = f"{row['chore']}|{row['at']}"
+    return f"{key}|{ts:.6f}" if isinstance(ts, int | float) and not isinstance(ts, bool) else key
+
+
+def _epoch(row: dict) -> float:
+    """The row's instant: its `ts`; a row written before rows carried one reads its local `at`, which
+    names two instants in the hour a clock change repeats."""
+    ts = row.get("ts")
+    if isinstance(ts, int | float) and not isinstance(ts, bool):
+        return float(ts)
+    return time.mktime(time.strptime(row["at"], "%Y-%m-%d %H:%M:%S"))
 
 
 def _iso_epoch(iso: str | None) -> float:

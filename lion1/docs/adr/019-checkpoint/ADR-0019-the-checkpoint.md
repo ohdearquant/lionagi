@@ -140,10 +140,10 @@ A lazy value shows its name, size and loader: its `ref` or `lion context show`.
   completed, stopped or older spawn counts as running.
 
 A Monitor's deadline is its timeout, five minutes when none is given, capped at 30 minutes whatever
-`persistent` says (A3). Of one command armed twice the newest arm decides, running or not. An inbox
-Monitor for the directory's actor is added when no kept `watch` runs the inbox script. A spawn
-counts only when its result named an agent id and it started within 12 hours (A4). A timestamp with
-no zone is read as UTC.
+`persistent` says (A3). Of one command armed twice the newest successful arm decides, running or
+not; an arm that failed is never kept and retires no older arm. An inbox Monitor for the directory's
+actor is added when no kept `watch` runs the inbox script. A spawn counts only when its result named
+an agent id and it started within 12 hours (A4). A timestamp with no zone is read as UTC.
 
 ### C6: A checkpoint lands only where git ignores it, and no take overwrites another _(enforced: mechanical)_ ^c6
 
