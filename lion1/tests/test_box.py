@@ -69,7 +69,7 @@ def test_the_docker_box_derives_run_read_write_and_diff_from_exec(tmp_path, monk
         r = await box.exec(["sh", "-c", "echo out; echo bad >&2; exit 3"], env={"K": "v"})
         assert (r["rc"], r["stdout"], r["stderr"]) == (3, "out\n", "bad\n")
         assert await box.run("echo $PRE $K; pwd", env={"K": "v"}) == (0, f"1 v\n{work.resolve()}\n")
-        # F03: the model's `bash` sees the prelude too, and the prelude runs once on either path
+        # the model's `bash` sees the prelude too, and the prelude runs once on either path
         r = await box.exec(["sh", "-c", "echo $PRE; echo ${LION_N:-0}"], env={"K": "v"})
         assert r["stdout"] == "1\n0\n" and r["timed_out"] is False
         box.prelude = "export LION_N=$((${LION_N:-0}+1))"
@@ -86,7 +86,7 @@ def test_the_docker_box_derives_run_read_write_and_diff_from_exec(tmp_path, monk
             assert "missing.txt" in str(e)
         else:
             raise AssertionError("a missing file read")
-        # P1-2 (hub review): a Latin-1 file came back with U+FFFD and an edit rewrote its bytes
+        # a Latin-1 file came back with U+FFFD and an edit rewrote its bytes
         (work / "latin.txt").write_bytes(b"caf\xe9\n")
         try:
             await box.read("latin.txt")
@@ -97,7 +97,7 @@ def test_the_docker_box_derives_run_read_write_and_diff_from_exec(tmp_path, monk
         assert await box.read("d/f.txt") == "hi\n"  # the base64 transport carries plain text unchanged
         await box.write("d/u.txt", "naïve 名\n")
         assert await box.read("d/u.txt") == "naïve 名\n"
-        # P2-3: the model's tools work the tree, not the box; the box itself reaches /tmp (the grader
+        # the model's tools work the tree, not the box; the box itself reaches /tmp (the grader
         # writes /tmp/model.patch through it: a bound on the box lost four graded runs, 2026-09-22)
         tree = BoxTree(box)
         for path in ("../x", "/etc/passwd", "d/../../x"):
@@ -123,7 +123,7 @@ def test_the_docker_box_derives_run_read_write_and_diff_from_exec(tmp_path, monk
         assert "-old\n+new\n" in patch and "+added\n" in patch and "c.pyc" not in patch
         assert "__pycache__" not in patch and "+hi\n" in patch  # the exclusion is by path, staged or not
         assert "+spaced\n" in patch and "b/new file.py" in patch and "+dash\n" in patch
-        # P1-1: git's stderr is not patch text (a CRLF warning read as a change, measured)
+        # git's stderr is not patch text (a CRLF warning read as a change, measured)
         git(work, "config", "core.safecrlf", "warn")
         git(work, "config", "core.autocrlf", "input")
         (work / "crlf.py").write_bytes(b"x\r\n")
@@ -148,7 +148,7 @@ def test_the_docker_box_derives_run_read_write_and_diff_from_exec(tmp_path, monk
 @pytest.mark.parametrize("timeout", [5.0, None])
 @pytest.mark.parametrize("transport", ["daytona", "docker"])
 def test_box_timeout_seam(monkeypatch, transport, timeout):
-    # ported from the round-3 review's counterexample: `run` on both transports takes None as well
+    # `run` on both transports takes None as well
     calls = []
 
     class Proc:

@@ -64,7 +64,7 @@ def test_read_lines_search_and_edit_over_a_tree(tmp_path):
 
 
 def test_search_over_a_single_file_still_prints_the_filename(tmp_path):
-    # P3-2 (hub review): rg drops the filename column when `path` names one file directly, so a
+    # rg drops the filename column when `path` names one file directly, so a
     # single-file search read back as `line:text` instead of the promised `file:line:text`
     actor, profile = tree(tmp_path)
     run = asyncio.run(
@@ -79,7 +79,7 @@ def test_search_over_a_single_file_still_prints_the_filename(tmp_path):
 
 
 def test_read_lines_on_an_empty_file_says_so(tmp_path):
-    # P3-4 (hub review): numbered's own (1, 0, 0) span read back as "lines 1-0 of 0", a range that
+    # numbered's own (1, 0, 0) span read back as "lines 1-0 of 0", a range that
     # names no line
     actor, profile = tree(tmp_path)
     (tmp_path / "empty.py").write_text("")
@@ -95,7 +95,7 @@ def test_read_lines_on_an_empty_file_says_so(tmp_path):
 
 
 def test_an_edit_keeps_a_crlf_files_other_bytes(tmp_path):
-    # F08: read_text() folded CRLF to LF and the write rewrote every line of a three-line file
+    # read_text() folded CRLF to LF and the write rewrote every line of a three-line file
     actor, profile = tree(tmp_path)
     (tmp_path / "win.txt").write_bytes(b"a = 1\r\nb = 1\r\nc = 1\r\n")
     run = asyncio.run(
@@ -111,7 +111,7 @@ def test_an_edit_keeps_a_crlf_files_other_bytes(tmp_path):
 
 
 def test_an_edit_keeps_each_line_of_a_mixed_endings_file(tmp_path):
-    # P2-9 (hub review): a file with one LF line among CRLF ones was neither "a CRLF file" nor an LF
+    # a file with one LF line among CRLF ones was neither "a CRLF file" nor an LF
     # one, so an edit rewrote every ending as LF; each unchanged line keeps its own now
     from hub.tools.code import reend
 
@@ -131,7 +131,7 @@ def test_an_edit_keeps_each_line_of_a_mixed_endings_file(tmp_path):
 
 
 def test_search_reaches_hidden_files_but_never_the_git_directory(tmp_path):
-    # P2-1: rg skips dotfiles by default, so `.github/ci.yml` was invisible and `.git` would not be
+    # rg skips dotfiles by default, so `.github/ci.yml` was invisible and `.git` would not be
     actor, profile = tree(tmp_path)
     (tmp_path / ".github").mkdir()
     (tmp_path / ".github" / "ci.yml").write_text("needle: 1\n")
@@ -150,7 +150,7 @@ def test_search_reaches_hidden_files_but_never_the_git_directory(tmp_path):
 
 
 def test_the_local_tree_refuses_paths_that_leave_it(tmp_path):
-    # F11: `..`, an absolute path elsewhere and a symlink out of the tree all reached the host
+    # `..`, an absolute path elsewhere and a symlink out of the tree all reached the host
     outside = tmp_path / "outside.py"
     outside.write_text("secret = 1\n")
     root = tmp_path / "root"

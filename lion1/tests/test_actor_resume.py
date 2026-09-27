@@ -3,10 +3,14 @@ applied at that point of the record; nothing runs again and no note is written a
 ADR-0018/C6)."""
 
 import asyncio
+import json
 
 from pydantic import BaseModel
 
+from hub import files
+from hub.chat import chat, entry_row, load_log
 from lionagi import Actor, Profile, RunRequest
+from lionagi.actor import DEFAULT_HANDLERS
 from tests.test_actor import scripted
 
 
@@ -120,3 +124,70 @@ def test_a_resumed_run_resolves_a_redeclared_value_to_its_latest_declaration():
         )
     )
     assert resumed.resolve("x") == "new"
+
+
+def _lnr01_asks(*messages):
+    it = iter(messages)
+
+    async def ask():
+        return next(it)
+
+    return ask
+
+
+def _lnr01_reader(directory, name):
+    actor = Actor(name, notes_dir=directory / "notes")
+    specs = files(actor, directory) | {h.name for h in DEFAULT_HANDLERS}
+    return actor, Profile(name="c", specs=frozenset(specs), system="Reply in plain text.")
+
+
+def _lnr01_session(tmp_path, name, turns, msgs):
+    log = tmp_path / f"{name}.jsonl"
+    actor, profile = _lnr01_reader(tmp_path, name)
+    with log.open("w") as fh:
+        run = asyncio.run(
+            chat(
+                actor,
+                profile,
+                scripted(*turns),
+                _lnr01_asks(*msgs),
+                say=lambda e: fh.write(json.dumps(entry_row(e), default=str) + "\n"),
+            )
+        )
+    return run, load_log(log)
+
+
+def test_a_refused_redeclaration_does_not_come_back_on_resume(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\n")
+    run1, history = _lnr01_session(
+        tmp_path,
+        "lnr01-c",
+        ['<lact r1>read(path="a.txt")</lact>', "<lvar r1>shadow</lvar>", "done"],
+        ["go", None],
+    )
+    assert run1.resolve("r1") == "alpha\n"
+    actor2, profile2 = _lnr01_reader(tmp_path, "lnr01-d")
+    run2 = asyncio.run(
+        chat(
+            actor2, profile2, scripted("ok"), _lnr01_asks("again", None), history=history, say=lambda e: None
+        )
+    )
+    assert run2.resolve("r1") == "alpha\n"
+
+
+def test_a_rewritten_note_resolves_to_its_latest_value_after_resume(tmp_path):
+    run1, history = _lnr01_session(
+        tmp_path,
+        "lnr01-a",
+        ["<lvar note.plan>v1</lvar>", "<lvar note.plan>v2</lvar>"],
+        ["first", "second", None],
+    )
+    assert run1.resolve("note.plan") == "v2"
+    actor2, profile2 = _lnr01_reader(tmp_path, "lnr01-b")
+    run2 = asyncio.run(
+        chat(
+            actor2, profile2, scripted("ok"), _lnr01_asks("again", None), history=history, say=lambda e: None
+        )
+    )
+    assert run2.notes.get("plan").value == "v2"
+    assert run2.resolve("note.plan") == "v2"

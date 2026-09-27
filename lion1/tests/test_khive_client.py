@@ -113,3 +113,25 @@ def test_cancelling_a_call_stops_kkernel_and_its_children(tmp_path, monkeypatch)
     with pytest.raises(KhiveError, match="did not answer within"):
         asyncio.run(k.exec("comm.inbox()"))
     assert procs[1].returncode is not None and procs[1].stdout.at_eof()  # the timeout path reaps too
+
+
+def test_a_timeout_after_kkernel_exited_still_stops_what_it_left_holding_the_pipes(tmp_path):
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    stub = tmp_path / "kkernel"
+    stub.write_text(f"#!/bin/sh\nsleep 30 &\necho $! > {tmp_path / 'child'}\nexit 0\n")
+    stub.chmod(0o755)
+    k = Khive(tmp_path, "lambda:x", kkernel=str(stub), timeout=0.5)
+    t0 = time.monotonic()
+    with pytest.raises(KhiveError, match="did not answer within"):
+        asyncio.run(asyncio.wait_for(k.exec("comm.inbox()"), 15))
+    assert time.monotonic() - t0 < 10
+    child = int((tmp_path / "child").read_text())
+    for _ in range(200):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError(f"kkernel's child {child} outlived the timed-out call")
