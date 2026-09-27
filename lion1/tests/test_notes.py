@@ -218,3 +218,55 @@ def test_find_reads_every_note_when_one_value_cannot_be_rendered_as_json():
     store.put("plan", "ship it", run="r", seq=2)
     assert [n.key for n in store.find("ship")] == ["plan"]
     assert [n.key for n in store.find("LOOP")] == ["ring"]  # the value's own text stands in for its JSON
+
+
+def test_a_first_write_that_fails_leaves_nothing_behind_and_the_next_write_carries_only_itself(
+    tmp_path, monkeypatch
+):
+    # the file is the store. A first write whose replace failed left its note in memory, readable at
+    # version 1 with no file on disk, and the next write carried it to the file as if it had landed
+    def refuse(src, dst):
+        raise OSError("replace refused")
+
+    path = tmp_path / "notes.json"
+    store = FileNoteStore(path)
+    with monkeypatch.context() as m:
+        m.setattr("lionagi.notes.os.replace", refuse)
+        with pytest.raises(OSError, match="replace refused"):
+            store.put("ghost", "uncommitted", run="r1", seq=1)
+    assert not path.exists() and not list(tmp_path.glob("*.tmp"))
+    store.put("real", "committed", run="r1", seq=2)  # no read in between: the write reconciles itself
+    on_disk = json.loads(path.read_text())
+    assert (sorted(on_disk["notes"]), on_disk["version"]) == (["real"], 1)
+    assert store.get("ghost") is None and store.get("real").value == "committed"
+    other = FileNoteStore(tmp_path / "other.json")
+    with monkeypatch.context() as m:
+        m.setattr("lionagi.notes.os.replace", refuse)
+        with pytest.raises(OSError, match="replace refused"):
+            other.put("ghost", "uncommitted", run="r1", seq=1)
+    assert (other.get("ghost"), other.version) == (None, 0)
+    # a failed write over an existing file keeps the file and the value it held
+    old = path.read_bytes()
+    with monkeypatch.context() as m:
+        m.setattr("lionagi.notes.os.replace", refuse)
+        with pytest.raises(OSError, match="replace refused"):
+            store.put("real", "changed", run="r1", seq=3)
+    assert path.read_bytes() == old and (store.get("real").value, store.version) == ("committed", 1)
+
+
+def test_note_find_and_note_list_render_a_value_that_refers_to_itself():
+    # the store's text of such a value falls back to str(); the commands rendered each hit's preview
+    # through their own text, which caught TypeError alone, and failed whole on the ValueError
+    store = MemoryNoteStore()
+    ring: list = ["loop"]
+    ring.append(ring)
+    store.put("ring", ring, run="r1", seq=1)
+    store.put("plan", "ship it", run="r1", seq=2)
+    assert [n.key for n in store.find("LOOP")] == ["ring"]
+    turn = '<lact f>note.find(query="loop")</lact><lact l>note.list()</lact>'
+    run = asyncio.run(
+        Actor("notes-ring").run(Profile("p", notes=store), RunRequest(max_rounds=1), scripted(turn))
+    )
+    found, listed = (run.record.get(a).content for a in ("f", "l"))
+    assert found.ok and [h["key"] for h in found.value] == ["ring"], found
+    assert listed.ok and [h["key"] for h in listed.value] == ["plan", "ring"], listed

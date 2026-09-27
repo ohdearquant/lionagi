@@ -19,6 +19,7 @@ from lionagi import (
     MemoryNoteStore,
     Profile,
     ProfileError,
+    Record,
     Result,
     RunRequest,
     Stopped,
@@ -579,3 +580,87 @@ def test_an_out_literal_with_an_unhashable_key_is_a_retry_that_names_the_field()
     run = once(Actor("edge-unhashable"), Profile("p"), *turns, emits=(Tally,))
     assert "your last turn could not be read: OUT{tally: ...}: value: " in notices(run)[1]
     assert run.output["tally"] == Tally(value=3)
+
+
+class Said(BaseModel):
+    text: str
+
+
+@pytest.mark.parametrize("forward", [False, True], ids=["one-command", "a-pointer-at-a-later-one"])
+@pytest.mark.parametrize("eager", [False, True], ids=["default-factory", "eager-factory"])
+def test_every_command_of_a_turn_is_admitted_before_any_of_them_runs(eager, forward):
+    # under an eager task factory a command's coroutine ran inside create_task: registered as pending
+    # only afterwards, it settled twice (a second RESULT under its alias), and a pointer at a later
+    # command of the same turn found nothing to wait for and resolved invalid
+    if eager and not hasattr(asyncio, "eager_task_factory"):
+        pytest.skip("eager tasks arrive in Python 3.12")
+    actor = Actor("edge-admitted")
+
+    @actor.handler(Said)
+    async def said(req: Said, ctx) -> str:
+        return req.text
+
+    turn = ("<lact a>said(text=*b)</lact>" if forward else "") + '<lact b>said(text="ok")</lact>'
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        errors: list[str] = []
+        loop.set_exception_handler(lambda _loop, c: errors.append(repr(c.get("exception"))))
+        if eager:
+            loop.set_task_factory(asyncio.eager_task_factory)
+        run = await actor.run(Profile("p"), RunRequest(max_rounds=1), scripted(turn))
+        await asyncio.sleep(0)  # any callback on a task that was already complete lands here
+        await asyncio.sleep(0)
+        rows = [(e.alias, e.content.ok, e.content.value) for e in run.record if e.kind is Kind.RESULT]
+        return sorted(rows), sorted(run.pending), errors
+
+    rows, pending, errors = asyncio.run(scenario())
+    assert rows == ([("a", True, "ok")] if forward else []) + [("b", True, "ok")]
+    assert pending == [] and errors == []
+
+
+@pytest.mark.parametrize("settled", [0, 1], ids=["first-turn", "after-a-settled-turn"])
+def test_a_backend_that_raises_leaves_the_run_with_no_outcome(settled):
+    # a settled turn without OUT{} leaves Continue in run.outcome, and the abort left it there: the
+    # run read as settled while it ended by a raise (ADR-0002/C4: an abort is not one of the four)
+    actor = Actor("edge-abort")
+    seen: list = []
+    calls = 0
+
+    def backend(messages):
+        nonlocal calls
+        calls += 1
+        if calls <= settled:
+            return "<lvar v>kept</lvar>"
+        seen.extend(actor.runs.values())
+        raise RuntimeError("backend down")
+
+    with pytest.raises(RuntimeError, match="backend down"):
+        asyncio.run(actor.run(Profile("p"), RunRequest(max_rounds=settled + 1), backend))
+    assert len(seen) == 1 and actor.runs == {} and seen[0].outcome is None
+    assert not any(e.kind == "run.completed" for e in actor.bus.log)
+    if settled:
+        assert seen[0].resolve("v") == "kept"
+
+
+@pytest.mark.parametrize("twice", [False, True], ids=["replays", "does-not-replay"])
+def test_a_history_that_does_not_replay_leaves_no_live_run(twice):
+    # the run was registered before its history replayed: a history refused (an alias twice) raised
+    # with a run that never ran still live in `actor.runs`
+    actor = Actor("edge-history")
+    entry = Record("old").append(Kind.INPUT, "kept", alias="prior")
+    calls: list[int] = []
+
+    def backend(messages):
+        calls.append(1)
+        return 'OUT{answer: "ok"}'
+
+    request = RunRequest(max_rounds=1, history=(entry, entry) if twice else (entry,))
+    if twice:
+        with pytest.raises(ValueError):
+            asyncio.run(actor.run(Profile("p"), request, backend))
+        assert calls == []
+    else:
+        asyncio.run(actor.run(Profile("p"), request, backend))
+        assert calls == [1]
+    assert actor.runs == {}

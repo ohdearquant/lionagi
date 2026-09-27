@@ -116,10 +116,14 @@ class FileNoteStore(MemoryNoteStore):
         self._load()
 
     def _load(self) -> None:
-        if self.path.exists():
-            data = json.loads(self.path.read_text())
-            self._version = int(data.get("version", 0))
-            self._notes = {k: Note(**v) for k, v in data.get("notes", {}).items()}
+        if not self.path.exists():
+            # the file is the store: with none, nothing is kept (a first write that failed left its
+            # note in memory, readable at version 1, and the next write carried it to the file)
+            self._version, self._notes = 0, {}
+            return
+        data = json.loads(self.path.read_text())
+        self._version = int(data.get("version", 0))
+        self._notes = {k: Note(**v) for k, v in data.get("notes", {}).items()}
 
     @contextlib.contextmanager
     def _locked(self):
