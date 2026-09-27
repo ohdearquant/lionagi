@@ -16,6 +16,7 @@ import functools
 import json
 import os
 import re
+import shlex
 import tomllib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -398,7 +399,7 @@ def watches(transcript_path: str | Path, actor: str, now: datetime | None = None
             value["persistent"] = given["persistent"]
         out.append(Var(f"watch.{m['task']}", "watch", value, "transcript", m["at"]))
     if not any(Path(INBOX_MONITOR).name in str(v.value.get("command") or "") for v in out):
-        command = " ".join(["bash", INBOX_MONITOR, actor, *(a for a in INBOX_PRIORITY if a != actor)])
+        command = shlex.join(["bash", INBOX_MONITOR, actor, *(a for a in INBOX_PRIORITY if a != actor)])
         value = {"command": command, "description": f"{actor} inbox", "timeout_ms": None, "persistent": True}
         out.append(Var("watch.inbox", "watch", value, "declared", _now()))
     return out

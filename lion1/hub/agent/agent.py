@@ -66,6 +66,24 @@ class AgentError(Exception):
     pass
 
 
+class LoopLock:
+    """An asyncio.Lock for whichever loop is running. A plain one binds to the first loop that waits
+    on it, and the next `asyncio.run` driving the same agent then raises at its first wait."""
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock = asyncio.Lock()
+
+    async def __aenter__(self) -> None:
+        loop = asyncio.get_running_loop()
+        if loop is not self._loop:
+            self._loop, self._lock = loop, asyncio.Lock()
+        await self._lock.acquire()
+
+    async def __aexit__(self, *exc: object) -> None:
+        self._lock.release()
+
+
 class Send(BaseModel):
     """Answer on a thread. One message per thread per wake; say it once, briefly."""
 
@@ -281,10 +299,10 @@ def _quiet(value: Any) -> tuple[int, int]:
     m = re.fullmatch(r"\s*(\d\d):(\d\d)\s*-\s*(\d\d):(\d\d)\s*", str(value))
     if m is None:
         raise ValueError(f"[wake] quiet {value!r}: like 23:00-07:00")
-    a, b = int(m[1]) * 60 + int(m[2]), int(m[3]) * 60 + int(m[4])
-    if not (0 <= a < 1440 and 0 <= b < 1440):
+    hours, minutes = (int(m[1]), int(m[3])), (int(m[2]), int(m[4]))
+    if any(h > 23 for h in hours) or any(n > 59 for n in minutes):  # 07:75 is not 08:15
         raise ValueError(f"[wake] quiet {value!r}: hours 00-23, minutes 00-59")
-    return a, b
+    return hours[0] * 60 + minutes[0], hours[1] * 60 + minutes[1]
 
 
 @dataclass
@@ -311,7 +329,7 @@ class Agent:
     held: str | None = None  # why the last wake did not happen, when a budget cap held it
     runs: list[Run] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
-    _sending: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    _sending: LoopLock = field(default_factory=LoopLock, repr=False)
     _delivered: dict[str, int] = field(default_factory=dict, repr=False)  # run id -> messages sent
     _lock_fd: int | None = field(default=None, repr=False)  # the pid file, held locked while serving
     _dropped: list[dict] = field(default_factory=list, repr=False)  # this wake's refused mail
@@ -478,15 +496,17 @@ class Agent:
     async def _tasks(self, now: float) -> list[dict]:
         """The tasks due now, as notices for this wake, once per `at`: a task the model leaves at the
         same `at` is not a wake again; one it moves is. A read that fails is a logged line, no tasks."""
-        if self.gtd is None or self.gtd.due == "off":
+        if self.gtd is None or (self.gtd.due == "off" and self.gtd.work != "idle"):
             return []
         try:
-            await self._read_queue(now)
+            await self._read_queue(now)  # with `due` off, `work = "idle"` still reads it: its top is the work
         except Exception as e:
             line = f"gtd read failed: {type(e).__name__}: {e}"
             if not self.errors or self.errors[-1] != line:
                 self.errors.append(line)
                 self._say(line)
+            return []
+        if self.gtd.due == "off":
             return []
         woken = dict(_value(self.state, "tasks", {}).get("woken") or {})
         out = []
@@ -1049,8 +1069,15 @@ class Agent:
                 self.state.put("taking", {}, run="-", seq=0)
                 self._dropped = []
                 continue
-            if self.profile_for(mail + notices).name != run.profile.name:
-                # this batch runs under another profile: the run ends here and `wake` runs it fresh
+            want = self.profile_for(mail + notices)
+            if (want.name, want.specs, want.privileges, want.system) != (
+                run.profile.name,
+                run.profile.specs,
+                run.profile.privileges,
+                run.profile.system,
+            ):
+                # this batch runs under another profile, or its profile changed under the same name
+                # (fewer specs, other privileges): the run ends here and `wake` runs it fresh
                 self._carry = (mail, notices)
                 return False
             self.admitted = list(mail)
@@ -1137,15 +1164,26 @@ class Agent:
         path = Path(cwd) / "agent.pid"
         if self._lock_fd is not None:
             return path
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            other = os.read(fd, 64).decode(errors="replace").strip() or "?"
+        while True:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                other = os.read(fd, 64).decode(errors="replace").strip() or "?"
+                os.close(fd)
+                raise AgentError(
+                    f"{self.khive.actor} is held by live process {other} ({path}); one process per identity"
+                ) from None
+            # opened before a holder's release removed the file, the lock is on a file nobody else
+            # will lock again while the path names a new one; locked on the path's own file it holds
+            try:
+                here = os.stat(path)
+            except FileNotFoundError:
+                here = None
+            mine = os.fstat(fd)
+            if here is not None and (here.st_dev, here.st_ino) == (mine.st_dev, mine.st_ino):
+                break
             os.close(fd)
-            raise AgentError(
-                f"{self.khive.actor} is held by live process {other} ({path}); one process per identity"
-            ) from None
         os.ftruncate(fd, 0)
         os.write(fd, str(os.getpid()).encode())
         self._lock_fd = fd

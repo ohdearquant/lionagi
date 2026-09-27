@@ -257,6 +257,45 @@ def test_the_same_findings_again_are_not_resent_and_the_row_says_which_report_th
     )
 
 
+class Yielding(FakeKhive):
+    """A send that gives the loop away mid-flight, as the real transport's subprocess does: two
+    checks of a turn interleave there."""
+
+    async def send(self, *args, **kwargs):
+        await asyncio.sleep(0)
+        return await super().send(*args, **kwargs)
+
+
+def test_two_checks_of_one_chore_in_a_turn_send_the_findings_once(tmp_path):
+    khive = Yielding(mail(SELF, "tick: disk"))
+    out = full(findings=("apps steady: under the floor on /dev/disk3s5 (/a)",), evidence="df: ...")
+    twice = '<lact c1>check(chore="disk")</lact><lact c2>check(chore="disk")</lact>'
+    chores, agent = build(tmp_path, khive, [twice, DONE], disk=Probe("disk", out))
+    asyncio.run(agent.wake())
+    assert len(khive.sent) == 1
+    first, second = chores.rows()
+    assert first["sent_to"] == [OWNER] and second["sent_to"] == [] and second["repeat_of"] == first["at"]
+
+
+def test_two_chores_opening_their_threads_in_one_turn_both_keep_them(tmp_path):
+    khive = Yielding(mail(SELF, "tick: disk"), mail(SELF, "tick: disk", mid="b2c3d4e5"))
+    both = '<lact c1>check(chore="disk")</lact><lact c2>check(chore="mem")</lact>'
+    disk = Probe("disk", *(full(findings=(f"disk {w}",), evidence="df: ...") for w in ("low", "lower")))
+    mem = Probe("mem", *(full(findings=(f"mem {w}",), evidence="vm_stat: ...") for w in ("low", "lower")))
+    chores, agent = build(tmp_path, khive, [both, DONE] * 2, disk=disk, mem=mem)
+    asyncio.run(agent.wake())
+    keys = {tuple(k.split(":", 2)[::2]) for k in agent.state.get("chore_threads").value}
+    assert keys == {("disk", OWNER), ("mem", OWNER)}
+
+    def threads(sent: list[dict]) -> dict:
+        return {(s["subject"].split(":")[0], s["to"]): s["thread_id"] for s in sent}
+
+    opened = threads(khive.sent)
+    assert len(khive.sent) == len(set(opened.values())) == 2
+    asyncio.run(agent.wake())  # a second loop: the locks of the first are not its locks
+    assert len(khive.sent) == 4 and threads(khive.sent[2:]) == opened  # each reused its own
+
+
 def test_a_quiet_tick_sends_nothing_and_still_leaves_a_row(tmp_path):
     khive = FakeKhive(mail(SELF, "tick: disk"))
     chores, agent = build(tmp_path, khive, [CHECK, DONE], disk=Probe("disk", full()))
@@ -384,7 +423,7 @@ def test_a_chore_that_never_answers_is_escalated_once_as_a_dead_instrument_and_a
 
 def test_an_ask_is_answered_on_its_thread_whatever_the_outcome_and_the_owner_is_not_told_twice(tmp_path):
     khive = FakeKhive(
-        mail(OWNER, "check disk please"), mail(STEWARD, "disk?", mid="b2c3d4e5", thread="t-leo")
+        mail(OWNER, "check disk please"), mail(STEWARD, "disk?", mid="b2c3d4e5", thread="t-steward")
     )
     quiet, loud = full(), full(findings=("a target over the cap",), evidence="du")
     chores, agent = build(
@@ -404,9 +443,12 @@ def test_an_ask_is_answered_on_its_thread_whatever_the_outcome_and_the_owner_is_
     ]
     assert "nothing to report" in khive.sent[0]["content"]
     chores.instruments["disk"].outcomes = [loud]
-    agent.backend.turns = [f'<lact c1>check(chore="disk", asker="{STEWARD}", thread="t-leo")</lact>', DONE]
+    agent.backend.turns = [
+        f'<lact c1>check(chore="disk", asker="{STEWARD}", thread="t-steward")</lact>',
+        DONE,
+    ]
     asyncio.run(agent.wake())
-    assert [(s["to"], s["thread_id"]) for s in khive.sent[1:]] == [(STEWARD, "t-leo"), (OWNER, "t3")]
+    assert [(s["to"], s["thread_id"]) for s in khive.sent[1:]] == [(STEWARD, "t-steward"), (OWNER, "t3")]
     assert chores.rows()[1]["asked_by"] == STEWARD and chores.rows()[1]["sent_to"] == [STEWARD, OWNER]
 
 
@@ -797,8 +839,8 @@ def test_the_bounded_client_lets_the_agent_remember_at_leg_salience_only():
         asyncio.run(k.exec('memory.remember(content="x", salience=0.9)'))
     with pytest.raises(AgentError, match="memory.remember takes salience <= 0.4 .*got none"):
         asyncio.run(k.exec('memory.remember(content="x (salience=0.1 in the text)")'))
-    # the guard read the first `salience=` substring only (apps review, 2026-09-22): a duplicate key,
-    # a name ending in it and a single-quoted `)` all reached the store at 0.9
+    # the guard reads every `salience=`, not the first substring: a duplicate key, a name ending in
+    # it and a single-quoted `)` must not reach the store at 0.9
     for op in (
         'memory.remember(content="x", salience=0.4, salience=0.9)',
         'memory.remember(content="x", my_salience=0.4, salience=0.9)',

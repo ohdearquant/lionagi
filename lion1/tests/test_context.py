@@ -4,6 +4,7 @@ harvests its kind, and an absent source is a value."""
 
 import asyncio
 import json
+import shlex
 import subprocess
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -198,6 +199,14 @@ def test_each_source_harvests_its_kind_and_an_absent_source_is_a_value(tmp_path)
         )
     )
     assert context_figure("s1", tmp_path) == {"used": 370, "window": 1000, "pct": 37}
+
+
+def test_the_inbox_line_quotes_a_monitor_path_with_a_space(monkeypatch):
+    script = "/opt/my tools/inbox-monitor.sh"
+    monkeypatch.setattr("hub.context.INBOX_MONITOR", script)
+    monkeypatch.setattr("hub.context.INBOX_PRIORITY", ())
+    (inbox,) = watches(FIXTURE, ACTOR, AT_TAKE + timedelta(days=1))
+    assert shlex.split(inbox.value["command"]) == ["bash", script, ACTOR]
 
 
 def test_watches_are_the_monitors_still_running_verbatim_and_the_inbox_line_is_added_once(

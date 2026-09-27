@@ -110,8 +110,8 @@ def test_a_wake_marks_mail_read_before_the_model_sees_it_answers_on_the_thread_a
     cursor = agent.state.get("cursor").value
     assert cursor["mail"] == ["a1b2c3d4"] and cursor["sent"] == 1 and cursor["outcome"] == "Success"
     assert cursor["run"] == run.id and cursor["wake"] == 1 and cursor["profile"] == "acting"
-    # a note's seq is the record's checkpoint (the next append), as Record.seq defines it; two of
-    # three private copies stamped the last entry's own index instead (night review, 2026-09-22)
+    # a note's seq is the record's checkpoint (the next append), as Record.seq defines it, never
+    # the last entry's own index
     assert agent.state.get("cursor").seq == run.record.seq == len(run.record) > 0
     assert agent.actor.notes_for(ACTING).get("posture").value == "answered hello"
     assert agent.state.get("threads").value == {THREAD: 1}
@@ -221,6 +221,48 @@ def test_mail_for_another_profile_ends_the_conversation_and_runs_fresh(tmp_path)
     assert first.profile is ACTING and second.profile is READER and khive.sent == [SENT]
     assert "read this" not in "".join(str(e.content) for e in first.record)
     assert lines[1].startswith("wake 2: Success after 1 rounds, 1 mail, 0 sent")
+
+
+def test_a_profile_changed_under_the_same_name_ends_the_conversation_and_runs_fresh(tmp_path):
+    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    later = mail("lambda:a", "read this", mid="c3d4e5f6")
+    fewer = Profile("acting", privileges=frozenset(), system="answer on the thread")
+    lines: list[str] = []
+
+    def profile_for(batch: list[dict]) -> Profile:
+        return fewer if any(m["id"] == "c3d4e5f6" for m in batch) else ACTING
+
+    backend = Scripted(REPLY, DONE, khive=khive)
+    agent = Agent(
+        Actor("echo", privileges={"comm.send"}), khive, backend, profile_for, continuous=True, poll_ms=20
+    )
+
+    def until() -> bool:
+        if len(lines) == 1 and later not in khive.taken:
+            khive.mail.append(later)
+        return len(lines) >= 2
+
+    asyncio.run(agent.serve(until=until, log=lines.append))
+    first, second = agent.runs
+    assert first.profile is ACTING and second.profile is fewer and khive.sent == [SENT]
+    assert "read this" not in "".join(str(e.content) for e in first.record)
+
+
+def test_two_sends_of_a_turn_wait_on_one_lock_under_every_loop_that_drives_the_agent():
+    class Yielding(FakeKhive):
+        async def send(self, *args, **kwargs):
+            await asyncio.sleep(0)  # as the real transport does, so the second send waits on the lock
+            return await super().send(*args, **kwargs)
+
+    khive = Yielding()
+    agent = build(khive)
+
+    async def two() -> None:
+        await asyncio.gather(*(agent.deliver("lambda:a", "hi", thread=None, run="r1") for _ in range(2)))
+
+    asyncio.run(two())
+    asyncio.run(two())
+    assert len(khive.sent) == 4
 
 
 def test_a_refused_command_does_not_end_the_batch(tmp_path):
@@ -465,6 +507,30 @@ def test_the_identity_is_a_lock_the_process_keeps_not_a_pid_it_wrote(tmp_path):
     second._release(path)
 
 
+def test_a_claim_that_locked_a_file_its_holder_just_removed_takes_the_live_one_and_is_refused(
+    tmp_path, monkeypatch
+):
+    import fcntl
+
+    khive = FakeKhive(cwd=tmp_path)
+    first, second, late = (build(khive, state=MemoryNoteStore()) for _ in range(3))
+    path = first._claim()
+    real, raced = fcntl.flock, []
+
+    def flock(fd, op):
+        if not raced:  # `late` opened the old file; its holder lets go and `second` claims a new one
+            raced.append(fd)
+            first._release(path)
+            second._claim()
+        return real(fd, op)
+
+    monkeypatch.setattr(fcntl, "flock", flock)
+    with pytest.raises(AgentError, match="held by live process"):
+        late._claim()
+    assert late._lock_fd is None and raced and path.read_text() == str(os.getpid())
+    second._release(path)
+
+
 def test_a_recovery_notice_the_transport_dropped_is_told_at_the_next_start():
     class FirstSendFails(FakeKhive):
         attempts = 0
@@ -626,7 +692,7 @@ def test_wake_rules_read_top_down_by_sender_glob_subject_and_spent_fraction():
     )
     assert rules.batch_after == 1800.0 and rules.batch_size == 3 and rules.quiet == ((23 * 60, 7 * 60),)
     assert rules.decide(mail("lambda:owner", "x"), 0.0) == "now"
-    assert rules.decide(mail("email:ocean@example.com", "x"), 0.0) == "now"
+    assert rules.decide(mail("email:person@example.com", "x"), 0.0) == "now"
     assert rules.decide({**mail("lambda:c", "x"), "subject": "[NOW] merge"}, 0.0) == "now"
     assert rules.decide(mail("lambda:b:desk", "x"), 0.5) == "batch"  # not past the spent fraction yet
     assert rules.decide(mail("lambda:b:desk", "x"), 0.9) == "drop"
@@ -647,6 +713,8 @@ def test_wake_rules_read_top_down_by_sender_glob_subject_and_spent_fraction():
         Wake.load({"batch_after": "soon"})
     with pytest.raises(ValueError, match="quiet"):
         Wake.load({"quiet": ["night"]})
+    with pytest.raises(ValueError, match="minutes 00-59"):  # 07:75 is refused, never read as 08:15
+        Wake.load({"quiet": ["07:75-08:00"]})
 
 
 def test_batch_mail_waits_read_under_the_deferred_note_and_now_mail_takes_it_along(tmp_path):
@@ -684,7 +752,7 @@ def test_the_window_opens_by_age_with_no_new_mail_and_the_wake_now_file_opens_it
     khive.mail.append(mail("lambda:a", "later too", mid="e2e2e2e2"))
     agent = build(khive, REPLY, DONE, wake_rules=rules, clock=lambda: now[0])  # the same notes on disk
     assert asyncio.run(agent.wake(wait_ms=0)) is None
-    (tmp_path / "wake-now").write_text("ocean from the app\n")
+    (tmp_path / "wake-now").write_text("the owner from the app\n")
     lines: list[str] = []
     agent._say = lines.append
     run = asyncio.run(agent.wake(wait_ms=0))
@@ -840,6 +908,31 @@ def test_a_quiet_chair_works_the_top_of_its_queue_after_idle_after(tmp_path):
     assert asyncio.run(agent.wake(wait_ms=0)) is None  # off: the queue is a line in the notice, never a wake
 
 
+def test_idle_work_reads_the_queue_when_due_is_off_and_due_tasks_still_do_not_wake(tmp_path):
+    from hub.agent.agent import Gtd
+
+    now = [2_000_000.0]
+    top = task("t9", "tidy the corpus", status="active", priority="p0", at=now[0] - 1)
+    khive = QueueKhive(queue=[top], cwd=tmp_path)
+    agent = Agent(
+        Actor("echo", privileges={"comm.send"}),
+        khive,
+        Scripted(DONE, khive=khive),
+        lambda b: ACTING,
+        gtd=Gtd(poll=1, due="off", work="idle", idle_after=600),
+        clock=lambda: now[0],
+    )
+    assert asyncio.run(agent.wake(wait_ms=0)) is None  # past its `at`, but `due` is off: no wake
+    assert khive.ops  # the queue was read all the same
+    now[0] += 600
+    run = asyncio.run(agent.wake(wait_ms=0))
+    assert run is not None
+    first = next(e for e in run.record if e.kind is Kind.INPUT).content
+    assert (
+        "[task t9 p0 active at " in first and "the top of your queue; no mail, you are working it]" in first
+    )
+
+
 def test_a_wake_now_file_with_no_mail_waiting_runs_the_queue_as_it_is_now_or_is_consumed_saying_so(tmp_path):
     from hub.agent.agent import Gtd
 
@@ -856,7 +949,7 @@ def test_a_wake_now_file_with_no_mail_waiting_runs_the_queue_as_it_is_now_or_is_
     assert asyncio.run(agent.wake(wait_ms=0)) is None  # quiet; the queue was read empty and is cached
     khive.queue = [task("t3", "read the desk", status="next", priority="p1")]  # assigned within `poll`
     now[0] += 5
-    (tmp_path / "wake-now").write_text("ocean from the app\n")
+    (tmp_path / "wake-now").write_text("the owner from the app\n")
     lines: list[str] = []
     agent._say = lines.append
     reads = len(khive.ops)
@@ -870,7 +963,7 @@ def test_a_wake_now_file_with_no_mail_waiting_runs_the_queue_as_it_is_now_or_is_
     # an empty queue: the file is consumed and said, and no model call is spent
     khive.queue = []
     now[0] += 5
-    (tmp_path / "wake-now").write_text("ocean again\n")
+    (tmp_path / "wake-now").write_text("the owner again\n")
     lines.clear()
     calls = khive.log.count("backend")
     assert asyncio.run(agent.wake(wait_ms=0)) is None
@@ -894,7 +987,7 @@ def test_the_pull_reads_the_queue_with_due_off_and_keeps_when_refused_mail_used_
         admit=lambda m: False,
         clock=lambda: now[0],
     )
-    (tmp_path / "wake-now").write_text("ocean\n")
+    (tmp_path / "wake-now").write_text("the owner\n")
     lines: list[str] = []
     agent._say = lines.append
     assert asyncio.run(agent.wake(wait_ms=0)) is None  # the mail was refused: no wake, the pull is kept
@@ -920,7 +1013,7 @@ def test_a_pull_beside_a_due_task_is_one_wake_and_no_queue_config_is_no_task(tmp
         gtd=Gtd(poll=60),
         clock=lambda: now[0],
     )
-    (tmp_path / "wake-now").write_text("ocean\n")
+    (tmp_path / "wake-now").write_text("the owner\n")
     lines: list[str] = []
     agent._say = lines.append
     run = asyncio.run(agent.wake(wait_ms=0))  # the due task wakes the chair; the pull is spent by it
@@ -931,7 +1024,7 @@ def test_a_pull_beside_a_due_task_is_one_wake_and_no_queue_config_is_no_task(tmp
     now[0] += 5
     assert asyncio.run(agent.wake(wait_ms=0)) is None and khive.log.count("backend") == 1  # not twice
     agent.gtd = None  # a reload took [gtd] away: the cached queue is not a queue
-    (tmp_path / "wake-now").write_text("ocean\n")
+    (tmp_path / "wake-now").write_text("the owner\n")
     lines.clear()
     assert asyncio.run(agent.wake(wait_ms=0)) is None and not (tmp_path / "wake-now").exists()
     assert lines == ["wake-now: nothing waiting and no task; no wake"]
@@ -968,11 +1061,11 @@ def test_a_pull_during_the_continuous_chairs_wait_is_one_wake_on_that_path(tmp_p
         step["polls"] += 1
         w = len(wake_lines())
         if w == 1 and step["n"] == 0:
-            file.write_text("ocean from the app\n")  # the pull lands in the wait, with a task queued
+            file.write_text("the owner from the app\n")  # the pull lands in the wait, with a task queued
             step["n"] = 1
         elif w == 2 and step["n"] == 1:
             now[0] += 1000  # t6 is due now, and the pull lands in the same poll
-            file.write_text("ocean again\n")
+            file.write_text("the owner again\n")
             step["n"] = 2
         elif w >= 3:
             step["after"] += 1

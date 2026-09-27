@@ -34,7 +34,6 @@ whatever the actor's own config adds.
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import json
 import re
@@ -53,7 +52,7 @@ from hub import guidance
 from lionagi.actor import Context, Profile, Run
 
 from ..khive import lit
-from .agent import Agent, AgentError
+from .agent import Agent, AgentError, LoopLock
 
 __all__ = (
     "DIRECTIONS",
@@ -276,7 +275,10 @@ class Chores:
     extra_digest: Callable[[str], list[str]] | None = None  # their lines for the day's digest (the desk)
     extra_digest_sent: Callable[[], None] | None = None  # told once a digest carrying them was delivered
     # their lines rendered, delivered and committed as one step: two digests of a turn never share a window
-    _briefing: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    _briefing: LoopLock = field(default_factory=LoopLock, repr=False)
+    # a check's report, from reading the last one sent to writing its row: two checks of a turn run
+    # together, and both reading "no prior" before either wrote would each send the same findings
+    _reporting: LoopLock = field(default_factory=LoopLock, repr=False)
     _caught_up: str | None = field(default=None, repr=False)  # the run whose missed-tick sweep ran
 
     def __post_init__(self) -> None:
@@ -342,71 +344,74 @@ class Chores:
                 control=False,
             )
         out, answered = self._vet(inst, out)
-        prior = self._last_to(req.chore, self.owner)
-        same = prior is not None and prior["findings"] == list(out.findings)
-        supersedes = "no-prior" if prior is None else f"{prior['at']} msg {prior.get('msg') or '?'}"
-        text = self._text(req.chore, inst, out, time.time() - t0, supersedes=supersedes, same=same)
-        subject = self._subject(req.chore, out)
-        sent_to: list[str] = []
-        undelivered: list[str] = []
-        msg = thread = None
-        if req.asker:  # an ask is answered where it was asked, quiet or not
-            try:
-                sent = await self.agent.deliver(req.asker, text, thread=req.thread, run=run, subject=subject)
-                sent_to.append(req.asker)
-                if req.asker == self.owner:  # the owner's receipt, whichever thread carried it
-                    msg, thread = str(sent.get("id")), str(sent.get("thread_id") or sent.get("id"))
-            except AgentError as e:  # the hop cap: the row says so, the check still lands
-                undelivered.append(f"{req.asker}: {e}")
-        recipients = [self.owner]
-        if out.escalate and self.steward and self.steward != self.owner:
-            recipients.append(self.steward)
-        repeat = False  # the owner's send skipped: the owner already holds these findings
-        for to in recipients if out.findings else []:
-            if to in sent_to:
-                continue
-            last = self._last_to(req.chore, to)  # a standing state is told once, per recipient
-            if last is not None and last["findings"] == list(out.findings):
-                repeat = repeat or to == self.owner
-                continue
-            try:
-                sent = await self._on_chore_thread(req.chore, to, text, run, subject=subject)
-                sent_to.append(to)
-                if to == self.owner:
-                    msg, thread = str(sent.get("id")), str(sent.get("thread_id") or sent.get("id"))
-            except AgentError as e:
-                undelivered.append(f"{to}: {e}")
-        self._append(
-            {
-                "at": _now(),
-                "chore": req.chore,
-                "args": req.args,
-                "findings": list(out.findings),
-                "control": out.control,
-                "escalate": out.escalate,
-                "answered": answered,
-                "direction": inst.direction,
-                "population": out.population,
-                "predicate": out.predicate,
-                "count": out.count,
-                "positive": out.positive,
-                "seconds": round(time.time() - t0, 1),
-                "evidence": self._cap(out.evidence),
-                "supersedes": supersedes,
-                "repeat_of": prior["at"] if same and out.findings else None,
-                "msg": msg,
-                "thread": thread,
-                "sent_to": sent_to,
-                "undelivered": undelivered,
-                "asked_by": req.asker,
-                "caught_up": caught,
-                "run": run.id,
-            }
-        )
-        owner_held = any(u.startswith(f"{self.owner}: ") for u in undelivered)
-        if out.commit is not None and (self.owner in sent_to or (repeat and not owner_held)):
-            out.commit()
-        dead = await self._dead(req.chore, answered, run)
+        async with self._reporting:
+            prior = self._last_to(req.chore, self.owner)
+            same = prior is not None and prior["findings"] == list(out.findings)
+            supersedes = "no-prior" if prior is None else f"{prior['at']} msg {prior.get('msg') or '?'}"
+            text = self._text(req.chore, inst, out, time.time() - t0, supersedes=supersedes, same=same)
+            subject = self._subject(req.chore, out)
+            sent_to: list[str] = []
+            undelivered: list[str] = []
+            msg = thread = None
+            if req.asker:  # an ask is answered where it was asked, quiet or not
+                try:
+                    sent = await self.agent.deliver(
+                        req.asker, text, thread=req.thread, run=run, subject=subject
+                    )
+                    sent_to.append(req.asker)
+                    if req.asker == self.owner:  # the owner's receipt, whichever thread carried it
+                        msg, thread = str(sent.get("id")), str(sent.get("thread_id") or sent.get("id"))
+                except AgentError as e:  # the hop cap: the row says so, the check still lands
+                    undelivered.append(f"{req.asker}: {e}")
+            recipients = [self.owner]
+            if out.escalate and self.steward and self.steward != self.owner:
+                recipients.append(self.steward)
+            repeat = False  # the owner's send skipped: the owner already holds these findings
+            for to in recipients if out.findings else []:
+                if to in sent_to:
+                    continue
+                last = self._last_to(req.chore, to)  # a standing state is told once, per recipient
+                if last is not None and last["findings"] == list(out.findings):
+                    repeat = repeat or to == self.owner
+                    continue
+                try:
+                    sent = await self._on_chore_thread(req.chore, to, text, run, subject=subject)
+                    sent_to.append(to)
+                    if to == self.owner:
+                        msg, thread = str(sent.get("id")), str(sent.get("thread_id") or sent.get("id"))
+                except AgentError as e:
+                    undelivered.append(f"{to}: {e}")
+            self._append(
+                {
+                    "at": _now(),
+                    "chore": req.chore,
+                    "args": req.args,
+                    "findings": list(out.findings),
+                    "control": out.control,
+                    "escalate": out.escalate,
+                    "answered": answered,
+                    "direction": inst.direction,
+                    "population": out.population,
+                    "predicate": out.predicate,
+                    "count": out.count,
+                    "positive": out.positive,
+                    "seconds": round(time.time() - t0, 1),
+                    "evidence": self._cap(out.evidence),
+                    "supersedes": supersedes,
+                    "repeat_of": prior["at"] if same and out.findings else None,
+                    "msg": msg,
+                    "thread": thread,
+                    "sent_to": sent_to,
+                    "undelivered": undelivered,
+                    "asked_by": req.asker,
+                    "caught_up": caught,
+                    "run": run.id,
+                }
+            )
+            owner_held = any(u.startswith(f"{self.owner}: ") for u in undelivered)
+            if out.commit is not None and (self.owner in sent_to or (repeat and not owner_held)):
+                out.commit()
+            dead = await self._dead(req.chore, answered, run)
         if same and out.findings and not sent_to:
             end = "unchanged since " + prior["at"] + ", not resent"
         else:
@@ -735,8 +740,13 @@ class Chores:
         say to one actor in a day. The first message opens the thread; the id is kept in state."""
         key = f"{chore}:{_now()[:10]}:{to}"
         state = self.agent.state
-        threads = dict(state.get("chore_threads").value) if state.get("chore_threads") else {}
-        sent = await self.agent.deliver(to, text, thread=threads.get(key), run=run, subject=subject)
+        known = state.get("chore_threads")
+        sent = await self.agent.deliver(
+            to, text, thread=(known.value if known else {}).get(key), run=run, subject=subject
+        )
+        # read again after the send: another chore's thread may have landed while this one was out
+        now = state.get("chore_threads")
+        threads = dict(now.value) if now else {}
         if key not in threads:
             threads[key] = str(sent.get("thread_id") or sent.get("id"))
             state.put("chore_threads", threads, run=run.id, seq=run.record.seq)
