@@ -235,7 +235,7 @@ in the agent's note file, and each value the run declared. Its record is written
 checkpoint as `record-<run>.jsonl`, rewritten whole at each take, after the same ignore check. A
 take that fails is kept among the agent's errors and the run goes on.
 
-- **Landing evidence**: `tests/test_checkpoint.py`:
+- **Landing evidence**: `tests/test_context.py`:
   `test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_same_view`,
   `test_the_resident_checkpoints_when_stop_ends_its_run`,
   `test_a_restore_that_cannot_replay_is_said_and_the_run_starts_fresh`.

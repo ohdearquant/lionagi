@@ -1,0 +1,1014 @@
+"""`lion areas`: the registry, one row per resident read from its own files (serving is the pid
+file's lock, the wake and today's spend the agent's own notes), the table and the page, and the
+served JSON; one resident's page (its wakes from serve.log, the conversation with it, the form that
+mails it) and the served routes behind it."""
+
+import asyncio
+import fcntl
+import http.client
+import json
+import os
+import plistlib
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+import lion_cli.areas as areas_cli
+import pytest
+from lion_cli.areas import _peer_allowed, _rewrite_budget, _tail, serve
+
+from hub.agent.agent import _line
+from hub.areas import (
+    _WAKE,
+    Area,
+    controls_info,
+    identity,
+    load_areas,
+    log_tail,
+    page,
+    resident,
+    resident_page,
+    status,
+    table,
+    talk,
+    waiting_mail,
+    wakes,
+)
+from hub.khive import KhiveError, lit
+
+TODAY = "2026-09-22"
+WAKE_LINE = (
+    "2026-09-23 20:14:46 wake 1: Success after 1 rounds, 1 mail, 1 sent; 1 model call(s), 512345 in, "
+    "4321 out, $0.1234; 39 idle poll(s) before it at 0 tokens"
+)
+RESTART = "serving lambda:x:desk from /x as pid 4321; ticks created: []; programs gh=/g git=/t"
+
+
+class FakeKhive:
+    """What the page calls on a Khive, recorded: no kkernel, no store, no mail."""
+
+    def __init__(self, sent: list[dict] | None = None, got: list[dict] | None = None):
+        self.ops: list[str] = []
+        self.calls: list[dict] = []
+        self.sent, self.got = sent or [], got or []
+
+    async def exec(self, ops: str) -> list:
+        self.ops.append(ops)
+        if ops.startswith("comm.inbox("):
+            return [{"messages": self.sent if 'box="sent"' in ops else self.got}]
+        return [{"id": "x"}]
+
+
+def fetch(url: str | urllib.request.Request, timeout: float = 2) -> bytes:
+    """A GET's body with its connection closed: the suite reads an unclosed socket as an error."""
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return r.read()
+
+
+def agent_dir(tmp_path: Path, name: str, *, role: str, cursor: dict, spend: dict | None) -> Path:
+    d = tmp_path / name
+    (d / "notes").mkdir(parents=True)
+    section = {"desk": "[desk]\nevery = 'every:5m'\n"}.get(role, "")
+    (d / "chores.toml").write_text(f'actor = "lambda:x:{name}"\nowner = "lambda:x"\nmodel = "m"\n{section}')
+    notes = {"version": 1, "notes": {"cursor": {"key": "cursor", "value": cursor}}}
+    if spend is not None:
+        notes["notes"]["spend"] = {"key": "spend", "value": spend}
+    (d / "notes" / "agent.json").write_text(json.dumps(notes))
+    return d
+
+
+def test_the_registry_reads_areas_and_a_missing_file_is_no_areas(tmp_path):
+    reg = tmp_path / "areas.toml"
+    reg.write_text('[area.a]\nchair = "lambda:a"\ndesks = ["/x", "/y"]\n\n[area.b]\nchair = "lambda:b"\n')
+    assert load_areas(reg) == [Area("a", "lambda:a", ["/x", "/y"]), Area("b", "lambda:b", [])]
+    assert load_areas(tmp_path / "none.toml") == []
+    reg.write_text("[area.c]\ndesks = []\n")
+    with pytest.raises(ValueError, match=r"\[area.c\] has no chair"):
+        load_areas(reg)
+
+
+def test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file(tmp_path):
+    d = agent_dir(
+        tmp_path,
+        "desk",
+        role="desk",
+        cursor={"wake": 7, "at": f"{TODAY} 11:09:15", "outcome": "Success"},
+        spend={"day": TODAY, "runs": 7, "mail": 9, "cost": 0.0123},
+    )
+    area = Area("x", "lambda:x", [str(d)])
+    r = resident(area, str(d), TODAY)
+    assert (r.actor, r.role, r.model, r.wake, r.last_outcome) == ("lambda:x:desk", "desk", "m", 7, "Success")
+    assert (r.runs_today, r.mail_today, r.cost_today, r.problem) == (7, 9, 0.0123, "")
+    assert r.serving is False and r.pid is None and r.in_wake is False
+    # a pid file nobody locks (a stale one) is not serving; a locked one is, whatever the pid says
+    (d / "agent.pid").write_text("424242")
+    r = resident(area, str(d), TODAY)
+    assert r.serving is False and r.pid == 424242
+    fd = os.open(d / "agent.pid", os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        r = resident(area, str(d), TODAY)
+        assert r.serving is True and r.pid == 424242
+    finally:
+        os.close(fd)
+    # yesterday's spend is not today's; a wake in flight reads as in_wake; a missing config is a problem
+    m = agent_dir(
+        tmp_path,
+        "chores",
+        role="chores",
+        cursor={"wake": 3, "at": f"{TODAY} 12:00:00", "outcome": "running"},
+        spend={"day": "2026-09-21", "runs": 40, "mail": 40, "cost": 1.0},
+    )
+    r = resident(area, str(m), TODAY)
+    assert (
+        r.role == "chores" and r.in_wake is True and (r.runs_today, r.mail_today, r.cost_today) == (0, 0, 0.0)
+    )
+    (m / "chores.toml").unlink()
+    r = resident(area, str(m), TODAY)
+    assert r.actor == "?" and r.problem.startswith("chores.toml: ")
+    never = tmp_path / "never"
+    never.mkdir()
+    (never / "chores.toml").write_text('actor = "lambda:x:n"\n')
+    r = resident(area, str(never), TODAY)
+    assert r.problem == "no notes yet: never ran from this directory" and r.wake == 0
+
+
+def test_the_table_and_the_page_say_the_counts_and_each_residents_state(tmp_path):
+    d = agent_dir(
+        tmp_path,
+        "desk",
+        role="desk",
+        cursor={"wake": 2, "at": f"{TODAY} 10:00:00", "outcome": "Success"},
+        spend=None,
+    )
+    areas = [Area("x", "lambda:x", [str(d)]), Area("empty", "lambda:e", [])]
+    rows = status(areas, TODAY)
+    text = table(areas, rows)
+    assert text.startswith(
+        "2 resident(s) in 2 area(s), 0 serving, 0 in a wake".replace("2 resident", "1 resident")
+    )
+    assert "x: chair lambda:x, 1 resident(s)" in text and "empty: chair lambda:e, 0 resident(s)" in text
+    row = "lambda:x:desk (desk, m): stopped; wake 2 at 2026-09-22 10:00:00 Success; today 0 run(s), 0 mail"
+    assert row + ", $0.0000" in text
+    html = page(areas, rows, refresh=3)
+    assert '<meta http-equiv=refresh content="3">' in html and "<span class=off>stopped</span>" in html
+    assert (
+        "lambda:x:desk" in html and "chair lambda:x" in html and "1 resident(s), 2 area(s), 0 serving" in html
+    )
+    assert table([], []).startswith("no areas:") and "no areas:" in page([], [])
+
+
+def test_the_served_page_and_json_reread_the_registry_on_every_request(tmp_path):
+    d = agent_dir(
+        tmp_path,
+        "desk",
+        role="desk",
+        cursor={"wake": 1, "at": f"{TODAY} 10:00:00", "outcome": "Success"},
+        spend=None,
+    )
+    reg = tmp_path / "areas.toml"
+    reg.write_text(f'[area.x]\nchair = "lambda:x"\ndesks = ["{d}"]\n')
+    # a free port: bind 0 through the server itself is hidden by serve(); take one and release it
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    t = threading.Thread(target=serve, args=(reg, "127.0.0.1", port, 2), daemon=True)
+    t.start()
+    for _ in range(50):
+        try:
+            body = fetch(f"http://127.0.0.1:{port}/api/areas", timeout=1)
+            break
+        except OSError:
+            time.sleep(0.1)
+    else:
+        raise AssertionError("the server never answered")
+    rows = json.loads(body)
+    assert [r["actor"] for r in rows] == ["lambda:x:desk"] and rows[0]["serving"] is False
+    html = fetch(f"http://127.0.0.1:{port}/").decode()
+    assert "lambda:x:desk" in html and 'content="2"' in html
+    reg.write_text(f'[area.x]\nchair = "lambda:x"\ndesks = ["{d}"]\n[area.y]\nchair = "lambda:y"\n')
+    html = fetch(f"http://127.0.0.1:{port}/").decode()
+    assert "chair lambda:y" in html  # re-read, not cached
+    with pytest.raises(urllib.error.HTTPError) as e:
+        fetch(f"http://127.0.0.1:{port}/nope")
+    e.value.close()
+
+
+def test_the_command_prints_the_table_from_a_given_registry(tmp_path):
+    d = agent_dir(
+        tmp_path,
+        "desk",
+        role="desk",
+        cursor={"wake": 1, "at": f"{TODAY} 10:00:00", "outcome": "Success"},
+        spend=None,
+    )
+    reg = tmp_path / "areas.toml"
+    reg.write_text(f'[area.x]\nchair = "lambda:x"\ndesks = ["{d}"]\n')
+    done = subprocess.run(
+        [sys.executable, "-m", "lion_cli.main", "areas", "--file", str(reg)],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    assert done.returncode == 0, done.stderr
+    assert (
+        "1 resident(s) in 1 area(s), 0 serving, 0 in a wake" in done.stdout and "lambda:x:desk" in done.stdout
+    )
+
+
+def test_wakes_read_the_serve_log_keep_restarts_and_odd_wake_lines_and_a_missing_log_is_no_rows(tmp_path):
+    d = tmp_path / "resident"
+    d.mkdir()
+    assert wakes(str(d)) == [] and log_tail(str(d)) == ""
+    failed = "2026-09-23 20:15:00 wake 2 failed: KhiveError: down"
+    lines = ["Traceback (most recent call last):", RESTART, WAKE_LINE, failed, "2026-09-23 20:16:00 held: x"]
+    (d / "serve.log").write_text("\n".join(lines) + "\n")
+    rows = wakes(str(d))[::-1]  # the page shows newest first; oldest first here to index by line
+    assert rows[0] == {"at": "", "raw": RESTART, "restart": True}
+    assert rows[1] == {
+        "at": "2026-09-23 20:14:46",
+        "wake": 1,
+        "outcome": "Success",
+        "rounds": 1,
+        "mail": 1,
+        "sent": 1,
+        "calls": 1,
+        "tokens_in": 512345,
+        "tokens_out": 4321,
+        "cost": 0.1234,
+        "idle": 39,  # an older line: no context, no restarts, neither key
+        "raw": WAKE_LINE,
+    }
+    assert rows[2] == {"at": "2026-09-23 20:15:00", "raw": failed}  # kept whole, never dropped
+    assert len(rows) == 3  # the traceback and the held line are not wake rows
+    assert wakes(str(d), n=1) == rows[-1:]
+    assert log_tail(str(d), n=2).splitlines() == lines[-2:]
+    assert log_tail(str(d)).splitlines() == lines[1:]  # this run only: the older traceback is cut
+
+
+def test_identity_is_none_without_a_config_or_without_an_actor_id(tmp_path):
+    assert identity(tmp_path) is None
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\ndisplay_name = "no id"\n')
+    assert identity(tmp_path) is None
+
+
+def test_talk_merges_my_sent_box_and_my_inbox_oldest_first_and_marks_nothing_read():
+    def msg(i: str, at: str, frm: str, to: str) -> dict:
+        return {"id": i, "from": frm, "to": to, "subject": f"s{i}", "content": f"c{i}", "created_at": at}
+
+    # 03.5Z sorts before 03Z as text: the order is by time; b is in both boxes and is shown once
+    khive = FakeKhive(
+        sent=[
+            msg("b", "2026-09-23T20:00:02Z", "person", "lambda:x"),
+            msg("d", "2026-09-23T20:00:03Z", "person", "lambda:x"),
+        ],
+        got=[
+            msg("c", "2026-09-23T20:00:03.5Z", "lambda:x", "person"),
+            msg("a", "2026-09-23T20:00:01Z", "lambda:x", "person"),
+            msg("b", "2026-09-23T20:00:02Z", "person", "lambda:x"),
+        ],
+    )
+    rows = asyncio.run(talk(khive, "lambda:x"))
+    assert [r["id"] for r in rows] == ["a", "b", "d", "c"]
+    assert rows[1] == {
+        "at": "2026-09-23T20:00:02Z",
+        "from": "person",
+        "to": "lambda:x",
+        "subject": "sb",
+        "content": "cb",
+        "id": "b",
+    }
+    assert sorted(khive.ops) == [
+        'comm.inbox(box="sent", to_actor="lambda:x", limit=50)',
+        'comm.inbox(from_actor="lambda:x", status="all", limit=50)',
+    ]
+    assert [r["id"] for r in asyncio.run(talk(khive, "lambda:x", limit=2))] == ["d", "c"]
+
+
+def test_the_resident_page_shows_its_wakes_the_talk_and_the_form_only_with_an_identity(tmp_path):
+    d = agent_dir(
+        tmp_path,
+        "desk",
+        role="desk",
+        cursor={"wake": 1, "at": "2026-09-23 20:14:46", "outcome": "Success"},
+        spend=None,
+    )
+    (d / "serve.log").write_text(f"{RESTART}\n{WAKE_LINE}\n")
+    row = resident(Area("x", "lambda:x", [str(d)]), str(d), TODAY)
+    said = {
+        "at": "2026-09-23T20:14:46Z",
+        "from": "person",
+        "to": "lambda:x:desk",
+        "subject": "hello <desk>",
+        "content": "line one\nline <two>",
+        "id": "m1",
+    }
+    html = resident_page(row, wakes(str(d)), log_tail(str(d)), [said], "person", 7, str(d))
+    assert "<h2>lambda:x:desk" in html and '<a href="/">' in html
+    assert "<td>512345</td>" in html and "<td>4321</td>" in html and "<td>$0.1234</td>" in html
+    assert "<td>39</td>" in html and "<tr class=restart><td colspan=11>restarted as pid " in html
+    assert "<b>hello &lt;desk&gt;</b>" in html and "line one\nline &lt;two&gt;</pre>" in html
+    assert "person → lambda:x:desk" in html and "<details><summary>log tail</summary>" in html
+    assert "<form method=post action=/send " in html and f'name=dir value="{d}"' in html
+    assert 'name=once value="' in html and "required" in html
+    assert "<input name=subject" in html and "<textarea name=content" in html
+    assert "setTimeout(tick,7000)" in html and "http-equiv=refresh" not in html
+    assert html.count("<script>") == 1 and "no identity" not in html
+    bare_reply = resident_page(row, [], "", [{**said, "subject": ""}], "person", 7, str(d), sent="m9")
+    assert "<b></b>" not in bare_reply and "sent, message m9" in bare_reply
+    bare = resident_page(row, [], "", [], None, 7, str(d))
+    assert "no identity: run lion areas --serve PORT --as DIR where DIR holds .khive/config.toml" in bare
+    assert "<form" not in bare and "no serve.log yet" in bare
+    down = resident_page(row, [], "", "kkernel exited 1: down", "person", 7, str(d))
+    assert "the conversation could not be read: kkernel exited 1: down" in down and "<form" in down
+
+
+def test_the_served_resident_page_reads_and_mails_only_a_registered_resident_as_the_identity(tmp_path):
+    d = agent_dir(
+        tmp_path,
+        "desk",
+        role="desk",
+        cursor={"wake": 1, "at": "2026-09-23 20:14:46", "outcome": "Success"},
+        spend=None,
+    )
+    (d / "serve.log").write_text(f"{WAKE_LINE}\n")
+    reg = tmp_path / "areas.toml"
+    reg.write_text(f'[area.x]\nchair = "lambda:x"\ndesks = ["{d}"]\n')
+
+    def start(ident) -> int:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        threading.Thread(target=serve, args=(reg, "127.0.0.1", port, 2, ident), daemon=True).start()
+        for _ in range(50):
+            try:
+                fetch(f"http://127.0.0.1:{port}/api/areas", timeout=1)
+                return port
+            except OSError:
+                time.sleep(0.1)
+        raise AssertionError("the server never answered")
+
+    def post(port: int, form: dict) -> http.client.HTTPResponse:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)  # never follows the 303
+        body = urllib.parse.urlencode(form)
+        head = {"Content-Type": "application/x-www-form-urlencoded", "Origin": f"http://127.0.0.1:{port}"}
+        conn.request("POST", "/send", body, head)
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        return resp
+
+    khive = FakeKhive()
+    port = start(("person", khive))
+    q = urllib.parse.urlencode({"dir": str(d)})
+    index = fetch(f"http://127.0.0.1:{port}/").decode()
+    assert f'<a href="/r?{q}">lambda:x:desk</a>' in index and "you are person" in index
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}/r?{q}", timeout=2) as got:
+        html = got.read().decode()
+    assert got.status == 200 and "<h2>lambda:x:desk" in html and "<td>512345</td>" in html
+    assert khive.ops and all(o.startswith("comm.inbox(") for o in khive.ops)  # read, never marked read
+    with pytest.raises(urllib.error.HTTPError) as e:
+        fetch(f"http://127.0.0.1:{port}/r?dir=/tmp/elsewhere")
+    e.value.close()
+    assert e.value.code == 404
+    api = json.loads(fetch(f"http://127.0.0.1:{port}/api/resident?{q}"))
+    assert set(api) == {"resident", "wakes", "tail", "talk", "me", "controls", "budget", "wake", "waiting"}
+    assert api["me"] == "person" and api["resident"]["actor"] == "lambda:x:desk" and api["talk"] == []
+    assert api["wakes"][0]["tokens_in"] == 512345 and api["tail"] == WAKE_LINE
+    khive.ops.clear()
+    assert post(port, {"dir": str(d), "subject": "s", "content": "  \n "}).status == 400
+    assert post(port, {"dir": "/tmp/elsewhere", "content": "hi"}).status == 404
+    assert khive.ops == []  # nothing sent for either
+    # a form on another site, or a rebound host name, gets nothing: no read, no send
+    forged = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+    forged.request(
+        "POST",
+        "/send",
+        urllib.parse.urlencode({"dir": str(d), "content": "hi"}),
+        {"Content-Type": "application/x-www-form-urlencoded", "Origin": "http://evil.example"},
+    )
+    refused = forged.getresponse()
+    refused.read()
+    forged.close()
+    assert refused.status == 403 and khive.ops == []
+    rebound = urllib.request.Request(f"http://127.0.0.1:{port}/r?{q}", headers={"Host": "evil.example"})
+    with pytest.raises(urllib.error.HTTPError) as rebound_err:
+        fetch(rebound)
+    rebound_err.value.close()
+    assert rebound_err.value.code == 403 and khive.ops == []
+    content = 'hi "there"\nsecond line'
+    once = "ab" * 16
+    sent = post(port, {"dir": str(d), "subject": "", "content": content, "to": "lambda:evil", "once": once})
+    assert sent.status == 303 and sent.getheader("Location") == f"/r?{q}&sent=x"
+    (op,) = khive.ops
+    assert op.startswith("comm.send(") and 'to="lambda:x:desk"' in op and lit(content) in op
+    assert f'idempotency_key="ui:{once}"' in op and khive.calls == []
+    assert "lambda:evil" not in op and "subject=" not in op  # the recipient is never a form value
+    bare = start(None)
+    assert post(bare, {"dir": str(d), "content": "hi"}).status == 400
+    assert "no identity: run lion areas" in fetch(f"http://127.0.0.1:{bare}/r?{q}").decode()
+
+
+# ---- the API the phone app reads ----
+
+CHORES = (
+    'actor = "lambda:x:desk"\nmodel = "m"\n[desk]\nevery = "every:5m"\n\n'
+    "# the caps, edited from the phone\n"
+    "[budget]\n"
+    "cost_per_day = 1.5  # dollars, the day's cap\n"
+    "# a comment inside the table\n"
+    "wakes_per_hour = 6\n"
+    "hops_per_thread = 12\n"
+    "\n"
+    "[wake]\n"
+    'default = "batch"\n'
+    'batch_after = "30m"\n'
+    "batch_size = 5\n"
+    "quiet = []\n"
+    "[[wake.rule]]\n"
+    'from = ["lambda:owner"]\n'
+    'then = "now"\n'
+)
+LABEL = "com.example.x.agent"
+ROW_KEYS = [
+    "area",
+    "chair",
+    "dir",
+    "actor",
+    "role",
+    "model",
+    "serving",
+    "pid",
+    "in_wake",
+    "wake",
+    "last_at",
+    "last_outcome",
+    "runs_today",
+    "mail_today",
+    "cost_today",
+    "problem",
+    "controls",
+    "waiting",
+]
+
+
+def app_dir(root: Path, *, plists: int = 1, deferred: list | None = None) -> Path:
+    cursor = {"wake": 45, "at": "2026-09-24 10:52:43", "outcome": "Quiet"}
+    d = agent_dir(root, "desk", role="desk", cursor=cursor, spend=None)
+    (d / "chores.toml").write_text(CHORES)
+    for i in range(plists):
+        with open(d / f"job{i}.plist", "wb") as f:
+            plistlib.dump({"Label": LABEL, "ProgramArguments": ["/usr/bin/true"]}, f)
+    if deferred is not None:
+        notes = json.loads((d / "notes" / "agent.json").read_text())
+        notes["notes"]["deferred"] = {"key": "deferred", "value": {"mail": deferred}}
+        (d / "notes" / "agent.json").write_text(json.dumps(notes))
+    return d
+
+
+def registry(root: Path, *desks: Path) -> Path:
+    reg = root / "areas.toml"
+    reg.write_text('[area.x]\nchair = "lambda:x"\ndesks = [' + ", ".join(f'"{d}"' for d in desks) + "]\n")
+    return reg
+
+
+def serve_on(reg: Path, ident=None, allow: list[str] | None = None) -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    threading.Thread(target=serve, args=(reg, "127.0.0.1", port, 2, ident, allow), daemon=True).start()
+    for _ in range(50):
+        try:
+            fetch(f"http://127.0.0.1:{port}/api/areas", timeout=1)
+            return port
+        except OSError:
+            time.sleep(0.1)
+    raise AssertionError("the server never answered")
+
+
+def call(port: int, method: str, path: str, body: str | None = None, headers: dict | None = None):
+    """(status, body text, headers); http.client sends no Origin, as a native client does not."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request(method, path, body, headers or {})
+    r = conn.getresponse()
+    text = r.read().decode()
+    conn.close()
+    return r.status, text, dict(r.getheaders())
+
+
+def control(port: int, doc: dict, headers: dict | None = None) -> tuple[int, dict]:
+    code, text, head = call(
+        port, "POST", "/control", json.dumps(doc), {"Content-Type": "application/json", **(headers or {})}
+    )
+    assert head["Content-Type"] == "application/json"  # /control always answers JSON
+    return code, json.loads(text)
+
+
+def areas_rows(port: int) -> list[dict]:
+    return json.loads(fetch(f"http://127.0.0.1:{port}/api/areas"))
+
+
+def recorder(path: Path, record: Path, rc: int, err: str = "") -> Path:
+    """A launchctl that writes its argv, one per line, to `record` and exits `rc`."""
+    said = f'echo "{err}" >&2\n' if err else ""
+    path.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" >> "{record}"\n{said}exit {rc}\n')
+    path.chmod(0o755)
+    return path
+
+
+class FailingKhive(FakeKhive):
+    async def exec(self, ops: str) -> list:
+        self.ops.append(ops)
+        raise KhiveError("kkernel exited 1: down")
+
+
+def test_the_wake_pattern_reads_a_line_with_and_without_the_context_suffixes_and_each_alone(tmp_path):
+    base = {"wake": 45, "outcome": "Quiet", "rounds": 1, "mail": ["a", "b"], "sent": 0, "idle_polls": 0}
+    tokens = {"calls": 1, "in": 56129, "out": 1038, "cost": 0.0624}
+    at = "2026-09-24 10:52:43"  # serve prints each line after the time (apps/cli/lion_cli/agent.py)
+    old = f"{at} {_line({**base, 'tokens': tokens})}"
+    ctx = f"{at} {_line({**base, 'tokens': {**tokens, 'context': 28324}})}"
+    both = f"{at} {_line({**base, 'tokens': {**tokens, 'context': 28324, 'restarts': 2}})}"
+    alone = f"{at} {_line({**base, 'tokens': {**tokens, 'restarts': 1}})}"
+    assert ctx.endswith("before it at 0 tokens; last turn stood in 28324 tokens")
+    assert both.endswith("; last turn stood in 28324 tokens, 2 session restart(s)")
+    assert alone.endswith("before it at 0 tokens, 1 session restart(s)")
+    for line, context, restarts in (
+        (old, None, None),
+        (ctx, "28324", None),
+        (both, "28324", "2"),
+        (alone, None, "1"),
+    ):
+        m = _WAKE.match(line)
+        assert m and (m["wake"], m["tokens_in"], m["cost"]) == ("45", "56129", "0.0624"), line
+        assert (m["context"], m["restarts"]) == (context, restarts), line
+    d = tmp_path / "r"
+    d.mkdir()
+    (d / "serve.log").write_text("\n".join([old, ctx, both, alone]) + "\n")
+    rows = wakes(str(d))[::-1]
+    assert "context" not in rows[0] and "restarts" not in rows[0]  # an older line: absent
+    assert rows[1] == {  # the contract's wake row, field for field
+        "at": at,
+        "wake": 45,
+        "outcome": "Quiet",
+        "rounds": 1,
+        "mail": 2,
+        "sent": 0,
+        "calls": 1,
+        "tokens_in": 56129,
+        "tokens_out": 1038,
+        "cost": 0.0624,
+        "idle": 0,
+        "context": 28324,
+        "restarts": 0,
+        "raw": ctx,
+    }
+    assert (rows[2]["context"], rows[2]["restarts"]) == (28324, 2)
+    assert "context" not in rows[3] and rows[3]["restarts"] == 1
+
+
+def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_the_controls(tmp_path):
+    deferred = [
+        {
+            "id": "d1d1d1d1",
+            "from": "x",
+            "properties": {"from_actor": "daemon:review"},
+            "subject": "verdict",
+            "content": "the body stays in the note",
+            "deferred_at": "2026-09-24 11:02:10",
+            "deferred_ts": 1790000000.0,
+        },
+        {
+            "id": "e2",
+            "from": "lambda:owner",
+            "subject": None,
+            "deferred_at": "2026-09-24 11:03:00",
+            "deferred_ts": 5,
+        },
+    ]
+    d = app_dir(tmp_path, deferred=deferred)
+    assert waiting_mail(str(d)) == [
+        {
+            "id": "d1d1d1d1",
+            "from": "daemon:review",
+            "subject": "verdict",
+            "deferred_at": "2026-09-24 11:02:10",
+            "deferred_ts": 1790000000.0,
+        },
+        {
+            "id": "e2",
+            "from": "lambda:owner",
+            "subject": "",
+            "deferred_at": "2026-09-24 11:03:00",
+            "deferred_ts": 5.0,
+        },
+    ]
+    assert waiting_mail(str(tmp_path)) == []  # no notes: nothing waiting
+    port = serve_on(registry(tmp_path, d))
+    (row,) = areas_rows(port)
+    assert list(row) == ROW_KEYS and row["waiting"] == 2 and row["dir"] == str(d)
+    assert row["controls"] == {
+        "held_by_file": False,
+        "hold_reason": "",
+        "wake_now_pending": False,
+        "launchd_label": LABEL,
+        "idle": True,
+    }
+    q = urllib.parse.urlencode({"dir": str(d)})
+    api = json.loads(fetch(f"http://127.0.0.1:{port}/api/resident?{q}"))
+    assert list(api) == ["resident", "wakes", "tail", "talk", "me", "controls", "budget", "wake", "waiting"]
+    assert api["resident"] == row and api["controls"] == row["controls"]  # the row of /api/areas
+    assert api["waiting"] == waiting_mail(str(d)) and api["me"] is None and api["talk"] == []
+    assert api["budget"] == {"cost_per_day": 1.5, "wakes_per_hour": 6, "hops_per_thread": 12}
+    assert api["wake"] == {
+        "default": "batch",
+        "batch_after": "30m",
+        "batch_size": 5,
+        "quiet": [],
+        "rule": [{"from": ["lambda:owner"], "then": "now"}],
+    }
+    (d / "chores.toml").write_text('actor = "lambda:x:desk"\n')  # a missing table is {}
+    api = json.loads(fetch(f"http://127.0.0.1:{port}/api/resident?{q}"))
+    assert api["budget"] == {} and api["wake"] == {}
+    code, text, _ = call(port, "GET", "/api/resident?dir=/tmp/elsewhere")
+    assert code == 404 and text.startswith("no resident at '/tmp/elsewhere'")
+
+
+def test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post(
+    tmp_path, monkeypatch
+):
+    inside = ("127.0.0.1", "::1", "100.64.0.1", "100.90.12.34", "100.127.255.254", "::ffff:100.70.1.2")
+    assert all(_peer_allowed(a) for a in inside)
+    outside = ("100.63.255.255", "100.128.0.1", "192.168.1.20", "8.8.8.8", "::ffff:8.8.8.8", "", "x")
+    assert not any(_peer_allowed(a) for a in outside)
+    d = app_dir(tmp_path)
+    port = serve_on(registry(tmp_path, d), allow=["phone.tailnet.ts.net", "100.90.12.34"])
+    # Host: the bound host:port, 127.0.0.1, localhost and every --allow; nothing else
+    for host in (f"phone.tailnet.ts.net:{port}", f"100.90.12.34:{port}", f"localhost:{port}"):
+        assert call(port, "GET", "/api/areas", headers={"Host": host})[0] == 200
+    code, text, _ = call(port, "GET", "/api/areas", headers={"Host": f"evil.example:{port}"})
+    assert code == 403 and "is not this server" in text
+    hold = {"dir": str(d), "action": "hold", "reason": "r"}
+    code, doc = control(port, hold, {"Host": f"evil.example:{port}"})
+    assert code == 403 and doc["ok"] is False and not (d / "hold").exists()
+    # Origin: present, it must be http(s):// + an allowed host; absent (a native client), it passes
+    for origin in ("http://evil.example", f"http://evil.example:{port}", "null", f"ftp://127.0.0.1:{port}"):
+        code, doc = control(port, hold, {"Origin": origin})
+        assert code == 403 and "is not this server" in doc["detail"] and not (d / "hold").exists(), origin
+    for origin in (f"https://phone.tailnet.ts.net:{port}", f"http://127.0.0.1:{port}"):
+        assert control(port, {**hold, "action": "resume"}, {"Origin": origin})[0] == 200
+    code, doc = control(port, hold)  # no Origin header at all
+    assert code == 200 and doc["ok"] is True and (d / "hold").exists()
+    # a peer off the tailnet: refused before the body is read, nothing done
+    (d / "hold").unlink()
+    seen: list[str] = []
+    monkeypatch.setattr(areas_cli, "_peer_allowed", lambda a: seen.append(a) or False)
+    code, doc = control(port, hold)
+    assert code == 403 and "outside loopback/Tailscale" in doc["detail"] and not (d / "hold").exists()
+    assert seen == ["127.0.0.1"] and call(port, "GET", "/api/areas")[0] == 403
+
+
+def test_control_holds_resumes_and_wakes_from_a_json_or_a_form_body_and_notes_each_control(tmp_path):
+    d = app_dir(tmp_path)
+    port = serve_on(registry(tmp_path, d), ident=("person", FakeKhive()))
+    code, doc = control(port, {"dir": str(d), "action": "hold", "reason": "lunch\nthen more"})
+    assert (code, doc) == (200, {"ok": True, "action": "hold", "detail": "held: lunch then more"})
+    first = (d / "hold").read_text().splitlines()[0]
+    assert first.startswith("held by person from the app at ") and first.endswith(": lunch then more")
+    (row,) = areas_rows(port)
+    assert row["controls"]["held_by_file"] is True and row["controls"]["hold_reason"] == first
+    assert control(port, {"dir": str(d), "action": "resume"}) == (
+        200,
+        {"ok": True, "action": "resume", "detail": "resumed"},
+    )
+    assert not (d / "hold").exists()
+    assert control(port, {"dir": str(d), "action": "resume"})[1]["detail"] == "was not held"
+    # form-encoded, as a browser form posts: the same control, a JSON answer
+    form = urllib.parse.urlencode({"dir": str(d), "action": "wake"})
+    code, text, head = call(
+        port, "POST", "/control", form, {"Content-Type": "application/x-www-form-urlencoded"}
+    )
+    assert code == 200 and head["Content-Type"] == "application/json"
+    assert json.loads(text)["detail"] == "wake requested" and (d / "wake-now").read_text().startswith(
+        "person at "
+    )
+    assert areas_rows(port)[0]["controls"]["wake_now_pending"] is True
+    # JSON under a form Content-Type (URLSession's default when the header is left out) reads as JSON
+    body = json.dumps({"dir": str(d), "action": "hold"})
+    code, text, _ = call(
+        port, "POST", "/control", body, {"Content-Type": "application/x-www-form-urlencoded"}
+    )
+    assert code == 200 and (d / "hold").exists()
+    # bad input is 400, a dir outside the registry 404 with nothing written; every answer JSON
+    assert control(port, {"dir": str(d), "action": "explode"})[0] == 400
+    code, text, _ = call(port, "POST", "/control", "{not json", {"Content-Type": "application/json"})
+    assert code == 400 and json.loads(text) == {"ok": False, "action": "", "detail": "the body is not JSON"}
+    code, text, _ = call(port, "POST", "/control", "[1]", {"Content-Type": "application/json"})
+    assert code == 400 and json.loads(text)["detail"] == "the body is not a JSON object"
+    other = tmp_path / "other"
+    other.mkdir()
+    code, doc = control(port, {"dir": str(other), "action": "hold"})
+    assert code == 404 and doc["ok"] is False and doc["action"] == "hold"
+    assert not (other / "hold").exists() and not (other / "landing").exists()
+    log = (d / "landing" / "controls.log").read_text().splitlines()
+    assert [line.split(" ")[1:4] for line in log] == [
+        ["person", "hold", "200"],
+        ["person", "resume", "200"],
+        ["person", "resume", "200"],
+        ["person", "wake", "200"],
+        ["person", "hold", "200"],
+        ["person", "explode", "400"],
+    ]
+    assert not (d / "serve.log").exists()  # the resident's own log is never written
+
+
+def test_cap_rewrites_only_the_two_keys_keeps_every_comment_and_refuses_what_it_cannot_rewrite(tmp_path):
+    d = app_dir(tmp_path)
+    (d / "chores.toml").chmod(0o640)
+    port = serve_on(registry(tmp_path, d))
+    code, doc = control(port, {"dir": str(d), "action": "cap", "cost_per_day": 40, "wakes_per_hour": "60"})
+    assert code == 200 and doc["ok"] is True and (doc["cost_per_day"], doc["wakes_per_hour"]) == (40.0, 60)
+    assert doc["budget"] == {"cost_per_day": 40.0, "wakes_per_hour": 60, "hops_per_thread": 12}
+    want = CHORES.replace("cost_per_day = 1.5  #", "cost_per_day = 40.0  #").replace(
+        "wakes_per_hour = 6\n", "wakes_per_hour = 60\n"
+    )
+    assert (d / "chores.toml").read_text() == want  # every other byte kept, the comments too
+    assert (d / "chores.toml").stat().st_mode & 0o777 == 0o640
+    code, doc = control(port, {"dir": str(d), "action": "cap", "wakes_per_hour": 0})
+    assert code == 200 and "cost_per_day" not in doc and doc["budget"]["cost_per_day"] == 40.0
+    before = (d / "chores.toml").read_bytes()
+    bad = [
+        {"cost_per_day": -1},
+        {"cost_per_day": "x"},
+        {"cost_per_day": "nan"},
+        {"cost_per_day": True},
+        {"wakes_per_hour": 1.5},
+        {"wakes_per_hour": -2},
+        {},
+    ]
+    for fields in bad:
+        code, doc = control(port, {"dir": str(d), "action": "cap", **fields})
+        assert code == 400 and doc["ok"] is False, fields
+    assert (d / "chores.toml").read_bytes() == before
+    # a [budget] the text rewrite cannot reach in place is refused, the file untouched
+    inline = 'actor = "lambda:x:desk"\nbudget = { cost_per_day = 1.0 }\n'
+    (d / "chores.toml").write_text(inline)
+    code, doc = control(port, {"dir": str(d), "action": "cap", "cost_per_day": 2})
+    assert code == 409 and "could not be rewritten in place" in doc["detail"]
+    assert (d / "chores.toml").read_text() == inline
+    (d / "chores.toml").unlink()
+    assert control(port, {"dir": str(d), "action": "cap", "cost_per_day": 2})[0] == 409
+    # a missing table is appended; a missing key goes after the table's last key, not after blanks
+    assert (
+        _rewrite_budget('actor = "a"', {"cost_per_day": "2.0"})
+        == 'actor = "a"\n\n[budget]\ncost_per_day = 2.0\n'
+    )
+    assert _rewrite_budget("", {"cost_per_day": "1.0"}) == "[budget]\ncost_per_day = 1.0\n"
+    table = "[budget] # caps\ncost_per_day = 1.0\n\n# next\n[wake]\n"
+    assert _rewrite_budget(table, {"wakes_per_hour": "3"}) == (
+        "[budget] # caps\ncost_per_day = 1.0\nwakes_per_hour = 3\n\n# next\n[wake]\n"
+    )
+
+
+def test_restart_refuses_without_one_plist_or_in_a_wake_and_kickstarts_the_label(tmp_path, monkeypatch):
+    record = tmp_path / "argv.txt"
+    monkeypatch.setattr(areas_cli, "_LAUNCHCTL", str(recorder(tmp_path / "launchctl", record, 0)))
+    none, two, one = (
+        app_dir(tmp_path / "a", plists=0),
+        app_dir(tmp_path / "b", plists=2),
+        app_dir(tmp_path / "c"),
+    )
+    port = serve_on(registry(tmp_path, none, two, one))
+    assert control(port, {"dir": str(none), "action": "restart"}) == (
+        409,
+        {"ok": False, "action": "restart", "detail": f"no launchd plist in {none}"},
+    )
+    code, doc = control(port, {"dir": str(two), "action": "restart"})
+    assert code == 409 and doc["detail"].startswith("2 launchd plists in ") and not record.exists()
+    code, doc = control(port, {"dir": str(one), "action": "restart"})
+    assert code == 200 and doc["ok"] is True and (doc["label"], doc["rc"]) == (LABEL, 0)
+    assert record.read_text().splitlines() == ["kickstart", "-k", f"gui/{os.getuid()}/{LABEL}"]
+    record.unlink()
+    # in a wake: the serving pid has a child whose argv reads like the model CLI's; refused unless forced
+    parent = subprocess.Popen(
+        ["/bin/bash", "-c", '(exec -a "claude -p" /bin/sleep 30) & wait'], start_new_session=True
+    )
+    try:
+        (one / "agent.pid").write_text(str(parent.pid))
+        for _ in range(50):
+            if not controls_info(str(one))["idle"]:
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("the child never showed to pgrep")
+        assert [r["controls"]["idle"] for r in areas_rows(port) if r["dir"] == str(one)] == [False]
+        code, doc = control(port, {"dir": str(one), "action": "restart"})
+        assert (code, doc["detail"]) == (409, "in a wake") and not record.exists()
+        code, doc = control(port, {"dir": str(one), "action": "restart", "force": "1"})
+        assert code == 200 and record.read_text().splitlines()[-1] == f"gui/{os.getuid()}/{LABEL}"
+    finally:
+        os.killpg(parent.pid, signal.SIGKILL)
+        parent.wait()
+    (one / "agent.pid").unlink()
+    # launchctl refusing: 502 with what it said
+    failing = recorder(tmp_path / "launchctl-fails", record, 113, "Could not find service")
+    monkeypatch.setattr(areas_cli, "_LAUNCHCTL", str(failing))
+    code, doc = control(port, {"dir": str(one), "action": "restart"})
+    assert (
+        code == 502 and doc["ok"] is False and doc["rc"] == 113 and "Could not find service" in doc["detail"]
+    )
+
+
+def test_a_replayed_once_answers_the_first_result_and_acts_once(tmp_path, monkeypatch):
+    record = tmp_path / "argv.txt"
+    monkeypatch.setattr(areas_cli, "_LAUNCHCTL", str(recorder(tmp_path / "launchctl", record, 0)))
+    d = app_dir(tmp_path)
+    port = serve_on(registry(tmp_path, d))
+    wake = {"dir": str(d), "action": "wake", "once": "c0" * 16}
+    first = control(port, wake)
+    assert first[0] == 200
+    (d / "wake-now").unlink()  # the resident took it
+    assert control(port, wake) == first and not (d / "wake-now").exists()  # answered, not written again
+    restart = {"dir": str(d), "action": "restart", "once": "ab" * 16}
+    assert control(port, restart) == control(port, restart)
+    assert record.read_text().count("kickstart") == 1
+    refused = {"dir": str(d), "action": "cap", "cost_per_day": -1, "once": "0f" * 16}
+    first_refusal = control(port, refused)
+    assert first_refusal[0] == 400
+    assert control(port, {**refused, "cost_per_day": 3}) == first_refusal  # the once's first answer stands
+    assert "cost_per_day = 1.5" in (d / "chores.toml").read_text()
+    assert (
+        control(port, {**wake, "once": "c1" * 16})[0] == 200 and (d / "wake-now").exists()
+    )  # a new once acts
+    assert len((d / "landing" / "controls.log").read_text().splitlines()) == 4
+
+
+def test_send_answers_json_under_accept_from_a_json_or_form_body_with_no_origin(tmp_path):
+    d = app_dir(tmp_path)
+    khive = FakeKhive()
+    port = serve_on(registry(tmp_path, d), ident=("person", khive))
+    head = {"Content-Type": "application/json", "Accept": "application/json"}
+    once = "de" * 16
+    body = json.dumps({"dir": str(d), "subject": "s", "content": "hi", "once": once})
+    code, text, got = call(port, "POST", "/send", body, head)
+    assert (code, json.loads(text), got["Content-Type"]) == (200, {"ok": True, "id": "x"}, "application/json")
+    (op,) = khive.ops
+    assert 'to="lambda:x:desk"' in op and 'subject="s"' in op and f'idempotency_key="ui:{once}"' in op
+    code, text, _ = call(port, "POST", "/send", json.dumps({"dir": "/tmp/elsewhere", "content": "hi"}), head)
+    assert code == 404 and json.loads(text)["ok"] is False
+    code, text, _ = call(port, "POST", "/send", json.dumps({"dir": str(d), "content": " "}), head)
+    assert (code, json.loads(text)) == (400, {"ok": False, "detail": "content is empty: nothing was sent"})
+    form = urllib.parse.urlencode({"dir": str(d), "content": "yo"})
+    code, text, _ = call(
+        port,
+        "POST",
+        "/send",
+        form,
+        {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+    )
+    assert code == 200 and json.loads(text)["ok"] is True
+    code, _, got = call(
+        port, "POST", "/send", json.dumps({"dir": str(d), "content": "yo"}), head | {"Accept": ""}
+    )
+    assert code == 303 and got["Location"].startswith("/r?")  # no Accept: the old page's redirect
+    assert len(khive.ops) == 3
+    down = serve_on(registry(tmp_path, d), ident=("person", FailingKhive()))
+    code, text, _ = call(down, "POST", "/send", json.dumps({"dir": str(d), "content": "hi"}), head)
+    assert (code, json.loads(text)) == (502, {"ok": False, "detail": "kkernel exited 1: down"})
+    bare = serve_on(registry(tmp_path, d))
+    code, text, _ = call(bare, "POST", "/send", json.dumps({"dir": str(d), "content": "hi"}), head)
+    assert code == 400 and json.loads(text)["detail"].startswith("no identity")
+
+
+def read_events(resp, until, timeout: float) -> list[tuple[str, object]]:
+    """(event, data) off an open `/events` response until `until(events)` holds."""
+    events: list[tuple[str, object]] = []
+    event, deadline = "", time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        line = resp.readline().decode()
+        if line.startswith("event: "):
+            event = line[len("event: ") :].strip()
+        elif line.startswith("data: "):
+            events.append((event, json.loads(line[len("data: ") :])))
+            if until(events):
+                return events
+    raise AssertionError(f"not within {timeout}s: {events}")
+
+
+def test_events_open_with_the_rows_then_the_history_and_deliver_a_new_line_within_two_seconds(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(areas_cli, "_PING_S", 0.5)
+    d = app_dir(tmp_path)
+    old = [f"2026-09-24 10:{i:02d}:00 held: line {i}" for i in range(25)]
+    (d / "serve.log").write_text("\n".join(old) + "\na partial")  # the last line is being written
+    port = serve_on(registry(tmp_path, d))
+
+    def handlers() -> list[threading.Thread]:
+        return [t for t in threading.enumerate() if "process_request_thread" in t.name]
+
+    baseline = len(handlers())
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("GET", "/events")
+    resp = conn.getresponse()
+    assert resp.status == 200 and resp.getheader("Content-Type").startswith("text/event-stream")
+    got = read_events(resp, lambda ev: sum(e == "log" for e, _ in ev) == 20, 5)
+    assert got[0][0] == "areas" and got[0][1] == areas_rows(port)
+    history = [x for e, x in got[1:]]
+    assert [x["line"] for x in history] == old[-20:]  # the last 20, the partial line not among them
+    assert all(x["dir"] == str(d) and x["history"] is True for x in history)
+    new = "2026-09-24 11:00:00 wake 46: Quiet after 1 rounds, 1 mail, 0 sent; 1 model call(s), 1 in, 1 out"
+    started = time.monotonic()
+    with open(d / "serve.log", "a") as f:
+        f.write(" line\n" + new + "\n")
+    got = read_events(resp, lambda ev: any(e == "log" and x["line"] == new for e, x in ev), 2.0)
+    assert time.monotonic() - started < 2.0
+    live = [x for e, x in got if e == "log"]
+    assert [(x["line"], x["history"]) for x in live] == [("a partial line", False), (new, False)]
+    # a row that changes is a new `areas` event; `ping` keeps the stream open
+    (d / "hold").write_text("held by person from the app at now: r\n")
+    got = read_events(resp, lambda ev: {"areas", "ping"} <= {e for e, _ in ev}, 3)
+    assert [x for e, x in got if e == "areas"][-1][0]["controls"]["held_by_file"] is True
+    assert ("ping", {}) in got
+    # the client gone: its thread ends at the next write
+    assert len(handlers()) == baseline + 1
+    resp.close()
+    conn.close()
+    for _ in range(50):
+        if len(handlers()) == baseline:
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("the /events thread outlived its client")
+
+
+def test_the_log_tail_reads_history_then_whole_new_lines_and_starts_over_on_a_shrunk_log(tmp_path):
+    log = tmp_path / "serve.log"
+    assert _tail(log, None) == ([], (0, b"", 0))  # no log yet
+    log.write_text("\n".join(f"l{i}" for i in range(30)) + "\npart")
+    lines, state = _tail(log, None)
+    assert lines == [(f"l{i}", True) for i in range(10, 30)] and state[1] == b"part"
+    with open(log, "a") as f:
+        f.write("ial\r\n\nnext\n")
+    lines, state = _tail(log, state)
+    assert lines == [("partial", False), ("next", False)] and _tail(log, state)[0] == []
+    log.write_text("fresh\n")  # rotated: shorter than the offset read to
+    assert _tail(log, state)[0] == [("fresh", False)]
+    later = tmp_path / "later.log"  # a log that appears after the connection: new lines, not history
+    lines, state = _tail(later, None)
+    later.write_text("first\n")
+    assert lines == [] and _tail(later, state)[0] == [("first", False)]
+    swapped = tmp_path / "swap.log"  # another file at the name, no shorter: read from its start
+    swapped.write_text("".join(f"old{i}\n" for i in range(100)))
+    lines, state = _tail(swapped, None)
+    fresh = tmp_path / "swap.new"
+    fresh.write_text("".join(f"new{i:03d}\n" for i in range(200)))
+    os.replace(fresh, swapped)
+    lines, _ = _tail(swapped, state)
+    assert [s for s, _ in lines] == [f"new{i:03d}" for i in range(200)]
+    big = tmp_path / "big.log"  # past the 64 KiB read: the history is still the last 20 whole lines
+    big.write_text("".join(f"{i:06d} {'x' * 40}\n" for i in range(3000)))
+    lines, _ = _tail(big, None)
+    assert [s for s, _ in lines] == [f"{i:06d} {'x' * 40}" for i in range(2980, 3000)]
+
+
+def test_the_wake_pattern_reads_the_task_suffix_with_and_without_the_other_two(tmp_path):
+    base = {"wake": 46, "outcome": "Quiet", "rounds": 1, "mail": [], "sent": 0, "idle_polls": 3}
+    tokens = {"calls": 1, "in": 40000, "out": 900, "cost": 0.05}
+    at = "2026-09-24 12:00:00"
+    only = f"{at} {_line({**base, 'tokens': tokens, 'tasks': ['t1', 't2']})}"
+    all3 = f"{at} {_line({**base, 'tokens': {**tokens, 'context': 30000, 'restarts': 1}, 'tasks': ['t1']})}"
+    assert only.endswith("before it at 0 tokens; 2 task(s) of the queue")
+    assert all3.endswith("; last turn stood in 30000 tokens, 1 session restart(s); 1 task(s) of the queue")
+    for line, tasks, context in ((only, "2", None), (all3, "1", "30000")):
+        m = _WAKE.match(line)
+        assert m and (m["wake"], m["tasks"], m["context"]) == ("46", tasks, context), line
+    d = tmp_path / "r"
+    d.mkdir()
+    (d / "serve.log").write_text(only + "\n" + all3 + "\n")
+    rows = wakes(str(d))[::-1]
+    assert rows[0]["tasks"] == 2 and "context" not in rows[0] and rows[0]["outcome"] == "Quiet"
+    assert (rows[1]["tasks"], rows[1]["context"], rows[1]["restarts"]) == (1, 30000, 1)
+
+
+def test_a_plist_whose_root_is_not_a_dict_or_whose_label_is_not_a_name_is_no_label_not_a_crash(tmp_path):
+    d = tmp_path / "r"
+    d.mkdir()
+    (d / "job.plist").write_bytes(plistlib.dumps(["not-a-dict"]))
+    assert controls_info(str(d))["launchd_label"] is None
+    (d / "job.plist").write_bytes(plistlib.dumps({"Label": ""}))
+    assert controls_info(str(d))["launchd_label"] is None
+    (d / "job.plist").write_bytes(b"<plist version='1.0'><dict><key>Label</key><string>x</string>")
+    assert controls_info(str(d))["launchd_label"] is None
+    (d / "job.plist").write_bytes(plistlib.dumps({"Label": "com.example.x"}))
+    assert controls_info(str(d))["launchd_label"] == "com.example.x"

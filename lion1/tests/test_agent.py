@@ -2,15 +2,19 @@
 thread under the privilege the profile holds, a cursor for the next wake, and the caps that keep a
 long-running actor from answering forever or spending without bound."""
 
+import argparse
 import asyncio
 import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+from lion_cli.agent import agent_main
 
 from hub.agent import Agent, AgentError, Budget, Wake, WakeRule
+from hub.khive import Khive
 from lionagi import Actor, Kind, MemoryNoteStore, Message, Profile, Success
 
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
@@ -625,6 +629,101 @@ def test_new_failure_preserves_older_owed_batch():
     assert state.get("unreported").value == [] and len(khive.sent) == 1
 
 
+def test_the_rerun_flag_takes_read_mail_through_one_wake_by_id(tmp_path, monkeypatch):
+    """--rerun ID...: the batch a killed round left read and unanswered, back through Agent.rerun."""
+    from types import SimpleNamespace
+
+    seen: dict = {}
+
+    class Held:
+        khive = SimpleNamespace(actor="lambda:x")
+
+        def _claim(self):
+            return None
+
+        def _release(self, pid):
+            seen["released"] = True
+
+        async def rerun(self, ids):
+            seen["ids"] = ids
+            return SimpleNamespace(record=[])
+
+    (tmp_path / "chores.toml").write_text('model = "deepseek/deepseek-v4.1-flash"\n')
+    monkeypatch.setattr("lion_cli.agent.build", lambda directory, backend: (None, Held()))
+    a = argparse.Namespace(
+        dir=str(tmp_path), stats=False, model=None, check=None, ticks=False, arm=False, once=False, wait=0
+    )
+    asyncio.run(agent_main(argparse.Namespace(**{**vars(a), "rerun": ["12345678", "0ff1ce00"]})))
+    assert seen == {"ids": ["12345678", "0ff1ce00"], "released": True}
+
+
+def test_once_refuses_served_identity(tmp_path, kkernel_stub, monkeypatch):
+    """While a live process holds the identity, --check, --ticks, --arm, --once and a normal start each
+    refuse before any act: no kkernel call, no landing, nothing written. --stats reads and stays
+    available."""
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n\n[chores.gtd-inbox]\n'
+        'every = "every:1h"\n'
+    )
+    ops: list[str] = []
+
+    async def fake_exec(self, op):
+        ops.append(op)
+        return [{"messages": [], "events": [], "items": []}]
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    base = dict(
+        dir=str(d),
+        stats=False,
+        model=None,
+        check=None,
+        ticks=False,
+        arm=False,
+        once=False,
+        rerun=None,
+        wait=0,
+    )
+    branches = {
+        "check": {"check": "gtd-inbox"},
+        "ticks": {"ticks": True},
+        "arm": {"arm": True},
+        "once": {"once": True},
+        "rerun": {"rerun": ["a1b2c3d4"]},
+        "start": {},
+    }
+    holder = subprocess.Popen(
+        [sys.executable, "-c", HOLD, str(d / "agent.pid")],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    outcome = {}
+    try:
+        assert holder.stdout.readline().strip() == "locked"  # `lion agent --dir d` is serving
+        for name, kw in branches.items():
+            try:
+                asyncio.run(agent_main(argparse.Namespace(**{**base, **kw})))
+                outcome[name] = "ran"
+            except AgentError as e:
+                outcome[name] = "refused" if "held by live process" in str(e) else f"AgentError: {e}"
+            except (Exception, SystemExit) as e:
+                outcome[name] = f"{type(e).__name__}: {e}"
+        asyncio.run(agent_main(argparse.Namespace(**{**base, "stats": True})))  # reads, under the lock
+    finally:
+        holder.stdin.close()
+        holder.wait(timeout=5)
+        holder.stdout.close()
+    files = sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.is_file())
+    assert (outcome, ops, files) == (
+        dict.fromkeys(branches, "refused"),
+        [],
+        [".khive/config.toml", "agent.pid", "chores.toml"],
+    )
+
+
 def test_serve_keeps_the_lock_its_process_already_claimed(tmp_path):
     """The CLI claims before its first act; serve takes that lock over instead of claiming it again, and
     lets it go when it stops."""
@@ -636,6 +735,227 @@ def test_serve_keeps_the_lock_its_process_already_claimed(tmp_path):
 
 
 # the actor as the resident: `[chair]` in chores.toml, the claude CLI as the backend
+
+
+# the chair as the resident: `[chair]` in chores.toml, the claude CLI as the backend
+
+
+def test_backend_for_claude_code_is_the_cli_chat_shape_on_the_named_model(monkeypatch):
+    from lion_cli.agent import backend_for
+
+    from hub.harness import ClaudeCodeSession
+
+    monkeypatch.setattr("hub.harness.claude_code.shutil.which", lambda name: "/opt/bin/claude")
+    b = backend_for("claude_code/claude-opus-5-5")
+    assert isinstance(b, ClaudeCodeSession) and (b.model, b.cli) == ("claude-opus-5-5", "/opt/bin/claude")
+    assert isinstance(backend_for("claude_code"), ClaudeCodeSession)
+    assert backend_for("claude_code").model is None
+    p = backend_for(
+        "claude_code/claude-opus-5-5",
+        {
+            "tools": ["Bash", "Read"],
+            "allowed": ["mcp__khive"],
+            "max_turns": 30,
+            "timeout": 1800,
+            "effort": "medium",
+            "add_dirs": ["/r"],
+            "mcp_config": "/m",
+            "cli": "/opt/bin/claude-named",
+        },
+        cwd=Path("/a"),
+    )
+    assert (p.tools, p.allowed, p.max_turns, p.cwd, p.add_dirs, p.mcp_config) == (
+        ("Bash", "Read"),
+        ("mcp__khive",),
+        30,
+        Path("/a"),
+        ("/r",),
+        "/m",
+    )
+    assert p.cli == "/opt/bin/claude-named"
+    assert p.timeout == 1800.0 and backend_for("claude_code").timeout == 300.0
+    assert p.effort == "medium" and backend_for("claude_code").effort is None
+    assert type(backend_for("deepseek/deepseek-v4.1-flash")).__name__ == "OpenRouter"
+
+
+def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread(
+    tmp_path, kkernel_stub, monkeypatch
+):
+    """`[chair]`: the wake runs under the chair profile (files, khive reads, notes, send; no chore
+    handler), the guidance names the actor, the owner and the role text, and the answer goes out as
+    one comm.send on the mail's thread. Mail from outside the trusted set is still dropped at the gate."""
+    from lion_cli.agent import build
+
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:v1"\n')
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x:v1"\nowner = "lambda:x"\nsteward = "lambda:owner"\nbatch = 1\n\n[chair]\n'
+        'system = "You are the twin of lambda:x for the harness QA."\n\n[budget]\ncost_per_day = 5\n'
+        "hops_per_thread = 3\n"
+    )
+    (d / "README.md").write_text("twin: hello from the directory\n")
+    ops: list[str] = []
+    boxes = [
+        [mail("lambda:x", "what does README.md say?")],
+        [mail("someone:else", "and me?", mid="e5f6a7b8")],
+        [mail("lambda:x", "now tell someone:else about it", mid="c9d0e1f2")],
+    ]
+
+    async def fake_exec(self, op):
+        ops.append(op)
+        if op.startswith("comm.inbox("):
+            return [{"messages": boxes.pop(0) if boxes else []}]
+        if op.startswith("comm.send("):
+            return [{"id": "m1", "thread_id": THREAD}]
+        return [{"messages": [], "events": [], "items": []}]
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    turns = [
+        '<lact r1>read(path="README.md")</lact>',
+        f'<lact s1>send(to="lambda:x", thread="{THREAD}", text="README.md says: twin: hello")</lact>',
+        'OUT{posture: {done: "answered the README question", awaiting: ""}}',
+        # wake 2: `send` is the agent handler over the BOUNDED client: a recipient outside the trusted set
+        # is refused there, before any comm.send; the model reads the refusal and ends the wake
+        f'<lact s2>send(to="someone:else", thread="{THREAD}", text="leak")</lact>',
+        'OUT{posture: {done: "refused to widen the recipients", awaiting: ""}}',
+    ]
+    chores, agent = build(d, Scripted(*turns))
+    assert chores.instruments == {} and getattr(agent, "desk", None) is None
+    assert agent.budget == Budget(wakes_per_hour=60, cost_per_day=5.0, hops_per_thread=3) and agent.batch == 1
+    run = asyncio.run(agent.wake(wait_ms=0))
+    assert (
+        run.profile.name == "chair"
+        and {"read", "list_dir", "khive_ops", "send", "note.get"} <= run.profile.specs
+    )
+    assert not {"check", "digest", "aged"} & run.profile.specs
+    system = run.profile.system
+    assert "You are lambda:x:v1, the chair of lambda:x" in system and "twin of lambda:x" in system
+    assert (
+        "signing as lambda:x:v1" in system
+        and "Mail from lambda:owner, lambda:x, lambda:x:v1 is your work" in system
+    )
+    results = [e.content.value for e in run.record if e.kind is Kind.RESULT]
+    assert any("twin: hello from the directory" in str(r) for r in results)
+    sends = [op for op in ops if op.startswith("comm.send(")]
+    assert (
+        len(sends) == 1 and '"lambda:x"' in sends[0] and THREAD in sends[0] and "README.md says" in sends[0]
+    )
+    assert agent.state.get("cursor").value["sent"] == 1
+    assert agent.actor.notes_for(run.profile).get("posture").value == "answered the README question"
+    # the outsider: read, noted, never run
+    assert asyncio.run(agent.wake(wait_ms=0)) is None
+    assert [op for op in ops if op.startswith("comm.send(")] == sends and agent.wakes == 1
+    # no chore, no tick: --ticks creates nothing, so no tick ever costs the chair a model call
+    base = dict(
+        dir=str(d),
+        stats=False,
+        model=None,
+        check=None,
+        ticks=True,
+        arm=False,
+        once=False,
+        rerun=None,
+        wait=0,
+    )
+    asyncio.run(agent_main(argparse.Namespace(**base)))
+    assert not [op for op in ops if op.startswith("schedule.")]
+    run2 = asyncio.run(agent.wake(wait_ms=0))
+    refused = [e.content for e in run2.record if e.kind is Kind.RESULT and not e.content.ok]
+    assert (
+        len(refused) == 1
+        and "agent boundary" in str(refused[0].error)
+        and "someone:else" in str(refused[0].error)
+    )
+    assert [op for op in ops if op.startswith("comm.send(")] == sends and agent.wakes == 2
+
+
+def test_a_chair_that_is_not_a_table_is_refused_by_name(tmp_path, kkernel_stub):
+    from lion_cli.agent import build
+
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:v1"\n')
+    (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\nchair = true\n')
+    with pytest.raises(ValueError, match=r"\[chair\] is a table"):
+        build(d, Scripted())
+
+
+def test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_key(
+    tmp_path, kkernel_stub, monkeypatch
+):
+    """A resident on the subscription must never bill the API key, so the arm landing says which of the
+    two the CLI child would see, and an ANTHROPIC_API_KEY fails the arm."""
+    from lion_cli.agent import arm, build
+
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:v1"\n')
+    (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n')
+
+    async def fake_exec(self, op):
+        if op.startswith("comm.inbox("):
+            return [{"messages": [{"id": "m1", "properties": {"to_actor": "lambda:x:v1"}}]}]
+        raise AgentError("agent boundary: refused")
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CC_ACCOUNT", raising=False)
+    chores, agent = build(d, Scripted())
+    rc, lines = asyncio.run(arm(chores, agent))
+    assert rc == 0
+    absent = "{'ANTHROPIC_API_KEY': 'absent', 'CLAUDE_CODE_OAUTH_TOKEN': 'absent'}"
+    assert (
+        f"auth env the claude child would inherit: {absent}; account: unnamed (the CLI's own login)" in lines
+    )
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-test")
+    monkeypatch.setenv("CC_ACCOUNT", "second")
+    rc, lines = asyncio.run(arm(chores, agent))
+    assert rc == 0 and any(
+        line.endswith("'CLAUDE_CODE_OAUTH_TOKEN': 'set'}; account: second") for line in lines
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    rc, lines = asyncio.run(arm(chores, agent))
+    assert rc == 1 and any(line.startswith("auth: FAILED, ANTHROPIC_API_KEY is set") for line in lines)
+
+
+def test_a_chair_admitting_all_runs_mail_from_any_sender_and_still_sends_only_to_the_trusted(
+    tmp_path, kkernel_stub, monkeypatch
+):
+    """`[chair] admit = "all"`: the chair's box takes every sender; the outsider's mail runs (the guidance
+    decides what to do with it) while `send` stays bounded to the trusted recipients."""
+    from lion_cli.agent import build
+
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x"\nowner = "lambda:owner"\nbatch = 1\n\n[chair]\nadmit = "all"\n'
+    )
+    ops: list[str] = []
+    boxes = [[mail("someone:else", "hello from outside")]]
+
+    async def fake_exec(self, op):
+        ops.append(op)
+        if op.startswith("comm.inbox("):
+            return [{"messages": boxes.pop(0) if boxes else []}]
+        if op.startswith("comm.send("):
+            return [{"id": "m1", "thread_id": THREAD}]
+        return [{"messages": [], "events": [], "items": []}]
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    turns = [
+        f'<lact s1>send(to="someone:else", thread="{THREAD}", text="hi")</lact>',
+        'OUT{posture: {done: "read one from outside, could not answer it", awaiting: ""}}',
+    ]
+    chores, agent = build(d, Scripted(*turns))
+    assert agent.admit is None
+    run = asyncio.run(agent.wake(wait_ms=0))
+    assert run is not None and run.profile.name == "chair"
+    refused = [e.content for e in run.record if e.kind is Kind.RESULT and not e.content.ok]
+    assert len(refused) == 1 and "agent boundary" in str(refused[0].error)
+    assert not [op for op in ops if op.startswith("comm.send(")]
 
 
 def test_the_wake_line_carries_the_last_turns_context_and_the_sessions_started_over():
@@ -798,6 +1118,25 @@ def test_budget_and_wake_rules_follow_the_config_file_while_serving(tmp_path):
     agent._reload()
     assert agent.wake_rules.default == "batch" and agent.budget.cost_per_day == 9.0  # in force stays
     assert lines[-1].startswith("reload failed, the values in force stay: ValueError: [wake] default")
+
+
+def test_build_reads_the_wake_rules_and_names_the_config_for_reload(tmp_path, kkernel_stub):
+    from lion_cli.agent import build as build_dir
+
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x"\nowner = "lambda:owner"\n\n[chair]\nadmit = "all"\n'
+        "\n[budget]\ncost_per_day = 3.0\n"
+        '\n[wake]\ndefault = "batch"\nbatch_size = 2\n'
+        '[[wake.rule]]\nfrom = ["lambda:owner", "email:*"]\nthen = "now"\n\n[gtd]\npoll = "30s"\n'
+    )
+    chores, agent = build_dir(d, Scripted())
+    assert agent.gtd is not None and agent.gtd.poll == 30.0 and agent.gtd.work == "off"
+    assert agent.wake_rules.default == "batch" and agent.wake_rules.batch_size == 2
+    assert agent.wake_rules.rules[0].senders == ("lambda:owner", "email:*")
+    assert agent.config == d / "chores.toml" and agent.budget.cost_per_day == 3.0
 
 
 class QueueKhive(FakeKhive):

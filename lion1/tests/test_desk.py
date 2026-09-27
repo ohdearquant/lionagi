@@ -10,13 +10,16 @@ import re
 import time
 import types
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
+from lion_cli.agent import build as cli_build
 
 from hub.agent import Agent, AgentError, Budget, Posture
 from hub.agent import desk as desk_module
 from hub.agent.chores import Bounded, Chores, Outcome
 from hub.agent.desk import READ_VERBS, Desk, Leave, Reader, after
+from hub.agent.verdicts import Verdicts
 from hub.khive import LOST, Khive, KhiveError
 from lionagi import Actor, Kind, RunRequest
 from lionagi.notes import FileNoteStore
@@ -422,6 +425,27 @@ def test_a_lost_escalation_receipt_is_settled_by_its_keyed_replay_and_never_list
     assert rows == [("m-o1", "escalated", "m1", "replayed")] and pending(agent) == {} and len(inner.sent) == 1
 
 
+def test_build_reads_the_escalation_rule_from_chores_toml(tmp_path, kkernel_stub):
+    chair = tmp_path / "chair"
+    (chair / ".khive").mkdir(parents=True)
+    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / "chores.toml").write_text(
+        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
+        f"[desk]\nactor_dir = {json.dumps(str(chair))}\n"
+        'escalate_from = ["lambda:owner", "lambda:b"]\nescalations_per_day = 5\n'
+    )
+    desk = cli_build(tmp_path, backend=None)[1].desk
+    assert getattr(desk, "escalate_from", None) == ("lambda:owner", "lambda:b")
+    assert getattr(desk, "escalations_per_day", None) == 5
+    default = chair_agent(tmp_path / "defaults").desk
+    assert (getattr(default, "escalate_from", None), getattr(default, "escalations_per_day", None)) == (
+        (),
+        40,
+    )
+
+
 BUILD = "lambda:x:build"  # a specialized desk of the chair's area
 WORK = inbox_row(ASKER, "reindex?", "please rebuild the ADR index", "m-w1", "t-w1", at="2026-09-22T10:00:01Z")
 WORK_BODY = "please rebuild the ADR index\nit went stale after 0026 was signed"
@@ -520,6 +544,41 @@ def test_the_guidance_names_the_routed_desks_and_the_task_command(tmp_path):
 def test_a_route_outside_the_chairs_area_or_to_itself_is_refused(tmp_path, actor):
     with pytest.raises(ValueError, match=rf"\[desk.routes\] names desks of {OWNER} other than {SELF}"):
         build(tmp_path, FakeKhive(), FakeReader(), [], routes={"elsewhere": actor})
+
+
+def test_build_admits_the_routed_desks_and_names_them_in_the_guidance(tmp_path, kkernel_stub):
+    agent = chair_agent(tmp_path, f'[desk.routes]\nbuild = "{BUILD}"\n')
+    assert BUILD in (agent.khive.recipients or ()) and "route" in agent.profile_for([]).specs
+    assert getattr(agent.desk, "routes", None) == {"build": BUILD}
+    system = agent.profile_for([]).system
+    assert "route(msg=<id>, desk=<name>)" in system and f"build ({BUILD})" in system
+    assert "none, so route nothing" in chair_agent(tmp_path / "bare").profile_for([]).system
+
+
+@pytest.mark.parametrize("actor", ["lambda:y:build", "lambda:x:agent", "lambda:x"])
+def test_build_refuses_a_route_outside_the_chairs_area_or_to_itself(tmp_path, kkernel_stub, actor):
+    with pytest.raises(
+        ValueError, match=r"\[desk.routes\] names desks of lambda:x other than lambda:x:agent"
+    ):
+        chair_agent(tmp_path, f'[desk.routes]\nelsewhere = "{actor}"\n')
+
+
+@pytest.mark.parametrize("missing", ['from = ["daemon:review"]\n', 'verdict_dir = ""\n'])
+def test_build_triages_verdicts_only_from_the_verdict_dir_the_config_names(tmp_path, kkernel_stub, missing):
+    """There is no default verdict directory. `[desk.verdicts]` absent: no triage, and no sender's mail is
+    read as a verdict notice. Present without a `verdict_dir`: refused at build, naming the key. Present
+    with one: the triage reads that directory."""
+    desk = chair_agent(tmp_path / "absent").desk
+    assert desk.verdicts is None and desk.verdict_from == ()
+    with pytest.raises(ValueError, match=r"\[desk.verdicts\] names the verdict_dir"):
+        chair_agent(tmp_path / "missing", "[desk.verdicts]\n" + missing)
+    verdicts = tmp_path / "verdicts"
+    desk = chair_agent(
+        tmp_path / "named",
+        f'[desk.verdicts]\nverdict_dir = {json.dumps(str(verdicts))}\nfrom = ["daemon:review"]\n',
+    ).desk
+    assert isinstance(desk.verdicts, Verdicts) and desk.verdicts.dir == str(verdicts)
+    assert desk.verdict_from == ("daemon:review",)
 
 
 TASK = inbox_row(
@@ -657,6 +716,14 @@ def test_the_twenty_first_task_of_a_day_is_left_cap_tasks(tmp_path, today, want)
     asyncio.run(agent.wake())
     got = [(r["class"], r.get("why")) for r in desk.rows() if r["msg"] == "m-t1"]
     assert got == [want] and len(assigns(inner)) == (1 if want[0] == "tasked" else 0)
+
+
+def test_build_reads_tasks_per_day_and_the_guidance_names_task(tmp_path, kkernel_stub):
+    agent = chair_agent(tmp_path, "tasks_per_day = 7\n")
+    assert getattr(agent.desk, "tasks_per_day", None) == 7
+    assert getattr(chair_agent(tmp_path / "bare").desk, "tasks_per_day", None) == 20
+    profile = agent.profile_for([])
+    assert "task" in profile.specs and "task(msg=<id>, title=" in profile.system
 
 
 class YieldingReader(FakeReader):
@@ -1087,6 +1154,31 @@ def test_a_brief_refused_or_lost_moves_neither_its_window_nor_its_sweeps(tmp_pat
     assert stored(agent, "desk_brief_at") == iso(T0 + 30) and stored(agent, "desk_sweeps") == 0
 
 
+@pytest.mark.parametrize(("extra", "repeat"), [("", "every:12h"), ('brief = "every:6h"\n', "every:6h")])
+def test_the_brief_is_the_digest_tick_repeating_as_desk_brief_says(
+    tmp_path, kkernel_stub, monkeypatch, extra, repeat
+):
+    ops: list[str] = []
+
+    async def recorded(self, op):
+        ops.append(op)
+        return [{"events": []}] if op.startswith("schedule.agenda") else [{"ok": True}]
+
+    monkeypatch.setattr(Khive, "exec", recorded)
+    agent = chair_agent(tmp_path, extra)
+    asyncio.run(agent.desk.chores.ensure_ticks())
+    reminds = [op for op in ops if op.startswith("schedule.remind(") and 'content="tick: digest"' in op]
+    assert len(reminds) == 1 and f'repeat="{repeat}"' in reminds[0], ops
+
+
+def test_a_desk_less_agent_keeps_the_daily_digest(tmp_path, kkernel_stub):
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / "chores.toml").write_text('actor = "lambda:x:agent"\nowner = "lambda:x"\n')
+    chores, agent = cli_build(tmp_path, backend=None)
+    assert getattr(chores, "digest_every", "daily") == "daily" and getattr(agent, "desk", None) is None
+
+
 def test_a_void_answer_is_left_with_the_instruments_own_reason_and_nothing_is_sent(tmp_path):
     khive = FakeKhive(mail(SELF, "tick: sweep"))
     desk, chores, agent = build(
@@ -1208,6 +1300,96 @@ def test_a_refused_reply_spends_only_its_own_attempt():
     with pytest.raises(AgentError, match="the message names none"):
         with khive.reply(ASKER, None):
             pass
+
+
+def test_build_wires_the_desk_from_chores_toml_with_a_reader_that_only_reads(tmp_path, kkernel_stub):
+    chair = tmp_path / "chair"
+    (chair / ".khive").mkdir(parents=True)
+    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / "chores.toml").write_text(
+        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
+        '[chores.disk]\nevery = "every:2h"\nroots = ["/"]\n'
+        f'[desk]\nactor_dir = {json.dumps(str(chair))}\nevery = "every:5m"\n'
+        "answers_per_hour = 3\nclarify_hours = 12\n"
+    )
+    chores, agent = cli_build(tmp_path, backend=None)
+    assert (
+        chores.extra_specs == frozenset({"sweep", "answer", "leave", "clarify", "route", "task"})
+        and chores.extra_ticks == {}
+    )
+    assert agent.watch == agent.desk.watch  # the chair's box wakes the desk; no tick is scheduled
+    assert agent.profile_for([]).specs == frozenset(
+        {"check", "digest", "aged", "sweep", "answer", "leave", "clarify", "route", "task"}
+    )
+    assert "You are also the front desk of lambda:x" in agent.profile_for([]).system
+    desk = agent.desk
+    assert desk.answers_per_hour == 3 and desk.clarify_hours == 12
+    assert desk.reader.allowed == READ_VERBS and desk.reader.actor == "lambda:x" and desk.reader.cwd == chair
+    assert not any(hasattr(desk.reader, n) for n in ("send", "grant", "mark_read", "inbox"))
+    with pytest.raises(AgentError, match=r"\['comm.read'\] are not verbs"):
+        asyncio.run(desk.reader.exec('comm.read(ids=["x"])'))
+    assert Path(desk.ledger) == tmp_path / "desk.jsonl"
+
+
+def chair_agent(tmp_path, extra: str = "") -> Agent:
+    """`lion agent`'s own build over an agent directory whose desk reads the chair `lambda:x`; `extra` is
+    appended to its chores.toml."""
+    chair = tmp_path / "chair"
+    (chair / ".khive").mkdir(parents=True)
+    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / "chores.toml").write_text(
+        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
+        f"[desk]\nactor_dir = {json.dumps(str(chair))}\n" + extra
+    )
+    return cli_build(tmp_path, backend=None)[1]
+
+
+def test_reader_helpers_cannot_write(tmp_path, kkernel_stub, monkeypatch):
+    """The reader `lion agent` builds reaches kkernel as the chair through its admitted `exec` only:
+    no helper of the chair's client marks, sends or is granted a recipient. A helper that is not there
+    is a refusal too."""
+    reached: list[tuple[str, str]] = []
+
+    async def recorded(self, ops):
+        reached.append((self.actor, ops))
+        return [{"messages": []}]
+
+    monkeypatch.setattr(Khive, "exec", recorded)
+    reader = chair_agent(tmp_path).desk.reader
+    for name, args in (
+        ("mark_read", (["m-q1"],)),
+        ("grant", ("lambda:a",)),
+        ("send", ("lambda:a", "as the chair")),
+        ("inbox", ()),
+    ):
+        try:
+            out = getattr(reader, name)(*args)
+            if asyncio.iscoroutine(out):
+                asyncio.run(out)
+        except (AttributeError, AgentError):
+            pass
+    refused = []
+    for ops in (
+        'comm.read(ids=["m-q1"])',
+        '{"tool": "comm.read", "args": {"ids": ["m-q1"]}}',
+        # four JSON-form ops a client refuses, through the reader this time
+        '{"tool": "comm.send", "args": {"to": "email:someone@example.com", "content": "hi"}}',
+        '[{"tool": "gtd.complete", "args": {"id": "00000000-0000-0000-0000-000000000000"}}]',
+        '{"tool": "memory.remember", "args": {"content": "x", "salience": 0.99}}',
+        '{"tool": "delete", "args": {"id": "x"}}',
+    ):
+        try:
+            asyncio.run(reader.exec(ops))
+        except AgentError as e:
+            refused.append(str(e).startswith("agent boundary"))
+    assert reached == [], f"kkernel was handed {reached} through the reader"
+    assert refused == [True] * 6
+    asyncio.run(reader.exec('comm.inbox(status="unread", limit=1)'))  # the recorder is live
+    assert reached == [("lambda:x", 'comm.inbox(status="unread", limit=1)')]
 
 
 def test_agent_marks_only_own_mail(tmp_path):
