@@ -15,7 +15,7 @@ import pytest
 from hub.agent import AgentError, Posture
 from hub.agent import desk as desk_module
 from hub.agent.chores import Bounded
-from hub.agent.desk import Answer, Clarify, Leave
+from hub.agent.desk import Answer, Clarify, Leave, after
 from hub.khive import LOST, Khive, KhiveError
 from lionagi import Kind, RunRequest
 from lionagi.notes import FileNoteStore
@@ -33,6 +33,7 @@ from tests.test_desk import (
     Probe,
     Scripted,
     build,
+    escalations,
     full,
     inbox_row,
     pending,
@@ -860,3 +861,205 @@ def test_two_discoveries_replaying_one_lost_answer_write_one_row_and_spend_one_h
     assert requests == [f"desk:{SELF}:m-q:answered"] and evidence["sent"] == 1, evidence
     assert evidence["hourly"] == 1 and evidence["pending"] == [], evidence
     assert type(run.outcome).__name__ == "Success", evidence
+
+
+# a discovery that failed to record its request moves no cursor; two discoveries never move it back
+
+
+class LostIntent:
+    """The agent's notes, whose first write of a pending entry carrying `field` (a recorded send or task)
+    fails before it persists, as a full disk would; every other write is the store's own."""
+
+    def __init__(self, store, field: str):
+        self.store, self.field, self.failed = store, field, 0
+
+    def __getattr__(self, name: str):
+        return getattr(self.store, name)
+
+    def put(self, key, value, **meta):
+        held = value.values() if key == "desk_pending" and isinstance(value, dict) else ()
+        if not self.failed and any(isinstance(m, dict) and m.get(self.field) for m in held):
+            self.failed += 1
+            raise OSError("no space left on device: the note was not written")
+        return self.store.put(key, value, **meta)
+
+
+def watch_twice(desk, agent) -> tuple[str | None, str | None]:
+    """Two watches: what the first raised, if anything, and the cursor it left."""
+    try:
+        asyncio.run(desk.watch(0))
+        raised = None
+    except OSError as e:
+        raised = f"{type(e).__name__}: {e}"
+    cursor = agent.state.get("desk_watch")
+    first = (raised, cursor.value if cursor is not None else None)
+    asyncio.run(desk.watch(0))
+    return first
+
+
+def test_an_escalation_whose_request_was_never_recorded_is_escalated_by_the_next_discovery(tmp_path):
+    """The steward's message is escalated by code; the write that records its request fails before the
+    send. Nothing was recorded, so nothing can replay it: the discovery fails before its cursor moves,
+    and the next one reads the message again and escalates it, once."""
+    urgent = inbox_row(STEWARD, "now", "do this now", "m-now", "t-now", at="2026-09-22T10:00:04Z")
+    khive, reader = FakeKhive(), FakeReader(urgent)
+    reader.threads["t-now"] = [urgent]
+    desk, chores, agent = build(tmp_path, khive, reader, [])
+    agent.state = LostIntent(agent.state, "send")
+    agent.state.put("desk_since", LIVE, run="-", seq=0)
+    raised, cursor = watch_twice(desk, agent)
+    evidence = {
+        "first_raised": raised,
+        "first_cursor": cursor,
+        "escalations": escalations(khive),
+        "rows": [(r["msg"], r["class"]) for r in desk.rows()],
+        "pending": sorted(pending(agent)),
+        "errors": agent.errors,
+    }
+    print("EVIDENCE", json.dumps(evidence))
+    assert agent.state.failed == 1, evidence  # the fault was injected
+    assert raised is not None and cursor is None, evidence
+    assert evidence["escalations"] == [(OWNER, f"[NOW] {STEWARD}: now", None)], evidence
+    assert evidence["rows"] == [("m-now", "escalated")] and evidence["pending"] == [], evidence
+
+
+class FreshVerdict:
+    """A verdict notice on the owner's open pull request, at its current head: code files one task."""
+
+    async def triage(self, text: str) -> dict:
+        head = "c0ffee00" * 5
+        return {
+            "errors": [],
+            "rungs": {},
+            "line": "APPROVE, 0 blocking",
+            "state": "OPEN",
+            "fresh": True,
+            "owner": OWNER,
+            "owner_by": "branch",
+            "repo": "o/r",
+            "number": 7,
+            "evaluated_head": head,
+            "current_head": head,
+            "decision": "APPROVE",
+            "blocking": 0,
+            "coverage": "every file read",
+        }
+
+
+def test_a_verdict_task_whose_request_was_never_recorded_is_filed_by_the_next_discovery(tmp_path):
+    """A verdict notice from a sender in `verdict_from` is filed as a task by code; the write that
+    records the task's request fails before the store is asked. The discovery fails before its cursor
+    moves, and the next one triages the notice again and files it, once."""
+    notice = inbox_row("daemon:review", "verdict o/r#7", "APPROVE", "m-v", "t-v", at="2026-09-22T10:00:04Z")
+    inner, reader = FakeKhive(), FakeReader(notice)
+    reader.threads["t-v"] = [notice]
+    desk, chores, agent = build(
+        tmp_path, Bounded(inner, recipients=frozenset({OWNER, STEWARD, SELF})), reader, []
+    )
+    desk.verdicts, desk.verdict_from = FreshVerdict(), ("daemon:review",)
+    agent.state = LostIntent(agent.state, "assign")
+    agent.state.put("desk_since", LIVE, run="-", seq=0)
+    raised, cursor = watch_twice(desk, agent)
+    evidence = {
+        "first_raised": raised,
+        "first_cursor": cursor,
+        "tasks": sorted(inner.tasks),
+        "rows": [(r["msg"], r["class"]) for r in desk.rows()],
+        "pending": sorted(pending(agent)),
+        "errors": agent.errors,
+    }
+    print("EVIDENCE", json.dumps(evidence))
+    assert agent.state.failed == 1, evidence
+    assert raised is not None and cursor is None, evidence
+    assert evidence["tasks"] == [f"desk:{SELF}:m-v:task"], evidence
+    assert evidence["rows"] == [("m-v", "tasked")] and evidence["pending"] == [], evidence
+
+
+def test_a_discovery_that_read_older_mail_and_finished_last_never_moves_the_cursor_back(tmp_path):
+    """Two discoveries at once read the box from one cursor: the first is held on its read while the
+    second reads a newer message and moves the cursor past it. The first then finishes with an older
+    stamp. The cursor stays past the newer one, and both messages are pending."""
+    older = inbox_row(ASKER, "q1", "first", "m-old", "t-old", at="2026-09-22T10:00:00.000000Z")
+    newer = inbox_row(ASKER, "q2", "second", "m-new", "t-new", at="2026-09-22T10:00:01.000000Z")
+
+    class Overlap(FakeReader):
+        calls = 0
+
+        async def exec(self, ops):
+            self.calls += 1
+            first = self.calls == 1
+            self.rows = [older if first else newer]
+            page = await super().exec(ops)  # the box as it stood when this read was made
+            if first:
+                entered.set()
+                await release.wait()
+            return page
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    reader = Overlap()
+    desk, chores, agent = build(tmp_path, FakeKhive(), reader, [])
+    agent.state.put("desk_since", LIVE, run="-", seq=0)
+
+    async def scenario():
+        first = asyncio.create_task(desk._discover())
+        await asyncio.wait_for(entered.wait(), 2)
+        await desk._discover()
+        committed = agent.state.get("desk_watch").value
+        release.set()
+        await asyncio.wait_for(first, 2)
+        return committed
+
+    committed = asyncio.run(scenario())
+    evidence = {
+        "after_second": committed,
+        "after_first": agent.state.get("desk_watch").value,
+        "pending": sorted(pending(agent)),
+        "reads": reader.calls,
+    }
+    print("EVIDENCE", json.dumps(evidence))
+    assert committed == after(newer["created_at"]) and reader.calls == 2, evidence
+    assert evidence["after_first"] == committed, evidence
+    assert evidence["pending"] == ["m-new", "m-old"], evidence
+
+
+# a torn last line of the desk ledger
+
+
+def test_a_torn_last_ledger_line_is_no_row_and_the_next_row_replaces_it(tmp_path):
+    """A crash in the middle of an append leaves the ledger's last line incomplete, with no newline after
+    it. That line was never a row: reading skips it, so discovery goes on, and the next row cuts it off
+    before it is appended, so it never becomes a middle line."""
+    fresh = inbox_row(ASKER, "q", "a question", "m-new", "t-new", at="2026-09-22T10:00:05.000000Z")
+    desk, chores, agent = build(tmp_path, FakeKhive(), FakeReader(fresh), [])
+    agent.state.put("desk_since", LIVE, run="-", seq=0)
+    good = {"at": "2026-09-22 10:00:00", "msg": "m-good", "from": ASKER, "subject": "s", "thread": "t"}
+    good = json.dumps({**good, "class": "left", "run": "-", "why": "notice"})
+    torn = '{"at": "2026-09-22 10:00:03", "msg": "m-x", "fr'
+    desk.ledger.write_text(good + "\n" + torn)
+    asyncio.run(desk.watch(0))
+    evidence = {"pending": sorted(pending(agent)), "rows": [r["msg"] for r in desk.rows()]}
+    desk._row("m-new", pending(agent)["m-new"], "left", why="notice", run="-")
+    evidence["after_row"] = [r["msg"] for r in desk.rows()]
+    evidence["text"] = desk.ledger.read_text()
+    print("EVIDENCE", json.dumps(evidence))
+    assert evidence["pending"] == ["m-new"] and evidence["rows"] == ["m-good"], evidence
+    assert evidence["after_row"] == ["m-good", "m-new"] and torn not in evidence["text"], evidence
+    assert evidence["text"].endswith("\n") and evidence["text"].count("\n") == 2, evidence
+
+
+def test_a_bad_middle_ledger_line_fails_closed_and_a_whole_last_row_missing_its_newline_is_kept(tmp_path):
+    """Only a torn LAST line is skipped: an undecodable line with a row after it is damage nobody can
+    place, and reading refuses. A last row that is whole but lost only its newline is a row, and the next
+    row starts on a line of its own."""
+    desk, chores, agent = build(tmp_path, FakeKhive(), FakeReader(), [])
+    row = {"at": "2026-09-22 10:00:00", "from": ASKER, "subject": "s", "thread": "t", "class": "left"}
+    first, second = (json.dumps({**row, "msg": m}) for m in ("m-1", "m-2"))
+    desk.ledger.write_text(first + "\n" + '{"at": "2026-09-22 10:00:03", "msg"\n' + second + "\n")
+    with pytest.raises(json.JSONDecodeError):
+        desk.rows()
+    desk.ledger.write_text(first + "\n" + '{"at": "2026-09-22 10:00:03", "msg"')  # the same line, last
+    assert [r["msg"] for r in desk.rows()] == ["m-1"]
+    desk.ledger.write_text(first)
+    assert [r["msg"] for r in desk.rows()] == ["m-1"]
+    desk._row("m-2", {k: row[k] for k in ("from", "subject", "thread")}, "left", why="notice", run="-")
+    assert [r["msg"] for r in desk.rows()] == ["m-1", "m-2"]

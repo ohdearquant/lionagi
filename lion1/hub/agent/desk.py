@@ -382,11 +382,15 @@ class Desk:
                         verdict=line,
                     )
                 except Exception as e:  # the outcome is unknown: the next discovery replays its key
+                    if not (_val(state, "desk_pending", {}).get(mid) or {}).get("assign"):
+                        raise  # nothing recorded, nothing to replay: the cursor stays and the next reads it
                     self.agent.errors.append(f"desk: task of {mid} unresolved: {type(e).__name__}: {e}")
         stamps = [str(m["created_at"]) for m in rows.values() if m.get("created_at")]
         newest = max(stamps, key=_instant) if stamps else None
-        # the cursor never moves back
-        if not paged and newest is not None and _instant(newest) >= _instant(since):
+        # the cursor never moves back: compared with the one stored now, which a discovery beside this
+        # one may have moved while this one read
+        cursor = _val(state, "desk_watch", "") or since
+        if not paged and newest is not None and _instant(newest) >= _instant(cursor):
             state.put("desk_watch", after(newest), run="-", seq=0)
         return _val(state, "desk_pending", {})
 
@@ -624,7 +628,7 @@ class Desk:
                 # a possible row is a row for the budget: a task pending, or left `task unresolved` today
                 unresolved = sum(1 for p in held.values() if p.get("assign"))
                 left = (r for r in self.rows() if r["class"] == "left" and r.get("why") == "task unresolved")
-                unresolved += sum(1 for r in left if _epoch(r["at"]) >= cut)
+                unresolved += sum(1 for r in left if _epoch(r) >= cut)
                 # counted and recorded with no await between: two tasks of one turn never pass the cap
                 if self._spent(("tasked",), cut) + unresolved >= self.tasks_per_day:
                     self._row(mid, m, "left", why="cap: tasks", run=run, **extra)
@@ -669,14 +673,25 @@ class Desk:
         except AgentError as e:  # refused before it was sent: the brief names it
             self._row(mid, m, "left", why=f"escalation refused: {str(e)[:80]}", run="-")
         except Exception as e:  # the outcome is unknown: the next discovery replays its key
+            if not (_val(self.agent.state, "desk_pending", {}).get(mid) or {}).get("send"):
+                raise  # nothing recorded, nothing to replay: the cursor stays and the next reads it
             self.agent.errors.append(f"desk: escalation of {mid} unresolved: {type(e).__name__}: {e}")
 
     # bookkeeping
 
     def rows(self) -> list[dict]:
+        """The ledger's rows. A last line with no newline after it that does not decode is an append a
+        crash cut short, never a row; an undecodable line anywhere else fails the read."""
         if not self.ledger.exists():
             return []
-        return [json.loads(line) for line in self.ledger.read_text().splitlines() if line.strip()]
+        text = self.ledger.read_text()
+        lines = [line for line in text.splitlines() if line.strip()]
+        if lines and not text.endswith("\n"):
+            try:
+                json.loads(lines[-1])
+            except ValueError:
+                lines.pop()
+        return [json.loads(line) for line in lines]
 
     def digest_lines(self, day: str) -> list[str]:
         """The front desk's brief, the desk's part of the chair's digest: the window since
@@ -691,7 +706,7 @@ class Desk:
         sweeps = _val(state, "desk_sweeps", 0)
         self._brief = (end, sweeps)
         lo, hi = (_instant(start).timestamp() if start else 0.0), _instant(end).timestamp()
-        rows = [r for r in self.rows() if r["class"] != "resolved" and lo <= _epoch(r["at"]) < hi]
+        rows = [r for r in self.rows() if r["class"] != "resolved" and lo <= _epoch(r) < hi]
         n = {c: sum(1 for r in rows if r["class"] == c) for c in _BRIEFED + ("left",)}
         left = [r for r in rows if r["class"] == "left"]
         held = _val(state, "desk_pending", {}).values()
@@ -783,7 +798,7 @@ class Desk:
         cut = time.time() - self.clarify_hours * 3600
         out = []
         for mid, r in self._open_clarifies().items():
-            if _epoch(r["at"]) < cut:
+            if _epoch(r) < cut:
                 self._row(mid, r, "left", why="clarify unanswered", run=run)
                 out.append(mid)
         return sorted(out)
@@ -882,7 +897,7 @@ class Desk:
         """Rows of these classes written since `since`, and sends of them whose delivery is unresolved,
         pending or left, by the time their send started: a possible delivery is a delivery for a budget."""
         rows = self.rows()
-        sent = sum(1 for r in rows if r["class"] in classes and _epoch(r["at"]) >= since)
+        sent = sum(1 for r in rows if r["class"] in classes and _epoch(r) >= since)
         held = (r.get("send") or {} for r in (*rows, *_val(self.agent.state, "desk_pending", {}).values()))
         unresolved = [s for s in held if s.get("row", {}).get("class") in classes]
         return sent + sum(1 for s in unresolved if _instant(s["started"]).timestamp() >= since)
@@ -909,8 +924,10 @@ class Desk:
     def _row(self, mid: str, m: dict, cls: str, *, run: Run | str, **extra: Any) -> None:
         """`run` is the live run, or the id of the attempt a watch settles outside any run."""
         rid, seq = (run, 0) if isinstance(run, str) else (run.id, run.record.seq)
+        now = time.time()  # `at` is local, for reading; `utc` is the instant every window compares
         row = {
-            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "utc": datetime.fromtimestamp(now, UTC).isoformat(timespec="microseconds").replace("+00:00", "Z"),
             "msg": mid,
             "from": m["from"],
             "subject": m["subject"],
@@ -920,7 +937,16 @@ class Desk:
             **extra,
         }
         self.ledger.parent.mkdir(parents=True, exist_ok=True)
+        held = self.ledger.read_bytes() if self.ledger.exists() else b""
         with self.ledger.open("a") as fh:
+            if held and not held.endswith(b"\n"):  # the last append was cut short, or lost its newline
+                cut = held.rfind(b"\n") + 1
+                try:
+                    json.loads(held[cut:])
+                except ValueError:  # never a row: cut it, so it does not become a line in the middle
+                    fh.truncate(cut)
+                else:
+                    fh.write("\n")
             fh.write(json.dumps(row) + "\n")
         pending = _val(self.agent.state, "desk_pending", {})
         if mid in pending:  # the row is the disposition: only now does the message leave the intake
@@ -962,8 +988,12 @@ def _val(store: Any, key: str, default: Any) -> Any:
     return note.value if note is not None and isinstance(note.value, type(default)) else default
 
 
-def _epoch(local: str) -> float:
-    return time.mktime(time.strptime(local, "%Y-%m-%d %H:%M:%S"))
+def _epoch(row: dict) -> float:
+    """A ledger row's instant: its `utc`; a row written before it carried one, its local `at`, which
+    cannot tell apart the two passes of an hour a DST change repeats."""
+    if row.get("utc"):
+        return _instant(row["utc"]).timestamp()
+    return time.mktime(time.strptime(row["at"], "%Y-%m-%d %H:%M:%S"))
 
 
 def _midnight() -> float:

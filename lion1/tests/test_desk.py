@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 import pytest
 
 from hub.agent import Agent, AgentError, Budget, Posture
+from hub.agent import desk as desk_module
 from hub.agent.chores import Bounded, Chores, Outcome
 from hub.agent.desk import READ_VERBS, Desk, Leave, Reader, after
 from hub.khive import LOST, Khive, KhiveError
@@ -825,9 +826,9 @@ def stored(agent: Agent, key: str):
 
 
 def ledger_row(t: float, mid: str, cls: str, **extra) -> dict:
-    """A desk ledger row as `_row` writes it, stamped at `t` in local time."""
+    """A desk ledger row as `_row` writes it, stamped at `t` in local time and in UTC."""
     at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
-    row = {"at": at, "msg": mid, "from": ASKER, "subject": f"s {mid}", "thread": f"t-{mid}"}
+    row = {"at": at, "utc": iso(t), "msg": mid, "from": ASKER, "subject": f"s {mid}", "thread": f"t-{mid}"}
     return {**row, "class": cls, "run": "-", **extra}
 
 
@@ -838,6 +839,72 @@ def briefing(tmp_path, *rows: dict):
     agent.state.put("desk_since", iso(T0), run="-", seq=0)
     desk.ledger.write_text("".join(json.dumps(r) + "\n" for r in rows))
     return desk, chores, khive, agent
+
+
+FOLD = (1414906200.0, 1414909800.0)  # 05:30Z and 06:30Z on 2014-11-02: both 01:30 in US Eastern time
+
+
+@pytest.fixture
+def fold_clock(monkeypatch):
+    """The desk's clock under a zone whose DST change repeats 01:00 to 02:00; the test moves `now`."""
+    clock = types.SimpleNamespace(now=FOLD[0])
+
+    class Clock:
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+        def time(self):
+            return clock.now
+
+        def strftime(self, fmt, t=None):
+            return time.strftime(fmt, time.localtime(clock.now) if t is None else t)
+
+    monkeypatch.setenv("TZ", "EST5EDT,M3.2.0/2,M11.1.0/2")
+    time.tzset()
+    monkeypatch.setattr(desk_module, "time", Clock())
+    try:
+        yield clock
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+@pytest.mark.parametrize("consumer", ["brief", "cap"])
+def test_a_ledger_row_counts_at_its_instant_when_a_dst_change_repeats_its_local_hour(
+    tmp_path, fold_clock, consumer
+):
+    """Two rows an hour apart carry one local label, 01:30, on the night the clocks go back. A brief
+    whose window opens between them briefs only the second, and a cap cut between them counts only the
+    second: each row is read at its own instant, never at its local label."""
+    early, late = FOLD
+    labels = {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) for t in FOLD}
+    assert labels == {"2014-11-02 01:30:00"}  # the zone applied: one label, two instants
+    desk, chores, khive, agent = briefing(tmp_path)
+    agent.clock = lambda: fold_clock.now
+    agent.state.put("desk_since", iso(early - 3600), run="-", seq=0)
+    seen = {"from": ASKER, "subject": "s", "thread": "t"}
+    desk._row("m-early", seen, "answered", run="-", chore="disk", findings=["f"])
+    fold_clock.now = late
+    desk._row("m-late", seen, "answered", run="-", chore="disk", findings=["f"])
+    fold_clock.now = late + 900
+    if consumer == "brief":
+        agent.state.put("desk_brief_at", iso(early + 900), run="-", seq=0)  # a brief delivered between
+        text = "\n".join(desk.digest_lines("-"))
+        assert "m-late" in text and "m-early" not in text, text
+    else:
+        assert desk._spent(("answered",), early + 1800) == 1, desk.rows()
+
+
+def test_a_ledger_row_counts_at_its_instant_to_the_microsecond(tmp_path, fold_clock):
+    """A cut half a second into the second a row was written in: the row, written after the cut,
+    counts, since its stamp keeps the fraction."""
+    _, late = FOLD
+    desk, chores, khive, agent = briefing(tmp_path)
+    agent.clock = lambda: fold_clock.now
+    fold_clock.now = late + 0.75
+    desk._row("m-frac", {"from": ASKER, "subject": "s", "thread": "t"}, "answered", run="-", chore="disk")
+    assert desk._spent(("answered",), late + 0.5) == 1, desk.rows()
+    assert desk._spent(("answered",), late + 0.8) == 0, desk.rows()
 
 
 def test_the_second_brief_starts_where_the_first_ended_and_each_row_is_briefed_once(tmp_path):
@@ -1703,10 +1770,9 @@ class LostReceipt(FakeKhive):
 
 
 def test_a_delivery_unresolved_is_refused_a_second_send_and_its_keyed_replay_settles_it(tmp_path):
-    """B-R3-1, settled by key (B-R4-1): a send whose answer was lost is a delivery unresolved. While its
-    replay fails the sweep lists it on its own line, `answer` is refused with that line and nothing is
-    written; the replay that the server answers `replayed` settles it with the message that landed,
-    and no thread is read."""
+    """A send whose answer was lost is a delivery unresolved. While its replay fails the sweep lists it
+    on its own line, `answer` is refused with that line and nothing is written; the replay that the
+    server answers `replayed` settles it with the message that landed, and no thread is read."""
     inner = LostReceipt()
     khive = Bounded(inner, recipients=frozenset({OWNER, STEWARD, SELF}))
     q = inbox_row(ASKER, "disk?", "how much disk?", "m-q1", "t-q1", at="2026-09-22T10:00:00.000000Z")
