@@ -53,7 +53,7 @@ reports are [[ADR-0003-the-bounds|ADR-0003]]; the hook failures it lists come fr
 
 ## Claims
 
-### C1: One SYSTEM entry per turn, numbered by its sequence _(enforced: mechanical)_ ^c1
+### C1: One SYSTEM entry per turn, numbered by its sequence _(enforced: mechanical; owed, S6)_ ^c1
 
 - **Subject**: every turn.
 - **Violated when**: a turn starts without a fresh notification, two are appended in one turn, or a
@@ -164,3 +164,6 @@ diagnostics on the record (ADR-0002/C4).
   turn keeps it so: every command settles before the next notification unless an accepted `OUT{}`
   ends the run ([[ADR-0002-the-run#^c1|ADR-0002/C1]]), so only a path carrying a command into the
   next turn, which no record decides, would reach it.
+- **S6**: Owed with D1: the closure entry of C1, appended after the reap
+  ([[ADR-0002-the-run|ADR-0002]] S4); until it lands, a run that ends by an outcome has no closure
+  entry.
