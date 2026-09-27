@@ -917,10 +917,12 @@ def test_events_open_with_the_rows_then_the_history_and_deliver_a_new_line_withi
     def handlers() -> list[threading.Thread]:
         return [t for t in threading.enumerate() if "process_request_thread" in t.name]
 
-    baseline = len(handlers())
+    # a handler of an earlier request can still be ending, so the stream's thread is the one new here
+    before = set(handlers())
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     conn.request("GET", "/events")
     resp = conn.getresponse()
+    (stream,) = [t for t in handlers() if t not in before]
     assert resp.status == 200 and resp.getheader("Content-Type").startswith("text/event-stream")
     got = read_events(resp, lambda ev: sum(e == "log" for e, _ in ev) == 20, 5)
     assert got[0][0] == "areas" and got[0][1] == areas_rows(port)
@@ -941,15 +943,11 @@ def test_events_open_with_the_rows_then_the_history_and_deliver_a_new_line_withi
     assert [x for e, x in got if e == "areas"][-1][0]["controls"]["held_by_file"] is True
     assert ("ping", {}) in got
     # the client gone: its thread ends at the next write
-    assert len(handlers()) == baseline + 1
+    assert stream.is_alive()
     resp.close()
     conn.close()
-    for _ in range(50):
-        if len(handlers()) == baseline:
-            break
-        time.sleep(0.1)
-    else:
-        raise AssertionError("the /events thread outlived its client")
+    stream.join(5)
+    assert not stream.is_alive(), "the /events thread outlived its client"
 
 
 def test_the_log_tail_reads_history_then_whole_new_lines_and_starts_over_on_a_shrunk_log(tmp_path):
