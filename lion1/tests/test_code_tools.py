@@ -52,7 +52,10 @@ def test_read_lines_search_and_edit_over_a_tree(tmp_path):
     assert r["r1"].value == "pkg/m.py lines 5-6 of 6\n5: def g():\n6:     return f() + 1"
     assert r["s1"].value.splitlines() == ["pkg/m.py:6:    return f() + 1"]  # build/ is ignored
     assert r["s2"].value == "(no matches)"
-    assert r["s3"].ok is False and "unclosed" in r["s3"].error.lower() or "regex" in r["s3"].error.lower()
+    # rg says "unclosed character class", GNU grep "Unmatched [", BSD grep "brackets ([ ]) not balanced"
+    assert r["s3"].ok is False and any(
+        w in r["s3"].error.lower() for w in ("unclosed", "unmatched", "balanced")
+    )
     assert r["e1"].ok and r["e2"].ok  # two edits of one file in one round: both land
     assert r["e3"].ok is False and "occurs 2 times" in r["e3"].error
     assert (
