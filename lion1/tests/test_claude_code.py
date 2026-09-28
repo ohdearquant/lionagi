@@ -5,8 +5,8 @@ from dataclasses import replace
 
 import pytest
 
-from hub.harness import claude_code
-from hub.harness.claude_code import ClaudeCodeSession
+from hub.backend import claude_code
+from hub.backend.claude_code import ClaudeCodeSession
 from lionagi import Message
 
 

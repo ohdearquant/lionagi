@@ -752,9 +752,9 @@ def test_serve_keeps_the_lock_its_process_already_claimed(tmp_path):
 def test_backend_for_claude_code_is_the_cli_chat_shape_on_the_named_model(monkeypatch):
     from lion_cli.agent import backend_for
 
-    from hub.harness import ClaudeCodeSession
+    from hub.backend import ClaudeCodeSession
 
-    monkeypatch.setattr("hub.harness.claude_code.shutil.which", lambda name: "/opt/bin/claude")
+    monkeypatch.setattr("hub.backend.claude_code.shutil.which", lambda name: "/opt/bin/claude")
     b = backend_for("claude_code/claude-opus-5-5")
     assert isinstance(b, ClaudeCodeSession) and (b.model, b.cli) == ("claude-opus-5-5", "/opt/bin/claude")
     assert isinstance(backend_for("claude_code"), ClaudeCodeSession)

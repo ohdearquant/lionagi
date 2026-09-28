@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench" / "swe"))
 from run_swe import solve  # noqa: E402
 
-from hub.harness import CodexError
+from hub.backend import CodexError
 from hub.tools import SandboxDead
 
 DIFF = "diff --git a/pkg/x.py b/pkg/x.py\n--- a/pkg/x.py\n+++ b/pkg/x.py\n@@ -1 +1 @@\n-old\n+new\n"

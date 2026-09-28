@@ -45,8 +45,8 @@ from lionagi.lndl import plain
 from lionagi.notes import FileNoteStore, MemoryNoteStore, NoteStore
 from lionagi.record import Directive, Entry, Kind
 
+from ..backend.claude_code import _prompt_tokens
 from ..chat import entry_row
-from ..harness.claude_code import _prompt_tokens
 from ..khive import Khive, lit
 
 __all__ = (

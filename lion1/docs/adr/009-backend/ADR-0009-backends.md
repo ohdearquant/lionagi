@@ -33,7 +33,7 @@ turn ([[ADR-0002-the-run|ADR-0002]]); a native tool call in its answer is read b
 Which model a name resolves to, through which route and on whose key, and whether the model that
 answered is the one named, are decided below this boundary: here a backend is built with a model
 name and answers with text. Source: `Backend`, `Reply` and the anchor in `lionagi/actor.py`;
-`hub/harness/openrouter.py`, `hub/harness/claude_code.py`, `hub/harness/codex.py`.
+`hub/backend/openrouter.py`, `hub/backend/claude_code.py`, `hub/backend/codex.py`.
 
 ## Definitions
 
@@ -58,7 +58,7 @@ name and answers with text. Source: `Backend`, `Reply` and the anchor in `lionag
 | #  | statement                                                                                                                         | source                                                                                                                                                                                                    | if false                                                                                              |
 | -- | --------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | A1 | A provider's prompt count is the size of the context the model saw on that attempt.                                               | the router's `usage.prompt_tokens`; the session CLI's input, cache read and cache write per turn; on 4,240 bench calls the count read 1.20 times the view estimate plus 1,695 ([[ADR-0006-the-notification#Assumptions\|ADR-0006/A3]]) | the anchor is exact about the wrong prompt; the figure returns to the estimate                        |
-| A2 | A CLI with its acting features switched off is a chat completion.                                                                 | with the flags in `hub/harness/codex.py` the CLI cannot run a command, search or spawn, measured on its 0.153 release; the session CLI under `--tools ""` and one turn                                    | C1's CLI backends are agents, and their acts pass no gate ([[ADR-0005-command-handling\|ADR-0005]])   |
+| A2 | A CLI with its acting features switched off is a chat completion.                                                                 | with the flags in `hub/backend/codex.py` the CLI cannot run a command, search or spawn, measured on its 0.153 release; the session CLI under `--tools ""` and one turn                                    | C1's CLI backends are agents, and their acts pass no gate ([[ADR-0005-command-handling\|ADR-0005]])   |
 | A3 | What a count stands above the view at its least is fixed context; what it later stands above that is history the record never saw. | the session CLI reads 34k cached input per call with its settings loaded against 3.9k without; on a served run one call read 14.8M tokens over its tool turns while the estimate never moved (2026-09-24) | the fold fires every turn past a budget the fixed context exceeds, or never sees the tool turns       |
 
 ## Claims
@@ -158,7 +158,7 @@ baseline runs the same CLI with its own tools, one whole task per call, and is n
 
 ## Decisions
 
-### D1: The router backend in `hub/harness/openrouter.py` ^d1
+### D1: The router backend in `hub/backend/openrouter.py` ^d1
 
 Serves C1, C2 and C5. `OpenRouter(model, ...)` posts the view with usage included and `max_tokens`
 32768: at 8192, 3 of 125 turns that wrote 40 to 52 actions were cut mid-tag. Temperature, provider
@@ -170,7 +170,7 @@ native call when the content is empty; `calls` keeps the envelopes.
 - **Landing evidence**: `tests/test_openrouter.py`: the count of the attempt that answered, the
   retried errored choice, the billed failure kept, the native call handed back as text.
 
-### D2: The two CLI shapes in `hub/harness/claude_code.py` ^d2
+### D2: The two CLI shapes in `hub/backend/claude_code.py` ^d2
 
 Serves C1, C2, C4, C5 and C6. `ClaudeCode` runs the CLI once per turn: tools off, one turn, no
 settings loaded, strict MCP config. `ClaudeCodeSession` resumes one CLI session per run and restarts
@@ -182,7 +182,7 @@ printed. Cancellation kills and reaps the child.
   last turn's when several ran, the session resumed with only the new entries, restarted by a
   directive and by the fold, one session per run, cancellation stopping the child.
 
-### D3: The subscription CLI backend in `hub/harness/codex.py` ^d3
+### D3: The subscription CLI backend in `hub/backend/codex.py` ^d3
 
 Serves C1 and C5. `Codex` runs the CLI once per turn in a scratch directory with every acting
 feature disabled: spawning removed by `agents.max_depth=0` (the feature flag alone does not), web

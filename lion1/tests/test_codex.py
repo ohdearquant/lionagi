@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from hub.harness import Codex, CodexError
-from hub.harness import codex as codex_mod
-from hub.harness.codex import DISABLED, INSTRUCTIONS
+from hub.backend import Codex, CodexError
+from hub.backend import codex as codex_mod
+from hub.backend.codex import DISABLED, INSTRUCTIONS
 from lionagi import Message
 
 # The fake keeps a per-scratch attempt counter beside `last.txt`, so a prompt can ask for a

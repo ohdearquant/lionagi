@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from hub.harness import OpenRouter, OpenRouterError
-from hub.harness import openrouter as mod
+from hub.backend import OpenRouter, OpenRouterError
+from hub.backend import openrouter as mod
 from lionagi import Message
 
 
