@@ -94,25 +94,51 @@ def test_the_live_example_says_what_the_calls_cost_when_a_later_call_fails(tmp_p
     assert "openrouter:" not in out  # no run to summarize: the failure is the caller's to say
 
 
+async def run_cells(name: str, ns: dict, before=None) -> None:
+    """Every code cell of a notebook, in order, in one namespace, top-level awaits included. `before`,
+    given a cell's source, runs on the namespace ahead of that cell."""
+    for i, cell in enumerate(
+        c for c in json.loads((NOTEBOOKS / name).read_text())["cells"] if c["cell_type"] == "code"
+    ):
+        source = "".join(cell["source"])
+        if before is not None:
+            before(source, ns)
+        result = eval(compile(source, f"{name}:cell{i}", "exec", ast.PyCF_ALLOW_TOP_LEVEL_AWAIT), ns)  # noqa: S307
+        if inspect.iscoroutine(result):
+            await result
+
+
 @pytest.mark.parametrize("name", sorted(p.name for p in NOTEBOOKS.glob("*.ipynb")))
 def test_a_notebook_runs_to_its_end(name, tmp_path, monkeypatch):
-    """Every code cell, in order, in one namespace, top-level awaits included; the notebooks are
-    scripted, so this is the whole notebook and it runs offline."""
+    """The notebooks are scripted, so this is the whole notebook and it runs offline."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    cells = json.loads((NOTEBOOKS / name).read_text())["cells"]
     ns: dict = {"__name__": f"notebook_{name}"}
-
-    async def run_cells():
-        for i, cell in enumerate(c for c in cells if c["cell_type"] == "code"):
-            code = compile("".join(cell["source"]), f"{name}:cell{i}", "exec", ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
-            result = eval(code, ns)  # noqa: S307
-            if inspect.iscoroutine(result):
-                await result
-
-    asyncio.run(run_cells())
+    asyncio.run(run_cells(name, ns))
     if name.startswith("03"):  # the peer's task is held and awaited, so its error would be this test's
         assert ns["peer_tasks"] and all(t.done() and t.exception() is None for t in ns["peer_tasks"])
+
+
+def test_the_two_actor_notebook_raises_a_peers_error_on_the_page(tmp_path, monkeypatch):
+    """A researcher whose backend raises settles the reviewer's ask naming the error, and the
+    reviewer's run goes on; the peer's own task is awaited where the peer runs are shown, so the
+    error is raised there rather than left to the loop to report at exit."""
+    monkeypatch.chdir(tmp_path)
+    ns: dict = {"__name__": "notebook_03_failing_peer"}
+
+    async def failing(messages):
+        raise RuntimeError("the researcher's backend is down")
+
+    def before(source, ns):
+        if source.startswith("run = await reviewer.run("):
+            ns["researcher_turns"] = failing
+        if source.startswith("await asyncio.gather"):
+            assert ns["run"].output["verdict"].decision == "request_changes"  # the reviewer finished
+            assert "RuntimeError" in str(ns["run"].resolve("q1"))  # and its ask says why the peer failed
+
+    with pytest.raises(RuntimeError, match="backend is down"):
+        asyncio.run(run_cells("03_two_actors.ipynb", ns, before))
+    assert [t.exception().args for t in ns["peer_tasks"]] == [("the researcher's backend is down",)]
 
 
 @pytest.mark.parametrize(

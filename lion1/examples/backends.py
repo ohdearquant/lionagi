@@ -104,8 +104,8 @@ async def main(kind: str, model: str | None) -> None:
             ),
             backend,
         )
-    except Exception:
-        if backend.calls:  # the calls that completed before the failure were paid for: say them
+    except BaseException:  # an interrupt too: the calls that completed before it were paid for
+        if backend.calls:
             spent(backend)
         raise
     print(f"{kind}: {type(run.outcome).__name__} after {run.round} rounds")
