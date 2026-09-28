@@ -301,5 +301,5 @@ take that fails is kept among the agent's errors and the run goes on.
 - **S9**: A lane row is an object whose lane id is a non-empty string and whose `properties`, when
   given, is an object; a pull request's number is a positive int, never a bool. A row of another
   shape is counted in `source.lanes` as invalid, the first one named, and never aborts the take; a
-  box that is not a list is a read that could not be done. Pinned by
-  `test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take`.
+  box that is not a list is a read that could not be done, and the khive client refuses such a page
+  itself. Pinned by `test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take`.

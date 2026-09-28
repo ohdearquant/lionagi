@@ -127,7 +127,11 @@ class Khive:
                 if LOST not in str(e):
                     raise
                 (page,) = await self.exec(f"comm.inbox({', '.join(args)})")
-            mail = page.get("messages") or []
+            mail = page.get("messages")
+            if mail is None:  # the store leaves the field out of an empty page
+                mail = []
+            elif not isinstance(mail, list):  # anything else is a read that cannot be trusted as empty
+                raise KhiveError(f"comm.inbox answered {type(mail).__name__} for messages, not a list")
             remaining -= slice_ms
             if mail or remaining <= 0:
                 return mail
