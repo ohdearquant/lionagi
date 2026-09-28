@@ -1,7 +1,7 @@
 ---
 adr: ADR-0012
 status: draft
-liveness: operating (the set runner, the in-box grader, the closure, the run identity, the host-side oracle and both arms are under tests; that compared bench runs share instances, head and budgets is the reader's check; no CLI-arm bench run on the hard set has the package indexes closed)
+liveness: operating (the set runner, the in-box grader, the closure, the run identity, the launch's provenance, the host-side oracle and both arms are under tests; that compared bench runs share instances, head and budgets is the reader's check; no CLI-arm bench run on the hard set has the package indexes closed)
 date: "2026-09-25"
 area: bench
 kind: new
@@ -106,10 +106,11 @@ The run id's `run.json` holds the four fields that make two launches one bench r
 written before it must agree and name all four; a row without the stamp refuses the launch. A
 resumed launch skips the instances its ledger holds.
 
-Each launch creates its own manifest: arguments, head, the dirty files as git's status lines with
-their state columns kept, the set's path and digest, the instances selected after every filter, and
-for the CLI arm its pinned version and configuration. The head is not one of the four: a resumed
-bench run may continue at another head, and each manifest says which.
+Each launch creates its own manifest: arguments, head, the dirty files as git's status lines, state
+columns kept, the set's path and digest, the instances after every filter, and for the CLI arm its
+pinned version and configuration. The head is not one of the four; a resumed bench run may continue
+at another, and each manifest says which. A failed git read refuses the launch; the digest is of the
+bytes the rows came from.
 
 ### C4: The bench runs unaided unless a launch says otherwise _(enforced: mechanical)_ ^c4
 
@@ -199,13 +200,17 @@ is cited with its bench run.
 
 Serves C1 to C5. One box per instance from its evaluation image, local or remote, `--parallel` wide.
 The hosts close unless `--aided`; the arm runs; the hosts reopen; the box grades the patch and the
-row is appended under a lock. A box that dies gets one fresh box. Defaults: unaided, settle 0,
-criteria off, a 1200 s time budget, 100 turns as a backstop, a cost cap only on a metered arm.
+row is appended under a lock. A box that dies gets one fresh box. A head that is not a full commit
+id counts as a failed git read. Defaults: unaided, settle 0, criteria off, a 1200 s time budget, 100
+turns as a backstop, a cost cap only on a metered arm.
 
 - **Landing evidence**: `tests/test_swe_run_set.py`: the retried spend kept, a cap on an unmetered
   arm refused before any box, an unconfirmed stop not graded, a disagreeing resume refused, a
   matching resume skipping ledger rows, manifests never overwritten;
-  `test_the_manifest_keeps_the_status_columns_of_an_unstaged_change`.
+  `test_the_manifest_keeps_the_status_columns_of_an_unstaged_change`,
+  `test_the_manifest_digests_the_bytes_the_rows_were_read_from`,
+  `test_a_git_read_that_fails_refuses_the_launch_before_anything_is_written` and its control
+  `test_the_manifest_names_a_clean_tree_and_a_dirty_one_as_git_reads_them`.
 
 ### D2: The grader in `bench/swe/sandbox.py` ^d2
 
@@ -267,12 +272,9 @@ model has no cost.
 - **S6**: The host-side baseline in `bench/swe/run_naked.py` runs the CLI with its own tools, one
   whole task per call (`ClaudeCodeAgentic`), over a copied tree and grades with the harness's own
   evaluation. It has no ledger, manifest or closure, and it writes an unreported cost as zero. Since
-  swebench 5.0.2 skips an instance holding a per-instance report under its run id
-  (`get_dataset_from_preds`), the oracle in `bench/swe/run_swe.py` grades under the run id joined to
-  the predictions' digest and refuses a report not naming exactly those predictions
-  (`tests/test_swe_naked.py`:
-  `test_new_predictions_under_a_reused_run_id_are_graded_not_read_from_an_earlier_evaluation`,
-  `test_a_report_that_does_not_name_the_predictions_handed_in_is_refused`).
+  swebench 5.0.2 skips an instance holding a per-instance report under its run id, its oracle grades
+  under the run id joined to the predictions' digest (`tests/test_swe_naked.py`:
+  `test_new_predictions_under_a_reused_run_id_are_graded_not_read_from_an_earlier_evaluation`).
 - **S7**: A CLI row's `outcome` is read off the exec's exit code and names no run outcome; only a
   loop row's is one.
 - **S8**: The boundary: what any instrument declares, returns and reports when it fails, and who
@@ -280,3 +282,8 @@ model has no cost.
   contract). The bench is one instrument: it returns rows and a ledger, never a run's outcome.
   Asking for a bench run by mail belongs to the long-running agent
   ([[ADR-0013-the-agent|ADR-0013]]).
+- **S9**: The oracle, `oracle` in `bench/swe/run_swe.py`, reads only a report its own evaluation
+  wrote, never one an earlier evaluation left under the same run id. It raises on a nonzero exit or
+  when none was written, and refuses a report not naming exactly the predictions handed in
+  (`tests/test_swe_naked.py`: `test_the_oracle_reads_only_a_report_its_own_evaluation_wrote`,
+  `test_a_report_that_does_not_name_the_predictions_handed_in_is_refused`).

@@ -1,6 +1,7 @@
 """The naked arm: a harness failure after paid work still records the patch on disk and the spend."""
 
 import asyncio
+import hashlib
 import json
 import shutil
 import subprocess
@@ -282,3 +283,34 @@ def test_a_report_that_does_not_name_the_predictions_handed_in_is_refused(tmp_pa
             run_naked.oracle(preds, "r1", ["x__x-1"], 1)
     _harness(monkeypatch, lambda patch: True)  # the control: the harness's own report on these predictions
     assert run_naked.oracle(preds, "r1", ["x__x-1"], 1)["resolved_ids"] == ["x__x-1"]
+
+
+def test_the_oracle_reads_only_a_report_its_own_evaluation_wrote(tmp_path, monkeypatch):
+    preds = tmp_path / "predictions.jsonl"
+    preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 2\n"}) + "\n")
+    digest = hashlib.sha256(preds.read_bytes()).hexdigest()[:16]
+    report = tmp_path / f"claude-code-naked-m.r1.{digest}.json"
+    report.write_text(json.dumps({"resolved_ids": ["x__x-1"]}))  # an earlier evaluation under this run id
+
+    def evaluator(rc: int, writes: dict | None) -> None:
+        def run(argv, *, capture_output, text, cwd, timeout):
+            if writes is not None:
+                report.write_text(json.dumps(writes))
+            return subprocess.CompletedProcess(argv, rc, "evaluated\n", "failed\n" if rc else "")
+
+        monkeypatch.setattr(run_naked.subprocess, "run", run)
+
+    evaluator(1, None)  # the evaluation fails and writes nothing
+    with pytest.raises(RuntimeError, match="the harness exited 1; see oracle_r1.log"):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    assert (tmp_path / "oracle_r1.log").read_text() == "evaluated\n\n--- stderr ---\nfailed\n"
+    evaluator(1, {"resolved_ids": []})  # a report beside a failed exit is not a grade either
+    with pytest.raises(RuntimeError, match="the harness exited 1"):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    report.write_text(json.dumps({"resolved_ids": ["x__x-1"]}))
+    evaluator(0, None)  # a clean exit that wrote no report: the one on disk is still the earlier one
+    with pytest.raises(RuntimeError, match="no harness report from this evaluation"):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    own = {"submitted_ids": ["x__x-1"], "resolved_ids": []}
+    evaluator(0, own)  # the control: this evaluation's own report, under the same name
+    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1) == own

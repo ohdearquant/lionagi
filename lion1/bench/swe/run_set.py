@@ -31,7 +31,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import fcntl
+import hashlib
 import json
+import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -257,21 +260,37 @@ def summary(ledger: Path) -> str:
     return "\n".join(lines)
 
 
-def manifest(args: argparse.Namespace, out_dir: Path, selected: list[str]) -> Path:
-    """What this launch was, written before the first box: the arguments, the source (HEAD and what
-    was dirty), the dataset's digest, the codex config when that arm runs, and the run it belongs to.
-    A later launch under the same id adds its own file, created exclusively, so two launches in one
-    second never write one file."""
-    import hashlib
-    import subprocess
+def provenance() -> dict:
+    """The source a launch runs from: HEAD, a full commit id, and what was dirty. A git read that
+    fails refuses the launch: an empty head attests nothing, and an empty status reads as a clean
+    tree."""
 
-    git = lambda *a: subprocess.run(["git", *a], capture_output=True, text=True, cwd=HERE).stdout  # noqa: E731
-    data = SETS[args.set].read_bytes()
+    def git(*a: str) -> str:
+        r = subprocess.run(["git", *a], capture_output=True, text=True, cwd=HERE)
+        if r.returncode != 0:
+            raise SystemExit(
+                f"git {' '.join(a)} exited {r.returncode}: {r.stderr.strip()[:200]}; the launch's source "
+                "is unknown, so nothing was launched"
+            )
+        return r.stdout
+
+    head = git("rev-parse", "HEAD").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise SystemExit(f"git rev-parse HEAD gave {head[:80]!r}, not a commit id; nothing was launched")
+    # a porcelain line's first two columns are its state: the leading space of an unstaged change stays
+    return {"head": head, "dirty": git("status", "--porcelain").rstrip("\n")}
+
+
+def manifest(args: argparse.Namespace, out_dir: Path, selected: list[str], data: bytes, src: dict) -> Path:
+    """What this launch was, written before the first box: the arguments, the source (HEAD and what
+    was dirty), the digest of the bytes the rows were read from, the codex config when that arm runs,
+    and the run it belongs to. A later launch under the same id adds its own file, created
+    exclusively, so two launches in one second never write one file."""
     doc = {
         "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "args": vars(args),
-        "head": git("rev-parse", "HEAD").strip(),
-        "dirty": git("status", "--porcelain").rstrip("\n"),  # a line's first two columns are its state
+        "head": src["head"],
+        "dirty": src["dirty"],
         "dataset": {"path": str(SETS[args.set]), "sha256": hashlib.sha256(data).hexdigest()},
         "selected": selected,  # the instances this launch asked for, after every filter
         "run": "run.json",
@@ -302,13 +321,15 @@ async def main(args: argparse.Namespace) -> None:
         )
     if args.cost_budget is None and not unmetered:
         args.cost_budget = 1.0
-    rows = json.loads(SETS[args.set].read_text())
+    data = SETS[args.set].read_bytes()  # one read: the manifest digests the bytes these rows came from
+    rows = json.loads(data)
     if args.repo:
         rows = [r for r in rows if r["repo"] == args.repo]
     if args.instances:
         rows = [r for r in rows if r["instance_id"] in set(args.instances)]
     if args.limit:
         rows = rows[: args.limit]
+    src = provenance()  # before anything is written
     out_dir = RESULTS / args.run_id
     out_dir.mkdir(parents=True, exist_ok=True)
     ledger = out_dir / "ledger.jsonl"
@@ -368,13 +389,15 @@ async def main(args: argparse.Namespace) -> None:
         lock_file.close()
         raise SystemExit(f"{out_dir / 'run.lock'} is held: another launch of this run is running") from None
     try:
-        await _run(args, out_dir, ledger, rows)
+        await _run(args, out_dir, ledger, rows, data, src)
     finally:
         lock_file.close()
 
 
-async def _run(args: argparse.Namespace, out_dir: Path, ledger: Path, rows: list[dict]) -> None:
-    print(f"launch record {manifest(args, out_dir, [r['instance_id'] for r in rows])}", flush=True)
+async def _run(
+    args: argparse.Namespace, out_dir: Path, ledger: Path, rows: list[dict], data: bytes, src: dict
+) -> None:
+    print(f"launch record {manifest(args, out_dir, [r['instance_id'] for r in rows], data, src)}", flush=True)
     done = ledger_ids(ledger)
     todo = [r for r in rows if r["instance_id"] not in done]
     print(

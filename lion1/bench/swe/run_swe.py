@@ -389,8 +389,9 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
     """The harness's report on `preds`. The harness skips an instance whose per-instance report
     exists under its run id and still writes a fresh top-level report from the cached ones, so the
     id it is handed carries the predictions' digest: new predictions under a reused run id are
-    graded, never read from an earlier evaluation. A report that does not name exactly the
-    predictions handed in raises."""
+    graded, never read from an earlier evaluation. Only a report this call wrote, new or changed
+    since it started, is read; a nonzero exit, no such report, or a report that does not name
+    exactly the predictions handed in raises; the log keeps both streams either way."""
     digest = hashlib.sha256(preds.read_bytes()).hexdigest()[:16]
     harness_id = f"{run_id}.{digest}"
     submitted = sorted(
@@ -416,11 +417,16 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
         "--instance_ids",
         *instance_ids,
     ]
+    pattern = f"*{harness_id}.json"
+    before = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in preds.parent.glob(pattern)}
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(preds.parent), timeout=7200)
     (preds.parent / f"oracle_{run_id}.log").write_text(proc.stdout + "\n--- stderr ---\n" + proc.stderr)
-    reports = sorted(preds.parent.glob(f"*{harness_id}.json"), key=lambda p: p.stat().st_mtime)
+    if proc.returncode != 0:
+        raise RuntimeError(f"the harness exited {proc.returncode}; see oracle_{run_id}.log")
+    after = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in preds.parent.glob(pattern)}
+    reports = sorted((p for p, seen in after.items() if before.get(p) != seen), key=lambda p: after[p][0])
     if not reports:
-        raise RuntimeError(f"no harness report; rc={proc.returncode}; see oracle_{run_id}.log")
+        raise RuntimeError(f"no harness report from this evaluation; see oracle_{run_id}.log")
     report = json.loads(reports[-1].read_text())
     graded = sorted(report.get("submitted_ids", []))
     if graded != submitted:
