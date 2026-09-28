@@ -298,7 +298,7 @@ def test_disk_groups_roots_by_device_reads_each_floor_once_in_gib_and_escalates_
         f"/dev/disk0s1 1948 1500 {free_kib} 84% 1 2 0% /\n"
     )
     sh = FakeSh(
-        **{"df -k": df, "find ": f"{tmp_path}/x/target\n", "du -sk": f"26000000\t{tmp_path}/x/target\n"}
+        **{"df -k": df, "find ": f"{tmp_path}/x/target\0", "du -sk": f"26000000\t{tmp_path}/x/target\n"}
     )
     floors = [
         {"name": "build admission", "budget_gib": 16, "floor_gib": 280, "enforcing": True},
@@ -350,14 +350,14 @@ def test_disk_fails_its_control_when_find_or_du_fail_and_absent_floors_inherit_t
     sh = FakeSh(
         **{
             "df -k": df,
-            "find ": (1, f"{tmp_path}/x/target\n", "find: permission denied"),
+            "find ": (1, f"{tmp_path}/x/target\0", "find: permission denied"),
             "du -sk": "26000000\t/x\n",
         }
     )
     out = asyncio.run(Disk([str(tmp_path)], every=None, run=sh).run({}))
     assert not out.control and f"{tmp_path}: find failed (rc 1): find: permission denied" in out.findings
     assert f"{tmp_path}/x/target: over the 20 GiB target cap" in out.findings  # what it did find is sized
-    sh.set("find ", f"{tmp_path}/x/target\n")
+    sh.set("find ", f"{tmp_path}/x/target\0")
     sh.set("du -sk", (1, "", "du: cannot read"))
     out = asyncio.run(Disk([str(tmp_path)], every=None, run=sh).run({}))
     assert not out.control and out.findings == (f"{tmp_path}/x/target: du failed (rc 1): du: cannot read",)
@@ -365,6 +365,62 @@ def test_disk_fails_its_control_when_find_or_du_fail_and_absent_floors_inherit_t
     assert Disk(["/"], every=None, floors=[]).floors == []  # an empty list declines every floor
     with pytest.raises(ValueError, match="a floor has a name and a floor_gib"):
         Disk(["/"], every=None, floors=[{"name": "x", "floor_gb": 1}])
+
+
+def test_disk_sizes_a_target_whose_path_holds_a_space_as_one_path(tmp_path):
+    df = (
+        "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on\n"
+        f"/dev/disk0s1 1 1 {400 * 2**20} 1% 1 2 0% /\n"
+    )
+    spaced, plain = f"{tmp_path}/my app/target", f"{tmp_path}/x/node_modules"
+    sh = FakeSh(**{"df -k": df, "find ": f"{spaced}\0{plain}\0", "du -sk": "1024\t-\n"})
+    out = asyncio.run(Disk([str(tmp_path)], every=None, run=sh).run({}))
+    assert out.control and out.findings == ()
+    assert "-print0" in next(c for c in sh.calls if c[0] == "/usr/bin/find")
+    assert sorted(c[2] for c in sh.calls if c[0] == "/usr/bin/du") == [spaced, plain]
+
+
+class Child:
+    """A child whose output never comes: records the kill and whether it was waited for."""
+
+    def __init__(self, gone: bool = False):
+        self.killed = self.waited = False
+        self.gone, self.returncode = gone, None
+
+    async def communicate(self):
+        await asyncio.sleep(60)
+
+    def kill(self):
+        self.killed = True
+        if self.gone:
+            raise ProcessLookupError
+
+    async def wait(self):
+        self.waited, self.returncode = True, -9
+        return -9
+
+
+@pytest.mark.parametrize("gone", [False, True], ids=["running", "exited-on-its-own"])
+def test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation(monkeypatch, gone):
+    child = Child(gone)
+
+    async def spawn(*argv, **kw):
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    assert asyncio.run(instr.sh(["/bin/x"], timeout=0.01)) == (124, "", "/bin/x did not finish within 0.01s")
+    assert child.killed and child.waited
+
+    async def cancelled():
+        task = asyncio.create_task(instr.sh(["/bin/x"]))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    child.killed = child.waited = False
+    asyncio.run(cancelled())
+    assert child.killed and child.waited
 
 
 class ExecKhive:
@@ -398,6 +454,28 @@ def test_gtd_inbox_names_its_population_and_fails_its_control_on_an_unshared_nam
     k = ExecKhive(**{"gtd.tasks": [[], []]})  # an unshared namespace answers empty, not an error
     out = asyncio.run(GtdInbox(k, "lambda:x", every=None).run({}))
     assert not out.control and out.findings == () and "has NO task at all" in out.evidence
+
+
+@pytest.mark.parametrize("answer", [None, {"tasks": []}, "error"])
+def test_gtd_inbox_an_inbox_read_that_is_not_a_list_is_unread_not_empty(answer):
+    known = {"id": "t1", "title": "any", "priority": "p1", "created_at": iso(1)}
+    k = ExecKhive(**{"gtd.tasks": [answer, [known]]})
+    out = asyncio.run(GtdInbox(k, "lambda:x", every=None).run({}))
+    assert not out.control and out.findings == () and out.positive == ""
+    assert f"the inbox read answered {type(answer).__name__}, not a list of tasks" in out.evidence
+    assert "lambda:x has a task at all" in out.evidence  # the known-positive held; the answer did not
+
+
+def test_gtd_inbox_a_full_page_is_a_floor_and_fails_the_control():
+    known = {"id": "t1", "title": "any", "priority": "p1", "created_at": iso(1)}
+    fresh = [{"id": f"t{i}", "title": "new", "priority": "p2", "created_at": iso(1)} for i in range(99)]
+    k = ExecKhive(**{"gtd.tasks": [fresh, [known]]})
+    out = asyncio.run(GtdInbox(k, "lambda:x", every=None).run({}))
+    assert out.control and out.count == 99 and "limit=100)" in k.ops[0]
+    k = ExecKhive(**{"gtd.tasks": [[*fresh, known], [known]]})
+    out = asyncio.run(GtdInbox(k, "lambda:x", every=None).run({}))
+    assert not out.control and out.count == 100 and out.positive == ""
+    assert "the inbox read returned a full page of 100; rows past it are unread" in out.evidence
 
 
 def test_inbox_sla_probes_each_actor_and_a_dead_read_fails_the_control():
@@ -463,6 +541,142 @@ def test_worktrees_first_sight_then_a_parked_dirty_tree_without_a_pr(tmp_path):
         Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=FakeSh()).run({})
     )
     assert not out.control and "git worktree list failed" in out.findings[0]
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/o/project.v2.git\n",
+        "https://github.com/o/project.v2\n",
+        "git@github.com:o/project.v2.git\n",
+        "ssh://git@github.com/o/project.v2/\n",
+    ],
+)
+def test_worktrees_an_origin_keeps_every_dot_of_its_repository(tmp_path, origin):
+    porcelain = (
+        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
+        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+    )
+    sh = FakeSh(
+        **{
+            "worktree list --porcelain": porcelain,
+            "remote get-url origin": origin,
+            "status --porcelain": "",
+            "log -1": f"{int(time.time())}\n",
+            "pr list -R o/project.v2 --head feat": "[]",
+        }
+    )
+    out = asyncio.run(Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=sh).run({}))
+    assert out.control and "origin o/project.v2\n" in out.evidence
+    assert ["pr", "list", "-R", "o/project.v2"] == next(c for c in sh.calls if "pr" in c)[1:5]
+
+
+@pytest.mark.parametrize("failing", ["status", "log", "pr"])
+def test_worktrees_a_failed_read_of_a_tree_fails_the_control_and_keeps_its_last_reading(tmp_path, failing):
+    porcelain = (
+        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
+        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+    )
+    good = {
+        "worktree list --porcelain": porcelain,
+        "remote get-url origin": "https://github.com/o/r.git\n",
+        f"-C {tmp_path}/wt status --porcelain": " M a.py\n",
+        f"-C {tmp_path}/wt log -1": f"{int(time.time()) - 5 * 86400}\n",
+        "pr list -R o/r --head feat": "[]",
+    }
+    key = {"status": "status --porcelain", "log": "log -1", "pr": "pr list -R o/r --head feat"}[failing]
+    store = MemoryNoteStore()
+    inst = Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=FakeSh(**good))
+    assert asyncio.run(inst.run({})).control
+    kept = store.get(f"worktrees:{tmp_path}/main").value
+    broken = FakeSh(**good)
+    broken.set(next(k for k in good if key in k), (1, "", "read failed"))
+    inst.sh = broken
+    out = asyncio.run(inst.run({}))
+    word = {"status": "status", "log": "log", "pr": "PR"}[failing]
+    assert not out.control and out.findings == (f"{tmp_path}/wt: the {word} read failed; the tree is unread",)
+    assert store.get(f"worktrees:{tmp_path}/main").value == kept  # no transition from an unread tree
+    fresh = Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=broken)
+    out = asyncio.run(fresh.run({}))  # first sight of an unread tree: nothing stored for it
+    assert not out.control and out.count == 0
+    assert f"{tmp_path}/wt: the {word} read failed; the tree is unread" in out.findings
+
+
+@pytest.mark.parametrize(
+    ("origin", "why"),
+    [
+        ((1, "", "No such remote 'origin'"), "failed: No such remote 'origin'"),
+        (
+            (128, "https://github.com/o/r.git\n", "fatal: bad config line 3"),
+            "failed: fatal: bad config line 3",
+        ),
+        ("https://git.example.com/o/r.git\n", "names no GitHub repo: https://git.example.com/o/r.git"),
+        ("https://evilgithub.com/o/r.git\n", "names no GitHub repo: https://evilgithub.com/o/r.git"),
+    ],
+)
+def test_worktrees_an_unread_origin_leaves_every_branch_pr_unread(tmp_path, origin, why):
+    porcelain = (
+        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
+        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+    )
+    good = {
+        "worktree list --porcelain": porcelain,
+        "remote get-url origin": "https://github.com/o/r.git\n",
+        "status --porcelain": " M a.py\n",
+        "log -1": f"{int(time.time()) - 5 * 86400}\n",
+        "pr list -R o/r --head feat": "[]",
+    }
+    store = MemoryNoteStore()
+    inst = Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=FakeSh(**good))
+    assert asyncio.run(inst.run({})).control
+    kept = store.get(f"worktrees:{tmp_path}/main").value
+    inst.sh = FakeSh(**good)
+    inst.sh.set("remote get-url origin", origin)
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == (
+        f"{tmp_path}/main: origin {why}",
+        f"{tmp_path}/wt: the PR read failed; the tree is unread",
+    )
+    assert not [c for c in inst.sh.calls if "pr" in c]  # no repository, no PR query
+    assert store.get(f"worktrees:{tmp_path}/main").value == kept
+
+
+@pytest.mark.parametrize("answer", ["null", "{}", "[1]", '[{"id": 1}]', "not json"])
+def test_worktrees_a_pr_answer_that_is_not_a_pr_list_is_unread(tmp_path, answer):
+    porcelain = (
+        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
+        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+    )
+    sh = FakeSh(
+        **{
+            "worktree list --porcelain": porcelain,
+            "remote get-url origin": "https://github.com/o/r.git\n",
+            "status --porcelain": "",
+            "log -1": f"{int(time.time())}\n",
+            "pr list -R o/r --head feat": answer,
+        }
+    )
+    out = asyncio.run(Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=sh).run({}))
+    assert not out.control and f"{tmp_path}/wt: the PR read failed; the tree is unread" in out.findings
+    assert f"{tmp_path}/wt | feat | dirty 0 | HEAD 0.0d | PR not a PR list" in out.evidence
+
+
+def test_worktrees_a_head_committed_ahead_of_the_clock_is_a_read(tmp_path):
+    porcelain = (
+        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
+        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+    )
+    sh = FakeSh(
+        **{
+            "worktree list --porcelain": porcelain,
+            "remote get-url origin": "https://github.com/o/r.git\n",
+            "status --porcelain": "",
+            "log -1": f"{int(time.time()) + 3600}\n",
+            "pr list -R o/r --head feat": "[]",
+        }
+    )
+    out = asyncio.run(Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=sh).run({}))
+    assert out.control and out.findings == (f"{tmp_path}/main: first snapshot, 1 worktree(s)",)
 
 
 def test_bench_jobs_reports_an_unreported_job_whose_process_is_gone(tmp_path):
@@ -1160,6 +1374,18 @@ def test_verdict_freshness_a_newest_json_that_does_not_parse_fails_the_control(t
     )
 
 
+@pytest.mark.parametrize(
+    "head",
+    ["12345678", "12345678" + "a" * 31, "12345678" + "a" * 33, "12345678" + "g" * 32, int("1" * 40)],
+)
+def test_verdict_freshness_a_json_whose_evaluated_head_is_not_a_full_sha_does_not_parse(tmp_path, head):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    body = {"repo": "o/r", "number": 7, "evaluated_head": head, "decision": "APPROVE", "blocking": []}
+    (tmp_path / "o-r-7-12345678.json").write_text(json.dumps(body))
+    rec = VerdictFreshness._read({"json": (str(tmp_path / "o-r-7-12345678.json"), 1.0)})
+    assert rec["error"] == f"ValueError: evaluated_head {str(head)[:48]!r} is not a full sha"
+
+
 def test_verdict_freshness_reads_the_md_header_when_the_json_is_missing_and_says_so(tmp_path):
     verdict(tmp_path, 8, HEAD8, head8="12121212", mtime=900)  # the control's known-positive
     verdict(
@@ -1776,6 +2002,27 @@ def test_ci_red_local_a_header_only_retry_keeps_the_prior_red_and_names_the_gap(
     out = asyncio.run(inst.run({}))
     assert not out.control and out.findings == ("o/r#7 aaaaaaaa: no job section yet",)
     assert "o/r#7 aaaaaaaa: 20260922T100000Z-aaaaaaaa.log: no job verdict yet" in out.evidence
+    assert store.get("ci-red:o/r").value == red  # the prior red is kept, never cleared
+
+
+def test_ci_red_local_a_job_left_without_a_verdict_before_the_next_began_keeps_the_prior_red(tmp_path):
+    """A new job header while a job has no verdict leaves that job unread, even when the next is green."""
+    pr = tmp_path / "pr-7"
+    pr.mkdir()
+    first = pr / "20260922T090000Z-aaaaaaaa.log"
+    first.write_text(
+        transcript(SHA, ("Rust", "failure", ["$ cargo test", "[cwd=/t rc=101 #1]", "error: a real failure"]))
+    )
+    os.utime(first, (1000, 1000))
+    store = MemoryNoteStore()
+    inst = ci_red(ci_sh(), channel=f"local:{tmp_path}", state=store)
+    assert asyncio.run(inst.run({})).data
+    red = store.get("ci-red:o/r").value
+    retry = transcript(SHA, ("Lint", "success", ["$ true", "[cwd=/t rc=0 #2]"]))
+    retry = retry.replace("\n===== job Lint", "\n===== job Rust =====\n\n$ cargo test\n\n===== job Lint", 1)
+    (pr / "20260922T100000Z-aaaaaaaa.log").write_text(retry)
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == ("o/r#7 aaaaaaaa: job Rust: no verdict before job Lint began",)
     assert store.get("ci-red:o/r").value == red  # the prior red is kept, never cleared
 
 
