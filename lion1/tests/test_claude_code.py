@@ -215,6 +215,45 @@ def test_failed_envelope_is_preserved(tmp_path):
     assert crashed.calls[0]["total_cost_usd"] is None and "TAIL-REASON" in crashed.calls[0]["error"]
 
 
+def test_a_failed_session_call_lands_its_envelope_and_the_next_call_bills_only_its_own_share(monkeypatch):
+    # the failure raised before the call was kept, so a spend row reading `calls` missed it whole
+    printed = {"subtype": "error_max_turns", "usage": {"input_tokens": 9000, "output_tokens": 700}}
+    answers = iter(
+        [
+            ("ok", {"usage": {"input_tokens": 500}, "total_cost_usd": 0.1}),
+            claude_code.ClaudeCodeError(
+                "claude reported error_max_turns: cap", {**printed, "total_cost_usd": 0.6}
+            ),
+            claude_code.ClaudeCodeError("claude did not answer within 300s"),
+            ("ok", {"usage": {"input_tokens": 700}, "total_cost_usd": 0.7}),
+        ]
+    )
+    prompts: list[str] = []
+
+    async def fake(cli, args, prompt, *, model, timeout, cwd=None, persist=False):
+        prompts.append(prompt)
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(claude_code, "_exec", fake)
+    s = ClaudeCodeSession(cli="/bin/claude")
+    asyncio.run(s([SYSTEM, IN0, SYS1]))
+    for error in ("error_max_turns", "did not answer"):
+        with pytest.raises(claude_code.ClaudeCodeError, match=error):
+            asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
+    asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
+    ok, capped, timed_out, after = s.calls
+    assert (
+        capped["error"] == "claude reported error_max_turns: cap" and capped["usage"]["output_tokens"] == 700
+    )
+    assert capped["total_cost_usd"] == pytest.approx(0.5)  # what this call added to the session
+    assert timed_out == {"total_cost_usd": None, "error": "claude did not answer within 300s"}
+    assert after["total_cost_usd"] == pytest.approx(0.1)  # the failed call's share is not billed twice
+    assert prompts[-1] == prompts[1]  # what a failed call did not deliver is sent again
+
+
 def test_both_chat_backends_hand_back_this_calls_prompt_count(monkeypatch):
     # fresh input, cache read and cache write together are the prompt this call sent, the CLI's own
     # context included; the actor anchors its context figure on it (ADR-0009/C2)
