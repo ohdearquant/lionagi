@@ -8,7 +8,9 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
+import tomllib
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -350,11 +352,11 @@ def test_disk_groups_roots_by_device_reads_each_floor_once_in_gib_and_escalates_
 ):
     free_kib = 290 * 2**20  # 290 GiB base-1024 = 311.4 GB base-1000
     df = (
-        "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on\n"
-        f"/dev/disk0s1 1948 1500 {free_kib} 84% 1 2 0% /\n"
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+        f"/dev/disk0s1 1948 1500 {free_kib} 84% /\n"
     )
     sh = FakeSh(
-        **{"df -k": df, "find ": f"{tmp_path}/x/target\0", "du -sk": f"26000000\t{tmp_path}/x/target\n"}
+        **{"df -P -k": df, "find ": f"{tmp_path}/x/target\0", "du -sk": f"26000000\t{tmp_path}/x/target\n"}
     )
     floors = [
         {"name": "build admission", "budget_gib": 16, "floor_gib": 280, "enforcing": True},
@@ -387,25 +389,22 @@ def test_disk_groups_roots_by_device_reads_each_floor_once_in_gib_and_escalates_
         == "df parsed 1 device(s) for 2 root(s); floors read in GiB base-1024, the unit floors are "
         "written in"
     )
-    assert [c[:2] for c in sh.calls[:2]] == [["/bin/df", "-k"], ["/bin/df", "-k"]]
-    sh.set("df -k", df.replace(str(free_kib), str(297 * 2**20)))  # 281 projected: only the steady floor
+    assert [c[:3] for c in sh.calls[:2]] == [["/bin/df", "-P", "-k"], ["/bin/df", "-P", "-k"]]
+    sh.set("df -P -k", df.replace(str(free_kib), str(297 * 2**20)))  # 281 projected: only the steady floor
     out = asyncio.run(inst.run({}))
     assert out.control and not out.escalate  # a steady-floor crossing reports; the owner decides
     assert out.findings[0] == f"steady: under the floor on /dev/disk0s1 ({tmp_path}, {tmp_path}/x)"
-    sh.set("df -k", "garbage")
+    sh.set("df -P -k", "garbage")
     out = asyncio.run(inst.run({}))
     assert not out.control and out.findings[0].endswith("df gave no free-space number: garbage")
     assert out.positive == "" and out.count == 0
 
 
 def test_disk_fails_its_control_when_find_or_du_fail_and_absent_floors_inherit_the_default_floor(tmp_path):
-    df = (
-        "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on\n"
-        f"/dev/disk0s1 1 1 {400 * 2**20} 1% 1 2 0% /\n"
-    )
+    df = f"Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk0s1 1 1 {400 * 2**20} 1% /\n"
     sh = FakeSh(
         **{
-            "df -k": df,
+            "df -P -k": df,
             "find ": (1, f"{tmp_path}/x/target\0", "find: permission denied"),
             "du -sk": "26000000\t/x\n",
         }
@@ -424,16 +423,88 @@ def test_disk_fails_its_control_when_find_or_du_fail_and_absent_floors_inherit_t
 
 
 def test_disk_sizes_a_target_whose_path_holds_a_space_as_one_path(tmp_path):
-    df = (
-        "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on\n"
-        f"/dev/disk0s1 1 1 {400 * 2**20} 1% 1 2 0% /\n"
-    )
+    df = f"Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk0s1 1 1 {400 * 2**20} 1% /\n"
     spaced, plain = f"{tmp_path}/my app/target", f"{tmp_path}/x/node_modules"
-    sh = FakeSh(**{"df -k": df, "find ": f"{spaced}\0{plain}\0", "du -sk": "1024\t-\n"})
+    sh = FakeSh(**{"df -P -k": df, "find ": f"{spaced}\0{plain}\0", "du -sk": "1024\t-\n"})
     out = asyncio.run(Disk([str(tmp_path)], every=None, run=sh).run({}))
     assert out.control and out.findings == ()
     assert "-print0" in next(c for c in sh.calls if c[0] == "/usr/bin/find")
     assert sorted(c[2] for c in sh.calls if c[0] == "/usr/bin/du") == [spaced, plain]
+
+
+@pytest.mark.parametrize(
+    ("table", "refusal"),
+    [
+        ("target_cap_gib = nan", "target_cap_gib is a finite number of GiB, zero or more: nan"),
+        ("target_cap_gib = -1", "target_cap_gib is a finite number of GiB, zero or more: -1"),
+        (
+            '[[chores.disk.floors]]\nname = "steady"\nfloor_gib = nan',
+            "floor_gib of floor 'steady' is a finite",
+        ),
+        (
+            '[[chores.disk.floors]]\nname = "steady"\nfloor_gib = inf',
+            "floor_gib of floor 'steady' is a finite",
+        ),
+        (
+            '[[chores.disk.floors]]\nname = "steady"\nfloor_gib = "300"',
+            "floor_gib of floor 'steady' is a finite",
+        ),
+        (
+            '[[chores.disk.floors]]\nname = "admit"\nfloor_gib = 280\nbudget_gib = nan',
+            "budget_gib of floor 'admit' is a finite number of GiB, zero or more: nan",
+        ),
+        (
+            '[[chores.disk.floors]]\nname = "admit"\nfloor_gib = 280\nbudget_gib = -16',
+            "budget_gib of floor 'admit' is a finite number of GiB, zero or more: -16",
+        ),
+    ],
+    ids=[
+        "cap-nan",
+        "cap-negative",
+        "floor-nan",
+        "floor-inf",
+        "floor-string",
+        "budget-nan",
+        "budget-negative",
+    ],
+)
+def test_disk_refuses_a_floor_budget_or_cap_that_is_not_a_finite_number_of_gib_at_build(table, refusal):
+    cfg = tomllib.loads(f'[chores.disk]\nroots = ["/"]\n{table}\n')
+    with pytest.raises(ValueError, match=re.escape(refusal)):
+        instr.instruments(cfg, FakeKhive(), MemoryNoteStore())
+    fine = '[[chores.disk.floors]]\nname = "zero"\nfloor_gib = 0\nbudget_gib = 0.5\n'
+    disk = instr.instruments(
+        tomllib.loads(f'[chores.disk]\nroots = ["/"]\ntarget_cap_gib = 0\n{fine}'),
+        FakeKhive(),
+        MemoryNoteStore(),
+    )
+    assert (
+        disk["disk"].floors == [{"name": "zero", "floor_gib": 0, "budget_gib": 0.5}] and disk["disk"].cap == 0
+    )
+
+
+def test_disk_reads_df_in_the_posix_layout_because_gnu_wraps_a_long_device_name_without_it(tmp_path):
+    device, free_kib = "/dev/mapper/vg0-lv_root_on_a_long_name", 400 * 2**20
+    wrapped = (  # GNU df -k: the source is past its column, so the numbers move to the next line
+        "Filesystem           1K-blocks      Used Available Use% Mounted on\n"
+        f"{device}\n                             1         1 {free_kib}   1% /\n"
+    )
+    posix = f"Filesystem 1024-blocks Used Available Capacity Mounted on\n{device} 1 1 {free_kib} 1% /\n"
+    sh = FakeSh(**{"df -k": wrapped, "df -P -k": posix, "find ": ""})
+    inst = Disk([str(tmp_path)], every=None, run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.count == 1 and out.findings == ()
+    assert f"{device} ({tmp_path}): free 400.0 GiB base-1024" in out.evidence
+    sh.set("df -P -k", wrapped)  # the wrapped row gives the parse no free-space column
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == (
+        f"{tmp_path}: df gave no free-space number: {wrapped.strip()[:120]}",
+    )
+    sh.set("df -P -k", (1, "", "df: No such file or directory"))
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == (
+        f"{tmp_path}: df gave no free-space number: df: No such file or directory",
+    )
 
 
 class Child:
