@@ -179,14 +179,15 @@ native call when the content is empty; `calls` keeps the envelopes.
 ### D2: The two CLI shapes in `hub/harness/claude_code.py` ^d2
 
 Serves C1, C2, C4, C5 and C6. `ClaudeCode` runs the CLI once per turn: tools off, one turn, no
-settings loaded, strict MCP config. `ClaudeCodeSession` resumes one CLI session per run and restarts
-it on a directive or the fold mark; for a served run it may hand the CLI its own tools, a working
-directory and one MCP. Both hand back the last turn's count from the CLI's per-turn usage when
-printed. Cancellation kills and reaps the child.
+settings, strict MCP config. `ClaudeCodeSession` resumes one CLI session per run, restarting on a
+directive or the fold mark; a served run may get the CLI's own tools, a working directory and one
+MCP. Both hand back the last turn's count when printed. Cancellation kills and reaps the child. A
+tool call still at the gate when the call ends lands not executed; a request the gate cannot send
+lands refused.
 
 - **Landing evidence**: `tests/test_claude_code.py`: both shapes hand back this call's count, the
-  last turn's when several ran, the session resumed with only the new entries, restarted by a
-  directive and by the fold, one session per run, cancellation stopping the child.
+  last turn's when several ran, resumed with only the new entries, restarted by a directive and the
+  fold, one session per run, cancellation stopping the child, the gate settled (S11).
 
 ### D3: The subscription CLI backend in `hub/harness/codex.py` ^d3
 
@@ -254,9 +255,11 @@ anchor.
   S2); the fix is owed.
 - **S11**: The gate over an acting session, owed when this record landed, holds (C6), pinned with a
   scripted CLI that runs the pre-tool hook: in `tests/test_claude_code.py`,
-  `test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record` and
-  `test_the_gate_admits_nothing_when_it_cannot_decide`; the wiring in `lion agent` by
-  `tests/test_agent.py` `test_the_session_clis_own_tool_calls_ask_the_agents_actor`. The record
-  keeps the call and its verdict, never what the tool returned. Both hook contracts were measured
-  once on the installed CLI: exit 2 stops the tool and the model reads the reason; an allow with
-  `updatedInput` runs the rewritten call. No test runs the live CLI.
+  `test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record`,
+  `test_the_gate_admits_nothing_when_it_cannot_decide`,
+  `test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_before_it_returns`
+  and `test_a_request_the_hooks_left_that_cannot_be_sent_is_a_refusal_that_lands`; the wiring in
+  `lion agent` by `tests/test_agent.py` `test_the_session_clis_own_tool_calls_ask_the_agents_actor`.
+  The record keeps the call and its verdict, never what the tool returned. Both hook contracts were
+  measured once on the installed CLI: exit 2 stops the tool and the model reads the reason; an allow
+  with `updatedInput` runs the rewritten call. No test runs the live CLI.

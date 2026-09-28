@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import functools
 import json
 import math
 import os
@@ -188,8 +187,29 @@ class ClaudeCodeSession:
             if self.actor is not None:
                 where = stack.enter_context(tempfile.TemporaryDirectory(prefix="lion-gate-"))
                 sock = os.path.join(where, "gate")
-                ask = functools.partial(_ask, self.actor, run, self.requires)
+                # the call owns what its hook asked: at its end, however it ends, a gate still deciding
+                # is cancelled and joined, its tool call landing not executed before the call returns
+                asks: set[asyncio.Task] = set()
+                closed = asyncio.Event()
+
+                async def ask(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+                    task = asyncio.current_task()
+                    asks.add(task)
+                    try:
+                        await _ask(self.actor, run, self.requires, closed, reader, writer)
+                    finally:
+                        asks.discard(task)
+
+                async def settle() -> None:
+                    closed.set()
+                    while asks:  # one that connected while the others were joined is cancelled too
+                        pending = list(asks)
+                        for task in pending:
+                            task.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+
                 await stack.enter_async_context(await asyncio.start_unix_server(ask, sock))
+                stack.push_async_callback(settle)  # unwound first, before the server closes
                 hook = {"type": "command", "command": shlex.join([sys.executable, "-I", "-c", _HOOK, sock])}
                 hook["timeout"] = math.ceil(self.timeout)  # the call's deadline, never the hook's, ends it
                 settings = {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}}
@@ -396,12 +416,13 @@ async def _ask(
     actor: Actor,
     run: str | None,
     requires: dict[str, tuple[str, ...]],
+    closed: asyncio.Event,
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
 ) -> None:
     """One tool call from the pre-tool hook: the actor's gate decides it, and it lands on the run's
     record, admitted with the arguments the hooks left or refused with the reason. A gate that fails
-    admits nothing."""
+    admits nothing; a call that ends before the gate decides lands the tool call not executed."""
     try:
         call = json.loads(await reader.read())
         live = actor.runs.get(run)
@@ -416,23 +437,38 @@ async def _ask(
             verdict: Result | BaseModel = Result(la.name, False, error=why, reason="refused")
             alias = f"{alias}_{live.record.seq}"
         else:
-            verdict = await actor.gate(
-                live, la, _ToolInput.model_validate(la.args), frozenset(requires.get(la.name, ()))
-            )
+            ended = Result(la.name, False, error="cancelled before it started", reason="cancelled")
+            try:
+                verdict = await actor.gate(
+                    live, la, _ToolInput.model_validate(la.args), frozenset(requires.get(la.name, ()))
+                )
+            except asyncio.CancelledError:
+                live.record.append(
+                    Kind.RESULT, ended, alias=alias, round=live.round, execution="not executed"
+                )
+                raise
+            if closed.is_set():  # the call is over: its CLI runs nothing, whatever the gate decided
+                verdict = ended
+        if not isinstance(verdict, Result):
+            try:
+                args = verdict.model_dump(mode="json")
+            except Exception as e:  # what the hooks left cannot reach the CLI: a refusal, and it lands
+                why = f"refused: the request cannot be sent, {type(e).__name__}: {e}"
+                verdict = Result(la.name, False, error=why, reason="refused")
         if isinstance(verdict, Result):
             live.record.append(Kind.RESULT, verdict, alias=alias, round=live.round, execution="not executed")
             answer = {"refuse": verdict.error}
         else:
-            args = verdict.model_dump(mode="json")
             result = Result(la.name, True, value=args)
             live.record.append(Kind.RESULT, result, alias=la.alias, round=live.round, execution="started")
             answer = {"allow": args}
     except Exception as e:
         answer = {"refuse": f"the runtime's gate failed: {type(e).__name__}: {e}"}
-    writer.write(json.dumps(answer).encode())
-    await writer.drain()
-    writer.close()
-    await writer.wait_closed()
+    with contextlib.suppress(ConnectionError):  # a hook the call's end already stopped hears nothing
+        writer.write(json.dumps(answer).encode())
+        await writer.drain()
+        writer.close()
+        await writer.wait_closed()
 
 
 def _plain(messages: list[Message]) -> str:

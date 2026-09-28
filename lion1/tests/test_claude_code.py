@@ -424,9 +424,9 @@ print(json.dumps({"result": "done", "usage": {"input_tokens": 10}}))
 """
 
 
-def _scripted(tmp_path, *calls: dict) -> str:
+def _scripted(tmp_path, *calls: dict, script: str = SCRIPTED) -> str:
     cli = tmp_path / "claude"
-    cli.write_text(f"#!{sys.executable}\n{SCRIPTED}")
+    cli.write_text(f"#!{sys.executable}\n{script}")
     cli.chmod(0o755)
     (tmp_path / "calls.json").write_text(json.dumps(calls))
     return str(cli)
@@ -521,3 +521,108 @@ def test_the_gate_admits_nothing_when_it_cannot_decide(tmp_path):
         text=True,
     )
     assert late.returncode == 2 and "the runtime's gate could not be asked" in late.stderr
+
+
+def test_a_request_the_hooks_left_that_cannot_be_sent_is_a_refusal_that_lands(tmp_path):
+    cli = _scripted(
+        tmp_path, _tool("Read", "toolu_a", file_path="a.txt"), _tool("Read", "toolu_b", file_path="b.txt")
+    )
+    actor = Actor("gated")
+
+    @actor.before
+    def tag(run, la, request):
+        # a value a hook can hold and JSON cannot carry: an object, and bytes that are not UTF-8
+        extra = object() if request.file_path == "a.txt" else b"\xff\xfe"
+        return type(request).model_validate({"file_path": request.file_path, "metadata": extra})
+
+    backend = ClaudeCodeSession(cli=cli, tools=("Read",), actor=actor)
+    run = asyncio.run(actor.run(Profile("worker"), RunRequest(inputs=("go",), max_rounds=1), backend))
+    a, b = json.loads((tmp_path / "seen.json").read_text())["seen"]
+    assert (a["rc"], b["rc"]) == (2, 2)
+    assert a["err"].startswith("refused: ") and "PydanticSerializationError" in a["err"]
+    assert b["err"].startswith("refused: ") and "UnicodeDecodeError" in b["err"]
+    acts = [
+        (e.alias, e.content.ok, e.content.reason, e.meta["execution"])
+        for e in run.record.of_kind(Kind.RESULT)
+    ]
+    assert acts == [(alias, False, "refused", "not executed") for alias in ("toolu_a", "toolu_b")]
+
+
+# a CLI that starts its pre-tool hook and does not wait for the answer: it fails, or runs past the call's
+# deadline, while the gate still waits on a before hook
+STRANDED = """import json, subprocess, sys, time
+from pathlib import Path
+
+here = Path(sys.argv[0]).parent
+sys.stdin.read()
+argv = sys.argv[1:]
+hook = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"][0]["hooks"][0]
+call = json.loads((here / "calls.json").read_text())[0]
+asked = subprocess.Popen(
+    hook["command"], shell=True, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+)
+asked.stdin.write(json.dumps(call).encode())
+asked.stdin.close()
+if (here / "mode").read_text() == "fail":
+    time.sleep(0.5)
+    sys.exit(1)
+time.sleep(30)
+"""
+
+
+def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_before_it_returns(tmp_path):
+    """The CLI fails, runs past the call's deadline, or the call is cancelled, while a before hook waits on an
+    approval: the call's deadline ends it, the tool call lands not executed before it returns, nothing of the
+    gate is left running, and the approval that comes later lands nothing. A hook that swallows the
+    cancellation and admits anyway admits nothing: the call is over."""
+    import time
+
+    cli = _scripted(tmp_path, _tool("Read", "toolu_x", file_path="notes.txt"), script=STRANDED)
+
+    async def arm(mode: str) -> None:
+        (tmp_path / "mode").write_text(mode)
+        errors: list[str] = []
+        asyncio.get_running_loop().set_exception_handler(lambda loop, ctx: errors.append(ctx["message"]))
+        actor = Actor("gated")
+        entered, approved = asyncio.Event(), asyncio.Event()
+        runs = []
+
+        @actor.before
+        async def approval(run, la, request):
+            runs.append(run)
+            entered.set()
+            try:
+                await approved.wait()
+            except asyncio.CancelledError:
+                if mode != "insist":
+                    raise
+
+        backend = ClaudeCodeSession(cli=cli, tools=("Read",), actor=actor, timeout=1.0)
+        t0 = time.monotonic()
+        request = RunRequest(inputs=("go",), max_rounds=1)
+        task = asyncio.create_task(actor.run(Profile("worker"), request, backend))
+        await asyncio.wait_for(entered.wait(), 5)
+        if mode == "cancel":
+            task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=2.5)
+        assert done and time.monotonic() - t0 < 2.0, mode
+        if mode == "cancel":
+            assert task.cancelled()
+        else:
+            error = task.exception()
+            match = "exited 1" if mode == "fail" else "did not answer"
+            assert isinstance(error, claude_code.ClaudeCodeError) and match in str(error), mode
+        assert [t for t in asyncio.all_tasks() if t is not asyncio.current_task()] == [], mode
+        (run,) = runs
+        acts = [
+            (e.alias, e.content.ok, e.content.reason, e.meta["execution"])
+            for e in run.record.of_kind(Kind.RESULT)
+        ]
+        assert acts == [("toolu_x", False, "cancelled", "not executed")], mode
+        landed = len(run.record)
+        approved.set()
+        await asyncio.sleep(0.3)
+        assert len(run.record) == landed and errors == [], mode
+
+    for mode in ("fail", "deadline", "cancel", "insist"):
+        asyncio.run(arm(mode))
