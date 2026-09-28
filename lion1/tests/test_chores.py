@@ -113,8 +113,11 @@ class FakeKhive:
                 for c in self.agenda
             ]
             return [{"events": events}]
-        if ops.startswith('list(kind="scheduled_event"'):
-            return [{"items": list(self.events)}]
+        if ops.startswith('list(kind="scheduled_event"'):  # a page of `limit` from `offset`, as the store
+            limit = int(ops.split("limit=")[1].split(",")[0].split(")")[0])
+            offset = int(ops.split("offset=")[1].split(")")[0]) if "offset=" in ops else 0
+            page = self.events[offset : offset + limit]
+            return [{"items": page, "has_more": offset + len(page) < len(self.events)}]
         if ops.startswith("comm.thread"):
             tid = ops.split('id="')[1].split('"')[0]
             msgs = self.threads.get(tid, [])
@@ -715,6 +718,39 @@ def test_two_aged_passes_of_one_turn_tell_the_steward_once_and_keep_both_markers
     assert sorted(agent.state.get("aged_sent").value) == sorted(_aged_key(r) for r in rows)
 
 
+@pytest.mark.parametrize("n", [1000, 1001])
+def test_each_unanswered_report_is_told_to_the_steward_once_however_many_markers_the_ledger_holds(
+    tmp_path, n
+):
+    khive = FakeKhive(*(mail(SELF, "tick: aged", mid=f"a{i:07x}") for i in range(3)))
+    chores, agent = build(
+        tmp_path, khive, ["<lact a1>aged()</lact>", DONE] * 3, disk=Probe("disk", full(), every="every:30m")
+    )
+    start = time.time() - 86400  # a day back: every report is past two 30-minute periods
+    rows = [
+        {
+            "at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start + i)),
+            "ts": start + i,
+            "chore": "disk",
+            "findings": ["low"],
+            "msg": f"m{i}",
+            "thread": f"t{i}",
+            "sent_to": [OWNER],
+        }
+        for i in range(n)
+    ]
+    chores.ledger.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    agent.state.put("aged_sent", ["disk|2026-01-01 00:00:00"], run="-", seq=0)  # its row left the ledger
+    told = []
+    for _ in range(3):
+        before = len(khive.sent)
+        asyncio.run(agent.wake())
+        told.append(sum(s["content"].count("\n- disk ") for s in khive.sent[before:]))
+    assert told == [n, 0, 0]
+    assert all(s["to"] == STEWARD for s in khive.sent)
+    assert sorted(agent.state.get("aged_sent").value) == sorted(_aged_key(r) for r in rows)
+
+
 def test_a_report_in_the_hour_a_clock_change_repeats_is_aged_from_its_own_instant(tmp_path, monkeypatch):
     monkeypatch.setenv("TZ", "America/New_York")
     time.tzset()
@@ -774,6 +810,51 @@ def test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once(
     asyncio.run(agent.wake())
     assert [r["chore"] for r in chores.rows()] == ["pr", "disk", "disk"]  # ev1 seen, not run again
     assert agent.state.get("missed_seen").value == ["ev1"]
+
+
+def test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once(tmp_path):
+    events = [
+        {"id": f"ev{i}", "content": "tick: pr", "properties": {"created_by_actor": SELF, "status": "missed"}}
+        for i in range(201)
+    ]
+    khive = FakeKhive(mail(SELF, "tick: disk"), mail(SELF, "tick: disk", mid="b2c3d4e5"), events=events)
+    chores, agent = build(
+        tmp_path, khive, [CHECK, DONE] * 2, disk=Probe("disk", full()), pr=Probe("pr", full())
+    )
+    asyncio.run(agent.wake())
+    asyncio.run(agent.wake())
+    caught = [r["args"]["missed_tick"] for r in chores.rows() if r["chore"] == "pr"]
+    assert sorted(caught) == sorted(e["id"] for e in events)  # all 201, each once, over two passes
+    assert [r["chore"] for r in chores.rows()][-2:] == ["disk", "disk"]
+    assert [o for o in khive.ops if o.startswith("list(")] == [
+        'list(kind="scheduled_event", limit=200)',
+        'list(kind="scheduled_event", limit=200, offset=200)',
+    ] * 2
+
+
+def test_a_seen_missed_tick_is_remembered_while_the_store_lists_it_however_many_there_are(tmp_path):
+    events = [
+        {
+            "id": f"ev{i}",
+            "content": "tick: gone",
+            "properties": {"created_by_actor": SELF, "status": "failed"},
+        }
+        for i in range(501)
+    ]
+    khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"b{i:07x}") for i in range(3)), events=events)
+    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 3, disk=Probe("disk", full()))
+    asyncio.run(agent.wake())
+    asyncio.run(agent.wake())
+    noted = [len(r["caught_up"]) for r in chores.rows()]
+    assert noted == [501, 0]  # a chore this agent does not hold is noted, once each
+    assert chores.rows()[0]["caught_up"][0] == "tick: gone: failed, noted"
+    khive.events = events[1:]  # the store no longer lists the first: its id is let go at the next note
+    khive.events.append(
+        {"id": "ev501", "content": "tick: gone", "properties": {"created_by_actor": SELF, "status": "missed"}}
+    )
+    asyncio.run(agent.wake())
+    assert chores.rows()[-1]["caught_up"] == ["tick: gone: missed, noted"]
+    assert agent.state.get("missed_seen").value == [f"ev{i}" for i in range(1, 502)]
 
 
 def test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those(tmp_path):

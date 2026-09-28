@@ -571,9 +571,9 @@ class Chores:
         if not self.steward:
             return "aged: no steward"
         async with self._aging:
-            now, done = time.time(), set(_val(self.agent.state, "aged_sent", []))
+            now, done, rows = time.time(), set(_val(self.agent.state, "aged_sent", [])), self.rows()
             due: list[tuple[dict, float, str]] = []
-            for r in self.rows():
+            for r in rows:
                 if not r.get("msg") or not r["findings"] or self.steward in (r.get("sent_to") or []):
                     continue  # only reports the owner alone received; the steward has the rest already
                 if chore and r["chore"] != chore:
@@ -611,7 +611,9 @@ class Chores:
                 )
                 for r, _, _ in due:
                     done.add(_aged_key(r))
-            self.agent.state.put("aged_sent", sorted(done)[-1000:], run=run.id, seq=run.record.seq)
+            # a marker lives as long as the ledger row it covers: no count of reports lets one be told twice
+            live = {_aged_key(r) for r in rows}
+            self.agent.state.put("aged_sent", sorted(done & live), run=run.id, seq=run.record.seq)
             return f"aged: {len(due)} report(s) sent to {self.steward}" if due else "aged: nothing unanswered"
 
     # ticks
@@ -650,11 +652,17 @@ class Chores:
         if self._caught_up == run.id:
             return []
         self._caught_up = run.id
-        try:
-            (rows,) = await self.agent.khive.exec('list(kind="scheduled_event", limit=200)')
+        items: list[dict] = []
+        try:  # every page: a row caught up keeps its status, so the first page alone comes back every pass
+            while True:
+                offset = f", offset={len(items)}" if items else ""
+                (rows,) = await self.agent.khive.exec(f'list(kind="scheduled_event", limit=200{offset})')
+                got = rows.get("items", []) if isinstance(rows, dict) else (rows or [])
+                items += got
+                if not got or not (isinstance(rows, dict) and rows.get("has_more")):
+                    break
         except Exception as e:
             return [f"missed-tick read failed: {type(e).__name__}: {e}"]
-        items = rows.get("items", []) if isinstance(rows, dict) else (rows or [])
         me, seen, done = self.agent.khive.actor, list(_val(self.agent.state, "missed_seen", [])), []
         for it in items:
             p = it.get("properties") or {}
@@ -680,8 +688,11 @@ class Chores:
                 )
             else:
                 done.append(f"{content}: {p['status']}, noted")
-        if done:
-            self.agent.state.put("missed_seen", seen[-500:], run=run.id, seq=run.record.seq)
+        if done:  # an id is kept while the store lists its row: no count of rows lets one run twice
+            listed = {it["id"] for it in items}
+            self.agent.state.put(
+                "missed_seen", [i for i in seen if i in listed], run=run.id, seq=run.record.seq
+            )
         return done
 
     def profiles(self) -> tuple[Profile, Profile]:
