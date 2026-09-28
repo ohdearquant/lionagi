@@ -1535,6 +1535,8 @@ class _Walk:
     async def value(self, name: str) -> Any:
         if name not in self.computed:
             seq, expr, writes = self.values[name]
+            if seq != self.seq:  # bound by an earlier turn: it reads after this program's writes so far
+                writes = None
             self.computed[name] = asyncio.ensure_future(self._compute(name, seq, expr, _Reader(self, writes)))
         return await asyncio.shield(self.computed[name])
 

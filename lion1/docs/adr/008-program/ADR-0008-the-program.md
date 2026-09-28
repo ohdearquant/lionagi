@@ -259,7 +259,8 @@ once.
 - **Landing evidence**:
   `test_a_value_nothing_read_stays_bound_into_later_turns_and_its_name_stays_taken`,
   `test_a_value_computed_on_the_record_resolves_after_the_log_replays_it_and_nothing_runs_again`,
-  `test_a_value_whose_computation_failed_stays_failed_and_what_it_ran_never_runs_again`. Owed: a
+  `test_a_value_whose_computation_failed_stays_failed_and_what_it_ran_never_runs_again`,
+  `test_a_value_bound_by_an_earlier_turn_reads_after_the_reading_programs_own_note_writes`. Owed: a
   replay of a value nothing read, and a last turn's values on the closure (ADR-0006).
 
 ## Alternatives

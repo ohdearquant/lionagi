@@ -444,6 +444,24 @@ def test_a_value_computed_on_the_record_resolves_after_the_log_replays_it_and_no
     assert run.values["v"] == first.values["v"] == (2, "xx")
 
 
+def test_a_value_bound_by_an_earlier_turn_reads_after_the_reading_programs_own_note_writes():
+    actor = _actor("lazy-note", [])
+
+    @actor.handler(Take)
+    async def take(req: Take, ctx) -> str:
+        await asyncio.sleep(0.2)
+        return "new"
+
+    actor.notes_for(PROGRAM).put("k", "old", run="r0", seq=0)
+    turns = (
+        fenced('v = note["k"]'),
+        fenced("note.k = take(rows=[])", "b = echo(text=*v)", 'c = echo(text=note["k"])'),
+        "idle",
+    )
+    run = _run(actor, *turns)
+    assert run.record.get("b").content.value == run.record.get("c").content.value == "new"
+
+
 def test_a_value_whose_computation_failed_stays_failed_and_what_it_ran_never_runs_again():
     calls: list = []
     actor = _actor("failed-value", calls)
