@@ -859,10 +859,13 @@ def test_a_running_wake_under_a_held_lock_is_not_idle_without_a_model_child(tmp_
         body["notes"]["cursor"]["value"]["outcome"] = "Quiet"
         notes.write_text(json.dumps(body))
         assert controls_info(str(d))["idle"] is True
+        body["notes"]["cursor"]["value"] = {"wake": 0}  # a cursor that names no outcome says nothing
+        notes.write_text(json.dumps(body))
+        assert controls_info(str(d))["idle"] is False
         notes.write_text("{not json")
         assert controls_info(str(d))["idle"] is False  # unread reads as busy
         notes.unlink()
-        assert controls_info(str(d))["idle"] is True  # never ran here
+        assert controls_info(str(d))["idle"] is False  # served, no cursor yet: a first wake may be starting
     finally:
         os.close(fd)
 

@@ -71,7 +71,7 @@ _JS = """
 (function () {
 'use strict';
 var state = {
-  areas: [], mode: 'list', dir: null, detail: null, detailDir: null, gen: 0, logs: {}, pending: null,
+  areas: [], mode: 'list', dir: null, detail: null, detailDir: null, gen: 0, logs: {}, pending: {},
 };
 
 function esc(s) {
@@ -286,8 +286,9 @@ function toggleInline(id, show, force) {
 }
 
 function sendControl(action, extra) {
-  if (!state.detailDir) return;
-  var body = Object.assign({ dir: state.detailDir, action: action, once: uid() }, extra);
+  var dir = state.detailDir;
+  if (!dir) return;
+  var body = Object.assign({ dir: dir, action: action, once: uid() }, extra);
   fetch('/control', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -296,7 +297,7 @@ function sendControl(action, extra) {
     toast(j.detail || (j.ok ? 'ok' : 'failed'));
     toggleInline('hold-inline', false);
     toggleInline('restart-inline', false);
-    loadDetail();
+    if (state.mode === 'detail' && state.dir === dir) loadDetail();  // the page may have moved on
   }).catch(function (e) { toast(String(e)); });
 }
 
@@ -306,10 +307,10 @@ function sendTalk() {
   var content = document.getElementById('talk-content').value;
   if (!content.trim() || !state.detailDir) return;
   btn.disabled = true;
-  // an unanswered send keeps its token, so sending the same words again replays it, never mails twice
-  var p = state.pending, dir = state.detailDir;
-  if (!p || p.dir !== dir || p.subject !== subject || p.content !== content) {
-    p = state.pending = { dir: dir, subject: subject, content: content, once: uid() };
+  // an unanswered send keeps its token per resident, so the same words again replay it, never mail twice
+  var dir = state.detailDir, p = state.pending[dir];
+  if (!p || p.subject !== subject || p.content !== content) {
+    p = state.pending[dir] = { subject: subject, content: content, once: uid() };
   }
   var form = new URLSearchParams({ dir: dir, subject: subject, content: content, once: p.once });
   fetch('/send', {
@@ -318,9 +319,11 @@ function sendTalk() {
     body: form.toString(),
   }).then(function (r) { return r.json(); }).then(function (j) {
     if (!j.ok) throw new Error('send failed');
-    if (state.pending === p) state.pending = null;
-    document.getElementById('talk-content').value = '';
-    loadDetail();
+    if (state.pending[dir] === p) delete state.pending[dir];
+    if (state.mode === 'detail' && state.dir === dir) {
+      document.getElementById('talk-content').value = '';
+      loadDetail();
+    }
   }).catch(function (e) { toast(String(e)); }).then(function () { btn.disabled = false; });
 }
 

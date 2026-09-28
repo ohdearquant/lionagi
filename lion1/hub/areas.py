@@ -300,13 +300,14 @@ def controls_info(directory: str) -> dict:
     idle = True
     pid_file = d / "agent.pid"
     if _held(pid_file)[0]:  # a wake on an in-process backend has no child to find
+        # idle only on a cursor that names a finished wake: a first wake starts before any cursor
+        # exists, and an unreadable one says nothing, so both read as busy, as an unread pgrep does
         try:
             store = json.loads((d / "notes" / "agent.json").read_text()).get("notes", {})
-            idle = ((store.get("cursor") or {}).get("value") or {}).get("outcome") != "running"
-        except FileNotFoundError:
-            pass  # never ran here: no wake to cut short
+            outcome = ((store.get("cursor") or {}).get("value") or {}).get("outcome")
+            idle = isinstance(outcome, str) and outcome not in ("", "running")
         except (OSError, ValueError, AttributeError):
-            idle = False  # an unread cursor reads as busy, as an unread pgrep does
+            idle = False
     if idle and pid_file.exists():
         try:
             text = pid_file.read_text(errors="replace").strip()
