@@ -491,6 +491,45 @@ def test_saved_patch_then_apply_failure_cleans_up(tmp_path, monkeypatch, capsys)
     assert ChatBox.made[-1].stopped and "box: no change in the copy" in capsys.readouterr().out
 
 
+def test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch(
+    tmp_path, monkeypatch, capsys
+):
+    # the log recorded no box: `-c` without `--box daytona` went on over the person's own tree, and an
+    # unapplied patch stood in the record and not in the new copy, with nothing said
+    from lion_cli.chat import resolve_chat
+
+    from tests.test_daytona import ChatBox, box_chat, repo_git
+
+    (tmp_path / "f.txt").write_text("a\n")
+    patch = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n"
+    monkeypatch.setattr(ChatBox, "patch", patch)
+    ChatBox.made.clear()
+    assert box_chat(monkeypatch, ChatBox, tmp_path, "done", image="img-1") is None
+    chats = tmp_path / ".lion" / "chats"
+    first = resolve_chat(chats, "last")
+    ran = {"kind": "BOX", "box": "daytona", "image": "img-1"}
+    assert json.loads(first.read_text().splitlines()[0]) == ran
+    saved = chats / f"{first.stem}.patch"
+    assert saved.read_text() == patch and (tmp_path / "f.txt").read_text() == "a\n"
+    monkeypatch.setattr(ChatBox, "patch", "")
+    capsys.readouterr()
+    # `lion chat -c` with no box flag: the box and image its log names, and the model is told
+    assert box_chat(monkeypatch, ChatBox, tmp_path, "done", resume="last", box=None, image=None) is None
+    assert len(ChatBox.made) == 2 and ChatBox.made[-1].image == "img-1" and ChatBox.made[-1].stopped
+    rows = [json.loads(r) for r in resolve_chat(chats, "last").read_text().splitlines()]
+    assert rows[0] == ran and [r["kind"] for r in rows].count("BOX") == 1
+    told = [r["content"] for r in rows if r["kind"] == "INPUT" and r["meta"].get("origin") == "console"]
+    assert len(told) == 1 and f"saved as {saved}, are not applied to {tmp_path}" in told[0]
+    assert "are not applied to" in " ".join(capsys.readouterr().out.split())  # the person sees it too
+    # the patch applied, and `--box vm` given: the flag wins, and nothing is said of a patch that landed
+    repo_git(tmp_path, "apply", str(saved))
+    assert box_chat(monkeypatch, ChatBox, tmp_path, "done", resume=first.stem, box="vm", image=None) is None
+    assert len(ChatBox.made) == 2
+    rows = [json.loads(r) for r in resolve_chat(chats, "last").read_text().splitlines()]
+    assert rows[0] == {"kind": "BOX", "box": "vm"}
+    assert not [r for r in rows if r["kind"] == "INPUT" and r["meta"].get("origin") == "console"]
+
+
 def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_path):
     from lionagi.record import fold
 
