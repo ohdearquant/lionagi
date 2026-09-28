@@ -357,6 +357,23 @@ def test_the_harness_grades_the_bytes_the_digest_names_whatever_rewrites_the_pre
     assert handed == [first]  # the patch the digest names, not the rewrite
 
 
+def test_the_snapshot_the_harness_reads_is_whole_or_absent(tmp_path, monkeypatch):
+    preds = tmp_path / "predictions.jsonl"
+    preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 1\n"}) + "\n")
+    digest = hashlib.sha256(preds.read_bytes()).hexdigest()[:16]
+    snapshot = tmp_path / f"predictions.{digest}.jsonl"
+    real = Path.write_bytes
+
+    def cut(self, data):  # the write dies half way: whatever path it was writing holds half the bytes
+        real(self, data[: len(data) // 2])
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_bytes", cut)
+    with pytest.raises(OSError, match="disk full"):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    assert not snapshot.exists()  # never a half-written snapshot under the name the harness reads
+
+
 @pytest.mark.parametrize("streams", [(b"so far\n", b"slow\n"), ("so far\n", "slow\n"), (None, None)])
 def test_an_evaluation_that_times_out_leaves_its_log_and_the_timeout_stands(tmp_path, monkeypatch, streams):
     preds = tmp_path / "predictions.jsonl"

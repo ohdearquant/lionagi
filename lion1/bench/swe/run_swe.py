@@ -14,6 +14,7 @@ import asyncio
 import glob
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -402,7 +403,11 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
         {json.loads(line)["instance_id"] for line in data.decode().splitlines() if line.strip()}
     )
     snapshot = preds.with_name(f"{preds.stem}.{digest}{preds.suffix}")
-    snapshot.write_bytes(data)
+    # whole or absent: two evaluations of the same bytes share the name, and a reader must never see
+    # a half-written one, so the bytes land beside it and move in atomically
+    part = snapshot.with_name(f"{snapshot.name}.{os.getpid()}.part")
+    part.write_bytes(data)
+    os.replace(part, snapshot)
     cmd = [
         "uv",
         "run",

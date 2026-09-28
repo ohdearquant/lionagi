@@ -290,4 +290,5 @@ model has no cost.
   (`tests/test_swe_naked.py`: `test_the_oracle_reads_only_a_report_its_own_evaluation_wrote`,
   `test_an_overlapping_evaluations_report_under_the_same_run_id_is_not_this_ones`,
   `test_the_harness_grades_the_bytes_the_digest_names_whatever_rewrites_the_predictions`,
+  `test_the_snapshot_the_harness_reads_is_whole_or_absent`,
   `test_a_report_that_does_not_name_the_predictions_handed_in_is_refused`).
