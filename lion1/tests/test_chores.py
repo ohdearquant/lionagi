@@ -1022,6 +1022,22 @@ def test_a_missed_tick_of_the_chore_this_check_runs_is_covered_by_the_check_itse
     assert agent.state.get("missed_seen").value == ["ev0", "ev1", "ev2"]
 
 
+def test_a_check_the_ask_narrowed_covers_no_missed_tick_of_its_chore(tmp_path):
+    events = [
+        {"id": "ev0", "content": "tick: disk", "status": "missed", "properties": {"created_by_actor": SELF}}
+    ]
+    khive = FakeKhive(mail(SELF, "tick: disk"), events=events)
+    khive.filtered = True
+    narrowed = '<lact c1>check(chore="disk", args={"paths": ["/"]})</lact>'
+    chores, agent = build(tmp_path, khive, [narrowed, DONE], disk=Probe("disk", full()))
+    asyncio.run(agent.wake())
+    rows = chores.rows()
+    assert [r["chore"] for r in rows] == ["disk", "disk"]  # the missed sweep, then the narrowed check
+    assert rows[0]["args"] == {"missed_tick": "ev0"} and rows[1]["args"] == {"paths": ["/"]}
+    assert rows[1]["caught_up"][0].startswith("tick: disk: missed, ran now: disk: ")
+    assert agent.state.get("missed_seen").value == ["ev0"]
+
+
 def test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page(tmp_path):
     noise = [
         {"id": f"n{i}", "content": "tick: disk", "status": status, "properties": {"created_by_actor": actor}}

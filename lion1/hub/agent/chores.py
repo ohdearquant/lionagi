@@ -335,7 +335,8 @@ class Chores:
                     f"{req.asker} on thread {req.thread} is not a message this wake admitted; "
                     f"its threads here: {sorted(threads) or 'none'}"
                 )
-        caught = await self._catch_up(run, skip=req.chore)
+        # a check the ask narrowed (args) covers no missed tick: the tick was the whole sweep
+        caught = await self._catch_up(run, skip=req.chore if not req.args else None)
         t0 = time.time()
         try:
             # the run id is the handler's fact, set after the model's args so they cannot name another
@@ -646,7 +647,7 @@ class Chores:
             created.append(content)
         return created
 
-    async def _catch_up(self, run: Run, *, skip: str) -> list[str]:
+    async def _catch_up(self, run: Run, *, skip: str | None) -> list[str]:
         """Once per run: the actor's own reminders khive marked missed (never fired) or failed, not
         seen before, run now. A missed digest or aged tick runs those handlers."""
         if self._caught_up == run.id:

@@ -308,4 +308,6 @@ bypasses the handler: no refusals, no row, no send.
   (`test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look`).
 - **S11**: A missed tick of the chore a check is running is covered by that check: it is marked seen
   and noted, never run a second time
-  (`test_a_missed_tick_of_the_chore_this_check_runs_is_covered_by_the_check_itself`).
+  (`test_a_missed_tick_of_the_chore_this_check_runs_is_covered_by_the_check_itself`). A check the
+  ask narrowed covers nothing: the tick was the whole sweep, so it runs
+  (`test_a_check_the_ask_narrowed_covers_no_missed_tick_of_its_chore`).
