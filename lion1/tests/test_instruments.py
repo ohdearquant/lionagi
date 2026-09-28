@@ -24,8 +24,10 @@ from hub.agent.instruments import (
     Disk,
     GtdInbox,
     InboxSla,
+    LockHolder,
     PrState,
     RequiredContexts,
+    ScheduledJob,
     Served,
     VerdictFreshness,
     Worktrees,
@@ -708,6 +710,167 @@ def test_bench_jobs_reports_an_unreported_job_whose_process_is_gone(tmp_path):
     assert out.evidence.startswith(f"control: {d}/notes/agent.json read, 2 job(s) noted\n")
     out = asyncio.run(BenchJobs(str(tmp_path / "nope"), str(tmp_path), every=None).run({}))
     assert not out.control
+
+
+def test_lock_holder_resolves_each_holders_pid_to_its_full_command_line_beside_its_own_held_lock(tmp_path):
+    own, lock, free = tmp_path / "agent.pid", tmp_path / "build.lock", tmp_path / "free.lock"
+    me = os.getpid()
+    listed = f"p{me}\nf3\nn{os.path.realpath(own)}\np4242\nf5\nn{os.path.realpath(lock)}\n"
+    sh = FakeSh(
+        **{
+            "-F pn": (1, listed, ""),  # rc 1: a named file nobody holds open
+            "-o pid=,command= -p": (
+                f"{me} /usr/bin/python3 -m lion agent --dir /a\n 4242 cargo build --release\n"
+            ),
+        }
+    )
+    inst = LockHolder([str(lock), str(free)], str(own), every="every:15m", run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (f"{lock}: held by pid 4242: cargo build --release",)
+    assert out.positive == f"own lock {own} held by own pid {me}: /usr/bin/python3 -m lion agent --dir /a"
+    assert out.evidence.startswith(f"control: {out.positive}\n") and f"{free}: no holder" in out.evidence
+    assert (out.count, out.predicate) == (2, "open by a process (1 match)")
+    # read by the lock's file and the pid, never by matching command text and never by taking the lock
+    assert sh.calls == [
+        [instr.LSOF, "-w", "-F", "pn", "--", str(own), str(lock), str(free)],
+        ["/bin/ps", "-ww", "-o", "pid=,command=", "-p", ",".join(map(str, sorted({me, 4242})))],
+    ]
+    sh.set("-o pid=,command= -p", f"{me} /usr/bin/python3 -m lion agent --dir /a\n")
+    out = asyncio.run(inst.run({}))  # the holder exited between the two reads
+    assert out.control and out.findings == (
+        f"{lock}: held by pid 4242: (no command line: the pid exited between the reads)",
+    )
+
+
+@pytest.mark.parametrize("broken", ["lsof", "ps"])
+def test_lock_holder_fails_its_control_when_its_own_held_lock_does_not_read_as_its_own(tmp_path, broken):
+    own, lock = tmp_path / "agent.pid", tmp_path / "build.lock"
+    me = os.getpid()
+    sh = FakeSh(
+        **{
+            "-F pn": f"p{me}\nf3\nn{os.path.realpath(own)}\n",
+            "-o pid=,command= -p": f"{me} /usr/bin/python3 -m lion agent\n",
+        }
+    )
+    # a dead lsof answers the way a lock nobody holds does: empty, rc 1
+    sh.set("-F pn" if broken == "lsof" else "-o pid=,command= -p", (1, "", "no such program"))
+    out = asyncio.run(LockHolder([str(lock)], str(own), every=None, run=sh).run({}))
+    assert not out.control and out.findings == () and out.positive == ""
+    assert "read broken" in out.evidence.splitlines()[0]
+
+
+@pytest.mark.skipif(instr.LSOF == "lsof", reason="no lsof on this machine")
+def test_lock_holder_reads_a_lock_a_live_process_holds_through_the_real_lsof_and_ps(tmp_path):
+    import fcntl
+    import subprocess
+    import sys
+
+    own, lock, free = tmp_path / "agent.pid", tmp_path / "held.lock", tmp_path / "free.lock"
+    fd = os.open(own, os.O_RDWR | os.O_CREAT)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    hold = (
+        "import fcntl, os, sys; fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT); "
+        "fcntl.flock(fd, fcntl.LOCK_EX); print('locked', flush=True); sys.stdin.read()"
+    )
+    holder = subprocess.Popen(
+        [sys.executable, "-c", hold, str(lock)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert holder.stdout.readline().strip() == "locked"
+        out = asyncio.run(LockHolder([str(lock), str(free)], str(own), every=None).run({}))
+    finally:
+        holder.stdin.close()
+        holder.wait(timeout=5)
+        holder.stdout.close()
+        os.close(fd)
+    assert out.control, out.evidence
+    assert len(out.findings) == 1 and out.findings[0].startswith(f"{lock}: held by pid {holder.pid}: ")
+    # the evidence carries the full command line, its argument included; the finding caps it
+    assert any(
+        ln.startswith(f"{lock}: pid {holder.pid}: ") and ln.endswith(f" {lock}")
+        for ln in out.evidence.splitlines()
+    )
+    assert f"{free}: no holder" in out.evidence
+
+
+def test_scheduled_job_reads_the_artifact_first_then_the_supervisors_last_exit(tmp_path):
+    d = tmp_path / "out"
+    d.mkdir()
+    (d / "fresh.json").write_text("{}")
+    (d / "stale.json").write_text("{}")
+    old = time.time() - 30 * 3600
+    os.utime(d / "stale.json", (old, old))
+    sh = FakeSh(
+        **{
+            "/com.example.fresh": "\tstate = not running\n\tlast exit code = 0\n",
+            "/com.example.stale": "\tstate = not running\n\tlast exit code = 0\n",
+            "/com.example.failed": "\tstate = not running\n\tlast exit code = 1: Operation not permitted\n",
+            "/com.example.new": "\tstate = waiting\n\tlast exit code = (never exited)\n",
+            "/com.example.gone": (113, "", 'Could not find service "com.example.gone" in domain'),
+        }
+    )
+    jobs = [
+        {"artifact": str(d / "fresh.json"), "max_age_h": 24, "label": "com.example.fresh"},
+        {"artifact": str(d / "stale.json"), "max_age_h": 24, "label": "com.example.stale"},
+        {"artifact": str(d / "none.json"), "max_age_h": 24, "label": "com.example.failed"},
+        {"artifact": str(d / "fresh.json"), "max_age_h": 1, "label": "com.example.new"},
+        {"artifact": str(d / "fresh.json"), "max_age_h": 24, "label": "com.example.gone"},
+        {"artifact": str(d / "fresh.json"), "max_age_h": 24},
+    ]
+    inst = ScheduledJob(jobs, every="every:1h", run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"{d}/stale.json: older than its 24h bound",  # a clean exit beside a stale artifact is a finding
+        f"{d}/none.json: absent, bound 24h",
+        f"{d}/none.json: its supervisor com.example.failed last exited 1",
+        f"{d}/fresh.json: its supervisor com.example.gone is not loaded",
+    )
+    lines = out.evidence.splitlines()
+    assert lines[1].startswith(f"{d}/stale.json: written 30.0h ago, bound 24h | launchd com.example.stale")
+    assert lines[3].endswith("| launchd com.example.new: last exit (never exited)")
+    assert (out.count, out.predicate.endswith("(3 match)")) == (6, True)
+    assert out.positive.startswith(f"{d} present; launchd com.example.fresh row read; {d} present")
+    assert [c[:2] for c in sh.calls] == [[instr.LAUNCHCTL, "print"]] * 5
+    assert asyncio.run(inst.run({})).findings == out.findings  # the age stays in the evidence: told once
+
+
+@pytest.mark.parametrize("broken", ["directory", "row"])
+def test_scheduled_job_fails_its_control_on_an_absent_directory_or_a_row_without_its_exit(tmp_path, broken):
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "a.json").write_text("{}")
+    artifact = tmp_path / ("gone" if broken == "directory" else "out") / "a.json"
+    row = "\tstate = running\n" if broken == "row" else "\tlast exit code = 0\n"
+    inst = ScheduledJob(
+        [{"artifact": str(artifact), "max_age_h": 24, "label": "com.example.job"}],
+        every=None,
+        run=FakeSh(**{"/com.example.job": row}),
+    )
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == () and out.positive == ""
+    reason = "its directory is absent" if broken == "directory" else "no last exit code in its row (unread)"
+    assert reason in out.evidence
+
+
+def test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_scheduled_jobs(tmp_path):
+    from types import SimpleNamespace
+
+    cfg = {
+        "owner": "lambda:x",
+        "chores": {
+            "lock-holder": {"every": "every:15m", "locks": ["/tmp/a.lock"]},
+            "scheduled-job": {"every": "every:1h", "jobs": [{"artifact": "/x/out.json", "max_age_h": 26}]},
+        },
+    }
+    built = instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), MemoryNoteStore())
+    assert sorted(built) == ["lock-holder", "scheduled-job"]
+    lock_holder = built["lock-holder"]
+    assert (lock_holder.locks, lock_holder.held) == (["/tmp/a.lock"], str(tmp_path / "agent.pid"))
+    assert built["scheduled-job"].jobs == [{"artifact": "/x/out.json", "max_age_h": 26}]
+    assert {i.every for i in built.values()} == {"every:15m", "every:1h"}
+    assert not any(i.empty_expected for i in built.values())
+    cfg["chores"]["scheduled-job"]["jobs"] = [{"artifact": "/x/out.json"}]
+    with pytest.raises(ValueError, match="a scheduled job names its artifact and its max_age_h"):
+        instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), MemoryNoteStore())
 
 
 def test_build_reads_the_actors_config_bounds_the_client_and_gates_the_mail(tmp_path, kkernel_stub):

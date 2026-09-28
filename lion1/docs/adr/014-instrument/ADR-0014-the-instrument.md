@@ -1,7 +1,7 @@
 ---
 adr: ADR-0014
 status: draft
-liveness: operating (eleven instruments build from one config and run under tests against scripted commands and stores; the command-line check prints a measurement unvetted and has no test; a lock-holder and a scheduled-job instrument are owed)
+liveness: operating (thirteen instruments build from one config and run under tests against scripted commands and stores, a lock holder and a scheduled job among them; the command-line check prints its measurement unvetted, says so, and is under test)
 date: "2026-09-25"
 area: instrument
 kind: new
@@ -149,8 +149,8 @@ one default floor of 300 GiB; an empty list declines every floor.
 
 ### C7: An instrument reads and acts on nothing _(enforced: process)_ ^c7
 
-An instrument reads: `gh` reads, `git` reads, `ps`, `launchctl print`, `df`, `find` and `du`, and
-the store through the agent's bounded client, which admits only the verbs on its list
+An instrument reads: `gh` reads, `git` reads, `ps`, `lsof`, `launchctl print`, `df`, `find` and
+`du`, and the store through the agent's bounded client, which admits only the verbs on its list
 ([[ADR-0015-chores|ADR-0015]], chores). It writes only its snapshot or cursor to the agent's note
 store ([[ADR-0007-the-record#^d3|ADR-0007/D3]]) and sends nothing; the report is the handler's. A
 remedy, a restart or a removal, is the owner's.
@@ -176,13 +176,14 @@ direction, cadence and question.
 ### D1: One builder names the instruments from the config ^d1
 
 Serves C3 and C8. `instruments(cfg, khive, state)` builds only what the `[chores.<name>]` tables
-name, eleven names in all, with their arguments and a cadence from `every` (none: on ask only).
+name, thirteen names in all, with their arguments and a cadence from `every` (none: on ask only).
 Constructors refuse a malformed declaration at build; `Chores` refuses an error direction outside
 the two and a blank `answers`. `every` is a store repeat such as `every:30m` or `daily`; `gh` and
 `git` resolve once to an absolute path where one is found.
 
 - **Landing evidence**:
-  `test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_default` in
+  `test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_default` and
+  `test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_scheduled_jobs` in
   `tests/test_instruments.py`;
   `test_a_chore_without_an_error_direction_or_a_question_is_refused_at_build` in
   `tests/test_chores.py`.
@@ -238,9 +239,26 @@ sizes each once with `/usr/bin/du`, reporting those over `target_cap_gib`, 20 by
 Serves C8, and stands outside C1 to C3. The command builds the agent from its directory, takes the
 identity's lock (refused while the agent serves there), calls `run({})`, prints `render()` and
 writes the text to a dated file in the agent directory, the day's latest run of that name kept.
-Nothing is sent, no ledger row is written, and `_vet` is not called.
+Nothing is sent, no ledger row is written, and `_vet` is not called; the text's second line says so.
 
-- **Landing evidence**: none; no test drives `--check`, `render` or `land` (S3).
+- **Landing evidence**: in `tests/test_agent.py`,
+  `test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing`,
+  `test_render_prints_the_measurement_unvetted_and_says_so`,
+  `test_land_writes_the_days_file_of_that_name_and_the_latest_run_wins` (S3).
+
+### D7: The `lock-holder` and `scheduled-job` instruments ^d7
+
+Serves C1 and C7. `LockHolder.run` lists the named lock files and the agent's own pid file in one
+`lsof` call and resolves every pid to its full command line with one `ps` read; its control is this
+process holding its own pid file. `ScheduledJob.run` reads each artifact's age against its bound,
+then `launchctl print` for a named label's last exit.
+
+- **Landing evidence**: in `tests/test_instruments.py`,
+  `test_lock_holder_resolves_each_holders_pid_to_its_full_command_line_beside_its_own_held_lock`,
+  `test_lock_holder_fails_its_control_when_its_own_held_lock_does_not_read_as_its_own`,
+  `test_lock_holder_reads_a_lock_a_live_process_holds_through_the_real_lsof_and_ps`,
+  `test_scheduled_job_reads_the_artifact_first_then_the_supervisors_last_exit`,
+  `test_scheduled_job_fails_its_control_on_an_absent_directory_or_a_row_without_its_exit` (S9).
 
 ## Alternatives
 
@@ -265,8 +283,9 @@ Nothing is sent, no ledger row is written, and `_vet` is not called.
   transition is not reported to the owner again when its report was not delivered, or when a run off
   the chore path measured it: `lion agent --check`, or a desk answer (one narrowed to named pull
   requests spares only the `required-contexts` and `ci-red` snapshots).
-- **S3**: `lion agent --check` prints a measurement unvetted and has no test; a missing
-  known-positive prints as "(none)" and nothing refuses it.
+- **S3**: `lion agent --check` prints a measurement unvetted and its text says so: no refusal ran,
+  nothing was sent, no ledger row was written. A missing known-positive prints as "(none)" and
+  nothing refuses it; the tests in D6 drive the check, `render` and `land`.
 - **S4**: A full page of 100 open pull requests costs one `gh pr view` per pull request the last
   snapshot held and the page lacks, on every `pr-state` run. `verdict-freshness` has no full-page
   check and calls a pull request beyond the page no longer open.
@@ -281,11 +300,11 @@ Nothing is sent, no ledger row is written, and `_vet` is not called.
 - **S8**: The boundary: this record is product-side and names no kernel concern. An instrument reads
   with the credentials and namespace its process was started with; a read they deny is a failed
   control, or an empty answer the control must catch (A1).
-- **S9**: Two instrument shapes are decided and owed, and no code builds them. A lock holder is read
-  as a pid resolved to its full command line beside a lock known to be held, never by matching text
-  or by taking the lock. A scheduled job is read by its artifact's freshness first and its
-  supervisor's exit second, as `served` reads a served agent: its last-wake note before its pid and
-  its launchd row.
+- **S9**: Two instrument shapes are built (D7). `lock-holder` reads a pid resolved to its full
+  command line beside a lock known to be held, the agent's own pid file, never by matching text or
+  by taking the lock. `scheduled-job` reads the artifact's freshness first and the supervisor's exit
+  second, as `served` reads a last-wake note before a pid. `lsof` names the processes with the file
+  open, so a waiter reads as a holder; the only supervisor read is a launchd row.
 - **S10**: `comm.probe` returns a page of at most 100 rows and caps its stale count at 1000, where
   1000 means at least that many. `inbox-sla` prints the count as it came, so a capped count reads as
   exact; its population is the rows on the probe pages.

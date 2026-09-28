@@ -79,7 +79,7 @@ No findings is quiet: a row, and no mail beyond the answer a question is owed. F
 to the owner. An escalation, marked so, goes to the owner and the steward; the agent never performs
 the remedy. A chore runs as one command inside a wake ([[ADR-0013-the-agent|ADR-0013]]).
 
-### C2: The chores are the ones `chores.toml` names, from a fixed set of eleven _(enforced: mechanical)_ ^c2
+### C2: The chores are the ones `chores.toml` names, from a fixed set of thirteen _(enforced: mechanical)_ ^c2
 
 - **Subject**: every agent built from its directory.
 - **Violated when**: a chore runs that the file does not name, or one is built without its error
@@ -97,6 +97,8 @@ and what it keeps between runs in the agent's notes:
 | `verdict-freshness` | the newest review verdict file per open pull request against its head; the pull requests from `gh` or a configured enumerator | one snapshot                                      | over-report  |
 | `ci-red`            | the failing lines at each red head, from `gh run view --log-failed` or a local CI transcript                    | a snapshot per repository                         | under-report |
 | `served`            | each served agent's last-wake note, pid file and launchd row                                                     | nothing                                           | under-report |
+| `lock-holder`       | the pids holding each named lock file open (`lsof`), each with its full command line (`ps`)                      | nothing                                           | under-report |
+| `scheduled-job`     | each job's artifact age against its bound, then its launchd row's last exit                                      | nothing                                           | under-report |
 | `gtd-inbox`         | the assignee's inbox tasks older than the triage age, through the store                                         | nothing                                           | under-report |
 | `inbox-sla`         | unread mail older than the age per watched actor, by `comm.probe`, no bodies                                     | nothing                                           | under-report |
 | `disk`              | free space per volume against each named floor (`df`), and build targets over a size cap (`find`, `du`)          | nothing                                           | over-report  |

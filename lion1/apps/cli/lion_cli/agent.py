@@ -219,11 +219,13 @@ async def arm(chores: Chores, agent: Agent) -> tuple[int, list[str]]:
 
 
 def render(name: str, inst: Any, out: Outcome) -> str:
-    """One instrument's outcome as the landing file and the console show it."""
+    """One instrument's outcome as the landing file and the console show it, unvetted, and saying so."""
     control = "ok" if out.control else "FAILED"
     lines = [
         f"{name}: control {control}, {len(out.findings)} finding(s), escalate={out.escalate}, "
         f"count={out.count}, direction {inst.direction}",
+        "unvetted: run outside the chore path, so no refusal ran over it (a blank population, predicate, "
+        "count or known-positive passes), nothing was sent and no ledger row was written",
         f"answers: {inst.answers}",
         f"known-positive: {out.positive or '(none)'}",
         f"population: {out.population}\npredicate: {out.predicate}",
