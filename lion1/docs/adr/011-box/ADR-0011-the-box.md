@@ -265,8 +265,9 @@ to; the person picks `--offline` when the directory holds what the network must 
   (`bench/swe/codex_cli.py`, `test_time_budget_zero_means_no_deadline` in
   `tests/test_swe_codex_cli.py`).
 - **S14**: The box tree's bound read the path's text only, so a symlink inside `workdir` pointing
-  elsewhere in the box was read and written through, where the tree on this machine refuses it. The
-  box holds nothing of this machine (C2), so what it reached was the box's own. Resolving the path
-  in the box before the check was owed; `BoxTree` now resolves it there, as written and as
-  normalised, and refuses either outside `workdir`. `tests/test_box.py` pins it against `LocalTree`:
-  `test_the_box_tree_resolves_a_symlink_in_the_box_before_its_bound`.
+  elsewhere in the box was read and written through. `BoxTree` now resolves the path in the box, as
+  written and as normalised, and refuses either outside `workdir`. The resolver keeps every byte of
+  a name, a newline it ends with included, so a link into a sibling named as the tree plus a newline
+  is refused; its answer is three NUL-ended paths and nothing else. Pinned against `LocalTree`:
+  `test_the_box_tree_resolves_a_symlink_in_the_box_before_its_bound`,
+  `test_a_resolver_answer_that_is_not_three_nul_ended_paths_is_refused`.

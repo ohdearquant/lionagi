@@ -153,8 +153,9 @@ def inside(workdir: str, path: str) -> None:
 
 
 # each argument's physical path, NUL-ended (a name may hold a newline), symlinks followed as the
-# kernel does and a missing tail kept as written: `realpath -m` is GNU only, and `readlink` with no
-# flag reads alike on both
+# kernel does and a missing tail kept as written: `realpath -m` is GNU only, and `readlink -n` reads
+# alike on both. No name goes through `$(...)` bare: that drops a newline the name ends with, so the
+# parent is cut by expansion and the link target carries a sentinel past its last byte
 _RESOLVE = r"""
 for arg do
   r=/ todo=$arg n=0
@@ -163,13 +164,14 @@ for arg do
     case $todo in */*) todo=${todo#*/} ;; *) todo= ;; esac
     case $c in
       '' | .) ;;
-      ..) r=$(dirname -- "$r") ;;
+      ..) r=${r%/*}; r=${r:-/} ;;
       *)
         p=${r%/}/$c
         if [ -L "$p" ]; then
           n=$((n + 1))
           [ "$n" -le 40 ] || exit 1
-          t=$(readlink -- "$p") || exit 1
+          t=$(readlink -n -- "$p" && printf x) || exit 1
+          t=${t%x}
           case $t in /*) r=/ ;; esac
           todo=$t${todo:+/$todo}
         else
@@ -202,8 +204,8 @@ class BoxTree:
         joined = path if path.startswith("/") else posixpath.join(root, path)
         argv = ["sh", "-c", _RESOLVE, "lion-resolve", root, joined, posixpath.normpath(joined)]
         r = await self.box.exec(argv)
-        real = r["stdout"].split("\0")[:-1]
-        if r["rc"] != 0 or len(real) != 3:
+        real = r["stdout"].split("\0")[:-1]  # three paths, each NUL-ended, nothing after the last
+        if r["rc"] != 0 or not r["stdout"].endswith("\0") or len(real) != 3:
             raise PermissionError(f"{path} did not resolve in the box: {r['stderr'].strip()[-300:]}")
         top = real[0].rstrip("/") + "/"
         for target in real[1:]:

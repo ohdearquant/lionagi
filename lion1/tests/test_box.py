@@ -161,6 +161,13 @@ def test_the_box_tree_resolves_a_symlink_in_the_box_before_its_bound(tmp_path, m
     (work / "same.py").symlink_to("a.py")  # a link that stays in the tree is followed
     (work / "sub").symlink_to("pkg")
     (work / "line\nbreak.py").write_text("lb = 1\n")  # a name holding a newline is still one path
+    twin = tmp_path / "work\n"  # a sibling named as the tree plus a newline: a link into it leads out
+    (twin / "sub").mkdir(parents=True)
+    (twin / "secret.py").write_text("twin = 1\n")
+    (work / "twin").symlink_to("../work\n")
+    (work / "sub\n").mkdir()  # a link whose target ends in a newline still lands on that target
+    (work / "sub\n" / "c.py").write_text("c = 1\n")
+    (work / "nl").symlink_to("sub\n")
     tree, local = BoxTree(DockerSandbox("img", workdir=str(work))), LocalTree(work)
 
     async def refused(op) -> None:
@@ -177,6 +184,9 @@ def test_the_box_tree_resolves_a_symlink_in_the_box_before_its_bound(tmp_path, m
             await refused(t.search("secret", "out", None))
             assert await t.read("same.py") == "a = 1\n"
             assert await t.read("line\nbreak.py") == "lb = 1\n"
+            assert await t.read("nl/c.py") == "c = 1\n"
+            await refused(t.read("twin/sub/../secret.py"))
+            await refused(t.write("twin/sub/../new.py", "owned\n"))
             await t.write("sub/b.py", "b = 1\n")
             assert await t.list_dir("sub") == ["b.py", "inner/"]
         # `ls` opens `out/..` as the kernel does, past the link; `write` opens `hop/../out/x.py` as
@@ -186,8 +196,28 @@ def test_the_box_tree_resolves_a_symlink_in_the_box_before_its_bound(tmp_path, m
 
     asyncio.run(go())
     assert sorted(p.name for p in away.iterdir()) == ["secret.py"]
+    assert sorted(p.name for p in twin.iterdir()) == ["secret.py", "sub"]
     assert (away / "secret.py").read_text() == "secret = 1\n"
     assert (work / "pkg" / "b.py").read_text() == "b = 1\n"
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    ["/w\0/w/a\0/w/a\0tail", "/w\0/w/a\0/w/a", "/w\0/w/a\0", "", "/w\0/w/a\0/w/a\0/w/b\0"],
+)
+def test_a_resolver_answer_that_is_not_three_nul_ended_paths_is_refused(stdout):
+    # a fourth record, a missing last NUL, two records, nothing, or bytes past the last NUL: not a frame
+    class Box:
+        workdir = "/w"
+
+        async def exec(self, argv, timeout=None):
+            return {"rc": 0, "stdout": stdout, "stderr": ""}
+
+    async def go():
+        with pytest.raises(PermissionError, match="did not resolve"):
+            await BoxTree(Box()).read("a")
+
+    asyncio.run(go())
 
 
 @pytest.mark.parametrize("timeout", [5.0, None])
