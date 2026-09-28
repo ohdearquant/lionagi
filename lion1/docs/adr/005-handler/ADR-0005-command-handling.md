@@ -207,11 +207,13 @@ wait costs less than a missing one.
   `tests/test_actor_effects.py`, `tests/test_swe_solve.py`. The replacement rebuilt from its fields
   (S8):
   `test_a_before_hooks_replacement_is_a_dict_or_the_specs_instance_rebuilt_through_its_validator`,
-  `test_a_replacement_of_another_class_or_one_its_spec_refuses_is_the_hooks_refusal`. The three
+  `test_a_replacement_of_another_class_or_one_its_spec_refuses_is_the_hooks_refusal`,
+  `test_a_replacement_instance_is_rebuilt_from_its_declared_fields_not_its_computed_ones`. The three
   captures:
   `test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entry_as_copies`,
-  `test_a_capture_copies_a_list_that_holds_itself_once`. The effect wait (C6), with the class on
-  `Handler` (S9): `test_each_class_waits_for_what_c6_says_and_reads_overlap`,
+  `test_a_capture_copies_a_list_that_holds_itself_once`, `test_a_capture_copies_what_a_tuple_holds`.
+  The effect wait (C6), with the class on `Handler` (S9):
+  `test_each_class_waits_for_what_c6_says_and_reads_overlap`,
   `test_a_write_pointing_at_a_later_write_is_a_circle_and_a_pure_one_resolves`,
   `test_the_class_is_declared_on_the_handler_write_by_default_and_checked`.
 

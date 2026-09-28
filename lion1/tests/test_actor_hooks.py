@@ -5,7 +5,7 @@ Result replaces it, and a hook that raises is told in the next notice while the 
 
 import asyncio
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, computed_field, field_validator
 
 from lionagi import Actor, Kind, Message, Profile, Result, RunRequest
 from lionagi.actor import DEFAULT_HANDLERS
@@ -31,6 +31,20 @@ class Padded(BaseModel):
 
 class Gather(BaseModel):
     items: list[str]
+
+
+class Counted(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    n: int
+
+    @computed_field
+    @property
+    def label(self) -> str:
+        return f"n={self.n}"
+
+
+class Pair(BaseModel):
+    items: tuple[list[str], str]
 
 
 def make() -> tuple[Actor, Profile]:
@@ -147,6 +161,21 @@ def test_a_before_hooks_replacement_is_a_dict_or_the_specs_instance_rebuilt_thro
     assert r["a2"].ok and r["a2"].value == "never validated"
 
 
+def test_a_replacement_instance_is_rebuilt_from_its_declared_fields_not_its_computed_ones():
+    actor = Actor("hooked-computed")
+
+    @actor.handler(Counted)
+    async def counted(req: Counted, ctx) -> str:
+        return req.label
+
+    @actor.before
+    def bump(run, la, req):
+        return Counted(n=req.n + 1)
+
+    r = results(run(actor, Profile("p"), "<lact c1>counted(n=1)</lact>"))["c1"]
+    assert r.ok and r.value == "n=2"
+
+
 def test_a_replacement_of_another_class_or_one_its_spec_refuses_is_the_hooks_refusal():
     actor, profile = make()
 
@@ -247,3 +276,26 @@ def test_a_capture_copies_a_list_that_holds_itself_once():
 
     returned = results(run(actor, Profile("p"), '<lact g1>gather(items=["a"])</lact>'))["g1"].value
     assert returned is not made[0] and returned[0] == "a" and returned[1] is returned
+
+
+def test_a_capture_copies_what_a_tuple_holds():
+    actor = Actor("hooked-tuple")
+    made: list[tuple] = []
+
+    @actor.handler(Pair)
+    async def pair(req: Pair, ctx) -> tuple:
+        made.append((["kept"], req.items[1]))
+        return made[-1]
+
+    @actor.after
+    def scribble(run, la, req, result):
+        result.value[0].append("scribbled")
+        req.items[0].append("scribbled")
+
+    entry = next(
+        e
+        for e in run(actor, Profile("p"), '<lact p1>pair(items=[["x"], "y"])</lact>').record
+        if e.alias == "p1"
+    )
+    assert made[0][0] == ["kept"] and entry.meta["returned"]["value"] == (["kept"], "y")
+    assert entry.meta["request"]["items"] == (["x"], "y") and entry.content.value == (["kept"], "y")

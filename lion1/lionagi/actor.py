@@ -1022,7 +1022,7 @@ class Actor:
                     verdict = await verdict
                 # a class is no receipt: a replacement is rebuilt from its fields by the Spec itself
                 if isinstance(verdict, dict | handler.spec):
-                    fields = verdict if isinstance(verdict, dict) else verdict.model_dump()
+                    fields = verdict if isinstance(verdict, dict) else _fields(verdict)
                     request = handler.spec.model_validate(fields)
             except Exception as e:
                 why = f"refused: {_hook_name(hook)} failed, {type(e).__name__}: {e}"
@@ -1559,7 +1559,7 @@ def _deref(run: Run, key: str, value: Any) -> Any:
 
 
 def _captured(value: Any, memo: dict[int, Any] | None = None) -> Any:
-    """A value as a capture holds it (ADR-0007/C1): an immutable value shared, a list or dict copied, a
+    """A value as a capture holds it (ADR-0007/C1): a scalar shared, a list, dict or tuple copied, a
     Spec instance or a Result rebuilt on captured fields; a list or dict holding itself is copied once."""
     memo = {} if memo is None else memo
     if id(value) in memo:
@@ -1572,6 +1572,8 @@ def _captured(value: Any, memo: dict[int, Any] | None = None) -> Any:
         memo[id(value)] = out = []
         out.extend(_captured(v, memo) for v in value)
         return out
+    if isinstance(value, tuple):
+        return tuple(_captured(v, memo) for v in value)
     if isinstance(value, BaseModel):
         return value.model_copy(
             update={k: _captured(getattr(value, k), memo) for k in type(value).model_fields}
@@ -1579,6 +1581,11 @@ def _captured(value: Any, memo: dict[int, Any] | None = None) -> Any:
     if isinstance(value, Result):
         return dataclasses.replace(value, value=_captured(value.value, memo))
     return value
+
+
+def _fields(spec: BaseModel) -> dict[str, Any]:
+    # the declared fields only: a computed field is no input, and a spec that forbids extras refuses it
+    return {k: getattr(spec, k) for k in type(spec).model_fields}
 
 
 def _plain(value: Any) -> Any:
