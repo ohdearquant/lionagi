@@ -69,16 +69,16 @@ Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Ha
 - **Violated when**: a step is skipped, or a refusal carries no reason from the closed set.
 
 The name is in the profile's subset, else `unknown`. After the effect wait (C6), pointers are
-dereferenced, waiting on any still running; a pointer to nothing is `invalid`, so is one leading
-back to its own command. The arguments validate against the Spec, else `invalid`. The handler's
-`requires` is within the profile's privileges, else `privilege`. The before hooks run (C4), else
-`refused`. The handler runs, and the after hooks see its result.
+dereferenced, waiting on any still running; a pointer to nothing, or back to its own command, is
+`invalid`. The arguments validate against the Spec, else `invalid`. The handler's `requires` is
+within the profile's privileges, else `privilege`. The before hooks run (C4), else `refused`. The
+request is captured (C5), else `invalid`. The handler runs; the after hooks see its result.
 
-The return lands on the record as `RESULT` under the command's alias, with its `execution` mark; a
-handler that raises produces a failed `RESULT` (`failed`, with the exception) and never breaks the
-loop. One that stops without returning settles too: `cancelled` when its work was cancelled
-underneath it, `invalid` when a validator's own exception refused the arguments. `pending` drops the
-alias on every exit.
+The return lands as `RESULT` under the command's alias, with its `execution` mark; a handler that
+raises produces a failed `RESULT` (`failed`, with the exception) and never breaks the loop. One that
+stops without returning settles too: `cancelled` when its work was cancelled underneath it,
+`invalid` when a validator's own exception refused the arguments. `pending` drops the alias on every
+exit.
 
 ### C2: Nothing is awaited inline; the bus observes _(enforced: mechanical)_ ^c2
 
@@ -122,9 +122,9 @@ Hooks run in registration order, each seeing the request as those before it left
 rewriting hook judges the rewrite; the order is the operator's.
 
 None lets the command run; a string refuses it (`refused: <reason>`). A dict or an instance of the
-Spec replaces the arguments, rebuilt from its fields, and a model of another class refuses the
-command (S8); any other value changes nothing. A hook that raises, exits non-zero or times out
-refuses the command.
+Spec replaces the arguments, rebuilt from its fields as its Spec reads them, extras kept; a model of
+another class refuses the command (S8); any other value changes nothing. A hook that raises, exits
+non-zero or times out refuses the command.
 
 A hook runs in its own process group; a timeout or a cancelled run ends it. Today no hook sees
 `OUT{}`; it becomes the `out` command with [[ADR-0003-the-bounds#^d3|ADR-0003/D3]].
@@ -143,8 +143,8 @@ The runtime captures three values: the request as the handler entered, the handl
 the first after hook, and the result as the hooks left it. Each hook works on a copy; a replacement
 is captured when returned, a failed hook's copy is dropped. The RESULT holds the third, what a
 pointer dereferences; the first two ride the entry as provenance, out of the model's reach. A
-capture shares an immutable value and copies a list or dict
-([[ADR-0007-the-record#^c1|ADR-0007/C1]]).
+capture shares an immutable value and copies a list, dict or set, and a Spec instance's fields and
+extras ([[ADR-0007-the-record#^c1|ADR-0007/C1]]).
 
 ### C6: A handler's effect class orders the turn _(enforced: mechanical)_ ^c6
 
@@ -208,11 +208,13 @@ wait costs less than a missing one.
   (S8):
   `test_a_before_hooks_replacement_is_a_dict_or_the_specs_instance_rebuilt_through_its_validator`,
   `test_a_replacement_of_another_class_or_one_its_spec_refuses_is_the_hooks_refusal`,
-  `test_a_replacement_instance_is_rebuilt_from_its_declared_fields_not_its_computed_ones`. The three
-  captures:
+  `test_a_replacement_instance_is_rebuilt_from_its_declared_fields_not_its_computed_ones`,
+  `test_a_replacement_instance_keeps_its_aliased_fields_and_its_extras`. The three captures:
   `test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entry_as_copies`,
-  `test_a_capture_copies_a_list_that_holds_itself_once`, `test_a_capture_copies_what_a_tuple_holds`.
-  The effect wait (C6), with the class on `Handler` (S9):
+  `test_a_capture_copies_a_list_that_holds_itself_once`, `test_a_capture_copies_what_a_tuple_holds`,
+  `test_a_hooks_change_in_place_to_an_extra_or_a_set_changes_nothing`,
+  `test_a_request_that_cannot_be_captured_settles_as_a_result_and_the_run_continues`. The effect
+  wait (C6), with the class on `Handler` (S9):
   `test_each_class_waits_for_what_c6_says_and_reads_overlap`,
   `test_a_write_pointing_at_a_later_write_is_a_circle_and_a_pure_one_resolves`,
   `test_the_class_is_declared_on_the_handler_write_by_default_and_checked`.
@@ -233,7 +235,8 @@ refuses with stdout as the reason; a turn hook's stdout is a notification line. 
 runs under `-I` with lion's own interpreter (C7).
 
 - **Landing evidence**: `tests/test_hooks.py`, among them
-  `test_a_before_hook_that_exits_zero_with_text_on_stdout_lets_the_command_run` (C4),
+  `test_a_before_hook_that_exits_zero_with_text_on_stdout_lets_the_command_run` and
+  `test_a_before_hooks_json_keyed_by_a_fields_alias_replaces_that_field` (C4),
   `test_writable_editable_hook_origin_is_refused` (C7),
   `test_git_global_options_cannot_hide_push_or_destructive_subcommand` and
   `test_the_tree_hook_names_the_files_that_changed_and_the_head_that_moved` (C8); the console test
@@ -281,6 +284,7 @@ runs under `-I` with lion's own interpreter (C7).
   ([[ADR-0001-the-actor|ADR-0001]] S4) makes the build count immaterial; another class is refused. A
   validator's failure on the rebuild is the hook's failure and refuses the command. Each hook works
   on a copy (C5), so a change in place changes nothing and only a returned replacement counts.
+  Private attributes and custom mutable objects stay shared.
 
 - **S9**: Owed with D1, landed with it: the effect wait of C6, with the class on `Handler`. Before
   it landed, every command waited on its pointers only, as C6 says a `pure` one does. A write that

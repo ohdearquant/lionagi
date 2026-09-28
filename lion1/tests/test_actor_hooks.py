@@ -5,10 +5,12 @@ Result replaces it, and a hook that raises is told in the next notice while the 
 
 import asyncio
 
-from pydantic import BaseModel, ConfigDict, computed_field, field_validator
+import pytest
+from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from lionagi import Actor, Kind, Message, Profile, Result, RunRequest
 from lionagi.actor import DEFAULT_HANDLERS
+from lionagi.spec import spec_name
 from tests.test_actor import scripted
 
 
@@ -45,6 +47,37 @@ class Counted(BaseModel):
 
 class Pair(BaseModel):
     items: tuple[list[str], str]
+
+
+class Aliased(BaseModel):
+    text: str = Field(alias="wire_text")
+
+
+class AliasedWithDefault(BaseModel):
+    text: str = Field("unchanged", alias="wire_text")
+
+
+class AliasedChoices(BaseModel):
+    text: str = Field("unchanged", validation_alias=AliasChoices("wire_text", "text_on_wire"))
+
+
+class AliasedPath(BaseModel):
+    head: str = Field("unchanged", validation_alias=AliasPath("wire", "texts", 0))
+    text: str = Field("unchanged", validation_alias=AliasPath("wire", "texts", 1))
+
+
+class AliasedByName(BaseModel):
+    model_config = ConfigDict(validate_by_name=True, validate_by_alias=False)
+    text: str = Field(alias="wire_text")
+
+
+class Loose(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    text: str
+
+
+class Tagged(BaseModel):
+    tags: set[str]
 
 
 def make() -> tuple[Actor, Profile]:
@@ -174,6 +207,68 @@ def test_a_replacement_instance_is_rebuilt_from_its_declared_fields_not_its_comp
 
     r = results(run(actor, Profile("p"), "<lact c1>counted(n=1)</lact>"))["c1"]
     assert r.ok and r.value == "n=2"
+
+
+@pytest.mark.parametrize(
+    "spec,args,update,expected",
+    [
+        (Aliased, 'wire_text="asked"', {"text": "changed"}, {"text": "changed"}),
+        (AliasedWithDefault, 'wire_text="asked"', {"text": "changed"}, {"text": "changed"}),
+        (AliasedChoices, 'text_on_wire="asked"', {"text": "changed"}, {"text": "changed"}),
+        (AliasedPath, "", {"head": "kept", "text": "changed"}, {"head": "kept", "text": "changed"}),
+        (AliasedByName, 'text="asked"', {"text": "changed"}, {"text": "changed"}),
+        (Loose, 'text="asked", note="asked"', {"note": "changed"}, {"text": "asked", "note": "changed"}),
+    ],
+    ids=["alias", "alias-with-default", "alias-choices", "alias-path", "by-name-only", "extras"],
+)
+def test_a_replacement_instance_keeps_its_aliased_fields_and_its_extras(spec, args, update, expected):
+    actor = Actor("hooked-aliases")
+
+    @actor.handler(spec)
+    async def dump(req: BaseModel, ctx) -> dict:
+        return req.model_dump()
+
+    @actor.before
+    def swap(run, la, req):
+        return req.model_copy(update=update)  # the Spec's own instance, its fields read by alias
+
+    r = results(run(actor, Profile("p"), f"<lact s1>{spec_name(spec)}({args})</lact>"))["s1"]
+    assert r.ok, r.error
+    assert r.value == expected
+
+
+@pytest.mark.parametrize(
+    "spec,args", [(Loose, 'text="x", tags=["asked"]'), (Tagged, 'tags=["asked"]')], ids=["extra", "set"]
+)
+def test_a_hooks_change_in_place_to_an_extra_or_a_set_changes_nothing(spec, args):
+    actor = Actor("hooked-in-place")
+    entered: list[list[str]] = []
+
+    def tags(req: BaseModel):
+        return req.model_extra["tags"] if isinstance(req, Loose) else req.tags
+
+    def scribble(values, word: str):
+        if isinstance(values, set):
+            values.add(word)
+        else:
+            values.append(word)
+
+    @actor.handler(spec)
+    async def keep(req: BaseModel, ctx) -> BaseModel:
+        entered.append(sorted(tags(req)))
+        return req
+
+    @actor.before
+    def before(run, la, req):
+        scribble(tags(req), "before")  # its own copy: nothing reaches the handler
+
+    @actor.after
+    def broken(run, la, req, result):
+        scribble(tags(result.value), "after")
+        raise RuntimeError("log full")  # a failed hook's copy is dropped
+
+    r = results(run(actor, Profile("p"), f"<lact k1>{spec_name(spec)}({args})</lact>"))["k1"]
+    assert r.ok and (entered, sorted(tags(r.value))) == ([["asked"]], ["asked"])
 
 
 def test_a_replacement_of_another_class_or_one_its_spec_refuses_is_the_hooks_refusal():

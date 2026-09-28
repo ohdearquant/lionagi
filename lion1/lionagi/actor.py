@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import AliasChoices, BaseModel, TypeAdapter, ValidationError
 
 from . import lndl
 from .bus import Bus
@@ -1035,10 +1035,14 @@ class Actor:
                     f"neither a dict nor {handler.spec.__name__}"
                 )
                 return Result(la.name, False, error=why, reason="refused"), None
+        try:
+            entered = _captured(request)  # the request as the handler entered, whatever it does to its own
+            provenance["request"] = entered.model_dump()
+        except Exception as e:  # a computed field or a serializer raised: nothing ran, the run goes on
+            error = f"invalid arguments: the request cannot be captured, {type(e).__name__}: {e}"
+            return Result(la.name, False, error=error, reason="invalid"), None
         ctx = Context(run, la.alias, handler)
         run.entered.add(la.alias)  # from here the handler may have acted on the world
-        entered = _captured(request)  # the request as the handler entered, whatever it does to its own
-        provenance["request"] = entered.model_dump()
         try:
             value = handler.fn(request, ctx)
             if inspect.isawaitable(value):
@@ -1559,8 +1563,9 @@ def _deref(run: Run, key: str, value: Any) -> Any:
 
 
 def _captured(value: Any, memo: dict[int, Any] | None = None) -> Any:
-    """A value as a capture holds it (ADR-0007/C1): a scalar shared, a list, dict or tuple copied, a
-    Spec instance or a Result rebuilt on captured fields; a list or dict holding itself is copied once."""
+    """A value as a capture holds it (ADR-0007/C1): a scalar shared, a list, dict, set or tuple copied,
+    a Spec instance or a Result rebuilt on captured fields and extras; a list or dict holding itself is
+    copied once."""
     memo = {} if memo is None else memo
     if id(value) in memo:
         return memo[id(value)]
@@ -1574,18 +1579,33 @@ def _captured(value: Any, memo: dict[int, Any] | None = None) -> Any:
         return out
     if isinstance(value, tuple):
         return tuple(_captured(v, memo) for v in value)
+    if isinstance(value, set):
+        return {_captured(v, memo) for v in value}
     if isinstance(value, BaseModel):
-        return value.model_copy(
-            update={k: _captured(getattr(value, k), memo) for k in type(value).model_fields}
-        )
+        update = {k: _captured(getattr(value, k), memo) for k in type(value).model_fields}
+        update.update((k, _captured(v, memo)) for k, v in (value.model_extra or {}).items())
+        return value.model_copy(update=update)
     if isinstance(value, Result):
         return dataclasses.replace(value, value=_captured(value.value, memo))
     return value
 
 
-def _fields(spec: BaseModel) -> dict[str, Any]:
-    # the declared fields only: a computed field is no input, and a spec that forbids extras refuses it
-    return {k: getattr(spec, k) for k in type(spec).model_fields}
+def _fields(spec: BaseModel) -> dict[Any, Any]:
+    # the declared fields only: a computed field is no input, and a spec that forbids extras refuses it.
+    # Each sits where validation reads it, under its alias unless the spec reads names only, and the
+    # extras a spec keeps come along; an alias path reads an int key from a dict as from a list
+    cls = type(spec)
+    out: dict[Any, Any] = dict(spec.model_extra or {})
+    for name, info in cls.model_fields.items():
+        alias = info.validation_alias if cls.model_config.get("validate_by_alias", True) else None
+        if isinstance(alias, AliasChoices):  # validation reads any one of them
+            alias = alias.choices[0]
+        *walk, last = [name] if alias is None else [alias] if isinstance(alias, str) else alias.path
+        node = out
+        for key in walk:
+            node = node.setdefault(key, {})
+        node[last] = getattr(spec, name)
+    return out
 
 
 def _plain(value: Any) -> Any:

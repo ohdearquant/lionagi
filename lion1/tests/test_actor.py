@@ -3,7 +3,7 @@ import re
 from typing import Literal
 
 import pytest
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, computed_field, field_validator
 
 from lionagi import Actor, Kind, Message, Profile, Refused, Retry, RunRequest, Success
 from lionagi.actor import ProfileError
@@ -1087,6 +1087,41 @@ def test_a_command_that_stops_without_returning_still_settles_as_a_result():
     assert results["v"].reason == "invalid" and "TypeError: the validator's own error" in results["v"].error
     notices = [e.content for e in run.record if e.kind is Kind.SYSTEM]
     assert not any("still running" in n for n in notices)
+
+
+class Reciprocal(BaseModel):
+    n: int
+
+    @computed_field
+    @property
+    def inverse(self) -> float:
+        return 1 / self.n
+
+
+def test_a_request_that_cannot_be_captured_settles_as_a_result_and_the_run_continues():
+    actor = Actor("t-capture")
+    called: list[int] = []
+
+    @actor.handler(Reciprocal)
+    def reciprocal(req: Reciprocal, ctx) -> float:
+        called.append(req.n)
+        return req.inverse
+
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(max_rounds=2, emits=(Done,)),
+            scripted(
+                "<lact z>reciprocal(n=0)</lact><lact h>reciprocal(n=2)</lact>",
+                'OUT{done: {summary: "s", files: []}}',
+            ),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.pending == {}
+    z, h = run.record.get("z"), run.record.get("h")
+    assert z.content.reason == "invalid" and z.meta["execution"] == "not executed"
+    assert "ZeroDivisionError: division by zero" in z.content.error
+    assert h.content.ok and h.content.value == 0.5 and called == [2]
 
 
 class GetCount(BaseModel):
