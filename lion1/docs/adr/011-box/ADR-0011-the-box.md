@@ -271,3 +271,6 @@ to; the person picks `--offline` when the directory holds what the network must 
   is refused; its answer is three NUL-ended paths and nothing else. Pinned against `LocalTree`:
   `test_the_box_tree_resolves_a_symlink_in_the_box_before_its_bound`,
   `test_a_resolver_answer_that_is_not_three_nul_ended_paths_is_refused`.
+- **S15**: A process the model runs in the box reads anywhere already (S6), so the tree's bound is
+  no boundary against one: a link it swaps between the resolve and the read reaches what that
+  process could read itself.
