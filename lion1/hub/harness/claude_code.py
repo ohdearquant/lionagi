@@ -283,8 +283,10 @@ def _delta(envelope: dict, prev: dict | None) -> dict:
     }
     if prev is None:
         return out
-    out["total_cost_usd"] = (envelope.get("total_cost_usd") or 0) - (prev.get("total_cost_usd") or 0)
-    out["duration_api_ms"] = (envelope.get("duration_api_ms") or 0) - (prev.get("duration_api_ms") or 0)
+    for k in ("total_cost_usd", "duration_api_ms"):
+        # a running total missing on either side leaves this call's share unknown, never negative
+        now, before = envelope.get(k), prev.get(k)
+        out[k] = None if now is None or before is None else now - before
     return out
 
 

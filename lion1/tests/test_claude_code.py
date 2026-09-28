@@ -226,6 +226,8 @@ def test_a_failed_session_call_lands_its_envelope_and_the_next_call_bills_only_i
             ),
             claude_code.ClaudeCodeError("claude did not answer within 300s"),
             ("ok", {"usage": {"input_tokens": 700}, "total_cost_usd": 0.7}),
+            claude_code.ClaudeCodeError("claude exited 1: cut off", {"usage": {"output_tokens": 5}}),
+            ("ok", {"usage": {"input_tokens": 800}, "total_cost_usd": 0.9}),
         ]
     )
     prompts: list[str] = []
@@ -244,14 +246,20 @@ def test_a_failed_session_call_lands_its_envelope_and_the_next_call_bills_only_i
         with pytest.raises(claude_code.ClaudeCodeError, match=error):
             asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
     asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
-    ok, capped, timed_out, after = s.calls
+    with pytest.raises(claude_code.ClaudeCodeError, match="cut off"):
+        asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
+    asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
+    ok, capped, timed_out, after, cut_off, unknown = s.calls
     assert (
         capped["error"] == "claude reported error_max_turns: cap" and capped["usage"]["output_tokens"] == 700
     )
     assert capped["total_cost_usd"] == pytest.approx(0.5)  # what this call added to the session
     assert timed_out == {"total_cost_usd": None, "error": "claude did not answer within 300s"}
     assert after["total_cost_usd"] == pytest.approx(0.1)  # the failed call's share is not billed twice
-    assert prompts[-1] == prompts[1]  # what a failed call did not deliver is sent again
+    assert prompts[3] == prompts[1]  # what a failed call did not deliver is sent again
+    # a printed envelope with no running total leaves its share, and the next call's, unknown
+    assert cut_off["total_cost_usd"] is None and cut_off["usage"]["output_tokens"] == 5
+    assert unknown["total_cost_usd"] is None and unknown["cumulative"]["total_cost_usd"] == 0.9
 
 
 def test_both_chat_backends_hand_back_this_calls_prompt_count(monkeypatch):
