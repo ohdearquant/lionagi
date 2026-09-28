@@ -755,6 +755,17 @@ class Disk:
         )
 
 
+# an origin names GitHub only in its host: https or ssh with github.com as the authority, or scp-style
+_GITHUB_ORIGIN = re.compile(
+    r"(?:(?:https?|ssh|git)://(?:[^@/\s]+@)?github\.com(?::\d+)?/|[^@/:\s]+@github\.com:)"
+    r"([^/\s]+/[^/\s]+?)(?:\.git)?/?"
+)
+
+
+def _pr_number(p: Any) -> bool:
+    return isinstance(p, dict) and isinstance(p.get("number"), int) and not isinstance(p["number"], bool)
+
+
 class Worktrees:
     """Worktrees per repo: branch, dirty count, HEAD age, an open PR for the branch. A tree first seen
     emits its whole row; after that the transitions: a branch or PR change, a tree gone, a tree
@@ -797,7 +808,7 @@ class Worktrees:
                 findings.append(f"{repo}: git worktree list failed: {err.strip()[:120]}")
                 continue
             rc, slug_out, slug_err = await self.sh([GIT, "-C", repo, "remote", "get-url", "origin"])
-            m = re.search(r"(?:^|[/@])github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?\s*$", slug_out.strip())
+            m = _GITHUB_ORIGIN.fullmatch(slug_out.strip())
             slug = m.group(1) if rc == 0 and m else None
             if slug is None:  # no repository to ask, so every branch's PR state is unread
                 control = False
@@ -858,9 +869,7 @@ class Worktrees:
                         listed = json.loads(prs) if rc == 0 else None
                     except json.JSONDecodeError:
                         listed = None
-                    if isinstance(listed, list) and all(
-                        isinstance(p, dict) and "number" in p for p in listed
-                    ):
+                    if isinstance(listed, list) and all(_pr_number(p) for p in listed):
                         pr = ",".join(f"#{p['number']}" for p in listed) or "none"
                     else:  # a failed call and an answer that is not a list of PRs are both unread
                         pr = "gh failed" if rc != 0 else "not a PR list"
@@ -1375,7 +1384,6 @@ class VerdictFreshness:
                     "round_no": d.get("round_no") or -1,
                     "cause": str(d.get("cause") or "unstated"),
                     "coverage": d.get("coverage_bounds"),
-                    "register": d.get("register_hash"),
                 }
             else:
                 head = re.match(r"# Review verdict \u2014 (\S+)#(\d+) @ [0-9a-f]{8}", text)

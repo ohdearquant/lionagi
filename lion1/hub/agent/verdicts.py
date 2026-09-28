@@ -24,8 +24,6 @@ _NOTICE = re.compile(r"([\w.-]+/[\w.-]+)#(\d+) @ ([0-9a-f]{8})")
 _ARTIFACT = re.compile(r"Artifact: (.+\.(?:json|md))(?=\s|$)", re.M)  # a path may hold a space
 _VERDICT = re.compile(r"^(.+-\d+-[0-9a-f]{8})(?:-\d{8}T\d{6}-\d+-\d+)?\.(json|md)$")  # or set aside, stamped
 _COVERAGE = re.compile(r"^- coverage bounds:.*$", re.M)
-_EVALUATED = re.compile(r"^- evaluated head: ([0-9a-f]{40})\s*$", re.M)
-_REGISTER = re.compile(r"^- findings-register hash: (\S+)\s*$", re.M)
 
 
 class Verdicts:
@@ -99,20 +97,13 @@ class Verdicts:
             )
             return got
         got["coverage"] = "coverage: not in the artifact"
-        if isinstance(cov := rec.get("coverage"), dict) and cov:  # the JSON's own, never the .md's
+        # a verdict's coverage is its own: the JSON's, or the .md's when the .md is the artifact read. A
+        # companion .md beside a JSON can be another round's, and nothing in it names the round.
+        if isinstance(cov := rec.get("coverage"), dict) and cov:
             got["coverage"] = "- coverage bounds: " + ", ".join(f"{k}={v}" for k, v in sorted(cov.items()))
-        elif "md" in files:  # the .md lands before its .json, so it can be another round's for a moment
+        elif "json" not in files:
             try:
-                md = Path(files["md"][0]).read_text()
-                h, reg = _EVALUATED.search(md), _REGISTER.search(md)
-                said = reg.group(1) if reg else None
-                if h and h.group(1) != ev:
-                    got["coverage"] = f"coverage: companion .md is for head {h.group(1)[:8]}"
-                elif "json" in files and said != rec.get("register"):  # a companion names the JSON's round
-                    got["coverage"] = (
-                        f"coverage: companion .md is another round's (register {said or 'none'})"
-                    )
-                elif h and (c := _COVERAGE.search(md)):
+                if c := _COVERAGE.search(Path(files["md"][0]).read_text()):
                     got["coverage"] = c.group(0)
             except OSError as e:
                 got["coverage"] = f"coverage: the .md is unreadable ({e})"

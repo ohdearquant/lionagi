@@ -617,6 +617,10 @@ def test_worktrees_a_failed_read_of_a_tree_fails_the_control_and_keeps_its_last_
         ),
         ("https://git.example.com/o/r.git\n", "names no GitHub repo: https://git.example.com/o/r.git"),
         ("https://evilgithub.com/o/r.git\n", "names no GitHub repo: https://evilgithub.com/o/r.git"),
+        (
+            "https://evil.example/path/github.com/o/r.git\n",
+            "names no GitHub repo: https://evil.example/path/github.com/o/r.git",
+        ),
     ],
 )
 def test_worktrees_an_unread_origin_leaves_every_branch_pr_unread(tmp_path, origin, why):
@@ -646,7 +650,9 @@ def test_worktrees_an_unread_origin_leaves_every_branch_pr_unread(tmp_path, orig
     assert store.get(f"worktrees:{tmp_path}/main").value == kept
 
 
-@pytest.mark.parametrize("answer", ["null", "{}", "[1]", '[{"id": 1}]', "not json"])
+@pytest.mark.parametrize(
+    "answer", ["null", "{}", "[1]", '[{"id": 1}]', '[{"number": null}]', '[{"number": true}]', "not json"]
+)
 def test_worktrees_a_pr_answer_that_is_not_a_pr_list_is_unread(tmp_path, answer):
     porcelain = (
         f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
