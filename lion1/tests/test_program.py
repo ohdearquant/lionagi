@@ -666,3 +666,85 @@ def test_a_command_can_be_called_by_a_dotted_name_and_returns_a_specs_fields():
     )
     run = _run(actor, turn, "idle")
     assert run.record.get("n").content.ok and run.record.get("y").content.value == "Dune Dune"
+
+
+class Many(BaseModel):
+    n: int
+
+
+def _counting_actor(name: str) -> Actor:
+    actor = _actor(name, [])
+
+    @actor.handler(Many)
+    async def many(req: Many, ctx) -> list[str]:
+        return [""] * req.n
+
+    return actor
+
+
+def test_a_comprehension_counts_each_item_it_builds_toward_the_size_limit():
+    actor = _counting_actor("items")
+    turn = fenced(
+        f"xs = many(n={LIMIT + 1})",
+        "big = (x for x in *xs)",
+        "a = echo(text=*big[0])",
+        f"ys = many(n={LIMIT})",
+        "fits = (y for y in *ys)",
+        "b = echo(text=*fits[0])",
+    )
+    run = _run(actor, turn, "idle")
+    a, b = run.record.get("a").content, run.record.get("b").content
+    assert (
+        not a.ok
+        and a.reason == "invalid"
+        and "line 2: the value built here is past the size limit" in a.error
+    )
+    assert b.ok and len(run.values["fits"][1]) == LIMIT and "fits" in run.values and "big" not in run.values
+
+
+def test_a_dicts_keys_count_toward_the_size_limit():
+    actor = _counting_actor("keys")
+    key = "k" * 200
+    turn = fenced(
+        "xs = many(n=1000)",
+        f'ds = ({{"{key}": x}} for x in *xs)',
+        f"a = echo(text=*ds[0].{key})",
+        f'one = {{"{key}": "v"}}',
+        f"b = echo(text=*one.{key})",
+    )
+    run = _run(actor, turn, "idle")
+    a, b = run.record.get("a").content, run.record.get("b").content
+    assert not a.ok and "line 2: the value built here is past the size limit" in a.error
+    assert b.ok and b.value == "v"
+
+
+def test_a_repair_is_counted_when_the_check_then_refuses_the_program():
+    actor = _actor("repaired-then-refused", [])
+    run = _run(actor, fenced('a = search_similar(input="Dune" candidates=[])', 'b = serch(text="y")'), "idle")
+    assert run.repairs == {"comma": 1} and "line 2: unknown command 'serch'" in _notices(run)
+    assert not [e for e in run.record if e.kind is Kind.RESULT]
+
+
+def test_a_result_read_through_a_value_is_consumed_only_when_the_values_reader_settles_ok():
+    actor = _actor("through-a-value", [])
+    turn = fenced(
+        'a = echo(text="x")',
+        "v = *a",
+        "b = echo(text=*v + 3)",
+        'c = echo(text="y")',
+        "w = *c",
+        "d = echo(text=*w)",
+    )
+    run = _run(actor, turn, "idle")
+    assert run.record.get("b").content.reason == "invalid" and run.record.get("d").content.value == "y"
+    hides = [e.meta["consumed"].refs for e in run.record if e.kind is Kind.SYSTEM and e.meta.get("consumed")]
+    assert hides == [("c",)]
+
+
+def test_an_unnamed_command_skips_an_auto_name_the_record_already_holds():
+    calls: list = []
+    actor = _actor("taken", calls)
+    held = (Entry(seq=0, kind=Kind.RESULT, content=Result("earlier", True, "kept"), alias="r3.0"),)
+    run = _run(actor, fenced('note.k = echo(text="a")'), "idle", history=held)
+    assert run.record.get("r3.0").content.value == "kept" and run.record.get("r3.1").content.value == "a"
+    assert calls == [("echo", "a")]

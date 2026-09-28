@@ -546,7 +546,7 @@ async def evaluate(node: ast.expr, env: Env, bound: dict[str, Any] | None = None
                         break
                 else:
                     out.append(await evaluate(node.elt, env, inner))
-                    size += _size(out[-1])
+                    size += 1 + _size(out[-1])  # the item and what it holds
                     if size > LIMIT:
                         raise _past(node)
             return out
@@ -601,9 +601,12 @@ def _size(value: Any) -> int:
         v = stack.pop()
         if isinstance(v, str):
             n += len(v)
-        elif isinstance(v, dict | list | tuple):
+        elif isinstance(v, dict):
+            n += len(v) + sum(len(k) for k in v)  # a key is characters too
+            stack.extend(v.values())
+        elif isinstance(v, list | tuple):
             n += len(v)
-            stack.extend(v.values() if isinstance(v, dict) else v[: LIMIT + 1])
+            stack.extend(v[: LIMIT + 1])
         else:
             n += 1
     return n

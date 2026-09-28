@@ -703,6 +703,7 @@ class Actor:
                 )
                 try:
                     program = _read(text, run.profile.language)
+                    run.repairs.update(program.repairs)  # applied by the reading, whatever the check says
                     if isinstance(program, Script):  # whole, before anything runs (ADR-0008/C1)
                         check_script(program, subset.names(), run.known)
                 except lndl.LNDLError as e:
@@ -710,7 +711,6 @@ class Actor:
                     self._retry(run, str(e))
                     self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
                     continue
-                run.repairs.update(program.repairs)
                 run.idle_note = None
                 if isinstance(program, Script):
                     acted = spoke = bool(program.body)
@@ -1433,6 +1433,7 @@ class _Walk:
         self.lacts: list[Lact] = []
         self.values: dict[str, tuple[ast.expr, dict[str, asyncio.Task]]] = {}  # with the writes before it
         self.computed: dict[str, asyncio.Future] = {}
+        self.value_reads: dict[str, set[str]] = {}  # a value's reads, charged to whoever reads the value
         self.writes: dict[str, asyncio.Task] = {}  # note key -> the latest assignment reached
         self.reads: dict[str, set[str]] = {}  # this program's command -> the results its arguments read
         self.used: set[str] = set()  # results read by a reader that settled ok, or taken by a note
@@ -1479,7 +1480,10 @@ class _Walk:
         return None
 
     def auto(self) -> str:
-        return f"r{self.seq}.{len(self.lacts)}"
+        n, taken = len(self.lacts), self.run.pending
+        while self.run.record.has_alias(f"r{self.seq}.{n}") or f"r{self.seq}.{n}" in taken:
+            n += 1  # a resumed record may hold the name already (its rows are renumbered on load)
+        return f"r{self.seq}.{n}"
 
     def launch(self, la: Lact, args: Callable[[], Awaitable[dict[str, Any]]]) -> asyncio.Task:
         run = self.run
@@ -1517,7 +1521,7 @@ class _Walk:
         except lndl.LNDLError as e:
             raise EvalError(f"*{name}: {e}") from None
         self.run.values[name] = (self.seq, value)
-        self.used |= reader.reads
+        self.value_reads[name] = reader.reads  # consumed only once a reader of the value settles ok
         return value
 
     def write(self, node: Any) -> None:
@@ -1564,7 +1568,9 @@ class _Reader:
     async def point(self, name: str) -> Any:
         walk = self.walk
         if name in walk.values:
-            return await walk.value(name)
+            value = await walk.value(name)
+            self.reads |= walk.value_reads.get(name, set())
+            return value
         task = walk.run.pending.get(name)
         if task is not None:
             await asyncio.shield(task)

@@ -200,6 +200,9 @@ resumed chat folds it and recompiles nothing; the record keeps four kinds
   `test_a_syntax_error_refuses_the_whole_message_and_nothing_runs`,
   `test_a_check_that_fails_refuses_the_whole_message_naming_the_line`,
   `test_a_build_past_the_size_limit_settles_the_node_invalid`,
+  `test_a_comprehension_counts_each_item_it_builds_toward_the_size_limit`,
+  `test_a_dicts_keys_count_toward_the_size_limit`,
+  `test_an_unnamed_command_skips_an_auto_name_the_record_already_holds`,
   `test_if_elif_else_runs_only_the_taken_branch_and_a_return_ends_the_program`,
   `test_each_catalogue_repair_is_named_and_counted`. A pointer reaches an earlier line's name or the
   record, so no cycle can be written.
@@ -212,6 +215,7 @@ as "<line>: read as X; if that is not what you meant, write it again", and the r
 name so the bench can say which slips models make.
 
 - **Landing evidence**: `test_the_tag_forms_repairs_are_counted_by_name`,
+  `test_a_repair_is_counted_when_the_check_then_refuses_the_program`,
   `test_an_unknown_name_is_measured_against_the_nearest_known_name_in_both_forms`, and in
   `tests/test_swe_solve.py`
   `test_the_row_counts_the_repairs_by_name_and_measures_each_unknown_name`: the bench row carries
@@ -233,6 +237,7 @@ any hidden one, a placeholder.
   `test_a_result_the_output_names_is_never_consumed`,
   `test_the_consumed_hide_survives_the_log_as_a_directive`,
   `test_the_context_figure_counts_a_consumed_result_as_its_placeholder`,
+  `test_a_result_read_through_a_value_is_consumed_only_when_the_values_reader_settles_ok`,
   `test_a_failed_producer_writes_nothing_and_the_assignment_is_told_not_written`. The hide rides the
   notification's `meta["consumed"]`, beside the fold's `meta["directive"]`. Owed: the closure's
   half, with the closure (ADR-0006).
