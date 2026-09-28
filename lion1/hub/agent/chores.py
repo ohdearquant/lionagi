@@ -545,7 +545,7 @@ class Chores:
             lines.append(
                 f"tokens {day}: {spend.get('calls', 0)} model call(s), {spend.get('in', 0)} in, "
                 f"{spend.get('out', 0)} out, ${spend.get('cost', 0.0):.4f}"
-                + partial(spend.get("unknown", 0))
+                + partial(spend.get("unknown"))  # a row with no count is from before the count
                 + f", over {spend.get('runs', 0)} wake(s) with {spend.get('mail', 0)} mail; "
                 f"{spend.get('idle', 0)} idle poll(s) at 0 tokens"
             )

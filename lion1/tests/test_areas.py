@@ -582,7 +582,7 @@ def test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_ever
     cursor = {"wake": 2, "at": f"{TODAY} 11:09:15", "outcome": "Success"}
     partial = {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": 1}
     d = agent_dir(tmp_path, "desk", role="desk", cursor=cursor, spend=partial)
-    whole_day = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3}
+    whole_day = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3, "unknown": 0}  # counted: none missed
     done = agent_dir(tmp_path, "whole", role="desk", cursor=cursor, spend=whole_day)
     area = Area("x", "lambda:x", [str(d), str(done)])
     r, whole = resident(area, str(d), TODAY), resident(area, str(done), TODAY)
@@ -606,9 +606,18 @@ def test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_ever
     assert "<td>$0.1234</td>" in html  # the complete wake beside it carries no mark
 
 
-def test_a_days_row_from_before_the_count_is_marked_partial_by_an_unknown_number_in_every_view(tmp_path):
+@pytest.mark.parametrize(
+    "before",
+    [
+        {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3},
+        {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": None},
+    ],
+)
+def test_a_days_row_from_before_the_count_is_marked_partial_by_an_unknown_number_in_every_view(
+    tmp_path, before
+):
+    # the row as the version before the count left it (no key), and as the first wake after it writes it
     cursor = {"wake": 2, "at": f"{TODAY} 11:09:15", "outcome": "Success"}
-    before = {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": None}  # the first wake after
     d = agent_dir(tmp_path, "desk", role="desk", cursor=cursor, spend=before)
     counted = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3, "unknown": 0}
     done = agent_dir(tmp_path, "whole", role="desk", cursor=cursor, spend=counted)

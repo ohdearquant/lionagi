@@ -451,7 +451,8 @@ class Agent:
             at = time.strftime("%H:%M:%S", time.localtime(min(recent) + 3600))
             return f"{len(recent)} wakes in the last hour (cap {self.budget.wakes_per_hour}); next at {at}"
         today = spend.get("day") == _day(now)
-        cost, unknown = (spend.get("cost", 0.0), spend.get("unknown", 0)) if today else (0.0, 0)
+        # a same-day row with no count is from before the count: uncounted, never complete
+        cost, unknown = (spend.get("cost", 0.0), spend.get("unknown")) if today else (0.0, 0)
         if cost >= self.budget.cost_per_day:
             return (
                 f"${cost:.4f} spent today"

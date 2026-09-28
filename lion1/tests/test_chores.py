@@ -660,7 +660,9 @@ def test_the_digests_tokens_line_marks_a_days_cost_that_misses_calls_of_unknown_
         "over 2 wake(s) with 1 mail; 0 idle poll(s) at 0 tokens" in text
     )
     khive.mail.append(mail(SELF, "tick: digest"))
-    agent.state.put("spend", {**spend, "unknown": None}, run="-", seq=1)  # a row from before the count
+    agent.state.put(
+        "spend", {k: v for k, v in spend.items() if k != "unknown"}, run="-", seq=1
+    )  # before the count
     asyncio.run(agent.wake())
     assert (
         "$0.3000 (partial: calls of unknown cost before this count went uncounted), over"

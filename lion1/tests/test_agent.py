@@ -491,6 +491,13 @@ def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_num
         "unknown": 0,
     }
     assert "partial" not in stats(tmp_path).splitlines()[0]
+    # a row from before the count that is already at the cap is held before any wake writes it: the
+    # hold and the stats line still say it is uncounted
+    state.put("spend", {"day": _day(now[0]), "cost": 0.9, "calls": 2, "wakes": [], "runs": 1}, run="-", seq=9)
+    khive.mail.append(mail("lambda:a", "go", mid="m5"))
+    assert asyncio.run(agent.wake(wait_ms=0)) is None
+    assert agent.held == f"$0.9000 spent today {uncounted} (cap $0.85); next day"
+    assert f"$0.9000 {uncounted}; 1 wake(s)" in stats(tmp_path).splitlines()[0]
 
 
 def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(tmp_path):

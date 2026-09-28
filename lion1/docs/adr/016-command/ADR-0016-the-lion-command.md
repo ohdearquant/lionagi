@@ -249,11 +249,11 @@ log keeps each envelope's cost as it came.
   ([[ADR-0013-the-agent#^c7|ADR-0013/C7]]). The lock, notes, ledgers and landing files are written
   wherever the directory is, so it belongs where no checkout tracks it. The implementation's own
   repository ignores `.khive/`, where the bench example keeps its directory.
-- **S10**: A day's row written before the count carries no `unknown`, and its calls cannot be
-  counted later. The first wake after it writes `None` there and every later wake of that day keeps
-  it, so the readers print `(partial: calls of unknown cost before this count went uncounted)`
-  beside the day's dollars until the next day. A wake's own line counts its own calls as ever.
-  Pinned by `tests/test_agent.py`:
+- **S10**: A day's row written before the count carries no `unknown`; its calls cannot be counted
+  later. Every reader takes the missing key as `None`, and the first wake after it writes `None`
+  there for the rest of the day. So the readers print `(partial: calls of unknown cost before this
+  count went uncounted)` beside the day's dollars until the next day, a row held at the cap
+  included. A wake's own line counts its calls as ever. Pinned by `tests/test_agent.py`:
   `test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_number_to_its_end`;
   `tests/test_areas.py`:
   `test_a_days_row_from_before_the_count_is_marked_partial_by_an_unknown_number_in_every_view`; the

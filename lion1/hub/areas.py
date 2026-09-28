@@ -185,6 +185,7 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
         problem.append("no notes yet: never ran from this directory")
     if spend.get("day") != today:
         spend = {}
+    unknown = spend.get("unknown") if spend else 0  # a row with no count is from before the count
     return Resident(
         area=area.name,
         chair=area.chair,
@@ -201,7 +202,7 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
         runs_today=int(spend.get("runs") or 0),
         mail_today=int(spend.get("mail") or 0),
         cost_today=float(spend.get("cost") or 0.0),
-        unknown_today=None if spend.get("unknown", 0) is None else int(spend.get("unknown") or 0),
+        unknown_today=None if unknown is None else int(unknown or 0),
         problem="; ".join(problem),
     )
 
