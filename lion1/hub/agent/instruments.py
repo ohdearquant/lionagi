@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -668,12 +669,22 @@ class Disk:
         for fl in self.floors:
             if "floor_gib" not in fl or "name" not in fl:
                 raise ValueError(f"a floor has a name and a floor_gib (base-1024): {fl}")
+        # every comparison with nan is false, so a nan floor reads as above on every pass
+        gib = [("target_cap_gib", target_cap_gib)] + [
+            (f"{k} of floor {fl['name']!r}", fl[k])
+            for fl in self.floors
+            for k in ("floor_gib", "budget_gib")
+            if k in fl
+        ]
+        for field, v in gib:
+            if not isinstance(v, int | float) or isinstance(v, bool) or not math.isfinite(v) or v < 0:
+                raise ValueError(f"{field} is a finite number of GiB, zero or more: {v!r}")
 
     async def run(self, args: dict[str, Any]) -> Outcome:
         findings, lines, control, escalate, matched = [], [], True, False, 0
         devices: dict[str, dict] = {}
-        for root in self.roots:
-            rc, out, err = await self.sh(["/bin/df", "-k", root])
+        for root in self.roots:  # -P: one line per volume; GNU wraps a long device name without it
+            rc, out, err = await self.sh(["/bin/df", "-P", "-k", root])
             rows = out.strip().splitlines()
             cols = rows[1].split() if len(rows) >= 2 else []
             if rc != 0 or len(cols) < 6 or not cols[3].isdigit():
