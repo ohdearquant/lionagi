@@ -8,7 +8,7 @@
 | [ADR-0004](004-language/ADR-0004-the-language.md) | 004-language | draft | operating (the refusal of a mixed response and the move of DeepSeek markup into the backend are owed) | ADR-0001, ADR-0002 |
 | [ADR-0005](005-handler/ADR-0005-command-handling.md) | 005-handler | draft | operating (the replacement rebuilt from its fields, the three captures and the effect wait are owed) | ADR-0003, ADR-0001, ADR-0002, ADR-0004 |
 | [ADR-0006](006-notification/ADR-0006-the-notification.md) | 006-notification | draft | operating (the closure entry is owed) | ADR-0003, ADR-0002, ADR-0005 |
-| [ADR-0007](007-record/ADR-0007-the-record.md) | 007-record | draft | operating (the note read pinned per command, the captures on the entry, the consumed directive, the fold by date and the cross-profile note read are owed) | ADR-0002, ADR-0006 |
+| [ADR-0007](007-record/ADR-0007-the-record.md) | 007-record | draft | operating (the captures on the entry and the consumed directive are owed) | ADR-0002, ADR-0006 |
 | [ADR-0008](008-program/ADR-0008-the-program.md) | 008-program | draft | unimplemented | ADR-0004, ADR-0005, ADR-0007 |
 | [ADR-0009](009-backend/ADR-0009-backends.md) | 009-backend | draft | partial (the router and both shapes of the session CLI operate and report the count; the subscription CLI hands back no count; the mixed-response refusal, the session CLI's failed-call envelope and the gate over an acting session are owed) | ADR-0002, ADR-0004, ADR-0006, ADR-0007 |
 | [ADR-0010](010-delegation/ADR-0010-delegation.md) | 010-delegation | draft | operating (the round trip, a peer ending without answering, a peer whose backend raises and an answer landing early are pinned by tests; no bench exercises the path) | ADR-0001, ADR-0002, ADR-0005, ADR-0006 |

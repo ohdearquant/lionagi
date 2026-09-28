@@ -146,10 +146,11 @@ def fold(record: Record, *, protect_input: bool = True) -> list[ViewEntry]:
 
     Nothing leaves the view on its own: every entry stays where it landed, so one render differs from
     the last only by what was appended and the provider's prefix cache holds. Directives then apply
-    in record order: `hide` removes, `show` brings back, `summarize` removes and puts its text in
-    front of where the span began. A hidden entry keeps a placeholder (`hidden=True`) so the model
-    knows what it can reopen; one under a summary does not, the summary names it. A directive
-    reaches only entries earlier than itself; INPUT is never hidden unless `protect_input` is False;
+    by date (`at`, record order among equal dates), wherever they ride: `hide` removes, `show` brings
+    back, `summarize` removes and puts its text in front of where the span began. A hidden entry
+    keeps a placeholder (`hidden=True`) so the model knows what it can reopen; one under a summary
+    does not, the summary names it. A directive reaches only entries earlier than its date; INPUT is
+    never hidden unless `protect_input` is False;
     a name that resolves to nothing is ignored, a directive cannot crash the fold. The runtime's own
     fold event (the view past its budget, ADR-0007/C2) is a `hide` directive on the notification
     that announces it, so it happens once and replays like any other.
@@ -167,7 +168,7 @@ def fold(record: Record, *, protect_input: bool = True) -> list[ViewEntry]:
                 seqs.append(e.seq)
         return seqs
 
-    for d in directives(record):
+    for d in sorted(directives(record), key=lambda d: d.at):
         targets = [s for s in (d.seqs if d.seqs is not None else resolve(d.refs)) if s < d.at]
         if protect_input:
             targets = [s for s in targets if entries[s].kind is not Kind.INPUT]
