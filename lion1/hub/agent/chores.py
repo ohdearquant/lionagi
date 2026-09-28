@@ -659,7 +659,8 @@ class Chores:
                 (rows,) = await self.agent.khive.exec(f'list(kind="scheduled_event", limit=200{offset})')
                 got = rows.get("items", []) if isinstance(rows, dict) else (rows or [])
                 items += got
-                if not got or not (isinstance(rows, dict) and rows.get("has_more")):
+                more = rows.get("has_more", len(got) == 200) if isinstance(rows, dict) else len(got) == 200
+                if not got or not more:
                     break
         except Exception as e:
             return [f"missed-tick read failed: {type(e).__name__}: {e}"]
@@ -688,11 +689,11 @@ class Chores:
                 )
             else:
                 done.append(f"{content}: {p['status']}, noted")
-        if done:  # an id is kept while the store lists its row: no count of rows lets one run twice
-            listed = {it["id"] for it in items}
-            self.agent.state.put(
-                "missed_seen", [i for i in seen if i in listed], run=run.id, seq=run.record.seq
-            )
+        # an id is kept while the store lists its row: no count of rows lets one run twice
+        listed = {it["id"] for it in items}
+        kept = [i for i in seen if i in listed]
+        if done or kept != seen:
+            self.agent.state.put("missed_seen", kept, run=run.id, seq=run.record.seq)
         return done
 
     def profiles(self) -> tuple[Profile, Profile]:

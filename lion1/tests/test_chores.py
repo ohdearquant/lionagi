@@ -65,6 +65,7 @@ class FakeKhive:
         self.ops: list[str] = []
         self.agenda = list(agenda)
         self.events = list(events)  # scheduled_event rows `list` returns
+        self.bare_pages = False  # `list` answers a page as a bare list, with no has_more beside it
         self.threads: dict[str, list[dict]] = {}  # thread id -> messages `comm.thread` returns
         self.refuse: set[str] = set()  # recipients the transport refuses, as the hop cap would
         self.keyed: dict[str, tuple] = {}  # idempotency key -> (the request, what its send returned)
@@ -117,6 +118,8 @@ class FakeKhive:
             limit = int(ops.split("limit=")[1].split(",")[0].split(")")[0])
             offset = int(ops.split("offset=")[1].split(")")[0]) if "offset=" in ops else 0
             page = self.events[offset : offset + limit]
+            if self.bare_pages:
+                return [page]
             return [{"items": page, "has_more": offset + len(page) < len(self.events)}]
         if ops.startswith("comm.thread"):
             tid = ops.split('id="')[1].split('"')[0]
@@ -812,12 +815,14 @@ def test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once(
     assert agent.state.get("missed_seen").value == ["ev1"]
 
 
-def test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once(tmp_path):
+@pytest.mark.parametrize("bare_pages", [False, True])
+def test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once(tmp_path, bare_pages):
     events = [
         {"id": f"ev{i}", "content": "tick: pr", "properties": {"created_by_actor": SELF, "status": "missed"}}
         for i in range(201)
     ]
     khive = FakeKhive(mail(SELF, "tick: disk"), mail(SELF, "tick: disk", mid="b2c3d4e5"), events=events)
+    khive.bare_pages = bare_pages  # a full bare page is read as a page with more behind it
     chores, agent = build(
         tmp_path, khive, [CHECK, DONE] * 2, disk=Probe("disk", full()), pr=Probe("pr", full())
     )
@@ -841,8 +846,8 @@ def test_a_seen_missed_tick_is_remembered_while_the_store_lists_it_however_many_
         }
         for i in range(501)
     ]
-    khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"b{i:07x}") for i in range(3)), events=events)
-    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 3, disk=Probe("disk", full()))
+    khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"b{i:07x}") for i in range(4)), events=events)
+    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 4, disk=Probe("disk", full()))
     asyncio.run(agent.wake())
     asyncio.run(agent.wake())
     noted = [len(r["caught_up"]) for r in chores.rows()]
@@ -855,6 +860,10 @@ def test_a_seen_missed_tick_is_remembered_while_the_store_lists_it_however_many_
     asyncio.run(agent.wake())
     assert chores.rows()[-1]["caught_up"] == ["tick: gone: missed, noted"]
     assert agent.state.get("missed_seen").value == [f"ev{i}" for i in range(1, 502)]
+    khive.events = events[400:]  # rows gone from the store are let go even when the pass notes nothing
+    asyncio.run(agent.wake())
+    assert chores.rows()[-1]["caught_up"] == []
+    assert agent.state.get("missed_seen").value == [f"ev{i}" for i in range(400, 501)]
 
 
 def test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those(tmp_path):
