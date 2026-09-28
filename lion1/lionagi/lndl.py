@@ -390,23 +390,25 @@ def _insert_commas(source: str) -> str | None:
 
 _CLOSERS = "the call's closers were missing at its end and were supplied"
 _COMMA = "a comma between arguments was missing and was supplied"
-_REPAIRED = {_CLOSERS: "closers", _COMMA: "comma"}  # a repair's note -> its name, for the run's count
+# a repair's name -> what the model is told of it; a line break escaped inside a string changes nothing
+# the model would rewrite, so it is counted and not told (ADR-0004/C3)
+_TOLD = {"closers": _CLOSERS, "comma": _COMMA}
 
 
-def _readings(source: str) -> list[tuple[str, str | None]]:
-    """The text as written, then each repair a model's slip calls for, with what was repaired."""
-    out: list[tuple[str, str | None]] = [(source, None)]
+def _readings(source: str) -> list[tuple[str, tuple[str, ...]]]:
+    """The text as written, then each repair a model's slip calls for, with the repairs it applied."""
+    out: list[tuple[str, tuple[str, ...]]] = [(source, ())]
     if "\n" in source:
-        out.append((_escape_newlines_in_strings(source), None))
+        out.append((_escape_newlines_in_strings(source), ("newline",)))
     closed = _close_dangling(source)
     if closed is not None:
-        out.append((closed, _CLOSERS))
+        out.append((closed, ("closers",)))
         if "\n" in closed:
-            out.append((_escape_newlines_in_strings(closed), _CLOSERS))
-    for text, _ in list(out):
+            out.append((_escape_newlines_in_strings(closed), ("closers", "newline")))
+    for text, names in list(out):
         with_commas = _insert_commas(text)
         if with_commas is not None:
-            out.append((with_commas, _COMMA))
+            out.append((with_commas, (*names, "comma")))
     return out
 
 
@@ -423,18 +425,19 @@ def parse_call(body: str) -> tuple[str, dict[str, Any]]:
     return name, args
 
 
-def parse_call_noting(body: str) -> tuple[str, dict[str, Any], str | None]:
-    """`parse_call`, plus what was repaired to read it (a missing comma, missing closers), or None."""
+def parse_call_noting(body: str) -> tuple[str, dict[str, Any], tuple[str, ...]]:
+    """`parse_call`, plus the repairs that read it, by name (`closers`, `newline`, `comma`); empty when
+    it read as written."""
     source, docs = _lift_heredocs(body.strip())
     node = first = None
-    note: str | None = None
-    for text, repair in _readings(source):
+    repairs: tuple[str, ...] = ()
+    for text, names in _readings(source):
         try:
             node = _parse_expr(_mark_pointers(text))
         except (SyntaxError, ValueError) as e:  # ValueError: a lone surrogate or a NUL byte
             first = first or e
             continue
-        note = repair
+        repairs = names
         break
     if node is None:
         assert first is not None
@@ -463,7 +466,7 @@ def parse_call_noting(body: str) -> tuple[str, dict[str, Any], str | None]:
             raise LNDLError(
                 f"{name}(...): {kw.arg}= must be a literal (string, number, list, dict) or a *pointer"
             ) from None
-    return name, args, note
+    return name, args, repairs
 
 
 class _JsonWords(ast.NodeTransformer):
@@ -788,10 +791,11 @@ def parse(text: str) -> Program:
                 f"it, point at it from a command: name(field=*{alias})"
             )
         else:
-            name, args, note = parse_call_noting(body)
-            if note:
-                problems.append(f"<lact {alias}>: {note}; if that is not the call you meant, write it again")
-                repairs.append(_REPAIRED[note])
+            name, args, repaired = parse_call_noting(body)
+            repairs += repaired
+            told = "; ".join(_TOLD[r] for r in repaired if r in _TOLD)
+            if told:
+                problems.append(f"<lact {alias}>: {told}; if that is not the call you meant, write it again")
             lacts.append(Lact(alias=alias, name=name, args=args, spec=spec, field=fld))
 
     out = None

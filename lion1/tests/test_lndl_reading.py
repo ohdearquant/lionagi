@@ -166,10 +166,10 @@ def test_a_literal_that_looks_like_the_heredoc_marker_is_a_string_nested_too():
 # the call
 
 
-def test_parse_call_is_parse_call_noting_without_the_note():
+def test_parse_call_is_parse_call_noting_without_the_repairs():
     assert parse_call('run(cmd="ls" timeout=1)') == ("run", {"cmd": "ls", "timeout": 1})
-    assert parse_call_noting('run(cmd="ls" timeout=1)') == ("run", {"cmd": "ls", "timeout": 1}, COMMA)
-    assert parse_call_noting('run(cmd="ls")') == ("run", {"cmd": "ls"}, None)
+    assert parse_call_noting('run(cmd="ls" timeout=1)') == ("run", {"cmd": "ls", "timeout": 1}, ("comma",))
+    assert parse_call_noting('run(cmd="ls")') == ("run", {"cmd": "ls"}, ())
 
 
 def test_a_dotted_callee_is_the_name():
@@ -702,11 +702,6 @@ def test_a_pointer_that_starts_a_continuation_line_is_read():
     assert parse_call("send(cc=[*c,\n        *d])") == ("send", {"cc": [Pointer("c"), Pointer("d")]})
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: when a call needs two repairs only the last is named (ADR-0004/C3: every "
-    "repair is named)",
-)
 def test_a_call_needing_a_comma_and_its_closers_names_both_repairs():
     p = parse('<lact r>run(cmd="ls" timeout=1</lact>')
     assert p.lacts[0].args == {"cmd": "ls", "timeout": 1}
@@ -730,8 +725,8 @@ def test_a_string_left_open_at_the_closing_tag_keeps_its_trailing_space():
 )
 @pytest.mark.parametrize("value", ["*a", "True", "None", "true", "null"])
 def test_a_missing_comma_after_any_argument_is_supplied(value):
-    name, args, note = parse_call_noting(f"run(cmd={value} timeout=1)")
-    assert name == "run" and args["timeout"] == 1 and note == COMMA
+    name, args, repairs = parse_call_noting(f"run(cmd={value} timeout=1)")
+    assert name == "run" and args["timeout"] == 1 and repairs == ("comma",)
 
 
 _TOO_DEEP = "known defect: deeply nested input raises RecursionError out of parse instead of LNDLError"

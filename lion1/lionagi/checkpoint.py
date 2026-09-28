@@ -99,7 +99,8 @@ class Checkpoint:
 
 def entry_of(row: dict) -> Entry | None:
     """A log row (the chat log's `entry_row`, ADR-0018/D1) back as a record entry: a result as Result,
-    the inbound marks, each result's execution fact and the context directive kept, the seq as it was;
+    the inbound marks, each result's execution fact, the context directives and a program's computed
+    values kept, the seq as it was;
     None for a row of another kind (a USAGE row, or another app's: the log, not the record)."""
     if row["kind"] not in Kind.__members__:
         return None
@@ -108,16 +109,24 @@ def entry_of(row: dict) -> Entry | None:
     if kind is Kind.RESULT and isinstance(content, dict) and "spec" in content:
         content = Result(**content)
     # `execution`: whether a result's handler was called; an older log has none, which says nothing
-    meta = {k: v for k, v in (row.get("meta") or {}).items() if k in _KEEP}
-    for key in ("directive", "consumed"):  # a program's consumed results ride a notification too
-        if isinstance(d := (row.get("meta") or {}).get(key), dict):
-            meta[key] = Directive(
-                op=d["op"],
-                refs=tuple(d["refs"]),
-                text=d.get("text", ""),
-                at=int(d.get("at", 0)),
-                seqs=tuple(d["seqs"]) if d.get("seqs") is not None else None,
-            )
+    kept = row.get("meta") or {}
+    meta = {k: v for k, v in kept.items() if k in _KEEP}
+
+    def directive(d: dict) -> Directive:
+        return Directive(
+            op=d["op"],
+            refs=tuple(d["refs"]),
+            text=d.get("text", ""),
+            at=int(d.get("at", 0)),
+            seqs=tuple(d["seqs"]) if d.get("seqs") is not None else None,
+        )
+
+    if isinstance(d := kept.get("directive"), dict):
+        meta["directive"] = directive(d)
+    if isinstance(ds := kept.get("consumed"), list):  # a program's consumed results ride a notification too
+        meta["consumed"] = tuple(directive(d) for d in ds)
+    if isinstance(vs := kept.get("values"), list):  # and the values it computed: alias, seq, value
+        meta["values"] = tuple((str(alias), int(seq), value) for alias, seq, value in vs)
     return Entry(
         seq=row["seq"],
         kind=kind,

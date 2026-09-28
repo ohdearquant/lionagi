@@ -132,9 +132,15 @@ def entry_row(e: Entry) -> dict:
             "reason": content.reason,
         }
     meta = dict(e.meta)
-    for key in ("directive", "consumed"):  # what this entry did to the view, as data
-        if isinstance(d := meta.get(key), Directive):
-            meta[key] = {"op": d.op, "refs": list(d.refs), "text": d.text, "at": d.at, "seqs": d.seqs}
+
+    def row(d: Directive) -> dict:
+        return {"op": d.op, "refs": list(d.refs), "text": d.text, "at": d.at, "seqs": d.seqs}
+
+    # what this entry did to the view, as data: a directive, and the hides of what a program consumed
+    if isinstance(d := meta.get("directive"), Directive):
+        meta["directive"] = row(d)
+    if isinstance(ds := meta.get("consumed"), tuple):
+        meta["consumed"] = [row(d) for d in ds]
     return {
         "seq": e.seq,
         "kind": e.kind.name,

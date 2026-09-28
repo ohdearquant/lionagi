@@ -133,13 +133,15 @@ class ViewEntry:
 
 
 def directives(record: Record) -> list[Directive]:
-    """Directives in record order, off the RESULT of a context command or a notification's SYSTEM entry:
-    the hide of what a program consumed, then the fold event."""
+    """Directives in the order of their `at`, record order among equals, off the RESULT of a context
+    command or a notification's SYSTEM entry: the hides of what a program consumed, each dated at its
+    consumption and so earlier than the notification carrying it, then the fold event."""
     out = []
     for e in record:
         if e.kind in (Kind.RESULT, Kind.SYSTEM):
-            out += [d for d in (e.meta.get("consumed"), e.meta.get("directive")) if isinstance(d, Directive)]
-    return out
+            ds = (*(e.meta.get("consumed") or ()), e.meta.get("directive"))
+            out += [d for d in ds if isinstance(d, Directive)]
+    return sorted(out, key=lambda d: d.at)
 
 
 def fold(record: Record, *, protect_input: bool = True) -> list[ViewEntry]:
@@ -147,7 +149,7 @@ def fold(record: Record, *, protect_input: bool = True) -> list[ViewEntry]:
 
     Nothing leaves the view on its own: every entry stays where it landed, so one render differs from
     the last only by what was appended and the provider's prefix cache holds. Directives then apply
-    in record order: `hide` removes, `show` brings back, `summarize` removes and puts its text in
+    in the order of their `at`: `hide` removes, `show` brings back, `summarize` removes and puts its text in
     front of where the span began. A hidden entry keeps a placeholder (`hidden=True`) so the model
     knows what it can reopen; one under a summary does not, the summary names it. A directive
     reaches only entries earlier than itself; INPUT is never hidden unless `protect_input` is False;

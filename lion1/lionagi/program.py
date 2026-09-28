@@ -283,9 +283,9 @@ def _bindable(node: ast.AST, name: str) -> None:
         )
 
 
-def _rhs(value: ast.expr, alias: str | None) -> Any:
+def _rhs(value: ast.expr, alias: str | None, bound: frozenset[str] = frozenset()) -> Any:
     """A statement's right side: a call is the command node itself, `DO` or not; else an expression,
-    a value node when it binds a name."""
+    a value node when it binds a name. `bound`: the comprehension names in reach of a `DO` inside one."""
     if isinstance(value, ast.Call):
         name = _command(value).removeprefix(_DO)
         if value.args:
@@ -293,7 +293,7 @@ def _rhs(value: ast.expr, alias: str | None) -> Any:
         for kw in value.keywords:
             if kw.arg is None:
                 raise _refuse(value, f"{name}(...): ** unpacking is not allowed")
-            _expr(kw.value, frozenset())
+            _expr(kw.value, bound)
         return Command(value.lineno, name, tuple((kw.arg, kw.value) for kw in value.keywords), alias)
     _expr(value, frozenset())
     return value if alias is None else Value(value.lineno, alias, value)
@@ -393,7 +393,7 @@ def _expr(node: ast.expr, bound: frozenset[str]) -> None:
             for v in (*ifs, elt):
                 _expr(v, bound | {var})
         case ast.Call() if _command(node).startswith(_DO):
-            _rhs(node, None)
+            _rhs(node, None, bound)
         case ast.Call():
             raise _refuse(node, "inside an expression a command is written DO name(field=value, ...)")
         case _:

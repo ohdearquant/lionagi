@@ -311,7 +311,12 @@ class Run:
         # what a name repair would have done, measured while it is off (ADR-0008/D2)
         self.misnamed: list[tuple[str, str | None, int | None]] = []
         self.thunks: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {}  # a program command's arguments
-        self.intermediates: list[str] = []  # results a program consumed, hidden by the next notification
+        # results a program consumed, each with the seq it was consumed at, hidden by the next notification
+        self.intermediates: dict[str, int] = {}
+        # a program's values not computed yet, for the whole run: the seq of the TEXT that bound it, its
+        # expression and the note writes before it; a value nothing has read stays bound (ADR-0008/C6)
+        self.unread: dict[str, tuple[int, ast.expr, dict[str, asyncio.Task]]] = {}
+        self.computed: list[str] = []  # program values computed since the last notification, which keeps them
         self.outcome: Outcome | None = None
         self.output: Any = None
 
@@ -343,7 +348,7 @@ class Run:
         try:
             self.resolve(name)
         except KeyError:
-            return name in self.pending
+            return name in self.pending or name in self.unread
         return True
 
 
@@ -641,6 +646,9 @@ class Actor:
                 except lndl.LNDLError:
                     continue
                 _admit(run, program, replayed.seq)
+            if profile.language == "program":  # the values a program computed, bound again as they were
+                for alias, seq, value in e.meta.get("values", ()):
+                    run.values[alias] = (seq, value)
         for text in request.inputs:
             run.record.append(Kind.INPUT, text)
         self.runs[run.id] = run  # live from here: a history that does not replay leaves no run behind
@@ -665,12 +673,19 @@ class Actor:
                     notice.meta["directive"] = Directive(
                         folded.op, folded.refs, folded.text, at=notice.seq, seqs=folded.seqs
                     )
-                if run.intermediates:  # the hide of what a program consumed, dated here (ADR-0008/D3)
-                    seqs = tuple(run.record.get(a).seq for a in run.intermediates)
-                    notice.meta["consumed"] = Directive(
-                        "hide", tuple(run.intermediates), at=notice.seq, seqs=seqs
+                if run.intermediates:  # the hide of what a program consumed, dated at each consumption
+                    # (ADR-0008/D3), so a show the program made after it stands over it
+                    by_at: dict[int, list[str]] = {}
+                    for alias, at in run.intermediates.items():
+                        by_at.setdefault(at, []).append(alias)
+                    notice.meta["consumed"] = tuple(
+                        Directive("hide", tuple(refs), at=at, seqs=tuple(run.record.get(a).seq for a in refs))
+                        for at, refs in sorted(by_at.items())
                     )
                     run.intermediates.clear()
+                if run.computed:  # the values a program computed, so a replayed record binds them again
+                    notice.meta["values"] = tuple((a, *run.values[a]) for a in run.computed)
+                    run.computed.clear()
                 if stop is not None and stop():
                     # asked after the notification, not before it: the sections have just looked at
                     # the world, and what they saw (acceptance checks passing, a fix that has stood
@@ -1431,12 +1446,14 @@ class _Walk:
         self.actor, self.run, self.subset, self.seq = actor, run, subset, seq
         self.tasks: list[asyncio.Task] = []
         self.lacts: list[Lact] = []
-        self.values: dict[str, tuple[ast.expr, dict[str, asyncio.Task]]] = {}  # with the writes before it
+        # an earlier turn's values nothing read yet are in reach, computed when first read
+        self.values: dict[str, tuple[int, ast.expr, dict[str, asyncio.Task]]] = dict(run.unread)
         self.computed: dict[str, asyncio.Future] = {}
         self.value_reads: dict[str, set[str]] = {}  # a value's reads, charged to whoever reads the value
         self.writes: dict[str, asyncio.Task] = {}  # note key -> the latest assignment reached
         self.reads: dict[str, set[str]] = {}  # this program's command -> the results its arguments read
-        self.used: set[str] = set()  # results read by a reader that settled ok, or taken by a note
+        # results read by a reader that settled ok, or taken by a note: the seq each was first consumed at
+        self.used: dict[str, int] = {}
         self.named: set[str] = set()  # what OUT{} points at: never consumed
 
     async def execute(self, script: Script) -> dict[str, Any] | None:
@@ -1447,10 +1464,15 @@ class _Walk:
         finally:
             await _settle(self.tasks)
             for alias, reads in self.reads.items():
-                if self.run.record.get(alias).content.ok:
-                    self.used |= reads
-            consumed = sorted(self.used - self.named, key=lambda a: self.run.record.get(a).seq)
-            self.run.intermediates += consumed
+                entry = self.run.record.get(alias)
+                if entry.content.ok:
+                    self.consume(reads, entry.seq)  # at the reader's settle
+            consumed = sorted(self.used.keys() - self.named, key=lambda a: self.run.record.get(a).seq)
+            self.run.intermediates.update((a, self.used[a]) for a in consumed)
+
+    def consume(self, reads: set[str], at: int) -> None:
+        for alias in reads:
+            self.used[alias] = min(at, self.used.get(alias, at))
 
     async def block(self, nodes: tuple) -> dict[str, Any] | None:
         for node in nodes:
@@ -1461,7 +1483,7 @@ class _Walk:
                 except lndl.LNDLError as e:
                     self.run.refused.append((f"line {node.line}", f"if: {e}; nothing after it ran"))
                     raise _Failed from None
-                self.used |= reader.reads
+                self.consume(reader.reads, len(self.run.record))
                 ended = await self.block(node.body if taken else node.orelse)
                 if ended is not None:
                     return ended
@@ -1469,12 +1491,13 @@ class _Walk:
                 reader = _Reader(self)
                 self.named |= node.named
                 fields = {key: await evaluate(v, reader) for key, v in node.fields}
-                self.used |= reader.reads
+                self.consume(reader.reads, len(self.run.record))
                 return fields
             elif isinstance(node, Command):
                 self.command(node)
             elif isinstance(node, Value):
-                self.values[node.alias] = (node.expr, dict(self.writes))
+                bound = (self.seq, node.expr, dict(self.writes))
+                self.values[node.alias] = self.run.unread[node.alias] = bound
             else:
                 self.write(node)
         return None
@@ -1511,16 +1534,18 @@ class _Walk:
 
     async def value(self, name: str) -> Any:
         if name not in self.computed:
-            expr, writes = self.values[name]
-            self.computed[name] = asyncio.ensure_future(self._compute(name, expr, _Reader(self, writes)))
+            seq, expr, writes = self.values[name]
+            self.computed[name] = asyncio.ensure_future(self._compute(name, seq, expr, _Reader(self, writes)))
         return await asyncio.shield(self.computed[name])
 
-    async def _compute(self, name: str, expr: ast.expr, reader: _Reader) -> Any:
+    async def _compute(self, name: str, seq: int, expr: ast.expr, reader: _Reader) -> Any:
         try:
             value = await evaluate(expr, reader)
         except lndl.LNDLError as e:
             raise EvalError(f"*{name}: {e}") from None
-        self.run.values[name] = (self.seq, value)
+        self.run.values[name] = (seq, value)
+        self.run.unread.pop(name, None)
+        self.run.computed.append(name)
         self.value_reads[name] = reader.reads  # consumed only once a reader of the value settles ok
         return value
 
@@ -1548,7 +1573,7 @@ class _Walk:
                 self.run.refused.append((target, f"not written: {type(e).__name__}: {e}"))
                 return
             self.run.notes_written.append(target)
-            self.used |= reader.reads
+            self.consume(reader.reads, len(self.run.record))
 
         task = asyncio.create_task(put())
         self.writes[node.key] = task

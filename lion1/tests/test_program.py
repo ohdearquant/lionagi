@@ -267,6 +267,24 @@ def test_a_value_is_computed_once_when_first_read_and_bound_for_later_turns():
     assert run.values["v"][1] == "xx" and "unread" not in run.values
 
 
+def test_a_value_nothing_read_stays_bound_into_later_turns_and_its_name_stays_taken():
+    calls: list = []
+    actor = _actor("unread", calls)
+    turns = (
+        fenced('later = "kept"', 'lazy = [DO echo(text="deferred")]'),
+        fenced("consumer = echo(text=*later)", "first = echo(text=*lazy[0])"),
+        fenced('later = echo(text="replacement")'),
+        "idle",
+    )
+    run = _run(actor, *turns)
+    assert run.record.get("consumer").content.value == "kept" and run.values["later"] == (2, "kept")
+    assert run.record.get("first").content.value == "deferred"
+    # the DO in the value ran once, when the second turn first read it
+    assert [e.round for e in run.record if e.kind is Kind.RESULT and e.content.value == "deferred"] == [2, 2]
+    assert sorted(calls) == [("echo", "deferred"), ("echo", "deferred"), ("echo", "kept")]
+    assert "later is bound already: a name is bound once for the whole run" in _notices(run)
+
+
 def test_a_value_whose_input_failed_fails_every_reader():
     calls: list = []
     actor = _actor("value-fails", calls)
@@ -370,11 +388,10 @@ def test_a_consumed_result_never_reaches_the_backend_yet_its_pointer_and_context
     assert f"[_r4 similar search_similar] {body}" in sent[3]  # and so does context.show
     # what nothing read stays whole
     assert "[_r6 shown echo] whole" in sent[1] and "[_r5 first echo] Children of Dune" in sent[1]
-    # one hide, on the notification after the program, dated there; `first` was read by nothing
-    hides = [
-        (e.name, e.meta["consumed"]) for e in run.record if e.kind is Kind.SYSTEM and e.meta.get("consumed")
-    ]
-    assert [(name, d.refs, d.at, d.seqs) for name, d in hides] == [("_sys7", ("similar",), 7, (4,))]
+    # one hide, on the notification after the program, dated when `first` settled having read it;
+    # `first` was read by nothing
+    hides = [(e.name, d) for e in run.record if e.kind is Kind.SYSTEM for d in e.meta.get("consumed", ())]
+    assert [(name, d.refs, d.at, d.seqs) for name, d in hides] == [("_sys7", ("similar",), 5, (4,))]
 
 
 def test_the_context_figure_counts_a_consumed_result_as_its_placeholder():
@@ -398,7 +415,33 @@ def test_the_consumed_hide_survives_the_log_as_a_directive():
     run = _run(actor, fenced('a = echo(text="x")', "b = echo(text=*a)"), "idle")
     notice = next(e for e in run.record if e.kind is Kind.SYSTEM and e.meta.get("consumed"))
     back = entry_of(json.loads(json.dumps(entry_row(notice), default=str)))
-    assert back.meta["consumed"] == notice.meta["consumed"] and back.meta["consumed"].refs == ("a",)
+    assert back.meta["consumed"] == notice.meta["consumed"]
+    assert [d.refs for d in back.meta["consumed"]] == [("a",)]
+
+
+def test_a_show_later_in_the_same_program_stands_over_the_hide_of_what_it_consumed():
+    seen: list = []
+    actor = _actor("same-program-show", [])
+    turn = fenced(
+        'a = echo(text="kept")', "b = echo(text=*a)", 'shown = context.show(refs=["a"] if *b else ["a"])'
+    )
+    run = _run(actor, turn, "idle", seen=seen)
+    # `b` consumed `a` when it settled, before the show; `shown` consumed `b`
+    hides = [(d.refs, d.at) for e in run.record if e.kind is Kind.SYSTEM for d in e.meta.get("consumed", ())]
+    assert hides == [(("a",), 4), (("b",), 5)]
+    assert "[_r3 a echo] kept" in [m.content for m in seen[1]]
+    assert any(m.content.startswith("[hidden; *name or context.show reopens: _r4 b") for m in seen[1])
+
+
+def test_a_value_computed_on_the_record_resolves_after_the_log_replays_it_and_nothing_runs_again():
+    calls: list = []
+    turn = fenced('a = echo(text="x")', "v = *a + *a", "b = echo(text=*v)")
+    first = _run(_actor("first", calls), turn, "idle")
+    history = tuple(entry_of(json.loads(json.dumps(entry_row(e), default=str))) for e in first.record)
+    calls.clear()
+    run = _run(_actor("resumed", calls), fenced("d = echo(text=*v)"), "idle", history=history)
+    assert run.record.get("d").content.value == "xx" and calls == [("echo", "xx")]
+    assert run.values["v"] == first.values["v"] == (2, "xx")
 
 
 @pytest.mark.parametrize(
@@ -447,6 +490,18 @@ def test_the_tag_forms_repairs_are_counted_by_name():
     assert run.repairs == {"closers": 2}
     run = _run(actor, '<lact d>search_similar(input="x" candidates=[])</lact>', "idle", profile=Profile("p"))
     assert run.repairs == {"comma": 1}
+
+
+@pytest.mark.parametrize(
+    ("turn", "counted"),
+    [
+        ('<lact r>search_similar(input="x" candidates=[]</lact>', {"closers": 1, "comma": 1}),
+        ('<lact r>echo(text="two\nlines")</lact>', {"newline": 1}),
+    ],
+)
+def test_the_tag_form_counts_every_repair_one_call_needed(turn, counted):
+    run = _run(_actor("tag-repairs-each", []), turn, "idle", profile=Profile("p"))
+    assert run.repairs == counted and run.record.get("r").content.ok
 
 
 def test_a_profile_sees_only_its_languages_guidance():
@@ -609,6 +664,7 @@ def test_the_evaluator_names_what_it_could_not_compute(expr, said):
         ("x = (a for a, b in [1])", "GeneratorExp is not part of the program form"),
         ("x = (note for note in [1])", "'note' cannot be bound"),
         ("x = echo(text=1) + 1", "inside an expression a command is written DO name"),
+        ('x = (DO echo(text=missing) for w in ["a"])', "missing: a name is read by pointing at it, *missing"),
         ("x = [DO a[0](y=1)]", "the command must be a name"),
         ("x = f()(y=1)", "the command must be a name"),
         ("x = a[0].f(y=1)", "the command must be a name"),
@@ -640,6 +696,21 @@ def test_what_is_outside_the_program_form_is_refused_at_reading(line, said):
         return
     with pytest.raises(LNDLError, match=said.replace("*", r"\*").replace("[", r"\[").replace("(", r"\(")):
         read(fenced(line))
+
+
+@pytest.mark.parametrize(
+    ("expr", "want"),
+    [
+        ('(DO echo(text=word) for word in ["a", "b"])', ["a", "b"]),
+        ('(w for w in ["a", "b"] if DO echo(text=w))', ["a", "b"]),
+        ('([DO echo(text=w)] for w in ["a", "b"])', [["a"], ["b"]]),
+    ],
+)
+def test_a_command_inside_a_comprehension_reads_the_comprehensions_name(expr, want):
+    calls: list = []
+    run = _run(_actor("comprehension-do", calls), fenced(f"OUT{{x: {expr}}}"))
+    assert isinstance(run.outcome, Success) and run.output == {"x": want}
+    assert calls == [("echo", "a"), ("echo", "b")]
 
 
 def test_the_reader_lowers_statements_to_nodes_and_leaves_products_alone():
@@ -737,7 +808,7 @@ def test_a_result_read_through_a_value_is_consumed_only_when_the_values_reader_s
     )
     run = _run(actor, turn, "idle")
     assert run.record.get("b").content.reason == "invalid" and run.record.get("d").content.value == "y"
-    hides = [e.meta["consumed"].refs for e in run.record if e.kind is Kind.SYSTEM and e.meta.get("consumed")]
+    hides = [d.refs for e in run.record if e.kind is Kind.SYSTEM for d in e.meta.get("consumed", ())]
     assert hides == [("c",)]
 
 

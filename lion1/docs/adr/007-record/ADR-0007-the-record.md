@@ -1,7 +1,7 @@
 ---
 adr: ADR-0007
 status: draft
-liveness: operating (the note read pinned per command, the captures on the entry, the consumed directive on the closure, the fold by date and the cross-profile note read are owed)
+liveness: operating (the note read pinned per command, the captures on the entry, the consumed directive on the closure and the cross-profile note read are owed)
 date: "2026-09-23"
 area: record
 kind: new
@@ -34,7 +34,7 @@ any command ([[ADR-0005-command-handling|ADR-0005]]). Source: `lionagi/record.py
 - **view**: what the model sees of the record: every entry in order, some hidden or summarised.
 - **directive**: an instruction to the view, stored on the entry that made it: hide, show, or
   summarise named entries.
-- **fold**: the pass that applies the directives in record order and renders the view.
+- **fold**: the pass that applies the directives in date order and renders the view.
 - **fold event**: the runtime's own hide directive, made when the view crosses `view_budget`.
 
 - **placeholder**: the line a hidden entry renders as: its name and size, with a RESULT's alias and
@@ -91,7 +91,7 @@ pointer reaches (ADR-0005/C5).
 
 Every entry stays in view where it landed: one render adds to the last and the provider's prefix
 holds. INPUT is never hidden (`fold_inputs` excepted, [[ADR-0009-backends#^c3|ADR-0009/C3]]).
-Directives apply in record order. A hidden entry renders as a placeholder, one summarised as its
+Directives apply in order of date. A hidden entry renders as a placeholder, one summarised as its
 summary. A value is never truncated: it stays whole on the record, a pointer away.
 
 Past `view_budget` (60,000 tokens, ADR-0009/C3) the runtime hides the oldest RESULTs the model has
@@ -109,8 +109,8 @@ hidden unseen.
 
 The handler calls `Context.direct`; the directive rides the command's RESULT, dated at its sequence.
 The runtime's ride the notification or the closure, dated at their event. The fold applies
-directives by date (today record order, C2), so a `context.show` after a consumption stands over its
-hide, and a directive reaches only entries earlier than its date.
+directives by date, record order among equals, so a `context.show` after a consumption stands over
+its hide, and a directive reaches only entries earlier than its date.
 
 A directive pins its targets' sequences when made; the fold reads those, never the names. A summary
 stands where the span began and keeps the names it replaced. Hiding changes the rendering only;
@@ -185,7 +185,8 @@ summary text; `_notify` calls it once per turn for the size, the out-of-view dif
 (ADR-0006).
 
 - **Landing evidence**: `tests/test_actor.py` (the fold event, the placeholder, the summary, the
-  context figure across a fold), `tests/test_chat.py` (resume by replaying the chat log).
+  context figure across a fold), `tests/test_chat.py` (resume by replaying the chat log),
+  `test_a_show_later_in_the_same_program_stands_over_the_hide_of_what_it_consumed`.
 
 ### D2: Directives ride the entry that made them ^d2
 
