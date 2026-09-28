@@ -744,7 +744,7 @@ def test_cap_rewrites_only_the_two_keys_keeps_every_comment_and_refuses_what_it_
     )
     assert (d / "chores.toml").read_text() == want  # every other byte kept, the comments too
     assert (d / "chores.toml").stat().st_mode & 0o777 == 0o640
-    code, doc = control(port, {"dir": str(d), "action": "cap", "wakes_per_hour": 0})
+    code, doc = control(port, {"dir": str(d), "action": "cap", "wakes_per_hour": 1})
     assert code == 200 and "cost_per_day" not in doc and doc["budget"]["cost_per_day"] == 40.0
     before = (d / "chores.toml").read_bytes()
     bad = [
@@ -754,6 +754,7 @@ def test_cap_rewrites_only_the_two_keys_keeps_every_comment_and_refuses_what_it_
         {"cost_per_day": True},
         {"wakes_per_hour": 1.5},
         {"wakes_per_hour": -2},
+        {"wakes_per_hour": 0},
         {},
     ]
     for fields in bad:
@@ -827,6 +828,28 @@ def test_restart_refuses_without_one_plist_or_in_a_wake_and_kickstarts_the_label
     assert (
         code == 502 and doc["ok"] is False and doc["rc"] == 113 and "Could not find service" in doc["detail"]
     )
+
+
+def test_a_running_wake_under_a_held_lock_is_not_idle_without_a_model_child(tmp_path):
+    """An in-process backend has no `claude -p` child: the cursor under a held lock says it is waking."""
+    d = agent_dir(tmp_path, "desk", role="desk", cursor={"wake": 3, "outcome": "running"}, spend=None)
+    (d / "agent.pid").write_text("424242")  # no such process: pgrep finds no child either way
+    assert controls_info(str(d))["idle"] is True  # nobody holds the lock: a stale cursor, not a wake
+    fd = os.open(d / "agent.pid", os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    notes = d / "notes" / "agent.json"
+    try:
+        assert controls_info(str(d))["idle"] is False
+        body = json.loads(notes.read_text())
+        body["notes"]["cursor"]["value"]["outcome"] = "Quiet"
+        notes.write_text(json.dumps(body))
+        assert controls_info(str(d))["idle"] is True
+        notes.write_text("{not json")
+        assert controls_info(str(d))["idle"] is False  # unread reads as busy
+        notes.unlink()
+        assert controls_info(str(d))["idle"] is True  # never ran here
+    finally:
+        os.close(fd)
 
 
 def test_a_replayed_once_answers_the_first_result_and_acts_once(tmp_path, monkeypatch):

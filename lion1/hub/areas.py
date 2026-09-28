@@ -277,7 +277,8 @@ def _row(r: Resident) -> dict:
 def controls_info(directory: str) -> dict:
     """The control surface for one resident, read live: whether its own hold file is set (and its
     first line), a pending wake-now, the `Label` of its one launchd plist (None with zero or more
-    than one), and whether the pid in agent.pid has a live `claude -p` child now."""
+    than one), and whether it is idle: no wake running under a held lock (the cursor says `running`
+    while the pid lock is held, whatever the backend) and no live `claude -p` child of its pid."""
     d = Path(directory)
     hold = d / "hold"
     hold_reason = ""
@@ -298,7 +299,15 @@ def controls_info(directory: str) -> dict:
         launchd_label = label if isinstance(label, str) and label else None
     idle = True
     pid_file = d / "agent.pid"
-    if pid_file.exists():
+    if _held(pid_file)[0]:  # a wake on an in-process backend has no child to find
+        try:
+            store = json.loads((d / "notes" / "agent.json").read_text()).get("notes", {})
+            idle = ((store.get("cursor") or {}).get("value") or {}).get("outcome") != "running"
+        except FileNotFoundError:
+            pass  # never ran here: no wake to cut short
+        except (OSError, ValueError, AttributeError):
+            idle = False  # an unread cursor reads as busy, as an unread pgrep does
+    if idle and pid_file.exists():
         try:
             text = pid_file.read_text(errors="replace").strip()
         except OSError:

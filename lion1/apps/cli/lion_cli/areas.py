@@ -586,8 +586,8 @@ def serve(
                     n = float(raw)
                 except (TypeError, ValueError):
                     return 400, f"wakes_per_hour {raw!r} is not a number", {}
-                if not n.is_integer() or n < 0:
-                    return 400, f"wakes_per_hour {raw!r}: a whole number >= 0", {}
+                if not n.is_integer() or n < 1:  # no wakes at all is a hold, not a cap
+                    return 400, f"wakes_per_hour {raw!r}: a whole number >= 1 (hold stops wakes)", {}
                 values["wakes_per_hour"] = int(n)
             if not values:
                 return 400, "cap needs cost_per_day and/or wakes_per_hour", {}

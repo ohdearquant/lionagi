@@ -70,7 +70,9 @@ table.wakes th,table.wakes td{text-align:left;padding:.3em .4em;border-bottom:1p
 _JS = """
 (function () {
 'use strict';
-var state = { areas: [], mode: 'list', dir: null, detail: null, logs: {} };
+var state = {
+  areas: [], mode: 'list', dir: null, detail: null, detailDir: null, gen: 0, logs: {}, pending: null,
+};
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -78,7 +80,12 @@ function esc(s) {
   });
 }
 function money(n) { return '$' + (Number(n) || 0).toFixed(4); }
-function uid() { return crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2); }
+// 32 hex characters, the token the server keys a send on; getRandomValues also runs over plain http
+function uid() {
+  return Array.prototype.map.call(crypto.getRandomValues(new Uint8Array(16)), function (x) {
+    return (x < 16 ? '0' : '') + x.toString(16);
+  }).join('');
+}
 
 var toastTimer;
 function toast(msg) {
@@ -164,14 +171,21 @@ function renderList() {
 
 // ---- screen 2: one resident ----
 function loadDetail() {
+  // a response lands only on the route that asked for it: a later navigation makes it stale
+  var dir = state.dir, gen = ++state.gen;
+  function current() { return gen === state.gen && state.mode === 'detail' && state.dir === dir; }
+  state.detailDir = null;  // no action targets a resident until its own page is shown
   document.getElementById('screen').innerHTML = '<p class="meta">loading\\u2026</p>';
-  fetch('/api/resident?dir=' + encodeURIComponent(state.dir)).then(function (r) {
+  fetch('/api/resident?dir=' + encodeURIComponent(dir)).then(function (r) {
     if (!r.ok) throw new Error('resident not found');
     return r.json();
   }).then(function (data) {
+    if (!current()) return;
     state.detail = data;
+    state.detailDir = dir;
     renderDetail();
   }).catch(function (e) {
+    if (!current()) return;
     document.getElementById('screen').innerHTML = '<a class="back" href="#">\\u2190 all residents</a>' +
       '<p class="problem">' + esc(String(e)) + '</p>';
   });
@@ -217,7 +231,7 @@ function renderDetail() {
     '<h3>cap</h3><div class="row">' +
     '<input id="cap-cost" type="number" step="0.1" min="0" value="' +
       esc(b.cost_per_day != null ? b.cost_per_day : '') + '" placeholder="cost/day">' +
-    '<input id="cap-wakes" type="number" step="1" min="0" value="' +
+    '<input id="cap-wakes" type="number" step="1" min="1" value="' +
       esc(b.wakes_per_hour != null ? b.wakes_per_hour : '') + '" placeholder="wakes/hr">' +
     '<button data-act="cap">save</button></div>' +
 
@@ -272,7 +286,8 @@ function toggleInline(id, show, force) {
 }
 
 function sendControl(action, extra) {
-  var body = Object.assign({ dir: state.dir, action: action, once: uid() }, extra);
+  if (!state.detailDir) return;
+  var body = Object.assign({ dir: state.detailDir, action: action, once: uid() }, extra);
   fetch('/control', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -289,15 +304,21 @@ function sendTalk() {
   var btn = document.getElementById('talk-send');
   var subject = document.getElementById('talk-subject').value;
   var content = document.getElementById('talk-content').value;
-  if (!content.trim()) return;
+  if (!content.trim() || !state.detailDir) return;
   btn.disabled = true;
-  var form = new URLSearchParams({ dir: state.dir, subject: subject, content: content, once: uid() });
+  // an unanswered send keeps its token, so sending the same words again replays it, never mails twice
+  var p = state.pending, dir = state.detailDir;
+  if (!p || p.dir !== dir || p.subject !== subject || p.content !== content) {
+    p = state.pending = { dir: dir, subject: subject, content: content, once: uid() };
+  }
+  var form = new URLSearchParams({ dir: dir, subject: subject, content: content, once: p.once });
   fetch('/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
     body: form.toString(),
   }).then(function (r) { return r.json(); }).then(function (j) {
     if (!j.ok) throw new Error('send failed');
+    if (state.pending === p) state.pending = null;
     document.getElementById('talk-content').value = '';
     loadDetail();
   }).catch(function (e) { toast(String(e)); }).then(function () { btn.disabled = false; });
