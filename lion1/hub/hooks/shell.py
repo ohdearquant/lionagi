@@ -118,11 +118,14 @@ async def run_hook(hook: Hook, payload: dict, cwd: Path) -> tuple[int | None, st
         if not done:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(proc.pid, signal.SIGKILL)
-            await proc.wait()
-            # drains and closes the pipes the cancelled read left open; the child is reaped by now,
-            # so a pipe that fails to drain changes nothing the caller is told
+            # drain first: a hook that filled its pipe holds it paused, and on 3.11 and 3.12 `wait`
+            # returns only once every pipe has closed, so waiting before draining never returns. A
+            # pipe that fails to drain, or a child that outlives the grace, changes nothing the
+            # caller is told
             with contextlib.suppress(Exception):
-                await proc.communicate()
+                await asyncio.wait_for(proc.communicate(), 5)
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.wait(), 5)
     return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
 
 

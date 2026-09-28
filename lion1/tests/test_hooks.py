@@ -235,6 +235,18 @@ def test_a_timed_out_hook_takes_its_children_with_it(tmp_path):
     assert not (tmp_path / "marker.txt").exists()  # the background child died with the hook
 
 
+@pytest.mark.parametrize("line", ["yes", "yes >&2"])
+def test_a_timed_out_hook_that_filled_its_pipe_still_returns(tmp_path, line):
+    from hub.hooks.shell import Hook
+
+    async def timed():  # a hook writing without end holds its pipe full; the kill alone never frees it
+        return await asyncio.wait_for(
+            run_hook(Hook("round", line, "flood", "*", 0.3), {"event": "x"}, tmp_path), 10
+        )
+
+    assert asyncio.run(timed()) == (None, "", "")
+
+
 def test_a_cancelled_hook_takes_its_children_with_it_too(tmp_path):
     # the timeout path reaped the process group; a cancelled run left the child to write on
     import time

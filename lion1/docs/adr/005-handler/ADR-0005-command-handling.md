@@ -115,19 +115,19 @@ fourth step of C1.
 ### C4: A before hook decides for the command, and a gate that fails admits nothing _(enforced: mechanical)_ ^c4
 
 - **Subject**: every command past validation and privilege.
-- **Violated when**: a handler runs after a hook refused, raised, or timed out, a refusal reaches
-  the model without its reason, or a shell hook's exit 0 without a JSON object refuses the command.
+- **Violated when**: a handler runs after a hook refused, raised or timed out, a refusal reaches the
+  model without its reason, or a shell hook's exit 0 without a JSON object refuses the command.
 
 Hooks run in registration order, each seeing the request as those before it left it: a guard after a
 rewriting hook judges the rewrite; the order is the operator's.
 
-None lets the command run; a string refuses it (`refused: <reason>`). Today a Pydantic model of any
-class replaces the arguments as returned; any other value, a dict too, changes nothing; a change in
-place reaches the handler. S8 owes the rebuild and the copy. A hook that raises, exits non-zero or
-times out refuses the command.
+None lets the command run; a string refuses it (`refused: <reason>`); a replacement is a dict or the
+Spec's instance, rebuilt (S8), and a change in place changes nothing. A hook that raises, exits
+non-zero or times out refuses the command.
 
-A hook runs in its own process group; a timeout, a cancel or an exception kills and reaps it. Today
-no hook sees `OUT{}`; it becomes the `out` command with [[ADR-0003-the-bounds#^d3|ADR-0003/D3]].
+A hook runs in its own process group; a timeout, a cancel or an exception kills it, drains its pipes
+and reaps it, one that filled its pipe included. No hook sees `OUT{}` yet; it becomes the `out`
+command with [[ADR-0003-the-bounds#^d3|ADR-0003/D3]].
 
 ### C5: An after hook sees what ran, ok or not, and cannot undo it _(enforced: mechanical; owed, S8)_ ^c5
 
@@ -223,7 +223,8 @@ runs under `-I` with lion's own interpreter (C7).
 - **Landing evidence**: `tests/test_hooks.py`, among them
   `test_a_before_hook_that_exits_zero_with_text_on_stdout_lets_the_command_run` (C4),
   `test_an_after_hook_whose_payload_refers_to_itself_starts_nothing_and_the_result_stands` and
-  `test_a_hook_that_fails_after_its_launch_is_killed_and_reaped_before_it_returns` (C4, C5),
+  `test_a_hook_that_fails_after_its_launch_is_killed_and_reaped_before_it_returns` and
+  `test_a_timed_out_hook_that_filled_its_pipe_still_returns` (C4, C5),
   `test_writable_editable_hook_origin_is_refused` (C7),
   `test_git_global_options_cannot_hide_push_or_destructive_subcommand`,
   `test_the_tree_hook_names_the_files_that_changed_and_the_head_that_moved`,
