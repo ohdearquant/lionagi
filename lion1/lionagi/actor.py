@@ -969,21 +969,10 @@ class Actor:
         except Exception as e:  # a validator's own exception: the arguments were not accepted
             error = f"invalid arguments: {type(e).__name__}: {e}"
             return Result(la.name, False, error=error, reason="invalid"), None
-        if not handler.requires <= run.profile.privileges:
-            missing = sorted(handler.requires - run.profile.privileges)
-            return Result(la.name, False, error=f"{la.name} requires {missing}", reason="privilege"), None
-        for hook in self.befores:
-            try:
-                verdict = hook(run, la, request)
-                if inspect.isawaitable(verdict):
-                    verdict = await verdict
-            except Exception as e:
-                why = f"refused: {_hook_name(hook)} failed, {type(e).__name__}: {e}"
-                return Result(la.name, False, error=why, reason="refused"), None
-            if isinstance(verdict, str):
-                return Result(la.name, False, error=f"refused: {verdict}", reason="refused"), None
-            if isinstance(verdict, BaseModel):
-                request = verdict
+        admitted = await self.gate(run, la, request, handler.requires)
+        if isinstance(admitted, Result):
+            return admitted, None
+        request = admitted
         ctx = Context(run, la.alias, handler)
         run.entered.add(la.alias)  # from here the handler may have acted on the world
         try:
@@ -1010,6 +999,29 @@ class Actor:
             if isinstance(seen, Result):
                 result = seen
         return result, (ctx.directive if result.ok else None)
+
+    async def gate(
+        self, run: Run, la: Lact, request: BaseModel, requires: frozenset[str]
+    ) -> Result | BaseModel:
+        """The privilege check, then the before hooks in registration order: the refusal as the
+        command's Result, else the request the hooks left. A session CLI's own tool call asks it too
+        (ADR-0009/C6)."""
+        if not requires <= run.profile.privileges:
+            missing = sorted(requires - run.profile.privileges)
+            return Result(la.name, False, error=f"{la.name} requires {missing}", reason="privilege")
+        for hook in self.befores:
+            try:
+                verdict = hook(run, la, request)
+                if inspect.isawaitable(verdict):
+                    verdict = await verdict
+            except Exception as e:
+                why = f"refused: {_hook_name(hook)} failed, {type(e).__name__}: {e}"
+                return Result(la.name, False, error=why, reason="refused")
+            if isinstance(verdict, str):
+                return Result(la.name, False, error=f"refused: {verdict}", reason="refused")
+            if isinstance(verdict, BaseModel):
+                request = verdict
+        return request
 
     async def _deref(self, run: Run, la: Lact) -> dict[str, Any]:
         """Wait for any pointer still pending, then substitute values for pointers."""

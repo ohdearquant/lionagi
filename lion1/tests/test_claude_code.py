@@ -1,13 +1,16 @@
 """The resumed-session Claude Code backend: what each round sends, and when it starts a new session."""
 
 import asyncio
+import json
+import subprocess
+import sys
 from dataclasses import replace
 
 import pytest
 
 from hub.harness import claude_code
 from hub.harness.claude_code import ClaudeCodeSession
-from lionagi import Message
+from lionagi import Actor, Kind, Message, Profile, RunRequest
 
 
 def _fake_exec(calls: list[dict]):
@@ -319,6 +322,7 @@ def test_the_provider_shape_hands_the_cli_its_own_tools_the_directories_and_the_
     a = calls[2]["args"]
     assert _after(a, "--tools") == "" and _after(a, "--max-turns") == "1" and "--allowedTools" not in a
     assert "--add-dir" not in a and "--mcp-config" not in a and calls[2]["cwd"] is None
+    assert all("--settings" not in c["args"] for c in calls)  # no actor given: no pre-tool hook
     free = ClaudeCodeSession(
         cli="/bin/claude", tools=("Bash",), max_turns=0, effort="medium"
     )  # 0: no turn cap
@@ -400,3 +404,113 @@ def test_a_timeout_after_the_cli_exited_still_stops_what_it_left_holding_the_pip
         time.sleep(0.01)
     else:
         raise AssertionError(f"the CLI's child {child} outlived the timed-out call")
+
+
+# the gate over an acting session (ADR-0009/C6): a scripted CLI that runs its pre-tool hook, as the real
+# one does, once per tool call it was scripted to make, and writes down what each hook answered
+SCRIPTED = """import json, subprocess, sys
+from pathlib import Path
+
+here = Path(sys.argv[0]).parent
+sys.stdin.read()
+argv = sys.argv[1:]
+hook = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"][0]["hooks"][0]
+seen = []
+for call in json.loads((here / "calls.json").read_text()):
+    done = subprocess.run(hook["command"], shell=True, input=json.dumps(call), capture_output=True, text=True)
+    seen.append({"rc": done.returncode, "out": done.stdout, "err": done.stderr})
+(here / "seen.json").write_text(json.dumps({"hook": hook, "seen": seen}))
+print(json.dumps({"result": "done", "usage": {"input_tokens": 10}}))
+"""
+
+
+def _scripted(tmp_path, *calls: dict) -> str:
+    cli = tmp_path / "claude"
+    cli.write_text(f"#!{sys.executable}\n{SCRIPTED}")
+    cli.chmod(0o755)
+    (tmp_path / "calls.json").write_text(json.dumps(calls))
+    return str(cli)
+
+
+def _tool(name: str, use_id: str, **args) -> dict:
+    return {"hook_event_name": "PreToolUse", "tool_name": name, "tool_use_id": use_id, "tool_input": args}
+
+
+def test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record(tmp_path):
+    cli = _scripted(
+        tmp_path,
+        _tool("Bash", "toolu_a", command="git status"),  # needs `shell`, which the profile holds
+        _tool("Read", "toolu_b", file_path="notes.txt"),  # a before hook rewrites it
+        _tool("Bash", "toolu_c", command="rm -rf build"),  # a before hook refuses it
+        _tool("Edit", "toolu_d", file_path="a.py"),  # needs `edit`, which the profile does not hold
+    )
+    actor = Actor("gated", privileges={"shell", "edit"})
+
+    @actor.before
+    def guard(run, la, request):
+        if "rm " in str(getattr(request, "command", "")):
+            return "no rm here"
+        if la.name == "Read":
+            return type(request).model_validate({"file_path": "notes/today.txt"})
+        return None
+
+    backend = ClaudeCodeSession(
+        cli=cli, tools=("Bash", "Read", "Edit"), actor=actor, requires={"Bash": ("shell",), "Edit": ("edit",)}
+    )
+    profile = Profile("worker", privileges=frozenset({"shell"}))
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=1), backend))
+    a, b, c, d = json.loads((tmp_path / "seen.json").read_text())["seen"]
+    assert a["rc"] == 0 and json.loads(a["out"])["hookSpecificOutput"] == {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "allow",
+        "updatedInput": {"command": "git status"},
+    }
+    assert b["rc"] == 0 and json.loads(b["out"])["hookSpecificOutput"]["updatedInput"] == {
+        "file_path": "notes/today.txt"
+    }
+    assert (c["rc"], c["err"]) == (2, "refused: no rm here")
+    assert (d["rc"], d["err"]) == (2, "Edit requires ['edit']")
+    acts = {e.alias: e for e in run.record if e.kind is Kind.RESULT}
+    assert set(acts) == {"toolu_a", "toolu_b", "toolu_c", "toolu_d"}
+    assert all(e.round == 1 for e in acts.values())
+    ran = acts["toolu_a"]
+    assert (ran.content.spec, ran.content.ok, ran.content.value) == ("Bash", True, {"command": "git status"})
+    assert ran.meta["execution"] == "started"
+    assert acts["toolu_b"].content.value == {"file_path": "notes/today.txt"}  # what the CLI was told to run
+    for alias, reason in (("toolu_c", "refused"), ("toolu_d", "privilege")):
+        e = acts[alias]
+        assert (e.content.ok, e.content.reason, e.meta["execution"]) == (False, reason, "not executed")
+    assert acts["toolu_d"].content.error == "Edit requires ['edit']"
+    # the next turn's view carries the acts, so the model reads them after a restart drops the session
+    rendered = "\n".join(m.content for m in actor._render(run, actor.subset(profile)))
+    assert f"[{ran.name} toolu_a Bash]" in rendered and "error: refused: no rm here" in rendered
+
+
+def test_the_gate_admits_nothing_when_it_cannot_decide(tmp_path):
+    """No live run, an id already on the record, and a hook that cannot reach the runtime: each stops the
+    tool; the CLI runs a tool whose hook failed any other way than exit 2."""
+    cli = _scripted(tmp_path, _tool("Bash", "toolu_a", command="ls"), _tool("Read", "toolu_b", file_path="x"))
+    actor = Actor("gated")
+    backend = ClaudeCodeSession(cli=cli, tools=("Bash", "Read"), actor=actor)
+    asyncio.run(backend([Message("system", "p", run="gone"), Message("user", "go", name="_in0", run="gone")]))
+    seen = json.loads((tmp_path / "seen.json").read_text())
+    assert [s["rc"] for s in seen["seen"]] == [2, 2]
+    assert "the runtime's gate failed: LookupError: gated has no live run 'gone'" == seen["seen"][0]["err"]
+    # the same id twice: the second call cannot land on the record, so it does not run
+    (tmp_path / "calls.json").write_text(
+        json.dumps([_tool("Bash", "toolu_a", command="ls"), _tool("Bash", "toolu_a", command="ls")])
+    )
+    run = asyncio.run(actor.run(Profile("worker"), RunRequest(inputs=("go",), max_rounds=1), backend))
+    first, again = json.loads((tmp_path / "seen.json").read_text())["seen"]
+    assert first["rc"] == 0 and again["rc"] == 2 and "ValueError" in again["err"]
+    assert [e.alias for e in run.record if e.kind is Kind.RESULT] == ["toolu_a"]
+    # the call is over and its socket gone: the same hook, asked now, stops the tool
+    command = json.loads((tmp_path / "seen.json").read_text())["hook"]["command"]
+    late = subprocess.run(
+        command,
+        shell=True,
+        input=json.dumps(_tool("Bash", "t", command="ls")),
+        capture_output=True,
+        text=True,
+    )
+    assert late.returncode == 2 and "the runtime's gate could not be asked" in late.stderr

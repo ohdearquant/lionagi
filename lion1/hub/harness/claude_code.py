@@ -22,15 +22,24 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
+import math
 import os
+import shlex
 import shutil
 import signal
+import sys
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lionagi.actor import Message, Reply
+from pydantic import BaseModel, ConfigDict
+
+from lionagi.actor import Actor, Message, Reply, Result
+from lionagi.lndl import Lact
+from lionagi.record import Kind
 
 __all__ = (
     "ClaudeCodeError",
@@ -100,6 +109,12 @@ class ClaudeCodeSession:
     cwd: str | Path | None = None
     add_dirs: tuple[str, ...] = ()
     mcp_config: str | Path | None = None
+    # the gate over an acting session (ADR-0009/C6): with `actor`, every tool call the CLI makes asks
+    # the CLI's pre-tool hook, which asks that actor's privilege check (`requires`: a tool's privileges
+    # by tool name) and before hooks for the run named on the messages; a refusal stops the tool, and
+    # the call lands on the run's record as a RESULT under the CLI's tool-use id
+    actor: Actor | None = None
+    requires: dict[str, tuple[str, ...]] = field(default_factory=dict)
     calls: list[dict] = field(default_factory=list)
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     sent: dict[str, int] = field(default_factory=dict)  # entry name -> hash of what the session got
@@ -169,9 +184,19 @@ class ClaudeCodeSession:
         # this run's own state, bound before the await: another run's call can switch the backend
         # to its session while this one is out, and what comes back belongs to this run
         sent, prev = self.sent, self._last
-        text, envelope = await _exec(
-            self.cli, args, prompt, model=self.model, timeout=self.timeout, cwd=self.cwd, persist=True
-        )
+        async with contextlib.AsyncExitStack() as stack:
+            if self.actor is not None:
+                where = stack.enter_context(tempfile.TemporaryDirectory(prefix="lion-gate-"))
+                sock = os.path.join(where, "gate")
+                ask = functools.partial(_ask, self.actor, run, self.requires)
+                await stack.enter_async_context(await asyncio.start_unix_server(ask, sock))
+                hook = {"type": "command", "command": shlex.join([sys.executable, "-I", "-c", _HOOK, sock])}
+                hook["timeout"] = math.ceil(self.timeout)  # the call's deadline, never the hook's, ends it
+                settings = {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}}
+                args += ["--settings", json.dumps(settings)]
+            text, envelope = await _exec(
+                self.cli, args, prompt, model=self.model, timeout=self.timeout, cwd=self.cwd, persist=True
+            )
         # over a resumed session the CLI's cost and api time accumulate, its usage does not
         self.calls.append(_delta(envelope, prev))
         sent.update({m.name: hash(m.content) for m in body if m.name is not None})
@@ -341,6 +366,67 @@ async def _exec(
 
 
 _DIRECTIVES = frozenset({"context.hide", "context.show", "context.summarize", "fold"})
+
+# the CLI's pre-tool hook, run by this interpreter isolated: the tool call on stdin goes to the gate's
+# socket and the verdict comes back. Exit 2 stops the tool with the reason; the CLI runs a tool whose
+# hook failed any other way, so a failure to ask exits 2 too
+_HOOK = """import json, socket, sys
+try:
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(sys.argv[1])
+    s.sendall(sys.stdin.buffer.read())
+    s.shutdown(socket.SHUT_WR)
+    answer = json.loads(b"".join(iter(lambda: s.recv(65536), b"")))
+except Exception as e:
+    answer = {"refuse": f"the runtime's gate could not be asked: {type(e).__name__}: {e}"}
+if "refuse" in answer:
+    sys.stderr.write(answer["refuse"])
+    sys.exit(2)
+out = {"hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": answer["allow"]}
+print(json.dumps({"hookSpecificOutput": out}))
+"""
+
+
+class _ToolInput(BaseModel):
+    # a CLI tool's input as a request: its fields as the CLI sent them
+    model_config = ConfigDict(extra="allow")
+
+
+async def _ask(
+    actor: Actor,
+    run: str | None,
+    requires: dict[str, tuple[str, ...]],
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+) -> None:
+    """One tool call from the pre-tool hook: the actor's gate decides it, and it lands on the run's
+    record, admitted with the arguments the hooks left or refused with the reason. A gate that fails
+    admits nothing."""
+    try:
+        call = json.loads(await reader.read())
+        live = actor.runs.get(run)
+        if live is None:
+            raise LookupError(f"{actor.name} has no live run {run!r}")
+        la = Lact(call["tool_use_id"], call["tool_name"], call["tool_input"])
+        verdict = await actor.gate(
+            live, la, _ToolInput.model_validate(la.args), frozenset(requires.get(la.name, ()))
+        )
+        if isinstance(verdict, Result):
+            live.record.append(
+                Kind.RESULT, verdict, alias=la.alias, round=live.round, execution="not executed"
+            )
+            answer = {"refuse": verdict.error}
+        else:
+            args = verdict.model_dump(mode="json")
+            result = Result(la.name, True, value=args)
+            live.record.append(Kind.RESULT, result, alias=la.alias, round=live.round, execution="started")
+            answer = {"allow": args}
+    except Exception as e:
+        answer = {"refuse": f"the runtime's gate failed: {type(e).__name__}: {e}"}
+    writer.write(json.dumps(answer).encode())
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
 
 
 def _plain(messages: list[Message]) -> str:

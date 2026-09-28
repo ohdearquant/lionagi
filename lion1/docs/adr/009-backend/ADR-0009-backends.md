@@ -1,7 +1,7 @@
 ---
 adr: ADR-0009
 status: draft
-liveness: partial (the router and both shapes of the session CLI operate and report the count; the subscription CLI hands back no count; the mixed-response refusal, the session CLI's failed-call envelope and the gate over an acting session are owed)
+liveness: partial (the router and both shapes of the session CLI operate and report the count; the gate over an acting session is pinned by tests with a scripted CLI, its two hook contracts measured once against the installed CLI; the subscription CLI hands back no count; the mixed-response refusal and the session CLI's failed-call envelope are owed)
 date: "2026-09-25"
 area: backend
 kind: new
@@ -144,16 +144,22 @@ The subscription CLI retries a transport failure or an empty answer, keeps every
 and writes its cost as unknown, never zero. A refused CLI turn rides its cost on the error.
 Cancelling a call kills and reaps the CLI child before the cancellation goes on.
 
-### C6: A session CLI given tools of its own acts, outside every gate of the runtime _(enforced: process)_ ^c6
+### C6: A session CLI's own tool calls pass the runtime's privilege check and before hooks _(enforced: mechanical)_ ^c6
 
-A served run's `[claude_code] tools` hands the session CLI its own tools: inside each turn it runs
-shell commands, reads and edits files and calls its one MCP in the agent's directory, up to
-`max_turns` of them, before it answers. Those acts pass no subset, privilege, hook or bus, and land
-nowhere on the record; they live in the CLI's session, which a fold cuts.
+- **Subject**: every tool call of a session CLI built with an actor.
+- **Violated when**: a tool runs after a refusal or after a hook that could not ask, or a call lands
+  nowhere on the record.
 
-Nothing in the runtime bounds them but the table that names the tools: an acting session is trusted
-like a handler, by review of its configuration, and its gate is owed (S11). The bench's host-side
-baseline runs the same CLI with its own tools, one whole task per call, and is no backend of `run`
+A served run's `[claude_code] tools` hands the session CLI its own tools, up to `max_turns` per
+turn. Given an actor, its pre-tool hook hands each call to the actor's privilege check
+([[ADR-0001-the-actor#^c4|ADR-0001/C4]]), `requires` naming a tool's privileges, then its before
+hooks ([[ADR-0005-command-handling#^c4|ADR-0005/C4]]). A refusal, or a hook that cannot ask, stops
+the tool; a replacement becomes its input.
+
+Each call lands on the run's record as a RESULT under the CLI's tool-use id, started or not
+executed; what the tool did stays in the CLI's session, past the subset, after hooks and bus (S11).
+`lion agent` hands over its actor; without one the session is trusted by review of its
+configuration. The bench's host-side baseline is no backend of `run`
 ([[ADR-0012-the-bench|ADR-0012]] S6).
 
 ## Decisions
@@ -246,7 +252,11 @@ anchor.
 - **S10**: The session CLI appends no envelope when its call fails, against C5: the failure raises
   before the call is kept, so a spend row misses it whole ([[ADR-0016-the-lion-command|ADR-0016]]
   S2); the fix is owed.
-- **S11**: The gate over an acting session is owed: the CLI's pre-tool hook asks the runtime's
-  privilege check ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]) and before hooks
-  ([[ADR-0005-command-handling#^c4|ADR-0005/C4]]) for each tool call, and each act lands on the
-  record. Until then C6 is the whole of it.
+- **S11**: The gate over an acting session, owed when this record landed, holds (C6), pinned with a
+  scripted CLI that runs the pre-tool hook: in `tests/test_claude_code.py`,
+  `test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record` and
+  `test_the_gate_admits_nothing_when_it_cannot_decide`; the wiring in `lion agent` by
+  `tests/test_agent.py` `test_the_session_clis_own_tool_calls_ask_the_agents_actor`. The record
+  keeps the call and its verdict, never what the tool returned. Both hook contracts were measured
+  once on the installed CLI: exit 2 stops the tool and the model reads the reason; an allow with
+  `updatedInput` runs the rewritten call. No test runs the live CLI.
