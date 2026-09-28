@@ -67,5 +67,10 @@ skip_covered = true
 source_paths = ["lionagi/"]
 pytest_add_cli_args_test_selection = ["tests/"]
 # the exports test reads module source, which mutmut rewrites; the hygiene test lists the tree
-# through git, and mutmut runs the suite from a copy git does not track
-pytest_add_cli_args = ["--ignore=tests/test_exports.py", "--ignore=tests/test_hygiene.py"]
+# through git, and mutmut runs the suite from a copy git does not track; the examples test runs the
+# scripts under examples/, which that copy does not hold
+pytest_add_cli_args = [
+    "--ignore=tests/test_exports.py",
+    "--ignore=tests/test_hygiene.py",
+    "--ignore=tests/test_examples.py",
+]

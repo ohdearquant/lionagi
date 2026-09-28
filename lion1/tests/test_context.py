@@ -209,6 +209,66 @@ def test_the_inbox_line_quotes_a_monitor_path_with_a_space(monkeypatch):
     assert shlex.split(inbox.value["command"]) == ["bash", script, ACTOR]
 
 
+def test_a_watch_that_only_names_the_inbox_script_does_not_stand_for_it(tmp_path):
+    raw, name = FIXTURE.read_text(), Path(INBOX_MONITOR).name
+    arm = "bash /tmp/watch-one.sh --actor lambda:x"
+
+    def names(command: str) -> list[str]:
+        path = tmp_path / "t.jsonl"
+        path.write_text(raw.replace(arm, json.dumps(command)[1:-1]))  # the command sits in a JSON string
+        return [w.name for w in watches(path, ACTOR, AT_TAKE)]
+
+    runs_it = (
+        f"bash /opt/tools/{name} {ACTOR}",
+        f"/opt/tools/{name} {ACTOR}",
+        f"zsh {name}",
+        f"env bash /opt/tools/{name} {ACTOR}",
+        f"env TZ=UTC /opt/tools/{name}",
+        f"bash -x {name} {ACTOR}",
+        f"bash --noprofile /opt/tools/{name} {ACTOR}",
+        f"bash -o pipefail {name}",
+        f"bash -c '/opt/tools/{name} {ACTOR}'",
+        f"bash -xc 'env TZ=UTC {name}'",
+        f"bash -- /opt/tools/{name}",
+        f"bash --debugger /opt/tools/{name}",
+        f"zsh --login {name}",
+        f"bash -c -x /opt/tools/{name}",
+    )
+    for runs in runs_it:
+        assert names(runs) == ["watch.tmon1", "watch.tmon2"], runs
+    mentions_it = (
+        f"tail -f /tmp/{name}.log",
+        f"grep x /tmp/{name}",
+        f"true # {name}",
+        f"bash '{name}",
+        f"bash --version {name}",
+        f"bash -c 'echo {name}'",
+        f"bash --rcfile {name}",
+        f'bash -c "\'{name}"',
+        f"bash -o {name}",
+        f"bash -n {name}",
+        f"sh -s {name}",
+        f"zsh --norc {name}",
+        f"bash +c {name}",
+        f"bash -o noexec {name}",
+        f"bash -o -c /opt/tools/{name}",
+        f"bash -O extglob {name}",
+    )
+    for mentions in mentions_it:
+        assert names(mentions) == ["watch.tmon1", "watch.tmon2", "watch.inbox"], mentions
+
+
+def test_a_typed_prompt_holding_a_unicode_line_separator_is_still_the_actor_tools(tmp_path):
+    said = "placeholder prompt 10"
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(FIXTURE.read_text().replace("placeholder prompt 10", "placeholder\\u2028prompt 10"))
+    typed = tmp_path / "typed.jsonl"
+    typed.write_text(json.dumps({"ts": 1, "text": said}, ensure_ascii=False) + "\n")
+    assert " " in typed.read_text()  # the line holds the raw separator, as a writer may leave it
+    kept = [d.value for d in directives("no-such-session", transcript, typed, sessions=tmp_path / "s")]
+    assert PROMPTS[8] in kept and said not in kept and PROMPTS[10] in kept
+
+
 def test_watches_are_the_monitors_still_running_verbatim_and_the_inbox_line_is_added_once(
     tmp_path, monkeypatch
 ):
