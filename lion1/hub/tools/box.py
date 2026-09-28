@@ -152,29 +152,73 @@ def inside(workdir: str, path: str) -> None:
         raise PermissionError(f"{path} is outside {workdir}")
 
 
+# each argument's physical path, one per line, symlinks followed as the kernel does and a missing
+# tail kept as written: `realpath -m` is GNU only, and `readlink` with no flag reads alike on both
+_RESOLVE = r"""
+for arg do
+  r=/ todo=$arg n=0
+  while [ -n "$todo" ]; do
+    c=${todo%%/*}
+    case $todo in */*) todo=${todo#*/} ;; *) todo= ;; esac
+    case $c in
+      '' | .) ;;
+      ..) r=$(dirname -- "$r") ;;
+      *)
+        p=${r%/}/$c
+        if [ -L "$p" ]; then
+          n=$((n + 1))
+          [ "$n" -le 40 ] || exit 1
+          t=$(readlink -- "$p") || exit 1
+          case $t in /*) r=/ ;; esac
+          todo=$t${todo:+/$todo}
+        else
+          r=$p
+        fi
+        ;;
+    esac
+  done
+  printf '%s\n' "$r"
+done
+"""
+
+
 class BoxTree:
     """The code tools' `Tree` over a box's `workdir`: `rg` when the image has it, else `grep -rE`;
-    every path is bound to the tree (`inside`) before the box sees it."""
+    every path is bound to the tree before the box sees it, by its text (`inside`) and then as the
+    box resolves it, so a symlink out of `workdir` is refused as `LocalTree` refuses it."""
 
     def __init__(self, box: Box):
         self.box = box
         self._rg: bool | None = None
 
-    def _bound(self, path: str) -> None:
+    async def _bound(self, path: str) -> None:
         root = getattr(self.box, "workdir", None)  # a box without one (test doubles) has no bound
-        if root:
-            inside(root, path)
+        if not root:
+            return
+        inside(root, path)
+        # the shell tools open the path as written, `read` and `write` its normalised form (`abs`):
+        # a symlink before a `..` takes the two apart, so both must stay in the tree
+        joined = path if path.startswith("/") else posixpath.join(root, path)
+        argv = ["sh", "-c", _RESOLVE, "lion-resolve", root, joined, posixpath.normpath(joined)]
+        r = await self.box.exec(argv)
+        real = r["stdout"].splitlines()
+        if r["rc"] != 0 or len(real) != 3:
+            raise PermissionError(f"{path} did not resolve in the box: {r['stderr'].strip()[-300:]}")
+        top = real[0].rstrip("/") + "/"
+        for target in real[1:]:
+            if target != real[0] and not target.startswith(top):
+                raise PermissionError(f"{path} resolves to {target}, outside {root}")
 
     async def read(self, path: str) -> str:
-        self._bound(path)
+        await self._bound(path)
         return await self.box.read(path)
 
     async def write(self, path: str, text: str) -> None:
-        self._bound(path)
+        await self._bound(path)
         await self.box.write(path, text)
 
     async def list_dir(self, path: str) -> list[str]:
-        self._bound(path)
+        await self._bound(path)
         rc, out = await self.box.run(f"ls -1Ap -- {shlex.quote(path)} 2>&1")  # -p: `/` after a directory
         if rc != 0:
             raise FileNotFoundError(out.strip() or f"ls exited {rc}")
@@ -184,7 +228,7 @@ class BoxTree:
         if self._rg is None:
             rc, _ = await self.box.run("command -v rg >/dev/null")
             self._rg = rc == 0
-        self._bound(path)  # inside the tree, or refused
+        await self._bound(path)  # inside the tree, or refused
         if self._rg:
             # -H: a single-file path drops the filename column without it
             argv = [
