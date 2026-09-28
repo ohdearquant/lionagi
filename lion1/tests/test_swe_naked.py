@@ -270,6 +270,8 @@ def test_new_predictions_under_a_reused_run_id_are_graded_not_read_from_an_earli
     predict("+x = 3\n")  # the first predictions again: their own earlier grade is theirs
     assert run_naked.oracle(preds, "r1", ["x__x-1"], 1)["resolved_ids"] == []
     assert ids[0] == ids[2] != ids[1] and all(i.startswith("r1.") for i in ids)
+    predict("+x = 2\n")  # a run id holding glob syntax names its report literally
+    assert run_naked.oracle(preds, "r[1]", ["x__x-1"], 1)["resolved_ids"] == ["x__x-1"]
 
 
 def test_a_report_that_does_not_name_the_predictions_handed_in_is_refused(tmp_path, monkeypatch):

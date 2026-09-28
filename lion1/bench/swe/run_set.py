@@ -275,7 +275,7 @@ def provenance() -> dict:
         return r.stdout
 
     head = git("rev-parse", "HEAD").strip()
-    if not re.fullmatch(r"[0-9a-f]{40}", head):
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head):  # a sha1 or a sha256 repository
         raise SystemExit(f"git rev-parse HEAD gave {head[:80]!r}, not a commit id; nothing was launched")
     # a porcelain line's first two columns are its state: the leading space of an unstaged change stays
     return {"head": head, "dirty": git("status", "--porcelain").rstrip("\n")}

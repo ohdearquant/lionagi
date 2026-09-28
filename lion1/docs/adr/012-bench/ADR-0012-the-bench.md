@@ -200,9 +200,9 @@ is cited with its bench run.
 
 Serves C1 to C5. One box per instance from its evaluation image, local or remote, `--parallel` wide.
 The hosts close unless `--aided`; the arm runs; the hosts reopen; the box grades the patch and the
-row is appended under a lock. A box that dies gets one fresh box. A head that is not a full commit
-id counts as a failed git read. Defaults: unaided, settle 0, criteria off, a 1200 s time budget, 100
-turns as a backstop, a cost cap only on a metered arm.
+row is appended under a lock. A dead box gets one fresh box. A head not a full commit id (40 or 64
+hex digits) is a failed git read. Defaults: unaided, settle 0, criteria off, a 1200 s time budget,
+100 turns as a backstop, a cost cap on a metered arm only.
 
 - **Landing evidence**: `tests/test_swe_run_set.py`: the retried spend kept, a cap on an unmetered
   arm refused before any box, an unconfirmed stop not graded, a disagreeing resume refused, a

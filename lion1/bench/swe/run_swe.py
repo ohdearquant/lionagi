@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import glob
 import hashlib
 import json
 import re
@@ -417,7 +418,8 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
         "--instance_ids",
         *instance_ids,
     ]
-    pattern = f"*{harness_id}.json"
+    # the report is named literally, glob syntax in the run id or not
+    pattern = f"*{glob.escape(harness_id)}.json"
     before = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in preds.parent.glob(pattern)}
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(preds.parent), timeout=7200)
     (preds.parent / f"oracle_{run_id}.log").write_text(proc.stdout + "\n--- stderr ---\n" + proc.stderr)

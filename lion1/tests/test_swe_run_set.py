@@ -237,7 +237,10 @@ def test_the_manifest_names_a_clean_tree_and_a_dirty_one_as_git_reads_them(tmp_p
     dirty = _record(capsys)
     assert clean["head"] == dirty["head"] == HEAD and clean["dirty"] == ""
     assert "bench/swe/run_set.py" in dirty["dirty"] and "?? notes.txt" in dirty["dirty"]
-    assert [i for i, _ in ran] == ["a", "a"]
+    _git(monkeypatch, head=(0, "b" * 64 + "\n", ""))  # a sha256 repository's head is a commit id too
+    asyncio.run(run_set.main(_args(run_id="sha256")))
+    assert _record(capsys)["head"] == "b" * 64
+    assert [i for i, _ in ran] == ["a", "a", "a"]
 
 
 class TransportFailBox(FakeBox):
