@@ -1457,6 +1457,7 @@ def test_a_before_hook_sees_out_and_its_rewrite_is_what_accept_judges():
         ({"done": "not a Done"}, "validation error"),  # held to the output's spec as the model's is
         ({"done": {"summary": "as a dict", "files": []}}, None),  # a dict is validated into it
         ({"other": Done(summary="s", files=[])}, "the outputs are ['done']"),
+        ({}, "must fill: ['done']"),  # a required output dropped, as the model could not
     ],
 )
 def test_a_before_hooks_rewrite_of_out_is_held_to_the_runs_outputs(fields, told):
@@ -1474,6 +1475,56 @@ def test_a_before_hooks_rewrite_of_out_is_held_to_the_runs_outputs(fields, told)
     else:
         assert isinstance(run.outcome, Exhausted) and run.output is None
         assert told in "\n".join(str(e.content) for e in run.record if e.kind is Kind.SYSTEM)
+
+
+def test_a_before_hooks_rewrite_may_drop_an_output_whose_fields_all_default():
+    class Note(BaseModel):
+        text: str = ""
+
+    actor = Actor("b-out-rewrite-default")
+    actor.before(lambda run, la, req: Output(fields={"done": req.fields["done"]}))
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done, Note), max_rounds=1),
+            scripted('OUT{done: {summary: "s", files: []}, note: {text: "n"}}'),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.output == {"done": Done(summary="s", files=[])}
+
+
+def test_accept_judges_the_rewrite_validated_and_the_caller_receives_what_it_approved():
+    actor = Actor("b-out-accept-validated")
+    actor.before(lambda run, la, req: Output(fields={"done": {"summary": "rewritten", "files": []}}))
+    judged: list[dict] = []
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(
+                inputs=("go",), emits=(Done,), max_rounds=1, accept=lambda run, out: judged.append(out)
+            ),
+            scripted('OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.output["done"] == Done(summary="rewritten", files=[])
+    assert judged == [run.output] and judged[0]["done"] is run.output["done"]
+
+
+def test_accept_is_not_asked_about_a_rewrite_the_outputs_refuse():
+    actor = Actor("b-out-accept-unasked")
+    actor.before(lambda run, la, req: Output(fields={"done": "not a Done"}))
+    judged: list[dict] = []
+    run = asyncio.run(
+        actor.run(
+            Profile("p", defaults={"max_refusals": 1}),
+            RunRequest(
+                inputs=("go",), emits=(Done,), max_rounds=1, accept=lambda run, out: judged.append(out)
+            ),
+            scripted('OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert judged == [] and run.output is None
+    assert isinstance(run.outcome, Refused) and "validation error" in run.outcome.why
 
 
 def test_a_reported_cost_that_is_not_a_number_reads_as_spent():
@@ -1507,7 +1558,9 @@ def test_a_before_hook_refusing_out_is_a_refusal_the_profile_default_counts():
     run = asyncio.run(
         actor.run(
             Profile("p", defaults={"max_refusals": 1}),
-            RunRequest(inputs=("go",), emits=(Done,), max_rounds=3, accept=judged.append),
+            RunRequest(
+                inputs=("go",), emits=(Done,), max_rounds=3, accept=lambda run, out: judged.append(out)
+            ),
             scripted('OUT{done: {summary: "s", files: []}}'),
         )
     )

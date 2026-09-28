@@ -563,18 +563,28 @@ class Output(BaseModel):
     fields: dict[str, Any]
 
 
-async def _out(req: Output, ctx: Context) -> dict[str, Any]:
-    # a before hook may have rewritten the fields: what leaves is held to the run's outputs as the
-    # assembled OUT{} was, so a rewrite cannot hand back what the model could not (ADR-0003/C4)
-    emits = {spec_name(s): s for s in ctx.run.request.emits}
-    if emits and set(req.fields) - set(emits):
-        raise ValueError(
-            f"OUT{{}} holds {sorted(set(req.fields) - set(emits))}; the outputs are {sorted(emits)}"
-        )
+def _held(run: Run, fields: dict[str, Any]) -> dict[str, Any]:
+    """OUT{} held to the run's outputs: a field off the list, a required output missing or a value
+    its output refuses is an error. The assembled fields and a before hook's rewrite of them go
+    through the same rule, so a rewrite cannot hand back what the model could not (ADR-0003/C4)."""
+    emits = {spec_name(s): s for s in run.request.emits}
+    if emits and set(fields) - set(emits):
+        raise ValueError(f"OUT{{}} holds {sorted(set(fields) - set(emits))}; the outputs are {sorted(emits)}")
+    missing = [
+        n
+        for n, s in emits.items()
+        if n not in fields and any(f.is_required() for f in s.model_fields.values())
+    ]
+    if missing:
+        raise ValueError(f"OUT{{...}} must fill: {missing}")
     return {
         k: v if (spec := emits.get(k)) is None or isinstance(v, spec) else spec.model_validate(v)
-        for k, v in req.fields.items()
+        for k, v in fields.items()
     }
+
+
+async def _out(req: Output, ctx: Context) -> dict[str, Any]:
+    return _held(ctx.run, req.fields)
 
 
 _OUT = Handler(Output, _out)
@@ -866,8 +876,17 @@ class Actor:
                 befores = list(self.befores)
                 if request.accept is not None:
 
-                    def judge(run: Run, la: Lact, out: BaseModel, accept=request.accept) -> Any:
-                        return accept(run, out.fields)
+                    async def judge(run: Run, la: Lact, out: Output, accept=request.accept) -> Any:
+                        # accept judges the rewrite held and validated, and what it approved is
+                        # what leaves: a rewrite the outputs refuse never reaches it
+                        try:
+                            fields = _held(run, out.fields)
+                        except ValueError as held:
+                            return str(held)
+                        verdict = accept(run, fields)
+                        if inspect.isawaitable(verdict):
+                            verdict = await verdict
+                        return verdict if isinstance(verdict, str | BaseModel) else Output(fields=fields)
 
                     judge.__name__ = _hook_name(request.accept)
                     befores.append(judge)
@@ -1235,14 +1254,10 @@ class Actor:
                     )
             except ValidationError as e:
                 raise lndl.LNDLError(f"OUT{{{key}: ...}}: {_validation_text(e)}") from None
-        missing = [
-            n
-            for n, s in emits.items()
-            if n not in out and any(f.is_required() for f in s.model_fields.values())
-        ]
-        if missing:
-            raise lndl.LNDLError(f"OUT{{...}} must fill: {missing}")
-        return out
+        try:
+            return _held(run, out)
+        except ValueError as e:
+            raise lndl.LNDLError(str(e)) from None
 
     def _deliver(self, run: Run, error: BaseException | None = None) -> None:
         """An answered inbound goes back to its origin under the same handle (ADR-0010/C3)."""

@@ -163,17 +163,27 @@ grants. When an actor with the authority exists (a chair, a department head), th
 Serves C4. Dispatch assembles and validates `out` before its before hooks. The run's `accept`, when
 set, is their last hook, after the actor's, so it judges the rewritten output. Hooks registered on
 the actor see `out` like any other command; an after hook's replacement on `out` is refused and
-listed under `hooks failed`, so the caller receives the value `accept` approved. A before hook's
-rewrite is held to the run's outputs as `OUT{}` was: a field off the list or a value its output
-refuses is a refusal.
+listed under `hooks failed`, so the caller receives the value `accept` approved (a change made in
+place by an after hook is ADR-0005/S8's copy, owed).
 
 - **Landing evidence**: `tests/test_actor.py`:
   `test_accept_gate_refuses_then_lets_a_later_turn_through` reads `refused:` in the next
   notification; `test_a_before_hook_sees_out_and_its_rewrite_is_what_accept_judges`,
   `test_a_before_hook_refusing_out_is_a_refusal_the_profile_default_counts`,
-  `test_an_after_hooks_replacement_of_out_is_refused_and_listed`,
-  `test_a_before_hooks_rewrite_of_out_is_held_to_the_runs_outputs`. The loop no longer calls
-  `accept`.
+  `test_an_after_hooks_replacement_of_out_is_refused_and_listed`. The loop no longer calls `accept`.
+
+### D4: A rewrite of `out` is held by the rule that held `OUT{}`, and `accept` judges it held ^d4
+
+Serves C4. A before hook's rewrite is held to the run's outputs by the rule that held `OUT{}`: a
+field off the list, a required output dropped, or a value its output refuses is a refusal. `accept`
+judges the rewrite once held and validated, so it sees output instances, never a rewrite the outputs
+refuse, and the caller receives the value it judged.
+
+- **Landing evidence**: `tests/test_actor.py`:
+  `test_a_before_hooks_rewrite_of_out_is_held_to_the_runs_outputs`,
+  `test_a_before_hooks_rewrite_may_drop_an_output_whose_fields_all_default`,
+  `test_accept_judges_the_rewrite_validated_and_the_caller_receives_what_it_approved`,
+  `test_accept_is_not_asked_about_a_rewrite_the_outputs_refuse`.
 
 ## Alternatives
 
