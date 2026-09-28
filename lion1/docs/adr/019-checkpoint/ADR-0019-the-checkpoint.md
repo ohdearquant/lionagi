@@ -260,11 +260,11 @@ take that fails is kept among the agent's errors and the run goes on.
 ## Consequences
 
 - **S1**: Claude Code's PreCompact hook, when an install sets it to `lion context checkpoint
-  --hook`, takes the session's checkpoint: the session, transcript and directory come from the
-  hook's input, the reason is `precompact`, and any other event is refused. Nothing else in the code
-  takes one by itself or starts the fresh session: a person or another program runs `lion context
-  checkpoint`, starts a session and gives it the restore's prompt. The reasons `threshold` and
-  `rotate` name such callers.
+  --hook`, takes the session's checkpoint with the reason `precompact`. The session, transcript and
+  directory come from the hook's input alone; an event of another kind, or one missing a string
+  session, transcript or directory, is refused with nothing taken. Nothing else takes one or starts
+  the fresh session: a person or another program runs `lion context checkpoint`, starts a session
+  and gives it the restore's prompt; `threshold` and `rotate` name such callers.
 - **S2**: The statusline's per-session file and the hook ring are written outside the code, by the
   statusline command and the prompt hook a Claude Code install configures; without them the figure
   reads "not known" and the person's words come from the transcript.

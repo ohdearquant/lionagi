@@ -257,9 +257,16 @@ def context_main(a: argparse.Namespace) -> None:
                     raise CheckpointError(
                         f"hook event {event!r}: only PreCompact takes a checkpoint; nothing was taken"
                     )
-                where, why = given.get("cwd") or where, "precompact"
-                session = given.get("session_id") or session
-                transcript = given.get("transcript_path") or transcript
+                # the event names its session, transcript and cwd; a field missing or blank is no
+                # licence to guess (the newest transcript may be another session's)
+                for field in ("session_id", "transcript_path", "cwd"):
+                    v = given.get(field)
+                    if not isinstance(v, str) or not v.strip() or "\0" in v:
+                        raise CheckpointError(
+                            f"the hook's {field} is missing or not a string; nothing was taken"
+                        )
+                where, why = given["cwd"], "precompact"
+                session, transcript = given["session_id"], given["transcript_path"]
             done = checkpoint(where, why, session=session, transcript=transcript, budget=a.budget)
             print(json.dumps(done, ensure_ascii=False, indent=1))
         elif a.verb == "restore":

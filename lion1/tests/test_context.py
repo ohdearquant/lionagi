@@ -1045,6 +1045,13 @@ def test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_h
         ("not json", "the hook's input is not JSON"),
         ("[]", "hook event None: only PreCompact takes a checkpoint; nothing was taken"),
         (json.dumps({**given, "hook_event_name": "Stop"}), "hook event 'Stop': only PreCompact takes"),
+        # an event missing its identity is refused, never filled in from the directory's newest transcript
+        (
+            json.dumps({k: v for k, v in given.items() if k != "transcript_path"}),
+            "hook's transcript_path is missing",
+        ),
+        (json.dumps({**given, "session_id": ""}), "hook's session_id is missing"),
+        (json.dumps({**given, "cwd": 7}), "hook's cwd is missing or not a string"),
     ):
         monkeypatch.setattr("sys.stdin", io.StringIO(text))
         with pytest.raises(SystemExit) as out:
