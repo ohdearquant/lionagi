@@ -133,7 +133,8 @@ class Adrs:
     decision headings, and its Alternatives rows, scored by how many distinct words of the ask they
     carry. An Alternatives row that matches is reported as "alternatives:", the table where an ADR says
     what it chose not to do; whether that settles the ask is the asker's and the chair's reading. The
-    control is the corpus itself: files were read."""
+    control is the corpus itself: every configured root is a directory holding records, so one root
+    missing is never hidden by another that answers."""
 
     name = "adrs"
     every = None
@@ -149,6 +150,7 @@ class Adrs:
 
     HEAD = re.compile(r"^###? (C\d+|D\d+|ADR-\d+):? ?(.*)$")
     MARK = re.compile(r"\s*_\(enforced: \w+\)_|\s*\^\w+$")  # the lint's markers, not words of the record
+    FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")  # a top-level fence, as docs/adr/_scripts/_md.py reads one
 
     def __init__(self, dirs: list[Path], *, limit: int = 5, min_terms: int = 2):
         self.dirs, self.limit, self.min_terms = [Path(d) for d in dirs], limit, min_terms
@@ -165,11 +167,20 @@ class Adrs:
                         k, _, v = ln.partition(":")
                         fm[k.strip()] = v.strip().strip('"')
                 body = text[end + 5 :]
-        title = next((ln[2:].strip() for ln in body.splitlines() if ln.startswith("# ")), path.stem)
-        heads = [self.MARK.sub("", ln.lstrip("#").strip()) for ln in body.splitlines() if self.HEAD.match(ln)]
+        lines: list[str] = []  # the record's own lines: a fenced example is not a heading or a row of it
+        closer: re.Pattern[str] | None = None
+        for ln in body.splitlines():
+            if closer is not None:
+                closer = None if closer.fullmatch(ln) else closer
+            elif (m := self.FENCE.fullmatch(ln)) and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+                closer = re.compile(rf" {{0,3}}{re.escape(m.group(1)[0])}{{{len(m.group(1))},}}[ \t]*")
+            else:
+                lines.append(ln)
+        title = next((ln[2:].strip() for ln in lines if ln.startswith("# ")), path.stem)
+        heads = [self.MARK.sub("", ln.lstrip("#").strip()) for ln in lines if self.HEAD.match(ln)]
         alts: list[str] = []
         in_alts = False
-        for ln in body.splitlines():
+        for ln in lines:
             if ln.startswith("## "):
                 in_alts = ln.strip() == "## Alternatives"
             elif in_alts and ln.startswith("|") and not ln.startswith("| -") and not ln.startswith("|-"):
@@ -185,7 +196,9 @@ class Adrs:
         # a third of a long ask's words, never under min_terms: with 2 of 10 the reply carried four
         # ADRs sharing two words with the ask beside the one that settled it
         need = min(max(self.min_terms, -(-len(words) // 3)), len(words))
-        files = sorted(p for d in self.dirs for p in d.rglob("ADR-*.md"))
+        by_root = {d: sorted(d.rglob("ADR-*.md")) if d.is_dir() else [] for d in self.dirs}
+        unread = [str(d) for d, fs in by_root.items() if not fs]
+        files = sorted(p for fs in by_root.values() for p in fs)
         hits: list[tuple[int, int, dict[str, Any], list[str], list[str]]] = []
         for path in files:
             rec = await asyncio.to_thread(self._read, path)
@@ -211,12 +224,13 @@ class Adrs:
         return Outcome(
             findings=tuple(findings),
             evidence=f"{len(files)} ADR file(s) under {', '.join(map(str, self.dirs))}; words {words}; "
-            f"{len(hits)} carrying >= {need} of them",
-            control=bool(files),
+            f"{len(hits)} carrying >= {need} of them"
+            + (f"; no record read under {', '.join(unread)}" if unread else ""),
+            control=bool(files) and not unread,
             population=f"ADR records under {', '.join(map(str, self.dirs))}",
             predicate=f"title, headings or alternatives carry >= {need} of {words}",
             count=len(findings),
-            positive=f"{len(files)} file(s) read, first {files[0].name}" if files else "",
+            positive=f"{len(files)} file(s) read, first {files[0].name}" if files and not unread else "",
         )
 
 
@@ -330,10 +344,22 @@ class Record:
     async def run(self, args: dict[str, Any]) -> Outcome:
         outs = await asyncio.gather(*(self._part(p, args) for p in self.parts))
         findings = tuple(f"[{p.name}] {f}" for p, o in zip(self.parts, outs, strict=True) for f in o.findings)
+        # the union's fields are joined, so a part missing one is refused here, as the chore refuses a whole
+        void = [
+            p.name
+            for p, o in zip(self.parts, outs, strict=True)
+            if (o.findings and not o.evidence.strip())
+            or (o.control and not (o.population.strip() and o.predicate.strip() and o.positive.strip()))
+            or (o.control and o.count is None)
+        ]
+        findings += tuple(
+            f"[{n}] its answer lacks its own output, population, predicate, count or known-positive; refused"
+            for n in void
+        )
         return Outcome(
             findings=findings,
             evidence="\n".join(f"[{p.name}]\n{o.evidence}" for p, o in zip(self.parts, outs, strict=True)),
-            control=all(o.control for o in outs),
+            control=all(o.control for o in outs) and not void,
             population="; ".join(o.population for o in outs),
             predicate="; ".join(o.predicate for o in outs),
             count=sum(o.count or 0 for o in outs),

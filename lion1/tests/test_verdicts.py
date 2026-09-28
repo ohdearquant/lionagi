@@ -237,6 +237,92 @@ def test_no_rung_naming_an_actor_is_undecided(tmp_path):
     assert got["owner"] is None
 
 
+@pytest.mark.parametrize(("head", "state"), [(NOW, "OPEN"), (EV, "MERGED"), (NOW, "CLOSED")])
+@pytest.mark.parametrize(
+    ("branch", "actor_map"), [("b/x", None), ("codex/fix", {})], ids=["disagree", "none"]
+)
+def test_a_stale_or_closed_verdict_is_decided_whatever_its_ownership(
+    tmp_path, head, state, branch, actor_map
+):
+    """Only a live verdict needs its owner: a stale or closed one is left for that reason, so a ladder that
+    disagrees or names no one is said on its line, never raised as an error."""
+    d = tmp_path / "verdicts"
+    pair(d)
+    got = triage(d, gh(head=head, state=state, branch=branch), notice(d), actor_map=actor_map)
+    assert (
+        got["errors"] == [] and got["owner"] is None and (got["fresh"], got["state"]) == (head == EV, state)
+    )
+    assert "owner unsettled (ownership" in got["line"]
+
+
+@pytest.mark.parametrize(
+    "head", ["f00dcafe", "f00dcafe" + "e" * 31, "f00dcafe" + "e" * 33, "f00dcafe" + "z" * 32]
+)
+def test_an_artifact_whose_evaluated_head_is_not_a_full_sha_is_undecided_never_stale(tmp_path, head):
+    d = tmp_path / "verdicts"
+    pair(d, md_file=False)
+    body = json.loads((d / "o-r-7-f00dcafe.json").read_text()) | {"evaluated_head": head}
+    (d / "o-r-7-f00dcafe.json").write_text(json.dumps(body))
+    sh = gh()
+    got = triage(d, sh, notice(d, at="o-r-7-f00dcafe.json"))
+    assert got["errors"] == [
+        f"artifact unreadable: {d}/o-r-7-f00dcafe.json: ValueError: evaluated_head {head!r} is not a full sha"
+    ]
+    assert sh.calls == []  # nothing is asked of gh about an artifact whose identity did not read
+
+
+def test_the_jsons_own_coverage_is_the_coverage_and_a_companion_of_another_round_lends_none(tmp_path):
+    d = tmp_path / "verdicts"
+    pair(d)
+    j, md = d / "o-r-7-f00dcafe.json", d / "o-r-7-f00dcafe.md"
+    body = json.loads(j.read_text())
+    j.write_text(json.dumps(body | {"coverage_bounds": {"diff-chars": "ok(1/9)", "debt-hits": "ok(0/25)"}}))
+    got = triage(d, gh(), notice(d))
+    assert got["coverage"] == "- coverage bounds: debt-hits=ok(0/25), diff-chars=ok(1/9)"
+    # no coverage in the JSON: the .md lends its line only when it names the JSON's register
+    j.write_text(json.dumps(body | {"register_hash": "abc123"}))
+    text = md.read_text()
+    md.write_text(text.replace(COVERAGE, f"- findings-register hash: abc123\n{COVERAGE}"))
+    assert triage(d, gh(), notice(d))["coverage"] == COVERAGE
+    md.write_text(text.replace(COVERAGE, f"- findings-register hash: def456\n{COVERAGE}"))
+    got = triage(d, gh(), notice(d))
+    assert got["coverage"] == "coverage: companion .md is another round's (register def456)"
+    md.write_text(text)
+    got = triage(d, gh(), notice(d))
+    assert got["coverage"] == "coverage: companion .md is another round's (register none)"
+    # a JSON naming no register takes no line from a .md that names one
+    j.write_text(json.dumps(body))
+    md.write_text(text.replace(COVERAGE, f"- findings-register hash: def456\n{COVERAGE}"))
+    got = triage(d, gh(), notice(d))
+    assert got["coverage"] == "coverage: companion .md is another round's (register def456)"
+
+
+@pytest.mark.parametrize("name", ["o-r-7-f00dcafe.md", "o-r-7-f00dcafe.json"])
+@pytest.mark.parametrize("folder", ["review verdicts", "review.md archive", "a.json b"])
+def test_an_artifact_path_holding_a_space_is_read_whole(tmp_path, name, folder):
+    d = tmp_path / folder
+    pair(d)
+    got = triage(d, gh(), notice(d, at=name) + "\nnext line")
+    assert got["errors"] == [] and got["path"] == f"{d}/o-r-7-f00dcafe.json"
+
+
+def test_an_md_only_verdict_naming_its_register_keeps_its_own_coverage(tmp_path):
+    d = tmp_path / "verdicts"
+    pair(d, json_file=False)
+    md = d / "o-r-7-f00dcafe.md"
+    md.write_text(md.read_text().replace(COVERAGE, f"- findings-register hash: abc123\n{COVERAGE}"))
+    got = triage(d, gh(), notice(d))
+    assert got["errors"] == [] and got["read"] == "md header (no JSON)" and got["coverage"] == COVERAGE
+
+
+@pytest.mark.parametrize("state", [None, "", "DRAFT"])
+def test_a_pr_state_that_did_not_read_is_undecided_whatever_the_ownership(tmp_path, state):
+    d = tmp_path / "verdicts"
+    pair(d)
+    got = triage(d, gh(state=state, branch="b/x"), notice(d))
+    assert got["errors"] == [f"o/r#7: state not read: {state!r}"]
+
+
 def test_a_notice_without_an_artifact_line_reads_the_md_header_when_the_json_is_missing(tmp_path):
     d = tmp_path / "verdicts"
     pair(d, json_file=False)
@@ -485,8 +571,11 @@ def test_a_fresh_notice_on_the_chairs_pr_files_one_row_by_code_and_is_never_list
     [(NOW, "OPEN", "verdict: stale head f00dcafe, now c0ffee00"), (EV, "MERGED", "verdict: pr MERGED")],
     ids=["stale", "merged"],
 )
-def test_a_stale_or_closed_verdict_is_left_with_why_and_nothing_filed_or_sent(tmp_path, head, state, why):
-    desk, inner, agent, _ = verdict_desk(tmp_path, gh(head=head, state=state))
+@pytest.mark.parametrize("branch", ["x/work", "b/x"], ids=["own", "ownership-disagreement"])
+def test_a_stale_or_closed_verdict_is_left_with_why_and_nothing_filed_or_sent(
+    tmp_path, head, state, why, branch
+):
+    desk, inner, agent, _ = verdict_desk(tmp_path, gh(head=head, state=state, branch=branch))
     assert discover(desk).startswith(f"sweep: nothing new for {OWNER}")
     assert ledger(desk) == [(VMID, "left", why, None)]
     assert assigns(inner) == [] and inner.sent == [] and pending(agent) == {}
