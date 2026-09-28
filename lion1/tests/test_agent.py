@@ -284,6 +284,12 @@ def test_a_hold_inside_the_conversation_is_logged_once(tmp_path):
     assert lines[0].startswith("wake 1: Quiet") and lines[1].startswith("held: 1 wakes in the last hour")
 
 
+@pytest.mark.parametrize("cap", [0, -1])
+def test_a_wake_cap_below_one_holds_every_wake_and_says_why(cap):
+    agent = build(FakeKhive(mail("lambda:a", "say hi back")), REPLY, DONE, budget=Budget(wakes_per_hour=cap))
+    assert agent.hold() == f"wakes_per_hour is {cap}: no wakes until it is raised"
+
+
 def test_no_mail_means_no_run_and_the_next_wake_reads_the_cursor_first():
     khive = FakeKhive(mail("lambda:a", "say hi back"))
     agent = build(khive, REPLY, DONE, DONE)
