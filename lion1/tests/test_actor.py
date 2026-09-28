@@ -1451,6 +1451,55 @@ def test_a_before_hook_sees_out_and_its_rewrite_is_what_accept_judges():
     assert isinstance(run.outcome, Success) and run.output["done"].summary == "rewritten"
 
 
+@pytest.mark.parametrize(
+    ("fields", "told"),
+    [
+        ({"done": "not a Done"}, "validation error"),  # held to the output's spec as the model's is
+        ({"done": {"summary": "as a dict", "files": []}}, None),  # a dict is validated into it
+        ({"other": Done(summary="s", files=[])}, "the outputs are ['done']"),
+    ],
+)
+def test_a_before_hooks_rewrite_of_out_is_held_to_the_runs_outputs(fields, told):
+    actor = Actor("b-out-rewrite-shape")
+    actor.before(lambda run, la, req: Output(fields=fields))
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=2, max_refusals=5),
+            scripted('OUT{done: {summary: "s", files: []}}', 'OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    if told is None:
+        assert isinstance(run.outcome, Success) and run.output["done"] == Done(summary="as a dict", files=[])
+    else:
+        assert isinstance(run.outcome, Exhausted) and run.output is None
+        assert told in "\n".join(str(e.content) for e in run.record if e.kind is Kind.SYSTEM)
+
+
+def test_a_reported_cost_that_is_not_a_number_reads_as_spent():
+    from lionagi.actor import Reply as Said
+
+    turns = iter(['<lact a1>echo(text="x")</lact>', '<lact a2>echo(text="y")</lact>'])
+
+    async def backend(messages: list[Message]) -> str:
+        return Said(next(turns), cost=float("nan"))  # a cost with no number in it is not room
+
+    run = asyncio.run(
+        _echo_actor("b-cost-nan").run(
+            Profile("p"), RunRequest(inputs=("go",), max_rounds=5, cost_budget=1.0), backend
+        )
+    )
+    assert run.outcome == Exhausted(1, "cost")
+    assert run.resolve("a1") == Result(
+        "echo", False, error="refused: the cost_budget of 1 is spent", reason="refused"
+    )
+
+
+def test_a_run_request_takes_its_fields_by_name_only():
+    with pytest.raises(TypeError):
+        RunRequest(("go",), (Done,), 10)
+
+
 def test_a_before_hook_refusing_out_is_a_refusal_the_profile_default_counts():
     actor = Actor("b-out-gate")
     actor.before(lambda run, la, req: "closed for the night")

@@ -239,7 +239,7 @@ def _grant(run: Run, bound: str, amount: float, reason: str) -> bool:
     return True
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)  # every field by name: the bounds are many and read alike
 class RunRequest:
     inputs: tuple[str, ...] = ()
     emits: tuple[Spec, ...] = ()  # what OUT{} fills; empty: OUT{} ends the run with its dereferenced fields
@@ -564,7 +564,17 @@ class Output(BaseModel):
 
 
 async def _out(req: Output, ctx: Context) -> dict[str, Any]:
-    return req.fields
+    # a before hook may have rewritten the fields: what leaves is held to the run's outputs as the
+    # assembled OUT{} was, so a rewrite cannot hand back what the model could not (ADR-0003/C4)
+    emits = {spec_name(s): s for s in ctx.run.request.emits}
+    if emits and set(req.fields) - set(emits):
+        raise ValueError(
+            f"OUT{{}} holds {sorted(set(req.fields) - set(emits))}; the outputs are {sorted(emits)}"
+        )
+    return {
+        k: v if (spec := emits.get(k)) is None or isinstance(v, spec) else spec.model_validate(v)
+        for k, v in req.fields.items()
+    }
 
 
 _OUT = Handler(Output, _out)
@@ -1463,7 +1473,8 @@ def _over(run: Run) -> str | None:
     """Time or cost spent: read at a round's start and again before each handler starts."""
     if run.bounds["time_budget"] is not None and run.elapsed >= run.bounds["time_budget"]:
         return "time"
-    if run.bounds["cost_budget"] is not None and run.cost >= run.bounds["cost_budget"]:
+    # written as "not under" so a cost that is not a number (nan) reads as spent, never as room
+    if run.bounds["cost_budget"] is not None and not run.cost < run.bounds["cost_budget"]:
         return "cost"
     return None
 

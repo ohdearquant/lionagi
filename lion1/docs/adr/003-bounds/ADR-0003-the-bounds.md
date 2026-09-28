@@ -161,15 +161,19 @@ grants. When an actor with the authority exists (a chair, a department head), th
 ### D3: `out` is registered like any handler, with `accept` appended to its before hooks ^d3
 
 Serves C4. Dispatch assembles and validates `out` before its before hooks. The run's `accept`, when
-set, is their last hook, after the actor's, so it judges the assembled, rewritten output. Hooks
-registered on the actor see `out` like any other command; an after hook's replacement on `out` is
-refused and listed under `hooks failed`, so the caller receives the value `accept` approved.
+set, is their last hook, after the actor's, so it judges the rewritten output. Hooks registered on
+the actor see `out` like any other command; an after hook's replacement on `out` is refused and
+listed under `hooks failed`, so the caller receives the value `accept` approved. A before hook's
+rewrite is held to the run's outputs as `OUT{}` was: a field off the list or a value its output
+refuses is a refusal.
 
 - **Landing evidence**: `tests/test_actor.py`:
   `test_accept_gate_refuses_then_lets_a_later_turn_through` reads `refused:` in the next
   notification; `test_a_before_hook_sees_out_and_its_rewrite_is_what_accept_judges`,
   `test_a_before_hook_refusing_out_is_a_refusal_the_profile_default_counts`,
-  `test_an_after_hooks_replacement_of_out_is_refused_and_listed`. The loop no longer calls `accept`.
+  `test_an_after_hooks_replacement_of_out_is_refused_and_listed`,
+  `test_a_before_hooks_rewrite_of_out_is_held_to_the_runs_outputs`. The loop no longer calls
+  `accept`.
 
 ## Alternatives
 
@@ -197,4 +201,7 @@ refused and listed under `hooks failed`, so the caller receives the value `accep
 - **S4**: D1-D3 landed with their tests: bound resolution and every check (C1, C2), extension
   requests and grants (C3), and output dispatch through hooks (C4). Still owed with C3: the
   notification naming idle turns, cost and refusals with their remainders. `Reply` carries a cost
-  and the run sums it, but no backend hands one back yet, so `cost_budget` reads nothing spent.
+  and the run sums it, but no backend hands one back yet, so `cost_budget` reads nothing spent; a
+  cost that is not a number reads as spent, never as room
+  (`test_a_reported_cost_that_is_not_a_number_reads_as_spent`). `RunRequest` takes every field by
+  name, so a new bound never shifts another (`test_a_run_request_takes_its_fields_by_name_only`).
