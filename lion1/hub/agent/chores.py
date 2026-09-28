@@ -652,26 +652,37 @@ class Chores:
         if self._caught_up == run.id:
             return []
         self._caught_up = run.id
-        items: list[dict] = []
-        try:  # every page: a row caught up keeps its status, so the first page alone comes back every pass
-            while True:
-                offset = f", offset={len(items)}" if items else ""
-                (rows,) = await self.agent.khive.exec(f'list(kind="scheduled_event", limit=200{offset})')
-                got = rows.get("items", []) if isinstance(rows, dict) else (rows or [])
-                items += got
-                more = rows.get("has_more", len(got) == 200) if isinstance(rows, dict) else len(got) == 200
-                if not got or not more:
-                    break
+        me, items = self.agent.khive.actor, []
+        try:  # the store filters by creator and status before a page; a row caught up keeps its status, so
+            # the first page alone comes back every pass: each list is paged by offset until it says no more
+            offsets = {"missed": 0, "failed": 0}
+            while offsets:
+                live = list(offsets)
+                pages = await self.agent.khive.exec(
+                    "["
+                    + ", ".join(
+                        f'list(kind="scheduled_event", created_by_actor={lit(me)}, status={lit(s)}, limit=200'
+                        + (f", offset={offsets[s]}" if offsets[s] else "")
+                        + ")"
+                        for s in live
+                    )
+                    + "]"
+                )
+                for s, rows in zip(live, pages, strict=True):
+                    got = rows.get("items", []) if isinstance(rows, dict) else (rows or [])
+                    items += got
+                    offsets[s] += len(got)
+                    more = (
+                        rows.get("has_more", len(got) == 200) if isinstance(rows, dict) else len(got) == 200
+                    )
+                    if not got or not more:
+                        del offsets[s]
         except Exception as e:
             return [f"missed-tick read failed: {type(e).__name__}: {e}"]
-        me, seen, done = self.agent.khive.actor, list(_val(self.agent.state, "missed_seen", [])), []
+        seen, done = list(_val(self.agent.state, "missed_seen", [])), []
         for it in items:
-            p = it.get("properties") or {}
-            if (
-                p.get("created_by_actor") != me
-                or p.get("status") not in ("missed", "failed")
-                or it["id"] in seen
-            ):
+            p, status = it.get("properties") or {}, it.get("status")  # status sits beside properties
+            if p.get("created_by_actor") != me or status not in ("missed", "failed") or it["id"] in seen:
                 continue
             seen.append(it["id"])
             content = str(it.get("content") or "")
@@ -679,16 +690,16 @@ class Chores:
             chore = m.group(1) if m else None
             if chore == "digest":
                 await self.digest(None, run)
-                done.append(f"{content}: {p['status']}, digest sent now")
+                done.append(f"{content}: {status}, digest sent now")
             elif chore == "aged":
-                done.append(f"{content}: {p['status']}, " + await self.aged(None, run))
+                done.append(f"{content}: {status}, " + await self.aged(None, run))
             elif chore in self.instruments and chore != skip:
                 done.append(
-                    f"{content}: {p['status']}, ran now: "
+                    f"{content}: {status}, ran now: "
                     + await self.check(Check(chore=chore, args={"missed_tick": it["id"]}), run)
                 )
             else:
-                done.append(f"{content}: {p['status']}, noted")
+                done.append(f"{content}: {status}, noted")
         # an id is kept while the store lists its row: no count of rows lets one run twice. A list read
         # by offset can skip a row one pass, so an id is let go only when two passes in a row miss it
         listed = {it["id"] for it in items}

@@ -9,6 +9,7 @@ finding about the instrument."""
 import asyncio
 import itertools
 import json
+import re
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -64,7 +65,8 @@ class FakeKhive:
         self.sent: list[dict] = []
         self.ops: list[str] = []
         self.agenda = list(agenda)
-        self.events = list(events)  # scheduled_event rows `list` returns
+        self.events = list(events)  # scheduled_event rows `list` returns, status beside properties as live
+        self.filtered = False  # True: `list` applies creator and status before the page, as the store does
         self.bare_pages = False  # `list` answers a page as a bare list, with no has_more beside it
         self.threads: dict[str, list[dict]] = {}  # thread id -> messages `comm.thread` returns
         self.refuse: set[str] = set()  # recipients the transport refuses, as the hop cap would
@@ -114,13 +116,24 @@ class FakeKhive:
                 for c in self.agenda
             ]
             return [{"events": events}]
-        if ops.startswith('list(kind="scheduled_event"'):  # a page of `limit` from `offset`, as the store
-            limit = int(ops.split("limit=")[1].split(",")[0].split(")")[0])
-            offset = int(ops.split("offset=")[1].split(")")[0]) if "offset=" in ops else 0
-            page = self.events[offset : offset + limit]
-            if self.bare_pages:
-                return [page]
-            return [{"items": page, "has_more": offset + len(page) < len(self.events)}]
+        if ops.startswith(
+            '[list(kind="scheduled_event"'
+        ):  # a page of `limit` from `offset` per call, filtered
+            pages = []
+            for call in re.findall(r"list\(([^)]*)\)", ops):
+                args = {k: json.loads(v) for k, v in re.findall(r'(\w+)=("[^"]*"|\d+)', call)}
+                want = {k: args[k] for k in ("created_by_actor", "status") if k in args and self.filtered}
+                rows = [
+                    e
+                    for e in self.events
+                    if all({**e["properties"], "status": e["status"]}.get(k) == v for k, v in want.items())
+                ]
+                offset = args.get("offset", 0)
+                page = rows[offset : offset + args["limit"]]
+                pages.append(
+                    page if self.bare_pages else {"items": page, "has_more": offset + len(page) < len(rows)}
+                )
+            return pages
         if ops.startswith("comm.thread"):
             tid = ops.split('id="')[1].split('"')[0]
             msgs = self.threads.get(tid, [])
@@ -784,15 +797,18 @@ def test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once(
         {
             "id": "ev1",
             "content": "tick: pr (fired at 2026-09-21T03:04:09Z)",
-            "properties": {"created_by_actor": SELF, "status": "missed"},
+            "status": "missed",
+            "properties": {"created_by_actor": SELF},
         },
         {
             "id": "ev2",
             "content": "tick: disk",
-            "properties": {"created_by_actor": "lambda:other", "status": "missed"},
+            "status": "missed",
+            "properties": {"created_by_actor": "lambda:other"},
         },
-        {"id": "ev3", "content": "tick: disk", "properties": {"created_by_actor": SELF, "status": "fired"}},
+        {"id": "ev3", "content": "tick: disk", "status": "fired", "properties": {"created_by_actor": SELF}},
     ]
+    # a store that ignores the filters: the code's own check still keeps the actor's missed and failed rows
     khive = FakeKhive(mail(SELF, "tick: disk"), mail(SELF, "tick: disk", mid="b2c3d4e5"), events=events)
     chores, agent = build(
         tmp_path,
@@ -818,10 +834,11 @@ def test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once(
 @pytest.mark.parametrize("bare_pages", [False, True])
 def test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once(tmp_path, bare_pages):
     events = [
-        {"id": f"ev{i}", "content": "tick: pr", "properties": {"created_by_actor": SELF, "status": "missed"}}
+        {"id": f"ev{i}", "content": "tick: pr", "status": "missed", "properties": {"created_by_actor": SELF}}
         for i in range(201)
     ]
     khive = FakeKhive(mail(SELF, "tick: disk"), mail(SELF, "tick: disk", mid="b2c3d4e5"), events=events)
+    khive.filtered = True
     khive.bare_pages = bare_pages  # a full bare page is read as a page with more behind it
     chores, agent = build(
         tmp_path, khive, [CHECK, DONE] * 2, disk=Probe("disk", full()), pr=Probe("pr", full())
@@ -831,9 +848,11 @@ def test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once(tmp_pat
     caught = [r["args"]["missed_tick"] for r in chores.rows() if r["chore"] == "pr"]
     assert sorted(caught) == sorted(e["id"] for e in events)  # all 201, each once, over two passes
     assert [r["chore"] for r in chores.rows()][-2:] == ["disk", "disk"]
-    assert [o for o in khive.ops if o.startswith("list(")] == [
-        'list(kind="scheduled_event", limit=200)',
-        'list(kind="scheduled_event", limit=200, offset=200)',
+    missed = f'list(kind="scheduled_event", created_by_actor="{SELF}", status="missed", limit=200'
+    failed = f'list(kind="scheduled_event", created_by_actor="{SELF}", status="failed", limit=200)'
+    assert [o for o in khive.ops if o.startswith("[list(")] == [
+        f"[{missed}), {failed}]",  # the failed list ends on its first page, the missed one goes on
+        f"[{missed}, offset=200)]",
     ] * 2
 
 
@@ -842,7 +861,8 @@ def test_a_seen_missed_tick_is_remembered_while_the_store_lists_it_however_many_
         {
             "id": f"ev{i}",
             "content": "tick: gone",
-            "properties": {"created_by_actor": SELF, "status": "failed"},
+            "status": "failed",
+            "properties": {"created_by_actor": SELF},
         }
         for i in range(501)
     ]
@@ -857,7 +877,7 @@ def test_a_seen_missed_tick_is_remembered_while_the_store_lists_it_however_many_
         1:
     ]  # the store no longer lists the first: a list read by offset can skip a row once
     khive.events.append(
-        {"id": "ev501", "content": "tick: gone", "properties": {"created_by_actor": SELF, "status": "missed"}}
+        {"id": "ev501", "content": "tick: gone", "status": "missed", "properties": {"created_by_actor": SELF}}
     )
     asyncio.run(agent.wake())
     assert chores.rows()[-1]["caught_up"] == ["tick: gone: missed, noted"]
@@ -870,6 +890,32 @@ def test_a_seen_missed_tick_is_remembered_while_the_store_lists_it_however_many_
     asyncio.run(agent.wake())
     assert chores.rows()[-1]["caught_up"] == []
     assert agent.state.get("missed_seen").value == [f"ev{i}" for i in (1, *range(400, 501))]
+
+
+def test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page(tmp_path):
+    noise = [
+        {"id": f"n{i}", "content": "tick: disk", "status": status, "properties": {"created_by_actor": actor}}
+        for i, (actor, status) in enumerate([("lambda:other", "missed"), (SELF, "fired")] * 100)
+    ]
+    late = [
+        {"id": "ev9", "content": "tick: pr", "status": "missed", "properties": {"created_by_actor": SELF}},
+        {"id": "ev8", "content": "tick: pr", "status": "failed", "properties": {"created_by_actor": SELF}},
+    ]
+    khive = FakeKhive(mail(SELF, "tick: disk"), events=noise + late)  # both past an unfiltered page of 200
+    khive.filtered = True
+    chores, agent = build(tmp_path, khive, [CHECK, DONE], disk=Probe("disk", full()), pr=Probe("pr", full()))
+    asyncio.run(agent.wake())
+    assert [op for op in khive.ops if "scheduled_event" in op] == [
+        f'[list(kind="scheduled_event", created_by_actor="{SELF}", status="missed", limit=200), '
+        f'list(kind="scheduled_event", created_by_actor="{SELF}", status="failed", limit=200)]'
+    ]
+    rows = chores.rows()
+    assert [(r["chore"], r["args"]) for r in rows] == [
+        ("pr", {"missed_tick": "ev9"}),
+        ("pr", {"missed_tick": "ev8"}),
+        ("disk", {}),
+    ]
+    assert agent.state.get("missed_seen").value == ["ev9", "ev8"]
 
 
 def test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those(tmp_path):

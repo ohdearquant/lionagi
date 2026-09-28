@@ -733,6 +733,53 @@ def test_once_refuses_served_identity(tmp_path, kkernel_stub, monkeypatch):
     )
 
 
+def test_check_with_the_identity_free_prints_and_lands_the_measurement_and_sends_nothing(
+    tmp_path, kkernel_stub, monkeypatch, capsys
+):
+    """With no live holder, --check claims the identity, runs the named instrument alone, prints it and
+    lands the same text, then lets the identity go: no send, no ledger row, no tick."""
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n\n[chores.gtd-inbox]\n'
+        'every = "every:1h"\n'
+    )
+    ops: list[str] = []
+
+    async def fake_exec(self, op):
+        ops.append(op)
+        old = {"id": "t1", "title": "triage me", "created_at": "2026-01-01T00:00:00Z"}
+        return [[old], [old]]
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    a = argparse.Namespace(
+        dir=str(d),
+        stats=False,
+        model=None,
+        check="gtd-inbox",
+        ticks=False,
+        arm=False,
+        once=False,
+        rerun=None,
+        wait=0,
+    )
+    asyncio.run(agent_main(a))
+    text, landed = capsys.readouterr().out.rsplit("\nlanded: ", 1)
+    path = Path(landed.strip())
+    assert text.startswith(
+        "gtd-inbox: control ok, 1 finding(s), escalate=False, count=1, direction under-report"
+    )
+    assert "- 1 gtd inbox row(s) older than 24h of 1 in inbox" in text
+    assert path.parent == d / "landing" and re.fullmatch(r"\d{8}-check-gtd-inbox\.txt", path.name)
+    assert path.read_text() == text
+    assert ops == [
+        '[gtd.tasks(status="inbox", assignee="lambda:x", limit=100), gtd.tasks(assignee="lambda:x", limit=1)]'
+    ]
+    files = sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.is_file())
+    assert files == [".khive/config.toml", "chores.toml", f"landing/{path.name}"]  # the identity let go
+
+
 def test_serve_keeps_the_lock_its_process_already_claimed(tmp_path):
     """The CLI claims before its first act; serve takes that lock over instead of claiming it again, and
     lets it go when it stops."""
