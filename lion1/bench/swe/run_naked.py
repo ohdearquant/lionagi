@@ -63,12 +63,15 @@ async def solve(row: dict, model: str, max_turns: int, out_dir: Path) -> dict:
     host = Path(tempfile.mkdtemp(prefix=f"swe-{iid}-"))
     harness = None
     try:
-        # the repository out of the image: a throwaway container, docker cp, gone
+        # the repository out of the image: a throwaway container, docker cp, gone whatever the copy
+        # or the baseline read did
         tmp = f"{name}-src"
-        await _docker("create", "--platform", "linux/amd64", "--name", tmp, row["image"])
-        await _docker("cp", f"{tmp}:/testbed/.", str(host))
-        rec["base"] = _baseline(host)
-        await _docker("container", "remove", "--force", tmp)
+        try:
+            await _docker("create", "--platform", "linux/amd64", "--name", tmp, row["image"])
+            await _docker("cp", f"{tmp}:/testbed/.", str(host))
+            rec["base"] = _baseline(host)
+        finally:
+            await _docker("container", "remove", "--force", tmp, check=False)
         await _docker(
             "run",
             "-d",
@@ -91,7 +94,7 @@ async def solve(row: dict, model: str, max_turns: int, out_dir: Path) -> dict:
         rec["final_text"] = text[-2000:]
         _spend(rec, env)
         rec["model_patch"] = _diff(host, rec["base"])
-    except Exception as e:
+    except BaseException as e:  # a cancellation too: the paid work is on disk and is kept
         rec["error"] = f"{type(e).__name__}: {e}"
         # the fix on disk is graded and the spend is counted whatever ended the run
         if harness is not None and harness.calls:
@@ -101,11 +104,20 @@ async def solve(row: dict, model: str, max_turns: int, out_dir: Path) -> dict:
                 rec["model_patch"] = _diff(host, rec["base"])
         except Exception as e2:
             rec["diff_error"] = f"{type(e2).__name__}: {e2}"
+        if not isinstance(e, Exception):
+            raise
     finally:
-        await _docker("container", "remove", "--force", name, check=False)
-        shutil.rmtree(host, ignore_errors=True)
-    rec["seconds"] = time.perf_counter() - t0
-    (out_dir / f"{iid}.json").write_text(json.dumps(rec, indent=1))
+        keep = "diff_error" in rec
+        if keep:
+            rec["host"] = str(host)  # the patch could not be read: the tree is the only copy, kept
+        rec["seconds"] = time.perf_counter() - t0
+        # written before the last await: a cancellation landing there has nothing left to skip
+        (out_dir / f"{iid}.json").write_text(json.dumps(rec, indent=1))
+        try:
+            await _docker("container", "remove", "--force", name, check=False)
+        finally:
+            if not keep:
+                shutil.rmtree(host, ignore_errors=True)
     return rec
 
 
@@ -132,26 +144,26 @@ def _baseline(host: Path) -> str:
     return sha
 
 
+def _git(host: Path, *argv: str, ok: tuple[int, ...] = (0,)) -> str:
+    """git's stdout, or a RuntimeError naming the command and its stderr: a read that failed is not
+    an empty result, and an empty result is not a patch of nothing."""
+    r = subprocess.run(["git", *argv], cwd=host, capture_output=True, text=True)
+    if r.returncode not in ok:
+        raise RuntimeError(f"git {argv[0]} exited {r.returncode}: {r.stderr.strip()[:200]}")
+    return r.stdout
+
+
 def _diff(host: Path, base: str) -> str:
     """The tree against `base`, staged or committed since or not, plus new source files, no bytecode."""
     parts = []
-    tracked = subprocess.run(
-        ["git", "diff", "--binary", base], cwd=host, capture_output=True, text=True
-    ).stdout
+    tracked = _git(host, "diff", "--binary", base)
     if tracked.strip():
         parts.append(tracked)
-    others = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"], cwd=host, capture_output=True, text=True
-    ).stdout.split()
-    for path in others:
+    for path in _git(host, "ls-files", "--others", "--exclude-standard").split():
         if path.endswith((".pyc", ".pyo")) or "__pycache__" in path:
             continue
-        d = subprocess.run(
-            ["git", "diff", "--no-index", "--binary", "/dev/null", path],
-            cwd=host,
-            capture_output=True,
-            text=True,
-        ).stdout
+        # --no-index implies --exit-code: 1 is the difference it was asked for
+        d = _git(host, "diff", "--no-index", "--binary", "/dev/null", path, ok=(0, 1))
         if d.strip():
             parts.append(d)
     return "".join(parts)

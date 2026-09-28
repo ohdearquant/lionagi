@@ -385,6 +385,48 @@ def test_the_report_send_is_keyed_by_the_job_so_a_lost_receipt_replays_and_never
     assert keys == ["bench:lambda:a:bench:t1:report"]
 
 
+def test_a_report_retried_after_a_lost_receipt_sends_the_body_it_first_sent(tmp_path, monkeypatch):
+    # the store replays a keyed send under its key: the retry must carry the same body, not the row
+    # as the ledger stands now, or the receipt names one report and the remembered row another
+    _job(tmp_path, monkeypatch, "t1", [{"instance_id": "a", "resolved": True, "cost_usd": 0.01}])
+    khive = BenchKhive(
+        mail(bench_agent.ACTOR_ID, "job t1 finished with exit 0. Report it.", mid="f1"), cwd=tmp_path
+    )
+    bodies = []
+
+    async def send(to, content, *, subject=None, thread_id=None, idempotency_key=None):
+        bodies.append(content)
+        if len(bodies) == 1:
+            raise TimeoutError("accepted by the store; the receipt was lost")
+        return await BenchKhive.send(khive, to, content, subject=subject, thread_id=thread_id)
+
+    khive.send = send
+    done = 'OUT{posture: {done: "x", awaiting: ""}}'
+    agent = bench_agent.build(khive, Scripted('<lact r1>report(run_id="t1")</lact>', done, khive=khive))
+    job = {
+        "asker": "lambda:a",
+        "thread": THREAD,
+        "pid": 1,
+        "started": "now",
+        "ask": {"set": "mini50", "model": "m"},
+    }
+    agent.state.put("jobs", {"t1": job}, run="-", seq=0)
+    run = asyncio.run(agent.wake(wait_ms=0))
+    result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
+    assert not result.ok and "TimeoutError" in str(result.error) and len(bodies) == 1
+    assert agent.state.get("jobs").value["t1"]["row"] == json.loads(bodies[0])  # frozen before the send
+    ledger = tmp_path / "results" / "t1" / "ledger.jsonl"
+    ledger.write_text(
+        ledger.read_text() + json.dumps({"instance_id": "b", "resolved": False, "cost_usd": 0.02}) + "\n"
+    )
+    khive.mail.append(mail(bench_agent.ACTOR_ID, "job t1 finished with exit 0. Report it.", mid="f2"))
+    agent.backend = Scripted('<lact r2>report(run_id="t1")</lact>', done, khive=khive)
+    run = asyncio.run(agent.wake(wait_ms=0))
+    result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
+    assert result.ok and bodies[1] == bodies[0] and len(khive.sent) == 1
+    assert agent.state.get("jobs").value["t1"]["row"] == json.loads(bodies[0])
+
+
 def test_a_launch_during_a_reports_send_is_not_written_away_by_the_report(tmp_path, monkeypatch):
     # the report read the jobs map, awaited its send, and wrote that map back whole: a launch that
     # ran in the same turn, during the await, was gone from the map, its child running unrecorded

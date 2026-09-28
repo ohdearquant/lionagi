@@ -252,10 +252,16 @@ def build(khive: Khive, backend) -> Agent:
         if job.get("reported") and not job.get("remember_pending"):
             raise AgentError(f"job {req.run_id} was reported at {job['reported']}; not again")
         if not job.get("reported"):
-            row = row_for(req.run_id)
+            row = job.get("row")
+            if row is None:
+                # frozen before the first send: a send that landed and lost its receipt is replayed by
+                # the store under the same key, and the replay must carry the same body, not the row
+                # as the ledger stands at the retry
+                row = row_for(req.run_id)
+                job = {**job, "row": row}
+                put_job(req.run_id, job, ctx)
             # through the agent's own send: counted on the thread, under the hop limit, in the cursor.
-            # The key names the job: a send that landed and lost its receipt is replayed by the store
-            # under the same key when the next finish mail reports it again, never mailed twice
+            # The key names the job, so the next finish mail's report is the same send, never a second
             sent = await agent.deliver(
                 job["asker"],
                 json.dumps(row),
