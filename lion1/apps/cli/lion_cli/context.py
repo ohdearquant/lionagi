@@ -1,6 +1,7 @@
 """`lion context {set,checkpoint,restore,status,show}`: a Claude Code session's checkpoint and restore,
-from the session's directory (ADR-0019/D3). One implementation: the areas server's `/api/context/*`
-routes call these functions; a refused take exits non-zero with the reason on stderr."""
+from the session's directory or as its PreCompact hook (ADR-0019/D3). One implementation: the areas
+server's `/api/context/*` routes call these functions; a refused take exits non-zero with the reason
+on stderr."""
 
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from hub.context import (
     lanes,
     newest_transcript,
     posture,
+    pulls,
     slug,
     spawns,
     topic,
@@ -139,9 +141,10 @@ def checkpoint(
         try:
             khive = Khive(d, actor)
         except KhiveError as e:
-            lane_note = f"unavailable: {e}"
+            lane_note = f"gtd.tasks and comm.inbox unavailable: {e}"
     if khive is not None:
         lane_vars, lane_note = asyncio.run(lanes(khive))
+    pr_vars, pr_note = asyncio.run(pulls(d))
     declared, taken = _pending(d)
     harvested = [
         *topic(PROJECTS / slug(d) / "memory" / "sessions_registry.json"),
@@ -149,6 +152,7 @@ def checkpoint(
         *watches(path, actor, now),
         *spawns(path, now),
         *lane_vars,
+        *pr_vars,
         *posture(path),
         *cursor(d),
     ]
@@ -158,7 +162,7 @@ def checkpoint(
         **transcript_source(path),
         "cwd": str(d),
         "context": context_figure(sid),
-        "lanes": lane_note,
+        "lanes": f"{lane_note}; {pr_note}",
     }
     view = transcript_turns(path, budget)
     ckpt = take(source, [*harvested, *declared], actor=actor, why=why, budget=budget, view=view)
@@ -242,7 +246,21 @@ def context_main(a: argparse.Namespace) -> None:
         if a.verb == "set":
             print(json.dumps(set_var(a.dir, a.name, a.kind, _value(a.value)), ensure_ascii=False))
         elif a.verb == "checkpoint":
-            done = checkpoint(a.dir, a.why, session=a.session, transcript=a.transcript, budget=a.budget)
+            where, why, session, transcript = a.dir, a.why, a.session, a.transcript
+            if a.hook:  # Claude Code's PreCompact hook: the session, its transcript and its cwd on stdin
+                try:
+                    given = json.loads(sys.stdin.read())
+                except ValueError as e:
+                    raise CheckpointError(f"the hook's input is not JSON ({e}); nothing was taken") from None
+                event = given.get("hook_event_name") if isinstance(given, dict) else None
+                if event != "PreCompact":
+                    raise CheckpointError(
+                        f"hook event {event!r}: only PreCompact takes a checkpoint; nothing was taken"
+                    )
+                where, why = given.get("cwd") or where, "precompact"
+                session = given.get("session_id") or session
+                transcript = given.get("transcript_path") or transcript
+            done = checkpoint(where, why, session=session, transcript=transcript, budget=a.budget)
             print(json.dumps(done, ensure_ascii=False, indent=1))
         elif a.verb == "restore":
             got = restore(a.dir, a.id)

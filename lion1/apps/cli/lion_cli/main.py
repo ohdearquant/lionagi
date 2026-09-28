@@ -133,6 +133,12 @@ def parser() -> argparse.ArgumentParser:
         help="default: the newest *.jsonl under ~/.claude/projects/<cwd slug>/, never a _precompact_ copy",
     )
     cc.add_argument("--budget", type=int, default=BUDGET, help="tokens; the kept view is half of it")
+    cc.add_argument(
+        "--hook",
+        action="store_true",
+        help="run as Claude Code's PreCompact hook: the session, transcript and cwd come on stdin, the "
+        "reason is precompact",
+    )
     cr = verbs.add_parser("restore", parents=[here], help="print the first prompt of the fresh session")
     cr.add_argument("--id", default=None, help="a checkpoint id; default: the latest")
     cr.add_argument("--json", action="store_true", help="print {id, first_prompt, watches, spawns}")
