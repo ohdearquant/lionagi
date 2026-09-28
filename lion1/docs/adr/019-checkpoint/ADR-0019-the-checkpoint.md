@@ -266,7 +266,7 @@ take that fails is kept among the agent's errors and the run goes on.
   are the actor's active khive tasks, and `source.lanes` says the rest were not read.
 - **S5**: One `latest.json` serves both arms. A Claude Code checkpoint taken in a resident's
   directory, the only kind of directory the `/api/context/` routes reach, becomes the latest; the
-  resident's next process refuses it and starts fresh ([[ADR-0013-the-agent|ADR-0013]] S9). No test
+  resident's next process refuses it and starts fresh ([[ADR-0013-the-agent|ADR-0013]] S8). No test
   pins it.
 - **S6**: `hub/context.py` reads fixed places under the home directory: Claude Code's project
   directory, the hook ring, the typing log and the statusline's files; where no tool writes one, it

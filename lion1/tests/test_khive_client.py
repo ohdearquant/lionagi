@@ -15,7 +15,7 @@ from hub.khive import LOST, Khive, KhiveError
 
 
 class Dropping(Khive):
-    """A client whose `exec` drops the first N answers the way kkernel did on 2026-09-22."""
+    """A client whose `exec` drops the first N answers, as a daemon under load can."""
 
     def __init__(self, tmp_path: Path, drops: int, error: str = LOST):
         (tmp_path / ".khive").mkdir(exist_ok=True)
