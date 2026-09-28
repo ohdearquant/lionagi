@@ -134,6 +134,12 @@ class FakeKhive:
                     page if self.bare_pages else {"items": page, "has_more": offset + len(page) < len(rows)}
                 )
             return pages
+        if ops.startswith("get(id="):  # one scheduled_event row by id, as the store answers it
+            wanted = json.loads(ops[len("get(id=") : -1])
+            for e in self.events:
+                if e["id"] == wanted:
+                    return [e]
+            raise KhiveError(f"get: {{'kind': 'not_found', 'message': 'not found: {wanted}'}}")
         if ops.startswith("comm.thread"):
             tid = ops.split('id="')[1].split('"')[0]
             msgs = self.threads.get(tid, [])
@@ -957,6 +963,43 @@ def test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look(
     assert chores.rows()[-1]["caught_up"] == []
     assert agent.state.get("missed_seen").value == [f"ev{i}" for i in range(n)]  # the order kept
     assert 0 < len(looks) < 10 * n, len(looks)  # a list scan would cost n * n / 2
+
+
+@pytest.mark.parametrize("bare_pages", [False, True])
+def test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once(tmp_path, bare_pages):
+    events = [
+        {"id": f"ev{i}", "content": "tick: pr", "status": "missed", "properties": {"created_by_actor": SELF}}
+        for i in range(201)
+    ]
+    khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"d{i:07x}") for i in range(4)), events=events)
+    khive.filtered, khive.bare_pages = True, bare_pages
+    paged, passes = khive.exec, []
+
+    async def exec(ops):  # on the second and third pass a row ahead of ev200 leaves between the two page
+        if ops.startswith("[list(") and "offset=" not in ops:  # reads, so ev200 shifts into the gap and
+            passes.append(1)  # neither page shows it
+        pages = await paged(ops)
+        if 2 <= len(passes) <= 3 and "offset=200" in ops:
+            pages = [
+                [r for r in p if r["id"] != "ev200"]
+                if isinstance(p, list)
+                else {**p, "items": [r for r in p["items"] if r["id"] != "ev200"]}
+                for p in pages
+            ]
+        return pages
+
+    khive.exec = exec
+    chores, agent = build(
+        tmp_path, khive, [CHECK, DONE] * 4, disk=Probe("disk", full()), pr=Probe("pr", full())
+    )
+    for _ in range(4):
+        asyncio.run(agent.wake())
+    caught = [r["args"]["missed_tick"] for r in chores.rows() if r["chore"] == "pr"]
+    assert caught.count("ev200") == 1 and len(caught) == 201  # skipped twice, asked for by id, never re-run
+    assert "ev200" in agent.state.get("missed_seen").value
+    assert [o for o in khive.ops if o.startswith("get(id=")] == [
+        'get(id="ev200")'
+    ]  # asked once, on the second miss
 
 
 def test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page(tmp_path):

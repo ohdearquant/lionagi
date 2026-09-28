@@ -710,11 +710,26 @@ class Chores:
             else:
                 done.append(f"{content}: {status}, noted")
         # an id is kept while the store lists its row: no count of rows lets one run twice. A list read
-        # by offset can skip a row one pass, so an id is let go only when two passes in a row miss it
+        # by offset can skip a row one pass, so an id is let go only when two passes in a row miss it,
+        # and then only on the store's own word for that id: a row it still holds was skipped twice
         listed = {it["id"] for it in items}
         gone_before = set(_val(self.agent.state, "missed_gone", []))
         gone = [i for i in seen if i not in listed]
-        kept = [i for i in seen if i in listed or i not in gone_before]
+        held = set()
+        for i in gone:
+            if i not in gone_before:
+                continue
+            try:
+                row = (await self.agent.khive.exec(f"get(id={lit(i)})"))[0]
+            except Exception as e:
+                if "not_found" not in str(
+                    e
+                ):  # only the store's not-found lets an id go; a failed read keeps it
+                    held.add(i)
+                continue
+            if isinstance(row, dict) and row.get("status") in ("missed", "failed"):
+                held.add(i)
+        kept = [i for i in seen if i in listed or i not in gone_before or i in held]
         if done or kept != seen:
             self.agent.state.put("missed_seen", kept, run=run.id, seq=run.record.seq)
         if set(gone) != gone_before:

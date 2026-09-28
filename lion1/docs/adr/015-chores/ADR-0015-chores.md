@@ -227,14 +227,15 @@ start and on `--ticks`, never for a chair.
 
 `_catch_up` asks the store for the actor's missed and failed rows, filtered before each page of 200,
 pages each list to its end, rechecks both in code and runs each row once. An id stays under
-`missed_seen` while the store lists it; two passes missing it let it go (S9).
+`missed_seen` while the store lists it; two misses ask the store for it by id (S9).
 
 - **Landing evidence**: `test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those`,
   `test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once`,
   `test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page`,
   `test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once` (201 rows, two passes),
   `test_a_seen_missed_tick_is_remembered_while_the_store_lists_it_however_many_there_are` (501
-  rows), `test_a_page_that_is_not_a_page_fails_the_missed_tick_read_and_lets_no_id_go`,
+  rows), `test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once`,
+  `test_a_page_that_is_not_a_page_fails_the_missed_tick_read_and_lets_no_id_go`,
   `test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look`;
   `test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread` asserts
   `--ticks` creates nothing for a chair.
@@ -295,10 +296,11 @@ bypasses the handler: no refusals, no row, no send.
   not resend the same findings, and the aged pass waits for the owner's reply on the ask's thread.
   `test_the_owners_own_ask_keeps_its_receipt_so_the_report_ages_and_is_not_repeated` pins it.
 - **S9**: Each of the two lists is paged, 200 to a page, by offset until the store says no more:
-  `has_more` false, or a bare page short of 200. So no number of the actor's own missed rows leaves
-  one unread. A row an offset read skips on one pass is read by the next, its id still held; a row
-  hidden on two passes in a row is let go, and runs again if it comes back
-  (`test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once`, both page shapes).
+  `has_more` false, or a bare page short of 200, so no number of the actor's missed rows leaves one
+  unread. A row an offset read skips on one pass is read by the next, its id still held
+  (`test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once`, both page shapes). An id
+  missed twice in a row is asked for by `get`: still held is kept, not-found is let go, a failed
+  read keeps it (`test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once`).
 - **S10**: A page that is no page, with no list in it or empty while the store says more is behind
   it, fails the whole read: nothing runs and no id is let go
   (`test_a_page_that_is_not_a_page_fails_the_missed_tick_read_and_lets_no_id_go`). Seen ids are
