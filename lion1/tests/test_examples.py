@@ -68,12 +68,14 @@ def test_the_live_example_says_what_the_calls_cost_when_a_later_call_fails(tmp_p
     module = load("backends")
 
     class Backend:
+        error = module.OpenRouterError
+
         def __init__(self):
             self.calls = []
 
         async def __call__(self, messages):
             if self.calls:
-                raise module.OpenRouterError("429 rate limited")
+                raise self.error("429 rate limited")
             self.calls.append(
                 {
                     "usage": {"input_tokens": 12, "output_tokens": 3},
@@ -92,6 +94,13 @@ def test_the_live_example_says_what_the_calls_cost_when_a_later_call_fails(tmp_p
     out = capsys.readouterr().out
     assert "   1     40     12      0      3      0   0.00021  stop / p" in out.splitlines()
     assert "openrouter:" not in out  # no run to summarize: the failure is the caller's to say
+    backend = Backend()
+    backend.error = asyncio.CancelledError  # an interrupt after the paid call: the table still prints
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(module.main("openrouter", None))
+    assert (
+        "   1     40     12      0      3      0   0.00021  stop / p" in capsys.readouterr().out.splitlines()
+    )
 
 
 async def run_cells(name: str, ns: dict, before=None) -> None:
