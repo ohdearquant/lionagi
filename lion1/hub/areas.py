@@ -30,6 +30,7 @@ from .khive import Khive, lit
 
 __all__ = (
     "DEFAULT_REGISTRY",
+    "partial",
     "Area",
     "Resident",
     "load_areas",
@@ -70,16 +71,24 @@ _STYLE = (
 # The context the last turn stood in, and the sessions the backend started over from a folded view
 # during the burst, follow when any: both optional and each printed on its own (`_line` in
 # hub/agent/agent.py), so an older line without them still matches; the tasks of the queue the wake
-# presented follow the same way. The phone app parses the `log` event's lines with this same pattern.
+# presented follow the same way, and so does the count of calls of unknown cost beside the dollars.
+# The phone app parses the `log` event's lines with this same pattern.
 _WAKE = re.compile(
     r"(?P<at>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) wake (?:(?P<wake>\d+): (?P<outcome>.+?) after "
     r"(?P<rounds>\d+) rounds, (?P<mail>\d+) mail, (?P<sent>\d+) sent; (?P<calls>\d+) model call\(s\), "
-    r"(?P<tokens_in>\d+) in, (?P<tokens_out>\d+) out, \$(?P<cost>[\d.]+); (?P<idle>\d+) idle poll\(s\) "
+    r"(?P<tokens_in>\d+) in, (?P<tokens_out>\d+) out, \$(?P<cost>[\d.]+)"
+    r"(?: \(partial: (?P<unknown>\d+) call\(s\) of unknown cost\))?; (?P<idle>\d+) idle poll\(s\) "
     r"before it at 0 tokens"
     r"(?:; last turn stood in (?P<context>\d+) tokens)?(?:, (?P<restarts>\d+) session restart\(s\))?"
     r"(?:; (?P<tasks>\d+) task\(s\) of the queue)?"
     r"$)?"
 )
+
+
+def partial(unknown: int) -> str:
+    """The mark beside a sum of costs that misses `unknown` calls; nothing when it misses none.
+    Every reader that sums prints this one text, and `_WAKE` reads it back off the wake line."""
+    return f" (partial: {unknown} call(s) of unknown cost)" if unknown else ""
 
 
 @dataclass
@@ -106,6 +115,7 @@ class Resident:
     runs_today: int
     mail_today: int
     cost_today: float
+    unknown_today: int  # today's calls of unknown cost: cost_today is partial while this is not 0
     problem: str = ""  # what could not be read, when something could not
 
 
@@ -188,6 +198,7 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
         runs_today=int(spend.get("runs") or 0),
         mail_today=int(spend.get("mail") or 0),
         cost_today=float(spend.get("cost") or 0.0),
+        unknown_today=int(spend.get("unknown") or 0),
         problem="; ".join(problem),
     )
 
@@ -214,6 +225,7 @@ def table(areas: list[Area], rows: list[Resident]) -> str:
                 + f"; wake {r.wake}"
                 + (f" at {r.last_at} {r.last_outcome}" if r.last_at else "")
                 + f"; today {r.runs_today} run(s), {r.mail_today} mail, ${r.cost_today:.4f}"
+                + partial(r.unknown_today)
             )
             if r.problem:
                 line += f"; PROBLEM {r.problem}"
@@ -253,7 +265,9 @@ def page(areas: list[Area], rows: list[Resident], refresh: int = 5, me: str | No
         )
         for r in mine:
             last = f"{h(r.last_at)} {h(r.last_outcome)}" if r.last_at else ""
-            today = f"{r.runs_today} run(s), {r.mail_today} mail, ${r.cost_today:.4f}"
+            today = (
+                f"{r.runs_today} run(s), {r.mail_today} mail, ${r.cost_today:.4f}{partial(r.unknown_today)}"
+            )
             if r.problem.startswith("no notes yet"):
                 problem = "<br><span class=note>never started</span>"  # not a fault: no wake yet
             else:
@@ -425,7 +439,7 @@ def wakes(directory: str, n: int = 30) -> list[dict]:
                     row[k] = v
                 elif k == "cost":
                     row[k] = float(v)
-                elif k not in ("context", "restarts", "tasks"):
+                elif k not in ("context", "restarts", "tasks", "unknown"):
                     row[k] = int(v)
             # the context and restarts suffixes: absent on an older line; a line that stood in a
             # context and started no session over prints no restarts, which is 0 restarts
@@ -436,6 +450,8 @@ def wakes(directory: str, n: int = 30) -> list[dict]:
                 row["restarts"] = int(m["restarts"])
             if m["tasks"] is not None:  # the queue tasks the wake presented
                 row["tasks"] = int(m["tasks"])
+            if m["unknown"] is not None:  # calls the wake's dollars miss
+                row["unknown"] = int(m["unknown"])
             rows.append({**row, "raw": line})
     return rows[max(len(rows) - n, 0) :][::-1]
 
@@ -511,7 +527,7 @@ def resident_page(
         f"<h2>{h(row.actor)} <small>{h(row.role)}, {h(row.model)} · area {h(row.area)}, chair "
         f"{h(row.chair)}</small></h2>",
         f"<p>{_state(row)} · {row.wake} wake(s){last} · today {row.runs_today} run(s), "
-        f"{row.mail_today} mail, ${row.cost_today:.4f}</p>",
+        f"{row.mail_today} mail, ${row.cost_today:.4f}" + partial(row.unknown_today) + "</p>",
     ]
     if row.problem:
         parts.append(f"<p class=bad>{h(row.problem)}</p>")
@@ -531,7 +547,12 @@ def resident_page(
                     parts.append(f"<tr class=bad><td colspan=11>{h(w['raw'])}</td></tr>")
                 continue
             cells = [w["at"], w["wake"], w["outcome"], w["rounds"], w["mail"], w["sent"], w["calls"]]
-            cells += [w["tokens_in"], w["tokens_out"], f"${w['cost']:.4f}", w["idle"]]
+            cells += [
+                w["tokens_in"],
+                w["tokens_out"],
+                f"${w['cost']:.4f}" + partial(w.get("unknown", 0)),
+                w["idle"],
+            ]
             parts.append("<tr>" + "".join(f"<td>{h(str(c))}</td>" for c in cells) + "</tr>")
         parts.append("</table>")
     else:
