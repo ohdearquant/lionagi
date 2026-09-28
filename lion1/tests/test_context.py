@@ -667,7 +667,7 @@ def serve_one(agent: Agent) -> list[str]:
 
 
 def test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_same_view(tmp_path):
-    backend = Growing((FAILS.format("g1"), 1_000), (FAILS.format("g2"), 500_000), (LONG_POSTURE, 500_000))
+    backend = Growing((FAILS.format("g1"), 1_000), (FAILS.format("g2"), 150_000), (LONG_POSTURE, 150_000))
     khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
     agent = resident(khive, backend)
     lines = serve_one(agent)
