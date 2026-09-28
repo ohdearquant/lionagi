@@ -126,10 +126,10 @@ outcome.
 ### D1: The loop is `Actor.run` as written ^d1
 
 Serves C1 to C4. Bounds are checked at the turn's start; under `wait`, after a reply or pause,
-`wait` is asked, and false ends the run. Then the inbox is taken, the notification is appended,
-`stop` is asked, the backend is called once, the message is read, every command is dispatched, and
-the turn settles. Under `wait` a message with no command and no `OUT{}` replies, and with
-`reply_on_commands` so does one whose commands all landed;
+`wait` is asked, and false ends the run, appending nothing. Then the inbox is taken, the
+notification is appended, `stop` is asked, the backend is called once, the message is read, commands
+are dispatched, and the turn settles. Under `wait` a message with no command nor `OUT{}` replies,
+and with `reply_on_commands` so does one whose commands all landed;
 `test_with_reply_on_commands_a_turn_whose_commands_all_landed_is_the_reply_and_a_failed_one_is_not`
 pins the three `wait` rows. The caller reads `run.outcome` after the loop returns.
 
