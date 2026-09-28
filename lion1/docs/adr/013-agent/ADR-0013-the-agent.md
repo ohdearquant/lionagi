@@ -297,22 +297,20 @@ refuses a run with no ledger.
 - **S7**: The watch is a second box polled beside the agent's own for the same wait; its notices are
   named apart on the cursor and never rerun, and a failed watch costs the agent's own mail nothing.
   The front desk sets it ([[ADR-0017-the-desk|ADR-0017]], the desk).
-- **S8**: The mail watch (`hub/agent/mail.py`) sends through `Agent.deliver`; it is not a chore, and
-  [[ADR-0020-the-mail-watch|ADR-0020]] decides it.
-- **S9**: The first run of any process replays the directory's latest checkpoint when it is a
+- **S8**: The first run of any process replays the directory's latest checkpoint when it is a
   continuous run's and its record still folds to the view taken; for any other the failure is kept
   among the agent's errors and the run starts fresh.
-- **S10**: The boundary: the identity and its grants, the lease that says a process is alive by its
+- **S9**: The boundary: the identity and its grants, the lease that says a process is alive by its
   turn activity, the one supervisor that starts and restarts it, killing it, and the durable record
-  are the kernel's. The agent holds a lock and nothing more; the entry point that starts it is S12.
-- **S11**: A profile named `agent` would share the agent's own note file, since a profile's notes
+  are the kernel's. The agent holds a lock and nothing more; the entry point that starts it is S11.
+- **S10**: A profile named `agent` would share the agent's own note file, since a profile's notes
   are filed by its name; nothing refuses the name.
-- **S12**: `scripts/serve_agent.sh`, the host supervisor's entry point, decides only whether to
+- **S11**: `scripts/serve_agent.sh`, the host supervisor's entry point, decides only whether to
   start. It refuses with exit 0, so a supervisor that restarts on failure leaves the job down: a
   checkout that is missing, dirty, unbuilt or not under git, a missing agent directory, an unusable
   named token file, or a config without a readable actor and owner. Each refusal lands one line, in
   `landing/serve-refusals.log` or else on standard error, saying whether the owner was told. A
   failed git read exits 1, error kept, for a retry. It unsets `ANTHROPIC_API_KEY`.
-- **S13**: When the khive CLI exits non-zero, the client's error quotes each failed op's own error
+- **S12**: When the khive CLI exits non-zero, the client's error quotes each failed op's own error
   from standard output; with none, standard error without its warning and database lines, then the
   raw output, the last 600 characters kept. No test pins it.
