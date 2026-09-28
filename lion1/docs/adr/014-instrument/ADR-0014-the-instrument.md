@@ -302,12 +302,13 @@ then `launchctl print` for a named label's last exit.
   control, or an empty answer the control must catch (A1).
 - **S9**: Two instrument shapes are built (D7). `lock-holder` reads a pid resolved to its full
   command line beside a lock known to be held, the agent's own pid file, never by matching text or
-  by taking the lock. `scheduled-job` reads the artifact's freshness first and the supervisor's exit
-  second, as `served` reads a last-wake note before a pid. `lsof` names the processes with the file
-  open, so a waiter reads as a holder; the only supervisor read is a launchd row.
+  by taking the lock. A waiter reads as a holder, a lock file `lsof` cannot stat reads unreadable,
+  and a lock with no file is held by nobody. `scheduled-job` reads the artifact's freshness first
+  and the supervisor's exit second, as `served` reads a last-wake note before a pid.
 - **S10**: `comm.probe` returns a page of at most 100 rows and caps its stale count at 1000, where
   1000 means at least that many. `inbox-sla` prints the count as it came, so a capped count reads as
   exact; its population is the rows on the probe pages.
-- **S11**: A dead-instrument notice that reached neither the owner nor the steward still marks the
-  chore told, so that crossing is never told until an answered run clears the mark. Marking the
-  chore only once a send lands is owed; no test sends the notice undelivered.
+- **S11**: A dead-instrument notice marks its recipient told only once the send lands: a copy the
+  crossing refused is owed at the next run, and the chore's own mark waits for every copy. A notice
+  that reached nobody leaves the chore untold:
+  `test_a_dead_instrument_notice_that_reached_nobody_leaves_the_crossing_untold_until_a_send_lands`.

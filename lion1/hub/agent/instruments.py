@@ -527,7 +527,10 @@ class LockHolder:
     about = "each named lock file: the pids holding it open, with their full command lines; reports holders"
     answers = "which processes hold each named lock file open right now, by pid and full command line"
     direction = "under-report"
-    mechanism = "lsof lists only the processes this user may inspect; a holder beyond them reads as no holder"
+    mechanism = (
+        "lsof lists only the processes this user may inspect; a holder beyond them reads as no holder. A "
+        "lock file lsof cannot stat is reported unreadable, not unheld"
+    )
 
     def __init__(
         self,
@@ -551,8 +554,14 @@ class LockHolder:
                 pid = int(line[1:])
             elif line[:1] == "n" and pid is not None and pid not in opened.setdefault(line[1:], []):
                 opened[line[1:]].append(pid)
-        # lsof names a file by its resolved path (/tmp reads /private/tmp on macOS)
+        # lsof names a file by its resolved path (/tmp reads /private/tmp on macOS); a path it could not
+        # stat is named the same way on stderr, one `status error` line each
         holders = {p: opened.get(os.path.realpath(p), []) for p in paths}
+        unread = {}
+        for line in err.splitlines():
+            head, _, why = line.rpartition(": ")
+            if head.startswith("lsof: status error on "):
+                unread[head.removeprefix("lsof: status error on ")] = why.strip()
         me = os.getpid()
         pids = sorted({me, *(p for ps in holders.values() for p in ps)})
         _, out, _ = await self.sh(["/bin/ps", "-ww", "-o", "pid=,command=", "-p", ",".join(map(str, pids))])
@@ -574,8 +583,13 @@ class LockHolder:
         ]
         findings, matched = [], 0
         for lock in self.locks:
+            why = unread.get(os.path.realpath(lock))
+            if why and not why.startswith("No such file"):  # a lock lsof could not read is not unheld
+                lines.append(f"{lock}: unreadable: {why}")
+                findings.append(f"{lock}: unreadable by lsof: {why}")
+                continue
             if not holders[lock]:
-                lines.append(f"{lock}: no holder")
+                lines.append(f"{lock}: no holder" + (" (no such file)" if why else ""))
                 continue
             matched += 1
             for p in holders[lock]:

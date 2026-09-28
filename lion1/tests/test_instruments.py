@@ -759,6 +759,26 @@ def test_lock_holder_fails_its_control_when_its_own_held_lock_does_not_read_as_i
     assert "read broken" in out.evidence.splitlines()[0]
 
 
+def test_lock_holder_reports_a_lock_lsof_could_not_read_as_unreadable_not_unheld(tmp_path):
+    own, lock, gone = tmp_path / "agent.pid", tmp_path / "shut" / "build.lock", tmp_path / "free.lock"
+    me = os.getpid()
+    # lsof names each file it could not stat on stderr, by its resolved path, and still lists the rest
+    err = (
+        f"lsof: status error on {os.path.realpath(lock)}: Permission denied\n"
+        f"lsof: status error on {os.path.realpath(gone)}: No such file or directory\n"
+    )
+    sh = FakeSh(
+        **{
+            "-F pn": (1, f"p{me}\nf3\nn{os.path.realpath(own)}\n", err),
+            "-o pid=,command= -p": f"{me} /usr/bin/python3 -m lion agent\n",
+        }
+    )
+    out = asyncio.run(LockHolder([str(lock), str(gone)], str(own), every=None, run=sh).run({}))
+    assert out.control and out.findings == (f"{lock}: unreadable by lsof: Permission denied",)
+    assert f"{lock}: unreadable: Permission denied" in out.evidence
+    assert f"{gone}: no holder (no such file)" in out.evidence  # a lock with no file is held by nobody
+
+
 @pytest.mark.skipif(instr.LSOF == "lsof", reason="no lsof on this machine")
 def test_lock_holder_reads_a_lock_a_live_process_holds_through_the_real_lsof_and_ps(tmp_path):
     import fcntl
