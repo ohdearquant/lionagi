@@ -730,7 +730,7 @@ def test_a_handler_returning_the_handle_is_settled_by_the_peers_answer():
         return run
 
     run = asyncio.run(main())
-    assert run.resolve("q1") == {"answer": {"text": "42"}}
+    assert run.resolve("q1") == {"answer": {"text": "42"}} and run.asked == {}
     peer_input = tasks[0].result().record.by_seq(0)
     assert peer_input.meta["origin"] == "rt-asker" and peer_input.meta["inbound"]
     sys2 = [e.content for e in run.record if e.name.startswith("_sys")][1]
@@ -755,6 +755,7 @@ def test_a_peer_that_ends_without_answering_settles_the_ask_as_failed():
     run = asyncio.run(main())
     res = run.record.get("q1").content
     assert not res.ok and res.error == "RuntimeError: nx-peer ended Exhausted without answering"
+    assert run.asked == {}  # the failure was read, so the ask is dropped as an answer is
 
 
 def test_a_peer_whose_backend_raises_settles_the_ask_as_failed_instead_of_hanging_it():
@@ -784,6 +785,41 @@ def test_a_peer_whose_backend_raises_settles_the_ask_as_failed_instead_of_hangin
     res = run.record.get("q1").content
     assert not res.ok
     assert res.error == "RuntimeError: er-peer ended in error (RuntimeError: backend down) without answering"
+    assert run.asked == {}
+
+
+@pytest.mark.parametrize("bound, reason", [({"max_rounds": 0}, "rounds"), ({"time_budget": 0}, "time")])
+def test_a_request_no_peer_run_took_waits_on_the_peers_inbox_for_its_next_run(bound, reason):
+    from lionagi import Exhausted
+
+    peer, asker, tasks = Actor(f"t-idle-{reason}-peer"), Actor(f"t-idle-{reason}-asker"), []
+
+    @asker.handler(Ask)
+    async def ask(req: Ask, ctx):
+        handle = peer.queue(req, ctx)
+        tasks.append(
+            asyncio.create_task(peer.run(Profile("p"), RunRequest(emits=(Answer,), **bound), scripted()))
+        )
+        return handle
+
+    async def main():
+        asking = asyncio.create_task(
+            asker.run(
+                Profile("p"),
+                RunRequest(inputs=("go",), max_rounds=2),
+                scripted('<lact q1>ask(question="x")</lact>', "done"),
+            )
+        )
+        while not tasks:
+            await asyncio.sleep(0)
+        idle = await tasks[0]
+        assert idle.outcome == Exhausted(0, reason) and idle.consumed == []
+        assert len(peer.inbox) == 1 and not asking.done()  # the request is queued, the ask open
+        await peer.run(Profile("p"), RunRequest(emits=(Answer,), max_rounds=1), scripted('OUT{answer: "42"}'))
+        return await asyncio.wait_for(asking, 5)
+
+    run = asyncio.run(main())
+    assert run.resolve("q1") == {"answer": {"text": "42"}} and run.asked == {}
 
 
 class Rows(BaseModel):
