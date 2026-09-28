@@ -160,6 +160,7 @@ def test_the_box_tree_resolves_a_symlink_in_the_box_before_its_bound(tmp_path, m
     (work / "hop").symlink_to("pkg/inner")
     (work / "same.py").symlink_to("a.py")  # a link that stays in the tree is followed
     (work / "sub").symlink_to("pkg")
+    (work / "line\nbreak.py").write_text("lb = 1\n")  # a name holding a newline is still one path
     tree, local = BoxTree(DockerSandbox("img", workdir=str(work))), LocalTree(work)
 
     async def refused(op) -> None:
@@ -175,6 +176,7 @@ def test_the_box_tree_resolves_a_symlink_in_the_box_before_its_bound(tmp_path, m
             await refused(t.list_dir("out"))
             await refused(t.search("secret", "out", None))
             assert await t.read("same.py") == "a = 1\n"
+            assert await t.read("line\nbreak.py") == "lb = 1\n"
             await t.write("sub/b.py", "b = 1\n")
             assert await t.list_dir("sub") == ["b.py", "inner/"]
         # `ls` opens `out/..` as the kernel does, past the link; `write` opens `hop/../out/x.py` as
@@ -217,8 +219,16 @@ def test_box_timeout_seam(monkeypatch, transport, timeout):
         box._box = types.SimpleNamespace(process=types.SimpleNamespace(exec=sdk_stub))
     else:
         box = DockerSandbox("offline-fixture")
+    given, exec_ = [], box.exec
+
+    async def spy(argv, **kw):  # `run` hands the transport the deadline as given, None included
+        given.append(kw.get("timeout", "absent"))
+        return await exec_(argv, **kw)
+
+    monkeypatch.setattr(box, "exec", spy)
     result = asyncio.run(box.run("echo ok", timeout=timeout))
     assert result == (0, "ok") and len(calls) == 1
+    assert given == [timeout] if transport == "docker" else calls[0][1]["timeout"] == timeout
 
 
 @pytest.mark.parametrize("timeout", [5.0, None])

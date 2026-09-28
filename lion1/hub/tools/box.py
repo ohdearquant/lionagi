@@ -152,8 +152,9 @@ def inside(workdir: str, path: str) -> None:
         raise PermissionError(f"{path} is outside {workdir}")
 
 
-# each argument's physical path, one per line, symlinks followed as the kernel does and a missing
-# tail kept as written: `realpath -m` is GNU only, and `readlink` with no flag reads alike on both
+# each argument's physical path, NUL-ended (a name may hold a newline), symlinks followed as the
+# kernel does and a missing tail kept as written: `realpath -m` is GNU only, and `readlink` with no
+# flag reads alike on both
 _RESOLVE = r"""
 for arg do
   r=/ todo=$arg n=0
@@ -177,7 +178,7 @@ for arg do
         ;;
     esac
   done
-  printf '%s\n' "$r"
+  printf '%s\0' "$r"
 done
 """
 
@@ -201,7 +202,7 @@ class BoxTree:
         joined = path if path.startswith("/") else posixpath.join(root, path)
         argv = ["sh", "-c", _RESOLVE, "lion-resolve", root, joined, posixpath.normpath(joined)]
         r = await self.box.exec(argv)
-        real = r["stdout"].splitlines()
+        real = r["stdout"].split("\0")[:-1]
         if r["rc"] != 0 or len(real) != 3:
             raise PermissionError(f"{path} did not resolve in the box: {r['stderr'].strip()[-300:]}")
         top = real[0].rstrip("/") + "/"
