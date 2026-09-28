@@ -90,25 +90,35 @@ async def main(kind: str, model: str | None) -> None:
         return max(req.text.split(), key=len)
 
     backend = build_backend(kind, model)
-    run = await actor.run(
-        Profile(
-            "counter", system="Use the commands; point at values; finish with OUT{} when both numbers are in."
-        ),
-        RunRequest(
-            inputs=(f"How many words, and which is the longest? Text: {TEXT!r}",),
-            emits=(Report,),
-            max_rounds=6,
-            time_budget=180,
-        ),
-        backend,
-    )
+    try:
+        run = await actor.run(
+            Profile(
+                "counter",
+                system="Use the commands; point at values; finish with OUT{} when both numbers are in.",
+            ),
+            RunRequest(
+                inputs=(f"How many words, and which is the longest? Text: {TEXT!r}",),
+                emits=(Report,),
+                max_rounds=6,
+                time_budget=180,
+            ),
+            backend,
+        )
+    except Exception:
+        if backend.calls:  # the calls that completed before the failure were paid for: say them
+            spent(backend)
+        raise
     print(f"{kind}: {type(run.outcome).__name__} after {run.round} rounds")
     for e in run.record:
         if e.kind is Kind.TEXT:
             print(f"  [{e.name}] {e.content.strip()[:160]!r}")
     if isinstance(run.outcome, Success):
         print("  output:", run.output["report"].model_dump())
+    spent(backend)
 
+
+def spent(backend) -> None:
+    """One line per call the backend made, whatever the run came to."""
     print(
         f"\n{'call':>4} {'ms':>6} {'input':>6} {'cached':>6} {'output':>6} {'think':>6} "
         f"{'cost $':>9}  finish / provider"
