@@ -268,6 +268,8 @@ class HookProcess:
         self.fail, self.alive, self.returncode = fail, True, None
 
     async def communicate(self, data: bytes | None = None) -> tuple[bytes, bytes]:
+        if data is None and self.fail is not None:  # a pipe that failed the read fails its drain too
+            raise ValueError("I/O operation on closed pipe")
         if data is not None and self.fail is not None:
             raise self.fail
         if data is not None:
@@ -343,7 +345,7 @@ def test_a_hook_that_fails_after_its_launch_is_killed_and_reaped_before_it_retur
     hook = Hook("after", "audit.sh", "audit", "*", 5)
     broken, fine = HookProcess(fail=OSError(5, "Input/output error")), HookProcess()
     spawned, killed = spawn_doubles(monkeypatch, broken, fine)
-    with pytest.raises(OSError, match="Input/output error"):
+    with pytest.raises(OSError, match="Input/output error"):  # the read's error, never the drain's
         asyncio.run(run_hook(hook, {"event": "after"}, tmp_path))
     assert killed == [(broken.pid, signal.SIGKILL)]
     assert broken.returncode is not None and not broken.alive  # the child is gone, and reaped
