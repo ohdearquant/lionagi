@@ -2,8 +2,9 @@
 The notice names a PR and the head the verdict evaluated; the artifact is read from the verdict
 dir only, as `VerdictFreshness` reads it, and must name that PR and head; one gh read gives the head now
 and the ownership inputs. Ownership is a ladder of rungs, branch prefix, then commit author name, then the
-daemon's actor map; the account login is never an input, since actors share it. A rung that disagrees with
-an earlier one, or no rung at all, is an error that names every rung's reading: never a guess. A stub (a
+daemon's actor map; the account login is never an input, since actors share it. On a fresh verdict of an
+open PR, a rung that disagrees with an earlier one, or no rung at all, is an error that names every rung's
+reading: never a guess; a stale or closed one is left for that reason, its owner unsettled. A stub (a
 decision in `stub_decisions`, the daemon's word that its engine did not answer) is decided as a stub with
 its cause before any gh read: there is no verdict to own."""
 
@@ -20,10 +21,11 @@ from .instruments import GH, Runner, VerdictFreshness, _resolve, sh
 __all__ = ("Verdicts",)
 
 _NOTICE = re.compile(r"([\w.-]+/[\w.-]+)#(\d+) @ ([0-9a-f]{8})")
-_ARTIFACT = re.compile(r"Artifact: (\S+)")
+_ARTIFACT = re.compile(r"Artifact: (.+\.(?:json|md))(?=\s|$)", re.M)  # a path may hold a space
 _VERDICT = re.compile(r"^(.+-\d+-[0-9a-f]{8})(?:-\d{8}T\d{6}-\d+-\d+)?\.(json|md)$")  # or set aside, stamped
 _COVERAGE = re.compile(r"^- coverage bounds:.*$", re.M)
 _EVALUATED = re.compile(r"^- evaluated head: ([0-9a-f]{40})\s*$", re.M)
+_REGISTER = re.compile(r"^- findings-register hash: (\S+)\s*$", re.M)
 
 
 class Verdicts:
@@ -97,12 +99,19 @@ class Verdicts:
             )
             return got
         got["coverage"] = "coverage: not in the artifact"
-        if "md" in files:  # the .md lands before its .json, so it can be another head's for a moment
+        if isinstance(cov := rec.get("coverage"), dict) and cov:  # the JSON's own, never the .md's
+            got["coverage"] = "- coverage bounds: " + ", ".join(f"{k}={v}" for k, v in sorted(cov.items()))
+        elif "md" in files:  # the .md lands before its .json, so it can be another round's for a moment
             try:
                 md = Path(files["md"][0]).read_text()
-                h = _EVALUATED.search(md)
+                h, reg = _EVALUATED.search(md), _REGISTER.search(md)
+                said = reg.group(1) if reg else None
                 if h and h.group(1) != ev:
                     got["coverage"] = f"coverage: companion .md is for head {h.group(1)[:8]}"
+                elif "json" in files and said != rec.get("register"):  # a companion names the JSON's round
+                    got["coverage"] = (
+                        f"coverage: companion .md is another round's (register {said or 'none'})"
+                    )
                 elif h and (c := _COVERAGE.search(md)):
                     got["coverage"] = c.group(0)
             except OSError as e:
@@ -121,6 +130,8 @@ class Verdicts:
             return undecided(f"{repo}#{n}: head not read: rc {rc}, {(err or out).strip()[:200]}")
         cur, branch = pr["headRefOid"], str(pr.get("headRefName") or "")
         got |= {"current_head": cur, "fresh": ev == cur, "state": pr.get("state"), "branch": branch}
+        if got["state"] not in ("OPEN", "CLOSED", "MERGED"):  # an unread state settles nothing
+            return undecided(f"{repo}#{n}: state not read: {got['state']!r}")
         # the ladder: each rung's reading, and the actor it answers, if any
         answers: list[tuple[str, str]] = []
         prefix, slash, _ = branch.partition("/")
@@ -139,14 +150,26 @@ class Verdicts:
             answers.append(("actor map", actor))
         got["rungs"]["actor map"] = f"{repo} -> {actor or 'no actor'}"
         said = "; ".join(f"{k} {v}" for k, v in got["rungs"].items())
-        if len({s for _, s in answers}) > 1:
-            return undecided(f"ownership disagreement: {said}")
-        if not answers:
-            return undecided(f"ownership: no rung names an actor: {said}")
-        got["owner_by"], got["owner"] = answers[0]
+        problem = (
+            f"ownership disagreement: {said}"
+            if len({s for _, s in answers}) > 1
+            else ""
+            if answers
+            else f"ownership: no rung names an actor: {said}"
+        )
+        if problem and got["fresh"] and got["state"] == "OPEN":  # only a live verdict needs its owner
+            return undecided(problem)
+        if not problem:
+            got["owner_by"], got["owner"] = answers[0]
         got["line"] = (
             f"{repo}#{n} @ {ev[:8]}: {got['decision']}, {got['blocking']} blocking, "
             + ("head fresh" if got["fresh"] else f"head STALE (now {cur[:8]})")
-            + f", {got['state']}, owner {got['owner']} by {got['owner_by']}, {got['read']}: {got['path']}"
+            + f", {got['state']}, "
+            + (
+                f"owner {got['owner']} by {got['owner_by']}"
+                if not problem
+                else f"owner unsettled ({problem})"
+            )
+            + f", {got['read']}: {got['path']}"
         )
         return got

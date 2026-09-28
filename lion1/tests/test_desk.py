@@ -172,7 +172,7 @@ def test_a_sweep_lists_the_chairs_new_mail_and_an_answer_replies_on_the_senders_
     (sent,) = khive.sent
     assert sent["to"] == ASKER and sent["thread_id"] == "t-q1" and sent["subject"] == "Re: disk?"
     assert sent["content"].startswith(
-        f"[desk] answered by {SELF} from its `disk` instrument; {OWNER} has not read"
+        f"[desk] answered by {SELF} from its `disk` instrument; it did not mark your message read for {OWNER}"
     )
     assert (
         "answers: what the probe was pointed at" in sent["content"] and "df: 301 GiB free" in sent["content"]
@@ -1509,6 +1509,16 @@ def test_a_clarify_quotes_the_message_asks_once_and_is_resolved_by_the_next_mess
         ("m-c1", "resolved"),
     ]
     assert rows[-1]["by"] == "m-c2" and desk._open_clarifies() == {} and len(khive.sent) == 1
+
+
+def test_the_model_is_told_the_readings_the_validator_admits():
+    """The clarify spec and the guidance name the same three sources the validator accepts."""
+    from hub import guidance
+
+    fields = desk_module.Clarify.model_fields
+    assert "a chore's name or a leave test" in fields["a"].description
+    assert "a chore's name or a leave test" in " ".join(desk_module.Clarify.__doc__.split())
+    assert "a chore's name or one of the leave tests" in guidance("desk")
 
 
 def test_a_clarify_is_refused_unless_both_readings_are_quoted_and_agents_only_once_per_thread(tmp_path):

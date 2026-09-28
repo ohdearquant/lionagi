@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from hub.agent import instruments as instr
-from hub.agent.chores import Chores
+from hub.agent.chores import Chores, Outcome
 from hub.agent.lookups import TAIL, Adrs, Decisions, Issues, Record, stem, terms
 from lionagi import MemoryNoteStore
 from tests.test_chores import DONE, OWNER, SELF, FakeKhive, Probe, full, mail
@@ -151,6 +151,90 @@ def test_adrs_score_titles_headings_and_rejected_alternatives_by_the_asks_words(
     empty.mkdir()
     out = asyncio.run(Adrs([empty]).run({"query": "mail"}))
     assert not out.control and out.positive == ""
+
+
+@pytest.mark.parametrize("second", ["missing", "a-file", "empty"])
+def test_adrs_a_configured_root_that_holds_no_record_fails_the_control_beside_one_that_answers(
+    tmp_path, second
+):
+    d = corpus(tmp_path)
+    other = tmp_path / "other"
+    if second == "a-file":
+        other.write_text("not a directory")
+    elif second == "empty":
+        other.mkdir()
+    out = asyncio.run(Adrs([d, other]).run({"query": "should the build queue escalate timeouts too?"}))
+    assert not out.control and out.positive == "" and out.count == 1  # the hit is still reported
+    assert out.evidence.endswith(f"; no record read under {other}")
+
+
+ADR_FENCED = """---
+adr: ADR-0030
+status: draft
+liveness: operating
+---
+
+```markdown
+# ADR-9999: A fenced title
+### C9: Widgets escalate gizmos ^c9
+## Alternatives
+| widgets gizmos | a fenced row |
+```
+
+# ADR-0030: The example
+
+~~~~
+### C8: Widgets fenced by tildes
+~~~~
+
+``` not a fence `here`
+### C1: The real claim about sprockets ^c1
+"""
+
+
+def test_adrs_read_no_heading_title_or_row_from_a_fenced_example(tmp_path):
+    d = tmp_path / "adr"
+    d.mkdir()
+    (d / "ADR-0030-the-example.md").write_text(ADR_FENCED)
+    out = asyncio.run(Adrs([d]).run({"query": "widgets gizmos"}))
+    assert out.control and out.count == 0 and out.findings == ()
+    out = asyncio.run(Adrs([d]).run({"query": "real sprockets"}))
+    (f,) = out.findings
+    assert f.startswith("ADR-0030 ADR-0030: The example (draft, operating)")
+    assert f.endswith("2 of 2 word(s); C1: The real claim about sprockets")
+
+
+class Part:
+    name = "custom"
+
+    def __init__(self, **fields):
+        self.fields = fields
+
+    async def run(self, args):
+        base = dict(findings=("x",), evidence="line", control=True, population="p", predicate="q", count=1)
+        return Outcome(**(base | {"positive": "known"} | self.fields))
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        {"population": ""},
+        {"predicate": " "},
+        {"positive": ""},
+        {"count": None},
+        {"evidence": ""},
+    ],
+    ids=["population", "predicate", "positive", "count", "evidence"],
+)
+def test_record_refuses_a_part_whose_answer_lacks_a_field_its_siblings_fill(tmp_path, missing):
+    d = corpus(tmp_path)
+    rec = Record([Adrs([d]), Part(**missing)])
+    out = asyncio.run(rec.run({"query": "build queue timeouts"}))
+    assert not out.control
+    assert out.findings[-1] == (
+        "[custom] its answer lacks its own output, population, predicate, count or known-positive; refused"
+    )
+    assert asyncio.run(Record([Adrs([d]), Part()]).run({"query": "build queue"})).control
 
 
 class SearchKhive:

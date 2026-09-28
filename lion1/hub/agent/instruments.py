@@ -10,6 +10,7 @@ instrument escalates instead of reading clean. `instruments(cfg, ...)` builds th
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -92,9 +93,18 @@ async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) ->
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        proc.kill()
+        await _stop(proc)
         return 124, "", f"{argv[0]} did not finish within {timeout}s"
+    except BaseException:  # a cancelled read still stops the child it started
+        await _stop(proc)
+        raise
     return proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
+
+
+async def _stop(proc: asyncio.subprocess.Process) -> None:
+    with contextlib.suppress(ProcessLookupError):  # it may have exited on its own
+        proc.kill()
+    await proc.wait()
 
 
 def _age_h(iso: str, now: float | None = None) -> float:
@@ -525,20 +535,29 @@ class GtdInbox:
         self.khive, self.assignee, self.every, self.max_age_h = khive, assignee, every, max_age_h
         self.empty_expected = empty_expected
 
+    PAGE = 100
+
     async def run(self, args: dict[str, Any]) -> Outcome:
         rows, any_ = await self.khive.exec(  # one invocation: the answer and its known-positive
-            f'[gtd.tasks(status="inbox", assignee={lit(self.assignee)}, limit=100), '
+            f'[gtd.tasks(status="inbox", assignee={lit(self.assignee)}, limit={self.PAGE}), '
             f"gtd.tasks(assignee={lit(self.assignee)}, limit=1)]"
         )
-        control = isinstance(any_, list) and len(any_) > 0
-        rows = rows if isinstance(rows, list) else []
+        read, kind = isinstance(rows, list), type(rows).__name__  # a non-list is unread, never empty
+        full = read and len(rows) >= self.PAGE  # a full page is a floor: the rows past it are unread
+        control = isinstance(any_, list) and len(any_) > 0 and read and not full
+        rows = rows if read else []
         old = [(r, _age_h(r["created_at"])) for r in rows if _age_h(r["created_at"]) > self.max_age_h]
         positive = (
             f"{self.assignee} has a task at all ({any_[0].get('id')}) in the call that listed the inbox"
             if control
             else ""
         )
-        lines = [f"control: {self.assignee} has {'a' if control else 'NO'} task at all; {len(rows)} in inbox"]
+        has = isinstance(any_, list) and len(any_) > 0
+        lines = [f"control: {self.assignee} has {'a' if has else 'NO'} task at all; {len(rows)} in inbox"]
+        if not read:
+            lines.append(f"the inbox read answered {kind}, not a list of tasks")
+        if full:
+            lines.append(f"the inbox read returned a full page of {self.PAGE}; rows past it are unread")
         lines += [f"{r['id']} {r.get('priority', '')} {r['title'][:70]} ({age:.0f}h)" for r, age in old]
         findings = (
             (f"{len(old)} gtd inbox row(s) older than {self.max_age_h:.0f}h of {len(rows)} in inbox",)
@@ -706,13 +725,13 @@ class Disk:
                     "node_modules",
                     ")",
                     "-prune",
-                    "-print",
+                    "-print0",
                 ]
             )
             if rc != 0:  # a partial enumeration is not an answer; what it did find is still sized
                 control = False
                 findings.append(f"{root}: find failed (rc {rc}): {err.strip()[:120]}")
-            targets.update(dict.fromkeys(out.split()))
+            targets.update(dict.fromkeys(p for p in out.split("\0") if p))
         for d in sorted(targets):
             rc, out2, err2 = await self.sh(["/usr/bin/du", "-sk", d], timeout=120)
             cols = out2.split()
@@ -777,9 +796,17 @@ class Worktrees:
                 control = False
                 findings.append(f"{repo}: git worktree list failed: {err.strip()[:120]}")
                 continue
-            rc, slug_out, _ = await self.sh([GIT, "-C", repo, "remote", "get-url", "origin"])
-            m = re.search(r"github\.com[:/]([^/]+/[^/.]+)", slug_out)
-            slug = m.group(1) if m else None
+            rc, slug_out, slug_err = await self.sh([GIT, "-C", repo, "remote", "get-url", "origin"])
+            m = re.search(r"(?:^|[/@])github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?/?\s*$", slug_out.strip())
+            slug = m.group(1) if rc == 0 and m else None
+            if slug is None:  # no repository to ask, so every branch's PR state is unread
+                control = False
+                why = (
+                    f"failed: {slug_err.strip()[:120]}"
+                    if rc != 0
+                    else f"names no GitHub repo: {slug_out.strip()[:120]}"
+                )
+                findings.append(f"{repo}: origin {why}")
             trees = [
                 dict(ln.split(" ", 1) for ln in block.splitlines() if " " in ln)
                 for block in out.strip().split("\n\n")
@@ -791,18 +818,27 @@ class Worktrees:
                 continue
             positives.append(f"{repo} lists {len(trees)} tree(s) incl. the main checkout; origin {slug}")
             lines.append(f"control: {positives[-1]}")
+            prev = _snapshot(self.state, f"worktrees:{repo}")
             snap = {}
             for t in trees[1:]:  # the first entry is the main checkout
                 path, branch = (
                     t.get("worktree", "?"),
                     (t.get("branch") or "detached").replace("refs/heads/", ""),
                 )
+                failed = []
                 rc, st, _ = await self.sh([GIT, "-C", path, "status", "--porcelain"])
                 dirty = len([ln for ln in st.splitlines() if ln.strip()]) if rc == 0 else -1
+                if rc != 0:
+                    failed.append("status")
                 rc, ts, _ = await self.sh([GIT, "-C", path, "log", "-1", "--format=%ct"])
-                age_d = (time.time() - int(ts.strip())) / 86400 if rc == 0 and ts.strip().isdigit() else -1
+                logged = rc == 0 and ts.strip().isdigit()
+                age_d = (time.time() - int(ts.strip())) / 86400 if logged else -1
+                if not logged:
+                    failed.append("log")
                 pr = "?"
-                if slug and branch != "detached":
+                if slug is None and branch != "detached":
+                    failed.append("PR")
+                elif branch != "detached":
                     rc, prs, _ = await self.sh(
                         [
                             GH,
@@ -818,20 +854,31 @@ class Worktrees:
                             "number",
                         ]
                     )
-                    pr = (
-                        ",".join(f"#{p['number']}" for p in json.loads(prs or "[]")) or "none"
-                        if rc == 0
-                        else "gh failed"
-                    )
+                    try:
+                        listed = json.loads(prs) if rc == 0 else None
+                    except json.JSONDecodeError:
+                        listed = None
+                    if isinstance(listed, list) and all(
+                        isinstance(p, dict) and "number" in p for p in listed
+                    ):
+                        pr = ",".join(f"#{p['number']}" for p in listed) or "none"
+                    else:  # a failed call and an answer that is not a list of PRs are both unread
+                        pr = "gh failed" if rc != 0 else "not a PR list"
+                        failed.append("PR")
                 parked = dirty > 0 and age_d > self.parked_days and pr == "none"
-                parked_n += parked
-                snap[path] = {"branch": branch, "dirty": dirty, "pr": pr, "parked": parked}
                 lines.append(
                     f"{path} | {branch} | dirty {dirty} | HEAD {age_d:.1f}d | PR {pr}"
                     + (" | PARKED" if parked else "")
                 )
+                if failed:  # the last good reading stands until a read succeeds
+                    control = False
+                    findings.append(f"{path}: the {', '.join(failed)} read failed; the tree is unread")
+                    if path in (prev or {}):
+                        snap[path] = prev[path]
+                    continue
+                parked_n += parked
+                snap[path] = {"branch": branch, "dirty": dirty, "pr": pr, "parked": parked}
             total += len(snap)
-            prev = _snapshot(self.state, f"worktrees:{repo}")
             if prev is None:
                 findings.append(f"{repo}: first snapshot, {len(snap)} worktree(s)")
             for p in sorted(set(prev or {}) | set(snap)):
@@ -1311,6 +1358,11 @@ class VerdictFreshness:
             text = Path(path).read_text()
             if "json" in files:
                 d = json.loads(text)
+                head = d["evaluated_head"]
+                if not isinstance(head, str) or not re.fullmatch(
+                    r"[0-9a-f]{40}", head
+                ):  # an identity, or unread
+                    raise ValueError(f"evaluated_head {str(d['evaluated_head'])[:48]!r} is not a full sha")
                 rec |= {
                     "read": "json",
                     "repo": d["repo"],
@@ -1322,6 +1374,8 @@ class VerdictFreshness:
                     "degraded": bool(d.get("degraded")),
                     "round_no": d.get("round_no") or -1,
                     "cause": str(d.get("cause") or "unstated"),
+                    "coverage": d.get("coverage_bounds"),
+                    "register": d.get("register_hash"),
                 }
             else:
                 head = re.match(r"# Review verdict \u2014 (\S+)#(\d+) @ [0-9a-f]{8}", text)
@@ -1620,6 +1674,8 @@ class CiRed:
         entries, gaps, verdicts, job, section = [], [], [], None, []
         for line in text.splitlines():
             if m := _LOCAL_JOB.match(line):
+                if job is not None:  # the next job began before this one's verdict: it is unread
+                    gaps.append(f"job {job}: no verdict before job {m.group(1)} began")
                 job, section = m.group(1), []
             elif (m := _LOCAL_VERDICT.match(line)) and m.group(1) == job:
                 verdicts.append(f"{job}={m.group(2)}")
