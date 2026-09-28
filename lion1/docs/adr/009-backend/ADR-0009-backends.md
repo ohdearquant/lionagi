@@ -222,7 +222,9 @@ anchor.
 ## Consequences
 
 - **S1**: A subscription CLI has no cost figure: the spend is unknown, never zero, and a reader that
-  sums it says so.
+  sums it says so. The agent's spend row counts such calls in `unknown`, beside the router's calls
+  whose `cost_complete` is false, and the readers [[ADR-0016-the-lion-command|ADR-0016]] S2 names
+  print the sum as partial.
 - **S2**: The same model through the loop and through its own CLI is comparable in one box
   ([[ADR-0012-the-bench|ADR-0012]], the bench).
 - **S3**: The subscription CLI hands back no count, so a run on it keeps the view estimate as its

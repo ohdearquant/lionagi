@@ -181,15 +181,22 @@ async def take_patch(
     return path
 
 
-def spent(calls: list[dict]) -> float:
+def spent(calls: list[dict]) -> tuple[float, int]:
     """What the session was billed: each call's `total_cost_usd` (every attempt, the failed ones
-    too), falling back to the last attempt's `usage.cost` for a backend that reports only that: a
-    total of 0 is a bill of 0, so only an absent total falls back."""
-    total = 0.0
+    too), falling back to the last attempt's `usage.cost` for a backend that reports only that, a
+    total of 0 being a bill of 0 so only an absent total falls back; and how many calls that sum
+    misses, with no figure at all or the router's `cost_complete` false."""
+    cost = 0.0
     for c in calls:
-        cost = c.get("total_cost_usd")
-        total += float(cost if cost is not None else (c.get("usage") or {}).get("cost") or 0)
-    return total
+        billed = c.get("total_cost_usd")
+        cost += float(billed if billed is not None else (c.get("usage") or {}).get("cost") or 0)
+    unknown = sum(
+        1
+        for c in calls
+        if (c.get("total_cost_usd") is None and (c.get("usage") or {}).get("cost") is None)
+        or c.get("cost_complete") is False
+    )
+    return cost, unknown
 
 
 def _branch(directory: Path) -> str:
@@ -425,7 +432,7 @@ async def _chat_main(
             except asyncio.CancelledError:  # a third Ctrl-C while the VM stops: still close, still leave
                 ended, interrupted = "interrupted", True
     calls = getattr(backend, "calls", [])
-    say.close(ended, len(calls), spent(calls), log)
+    say.close(ended, len(calls), *spent(calls), log)
     if interrupted:
         # a backend call may still be on its thread; the loop's shutdown would wait for it
         # (measured: a Ctrl-C that seemed to do nothing). The log is written; leave now.

@@ -1,7 +1,7 @@
 ---
 adr: ADR-0016
 status: draft
-liveness: partial (the command tree, the shared lock, the spend row and the chat's total-first cost line are under tests; the text `--stats` prints has no test; a mark for an unknown or partial cost is owed, and it has to reach a day whose row predates it)
+liveness: operating (the command tree, the shared lock, the spend row with its count of calls of unknown cost, a same-day row from before the count, the readers' mark of a partial sum, the chat's total-first cost line and the text `--stats` prints are under tests; the phone page renders the mark untested; a failed session CLI call lands no envelope, so the row misses it)
 date: "2026-09-25"
 area: command
 kind: new
@@ -101,16 +101,16 @@ the last wake move into `idle` and `idle_last`. After the run, or before a faile
 leaves, the row adds the mail and notices the wake ran and what the calls since the wake began cost.
 
 That is their count, tokens in (`prompt_tokens`, or input plus cache read plus cache write), tokens
-out, and the sum of `total_cost_usd`; an unknown cost adds nothing (S2). The keys are `day`, `cost`,
-`calls`, `in`, `out`, `mail`, `runs`, `idle`, `idle_last` and `wakes`; the sums restart on a new
-local day. The cursor keeps the wake's own `tokens` and `idle_polls`.
+out, the sum of `total_cost_usd`, and `unknown`, the calls it misses (S2). The keys are `day`,
+`cost`, `unknown`, `calls`, `in`, `out`, `mail`, `runs`, `idle`, `idle_last` and `wakes`; the sums
+restart on a new local day. The cursor keeps the wake's own `tokens` and `idle_polls`.
 
 ### C4: Every reader reads what the agent wrote _(enforced: mechanical)_ ^c4
 
 - **Subject**: `stats` in `apps/cli/lion_cli/agent.py`; `resident` and `wakes` in `hub/areas.py`;
   `spent` in `apps/cli/lion_cli/chat.py`.
-- **Violated when**: a reader estimates tokens from text, shows another day's row as today's, or
-  shows a directory it cannot read as zeros with no problem named.
+- **Violated when**: a reader estimates tokens from text, shows another day's row as today's, shows
+  a directory it cannot read as zeros with no problem named, or a partial cost without its mark.
 
 `lion agent --stats` prints the row, tokens per handled message, the last wake's cursor, and counts
 from the ledger and desk files; a directory with no notes is said, never a zero. `lion areas` shows
@@ -174,13 +174,17 @@ of [[ADR-0009-backends#^d3|ADR-0009/D3]] is not offered.
 ### D4: `_usage`, `_spend`, `_facts` and `_line` in `hub/agent/agent.py` ^d4
 
 Serves C3. `_usage(before)` reads the envelopes on the backend's `calls` from index `before`.
-`_spend` rewrites the day's row in one put on the agent's store. `_facts` adds the wake's `tokens`
-and `idle_polls` to the cursor. `_line` renders the cursor as the serve log's line, with the context
-the last turn stood in and the session restarts when present.
+`_usage` also counts the calls whose cost is unknown or incomplete. `_spend` rewrites the day's row
+in one put on the agent's store. `_facts` adds the wake's `tokens` and `idle_polls` to the cursor.
+`_line` renders the cursor as the serve log's line, with the context the last turn stood in and the
+session restarts when present.
 
 - **Landing evidence**: `tests/test_agent.py`: the cost cap from the backend's own figures, each
   burst of a continuous chair booked once, one serve line per wake, the last turn's context on the
-  line; `tests/test_chores.py`: the digest's tokens line.
+  line,
+  `test_a_call_of_unknown_or_incomplete_cost_adds_nothing_to_the_cost_and_the_readers_mark_the_sum`;
+  `tests/test_chores.py`: the digest's tokens line,
+  `test_the_digests_tokens_line_marks_a_days_cost_that_misses_calls_of_unknown_cost`.
 
 ### D5: The readers `stats`, `resident`, `wakes` and the chat's `spent` ^d5
 
@@ -188,13 +192,17 @@ Serves C4. `stats` loads `notes/agent.json` and the directory's ledgers. `reside
 resident's row from its own `chores.toml`, notes and lock, drops a row of another day, and names
 what it could not read; serving is the lock, never the pid in the file. `wakes` parses the serve log
 with the pattern the page shares. `spent` sums each call's `total_cost_usd`, its `usage.cost` only
-when the total is missing or null; the chat log keeps each envelope's cost as it came, null
-included.
+when the total is null, and counts the calls with neither or with `cost_complete` false; the chat
+log keeps each envelope's cost as it came.
 
 - **Landing evidence**: `tests/test_areas.py`: the resident's row read from its own files, serving
-  as the lock, the serve log's wake lines; `tests/test_chat.py`: the cost line over every attempt,
-  `test_the_cost_line_takes_a_total_of_zero_over_the_usage_cost_beside_it`;
-  `test_once_refuses_served_identity`: `--stats` under a held lock.
+  as the lock, the serve log's wake lines,
+  `test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_every_view`;
+  `tests/test_chat.py`: the cost line over every attempt,
+  `test_the_cost_line_marks_a_sum_that_misses_calls_of_unknown_or_incomplete_cost`,
+  `test_the_cost_line_takes_a_total_of_zero_over_the_usage_cost_beside_it`; `tests/test_agent.py`:
+  `test_once_refuses_served_identity`, `--stats` under a held lock;
+  `test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text`, the text it prints.
 
 ## Alternatives
 
@@ -215,11 +223,12 @@ included.
   ([[ADR-0013-the-agent|ADR-0013]]); which model a name binds to, through which route and on whose
   key, stay below [[ADR-0009-backends|ADR-0009]] S5. Two directories naming one actor (A3) are not
   caught here.
-- **S2**: An unknown cost adds nothing to the row and leaves no mark: a router call whose attempts
-  carry no cost figure reads as zero in `cost` while its call counts. The router's `cost_complete`
-  flag is not read, and the day's cost cap compares the known sum. A failed session CLI call lands
-  no envelope today, so the row misses it whole. A mark that the day's cost is partial, as
-  [[ADR-0009-backends|ADR-0009]] S1 asks of a reader that sums, is owed.
+- **S2**: A call with no cost figure adds nothing to `cost`, a router call whose `cost_complete` is
+  false adds its known subtotal; both count in `unknown`. The cap compares the known sum. While
+  `unknown` is not zero, `--stats`, `lion areas`, the digest, the wake line, the chat's closing line
+  and the cap's hold print `(partial: N call(s) of unknown cost)` beside the figure, as
+  [[ADR-0009-backends|ADR-0009]] S1 asks. The phone page renders it too, untested. A failed session
+  CLI call lands no envelope today, so the row misses it whole.
 - **S3**: For `claude_code` the row's dollars are the figure the CLI prints, taken per call as a
   delta ([[ADR-0009-backends#^c4|ADR-0009/C4]]); whether that figure is a bill under a subscription
   login is not shown here.
@@ -230,8 +239,9 @@ included.
 - **S6**: `mail` counts the notices a wake ran, queue tasks and watch notices, beside its mail;
   tokens per handled message divides by that count.
 - **S7**: A one-shot form against a served directory is refused; `--stats` is the read that works
-  while the agent serves. The text `--stats` prints has no test; the numbers under it are pinned by
-  the tests of D4.
+  while the agent serves. The text `--stats` prints is pinned whole by
+  `test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text`; the numbers under it
+  by the tests of D4.
 - **S8**: The serve log is standard output; `lion areas` reads it as `serve.log` in the agent
   directory, so a served agent's output has to land there. `lion agent` does not redirect it.
 - **S9**: An agent directory is whatever `--dir` names, and only a checkpoint written there checks
@@ -239,6 +249,12 @@ included.
   ([[ADR-0013-the-agent#^c7|ADR-0013/C7]]). The lock, notes, ledgers and landing files are written
   wherever the directory is, so it belongs where no checkout tracks it. The implementation's own
   repository ignores `.khive/`, where the bench example keeps its directory.
-- **S10**: The mark S2 owes is owed on the day it lands too: a row written that day before it
-  carries no count of the calls it missed, and reading that absence as none would show the day as
-  complete.
+- **S10**: A day's row written before the count carries no `unknown`, and its calls cannot be
+  counted later. The first wake after it writes `None` there and every later wake of that day keeps
+  it, so the readers print `(partial: calls of unknown cost before this count went uncounted)`
+  beside the day's dollars until the next day. A wake's own line counts its own calls as ever.
+  Pinned by `tests/test_agent.py`:
+  `test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_number_to_its_end`;
+  `tests/test_areas.py`:
+  `test_a_days_row_from_before_the_count_is_marked_partial_by_an_unknown_number_in_every_view`; the
+  digest test in `tests/test_chores.py`.

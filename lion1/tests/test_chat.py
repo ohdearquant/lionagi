@@ -336,15 +336,37 @@ def test_the_cost_line_reads_what_was_billed_across_every_attempt():
         {"usage": None, "total_cost_usd": 0.003},  # billed and failed: no usage at all
         {"usage": {"cost": 0.002}},  # a backend that reports only usage.cost
     ]
-    assert round(spent(calls), 4) == 0.014
+    cost, unknown = spent(calls)
+    assert round(cost, 4) == 0.014 and unknown == 0
+
+
+def test_the_cost_line_marks_a_sum_that_misses_calls_of_unknown_or_incomplete_cost(capsys):
+    from lion_cli.chat import spent
+    from lion_cli.view import Console
+
+    calls = [
+        {"usage": {"cost": 0.002}, "total_cost_usd": 0.004},
+        {"usage": {}, "total_cost_usd": None},  # no figure anywhere: a subscription CLI's call
+        {"usage": {}, "total_cost_usd": 0.001, "cost_complete": False},  # a retried attempt carried none
+    ]
+    cost, unknown = spent(calls)
+    assert round(cost, 4) == 0.005 and unknown == 2
+    Console("m", None, color=False, width=200).close("done", len(calls), cost, unknown, None)
+    out = capsys.readouterr().out
+    assert "done · 3 call(s) · $0.0050 (partial: 2 call(s) of unknown cost) · 0 entries" in out
+    Console("m", None, color=False, width=200).close("done", 1, 0.004, 0, None)
+    assert "done · 1 call(s) · $0.0040 · 0 entries" in capsys.readouterr().out
 
 
 def test_the_cost_line_takes_a_total_of_zero_over_the_usage_cost_beside_it():
     from lion_cli.chat import spent
 
-    assert spent([{"usage": {"cost": 0.005}, "total_cost_usd": 0}]) == 0
-    assert spent([{"usage": {"cost": 0.005}, "total_cost_usd": 0.0}, {"usage": {"cost": 0.002}}]) == 0.002
-    assert spent([{"usage": {"cost": 0.005}, "total_cost_usd": None}]) == 0.005
+    assert spent([{"usage": {"cost": 0.005}, "total_cost_usd": 0}]) == (0, 0)
+    assert spent([{"usage": {"cost": 0.005}, "total_cost_usd": 0.0}, {"usage": {"cost": 0.002}}]) == (
+        0.002,
+        0,
+    )
+    assert spent([{"usage": {"cost": 0.005}, "total_cost_usd": None}]) == (0.005, 0)
 
 
 def test_a_turn_with_out_is_refused_and_the_conversation_goes_on(tmp_path):
