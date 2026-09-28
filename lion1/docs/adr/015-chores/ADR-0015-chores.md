@@ -266,11 +266,11 @@ bypasses the handler: no refusals, no row, no send.
   write by the agent's own actor is the kernel's to give, with the identity's grants
   ([[ADR-0013-the-agent|ADR-0013]] S9).
 - **S3**: The missed-tick read pages through every scheduled row, 200 to a page, by offset until the
-  store's `has_more` is false, and filters to the actor in code, so no number of missed rows leaves
-  one unread (`test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once`). Offsets index
-  a list the store can change between pages; a row one pass skips that way is read by the next
-  pass's walk. The store's `list` filters scheduled rows by creator and by status before the page,
-  and the code passes neither; passing them is owed.
+  store says no more: `has_more` false, or a bare page short of 200. It filters to the actor in
+  code, so no number of missed rows leaves one unread
+  (`test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once`, both page shapes). A row
+  a moving list skips on one pass is read by the next. The store's `list` filters by creator and by
+  status before the page, and the code passes neither; passing them is owed.
 - **S4**: A standing state is told once until it changes, a standing failure included: a chore that
   recovers quietly and fails again the same way is not resent. The digest carries the counts, and an
   owner who wants a state again asks.
