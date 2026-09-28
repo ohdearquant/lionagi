@@ -1888,20 +1888,29 @@ def test_a_pr_list_that_is_not_a_json_list_is_unread_by_every_instrument_reading
     tmp_path, which, answer
 ):
     verdict(tmp_path, 7, SHA, head8=SHA[:8], mtime=1000)
-    build = {
-        "required-contexts": lambda sh: required(sh),
-        "verdict-freshness": lambda sh: VerdictFreshness(
-            MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh
-        ),
-        "ci-red": lambda sh: ci_red(sh),
-    }[which]
+    store = MemoryNoteStore()  # one store across the reads: the unread read must keep the last rows
     sh = {"required-contexts": required_sh, "verdict-freshness": freshness_sh, "ci-red": ci_sh}[which]()
-    assert asyncio.run(build(sh).run({})).control  # the control: a real list reads
+    inst = {
+        "required-contexts": lambda: required(sh, state=store),
+        "verdict-freshness": lambda: VerdictFreshness(
+            store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh
+        ),
+        "ci-red": lambda: ci_red(sh, state=store),
+    }[which]()
+    key = {
+        "required-contexts": "required-contexts:o/r",
+        "verdict-freshness": "verdict-freshness",
+        "ci-red": "ci-red:o/r",
+    }
+    assert asyncio.run(inst.run({})).control  # the control: a real list reads
+    kept = store.get(key[which]).value
+    assert kept
     sh.set("pr list -R o/r", answer)
-    out = asyncio.run(build(sh).run({}))
+    out = asyncio.run(inst.run({}))
     assert not out.control and f"o/r: gh pr list gave no JSON list: {answer[:120]!r}" in out.findings
+    assert store.get(key[which]).value == kept  # the last rows stay
     sh.set("pr list -R o/r", "[]")  # a decoded empty list is a value: no pull request to judge
-    assert asyncio.run(build(sh).run({})).control
+    assert asyncio.run(inst.run({})).control
 
 
 def test_ci_red_actions_extracts_each_failed_run_strips_ansi_and_stamps_and_counts_the_dedupe():
