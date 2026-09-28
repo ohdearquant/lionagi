@@ -341,7 +341,7 @@ def directives(
         return ring
     typed: set[str] = set()
     try:
-        for line in typed_log.read_text().splitlines():
+        for line in typed_log.read_text().split("\n"):  # JSONL is framed by LF; U+2028 sits inside a string
             try:
                 typed.add(str(json.loads(line).get("text", "")).strip())
             except (ValueError, AttributeError):
@@ -398,11 +398,72 @@ def watches(transcript_path: str | Path, actor: str, now: datetime | None = None
         if "persistent" in given:
             value["persistent"] = given["persistent"]
         out.append(Var(f"watch.{m['task']}", "watch", value, "transcript", m["at"]))
-    if not any(Path(INBOX_MONITOR).name in str(v.value.get("command") or "") for v in out):
+    running = False  # a watch runs the inbox script, itself or handed to a shell; a mention is not a run
+    for v in out:
+        try:
+            argv = shlex.split(str(v.value.get("command") or ""), comments=True)
+        except ValueError:  # a command that does not parse is not known to run it
+            continue
+        running = running or _runs_inbox(argv)
+    if not running:
         command = shlex.join(["bash", INBOX_MONITOR, actor, *(a for a in INBOX_PRIORITY if a != actor)])
         value = {"command": command, "description": f"{actor} inbox", "timeout_ms": None, "persistent": True}
         out.append(Var("watch.inbox", "watch", value, "declared", _now()))
     return out
+
+
+# options after which the shell still runs its script (each measured on bash, sh and zsh); after
+# any other (`-n`, `-s`, `--version`, `--rcfile FILE`) it is not known to
+_SHELL_SHORT = frozenset("abefhklmpruvxBCEHPT")
+_SHELL_SET = frozenset(("errexit", "nounset", "pipefail", "verbose", "xtrace"))  # `-o NAME`
+_SHELL_LONG = {
+    "zsh": frozenset(("--login", "--restricted", "--verbose")),
+    "bash": frozenset(
+        (
+            "--debugger",
+            "--login",
+            "--noediting",
+            "--noprofile",
+            "--norc",
+            "--posix",
+            "--restricted",
+            "--verbose",
+        )
+    ),
+}
+
+
+def _runs_inbox(argv: list[str]) -> bool:
+    """Whether `argv` runs the inbox script: itself, after `env [NAME=value ...]`, or handed to a shell
+    as its script or as the first word of its `-c` string. A command it cannot place is not known to."""
+    if argv and Path(argv[0]).name == "env":
+        argv = argv[1:]
+        while argv and "=" in argv[0] and not argv[0].startswith("-"):
+            argv = argv[1:]
+    if argv and Path(argv[0]).name in ("bash", "sh", "zsh"):
+        long = _SHELL_LONG["zsh" if Path(argv[0]).name == "zsh" else "bash"]
+        argv, string = argv[1:], False
+        while argv and argv[0][:1] in ("-", "+") and argv[0] not in ("-", "--"):
+            flag, argv = argv[0], argv[1:]
+            if flag.startswith("--"):
+                if flag not in long:
+                    return False
+            elif flag[1:] == "o":  # `-o pipefail`: the option takes the next word
+                if not argv or argv[0] not in _SHELL_SET:
+                    return False
+                argv = argv[1:]
+            else:
+                string = string or (flag[0] == "-" and "c" in flag)
+                if not set(flag[1:].replace("c", "") if flag[0] == "-" else flag[1:]) <= _SHELL_SHORT:
+                    return False
+        if argv and argv[0] in ("-", "--"):
+            argv = argv[1:]
+        if string:
+            try:
+                return bool(argv) and _runs_inbox(shlex.split(argv[0], comments=True))
+            except ValueError:
+                return False
+    return bool(argv) and Path(argv[0]).name == Path(INBOX_MONITOR).name
 
 
 def spawns(transcript_path: str | Path, now: datetime | None = None) -> list[Var]:

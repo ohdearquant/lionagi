@@ -11,11 +11,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from lion_cli.areas import context_api
+from lion_cli.context import checkpoint, restore, show, status
+from lion_cli.main import main
 
 from hub.agent import Agent
 from hub.context import (
     INBOX_MONITOR,
     context_figure,
+    cursor,
     directives,
     lanes,
     posture,
@@ -25,16 +29,21 @@ from hub.context import (
     watches,
 )
 from hub.khive import KhiveError
-from lionagi import Actor, Reply
+from lionagi import Actor, Kind, Record, Reply, fold
 from lionagi.checkpoint import (
     DIRECTIVES,
+    LAZY,
+    CheckpointError,
     NotIgnored,
     Var,
+    load,
     render_prompt,
     save,
     take,
+    to_history,
 )
-from tests.test_agent import FakeKhive, profile_for
+from tests.test_agent import REPLY, FakeKhive, mail, profile_for
+from tests.test_areas import call, registry, serve_on
 
 FIXTURE = Path(__file__).parent / "fixtures" / "session_transcript.jsonl"
 AT_TAKE = datetime(2026, 9, 24, 10, 5, tzinfo=UTC)  # the fixture's timed Monitor has not timed out yet
@@ -209,6 +218,66 @@ def test_the_inbox_line_quotes_a_monitor_path_with_a_space(monkeypatch):
     assert shlex.split(inbox.value["command"]) == ["bash", script, ACTOR]
 
 
+def test_a_watch_that_only_names_the_inbox_script_does_not_stand_for_it(tmp_path):
+    raw, name = FIXTURE.read_text(), Path(INBOX_MONITOR).name
+    arm = "bash /tmp/watch-one.sh --actor lambda:x"
+
+    def names(command: str) -> list[str]:
+        path = tmp_path / "t.jsonl"
+        path.write_text(raw.replace(arm, json.dumps(command)[1:-1]))  # the command sits in a JSON string
+        return [w.name for w in watches(path, ACTOR, AT_TAKE)]
+
+    runs_it = (
+        f"bash /opt/tools/{name} {ACTOR}",
+        f"/opt/tools/{name} {ACTOR}",
+        f"zsh {name}",
+        f"env bash /opt/tools/{name} {ACTOR}",
+        f"env TZ=UTC /opt/tools/{name}",
+        f"bash -x {name} {ACTOR}",
+        f"bash --noprofile /opt/tools/{name} {ACTOR}",
+        f"bash -o pipefail {name}",
+        f"bash -c '/opt/tools/{name} {ACTOR}'",
+        f"bash -xc 'env TZ=UTC {name}'",
+        f"bash -- /opt/tools/{name}",
+        f"bash --debugger /opt/tools/{name}",
+        f"zsh --login {name}",
+        f"bash -c -x /opt/tools/{name}",
+    )
+    for runs in runs_it:
+        assert names(runs) == ["watch.tmon1", "watch.tmon2"], runs
+    mentions_it = (
+        f"tail -f /tmp/{name}.log",
+        f"grep x /tmp/{name}",
+        f"true # {name}",
+        f"bash '{name}",
+        f"bash --version {name}",
+        f"bash -c 'echo {name}'",
+        f"bash --rcfile {name}",
+        f'bash -c "\'{name}"',
+        f"bash -o {name}",
+        f"bash -n {name}",
+        f"sh -s {name}",
+        f"zsh --norc {name}",
+        f"bash +c {name}",
+        f"bash -o noexec {name}",
+        f"bash -o -c /opt/tools/{name}",
+        f"bash -O extglob {name}",
+    )
+    for mentions in mentions_it:
+        assert names(mentions) == ["watch.tmon1", "watch.tmon2", "watch.inbox"], mentions
+
+
+def test_a_typed_prompt_holding_a_unicode_line_separator_is_still_the_actor_tools(tmp_path):
+    said = "placeholder prompt 10"
+    transcript = tmp_path / "t.jsonl"
+    transcript.write_text(FIXTURE.read_text().replace("placeholder prompt 10", "placeholder\\u2028prompt 10"))
+    typed = tmp_path / "typed.jsonl"
+    typed.write_text(json.dumps({"ts": 1, "text": said}, ensure_ascii=False) + "\n")
+    assert " " in typed.read_text()  # the line holds the raw separator, as a writer may leave it
+    kept = [d.value for d in directives("no-such-session", transcript, typed, sessions=tmp_path / "s")]
+    assert PROMPTS[8] in kept and said not in kept and PROMPTS[10] in kept
+
+
 def test_watches_are_the_monitors_still_running_verbatim_and_the_inbox_line_is_added_once(
     tmp_path, monkeypatch
 ):
@@ -303,6 +372,54 @@ def test_concurrent_saves_each_land_and_latest_names_one_of_them(tmp_path):
     assert len(files) == 12 and not list(ctx.glob(".latest.json.*"))
     latest = json.loads((ctx / "latest.json").read_text())["id"]
     assert (ctx / f"{latest}.json").exists()
+
+
+def test_the_loop_cursor_header_and_posture_are_read_and_an_event_turn_renders_as_a_wake(tmp_path):
+    d = actor_dir(tmp_path)
+    loop = d / ".khive" / "loop"
+    loop.mkdir(parents=True)
+    (loop / "archive").mkdir()
+    (loop / "archive" / "x_loop.md").write_text("# old\nARCHIVED-MARK\n")
+    (loop / "x_loop.md").write_text(
+        "# lambda:x loop cursor\n\n> HEADER-MARK newest record first\n\n## Posture\nPOSTURE-MARK holding\n\n"
+        "## LOG\nLOG-MARK 10:00 did things\n"
+    )
+    got = {v.name: v for v in cursor(d)}
+    assert got["cursor.header"].value == "# lambda:x loop cursor\n\n> HEADER-MARK newest record first"
+    assert got["cursor.posture"].value == "POSTURE-MARK holding" and got["cursor.posture"].kind == "posture"
+    # a header past LAZY is named in the prompt and read whole by `show`, never inlined
+    long_header = "# lambda:x loop cursor\n\n> " + "HEADER-LONG-MARK " * 40
+    (loop / "x_loop.md").write_text(long_header + "\n\n## Posture\nPOSTURE-MARK holding\n")
+    assert len(long_header) > LAZY
+    ckpt_long = take({}, cursor(d), actor=ACTOR, why="manual", budget=400)
+    long_prompt = render_prompt(ckpt_long)
+    assert "HEADER-LONG-MARK HEADER-LONG-MARK" not in long_prompt and "cursor.header" in long_prompt
+    save(ckpt_long, d)
+    assert show(d, "cursor.header") == long_header.strip()
+    (loop / "x_loop.md").write_text(
+        "# lambda:x loop cursor\n\n> HEADER-MARK newest record first\n\n## Posture\nPOSTURE-MARK holding\n\n"
+        "## LOG\nLOG-MARK 10:00 did things\n"
+    )
+    assert "LOG-MARK" not in json.dumps({k: v.value for k, v in got.items()})
+    assert cursor(tmp_path / "nowhere") == []
+    view = transcript_turns(FIXTURE, 10**6)
+    ckpt = take(
+        {"transcript": str(FIXTURE)},
+        [*harvest(tmp_path), *cursor(d)],
+        actor=ACTOR,
+        why="manual",
+        budget=10**6,
+        view=view,
+    )
+    prompt = render_prompt(ckpt)
+    assert '] wake:\n```\n[event] Agent "spawn four" finished\n```' in prompt
+    assert "] in:\n```\nplaceholder prompt two" in prompt
+    assert "POSTURE-MARK holding" in prompt and "ARCHIVED-MARK" not in prompt
+    # the two postures carry two labels: the transcript's and the cursor's
+    assert (
+        prompt.count("Your posture at the take:") == 1
+        and "Your loop file's posture (cursor.posture):" in prompt
+    )
 
 
 def test_the_first_line_re_arms_each_watch_verbatim_before_any_work(tmp_path):
@@ -430,6 +547,11 @@ def test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands
     with pytest.raises(NotIgnored, match="does not ignore it"):
         save(ckpt, d)
     assert not (d / ".khive" / "context").exists()
+    with pytest.raises(SystemExit) as out:
+        main(["context", "checkpoint", "--dir", str(d), "--transcript", str(FIXTURE)])
+    assert out.value.code == 1
+    assert "lion context checkpoint: " in capsys.readouterr().err
+    assert not (d / ".khive" / "context").exists()
     # the pattern a repo that tracks other .khive files uses, checked before the directory exists
     # (measured: `check-ignore .khive/context` said no, the directory form says yes)
     # (this actor dir sits BELOW the repo root, so the pattern needs `**/`; an actor that is the root
@@ -445,6 +567,56 @@ def test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands
     probe = subprocess.run(["git", "-C", str(tmp_path), "rev-parse"], capture_output=True, text=True)
     assert "not a git repository" in probe.stderr  # the control: tmp_path itself is outside a repository
     assert save(ckpt, actor_dir(outside)).is_file()
+
+
+def test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status(tmp_path, monkeypatch):
+    called: list[str] = []
+
+    async def no_run(*a, **k):
+        called.append("Actor.run")
+        raise AssertionError("a checkpoint ran a model")
+
+    monkeypatch.setattr(Actor, "run", no_run)
+    d = actor_dir(tmp_path)
+    done = checkpoint(d, "manual", transcript=FIXTURE, khive=TaskKhive([TASK]), now=AT_TAKE)
+    got = restore(d)
+    now = status(d, session="no-such-session")
+    assert called == []
+    assert done["id"] == got["id"] == now["latest"] and done["kept"] + done["hidden"] == 14
+    assert "watch.tmon1" in done["vars"] and "lane.1ane0001" in done["vars"]
+
+
+def test_a_long_var_is_its_name_size_and_loader_while_a_persons_words_and_watches_stay_whole(tmp_path):
+    words = "placeholder words, said once " * 40
+    command = "bash /tmp/long-watch.sh " + "a" * 500
+    lanes_ = [{"kind": "task", "id": f"t{i}", "title": "placeholder lane"} for i in range(20)]
+    given = [
+        Var("directive.1", "directive", words, "hook", ""),
+        Var(
+            "watch.t1",
+            "watch",
+            {"command": command, "description": "long", "timeout_ms": None},
+            "transcript",
+            "",
+        ),
+        Var("posture", "posture", "q" * (LAZY + 1), "notes", "7", ref='note.get(key="posture")'),
+        Var("lanes", "lane", lanes_, "khive", ""),
+        Var("short", "fact", "s" * LAZY, "declared", ""),
+    ]
+    c = take({}, given, actor=ACTOR, why="manual", budget=100)
+    by = {v.name: v for v in c.vars}
+    # a ref names the store that keeps the value; without one the checkpoint file keeps it
+    assert (by["posture"].value, by["posture"].size) == (None, LAZY + 1)
+    assert by["lanes"].value == lanes_ and by["lanes"].size == len(json.dumps(lanes_, ensure_ascii=False))
+    assert by["short"].size is None and by["directive.1"].size is None and by["watch.t1"].size is None
+    prompt = render_prompt(c)
+    assert words in prompt and command in prompt and "s" * LAZY in prompt
+    assert "q" * (LAZY + 1) not in prompt and '"t19"' not in prompt
+    assert f'{LAZY + 1} chars, not shown here; load it with `note.get(key="posture")`' in prompt
+    assert (
+        f"{by['lanes'].size} chars, not shown here; load it with `lion context show --id {c.id} --var lanes`"
+        in prompt
+    )
 
 
 class Raises:
@@ -486,3 +658,215 @@ def resident(khive: FakeKhive, backend, **kw) -> Agent:
 
 FAILS = '<lact {}>note.get(key="absent")</lact>'  # a failed command: the burst gets one more turn
 LONG_POSTURE = "quiet now; " + "placeholder posture " * 25
+
+
+def serve_one(agent: Agent) -> list[str]:
+    lines: list[str] = []
+    asyncio.run(agent.serve(until=lambda: len(lines) >= 1, log=lines.append))
+    return lines
+
+
+def test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_same_view(tmp_path):
+    backend = Growing((FAILS.format("g1"), 1_000), (FAILS.format("g2"), 500_000), (LONG_POSTURE, 500_000))
+    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    agent = resident(khive, backend)
+    lines = serve_one(agent)
+    (run,) = agent.runs
+    folds = [e for e in run.record if e.kind is Kind.SYSTEM and "directive" in e.meta]
+    assert len(folds) == 1 and folds[0].meta["directive"].refs and agent.errors == []
+    assert [line for line in lines if line.startswith("checkpoint ")] == [
+        f"checkpoint {load(tmp_path).id} (threshold) at seq {run.record.seq}"
+    ]
+    ckpt = load(tmp_path)
+    assert (
+        ckpt.why == "threshold" and ckpt.source["kind"] == "resident" and ckpt.source["seq"] == run.record.seq
+    )
+    assert ckpt.actor == khive.actor and ckpt.source["context"]["used"] > 60_000  # the figure the fold used
+    # the posture note is over LAZY: carried by its key and size, the note keeps the body
+    held = {v.name: v for v in ckpt.vars}
+    note = agent.actor.notes_for(run.profile).get("posture").value
+    assert len(note) > LAZY and (held["posture"].value, held["posture"].size) == (None, len(note))
+    assert held["posture"].ref == 'note.get(key="posture")' and "last_wake" in held
+    # no result rides inline: the record stays where source.record points
+    text = next((tmp_path / ".khive" / "context").glob("ckpt-*.json")).read_text()
+    assert "no note 'absent'" not in text and "no note 'absent'" in Path(ckpt.source["record"]).read_text()
+    history = to_history(ckpt)
+    assert [(e.seq, e.kind, e.content) for e in history] == [(e.seq, e.kind, e.content) for e in run.record]
+    # the next process: its first run starts from the checkpoint, the view folded where it folded
+    khive2 = FakeKhive(mail("lambda:a", "one more", mid="c3d4e5f6"), cwd=tmp_path)
+    backend2 = Growing(("still here", 2_000))
+    agent2 = resident(khive2, backend2)
+    serve_one(agent2)
+    (run2,) = agent2.runs
+    n = len(history)
+    assert [e.content for e in list(run2.record)[:n]] == [e.content for e in run.record]
+
+    def shape(record, upto):
+        return [
+            (v.entry.seq, v.hidden, v.summary)
+            for v in fold(record, protect_input=False)
+            if v.entry.seq < upto
+        ]
+
+    assert shape(run2.record, n) == shape(run.record, n)
+    hidden = [v.entry.name for v in fold(run.record, protect_input=False) if v.hidden]
+    first_view = "\n".join(m.content for m in backend2.seen[0])
+    assert hidden and all(name in first_view for name in hidden) and agent2.errors == []
+    # the take makes no model call: a backend that raises is never reached
+    agent.backend = Raises()
+    agent._checkpoint(run, "manual")
+    assert agent.backend.calls == [] and agent.errors == [] and load(tmp_path).why == "manual"
+
+
+def test_the_resident_checkpoints_when_stop_ends_its_run(tmp_path):
+    backend = Growing((FAILS.format("g1"), 1_000), ("never read", 1_000))
+    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    agent = resident(khive, backend, max_rounds=1)
+    serve_one(agent)
+    (run,) = agent.runs
+    ckpt = load(tmp_path)
+    assert ckpt.why == "end" and ckpt.source["seq"] == run.record.seq and agent.errors == []
+    assert len(backend.calls) == 1  # the second round's notification ended the run before the model
+
+
+def test_a_restore_that_cannot_replay_is_said_and_the_run_starts_fresh(tmp_path):
+    rec = Record("r0")
+    rec.append(Kind.INPUT, "placeholder")
+    source = {"record": str(tmp_path / "gone.jsonl"), "run": "r0"}
+    save(take(source, [], actor="lambda:a:echo", why="end", budget=100, record=rec), tmp_path)
+    with pytest.raises(CheckpointError, match="cannot be read"):
+        to_history(load(tmp_path))
+    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    agent = resident(khive, Growing((REPLY, 1_000)))
+    lines = serve_one(agent)
+    (run,) = agent.runs
+    assert lines[0].startswith("restore failed, the run starts fresh: restore: CheckpointError")
+    assert len(agent.errors) == 1 and "cannot be read" in agent.errors[0]
+    first = list(run.record)[0]
+    assert first.kind is Kind.INPUT and "say hi back" in first.content
+
+
+def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp_path, monkeypatch, capsys):
+    import lion_cli.context as cli
+
+    monkeypatch.setattr("hub.context.INBOX_PRIORITY", ("lambda:owner",))
+
+    def down(*a, **k):
+        raise KhiveError("kkernel not found on PATH or under ~/.cargo/bin")
+
+    monkeypatch.setattr(cli, "Khive", down)
+    d = actor_dir(tmp_path)
+    big = "b" * (LAZY + 100)
+    main(
+        ["context", "set", "--dir", str(d), "--name", "next", "--kind", "fact", "--value", "placeholder next"]
+    )
+    main(["context", "set", "--dir", str(d), "--name", "big", "--kind", "fact", "--value", big])
+    main(
+        ["context", "set", "--dir", str(d), "--name", "mcp", "--kind", "fact", "--value", '["khive", "lion"]']
+    )
+    declared = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert declared["value"] == ["khive", "lion"] and declared["source"] == "declared"
+    before = status(d)
+    assert (before["pending_vars"], before["latest"], before["stale"]) == (3, None, True)
+    main(["context", "checkpoint", "--dir", str(d), "--transcript", str(FIXTURE), "--why", "rotate"])
+    done = json.loads(capsys.readouterr().out)
+    assert {"next", "big", "mcp"} <= set(done["vars"]) and done["context"] == {
+        "used": None,
+        "window": None,
+        "pct": None,
+    }
+    assert load(d).source["lanes"].startswith("unavailable: kkernel not found")
+    after = status(d)
+    assert after["latest"] == done["id"] and after["pending_vars"] == 0  # the checkpoint drained them
+    main(["context", "restore", "--dir", str(d)])
+    prompt = capsys.readouterr().out
+    assert prompt.startswith(f"Checkpoint {done['id']} of {ACTOR}")
+    assert (
+        'MCP servers expected: ["khive", "lion"]' in prompt and "What to do first: placeholder next" in prompt
+    )
+    assert (
+        big not in prompt
+        and f"- big: {len(big)} chars, not shown here; load it with `lion context show" in prompt
+    )
+    main(["context", "show", "--dir", str(d), "--id", done["id"], "--var", "big"])
+    assert capsys.readouterr().out == big + "\n"
+    main(["context", "show", "--dir", str(d), "--var", "mcp"])
+    assert json.loads(capsys.readouterr().out) == ["khive", "lion"]
+    main(["context", "restore", "--dir", str(d), "--json"])
+    got = json.loads(capsys.readouterr().out)
+    assert set(got) == {"id", "first_prompt", "watches", "spawns"} and got["first_prompt"] == prompt.rstrip(
+        "\n"
+    )
+    assert got["watches"][-1]["command"].endswith(f"{ACTOR} lambda:owner")
+    for argv, said in (
+        (["restore", "--id", "../../etc/passwd"], "is not a name"),
+        (["show", "--var", "nosuch"], "has no var 'nosuch'"),
+    ):
+        with pytest.raises(SystemExit) as out:
+            main(["context", argv[0], "--dir", str(d), *argv[1:]])
+        assert out.value.code == 1 and said in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["context", "set", "--dir", str(d), "--name", "x", "--kind", "nonsense", "--value", "v"])
+
+
+def test_a_declared_value_holding_a_line_separator_is_read_back_whole(tmp_path):
+    import lion_cli.context as cli
+
+    d = actor_dir(tmp_path)
+    odd = ["a\nb", "a\x85b", "a\u2028b", "a\u2029b"]  # the writer keeps all but LF unescaped
+    for i, value in enumerate(odd):
+        cli.set_var(d, f"v{i}", "fact", value)
+    got, _ = cli._pending(d)
+    assert [v.value for v in got] == odd and status(d)["pending_vars"] == 4
+
+
+def test_the_context_routes_answer_for_a_registered_desk_only(tmp_path, monkeypatch):
+    import lion_cli.context as cli
+
+    d = actor_dir(tmp_path)
+    reg = registry(tmp_path, d)
+    code, doc = context_api(reg, "GET", "/api/context/status", {"dir": str(d)})
+    assert code == 200 and doc["latest"] is None
+    code, doc = context_api(reg, "GET", "/api/context/status", {"dir": str(tmp_path / "elsewhere")})
+    assert code == 404 and "not a desk" in doc["detail"]
+    code, doc = context_api(reg, "GET", "/api/context/restore", {"dir": str(d)})
+    assert code == 409 and "latest.json is absent" in doc["detail"]
+    # the desk has no transcript of its own here: the take refuses, and says so
+    code, doc = context_api(reg, "POST", "/api/context/checkpoint", {"dir": str(d), "why": "end"})
+    assert code == 409 and doc["ok"] is False and "no Claude Code transcript" in doc["detail"]
+    monkeypatch.setattr(cli, "newest_transcript", lambda directory: FIXTURE)
+    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    code, doc = context_api(reg, "POST", "/api/context/checkpoint", {"dir": str(d), "why": "end"})
+    assert code == 200 and doc["id"].startswith("ckpt-") and "lane.1ane0001" in doc["vars"]
+    code, doc = context_api(reg, "GET", "/api/context/restore", {"dir": str(d), "id": doc["id"]})
+    assert code == 200 and doc["first_prompt"].startswith("Checkpoint ckpt-")
+    assert context_api(reg, "DELETE", "/api/context/status", {"dir": str(d)})[0] == 404
+    # a declaration over the wire: the same pending file `lion context set` writes, refused on a bad kind
+    declared = {"dir": str(d), "name": "n", "kind": "fact", "value": "v"}
+    code, doc = context_api(reg, "POST", "/api/context/set", declared)
+    assert code == 200 and doc["name"] == "n" and doc["source"] == "declared"
+    assert (d / ".khive" / "context" / "pending.jsonl").read_text().count("\n") == 1
+    code, doc = context_api(reg, "POST", "/api/context/set", {"dir": str(d), "name": "n", "kind": "nope"})
+    assert code == 409 and "kind" in doc["detail"]
+    assert context_api(reg, "POST", "/api/context/set", {"dir": str(tmp_path / "x"), "name": "n"})[0] == 404
+
+
+def test_the_served_context_routes_sit_behind_the_same_gates(tmp_path):
+    d = actor_dir(tmp_path)
+    port = serve_on(registry(tmp_path, d))
+    code, text, _ = call(port, "GET", f"/api/context/status?dir={d}")
+    assert code == 200 and json.loads(text)["pending_vars"] == 0
+    assert call(port, "GET", f"/api/context/status?dir={tmp_path}")[0] == 404
+    code, text, _ = call(
+        port, "GET", f"/api/context/status?dir={d}", headers={"Host": f"evil.example:{port}"}
+    )
+    assert code == 403 and "is not this server" in text  # the Host gate, as on every other route
+    body = json.dumps({"dir": str(d), "why": "end"})
+    json_type = {"Content-Type": "application/json"}
+    assert (
+        call(port, "POST", "/api/context/checkpoint", body, {**json_type, "Origin": "http://evil.example"})[0]
+        == 403
+    )
+    code, text, _ = call(port, "POST", "/api/context/checkpoint", body, json_type)
+    assert code == 409 and json.loads(text)["ok"] is False  # no transcript for this desk: refused, said
+    assert not (d / ".khive" / "context").exists() or not list((d / ".khive" / "context").glob("ckpt-*.json"))

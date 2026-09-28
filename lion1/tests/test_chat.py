@@ -7,7 +7,7 @@ import json
 
 from hub import files
 from hub.chat import chat, entry_row, load_log
-from lionagi import Actor, Kind, Profile
+from lionagi import Actor, Kind, Profile, RunRequest
 from lionagi.actor import DEFAULT_HANDLERS, Message, Stopped, _messages
 from lionagi.checkpoint import CheckpointError, load, save, take, to_history
 from tests.test_actor import scripted
@@ -261,6 +261,84 @@ def test_each_entry_is_said_as_it_lands_not_at_the_next_round_boundary(tmp_path)
     assert [e.seq for e in said] == list(range(len(run.record)))  # and nothing said twice
 
 
+def test_an_exact_chat_id_resolves_beside_its_same_second_sibling(tmp_path):
+    # `X` and `X-02` both start with `X`; the id as given is the one meant
+    from lion_cli.chat import fresh_log, resolve_chat
+
+    chats = tmp_path / "chats"
+    a, _ = fresh_log(chats, "20260921-200000")
+    b, _ = fresh_log(chats, "20260921-200000")
+    assert (a, b) == ("20260921-200000", "20260921-200000-02")
+    assert resolve_chat(chats, a).stem == a and resolve_chat(chats, b).stem == b
+    try:
+        resolve_chat(chats, "20260921-2000")
+    except SystemExit as e:
+        assert "ambiguous" in str(e)
+    else:
+        raise AssertionError("a short prefix of two logs resolved")
+
+
+def test_a_start_that_fails_frees_its_empty_log_so_continue_keeps_the_old_history(tmp_path, monkeypatch):
+    # a bad hooks.toml failed the start after the new log was reserved; `-c` then chose the
+    # empty log and the previous history was gone from the next session
+    import argparse
+
+    from lion_cli.chat import chat_main, resolve_chat
+
+    chats = tmp_path / ".lion" / "chats"
+    chats.mkdir(parents=True)
+    old = chats / "20260921-100000.jsonl"
+    old.write_text('{"kind": "INPUT"}\n')
+    (tmp_path / ".lion" / "hooks.toml").write_text("[[before]]\nname = 'broken'\n")  # no `run`
+    a = argparse.Namespace(
+        dir=str(tmp_path),
+        resume=None,
+        log=None,
+        shell=False,
+        code=False,
+        offline=False,
+        model="x",
+        rounds=1,
+        raw=False,
+        say=None,
+        verbose=False,
+    )
+    try:
+        asyncio.run(chat_main(a))
+    except ValueError as e:
+        assert "has no `run`" in str(e)
+    else:
+        raise AssertionError("a broken hooks.toml started")
+    assert sorted(p.name for p in chats.iterdir()) == [old.name]
+    assert resolve_chat(chats, "last") == old
+    # --log into the chats directory and the person quits at the first prompt: the log was opened
+    # empty and a `not a.log` guard left it as `-c`'s next target
+    (tmp_path / ".lion" / "hooks.toml").unlink()
+
+    async def eof(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("lion_cli.chat.backend_for", lambda model: scripted("never"))
+    monkeypatch.setattr("lion_cli.view.stdin_ask", eof)
+    a.log = str(chats / "debug.jsonl")
+    try:
+        asyncio.run(chat_main(a))
+    except SystemExit:
+        pass
+    assert sorted(p.name for p in chats.iterdir()) == [old.name]
+
+
+def test_the_cost_line_reads_what_was_billed_across_every_attempt():
+    from lion_cli.chat import spent
+
+    calls = [
+        {"usage": {"cost": 0.005}, "total_cost_usd": 0.009},  # retried: the last attempt's usage only
+        {"usage": None, "total_cost_usd": 0.003},  # billed and failed: no usage at all
+        {"usage": {"cost": 0.002}},  # a backend that reports only usage.cost
+    ]
+    assert round(spent(calls), 4) == 0.014
+
+
 def test_a_turn_with_out_is_refused_and_the_conversation_goes_on(tmp_path):
     actor, profile = reader(tmp_path)
     said: list = []
@@ -270,6 +348,147 @@ def test_a_turn_with_out_is_refused_and_the_conversation_goes_on(tmp_path):
     sys_entries = [e.content for e in run.record if e.kind is Kind.SYSTEM]
     assert any("this conversation has no OUT{}" in c for c in sys_entries)
     assert [e.content for e in run.record if e.kind is Kind.TEXT][-1] == "Still here."
+
+
+def test_the_console_reads_and_codes_over_a_given_tree_with_the_box_guidance(tmp_path):
+    """`console(tree=..., about_box=...)`: the file and code tools work the tree handed in, not the
+    directory, and the shell guidance is the box's, not the VM's."""
+    from lion_cli.chat import console
+
+    class FakeTree:
+        def __init__(self):
+            self.files = {"a.py": "x = 1\n"}
+
+        async def read(self, path):
+            return self.files[path]
+
+        async def write(self, path, text):
+            self.files[path] = text
+
+        async def search(self, pattern, path, include):
+            return "a.py:1:x = 1\n" if pattern in "x = 1" else ""
+
+        async def list_dir(self, path):
+            return sorted(self.files)
+
+    class FakeBox:
+        workdir, prelude, dead = "/w", "", None
+
+        async def exec(self, argv, *, stdin=None, timeout=120, env=None):
+            return {"rc": 0, "stdout": "ran " + " ".join(argv[-1:]), "stderr": ""}
+
+    tree = FakeTree()
+    actor, profile = console(
+        tmp_path, model="m", sandbox=FakeBox(), coding=True, tree=tree, about_box="THE BOX RULES"
+    )
+    assert "THE BOX RULES" in profile.system and "a VM" not in profile.system
+    backend = scripted(
+        '<lact l1>list_dir(path=".")</lact><lact s1>search(pattern="x = 1", path=".")</lact>'
+        '<lact e1>edit(path="a.py", old="x = 1", new="x = 2")</lact><lact b1>bash(command="pytest")</lact>',
+        "done",
+    )
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), backend))
+    r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
+    assert r["l1"].value == ["a.py"] and r["s1"].value == "a.py:1:x = 1\n" and r["e1"].ok
+    assert tree.files["a.py"] == "x = 2\n" and not (tmp_path / "a.py").exists()
+    assert r["b1"].value["stdout"] == "ran pytest"
+
+
+def test_capture_failure_retains_box_and_reports_identity(tmp_path, monkeypatch, capsys):
+    # the copy is the only one, so the box is kept, not stopped, and named; the error the chat ended
+    # on is the one taking the patch raised
+    from tests.test_daytona import ChatBox, box_chat
+
+    async def unreadable(self, base="HEAD"):
+        raise RuntimeError("git diff in /w exited 128: fatal: bad object")
+
+    monkeypatch.setattr(ChatBox, "diff", unreadable)
+    ChatBox.made.clear()
+    err = box_chat(monkeypatch, ChatBox, tmp_path, "done")
+    box = ChatBox.made[-1]
+    assert isinstance(err, RuntimeError) and "fatal: bad object" in str(err)
+    assert box.started and not box.stopped  # retained
+    out = " ".join(capsys.readouterr().out.split())
+    assert f"box {box.box_id}: kept, not stopped" in out  # and named, so it can be reached
+
+
+def test_a_save_failure_or_a_dead_box_keeps_the_error_and_says_whether_the_box_can_be_reached(
+    tmp_path, monkeypatch, capsys
+):
+    from tests.test_daytona import ChatBox, box_chat
+
+    monkeypatch.setattr(
+        ChatBox, "patch", "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n"
+    )
+    chats = tmp_path / ".lion" / "chats"
+    (chats / "c1.patch").mkdir(parents=True)  # the patch cannot be written where it goes
+    ChatBox.made.clear()
+    err = box_chat(monkeypatch, ChatBox, tmp_path, "done", log=str(chats / "c1.jsonl"))
+    box = ChatBox.made[-1]
+    assert isinstance(err, IsADirectoryError) and not box.stopped
+    assert f"box {box.box_id}: kept, not stopped" in " ".join(capsys.readouterr().out.split())
+
+    async def died(self, base="HEAD"):
+        self.dead = "failed to resolve container IP"
+        raise RuntimeError("git diff: failed to resolve container IP")
+
+    monkeypatch.setattr(ChatBox, "diff", died)
+    err = box_chat(monkeypatch, ChatBox, tmp_path, "done")
+    out = " ".join(capsys.readouterr().out.split())
+    assert isinstance(err, RuntimeError) and "recovery unavailable: failed to resolve container IP" in out
+
+
+def test_preparation_failure_stops_the_box(tmp_path, monkeypatch):
+    from tests.test_daytona import ChatBox, box_chat
+
+    async def refused(self, *a, **k):
+        return {
+            "rc": 1,
+            "stdout": "",
+            "stderr": "fatal: not a git repository",
+            "elapsed": 0,
+            "timed_out": False,
+        }
+
+    async def refused_line(self, *a, **k):
+        return 1, "fatal: not a git repository"
+
+    monkeypatch.setattr(ChatBox, "exec", refused)
+    monkeypatch.setattr(ChatBox, "run", refused_line)
+    ChatBox.made.clear()
+    err = box_chat(monkeypatch, ChatBox, tmp_path, "done")
+    assert isinstance(err, RuntimeError) and "baseline failed" in str(err)
+    assert ChatBox.made[-1].started and ChatBox.made[-1].stopped
+
+
+def test_a_push_that_fails_still_stops_the_box(tmp_path, monkeypatch):
+    from tests.test_daytona import ChatBox, box_chat
+
+    async def bad_push(self, directory):
+        raise OSError("push into /w failed (rc 2): tar: short read")
+
+    monkeypatch.setattr(ChatBox, "push", bad_push)
+    ChatBox.made.clear()
+    err = box_chat(monkeypatch, ChatBox, tmp_path, "done")
+    box = ChatBox.made[-1]
+    assert box.started and isinstance(err, OSError)
+    assert box.stopped, f"the start failed on {err!r} and the box was never stopped"
+
+
+def test_saved_patch_then_apply_failure_cleans_up(tmp_path, monkeypatch, capsys):
+    from tests.test_daytona import ChatBox, box_chat
+
+    (tmp_path / "f.txt").write_text("moved on\n")
+    patch = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n"
+    monkeypatch.setattr(ChatBox, "patch", patch)
+    ChatBox.made.clear()
+    assert box_chat(monkeypatch, ChatBox, tmp_path, "done", apply=True) is None
+    (saved,) = (tmp_path / ".lion" / "chats").glob("*.patch")
+    assert saved.read_text() == patch and (tmp_path / "f.txt").read_text() == "moved on\n"
+    assert ChatBox.made[-1].stopped  # the patch is on disk: the box is not needed
+    monkeypatch.setattr(ChatBox, "patch", "")
+    assert box_chat(monkeypatch, ChatBox, tmp_path, "done") is None
+    assert ChatBox.made[-1].stopped and "box: no change in the copy" in capsys.readouterr().out
 
 
 def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_path):

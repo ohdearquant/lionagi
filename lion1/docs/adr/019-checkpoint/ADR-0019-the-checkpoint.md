@@ -140,10 +140,10 @@ A lazy value shows its name, size and loader: its `ref` or `lion context show`.
   completed, stopped or older spawn counts as running.
 
 A Monitor's deadline is its timeout, five minutes when none is given, capped at 30 minutes whatever
-`persistent` says (A3). Of one command armed twice the newest arm decides, running or not. An inbox
-Monitor for the directory's actor is added when no kept `watch` runs the inbox script. A spawn
-counts only when its result named an agent id and it started within 12 hours (A4). A timestamp with
-no zone is read as UTC.
+`persistent` says (A3). Of one command armed twice the newest successful arm decides, running or
+not; an arm that failed is never kept and retires no older arm. An inbox Monitor for the directory's
+actor is added when no kept `watch` runs the inbox script. A spawn counts only when its result named
+an agent id and it started within 12 hours (A4). A timestamp with no zone is read as UTC.
 
 ### C6: A checkpoint lands only where git ignores it, and no take overwrites another _(enforced: mechanical)_ ^c6
 
@@ -235,7 +235,7 @@ in the agent's note file, and each value the run declared. Its record is written
 checkpoint as `record-<run>.jsonl`, rewritten whole at each take, after the same ignore check. A
 take that fails is kept among the agent's errors and the run goes on.
 
-- **Landing evidence**: `tests/test_checkpoint.py`:
+- **Landing evidence**: `tests/test_context.py`:
   `test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_same_view`,
   `test_the_resident_checkpoints_when_stop_ends_its_run`,
   `test_a_restore_that_cannot_replay_is_said_and_the_run_starts_fresh`.
@@ -266,7 +266,7 @@ take that fails is kept among the agent's errors and the run goes on.
   are the actor's active khive tasks, and `source.lanes` says the rest were not read.
 - **S5**: One `latest.json` serves both arms. A Claude Code checkpoint taken in a resident's
   directory, the only kind of directory the `/api/context/` routes reach, becomes the latest; the
-  resident's next process refuses it and starts fresh ([[ADR-0013-the-agent|ADR-0013]] S9). No test
+  resident's next process refuses it and starts fresh ([[ADR-0013-the-agent|ADR-0013]] S8). No test
   pins it.
 - **S6**: `hub/context.py` reads fixed places under the home directory: Claude Code's project
   directory, the hook ring, the typing log and the statusline's files; where no tool writes one, it
