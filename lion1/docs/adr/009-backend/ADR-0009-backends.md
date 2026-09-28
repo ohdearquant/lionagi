@@ -150,16 +150,16 @@ Cancelling a call kills and reaps the CLI child before the cancellation goes on.
 - **Violated when**: a tool runs after a refusal or after a hook that could not ask, or a call lands
   nowhere on the record.
 
-A served run's `[claude_code] tools` hands the session CLI its own tools, up to `max_turns` per
-turn. Given an actor, its pre-tool hook hands each call to the actor's privilege check
+`[claude_code] tools` hands the session CLI its tools, `max_turns` per turn. With an actor, the
+pre-tool hook hands each call to the actor's privilege check
 ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]), `requires` naming a tool's privileges, then its before
 hooks ([[ADR-0005-command-handling#^c4|ADR-0005/C4]]). A refusal, or a hook that cannot ask, stops
-the tool; a replacement becomes its input.
+the tool; a replacement is its input.
 
 Each call lands on the run's record as a RESULT under the CLI's tool-use id, started or not
-executed; what the tool did stays in the CLI's session, past the subset, after hooks and bus (S11).
-`lion agent` hands over its actor; without one the session is trusted by review of its
-configuration. The bench's host-side baseline is no backend of `run`
+executed; a repeated id is refused, landing suffixed by its entry's seq. What the tool did stays in
+the CLI's session, past subset, after hooks and bus (S11). `lion agent` hands over its actor;
+without one the session is trusted as configured. The bench's host-side baseline is no backend
 ([[ADR-0012-the-bench|ADR-0012]] S6).
 
 ## Decisions

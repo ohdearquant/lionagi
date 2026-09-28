@@ -496,14 +496,21 @@ def test_the_gate_admits_nothing_when_it_cannot_decide(tmp_path):
     seen = json.loads((tmp_path / "seen.json").read_text())
     assert [s["rc"] for s in seen["seen"]] == [2, 2]
     assert "the runtime's gate failed: LookupError: gated has no live run 'gone'" == seen["seen"][0]["err"]
-    # the same id twice: the second call cannot land on the record, so it does not run
+    # the same id twice: the second call is refused, and its refusal lands under the id suffixed
     (tmp_path / "calls.json").write_text(
         json.dumps([_tool("Bash", "toolu_a", command="ls"), _tool("Bash", "toolu_a", command="ls")])
     )
     run = asyncio.run(actor.run(Profile("worker"), RunRequest(inputs=("go",), max_rounds=1), backend))
     first, again = json.loads((tmp_path / "seen.json").read_text())["seen"]
-    assert first["rc"] == 0 and again["rc"] == 2 and "ValueError" in again["err"]
-    assert [e.alias for e in run.record if e.kind is Kind.RESULT] == ["toolu_a"]
+    assert first["rc"] == 0 and again["rc"] == 2
+    assert again["err"] == "refused: tool-use id 'toolu_a' is already on the record"
+    acts = [e for e in run.record if e.kind is Kind.RESULT]
+    assert [e.alias for e in acts] == ["toolu_a", f"toolu_a_{acts[1].seq}"]
+    assert (acts[1].content.ok, acts[1].content.reason, acts[1].meta["execution"]) == (
+        False,
+        "refused",
+        "not executed",
+    )
     # the call is over and its socket gone: the same hook, asked now, stops the tool
     command = json.loads((tmp_path / "seen.json").read_text())["hook"]["command"]
     late = subprocess.run(

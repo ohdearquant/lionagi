@@ -408,13 +408,19 @@ async def _ask(
         if live is None:
             raise LookupError(f"{actor.name} has no live run {run!r}")
         la = Lact(call["tool_use_id"], call["tool_name"], call["tool_input"])
-        verdict = await actor.gate(
-            live, la, _ToolInput.model_validate(la.args), frozenset(requires.get(la.name, ()))
-        )
-        if isinstance(verdict, Result):
-            live.record.append(
-                Kind.RESULT, verdict, alias=la.alias, round=live.round, execution="not executed"
+        alias = la.alias
+        if live.record.has_alias(alias):
+            # the CLI's ids are its own and never repeat; a repeat is refused, and the refusal still
+            # lands, under the id suffixed by the record's next seq, so the call is on the record
+            why = f"refused: tool-use id {alias!r} is already on the record"
+            verdict: Result | BaseModel = Result(la.name, False, error=why, reason="refused")
+            alias = f"{alias}_{live.record.seq}"
+        else:
+            verdict = await actor.gate(
+                live, la, _ToolInput.model_validate(la.args), frozenset(requires.get(la.name, ()))
             )
+        if isinstance(verdict, Result):
+            live.record.append(Kind.RESULT, verdict, alias=alias, round=live.round, execution="not executed")
             answer = {"refuse": verdict.error}
         else:
             args = verdict.model_dump(mode="json")
