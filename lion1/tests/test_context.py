@@ -1148,3 +1148,20 @@ def test_a_claude_code_checkpoint_in_a_residents_directory_is_refused_by_its_nex
     first = list(run.record)[0]
     assert first.kind is Kind.INPUT and "one more" in first.content and "say hi back" not in first.content
     assert load(d, own.id) == own  # the resident's checkpoint is on disk, no longer the one latest names
+
+
+def test_only_the_first_invalid_row_is_spelled_out():
+    from hub.context import _valid
+
+    class Counted:
+        calls = 0
+
+        def __repr__(self):
+            Counted.calls += 1
+            return "x" * 200
+
+    rows = [{"number": Counted()} for _ in range(100)] + [{"number": 3}]
+    good, note = _valid(rows, "pr")
+    assert [r["number"] for r in good] == [3]
+    assert note == f" (100 invalid; the first: number {'x' * 40}, not a positive int)"
+    assert Counted.calls == 1  # the other 99 are counted, never rendered

@@ -514,27 +514,27 @@ def _valid(rows: list, kind: str) -> tuple[list[dict], str]:
     adds for the rest: how many were invalid and what the first one was. A row is an object; a pull
     request's number is a positive int, never a bool; any other row's `properties` is an object when
     given, and the id its lane is named by is a non-empty string."""
-    good, bad = [], []
+    good, bad, first = [], 0, ""  # the count and the first reason: only the first is ever spelled out
     for r in rows:
         if not isinstance(r, dict):
-            bad.append(f"{type(r).__name__}, not an object")
+            bad, first = bad + 1, first or f"{type(r).__name__}, not an object"
             continue
         if kind == "pr":
             n = r.get("number")
             if isinstance(n, bool) or not isinstance(n, int) or n < 1:
-                bad.append(f"number {n!r:.40}, not a positive int")
+                bad, first = bad + 1, first or f"number {n!r:.40}, not a positive int"
                 continue
         else:
             props = r.get("properties")
             if props is not None and not isinstance(props, dict):
-                bad.append(f"properties {type(props).__name__}, not an object")
+                bad, first = bad + 1, first or f"properties {type(props).__name__}, not an object"
                 continue
             key = (props or {}).get("thread_id") or r.get("id") if kind == "thread" else r.get("id")
             if not isinstance(key, str) or not key:
-                bad.append(f"id {key!r:.40}, not a non-empty string")
+                bad, first = bad + 1, first or f"id {key!r:.40}, not a non-empty string"
                 continue
         good.append(r)
-    return good, f" ({len(bad)} invalid; the first: {bad[0]})" if bad else ""
+    return good, f" ({bad} invalid; the first: {first})" if bad else ""
 
 
 async def lanes(khive: Khive) -> tuple[list[Var], str]:
