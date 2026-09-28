@@ -204,10 +204,10 @@ scores ADR titles, headings and Alternatives rows. `Decisions` keeps khive notes
 matched, beside a known positive in the same batch. One failed control fails the whole; no hit is an
 empty population, and the desk leaves it.
 
-The reply's first line says the desk answered from its `record` instrument and that the owner has
-not read the message. Then come the lead, "the record holds these, one may settle it:", and the
-report, each finding naming its lookup. The tail asks whether what settles it is complete, or to say
-so on the thread to reopen it.
+The reply's first line says the desk answered from its `record` instrument and did not mark it read
+for the owner. Then come the lead, "the record holds these, one may settle it:", and the report,
+each finding naming its lookup. The tail asks whether what settles it is complete, or to say so on
+the thread to reopen it.
 
 ### C9: The owner hears of what the desk did in the brief, and a window moves only once delivered _(enforced: mechanical)_ ^c9
 
@@ -445,9 +445,9 @@ least two and at most all of them.
 
 ## Consequences
 
-- **S1**: A sender gets an answer from the desk's actor, saying the owner has not read the message,
-  before the owner reads it. A sender who wants the owner's judgment says so, and the guidance
-  leaves such mail.
+- **S1**: A sender gets an answer from the desk's actor, saying the desk did not mark the message
+  read for the owner, and the owner may read it at any time. A sender who wants the owner's judgment
+  says so, and the guidance leaves such mail.
 - **S2**: The desk handles mail that arrives after it went live; the backlog is the owner's. A row
   the owner marks read before discovery reads it is never pending, since discovery lists unread
   rows.
