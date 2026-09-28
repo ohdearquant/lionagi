@@ -38,7 +38,7 @@ from tests.test_instruments import FakeSh
 
 EV = "f00dcafe" + "e" * 32  # the head the verdict evaluated
 NOW = "c0ffee00" + "1" * 32  # the PR's head after a later push
-COVERAGE = "- coverage bounds: diff-chars=ok(10/100), debt-hits=hit(?/25)"
+COVERAGE = "- coverage bounds: debt-hits=hit(?/25), diff-chars=ok(10/100)"
 PREFIX = {"x": "lambda:x", "b": "lambda:b"}
 AUTHORS = {"Ann": "lambda:a", "b": "lambda:b"}
 VIEW = [GH, "pr", "view", "7", "-R", "o/r", "--json", "headRefOid,headRefName,state,commits"]
@@ -75,6 +75,7 @@ def pair(
             "blocking": list(blocking),
             "asserted_blocking": len(blocking),
             "degraded": degraded,
+            "coverage_bounds": {"debt-hits": "hit(?/25)", "diff-chars": "ok(10/100)"},
         } | ({"cause": cause} if cause else {})
         stem.with_suffix(".json").write_text(json.dumps(body))
     if md_file:
@@ -271,30 +272,21 @@ def test_an_artifact_whose_evaluated_head_is_not_a_full_sha_is_undecided_never_s
     assert sh.calls == []  # nothing is asked of gh about an artifact whose identity did not read
 
 
-def test_the_jsons_own_coverage_is_the_coverage_and_a_companion_of_another_round_lends_none(tmp_path):
+def test_a_json_verdict_takes_its_own_coverage_and_a_companion_md_lends_none(tmp_path):
     d = tmp_path / "verdicts"
     pair(d)
     j, md = d / "o-r-7-f00dcafe.json", d / "o-r-7-f00dcafe.md"
     body = json.loads(j.read_text())
     j.write_text(json.dumps(body | {"coverage_bounds": {"diff-chars": "ok(1/9)", "debt-hits": "ok(0/25)"}}))
+    assert (
+        triage(d, gh(), notice(d))["coverage"] == "- coverage bounds: debt-hits=ok(0/25), diff-chars=ok(1/9)"
+    )
+    # no coverage in the JSON: the .md beside it may be another round's, whatever head or register it names
+    del body["coverage_bounds"]
+    j.write_text(json.dumps(body | {"register_hash": "abc123", "round_no": 2}))
+    md.write_text(md.read_text().replace(COVERAGE, f"- findings-register hash: abc123\n{COVERAGE}"))
     got = triage(d, gh(), notice(d))
-    assert got["coverage"] == "- coverage bounds: debt-hits=ok(0/25), diff-chars=ok(1/9)"
-    # no coverage in the JSON: the .md lends its line only when it names the JSON's register
-    j.write_text(json.dumps(body | {"register_hash": "abc123"}))
-    text = md.read_text()
-    md.write_text(text.replace(COVERAGE, f"- findings-register hash: abc123\n{COVERAGE}"))
-    assert triage(d, gh(), notice(d))["coverage"] == COVERAGE
-    md.write_text(text.replace(COVERAGE, f"- findings-register hash: def456\n{COVERAGE}"))
-    got = triage(d, gh(), notice(d))
-    assert got["coverage"] == "coverage: companion .md is another round's (register def456)"
-    md.write_text(text)
-    got = triage(d, gh(), notice(d))
-    assert got["coverage"] == "coverage: companion .md is another round's (register none)"
-    # a JSON naming no register takes no line from a .md that names one
-    j.write_text(json.dumps(body))
-    md.write_text(text.replace(COVERAGE, f"- findings-register hash: def456\n{COVERAGE}"))
-    got = triage(d, gh(), notice(d))
-    assert got["coverage"] == "coverage: companion .md is another round's (register def456)"
+    assert got["coverage"] == "coverage: not in the artifact" and got["read"] == "json"
 
 
 @pytest.mark.parametrize("name", ["o-r-7-f00dcafe.md", "o-r-7-f00dcafe.json"])
@@ -346,8 +338,7 @@ def test_a_companion_md_of_another_head_lends_the_json_no_coverage(tmp_path, md_
     head = f"- evaluated head: {md_head}\n" if md_head else ""
     md.write_text(text.replace(f"- evaluated head: {EV}\n", head))
     got = triage(d, gh(), notice(d))
-    want = "coverage: companion .md is for head c0ffee00" if md_head else "coverage: not in the artifact"
-    assert got["coverage"] == want, got["coverage"]
+    assert got["coverage"] == COVERAGE, got["coverage"]  # the JSON's own
     read = [got[k] for k in ("errors", "read", "evaluated_head", "decision", "fresh")]
     assert read == [[], "json", EV, "REQUEST-CHANGES", True]
 

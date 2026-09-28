@@ -1375,7 +1375,6 @@ class VerdictFreshness:
                     "round_no": d.get("round_no") or -1,
                     "cause": str(d.get("cause") or "unstated"),
                     "coverage": d.get("coverage_bounds"),
-                    "register": d.get("register_hash"),
                 }
             else:
                 head = re.match(r"# Review verdict \u2014 (\S+)#(\d+) @ [0-9a-f]{8}", text)
