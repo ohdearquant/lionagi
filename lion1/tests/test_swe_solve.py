@@ -139,6 +139,16 @@ def test_a_turn_cut_at_the_cap_or_blank_is_named_in_the_next_notice(tmp_path: Pa
     assert rec["outcome"] == "Exhausted:rounds" and rec["rounds"] == 3
 
 
+def test_the_row_counts_the_repairs_by_name_and_measures_each_unknown_name(tmp_path: Path):
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+    turn = '<lact a1>bsh(command="ls")</lact>\n<lact a2>bash(command="ls"</lact>'
+    rec = asyncio.run(
+        solve(row, "m", 1, tmp_path, "codex", box=ToolBox(), backend=Turns((turn, {"finish_reason": "stop"})))
+    )
+    assert rec["repairs"] == {"closers": 1}
+    assert rec["unknown_names"] == [["bsh", "bash", 1]]
+
+
 class DyingBox(ToolBox):
     """The first command kills the box, as a Daytona container with no IP does."""
 

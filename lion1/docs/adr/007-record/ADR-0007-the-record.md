@@ -1,7 +1,7 @@
 ---
 adr: ADR-0007
 status: draft
-liveness: operating (the note read pinned per command, the captures on the entry, the consumed directive, the fold by date and the cross-profile note read are owed)
+liveness: operating (the note read pinned per command, the captures on the entry, the consumed directive on the closure, the fold by date and the cross-profile note read are owed)
 date: "2026-09-23"
 area: record
 kind: new
@@ -195,7 +195,9 @@ date and a resumed chat replays them by folding. `_perform` pins the targets' se
 a command's directive, and stores none when a ref names nothing on the record.
 
 - **Landing evidence**: `test_a_hidden_result_is_a_placeholder_and_a_summarized_one_is_not`,
-  `test_a_directive_naming_nothing_on_the_record_is_refused_not_stored_empty`.
+  `test_a_directive_naming_nothing_on_the_record_is_refused_not_stored_empty`; the consumed marks on
+  the notification, `meta["consumed"]`: `test_the_consumed_hide_survives_the_log_as_a_directive` and
+  `test_a_consumed_result_never_reaches_the_backend_yet_its_pointer_and_context_show_do`.
 
 ### D3: `notes.py` with a memory store and a file store ^d3
 

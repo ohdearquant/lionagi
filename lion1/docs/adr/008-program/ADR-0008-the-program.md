@@ -1,7 +1,7 @@
 ---
 adr: ADR-0008
 status: draft
-liveness: unimplemented
+liveness: operating (the consumed marks of a last turn on the closure, the normalised program on the TEXT entry, the tag form lowered to the same nodes and the name repairs with their bench measurement are owed)
 date: "2026-09-23"
 area: program
 kind: extends
@@ -112,7 +112,8 @@ The runtime's own evaluator (never `eval`) computes it when its node executes; a
 waits. Values are data (scalars, strings, lists, dicts, a Spec's fields); access and indexing read,
 never call. A type error settles the node `invalid`, naming both. The only loop is the
 comprehension; a call is a command node, `DO name(...)` (C6). `note["key"]` is read once per node,
-with its version: one expression, one version. A size limit on what it builds is owed.
+with its version: one expression, one version. A build past 100,000 characters and items settles
+`invalid`.
 
 ### C4: A command's result may be assigned to a note, and then it is not in the view _(enforced: mechanical)_ ^c4
 
@@ -194,8 +195,14 @@ consumption, on the next notification or the closure ([[ADR-0007-the-record#^d2|
 resumed chat folds it and recompiles nothing; the record keeps four kinds
 ([[ADR-0007-the-record#^c1|ADR-0007/C1]]).
 
-- **Landing evidence**: owed: `tests/test_program.py` with the example above resolving in one turn,
-  a syntax error refusing the whole message with nothing executed, and each catalogue repair named.
+- **Landing evidence**: `lionagi/program.py` (beside `lionagi/lndl.py`, which a `lionagi/lndl/`
+  package would shadow); `tests/test_program.py`: `test_the_records_example_resolves_in_one_turn`,
+  `test_a_syntax_error_refuses_the_whole_message_and_nothing_runs`,
+  `test_a_check_that_fails_refuses_the_whole_message_naming_the_line`,
+  `test_a_build_past_the_size_limit_settles_the_node_invalid`,
+  `test_if_elif_else_runs_only_the_taken_branch_and_a_return_ends_the_program`,
+  `test_each_catalogue_repair_is_named_and_counted`. A pointer reaches an earlier line's name or the
+  record, so no cycle can be written.
 
 ### D2: The repair catalogue is data, and each repair is counted ^d2
 
@@ -204,8 +211,12 @@ Serves C2. A table of repairs with a name, a matcher and a rewrite; the four rea
 as "<line>: read as X; if that is not what you meant, write it again", and the run counts repairs by
 name so the bench can say which slips models make.
 
-- **Landing evidence**: owed: the count in the run's usage row; unknown-name refusals with their
-  edit distance to the nearest known name, measured before the name repair is turned on.
+- **Landing evidence**: `test_the_tag_forms_repairs_are_counted_by_name`,
+  `test_an_unknown_name_is_measured_against_the_nearest_known_name_in_both_forms`, and in
+  `tests/test_swe_solve.py`
+  `test_the_row_counts_the_repairs_by_name_and_measures_each_unknown_name`: the bench row carries
+  `repairs` by name and `unknown_names` as name, nearest known name and Levenshtein distance. Owed:
+  a bench run that takes the measurement, and the name repairs it turns on.
 
 ### D3: Note assignment and view curation in the dispatcher's settle ^d3
 
@@ -217,8 +228,14 @@ consumption, rides the next notification, or the closure when no turn follows
 consumes nothing. A RESULT `OUT{}` names is never consumed; the fold renders a consumed RESULT as
 any hidden one, a placeholder.
 
-- **Landing evidence**: owed: a test where the consumed result never appears in a backend's messages
-  while the pointer and `context.show` still reach it.
+- **Landing evidence**:
+  `test_a_consumed_result_never_reaches_the_backend_yet_its_pointer_and_context_show_do`,
+  `test_a_result_the_output_names_is_never_consumed`,
+  `test_the_consumed_hide_survives_the_log_as_a_directive`,
+  `test_the_context_figure_counts_a_consumed_result_as_its_placeholder`,
+  `test_a_failed_producer_writes_nothing_and_the_assignment_is_told_not_written`. The hide rides the
+  notification's `meta["consumed"]`, beside the fold's `meta["directive"]`. Owed: the closure's
+  half, with the closure (ADR-0006).
 
 ## Alternatives
 

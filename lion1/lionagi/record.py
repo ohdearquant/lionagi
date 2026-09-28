@@ -133,11 +133,12 @@ class ViewEntry:
 
 
 def directives(record: Record) -> list[Directive]:
-    """Directives in record order, off the RESULT of a context command or the SYSTEM entry of a fold."""
+    """Directives in record order, off the RESULT of a context command or a notification's SYSTEM entry:
+    the hide of what a program consumed, then the fold event."""
     out = []
     for e in record:
-        if e.kind in (Kind.RESULT, Kind.SYSTEM) and isinstance(e.meta.get("directive"), Directive):
-            out.append(e.meta["directive"])
+        if e.kind in (Kind.RESULT, Kind.SYSTEM):
+            out += [d for d in (e.meta.get("consumed"), e.meta.get("directive")) if isinstance(d, Directive)]
     return out
 
 

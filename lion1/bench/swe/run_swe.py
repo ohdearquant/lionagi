@@ -345,6 +345,10 @@ async def solve(
         if stopped_by:
             rec["stopped_by"] = stopped_by[0]
         rec["rounds"] = run.round
+        rec["repairs"] = dict(run.repairs)  # the slips the reading repaired, counted by name
+        # each unknown command with the nearest known name and its edit distance, measured while the
+        # name repair is off
+        rec["unknown_names"] = [list(m) for m in run.misnamed]
         rec["seconds_in_loop"] = run.elapsed
         rec["watch"] = watch.state()
         rec["model_patch"] = await box.diff(rec["base"])

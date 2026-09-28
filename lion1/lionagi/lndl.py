@@ -106,6 +106,7 @@ class Program:
     lacts: list[Lact] = field(default_factory=list)
     out: Out | None = None
     problems: list[str] = field(default_factory=list)  # constructs dropped from this turn, and why
+    repairs: list[str] = field(default_factory=list)  # each repair a call's reading applied, by name
 
     @property
     def aliases(self) -> set[str]:
@@ -355,7 +356,7 @@ def _close_dangling(source: str) -> str | None:
 
 def _insert_commas(source: str) -> str | None:
     """`run(cmd="ls" timeout=1)`: the comma between two arguments left out. None when none is missing
-    or the text does not tokenize."""
+    or the text does not tokenize. Only inside brackets: `a = f(x=1)` then `b = ...` is two statements."""
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (tokenize.TokenError, SyntaxError, ValueError):  # ValueError: 3.12+'s tokenizer, a lone surrogate
@@ -363,7 +364,8 @@ def _insert_commas(source: str) -> str | None:
     offsets = _line_offsets(source)
     spots = []
     skip = (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT, tokenize.DEDENT)
-    for i in range(1, len(tokens) - 1):
+    depth = 0
+    for i in range(len(tokens) - 1):
         tok, nxt = tokens[i], tokens[i + 1]
         k = i - 1
         while k > 0 and tokens[k].type in skip:  # the previous argument may end on an earlier line
@@ -372,13 +374,23 @@ def _insert_commas(source: str) -> str | None:
         value_end = prev.type in (tokenize.STRING, tokenize.NUMBER) or (
             prev.type == tokenize.OP and prev.string in ")]}"
         )
-        if tok.type == tokenize.NAME and nxt.type == tokenize.OP and nxt.string == "=" and value_end:
+        keyword = tok.type == tokenize.NAME and nxt.type == tokenize.OP and nxt.string == "="
+        if depth and keyword and value_end:
             spots.append(offsets[tok.start[0] - 1] + tok.start[1])
+        if tok.type == tokenize.OP and tok.string in ("(", "[", "{"):
+            depth += 1
+        elif tok.type == tokenize.OP and tok.string in (")", "]", "}"):
+            depth -= 1
     if not spots:
         return None
     for at in reversed(spots):
         source = source[:at] + ", " + source[at:]
     return source
+
+
+_CLOSERS = "the call's closers were missing at its end and were supplied"
+_COMMA = "a comma between arguments was missing and was supplied"
+_REPAIRED = {_CLOSERS: "closers", _COMMA: "comma"}  # a repair's note -> its name, for the run's count
 
 
 def _readings(source: str) -> list[tuple[str, str | None]]:
@@ -388,14 +400,13 @@ def _readings(source: str) -> list[tuple[str, str | None]]:
         out.append((_escape_newlines_in_strings(source), None))
     closed = _close_dangling(source)
     if closed is not None:
-        note = "the call's closers were missing at its end and were supplied"
-        out.append((closed, note))
+        out.append((closed, _CLOSERS))
         if "\n" in closed:
-            out.append((_escape_newlines_in_strings(closed), note))
+            out.append((_escape_newlines_in_strings(closed), _CLOSERS))
     for text, _ in list(out):
         with_commas = _insert_commas(text)
         if with_commas is not None:
-            out.append((with_commas, "a comma between arguments was missing and was supplied"))
+            out.append((with_commas, _COMMA))
     return out
 
 
@@ -746,6 +757,7 @@ def parse(text: str) -> Program:
     lvars: list[Lvar] = []
     lacts: list[Lact] = []
     problems: list[str] = []
+    repairs: list[str] = []
     seen: set[str] = set()
 
     outs: list[str] = []
@@ -779,6 +791,7 @@ def parse(text: str) -> Program:
             name, args, note = parse_call_noting(body)
             if note:
                 problems.append(f"<lact {alias}>: {note}; if that is not the call you meant, write it again")
+                repairs.append(_REPAIRED[note])
             lacts.append(Lact(alias=alias, name=name, args=args, spec=spec, field=fld))
 
     out = None
@@ -791,7 +804,7 @@ def parse(text: str) -> Program:
             out = parse_out(outs[0])
         except LNDLError as e:
             problems.append(f"OUT{{...}} could not be read, so this turn ran without it: {e}")
-    return Program(lvars=lvars, lacts=lacts, out=out, problems=problems)
+    return Program(lvars=lvars, lacts=lacts, out=out, problems=problems, repairs=repairs)
 
 
 def guidance(outputs: tuple[str, ...] = (), commands: Iterable[str] | None = None) -> str:

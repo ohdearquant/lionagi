@@ -132,8 +132,9 @@ def entry_row(e: Entry) -> dict:
             "reason": content.reason,
         }
     meta = dict(e.meta)
-    if isinstance(d := meta.get("directive"), Directive):  # what this entry did to the view, as data
-        meta["directive"] = {"op": d.op, "refs": list(d.refs), "text": d.text, "at": d.at, "seqs": d.seqs}
+    for key in ("directive", "consumed"):  # what this entry did to the view, as data
+        if isinstance(d := meta.get(key), Directive):
+            meta[key] = {"op": d.op, "refs": list(d.refs), "text": d.text, "at": d.at, "seqs": d.seqs}
     return {
         "seq": e.seq,
         "kind": e.kind.name,

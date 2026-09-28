@@ -109,14 +109,15 @@ def entry_of(row: dict) -> Entry | None:
         content = Result(**content)
     # `execution`: whether a result's handler was called; an older log has none, which says nothing
     meta = {k: v for k, v in (row.get("meta") or {}).items() if k in _KEEP}
-    if isinstance(d := (row.get("meta") or {}).get("directive"), dict):
-        meta["directive"] = Directive(
-            op=d["op"],
-            refs=tuple(d["refs"]),
-            text=d.get("text", ""),
-            at=int(d.get("at", 0)),
-            seqs=tuple(d["seqs"]) if d.get("seqs") is not None else None,
-        )
+    for key in ("directive", "consumed"):  # a program's consumed results ride a notification too
+        if isinstance(d := (row.get("meta") or {}).get(key), dict):
+            meta[key] = Directive(
+                op=d["op"],
+                refs=tuple(d["refs"]),
+                text=d.get("text", ""),
+                at=int(d.get("at", 0)),
+                seqs=tuple(d["seqs"]) if d.get("seqs") is not None else None,
+            )
     return Entry(
         seq=row["seq"],
         kind=kind,
