@@ -57,12 +57,15 @@ Source: `Actor.run` in `lionagi/actor.py`.
 | when, first row that fits                                 | what executes                                       | outcome                                                          |
 | --------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------- |
 | a bound is spent at the turn's start                      | nothing                                             | `Exhausted(reason)`, unless `run.more` was granted in an earlier turn (ADR-0003) |
+| under `wait`, after a reply or a pause with no command pending, `wait` answers false at the turn's start | nothing, not even the notification | `Stopped(n)`                                     |
 | `stop()` is true after the notification                   | nothing                                             | `Stopped(n)`                                                     |
 | the message carries the loop's own `<system round=` frame, or two `OUT{}` | nothing                             | a retry; the error rides the next notification                   |
-| the message has no LNDL                                   | nothing                                             | the run continues, with an idle note                             |
+| under `wait`, the message has no command and no `OUT{}`   | nothing                                             | the run continues as a reply; `wait` is asked at the next turn's start |
+| the message has no LNDL, in a run without `wait`          | nothing                                             | the run continues, with an idle note                             |
 | the message has `OUT{}` and its fields do not assemble | every command; `OUT{}` waits, then fails to assemble; the turn settles | a retry; the error rides the next notification, a repeat counted (C3) |
 | the message has `OUT{}` and `accept` refuses it | every command; `OUT{}` refused; the turn settles | a retry with the reason; `Refused` after `max_refusals` in a row |
 | the message has `OUT{}` | every command; `OUT{}` waits for what it references, then assembles | `Success` when the fields assemble and `accept` has nothing to say; the rest cancelled and reaped |
+| under `wait` with `reply_on_commands`, the message has commands and no `OUT{}`, every one lands ok and nothing is refused | every command | the run continues once they settle, as a reply; `wait` is asked at the next turn's start |
 | the message has no `OUT{}`                                | every command                                       | the run continues once they settle                               |
 
 Every command in a turn is dispatched, `OUT{}` or not: a model that writes "edit, then done" in one
@@ -122,14 +125,18 @@ outcome.
 
 ### D1: The loop is `Actor.run` as written ^d1
 
-Serves C1 to C4. Bounds are checked at the turn's start, the inbox is taken, the notification is
-appended, `stop` is asked, the backend is called once, the message is read, every command is
-dispatched, and the turn settles. The caller reads `run.outcome` after the loop returns.
+Serves C1 to C4. Bounds are checked at the turn's start; under `wait`, after a reply or pause,
+`wait` is asked, and false ends the run. Then the inbox is taken, the notification is appended,
+`stop` is asked, the backend is called once, the message is read, every command is dispatched, and
+the turn settles. Under `wait` a message with no command and no `OUT{}` replies, and with
+`reply_on_commands` so does one whose commands all landed;
+`test_with_reply_on_commands_a_turn_whose_commands_all_landed_is_the_reply_and_a_failed_one_is_not`
+pins the three `wait` rows. The caller reads `run.outcome` after the loop returns.
 
-- **Landing evidence**: `tests/test_actor.py`; tests compare `Exhausted`, `Refused` and `Stopped` by
-  value and `Success` by type. Owed: a cancelled command's RESULT is on the record when `run`
-  returns; the closure entry (ADR-0006/C1). One cancelled before it entered is recorded by
-  `_never_started`.
+- **Landing evidence**: `tests/test_actor.py`, `tests/test_actor_edges.py`; tests compare
+  `Exhausted`, `Refused` and `Stopped` by value and `Success` by type. Owed: a cancelled command's
+  RESULT is on the record when `run` returns; the closure entry (ADR-0006/C1). One cancelled before
+  it entered is recorded by `_never_started`.
 
 ## Alternatives
 
@@ -142,8 +149,11 @@ dispatched, and the turn settles. The caller reads `run.outcome` after the loop 
 
 ## Consequences
 
-- **S1**: A retry costs a turn and appears in the record as an event; a caller counting outcomes
-  never sees it.
+- **S1**: A retry costs a turn, and its message stays on the record as TEXT; the retry itself is the
+  `round.retry` event on the actor's bus and `run.retry_error`. Its reason enters the record only in
+  the next turn's notification, so a retry on the run's last turn leaves none there; a caller
+  counting outcomes never sees it. The notification is pinned by
+  `test_an_out_that_does_not_assemble_is_a_retry_that_names_what_is_wrong`; no test pins the event.
 - **S2**: The idle row keeps a talking model alive; `max_idle` (ADR-0003) is what ends it.
 - **S3**: The code still says round where this corpus says turn: `max_rounds`, `Exhausted(rounds)`,
   `<system round=`, "rounds running", the `round.*` events, `Stopped(round)`. The rename is owed
