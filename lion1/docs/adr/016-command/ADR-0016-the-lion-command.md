@@ -1,7 +1,7 @@
 ---
 adr: ADR-0016
 status: draft
-liveness: operating (the command tree, the shared lock, the spend row with its count of calls of unknown cost, the readers' mark of a partial sum and the text `--stats` prints are under tests; the phone page shows no mark; a failed session CLI call lands no envelope, so the row misses it)
+liveness: operating (the command tree, the shared lock, the spend row with its count of calls of unknown cost, the readers' mark of a partial sum and the text `--stats` prints are under tests; the phone page renders the mark untested; a failed session CLI call lands no envelope, so the row misses it)
 date: "2026-09-25"
 area: command
 kind: new
@@ -223,11 +223,11 @@ cost as it came, null included.
   key, stay below [[ADR-0009-backends|ADR-0009]] S5. Two directories naming one actor (A3) are not
   caught here.
 - **S2**: A call with no cost figure adds nothing to `cost`, a router call whose `cost_complete` is
-  false adds its known subtotal, and both count in `unknown`. The day's cap compares the known sum.
-  While `unknown` is not zero, `--stats`, `lion areas`, the digest, the wake line, the chat's
-  closing line and the cap's hold print `(partial: N call(s) of unknown cost)` beside the figure, as
-  [[ADR-0009-backends|ADR-0009]] S1 asks; the phone page does not. A failed session CLI call lands
-  no envelope today, so the row misses it whole.
+  false adds its known subtotal; both count in `unknown`. The cap compares the known sum. While
+  `unknown` is not zero, `--stats`, `lion areas`, the digest, the wake line, the chat's closing line
+  and the cap's hold print `(partial: N call(s) of unknown cost)` beside the figure, as
+  [[ADR-0009-backends|ADR-0009]] S1 asks. The phone page renders it too, untested. A failed session
+  CLI call lands no envelope today, so the row misses it whole.
 - **S3**: For `claude_code` the row's dollars are the figure the CLI prints, taken per call as a
   delta ([[ADR-0009-backends#^c4|ADR-0009/C4]]); whether that figure is a bill under a subscription
   login is not shown here.

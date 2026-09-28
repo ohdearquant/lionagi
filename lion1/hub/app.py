@@ -79,7 +79,10 @@ function esc(s) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
-function money(n) { return '$' + (Number(n) || 0).toFixed(4); }
+function money(n, unknown) {  // the mark hub.areas.partial() writes, beside the dollars it qualifies
+  return '$' + (Number(n) || 0).toFixed(4) +
+    (unknown > 0 ? ' (partial: ' + unknown + ' call(s) of unknown cost)' : '');
+}
 // 32 hex characters, the token the server keys a send on; getRandomValues also runs over plain http
 function uid() {
   return Array.prototype.map.call(crypto.getRandomValues(new Uint8Array(16)), function (x) {
@@ -164,7 +167,7 @@ function renderList() {
       '<div class="meta">' + esc(r.role) + ' \\u00b7 ' + r.wake + ' wake(s)' +
       (r.last_at ? ' \\u00b7 last ' + esc(r.last_at) + ' ' + esc(r.last_outcome) : '') + '</div>' +
       '<div class="meta">today ' + r.runs_today + ' run(s) \\u00b7 ' + r.mail_today + ' mail \\u00b7 ' +
-      money(r.cost_today) + '</div>' +
+      money(r.cost_today, r.unknown_today) + '</div>' +
       (r.problem ? '<div class="problem">' + esc(r.problem) + '</div>' : '') + '</a>';
   }).join('') || '<p class="meta">no residents</p>';
 }
@@ -192,16 +195,19 @@ function loadDetail() {
 }
 
 function parseWake(line) {
-  var m = /(\\d+) in, (\\d+) out, \\$([\\d.]+)/.exec(line);
+  var m = /(\\d+) in, (\\d+) out, \\$([\\d.]+)(?: \\(partial: (\\d+) call\\(s\\) of unknown cost\\))?/
+    .exec(line);
   if (!m) return null;
   var ctx = /last turn stood in (\\d+) tokens/.exec(line);
   var rst = /(\\d+) session restart\\(s\\)/.exec(line);
-  return { tin: m[1], tout: m[2], cost: m[3], ctx: ctx ? ctx[1] : null, rst: rst ? +rst[1] : 0 };
+  return { tin: m[1], tout: m[2], cost: m[3], unknown: m[4] ? +m[4] : 0,
+    ctx: ctx ? ctx[1] : null, rst: rst ? +rst[1] : 0 };
 }
 function logLineHtml(line) {
   var w = parseWake(line);
   if (!w) return '<div class="logline">' + esc(line) + '</div>';
-  return '<div class="logline wake">in ' + w.tin + ' \\u00b7 out ' + w.tout + ' \\u00b7 ' + money(w.cost) +
+  return '<div class="logline wake">in ' + w.tin + ' \\u00b7 out ' + w.tout + ' \\u00b7 ' +
+    money(w.cost, w.unknown) +
     (w.ctx ? ' \\u00b7 ctx ' + w.ctx : '') + (w.rst > 0 ? ' \\u00b7 ' + w.rst + ' restart(s)' : '') +
     '</div>';
 }
@@ -262,7 +268,8 @@ function renderDetail() {
         return 'wake' in x;
       }).map(function (x) {
         return '<tr><td>' + esc(x.at) + '</td><td>' + x.wake + '</td><td>' + esc(x.outcome) +
-          '</td><td>' + x.mail + '</td><td>' + x.tokens_in + '</td><td>' + money(x.cost) + '</td></tr>';
+          '</td><td>' + x.mail + '</td><td>' + x.tokens_in + '</td><td>' +
+          money(x.cost, x.unknown) + '</td></tr>';
       }).join('') + '</table>' +
 
     '<h3>talk</h3><div id="talk-box" class="talk">' + (Array.isArray(d.talk) ? d.talk.map(function (m) {
