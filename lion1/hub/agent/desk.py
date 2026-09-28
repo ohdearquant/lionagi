@@ -107,13 +107,14 @@ class Leave(BaseModel):
 
 class Clarify(BaseModel):
     """Ask the sender which of two readings a message means, when each reading is a question of fact
-    one chore answers. Both readings are quoted word for word from the message; the question itself is
-    composed by code; the answer arrives as a later message and is answered or left then. Once per
-    thread; never to a person's mail; never for a message that is itself a clarify."""
+    one chore answers. Each reading is the message's own words (case aside), a chore's name or a leave
+    test; the question itself is composed by code; the answer arrives as a later message and is answered
+    or left then. Once per thread; never to a person's mail; never for a message that is itself a
+    clarify."""
 
     msg: str = Field(description="the message id exactly as the sweep listed it")
-    a: str = Field(description="one reading, the message's own words")
-    b: str = Field(description="the other reading, the message's own words")
+    a: str = Field(description="one reading: the message's own words, a chore's name or a leave test")
+    b: str = Field(description="the other reading, from the same three")
 
 
 class Route(BaseModel):
@@ -472,7 +473,7 @@ class Desk:
                 return f"{req.msg}: left, the instrument did not answer ({out.findings[-1][:80]})"
             text = (
                 f"[desk] answered by {self.agent.khive.actor} from its `{req.chore}` instrument; "
-                f"{owner} has not read your message.\n"
+                f"it did not mark your message read for {owner}.\n"
             ) + self.chores._text(req.chore, inst, out, time.time() - t0, supersedes="desk", same=False)
             if lead := getattr(
                 inst, "lead", ""
@@ -539,7 +540,7 @@ class Desk:
             body = (
                 f"{CLARIFY_MARK} {self.agent.khive.actor} could not tell whether you mean {a!r} or {b!r}; "
                 f"say which in a message to {owner} on this thread and the desk answers what one instrument "
-                f"settles or leaves it for {owner}, who has not read your message."
+                f"settles or leaves it for {owner}; the desk did not mark your message read."
             )
             subject = "Re: " + (m["subject"] or "your message")
             try:
