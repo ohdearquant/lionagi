@@ -1,7 +1,7 @@
 ---
 adr: ADR-0007
 status: draft
-liveness: operating (the note read pinned per command, the captures on the entry, the consumed directive, the fold by date and the cross-profile note read are owed)
+liveness: operating (the note read pinned per command, the freeze of a captured list or dict, the consumed directive, the fold by date and the cross-profile note read are owed)
 date: "2026-09-23"
 area: record
 kind: new
@@ -185,7 +185,9 @@ summary text; `_notify` calls it once per turn for the size, the out-of-view dif
 (ADR-0006).
 
 - **Landing evidence**: `tests/test_actor.py` (the fold event, the placeholder, the summary, the
-  context figure across a fold), `tests/test_chat.py` (resume by replaying the chat log).
+  context figure across a fold), `tests/test_chat.py` (resume by replaying the chat log). The
+  captures on a RESULT, copied and not yet frozen:
+  `test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entry_as_copies`.
 
 ### D2: Directives ride the entry that made them ^d2
 

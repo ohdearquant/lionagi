@@ -5,9 +5,9 @@ Result replaces it, and a hook that raises is told in the next notice while the 
 
 import asyncio
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
-from lionagi import Actor, Kind, Profile, Result, RunRequest
+from lionagi import Actor, Kind, Message, Profile, Result, RunRequest
 from lionagi.actor import DEFAULT_HANDLERS
 from tests.test_actor import scripted
 
@@ -18,6 +18,19 @@ class Echo(BaseModel):
 
 class Boom(BaseModel):
     why: str
+
+
+class Padded(BaseModel):
+    text: str
+
+    @field_validator("text")
+    @classmethod
+    def trimmed(cls, v: str) -> str:
+        return v.strip()
+
+
+class Gather(BaseModel):
+    items: list[str]
 
 
 def make() -> tuple[Actor, Profile]:
@@ -114,3 +127,123 @@ def test_an_after_hook_sees_every_result_and_may_replace_it_and_its_own_failure_
         "hooks failed (the commands ran; their results stand):\n  a2: flaky: RuntimeError: log full"
         in notices(out)
     )
+
+
+def test_a_before_hooks_replacement_is_a_dict_or_the_specs_instance_rebuilt_through_its_validator():
+    actor = Actor("hooked-rebuild")
+
+    @actor.handler(Padded)
+    async def padded(req: Padded, ctx) -> str:
+        return req.text
+
+    @actor.before
+    def swap(run, la, req):
+        if la.alias == "a1":
+            return {"text": "  from a dict  "}
+        return Padded.model_construct(text="  never validated  ")  # a class is no receipt
+
+    r = results(run(actor, Profile("p"), '<lact a1>padded(text="x")</lact><lact a2>padded(text="y")</lact>'))
+    assert r["a1"].ok and r["a1"].value == "from a dict"
+    assert r["a2"].ok and r["a2"].value == "never validated"
+
+
+def test_a_replacement_of_another_class_or_one_its_spec_refuses_is_the_hooks_refusal():
+    actor, profile = make()
+
+    @actor.before
+    def swap(run, la, req):
+        if la.alias == "a1":
+            return Boom(why="another class")
+        if la.alias == "a2":
+            return {"text": 5}
+        if la.alias == "a3":
+            req.text = "changed in place"  # its own copy: nothing reaches the handler
+            return None
+        return 5  # neither a verdict nor a replacement: the command runs as asked
+
+    out = run(
+        actor,
+        profile,
+        '<lact a1>echo(text="one")</lact><lact a2>echo(text="two")</lact>'
+        '<lact a3>echo(text="three")</lact><lact a4>echo(text="four")</lact>',
+    )
+    r = results(out)
+    assert (
+        r["a1"].reason == "refused"
+        and r["a1"].error == "refused: swap returned Boom, neither a dict nor Echo"
+    )
+    assert r["a2"].reason == "refused"
+    assert r["a2"].error.startswith("refused: swap failed, ValidationError: 1 validation error for Echo")
+    assert [out.record.get(a).meta["execution"] for a in ("a1", "a2")] == ["not executed"] * 2
+    assert r["a3"].ok and r["a3"].value == "three"
+    assert r["a4"].ok and r["a4"].value == "four"
+
+
+def test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entry_as_copies():
+    actor = Actor("hooked-captures")
+    kept: list[list[str]] = []
+    seen: list[tuple[str, list[str], list[str]]] = []
+
+    @actor.handler(Gather)
+    async def gather(req: Gather, ctx) -> list[str]:
+        kept.append([*req.items, "found"])
+        req.items.append("handler touched its request")
+        return kept[-1]
+
+    @actor.after
+    def scribble(run, la, req, result):
+        seen.append(("scribble", list(req.items), list(result.value)))
+        result.value.append("scribbled")
+        req.items.append("scribbled")
+
+    @actor.after
+    def replace(run, la, req, result):
+        seen.append(("replace", list(req.items), list(result.value)))
+        return Result(result.spec, True, value=[*result.value, "replaced"])
+
+    @actor.after
+    def broken(run, la, req, result):
+        result.value.append("dropped")
+        raise RuntimeError("log full")
+
+    views: list[list[Message]] = []
+    inner = scripted('<lact g1>gather(items=["a"])</lact>', "done")
+
+    async def backend(messages):
+        views.append(messages)
+        return await inner(messages)
+
+    out = asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), backend))
+    kept[0].append("the handler kept its return")
+    entry = out.record.get("g1")
+    assert seen == [("scribble", ["a"], ["a", "found"]), ("replace", ["a"], ["a", "found"])]
+    assert entry.content.value == ["a", "found", "replaced"] == out.resolve("g1")
+    assert entry.meta["request"] == {"items": ["a"]}
+    assert entry.meta["returned"] == {
+        "spec": "gather",
+        "ok": True,
+        "value": ["a", "found"],
+        "error": None,
+        "reason": None,
+    }
+    assert (
+        "hooks failed (the commands ran; their results stand):\n  g1: broken: RuntimeError: log full"
+        in notices(out)
+    )
+    (shown,) = [m for m in views[1] if m.name == entry.name]
+    assert shown.content == f'[{entry.name} g1 gather] ["a", "found", "replaced"]'
+    assert not any("touched" in m.content or "scribbled" in m.content for m in views[1])
+
+
+def test_a_capture_copies_a_list_that_holds_itself_once():
+    actor = Actor("hooked-ring")
+    made: list[list] = []
+
+    @actor.handler(Gather)
+    async def ring(req: Gather, ctx) -> list:
+        made.append([*req.items])
+        made[-1].append(made[-1])
+        return made[-1]
+
+    returned = results(run(actor, Profile("p"), '<lact g1>gather(items=["a"])</lact>'))["g1"].value
+    assert returned is not made[0] and returned[0] == "a" and returned[1] is returned

@@ -95,7 +95,7 @@ class Echo(BaseModel):
 def _echo_actor(name: str) -> Actor:
     actor = Actor(name)
 
-    @actor.handler(Echo)
+    @actor.handler(Echo, effect="pure")
     async def echo(req: Echo, ctx) -> str:
         return req.text
 

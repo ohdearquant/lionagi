@@ -123,12 +123,17 @@ _PROFILE_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 
 
 HandlerFn = Callable[[BaseModel, "Context"], "Awaitable[Any] | Any"]
-# a hook before a command runs: None lets it run, a str refuses it with that reason, a request of the
-# same spec replaces its arguments; a hook that raises refuses it (a gate that fails admits nothing)
-BeforeFn = Callable[["Run", Lact, BaseModel], "Awaitable[str | BaseModel | None] | str | BaseModel | None"]
-# a hook after a command settled, ok or not: None keeps the result, a Result replaces it; a hook that
-# raises is told in the next notice and the result stands (the command already ran)
+# a hook before a command runs, on its own copy of the request: None lets it run, a str refuses it with
+# that reason, a dict or an instance of the spec replaces its arguments, rebuilt from its fields, and a
+# model of another class refuses it; a hook that raises refuses it (a gate that fails admits nothing)
+BeforeFn = Callable[
+    ["Run", Lact, BaseModel], "Awaitable[str | BaseModel | dict | None] | str | BaseModel | dict | None"
+]
+# a hook after a command settled, ok or not, on its own copies: None keeps the result, a Result replaces
+# it; a hook that raises is told in the next notice and the result stands (the command already ran)
 AfterFn = Callable[["Run", Lact, BaseModel, "Result"], "Awaitable[Result | None] | Result | None"]
+
+_EFFECTS = ("write", "read", "pure")  # what a handler does to live state, for the whole invocation
 
 
 @dataclass(frozen=True)
@@ -136,6 +141,13 @@ class Handler:
     spec: Spec
     fn: HandlerFn
     requires: frozenset[str] = frozenset()
+    # write: waits for every earlier command of its turn but the pure ones; read: for the nearest
+    # earlier write; pure: for its pointers only (ADR-0005/C6)
+    effect: str = "write"
+
+    def __post_init__(self) -> None:
+        if self.effect not in _EFFECTS:
+            raise ValueError(f"handler effect {self.effect!r} is not one of {', '.join(_EFFECTS)}")
 
     @property
     def name(self) -> str:
@@ -269,6 +281,7 @@ class Run:
         self.pending: dict[str, asyncio.Task] = {}
         self.entered: set[str] = set()  # pending aliases whose handler has been called
         self.pointing: dict[str, set[str]] = {}  # command alias -> the names its arguments point at
+        self.waits: dict[str, set[str]] = {}  # command alias -> the earlier commands its effect waits for
         self.settled: list[str] = []  # aliases settled since the last notification
         self.refused: list[tuple[str, str]] = []  # (alias, why) since the last notification
         self.failed: list[tuple[str, str]] = []  # (alias, why) whose handler started, not succeeding
@@ -519,14 +532,21 @@ class Actor:
                 raise TypeError(
                     "register() takes a Handler or an object with a .spec and a __call__(request, context)"
                 )
-            handler = Handler(spec, handler, frozenset(getattr(handler, "requires", ())))
+            handler = Handler(
+                spec,
+                handler,
+                frozenset(getattr(handler, "requires", ())),
+                getattr(handler, "effect", "write"),
+            )
         name = self.operable.add(handler.spec)
         self.handlers[name] = handler
         return handler
 
-    def handler(self, spec: Spec, *, requires: Iterable[str] = ()) -> Callable[[HandlerFn], HandlerFn]:
+    def handler(
+        self, spec: Spec, *, requires: Iterable[str] = (), effect: str = "write"
+    ) -> Callable[[HandlerFn], HandlerFn]:
         def deco(fn: HandlerFn) -> HandlerFn:
-            self.register(Handler(spec, fn, frozenset(requires)))
+            self.register(Handler(spec, fn, frozenset(requires), effect))
             return fn
 
         return deco
@@ -838,6 +858,8 @@ class Actor:
         # command of the same turn would find nothing to wait for
         admitted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         tasks = []
+        effectful: list[str] = []  # this turn's write and read commands so far, in source order
+        last_write: str | None = None
         try:
             for la in program.lacts:
                 if la.alias.startswith("auto_") and (
@@ -861,6 +883,16 @@ class Actor:
                 if la.field is not None:
                     run.fields[la.alias] = la.field
                 run.pointing[la.alias] = {p.name for p in la.pointers()}
+                # an unknown command has no handler and nothing to wait for: it settles at once
+                effect = self.handlers[la.name].effect if la.name in subset else "pure"
+                if effect == "write":
+                    run.waits[la.alias] = set(effectful)
+                elif effect == "read":
+                    run.waits[la.alias] = {last_write} if last_write is not None else set()
+                if effect != "pure":
+                    effectful.append(la.alias)
+                if effect == "write":
+                    last_write = la.alias
                 task = asyncio.create_task(self._perform(run, la, subset, admitted))
                 task.add_done_callback(functools.partial(self._never_started, run, la))
                 run.pending[la.alias] = task
@@ -896,9 +928,10 @@ class Actor:
         await admitted  # set once the whole turn is in `pending`; already set under the default factory
         self.bus.emit("command.requested", run=run.id, alias=la.alias, name=la.name)
         cancelled = False
+        provenance: dict[str, Any] = {}  # the request the handler entered and its return, once reached
         try:
             try:
-                result, directive = await self._execute(run, la, subset)
+                result, directive = await self._execute(run, la, subset, provenance)
             except asyncio.CancelledError:
                 result = Result(la.name, False, error="cancelled before it finished", reason="cancelled")
                 directive, cancelled = None, True
@@ -923,7 +956,12 @@ class Actor:
                     directive = None
             try:
                 entry = run.record.append(
-                    Kind.RESULT, result, alias=la.alias, round=run.round, execution=execution
+                    Kind.RESULT,
+                    result,
+                    alias=la.alias,
+                    round=run.round,
+                    execution=execution,
+                    **provenance,
                 )
             except ValueError as e:  # the alias was taken meanwhile; the call ran, its result has no name
                 told.append((la.alias, str(e)))
@@ -952,10 +990,15 @@ class Actor:
         if cancelled:
             raise asyncio.CancelledError
 
-    async def _execute(self, run: Run, la: Lact, subset: Operable) -> tuple[Result, Directive | None]:
+    async def _execute(
+        self, run: Run, la: Lact, subset: Operable, provenance: dict[str, Any]
+    ) -> tuple[Result, Directive | None]:
         if la.name not in subset:
             return Result(la.name, False, error=f"unknown command {la.name!r}", reason="unknown"), None
         handler = self.handlers[la.name]
+        prior = [run.pending[a] for a in run.waits.get(la.alias, ()) if a in run.pending]
+        if prior:  # the effect wait (C6); a command it waits for settles itself, however it ends
+            await asyncio.wait(prior)
         try:
             args = await self._deref(run, la)
             request = handler.spec.model_validate(args)
@@ -974,18 +1017,28 @@ class Actor:
             return Result(la.name, False, error=f"{la.name} requires {missing}", reason="privilege"), None
         for hook in self.befores:
             try:
-                verdict = hook(run, la, request)
+                verdict = hook(run, la, _captured(request))
                 if inspect.isawaitable(verdict):
                     verdict = await verdict
+                # a class is no receipt: a replacement is rebuilt from its fields by the Spec itself
+                if isinstance(verdict, dict | handler.spec):
+                    fields = verdict if isinstance(verdict, dict) else verdict.model_dump()
+                    request = handler.spec.model_validate(fields)
             except Exception as e:
                 why = f"refused: {_hook_name(hook)} failed, {type(e).__name__}: {e}"
                 return Result(la.name, False, error=why, reason="refused"), None
             if isinstance(verdict, str):
                 return Result(la.name, False, error=f"refused: {verdict}", reason="refused"), None
-            if isinstance(verdict, BaseModel):
-                request = verdict
+            if isinstance(verdict, BaseModel) and not isinstance(verdict, handler.spec):
+                why = (
+                    f"refused: {_hook_name(hook)} returned {type(verdict).__name__}, "
+                    f"neither a dict nor {handler.spec.__name__}"
+                )
+                return Result(la.name, False, error=why, reason="refused"), None
         ctx = Context(run, la.alias, handler)
         run.entered.add(la.alias)  # from here the handler may have acted on the world
+        entered = _captured(request)  # the request as the handler entered, whatever it does to its own
+        provenance["request"] = entered.model_dump()
         try:
             value = handler.fn(request, ctx)
             if inspect.isawaitable(value):
@@ -999,16 +1052,19 @@ class Actor:
             result = Result(la.name, True, value=value)
         except Exception as e:
             result = Result(la.name, False, error=f"{type(e).__name__}: {e}", reason="failed")
+        # the return before the first after hook rides the entry; each hook works on copies, so only
+        # a replacement it returns changes the result, and a failed hook's copy is dropped
+        provenance["returned"], result = dict(vars(_captured(result))), _captured(result)
         for hook in self.afters:
             try:
-                seen = hook(run, la, request, result)
+                seen = hook(run, la, _captured(entered), _captured(result))
                 if inspect.isawaitable(seen):
                     seen = await seen
             except Exception as e:
                 run.hook_errors.append((la.alias, f"{_hook_name(hook)}: {type(e).__name__}: {e}"))
                 continue
             if isinstance(seen, Result):
-                result = seen
+                result = _captured(seen)
         return result, (ctx.directive if result.ok else None)
 
     async def _deref(self, run: Run, la: Lact) -> dict[str, Any]:
@@ -1018,7 +1074,8 @@ class Actor:
             if task is not None and task is not asyncio.current_task():
                 if _reaches(run, p.name, la.alias):
                     raise lndl.LNDLError(
-                        f"*{p.name} points back at {la.alias}: a circle of pointers never settles"
+                        f"*{p.name} waits on {la.alias}: a circle of pointers never settles, and a "
+                        "command that writes or reads waits for earlier commands of its turn"
                     )
                 await asyncio.shield(task)
 
@@ -1378,7 +1435,8 @@ def _referenced(program: Program) -> set[str]:
 
 
 def _reaches(run: Run, start: str, target: str) -> bool:
-    """Whether following pointers from the pending command `start` comes back to `target`."""
+    """Whether following pointers and effect waits from the pending command `start` comes back to
+    `target`."""
     seen, stack = set(), [start]
     while stack:
         a = stack.pop()
@@ -1387,7 +1445,7 @@ def _reaches(run: Run, start: str, target: str) -> bool:
         if a in seen:
             continue
         seen.add(a)
-        stack.extend(n for n in run.pointing.get(a, ()) if n in run.pending)
+        stack.extend(n for n in run.pointing.get(a, set()) | run.waits.get(a, set()) if n in run.pending)
     return False
 
 
@@ -1497,6 +1555,29 @@ def _deref(run: Run, key: str, value: Any) -> Any:
         return {k: _deref(run, key, v) for k, v in value.items()}
     if isinstance(value, list | tuple):
         return [_deref(run, key, v) for v in value]
+    return value
+
+
+def _captured(value: Any, memo: dict[int, Any] | None = None) -> Any:
+    """A value as a capture holds it (ADR-0007/C1): an immutable value shared, a list or dict copied, a
+    Spec instance or a Result rebuilt on captured fields; a list or dict holding itself is copied once."""
+    memo = {} if memo is None else memo
+    if id(value) in memo:
+        return memo[id(value)]
+    if isinstance(value, dict):
+        memo[id(value)] = out = {}
+        out.update((k, _captured(v, memo)) for k, v in value.items())
+        return out
+    if isinstance(value, list):
+        memo[id(value)] = out = []
+        out.extend(_captured(v, memo) for v in value)
+        return out
+    if isinstance(value, BaseModel):
+        return value.model_copy(
+            update={k: _captured(getattr(value, k), memo) for k in type(value).model_fields}
+        )
+    if isinstance(value, Result):
+        return dataclasses.replace(value, value=_captured(value.value, memo))
     return value
 
 

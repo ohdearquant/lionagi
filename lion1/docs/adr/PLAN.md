@@ -27,9 +27,9 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0002 | The run: the turn table, repeats, stop, four outcomes, the closure | operating; reference-only wait and reap owed | process lifecycle: admission, turn as the unit, terminal states |
 | ADR-0003 | The bounds: the job, run.more, extend, `OUT{}` as a command | partial; the re-check between commands, extend, run.more, cost, context check owed | admission and budgets: minted at spawn, inherited, exhaustion refuses the next call |
 | ADR-0004 | The language: LNDL, commands, values, pointers, lenient reading | operating; mixed-response refusal and the markup move owed | the request program |
-| ADR-0005 | Command handling: order, the bus, hooks, effect classes | operating; captures, rebuilt replacement, effect wait owed | the tool protocol: declared effects, denial as data, receipts |
+| ADR-0005 | Command handling: order, the bus, hooks, effect classes | operating | the tool protocol: declared effects, denial as data, receipts |
 | ADR-0006 | The notification, and the closure | operating; closure owed | context assembly: the runtime's typed section |
-| ADR-0007 | The record, the view, the fold, context commands, notes | operating; captures, dated directives, consumed mark, cross-profile note read owed | the durable record, visibility directives, the store families |
+| ADR-0007 | The record, the view, the fold, context commands, notes | operating; frozen captures, dated directives, consumed mark, cross-profile note read owed | the durable record, visibility directives, the store families |
 | ADR-0008 | The program: compile then run, control results, curated view | unimplemented | the request program |
 | ADR-0009 | Backends and the context figure: three shapes, the `Reply` count, the floor, the session restart | draft (2026-09-25); the subscription CLI's count and the mixed-response refusal owed | the inference driver: a binding row, the served model read from the response; here the envelope keeps the response's model and compares nothing |
 | ADR-0010 | Delegation between actors: `queue`, the handle, the answer as a settled command, the reply, no graph object | draft (2026-09-25); no bench exercises the path | principals and mail; in-process peers are one layer, the long-running agent another |

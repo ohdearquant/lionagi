@@ -1,7 +1,7 @@
 ---
 adr: ADR-0005
 status: draft
-liveness: operating (the replacement rebuilt from its fields, the three captures and the effect wait are owed)
+liveness: operating (the replacement rebuilt from its fields, the three captures and the effect wait are pinned by tests; no handler in `hub/` declares a class, so each runs as a `write`)
 date: "2026-09-23"
 area: handler
 kind: new
@@ -63,7 +63,7 @@ Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Ha
 
 ## Claims
 
-### C1: One order per command _(enforced: mechanical; owed, S9)_ ^c1
+### C1: One order per command _(enforced: mechanical)_ ^c1
 
 - **Subject**: every `<lact>` the loop dispatches.
 - **Violated when**: a step is skipped, or a refusal carries no reason from the closed set.
@@ -121,15 +121,15 @@ fourth step of C1.
 Hooks run in registration order, each seeing the request as those before it left it: a guard after a
 rewriting hook judges the rewrite; the order is the operator's.
 
-None lets the command run; a string refuses it (`refused: <reason>`). Today a Pydantic model of any
-class replaces the arguments as returned; any other value, a dict too, changes nothing; a change in
-place reaches the handler. S8 owes the rebuild and the copy. A hook that raises, exits non-zero or
-times out refuses the command.
+None lets the command run; a string refuses it (`refused: <reason>`). A dict or an instance of the
+Spec replaces the arguments, rebuilt from its fields, and a model of another class refuses the
+command (S8); any other value changes nothing. A hook that raises, exits non-zero or times out
+refuses the command.
 
 A hook runs in its own process group; a timeout or a cancelled run ends it. Today no hook sees
 `OUT{}`; it becomes the `out` command with [[ADR-0003-the-bounds#^d3|ADR-0003/D3]].
 
-### C5: An after hook sees what ran, ok or not, and cannot undo it _(enforced: mechanical; owed, S8)_ ^c5
+### C5: An after hook sees what ran, ok or not, and cannot undo it _(enforced: mechanical)_ ^c5
 
 - **Subject**: every command whose handler was called.
 - **Violated when**: a refused command reaches an after hook, or an after hook's failure changes the
@@ -146,7 +146,7 @@ pointer dereferences; the first two ride the entry as provenance, out of the mod
 capture shares an immutable value and copies a list or dict
 ([[ADR-0007-the-record#^c1|ADR-0007/C1]]).
 
-### C6: A handler's effect class orders the turn _(enforced: mechanical; owed, S9)_ ^c6
+### C6: A handler's effect class orders the turn _(enforced: mechanical)_ ^c6
 
 - **Subject**: every command dispatched in one turn, hooks included.
 - **Violated when**: a command runs before one its class waits for has settled, a `pure` command
@@ -194,15 +194,26 @@ run, so two runs never compare against each other.
 
 ### D1: Dispatch as one task per command; `Actor.before` and `Actor.after` beside `Actor.section` ^d1
 
-Serves C1 to C5. `_dispatch` creates a task per `<lact>` and records it under the alias in
-`pending`; `_perform` walks C1's order and appends the `RESULT`; `_execute` calls the two hook lists
-around the handler. Every holder of an alias is checked at dispatch and `pending` is empty at each
-turn's end, so no RESULT finds its alias taken at settle; the branch for that case tells the call
-under its `execution` heading. The runtime knows nothing of files or shells.
+Serves C1 to C6. `_dispatch` creates a task per `<lact>` under its alias in `pending`; `_perform`
+walks C1's order and appends the `RESULT`; `_execute` calls the hook lists around the handler. Every
+alias holder is checked at dispatch and `pending` empties at each turn's end, so no RESULT finds its
+alias taken at settle; that branch reports it under `execution`. The runtime knows nothing of files
+or shells.
+
+`Handler.effect` defaults to `write`: the runtime cannot see what a handler touches, and a needless
+wait costs less than a missing one.
 
 - **Landing evidence**: `tests/test_actor.py`, `tests/test_actor_hooks.py`,
-  `tests/test_swe_solve.py`. Owed: a replacement rebuilt from its fields (today any model class is
-  taken as it comes); the three captures; the effect wait (C6), with the class on `Handler`.
+  `tests/test_actor_effects.py`, `tests/test_swe_solve.py`. The replacement rebuilt from its fields
+  (S8):
+  `test_a_before_hooks_replacement_is_a_dict_or_the_specs_instance_rebuilt_through_its_validator`,
+  `test_a_replacement_of_another_class_or_one_its_spec_refuses_is_the_hooks_refusal`. The three
+  captures:
+  `test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entry_as_copies`,
+  `test_a_capture_copies_a_list_that_holds_itself_once`. The effect wait (C6), with the class on
+  `Handler` (S9): `test_each_class_waits_for_what_c6_says_and_reads_overlap`,
+  `test_a_write_pointing_at_a_later_write_is_a_circle_and_a_pure_one_resolves`,
+  `test_the_class_is_declared_on_the_handler_write_by_default_and_checked`.
 
 ### D2: The bus is `lionagi/bus.py` ^d2
 
@@ -263,11 +274,13 @@ runs under `-I` with lion's own interpreter (C7).
 - **S7**: On the 50-instance bench, 1722 commands in 733 turns: `run` 982, ordered whichever way,
   and 609 reads; three classes save 253 of 1458 serial steps over two on the 469 turns with two or
   more commands, 17%. One turn wrote 81 commands.
-- **S8**: Owed with D1: a before hook's replacement is a dict or an instance of the Spec, either
-  rebuilt from its fields, since a class is no receipt and a stable validator
-  ([[ADR-0001-the-actor|ADR-0001]] S4) makes the build count immaterial; another class is refused.
-  Each hook then works on a copy (C5), so a change in place changes nothing and only a returned
-  replacement counts.
+- **S8**: Owed with D1, landed with it. A before hook's replacement is a dict or an instance of the
+  Spec, either rebuilt from its fields, since a class is no receipt and a stable validator
+  ([[ADR-0001-the-actor|ADR-0001]] S4) makes the build count immaterial; another class is refused. A
+  validator's failure on the rebuild is the hook's failure and refuses the command. Each hook works
+  on a copy (C5), so a change in place changes nothing and only a returned replacement counts.
 
-- **S9**: Owed with D1: the effect wait of C6, with the class on `Handler`; until it lands, every
-  command waits on its pointers only, as C6 says a `pure` one does.
+- **S9**: Owed with D1, landed with it: the effect wait of C6, with the class on `Handler`. Before
+  it landed, every command waited on its pointers only, as C6 says a `pure` one does. A write that
+  points at a later write of its turn now closes a circle and is refused `invalid`, and no handler
+  in `hub/` declares a class, so every command of a hub turn waits for the one before it.
