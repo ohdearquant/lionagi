@@ -16,8 +16,14 @@ from hub.tools import SandboxDead
 DIFF = "diff --git a/pkg/x.py b/pkg/x.py\n--- a/pkg/x.py\n+++ b/pkg/x.py\n@@ -1 +1 @@\n-old\n+new\n"
 
 
+BASE = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"  # the commit the boxes were handed
+
+
 class Box:
-    async def diff(self) -> str:
+    async def run(self, cmd: str, *, timeout: float = 120.0, env=None) -> tuple[int, str]:
+        return 0, BASE + "\n"  # the baseline read; this box runs nothing else
+
+    async def diff(self, base: str = "HEAD") -> str:
         return DIFF
 
 
@@ -82,7 +88,7 @@ class ToolBox(Box):
         return {"rc": 0, "stdout": "a.py\n", "stderr": "", "elapsed": 0.0}
 
     async def run(self, cmd: str, *, timeout: float = 120.0, env=None) -> tuple[int, str]:
-        return 0, "a.py\n"
+        return (0, BASE + "\n") if cmd == "git rev-parse HEAD" else (0, "a.py\n")
 
     async def read(self, path: str) -> str:
         return "x = 1\n"
@@ -140,7 +146,7 @@ class DyingBox(ToolBox):
         self.dead = "failed to resolve container IP after 3 attempts"
         raise SandboxDead(self.dead)
 
-    async def diff(self) -> str:
+    async def diff(self, base: str = "HEAD") -> str:
         if self.dead:
             raise SandboxDead(self.dead)
         return ""
@@ -245,7 +251,7 @@ def test_a_failed_envelope_is_not_counted_as_a_round(tmp_path: Path):
 class DiffBox(FilesBox):
     """Like FilesBox, and its diff is empty until a file really changed."""
 
-    async def diff(self) -> str:
+    async def diff(self, base: str = "HEAD") -> str:
         return DIFF if self.files["a.py"] != "one\ntwo\n" else ""
 
 
@@ -264,3 +270,36 @@ def test_an_edit_beside_the_finish_runs_before_the_finish_is_judged(tmp_path: Pa
     record = (tmp_path / "pkg__pkg-1.record.txt").read_text()
     assert "the source changed in this round; nothing has run against that change" in record
     assert rec["outcome"] == "Success" and rec["rounds"] == 2 and rec["model_patch"] == DIFF
+
+
+class BaseBox(ToolBox):
+    """Records the base every diff was asked against."""
+
+    def __init__(self):
+        self.bases: list[str] = []
+
+    async def diff(self, base: str = "HEAD") -> str:
+        self.bases.append(base)
+        return DIFF
+
+
+def test_the_prediction_is_the_diff_against_the_commit_the_model_was_handed(tmp_path: Path):
+    # `HEAD` at diff time moves with a commit the model makes, and that commit's work would vanish
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+    box = BaseBox()
+    backend = Turns(('OUT{done: {summary: "fixed"}}', {"finish_reason": "stop"}))
+    rec = asyncio.run(solve(row, "m", 5, tmp_path, "openrouter", box=box, backend=backend))
+    assert rec["base"] == BASE and box.bases and set(box.bases) == {BASE}  # the watch reads it too
+    assert json.loads((tmp_path / "pkg__pkg-1.json").read_text())["base"] == BASE
+
+
+def test_a_box_with_no_baseline_commit_is_no_run(tmp_path: Path):
+    class NoGit(ToolBox):
+        async def run(self, cmd, *, timeout=120.0, env=None):
+            return (128, "fatal: not a git repository\n") if cmd == "git rev-parse HEAD" else (0, "")
+
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+    backend = Turns(('OUT{done: {summary: "fixed"}}', {"finish_reason": "stop"}))
+    rec = asyncio.run(solve(row, "m", 5, tmp_path, "openrouter", box=NoGit(), backend=backend))
+    assert rec["error"].startswith("RuntimeError: no baseline commit: rev-parse exited 128")
+    assert backend.turns and "base" not in rec  # the model never ran

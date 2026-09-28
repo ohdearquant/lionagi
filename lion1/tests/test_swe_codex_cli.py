@@ -35,6 +35,9 @@ def stream_text() -> str:
     )
 
 
+BASE = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"  # the commit the boxes were handed
+
+
 class FakeBox:
     def __init__(self, rc: int = 0):
         self.rc = rc
@@ -47,6 +50,8 @@ class FakeBox:
         self.envs.append(env)
         if "curl -fsSL" in cmd:
             return 0, "codex-cli 0.153.4\n"
+        if cmd == "git rev-parse HEAD":
+            return 0, BASE + "\n"
         if f"{codex_cli.BIN} exec" in cmd:
             self.files[STREAM] = stream_text()
             self.files[STDERR] = ""
@@ -62,7 +67,7 @@ class FakeBox:
     async def write(self, path: str, text: str) -> None:
         self.files[path] = text
 
-    async def diff(self) -> str:
+    async def diff(self, base: str = "HEAD") -> str:
         return DIFF
 
 
@@ -199,7 +204,7 @@ class GatewayTimeoutBox(FakeBox):
             return self.stop_rc, ""
         return await super().run(cmd, timeout=timeout, env=env)
 
-    async def diff(self):
+    async def diff(self, base: str = "HEAD"):
         self.diffs += 1
         return DIFF
 
@@ -285,3 +290,57 @@ def test_a_provider_reporting_zero_usage_is_a_complete_zero(tmp_path, monkeypatc
     box = StreamBox(STARTED, {"type": "turn.completed", "usage": zero})
     rec = asyncio.run(solve(ROW, "deepseek/deepseek-v4.1-flash", tmp_path, box=box))
     assert rec["cost_usd"] == 0.0 and rec["usage_complete"] is True and rec["tokens"]["output"] == 0
+
+
+def test_the_codex_prediction_is_the_diff_against_the_commit_it_was_handed(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+
+    class BaseBox(FakeBox):
+        bases: list[str] = []
+
+        async def diff(self, base: str = "HEAD") -> str:
+            self.bases.append(base)
+            return DIFF
+
+    box = BaseBox()
+    rec = asyncio.run(solve(ROW, "deepseek/deepseek-v4.1-flash", tmp_path, box=box))
+    assert rec["base"] == BASE and box.bases == [BASE] and rec["model_patch"] == DIFF
+
+
+@pytest.mark.parametrize(
+    "stream", ["", "not json\n{\n", 'null\n1\n"x"\n', json.dumps({"type": "thread.started"}) + "\n"]
+)
+def test_a_stream_with_no_turn_is_no_reading_and_no_success(tmp_path, monkeypatch, stream):
+    # exit 0 beside an empty, unparsable or turnless stream once read as Success at $0, complete
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+
+    class NoTurn(FakeBox):
+        async def run(self, cmd, **kw):
+            result = await super().run(cmd, **kw)
+            if f"{codex_cli.BIN} exec" in cmd:
+                self.files[STREAM] = stream
+            return result
+
+    rec = asyncio.run(solve(ROW, "deepseek/deepseek-v4.1-flash", tmp_path, box=NoTurn(rc=0)))
+    assert rec["cost_usd"] is None and rec["tokens"] is None and rec["usage_complete"] is False
+    assert rec["outcome"] == "Error:no-turn" and rec["exit_code"] == 0
+    # the control: one metered turn is a reading, complete, and a success
+    zero = {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}
+    rec = asyncio.run(
+        solve(
+            ROW,
+            "deepseek/deepseek-v4.1-flash",
+            tmp_path,
+            box=StreamBox(STARTED, {"type": "turn.completed", "usage": zero}),
+        )
+    )
+    assert rec["cost_usd"] == 0.0 and rec["usage_complete"] is True and rec["outcome"] == "Success"
+
+
+@pytest.mark.parametrize("usage", [{"total_tokens": 1}, {"input_tokens": 5}, "1", None])
+def test_a_usage_without_input_and_output_tokens_is_no_reading(tmp_path, monkeypatch, usage):
+    # a total alone once read as a metered turn at $0 with zero tokens, complete
+    monkeypatch.setenv("OPENROUTER_API_KEY", "k")
+    box = StreamBox(STARTED, {"type": "turn.completed", "usage": usage})
+    rec = asyncio.run(solve(ROW, "deepseek/deepseek-v4.1-flash", tmp_path, box=box))
+    assert rec["cost_usd"] is None and rec["tokens"] is None and rec["usage_complete"] is False
