@@ -48,7 +48,7 @@ def test_a_dropped_inbox_read_is_read_again_once_and_only_that_error(tmp_path):
         )  # another error: no retry
 
 
-@pytest.mark.parametrize("messages", ["", {}, 0, "x", 5])
+@pytest.mark.parametrize("messages", ["", {}, 0, "x", 5, None])
 def test_a_page_whose_messages_are_not_a_list_is_refused_never_read_as_empty(tmp_path, messages):
     with pytest.raises(KhiveError, match="not a list"):
         asyncio.run(Dropping(tmp_path, 0, page={"messages": messages}).inbox(wait_ms=0))
