@@ -140,8 +140,11 @@ def test_a_syntax_error_refuses_the_whole_message_and_nothing_runs():
     run = _run(actor, turn, "no program this time")
     assert calls == [] and actor.notes_for(PROGRAM).get("k") is None
     assert not [e for e in run.record if e.kind is Kind.RESULT]
-    told = "your last turn could not be read: line 3: invalid syntax; the program was not run"
-    assert told in _notices(run)
+    # the parser's own words differ by interpreter version; the line and the refusal do not
+    told = re.search(
+        r"your last turn could not be read: line 3: [^;\n]+; the program was not run", _notices(run)
+    )
+    assert told is not None
 
 
 @pytest.mark.parametrize(
