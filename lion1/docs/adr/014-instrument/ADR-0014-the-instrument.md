@@ -1,7 +1,7 @@
 ---
 adr: ADR-0014
 status: draft
-liveness: operating (twelve instruments build from one config and run under tests against scripted commands and stores; the command-line check prints a measurement unvetted and has no test; a lock-holder and a scheduled-job instrument are owed)
+liveness: operating (eleven instruments build from one config and run under tests against scripted commands and stores; the command-line check prints a measurement unvetted and has no test; a lock-holder and a scheduled-job instrument are owed)
 date: "2026-09-25"
 area: instrument
 kind: new
@@ -171,32 +171,18 @@ known-positive, the evidence capped at `evidence_cap` characters with the cap st
 rows are neither sent nor kept. The model's system text lists each instrument's `about`, error
 direction, cadence and question.
 
-### C9: `daemon-passes` counts mail, and a thin window is a finding only against a declared period _(enforced: mechanical)_ ^c9
-
-- **Subject**: the `daemon-passes` instrument.
-- **Violated when**: a run with `period_min` unset reports a cadence finding, or a run with it set
-  passes a window short of half its expected passes without one.
-
-The producer mails only when a pass has news, so the instrument's count is of mail and never of
-passes, and its window line says so (S12). `period_min`, 0 by default, declares the producer's
-period in minutes. When it is set, the window's minutes over it are the passes expected, and fewer
-than half of them, rounded down, is a finding, `daemon cadence`, naming both numbers. It reports and
-does not escalate.
-
 ## Decisions
 
 ### D1: One builder names the instruments from the config ^d1
 
-Serves C3 and C8. `instruments(cfg, khive, state, reader)` builds only what the `[chores.<name>]`
-tables name, twelve names in all, with their arguments and a cadence from `every` (none: on ask
-only). Constructors refuse a malformed declaration at build; `Chores` refuses an error direction
-outside the two and a blank `answers`. `every` is a store repeat such as `every:30m` or `daily`;
-only `daemon-passes` has a default, twelve hours. `gh` and `git` resolve once to an absolute path
-where one is found.
+Serves C3 and C8. `instruments(cfg, khive, state)` builds only what the `[chores.<name>]` tables
+name, eleven names in all, with their arguments and a cadence from `every` (none: on ask only).
+Constructors refuse a malformed declaration at build; `Chores` refuses an error direction outside
+the two and a blank `answers`. `every` is a store repeat such as `every:30m` or `daily`; `gh` and
+`git` resolve once to an absolute path where one is found.
 
 - **Landing evidence**:
-  `test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_default` and
-  `test_build_refuses_daemon_passes_without_a_desk_and_names_the_missing_section` in
+  `test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_default` in
   `tests/test_instruments.py`;
   `test_a_chore_without_an_error_direction_or_a_question_is_refused_at_build` in
   `tests/test_chores.py`.
@@ -229,16 +215,13 @@ recipient on the chore's thread of the day.
 
 Serves C5. `pr-state:<repo>`, `required-contexts:<repo>`, `ci-red:<repo>`, `worktrees:<repo>` and
 `verdict-freshness` are put once per run. An ask narrowed to named pull requests (`prs`) answers
-every named row and leaves the `required-contexts` and `ci-red` snapshots untouched. `daemon-passes`
-keeps a cursor instead, moved only by the measurement's `commit`, which the handler calls after the
-owner's report landed or was a standing repeat.
+every named row and leaves the `required-contexts` and `ci-red` snapshots untouched.
 
 - **Landing evidence**: in `tests/test_instruments.py`,
   `test_pr_state_first_sight_is_the_full_row_then_transitions_and_the_stale_crossing_once`,
   `test_pr_state_verifies_a_pr_absent_from_a_full_page_before_calling_it_closed`,
   `test_worktrees_first_sight_then_a_parked_dirty_tree_without_a_pr`,
-  `test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed`,
-  `test_daemon_passes_the_window_retires_only_after_the_owners_report_lands`.
+  `test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed`.
 
 ### D5: The `disk` instrument ^d5
 
@@ -258,19 +241,6 @@ writes the text to a dated file in the agent directory, the day's latest run of 
 Nothing is sent, no ledger row is written, and `_vet` is not called.
 
 - **Landing evidence**: none; no test drives `--check`, `render` or `land` (S3).
-
-### D7: `DaemonPasses` over the desk's reader ^d7
-
-Serves C9. `DaemonPasses.run` pages the owner's box from its cursor through the desk's reader, keeps
-the mail whose subject and sender match exactly, counts each once however many pages carry it, and
-finds a signal only at the start of a line. A line opening with a `known` prefix is a standing
-condition, counted and never a finding.
-
-- **Landing evidence**: in `tests/test_instruments.py`,
-  `test_daemon_passes_three_mails_in_twelve_hours_are_a_cadence_finding_only_with_a_period_set`,
-  `test_daemon_passes_a_pass_carrying_only_the_known_prefix_is_clean_and_standing`,
-  `test_daemon_passes_a_subject_that_merely_contains_the_pass_subject_is_excluded`,
-  `test_daemon_passes_two_pages_are_read_whole_and_a_pass_seen_twice_counts_once`.
 
 ## Alternatives
 
@@ -294,8 +264,7 @@ condition, counted and never a finding.
 - **S2**: A snapshot instrument writes its snapshot inside its run, before any report lands. A
   transition is not reported to the owner again when its report was not delivered, or when a run off
   the chore path measured it: `lion agent --check`, or a desk answer (one narrowed to named pull
-  requests spares only the `required-contexts` and `ci-red` snapshots). Only `daemon-passes` defers
-  its cursor to `commit`.
+  requests spares only the `required-contexts` and `ci-red` snapshots).
 - **S3**: `lion agent --check` prints a measurement unvetted and has no test; a missing
   known-positive prints as "(none)" and nothing refuses it.
 - **S4**: A full page of 100 open pull requests costs one `gh pr view` per pull request the last
@@ -323,7 +292,3 @@ condition, counted and never a finding.
 - **S11**: A dead-instrument notice that reached neither the owner nor the steward still marks the
   chore told, so that crossing is never told until an answered run clears the mark. Marking the
   chore only once a send lands is owed; no test sends the notice undelivered.
-- **S12**: The cadence rule compares mail, sent on news only, with the passes a period implies, so a
-  healthy producer with nothing to report reads as a thin window, and the finding calls the mails
-  passes. A pass count the producer emits, or a period declared only for a producer that mails every
-  pass, is owed.

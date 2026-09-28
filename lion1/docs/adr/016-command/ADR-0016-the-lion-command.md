@@ -113,9 +113,9 @@ local day. The cursor keeps the wake's own `tokens` and `idle_polls`.
   shows a directory it cannot read as zeros with no problem named.
 
 `lion agent --stats` prints the row, tokens per handled message, the last wake's cursor, and counts
-from the ledger, desk and mail-watch files; a directory with no notes is said, never a zero. `lion
-areas` shows each resident's runs, mail and cost for today from its notes and each wake's line from
-its `serve.log`; what cannot be read lands as a problem.
+from the ledger and desk files; a directory with no notes is said, never a zero. `lion areas` shows
+each resident's runs, mail and cost for today from its notes and each wake's line from its
+`serve.log`; what cannot be read lands as a problem.
 
 The agent reads its own row for its caps: the hour's wakes, the day's cost, the spent fraction a
 `[wake]` rule tests, and a continuous run's stop (ADR-0013). The chores digest prints the day's line
@@ -148,11 +148,11 @@ chat quietly on an interrupt. `context` takes its verbs as a second level of sub
 ### D2: `agent_main`, `land` and `arm` in `apps/cli/lion_cli/agent.py` ^d2
 
 Serves C1 and C2. `build()` makes the agent from `chores.toml`: the trusted senders, the bounded
-khive client, the gate, the chores, and the desk and mail watch when configured. `agent_main` claims
-before any branch. `land()` writes a landing file. `arm()` reads the actor's own inbox and requires
-rows addressed to it, tries five operations and a send to an outsider that the client must each
-refuse, quotes each refusal, and fails when `ANTHROPIC_API_KEY` is set in the environment the CLI
-child inherits.
+khive client, the gate, the chores, and the desk when configured. `agent_main` claims before any
+branch. `land()` writes a landing file. `arm()` reads the actor's own inbox and requires rows
+addressed to it, tries five operations and a send to an outsider that the client must each refuse,
+quotes each refusal, and fails when `ANTHROPIC_API_KEY` is set in the environment the CLI child
+inherits.
 
 - **Landing evidence**: `tests/test_agent.py`: `test_once_refuses_served_identity`,
   `test_the_identity_is_a_lock_the_process_keeps_not_a_pid_it_wrote`,
@@ -165,9 +165,8 @@ Serves C3. The model is the flag's, else `chores.toml`'s, else `deepseek/deepsee
 `deepseek` name gets the router with a fixed provider order, fallbacks off and data collection
 denied; any other name the router's own routing; both a 2,000-token reasoning budget and a stop on
 the notification frame ([[ADR-0009-backends#^d1|ADR-0009/D1]]). `claude_code[/<model>]` is the
-session CLI with the config's `[claude_code]` options in the agent directory. `none` is the
-code-only backend, whose `calls` stay empty. The subscription CLI of
-[[ADR-0009-backends#^d3|ADR-0009/D3]] is not offered.
+session CLI with the config's `[claude_code]` options in the agent directory. The subscription CLI
+of [[ADR-0009-backends#^d3|ADR-0009/D3]] is not offered.
 
 - **Landing evidence**:
   `tests/test_agent.py::test_backend_for_claude_code_is_the_cli_chat_shape_on_the_named_model`.
@@ -221,7 +220,7 @@ the chat log keeps each envelope's cost as it came, null included.
   [[ADR-0009-backends|ADR-0009]] S1 asks of a reader that sums, is owed.
 - **S3**: For `claude_code` the row's dollars are the figure the CLI prints, taken per call as a
   delta ([[ADR-0009-backends#^c4|ADR-0009/C4]]); whether that figure is a bill under a subscription
-  login is not shown here. A `none` wake records zero calls and zero cost, and that zero is true.
+  login is not shown here.
 - **S4**: The day is the machine's local day (A2); a reader elsewhere converts. A landing file keeps
   one run per name per day, the latest.
 - **S5**: Idle polls reach the row only at the next wake: the polls after a process's last wake are

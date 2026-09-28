@@ -619,6 +619,12 @@ class Agent:
         elif take or (self.wake_rules is not None and self.wake_rules.window_open(waiting, now)):
             take, waiting = waiting + take, []
         if [m.get("id") for m in waiting] != [m.get("id") for m in before]:
+            kept = {m.get("id") for m in waiting}
+            released = [m.get("id") for m in before if m.get("id") not in kept]
+            if released:  # read mail reaches `taking` before `deferred` lets go of it (ADR-0013/C3)
+                held = list(_value(self.state, "taking", {}).get("mail") or [])
+                named = held + [i for i in released if i not in held]
+                self.state.put("taking", {"mail": named}, run="-", seq=0)
             self.state.put("deferred", {"mail": waiting}, run="-", seq=0)
         if len(waiting) != self._waiting_said and (waiting or self._waiting_said > 0):
             self._waiting_said = len(waiting)
@@ -744,6 +750,10 @@ class Agent:
                 }
             )
         self._owe(owed)
+        gone = {i for o in owed for i in o["mail"]}
+        left = [m for m in self._waiting() if m.get("id") not in gone]
+        if len(left) != len(self._waiting()):  # told as lost, so never also run from `deferred`
+            self.state.put("deferred", {"mail": left}, run="-", seq=0)
         if taking.get("mail"):
             self.state.put("taking", {}, run="-", seq=0)
         if prior.get("outcome") == "running":
