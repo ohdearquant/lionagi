@@ -445,7 +445,7 @@ class Agent:
         now = self.clock()
         recent = [t for t in spend.get("wakes", []) if now - t < 3600]
         if len(recent) >= self.budget.wakes_per_hour:
-            if not recent:  # a cap below one allows no wake, so no wake ages out to lift it
+            if self.budget.wakes_per_hour < 1:  # no wake ages out to lift a cap below one: say so
                 return f"wakes_per_hour is {self.budget.wakes_per_hour}: no wakes until it is raised"
             at = time.strftime("%H:%M:%S", time.localtime(min(recent) + 3600))
             return f"{len(recent)} wakes in the last hour (cap {self.budget.wakes_per_hour}); next at {at}"
