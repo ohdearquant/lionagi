@@ -117,6 +117,56 @@ async def run_cells(name: str, ns: dict, before=None) -> None:
             await result
 
 
+def test_the_call_table_marks_a_partial_cost_and_names_a_failed_calls_error(tmp_path, monkeypatch, capsys):
+    """A subtotal an attempt is missing from prints as at least that much, so a partial zero does not
+    read as a free call; a failed call's row carries its error where a finished one names its end."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    module = load("backends")
+
+    class Backend:
+        calls = [
+            {
+                "usage": {"input_tokens": 1},
+                "total_cost_usd": 0.0002,
+                "cost_complete": True,
+                "finish_reason": "stop",
+                "provider": "p",
+            },
+            {
+                "usage": {"input_tokens": 1},
+                "total_cost_usd": 0.0002,
+                "cost_complete": False,
+                "finish_reason": "stop",
+                "provider": "p",
+            },
+            {
+                "usage": {},
+                "total_cost_usd": 0.0,
+                "cost_complete": False,
+                "error": "cancelled\nafter 2 attempts",
+            },
+            {
+                "usage": {},
+                "total_cost_usd": 0.0,
+                "cost_complete": True,
+                "finish_reason": "stop",
+                "provider": "p",
+            },
+            {"usage": {}, "total_cost_usd": None, "finish_reason": "stop", "provider": "p"},
+        ]
+
+    module.spent(Backend())
+    rows = capsys.readouterr().out.splitlines()
+    assert [r.split(maxsplit=7)[6:] for r in rows if r[:5].strip().isdigit()] == [
+        ["0.00020", "stop / p"],
+        [">=0.00020", "stop / p"],
+        [">=0.00000", "cancelled"],
+        ["0.00000", "stop / p"],
+        ["unknown", "stop / p"],
+    ]
+    assert rows[-1].endswith(">= marks a subtotal")
+
+
 @pytest.mark.parametrize("name", sorted(p.name for p in NOTEBOOKS.glob("*.ipynb")))
 def test_a_notebook_runs_to_its_end(name, tmp_path, monkeypatch):
     """The notebooks are scripted, so this is the whole notebook and it runs offline."""
@@ -138,15 +188,20 @@ def test_the_two_actor_notebook_raises_a_peers_error_on_the_page(tmp_path, monke
     async def failing(messages):
         raise RuntimeError("the researcher's backend is down")
 
+    seen: list[str] = []
+
     def before(source, ns):
         if source.startswith("run = await reviewer.run("):
+            seen.append("run")
             ns["researcher_turns"] = failing
         if source.startswith("await asyncio.gather"):
+            seen.append("gather")
             assert ns["run"].output["verdict"].decision == "request_changes"  # the reviewer finished
             assert "RuntimeError" in str(ns["run"].resolve("q1"))  # and its ask says why the peer failed
 
     with pytest.raises(RuntimeError, match="backend is down"):
         asyncio.run(run_cells("03_two_actors.ipynb", ns, before))
+    assert seen == ["run", "gather"]  # both cells were met, so the checks inside ran
     assert [t.exception().args for t in ns["peer_tasks"]] == [("the researcher's backend is down",)]
 
 

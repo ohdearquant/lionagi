@@ -124,8 +124,10 @@ def spent(backend) -> None:
         f"{'cost $':>9}  finish / provider"
     )
 
-    def cost(v) -> str:
-        return "unknown" if v is None else f"{float(v):.5f}"
+    def cost(v, complete) -> str:
+        # a subtotal with an attempt uncounted (the call was cut off, or an attempt answered without
+        # a price) is at least what was counted, and says so
+        return "unknown" if v is None else f"{'' if complete is not False else '>='}{float(v):.5f}"
 
     for i, c in enumerate(backend.calls, 1):
         u = c.get("usage") or {}
@@ -133,10 +135,15 @@ def spent(backend) -> None:
         print(
             f"{i:>4} {ms:>6} {u.get('input_tokens', 0):>6} "
             f"{u.get('cache_read_input_tokens', 0):>6} {u.get('output_tokens', 0):>6} "
-            f"{u.get('reasoning_output_tokens') or 0:>6} {cost(c.get('total_cost_usd')):>9}  "
-            f"{c.get('finish_reason')} / {c.get('provider')}"
+            f"{u.get('reasoning_output_tokens') or 0:>6} "
+            f"{cost(c.get('total_cost_usd'), c.get('cost_complete')):>9}  "
+            + (  # one line per call: a CLI's error can run to several
+                c["error"].splitlines()[0]
+                if c.get("error")
+                else f"{c.get('finish_reason')} / {c.get('provider')}"
+            )
         )
-    print("cost is None on a subscription CLI: the spend is unknown, not zero")
+    print("cost is None on a subscription CLI: the spend is unknown, not zero; >= marks a subtotal")
 
 
 if __name__ == "__main__":
