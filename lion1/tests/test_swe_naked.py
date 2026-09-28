@@ -246,3 +246,18 @@ def test_the_oracle_reads_only_a_report_its_own_evaluation_wrote(tmp_path, monke
         run_naked.oracle(preds, "r1", ["x__x-1"], 1)
     evaluator(0, {"resolved_ids": []})  # the control: this evaluation's own report, under the same name
     assert run_naked.oracle(preds, "r1", ["x__x-1"], 1) == {"resolved_ids": []}
+
+
+@pytest.mark.parametrize("streams", [(b"so far\n", b"slow\n"), ("so far\n", "slow\n"), (None, None)])
+def test_an_evaluation_that_times_out_leaves_its_log_and_the_timeout_stands(tmp_path, monkeypatch, streams):
+    preds = tmp_path / "predictions.jsonl"
+    preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 2\n"}) + "\n")
+
+    def run(argv, *, capture_output, text, cwd, timeout):
+        raise subprocess.TimeoutExpired(argv, timeout, output=streams[0], stderr=streams[1])
+
+    monkeypatch.setattr(run_naked.subprocess, "run", run)
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    so_far, slow = ("so far\n", "slow\n") if streams[0] else ("", "")
+    assert (tmp_path / "oracle_r1.log").read_text() == f"{so_far}\n--- stderr ---\n{slow}"

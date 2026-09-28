@@ -410,8 +410,13 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
     ]
     pattern = f"*{run_id}.json"
     before = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in preds.parent.glob(pattern)}
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(preds.parent), timeout=7200)
-    (preds.parent / f"oracle_{run_id}.log").write_text(proc.stdout + "\n--- stderr ---\n" + proc.stderr)
+    log = preds.parent / f"oracle_{run_id}.log"
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(preds.parent), timeout=7200)
+    except subprocess.TimeoutExpired as e:  # the streams so far, then the timeout stands
+        log.write_text(_text(e.stdout) + "\n--- stderr ---\n" + _text(e.stderr))
+        raise
+    log.write_text(proc.stdout + "\n--- stderr ---\n" + proc.stderr)
     if proc.returncode != 0:
         raise RuntimeError(f"the harness exited {proc.returncode}; see oracle_{run_id}.log")
     after = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in preds.parent.glob(pattern)}
@@ -419,6 +424,10 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
     if not reports:
         raise RuntimeError(f"no harness report from this evaluation; see oracle_{run_id}.log")
     return json.loads(reports[-1].read_text())
+
+
+def _text(stream: str | bytes | None) -> str:
+    return stream.decode(errors="replace") if isinstance(stream, bytes) else (stream or "")
 
 
 async def main(args: argparse.Namespace) -> None:
