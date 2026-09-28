@@ -281,5 +281,5 @@ take that fails is kept among the agent's errors and the run goes on.
   kept, and where it lives once the directory is gone. Here a checkpoint is files in a directory git
   ignores, and a restore is a prompt or a history.
 - **S9**: `taken_at` keeps the take's fraction of a second, so `status` calls a file written in the
-  take's second stale only when written after it. A `taken_at` with no fraction, as takes wrote it
-  before, reads as its second's start: a file written anywhere in that second reads stale.
+  take's second stale only when written after it. A `taken_at` with no fraction reads as its
+  second's start: a file written anywhere in that second reads stale.

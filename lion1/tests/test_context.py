@@ -601,9 +601,9 @@ def test_the_status_is_stale_when_the_file_changed_after_the_take_within_its_sec
         record=rec,
         now=AT_TAKE + timedelta(milliseconds=900),
     )
-    # a whole-second taken_at, as a take wrote it before the fraction was kept, reads as its second's start
-    whole = replace(ckpt, taken_at="2026-09-24T10:05:00+00:00")
-    assert ckpt.taken_at == "2026-09-24T10:05:00.900000+00:00"
+    # a whole-second taken_at reads as its second's start
+    whole = replace(ckpt, taken_at=AT_TAKE.isoformat())
+    assert ckpt.taken_at == (AT_TAKE + timedelta(milliseconds=900)).isoformat()
     d, d_whole = actor_dir(tmp_path / "fraction"), actor_dir(tmp_path / "whole")
     save(ckpt, d)
     save(whole, d_whole)
