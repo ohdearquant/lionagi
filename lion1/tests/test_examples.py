@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = ROOT / "examples"
 SCRIPTED = ("tools_and_gates", "notes_and_context", "watch_the_artifact", "budgets_and_outcomes")
 LIVE = ("backends",)
+# tests/test_bench_agent.py drives this one: a fake store, and a child that writes a ledger
+OWN_TESTS = ("bench_agent",)
 
 
 def run(script: str, *args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -29,7 +31,7 @@ def run(script: str, *args: str, env: dict[str, str]) -> subprocess.CompletedPro
 
 
 def test_every_script_in_examples_is_listed_here():
-    assert sorted(p.stem for p in EXAMPLES.glob("*.py")) == sorted(SCRIPTED + LIVE)
+    assert sorted(p.stem for p in EXAMPLES.glob("*.py")) == sorted(SCRIPTED + LIVE + OWN_TESTS)
 
 
 @pytest.mark.parametrize("script", SCRIPTED + LIVE)
