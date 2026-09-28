@@ -1,7 +1,7 @@
 ---
 adr: ADR-0019
 status: draft
-liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests, the restore, the files, both transports and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests)
+liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests)
 date: "2026-09-25"
 area: checkpoint
 kind: new
@@ -215,7 +215,8 @@ is a `posture` too.
   `test_the_ceiling_eight_directives_half_the_budget_and_the_watch_list`, the spawn test;
   `tests/test_context.py`:
   `test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_open_pull_requests`,
-  `test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one`.
+  `test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one`,
+  `test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take`.
 
 ### D3: `lion context` and `/api/context/*`: one implementation, two transports ^d3
 
@@ -297,3 +298,8 @@ take that fails is kept among the agent's errors and the run goes on.
   kernel's: which checkpoint a new process starts from, who starts it, how long a checkpoint is
   kept, and where it lives once the directory is gone. Here a checkpoint is files in a directory git
   ignores, and a restore is a prompt or a history.
+- **S9**: A lane row is an object whose lane id is a non-empty string and whose `properties`, when
+  given, is an object; a pull request's number is a positive int, never a bool. A row of another
+  shape is counted in `source.lanes` as invalid, the first one named, and never aborts the take; a
+  box that is not a list is a read that could not be done. Pinned by
+  `test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take`.
