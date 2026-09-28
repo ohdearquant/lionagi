@@ -2,9 +2,9 @@
 
 ## What the records are
 
-`docs/adr/` is the design of the loop written once, in the present tense, from the private
-repository of the earlier prototype at revision `63da864a`, package `lionagi/`, as it stands; the
-amended history it was distilled from is not in this repository. A record says what is, why,
+`docs/adr/` is the design of the loop written once, in the present tense, from the package
+`lionagi/` as it stands; the amended history it was distilled from is not in this repository. A
+record says what is, why,
 and what it costs, in the register the tooling in `docs/adr/_scripts/` enforces: Context, Definitions,
 Assumptions, Claims, Decisions, Alternatives, Consequences, with anchors on the C and D items. A fact the
 code does not show is not asserted; a claim marked mechanical has a landed decision behind it or says
@@ -36,13 +36,12 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0011 | The box: one shape for three boxes, the coding tools over a tree, the watch and its gate, the patch | draft (2026-09-25); the real-box tests opt-in; resolving a boxed path in the box owed | the sandboxed executor: content-addressed trees, declared write paths, receipts |
 | ADR-0013 | The long-running agent: the wake, the send gate and the hop count, the caps, the cursor and posture, the lock, the continuous run and its checkpoint | draft (2026-09-25) | the process: one identity per process, lease by turn activity, one supervisor |
 | ADR-0012 | The bench as the instrument: the grade in the box, the row, the run id, unaided by default, what compares with what, the cited figures | draft (2026-09-25); one carried figure not reproduced | the instrument contract |
-| ADR-0014 | The instrument contract: the measurement and its proof, the refusals, the dead instrument, first sight then transitions, the floors | draft (2026-09-25); the command-line check unvetted and untested; a lock-holder and a scheduled-job instrument, a dead mark on delivery and a pass count owed | none |
-| ADR-0015 | Chores: three endings chosen by code, twelve chores from one file, ticks as store reminders, the bounded client, print and save | draft (2026-09-25); no test drives a positive hand-run check; the catch-up's store-side filters owed | the scheduled run of a process |
+| ADR-0014 | The instrument contract: the measurement and its proof, the refusals, the dead instrument, first sight then transitions, the floors | draft (2026-09-25); the command-line check unvetted and untested; a lock-holder and a scheduled-job instrument, a dead mark on delivery owed | none |
+| ADR-0015 | Chores: three endings chosen by code, eleven chores from one file, ticks as store reminders, the bounded client, print and save | draft (2026-09-25); no test drives a positive hand-run check; the catch-up's store-side filters owed | the scheduled run of a process |
 | ADR-0016 | The lion command and the spend row: one entry, the shared lock, the row from the envelopes, the readers | draft (2026-09-25); the unknown-cost mark owed | none |
 | ADR-0017 | The desk: the read-only reader, the cursor that never marks, the gate, code escalations, every model-facing command with its gate, pending until its row, keyed replay, record answers, the brief, areas and chairs | draft (2026-09-25); no bench exercises the desk | mail settlement by keyed replay |
 | ADR-0018 | Chat in a box: one run that waits for the person, the flags, the person's tree or a copy, the patch home, the resume | draft (2026-09-25); no test interrupts a boxed chat | none |
 | ADR-0019 | The checkpoint and the restore: named values and a folded view with no model call, the transcript scan, half the budget and eight of the person's words, the re-arm first, the ignored directory, one `latest.json` for both arms | draft (2026-09-25); lanes from pull requests and threads owed; nothing in the code starts a Claude Code session's checkpoint | the durable record and a session's continuity across processes: which checkpoint a new process starts from, who starts it, how long a checkpoint is kept |
-| ADR-0020 | The mail watch: one call per listed row, code settles from the tracker's class, one thread per tracked row, the ledger before the mark, the backlog once, the code-only pass | draft (2026-09-25); no test builds the watch from `[mail]`; serialised escalation owed | an effect on an outside system: a declared write, its receipt, applied once |
 
 Every record is drafted. Each record is written
 from the code first; the vocabulary below is fixed before any of them. 0009 landed 2026-09-25 and
@@ -53,7 +52,7 @@ amended nothing: it names the long-running agent's mail as the other layer and l
 boundary to 0013. 0011 landed 2026-09-25 and amended nothing: the box, the tools and the watch as the code
 holds them, with the executor over content-addressed trees named as the boundary. 0013 landed 2026-09-25 and amended
 0010 C4 (mail is the wake's input, or one inbound while a run continues) and 0007 S2 (the continuous run's
-checkpoint is built and replays as history). 0014 landed 2026-09-25 and amended nothing; twelve
+checkpoint is built and replays as history). 0014 landed 2026-09-25 and amended nothing; eleven
 instruments build from one config. 0018 landed 2026-09-25 and amended 0007 C4 (a changed renderer is not
 detected) and 0008 S4 (the continuous run's checkpoint exists). 0012, 0015 and 0016 landed 2026-09-25;
 0016 amended 0009 (S10: the session CLI lands no envelope on a failed call, owed). 0017 landed
@@ -67,18 +66,18 @@ commands is owed (0003); `run.more` is not yet a default handler (0001 C2); `Con
 waits, a pending alias raises (0005 C3, S6); a repair's note rides `not executed:` (0004 C3); the
 notification's order and wording (0006 C2); the fold applies directives in record order today
 (0007 C3); a session CLI given its own tools acts outside every gate, its gate owed (0009 C6, S11;
-0001 C5); the serve wrapper decides whether to start (0013 S12); the owner-bound reader stands in
+0001 C5); the serve wrapper decides whether to start (0013 S11); the owner-bound reader stands in
 until the store lets an actor read a namespace it can see (0017 D2).
 
 The same comparison found mechanisms the code enforces that no record stated, and items the earlier
 records owed that the new ones had dropped; both are now in their records (0001 to 0003, 0005 to
-0007, 0011 to 0017). Two subjects without a record got one: the checkpoint (0019, its definition
-moved from 0013) and the mail watch (0020, which 0013 S8 and 0015 S9 had left).
+0007, 0011 to 0017). One subject without a record got one: the checkpoint (0019, its definition
+moved from 0013).
 
 A second review against the same code corrected more: the turn table's row for an `OUT{}` that does
 not assemble (0002 C1); the VM box's timeout (0011 S13) and its path check by text (0011 C3, S14);
-the dead-instrument mark and the cadence rule (0014 C4, C9, S11, S12); `note.delete` as a delete
-(0007 D3); concurrent escalations and the told error (0020 C3, C4, C6, S7, S14); the effect wait
+the dead-instrument mark (0014 C4, S11); `note.delete` as a delete
+(0007 D3); the effect wait
 before pointers (0005 C1); `still running:` unreachable under every decided turn (0006 S5); and the
 hard-set pair as code-host-closed, not unaided (0012 C8).
 
@@ -150,7 +149,7 @@ hard-set pair as code-host-closed, not unaided (0012 C8).
   runtime; a continuous run carries many wakes and its checkpoint carries the record across a restart
   (0013 C4, C5, C6, C7).
 - The identity and its grants, the lease by turn activity, the supervisor and the durable record are below
-  the boundary; the agent holds a lock and nothing more (0013 S10).
+  the boundary; the agent holds a lock and nothing more (0013 S9).
 - A measurement names its population, predicate and count and what its known-positive read, or is
   refused before anything is sent; a failed control voids the answer and escalates to the owner and the
   steward; an empty population is a finding unless declared expected; an instrument that never answers
@@ -167,7 +166,7 @@ hard-set pair as code-host-closed, not unaided (0012 C8).
   says what the instance cost and an unmeasured spend is unknown, never zero; a run id is one bench run
   and a disagreeing launch is refused; the bench runs unaided unless a launch says otherwise, and
   unaided is the number; cited figures belong to named bench runs (0012 C1 to C5, C9).
-- A chore ends quiet, reported or escalated and code picks the ending; the chores are the twelve the
+- A chore ends quiet, reported or escalated and code picks the ending; the chores are the eleven the
   file names; a chore runs on its tick, a trusted question or a missed tick, inside a wake, as the
   agent's actor behind the gate, reaching the store only through the bounded client; a report names
   its prior and the steward hears only what the owner left (0015 C1 to C5, C7).
@@ -182,10 +181,6 @@ hard-set pair as code-host-closed, not unaided (0012 C8).
   delivered; an area is one chair and its residents (0017 C1 to C11).
 - A checkpoint is named values and a folded view taken with no model call; a restore starts from
   the latest one, re-arms first, and a checkpoint lives in an ignored directory (0019 C1 to C7).
-- The mail watch asks the model for one call per listed row; code settles only a settleable class
-  pinned to one tracked row, and everything else reaches the owner as one message on its thread;
-  the mail ledger records an escalation before its mark; the backlog is reported once and never
-  acted on (0020 C1 to C8).
 
 ## Open
 

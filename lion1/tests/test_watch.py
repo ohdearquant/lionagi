@@ -25,7 +25,7 @@ class FakeBox:
         self.out = out or {}  # stdout per command
         self.ran: list[str] = []
 
-    async def diff(self) -> str:
+    async def diff(self, base: str = "HEAD") -> str:
         return next(self.diffs)
 
     async def run(self, cmd: str, *, timeout: float = 120.0, env: dict | None = None) -> tuple[int, str]:

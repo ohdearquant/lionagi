@@ -288,6 +288,15 @@ def test_a_hold_inside_the_conversation_is_logged_once(tmp_path):
     assert lines[0].startswith("wake 1: Quiet") and lines[1].startswith("held: 1 wakes in the last hour")
 
 
+@pytest.mark.parametrize("cap", [0, -1])
+def test_a_wake_cap_below_one_holds_every_wake_and_says_why(cap):
+    agent = build(FakeKhive(mail("lambda:a", "say hi back")), REPLY, DONE, budget=Budget(wakes_per_hour=cap))
+    assert agent.hold() == f"wakes_per_hour is {cap}: no wakes until it is raised"
+    # with a wake still in the hour the reason is the same: its ageing out lifts nothing
+    agent.state.put("spend", {"wakes": [agent.clock() - 10]}, run="-", seq=0)
+    assert agent.hold() == f"wakes_per_hour is {cap}: no wakes until it is raised"
+
+
 def test_no_mail_means_no_run_and_the_next_wake_reads_the_cursor_first():
     khive = FakeKhive(mail("lambda:a", "say hi back"))
     agent = build(khive, REPLY, DONE, DONE)
@@ -1079,6 +1088,52 @@ def test_the_window_opens_by_age_with_no_new_mail_and_the_wake_now_file_opens_it
     assert run is not None and not (tmp_path / "wake-now").exists()  # the lever is consumed by its wake
     assert agent.state.get("cursor").value["mail"] == ["e2e2e2e2"]
     assert lines[0] == "wake-now: taking 1 waiting and 0 new"
+
+
+class FailsOnce(MemoryNoteStore):
+    """A store whose write of `key` raises once, the first time it follows a write of `after`, while
+    `armed`: the disk that fills between two notes of one wake."""
+
+    def __init__(self, key: str, after: str):
+        super().__init__()
+        self.key, self.after, self.armed, self.seen = key, after, False, False
+
+    def put(self, key, value, *, run, seq):
+        if self.armed and self.seen and key == self.key:
+            self.armed = False
+            raise OSError("disk full")
+        if self.armed and key == self.after:
+            self.seen = True
+        return super().put(key, value, run=run, seq=seq)
+
+
+def test_released_mail_is_named_under_taking_before_deferred_lets_go_so_a_failed_write_still_owes_it():
+    rules = Wake(default="batch", batch_after=3600, batch_size=5, rules=(WakeRule("now", subject="^urgent"),))
+    khive, state = FakeKhive(mail("lambda:a", "a verdict", mid="d1d1d1d1")), FailsOnce("taking", "deferred")
+    agent = build(khive, state=state, wake_rules=rules, owner="lambda:a")
+    assert asyncio.run(agent.wake(wait_ms=0)) is None  # read and kept under `deferred`
+    khive.mail.append({**mail("lambda:a", "now please", mid="e2e2e2e2"), "subject": "urgent: now"})
+    state.armed = True  # `deferred` lets go of d1d1d1d1, then the write naming the run's batch fails
+    with pytest.raises(OSError, match="disk full"):
+        asyncio.run(agent.wake(wait_ms=0))
+    assert state.get("deferred").value == {"mail": []}
+    asyncio.run(build(khive, state=state, wake_rules=rules, owner="lambda:a").serve(until=lambda: True))
+    told = [s["content"] for s in khive.sent]
+    assert len(told) == 1 and "d1d1d1d1" in told[0] and "e2e2e2e2" in told[0]
+    assert state.get("unreported").value == [] and state.get("taking").value == {}
+
+
+def test_a_batch_told_as_lost_leaves_deferred_so_it_is_never_run_later_too():
+    rules = Wake(default="batch", batch_after=3600, batch_size=5)
+    khive, state = FakeKhive(), MemoryNoteStore()
+    waiting = [{**mail("lambda:a", "a verdict", mid="d1d1d1d1"), "deferred_ts": 0.0}]
+    waiting.append({**mail("lambda:a", "another", mid="f3f3f3f3"), "deferred_ts": 0.0})
+    state.put("deferred", {"mail": waiting}, run="-", seq=0)  # a take whose `deferred` write never landed
+    state.put("taking", {"mail": ["d1d1d1d1"]}, run="-", seq=0)
+    agent = build(khive, state=state, wake_rules=rules, owner="lambda:a")
+    asyncio.run(agent.serve(until=lambda: True))
+    assert len(khive.sent) == 1 and "d1d1d1d1" in khive.sent[0]["content"]
+    assert [m["id"] for m in state.get("deferred").value["mail"]] == ["f3f3f3f3"]
 
 
 def test_a_hold_file_holds_the_agent_by_its_first_line_and_its_removal_resumes_it(tmp_path):
