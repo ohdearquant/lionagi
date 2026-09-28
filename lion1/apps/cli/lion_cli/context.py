@@ -187,7 +187,7 @@ def restore(directory: str | Path, id: str | None = None) -> dict:
 
 def status(directory: str | Path, *, session: str | None = None) -> dict:
     """`{latest, taken_at, context_now, stale, pending_vars}`. Stale: no checkpoint, or the transcript or
-    record it points at changed after the take."""
+    record it points at changed after the take. A `taken_at` with no fraction is its second's start."""
     d = Path(directory).resolve()
     try:
         c = load(d)

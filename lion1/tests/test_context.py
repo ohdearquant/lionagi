@@ -4,9 +4,10 @@ harvests its kind, and an absent source is a value."""
 
 import asyncio
 import json
+import os
 import shlex
 import subprocess
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -586,6 +587,39 @@ def test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status(tmp_path
     assert "watch.tmon1" in done["vars"] and "lane.1ane0001" in done["vars"]
 
 
+@pytest.mark.parametrize("kind", ["transcript", "record"])
+def test_the_status_is_stale_when_the_file_changed_after_the_take_within_its_second_too(tmp_path, kind):
+    pointed = tmp_path / f"{kind}.jsonl"
+    pointed.write_text("placeholder\n")
+    rec = Record("r0") if kind == "record" else None
+    ckpt = take(
+        {kind: str(pointed)},
+        [],
+        actor=ACTOR,
+        why="manual",
+        budget=100,
+        record=rec,
+        now=AT_TAKE + timedelta(milliseconds=900),
+    )
+    # a whole-second taken_at, as a take wrote it before the fraction was kept, reads as its second's start
+    whole = replace(ckpt, taken_at="2026-09-24T10:05:00+00:00")
+    assert ckpt.taken_at == "2026-09-24T10:05:00.900000+00:00"
+    d, d_whole = actor_dir(tmp_path / "fraction"), actor_dir(tmp_path / "whole")
+    save(ckpt, d)
+    save(whole, d_whole)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    for written, stale, stale_whole in (
+        (AT_TAKE - timedelta(milliseconds=500), False, False),  # before the take's second
+        (AT_TAKE + timedelta(milliseconds=100), False, True),  # the same second, before the take
+        (AT_TAKE + timedelta(milliseconds=950), True, True),  # the same second, after the take
+        (AT_TAKE + timedelta(milliseconds=1_100), True, True),  # the next second
+    ):
+        ns = (written - epoch) // timedelta(microseconds=1) * 1_000
+        os.utime(pointed, ns=(ns, ns))
+        got = tuple(status(at, session="no-such-session")["stale"] for at in (d, d_whole))
+        assert got == (stale, stale_whole), written
+
+
 def test_a_long_var_is_its_name_size_and_loader_while_a_persons_words_and_watches_stay_whole(tmp_path):
     words = "placeholder words, said once " * 40
     command = "bash /tmp/long-watch.sh " + "a" * 500
@@ -778,6 +812,7 @@ def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp
     assert load(d).source["lanes"].startswith("unavailable: kkernel not found")
     after = status(d)
     assert after["latest"] == done["id"] and after["pending_vars"] == 0  # the checkpoint drained them
+    assert after["stale"] is False  # the transcript was last written before the take
     main(["context", "restore", "--dir", str(d)])
     prompt = capsys.readouterr().out
     assert prompt.startswith(f"Checkpoint {done['id']} of {ACTOR}")
