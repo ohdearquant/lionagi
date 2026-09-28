@@ -390,14 +390,19 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
     """The harness's report on `preds`. The harness skips an instance whose per-instance report
     exists under its run id and still writes a fresh top-level report from the cached ones, so the
     id it is handed carries the predictions' digest: new predictions under a reused run id are
-    graded, never read from an earlier evaluation. Only a report this call wrote, new or changed
-    since it started, is read; a nonzero exit, no such report, or a report that does not name
-    exactly the predictions handed in raises; the log keeps both streams either way."""
-    digest = hashlib.sha256(preds.read_bytes()).hexdigest()[:16]
+    graded, never read from an earlier evaluation. The harness is handed a snapshot of the bytes
+    the digest names, so an overlapping run rewriting `preds` changes nothing here. Only a report
+    this call wrote, new or changed since it started, is read; a nonzero exit, no such report, or a
+    report that does not name exactly the predictions handed in raises; the log keeps both streams
+    either way."""
+    data = preds.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()[:16]
     harness_id = f"{run_id}.{digest}"
     submitted = sorted(
-        {json.loads(line)["instance_id"] for line in preds.read_text().splitlines() if line.strip()}
+        {json.loads(line)["instance_id"] for line in data.decode().splitlines() if line.strip()}
     )
+    snapshot = preds.with_name(f"{preds.stem}.{digest}{preds.suffix}")
+    snapshot.write_bytes(data)
     cmd = [
         "uv",
         "run",
@@ -410,7 +415,7 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
         "--dataset_name",
         "SWE-bench/SWE-bench_Verified",
         "--predictions_path",
-        str(preds),
+        str(snapshot),
         "--run_id",
         harness_id,
         "--max_workers",

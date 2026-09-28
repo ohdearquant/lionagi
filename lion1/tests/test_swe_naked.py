@@ -333,6 +333,30 @@ def test_an_overlapping_evaluations_report_under_the_same_run_id_is_not_this_one
         run_naked.oracle(preds, "r1", ["y__y-2"], 1)
 
 
+def test_the_harness_grades_the_bytes_the_digest_names_whatever_rewrites_the_predictions(
+    tmp_path, monkeypatch
+):
+    preds = tmp_path / "predictions.jsonl"
+    first = json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 1\n"}) + "\n"
+    preds.write_text(first)
+    handed: list[str] = []
+
+    def run(argv, *, capture_output, text, cwd, timeout):
+        # an overlapping run under the same run id rewrites the predictions before the harness reads
+        preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 2\n"}) + "\n")
+        path = Path(argv[argv.index("--predictions_path") + 1])
+        handed.append(path.read_text())
+        rid = argv[argv.index("--run_id") + 1]
+        (Path(cwd) / f"m.{rid}.json").write_text(
+            json.dumps({"submitted_ids": ["x__x-1"], "resolved_ids": []})
+        )
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(run_naked.subprocess, "run", run)
+    run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    assert handed == [first]  # the patch the digest names, not the rewrite
+
+
 @pytest.mark.parametrize("streams", [(b"so far\n", b"slow\n"), ("so far\n", "slow\n"), (None, None)])
 def test_an_evaluation_that_times_out_leaves_its_log_and_the_timeout_stands(tmp_path, monkeypatch, streams):
     preds = tmp_path / "predictions.jsonl"
