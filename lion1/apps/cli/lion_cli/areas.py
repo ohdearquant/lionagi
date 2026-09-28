@@ -593,9 +593,11 @@ def serve(
                 return 400, "cap needs cost_per_day and/or wakes_per_hour", {}
             path = d / "chores.toml"
             try:
-                text = path.read_text()
+                text = path.read_bytes().decode()  # bytes, so a CRLF file keeps its line endings
             except FileNotFoundError:
                 return 409, f"no chores.toml in {d}", {}
+            except UnicodeDecodeError as e:
+                return 409, f"chores.toml is not UTF-8, nothing was written: {e}", {}
             try:
                 before = tomllib.loads(text)
             except tomllib.TOMLDecodeError as e:
@@ -612,7 +614,7 @@ def serve(
             if not isinstance(budget, dict) or after != {**before, "budget": {**budget, **values}}:
                 return 409, "chores.toml's [budget] could not be rewritten in place; nothing was written", {}
             tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-            tmp.write_text(new_text)
+            tmp.write_bytes(new_text.encode())
             os.chmod(tmp, path.stat().st_mode & 0o7777)
             os.replace(tmp, path)
             detail = " ".join(f"{k}={v}" for k, v in values.items())

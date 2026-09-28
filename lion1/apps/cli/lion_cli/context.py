@@ -76,7 +76,7 @@ def _pending(directory: Path) -> tuple[list[Var], str]:
     except FileNotFoundError:
         return [], ""
     out = []
-    for i, line in enumerate(text.splitlines(), 1):
+    for i, line in enumerate(text.split("\n"), 1):  # LF only: a value may hold U+2028 unescaped
         if not line.strip():
             continue
         try:

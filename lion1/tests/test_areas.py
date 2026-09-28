@@ -830,6 +830,21 @@ def test_restart_refuses_without_one_plist_or_in_a_wake_and_kickstarts_the_label
     )
 
 
+def test_cap_keeps_a_crlf_files_line_endings_and_refuses_one_that_is_not_utf8(tmp_path):
+    d = app_dir(tmp_path)
+    crlf = CHORES.replace("\n", "\r\n").encode()
+    (d / "chores.toml").write_bytes(crlf)
+    port = serve_on(registry(tmp_path, d))
+    code, doc = control(port, {"dir": str(d), "action": "cap", "wakes_per_hour": 60})
+    assert code == 200 and doc["wakes_per_hour"] == 60
+    assert (d / "chores.toml").read_bytes() == crlf.replace(
+        b"wakes_per_hour = 6\r\n", b"wakes_per_hour = 60\r\n"
+    )
+    (d / "chores.toml").write_bytes(b"# \xff\n" + crlf)
+    code, doc = control(port, {"dir": str(d), "action": "cap", "wakes_per_hour": 7})
+    assert code == 409 and doc["detail"].startswith("chores.toml is not UTF-8, nothing was written")
+
+
 def test_a_running_wake_under_a_held_lock_is_not_idle_without_a_model_child(tmp_path):
     """An in-process backend has no `claude -p` child: the cursor under a held lock says it is waking."""
     d = agent_dir(tmp_path, "desk", role="desk", cursor={"wake": 3, "outcome": "running"}, spend=None)

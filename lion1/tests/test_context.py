@@ -749,6 +749,17 @@ def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp
         main(["context", "set", "--dir", str(d), "--name", "x", "--kind", "nonsense", "--value", "v"])
 
 
+def test_a_declared_value_holding_a_line_separator_is_read_back_whole(tmp_path):
+    import lion_cli.context as cli
+
+    d = actor_dir(tmp_path)
+    odd = ["a\nb", "a\x85b", "a\u2028b", "a\u2029b"]  # the writer keeps all but LF unescaped
+    for i, value in enumerate(odd):
+        cli.set_var(d, f"v{i}", "fact", value)
+    got, _ = cli._pending(d)
+    assert [v.value for v in got] == odd and status(d)["pending_vars"] == 4
+
+
 def test_the_context_routes_answer_for_a_registered_desk_only(tmp_path, monkeypatch):
     import lion_cli.context as cli
 
