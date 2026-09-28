@@ -22,6 +22,7 @@ from hub.agent.chores import (
     Chores,
     Digest,
     Outcome,
+    _aged_key,
     period_s,
     sender_of,
     verbs,
@@ -196,11 +197,13 @@ def build(
 
 
 def age_ledger(chores: Chores, hours: float) -> None:
-    """Move every ledger row's `at` into the past, as a test's clock."""
+    """Move every ledger row's `at` and `ts` into the past, as a test's clock."""
     rows = chores.rows()
     for r in rows:
         t = time.mktime(time.strptime(r["at"], "%Y-%m-%d %H:%M:%S")) - hours * 3600
         r["at"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+        if "ts" in r:  # a row from before `ts` carries its label alone
+            r["ts"] -= hours * 3600
     chores.ledger.write_text("".join(json.dumps(r) + "\n" for r in rows))
 
 
@@ -419,6 +422,34 @@ def test_a_chore_that_never_answers_is_escalated_once_as_a_dead_instrument_and_a
     told = [r["at"] for r in rows if OWNER in r["sent_to"]]  # the row whose report reached the owner
     assert len(khive.sent) == 4 and told == [rows[5]["repeat_of"]]  # a standing state is told once
     assert [r["answered"] for r in rows] == [False, False, False, False, True, False]
+
+
+def test_a_dead_instrument_notice_a_recipient_refused_is_sent_to_that_recipient_at_the_next_run(
+    tmp_path, monkeypatch
+):
+    ticks, start = itertools.count(), datetime(2026, 9, 22)
+    monkeypatch.setattr(
+        "hub.agent.chores._now",
+        lambda: (start + timedelta(seconds=next(ticks))).strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"m{i}000000") for i in range(5)))
+    khive.refuse = {STEWARD}  # the steward's copies are refused, as a hop cap would
+    dead = Outcome(findings=("NOT-MEASURED",), evidence="rc 1", control=False)
+    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 5, disk=Probe("disk", dead))
+
+    def notices() -> list[str]:
+        return [s["to"] for s in khive.sent if s["subject"] == "ESCALATE disk: instrument dead"]
+
+    for _ in range(3):
+        run = asyncio.run(agent.wake())
+    assert notices() == [OWNER]  # the crossing: the owner's copy landed, the steward's did not
+    assert any(f"told ['{OWNER}', '{STEWARD} undelivered: hop limit" in r for r in results(run))
+    assert agent.state.get("dead_told").value == [f"disk|{OWNER}"]
+    khive.refuse = set()
+    asyncio.run(agent.wake())  # the steward is still owed its copy; the owner is not told again
+    assert notices() == [OWNER, STEWARD] and agent.state.get("dead_told").value == ["disk"]
+    asyncio.run(agent.wake())
+    assert notices() == [OWNER, STEWARD]  # every copy landed: told once
 
 
 def test_an_ask_is_answered_on_its_thread_whatever_the_outcome_and_the_owner_is_not_told_twice(tmp_path):
@@ -655,9 +686,58 @@ def test_aged_tells_the_steward_once_what_the_owner_left_unanswered_and_nothing_
     assert len(khive.sent) == 3
     assert any("aged: nothing unanswered" in r for r in results(run))
     rows = chores.rows()
-    assert sorted(agent.state.get("aged_sent").value) == sorted(f"{r['chore']}|{r['at']}" for r in rows[:2])
+    assert sorted(agent.state.get("aged_sent").value) == sorted(_aged_key(r) for r in rows[:2])
     assert period_s("every:30m") == 1800 and period_s("daily") == 86400 and period_s(None) == 86400
     assert Aged().chore is None
+
+
+def test_two_aged_passes_of_one_turn_tell_the_steward_once_and_keep_both_markers(tmp_path):
+    khive = Yielding(
+        mail(SELF, "tick: disk"),
+        mail(SELF, "tick: pr", mid="b2c3d4e5"),
+        mail(SELF, "tick: aged", mid="c3d4e5f6"),
+    )
+    twice = '<lact a1>aged()</lact><lact a2>aged(chore="pr")</lact>'
+    chores, agent = build(
+        tmp_path,
+        khive,
+        [CHECK, DONE, '<lact c1>check(chore="pr")</lact>', DONE, twice, DONE],
+        disk=Probe("disk", full(findings=("low",), evidence="df"), every="every:30m"),
+        pr=Probe("pr", full(findings=("#7 red",), evidence="gh"), every="every:30m"),
+    )
+    asyncio.run(agent.wake())
+    asyncio.run(agent.wake())
+    age_ledger(chores, hours=1.5)
+    asyncio.run(agent.wake())  # both passes run together; each finds what the other has not marked yet
+    aged = "".join(s["content"] for s in khive.sent if s["to"] == STEWARD)
+    assert (aged.count("\n- disk "), aged.count("\n- pr ")) == (1, 1)  # each report told once
+    rows = chores.rows()
+    assert sorted(agent.state.get("aged_sent").value) == sorted(_aged_key(r) for r in rows)
+
+
+def test_a_report_in_the_hour_a_clock_change_repeats_is_aged_from_its_own_instant(tmp_path, monkeypatch):
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        khive = FakeKhive()
+        chores, _ = build(tmp_path, khive, [], disk=Probe("disk", full()))
+        label = "2026-11-01 01:30:00"  # 01:30 EDT, then 01:30 EST an hour later
+        first, second = (datetime(2026, 11, 1, h, 30, tzinfo=UTC).timestamp() for h in (5, 6))
+        assert {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)) for t in (first, second)} == {label}
+        reply = datetime(2026, 11, 1, 6, 0, tzinfo=UTC).isoformat()  # between the two instants
+        khive.threads["t1"] = [{"properties": {"from_actor": OWNER, "sent_at": reply}, "content": "on it"}]
+        acked = [
+            asyncio.run(chores._acknowledged({"at": label, "ts": ts, "thread": "t1"}))[0]
+            for ts in (first, second)
+        ]
+        assert acked == [True, False]  # the reply came after the first report and before the second
+        keys = {_aged_key({"chore": "disk", "at": label, "ts": ts}) for ts in (first, second)}
+        assert len(keys) == 2  # two reports, two aged markers, though both read 01:30
+        old = {"at": "2026-09-22 12:00:00", "thread": "t1"}  # a row from before `ts`: its label is read
+        assert asyncio.run(chores._acknowledged(old)) == (True, "answered")
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 def test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once(tmp_path):
