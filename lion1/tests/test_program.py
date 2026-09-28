@@ -789,6 +789,39 @@ def test_a_dicts_keys_count_toward_the_size_limit():
     assert b.ok and b.value == "v"
 
 
+class Grid(BaseModel):
+    n: int
+
+
+class Take(BaseModel):
+    rows: list[dict]
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("g = grid(n=2)", "OUT{x: (x for x in *g)}"),
+        ("g = grid(n=2)", "if [*g[0]]:", '    OUT{x: "taken"}'),
+        ("g = grid(n=2)", 'note["k"] = [*g[0]]', 'OUT{x: *note["k"]}'),
+        ("g = grid(n=2)", "a = take(rows=*g)", "OUT{x: *a}"),
+    ],
+)
+def test_a_dict_whose_keys_are_not_strings_counts_each_key_as_one_item(lines):
+    actor = _actor("intkeys", [])
+
+    @actor.handler(Grid)
+    async def grid(req: Grid, ctx) -> list[dict]:
+        return [{i: f"row{i}"} for i in range(req.n)]
+
+    @actor.handler(Take)
+    async def take(req: Take, ctx) -> int:
+        return len(req.rows)
+
+    run = _run(actor, fenced(*lines), "idle")
+    assert isinstance(run.outcome, Success), _notices(run)
+    assert run.output["x"] in ([{0: "row0"}, {1: "row1"}], "taken", [{0: "row0"}], 2)
+
+
 def test_a_repair_is_counted_when_the_check_then_refuses_the_program():
     actor = _actor("repaired-then-refused", [])
     run = _run(actor, fenced('a = search_similar(input="Dune" candidates=[])', 'b = serch(text="y")'), "idle")

@@ -602,7 +602,7 @@ def _size(value: Any) -> int:
         if isinstance(v, str):
             n += len(v)
         elif isinstance(v, dict):
-            n += len(v) + sum(len(k) for k in v)  # a key is characters too
+            n += len(v) + sum(len(k) if isinstance(k, str) else 1 for k in v)  # a key is characters too
             stack.extend(v.values())
         elif isinstance(v, list | tuple):
             n += len(v)

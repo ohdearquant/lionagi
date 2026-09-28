@@ -202,6 +202,7 @@ resumed chat folds it and recompiles nothing; the record keeps four kinds
   `test_a_build_past_the_size_limit_settles_the_node_invalid`,
   `test_a_comprehension_counts_each_item_it_builds_toward_the_size_limit`,
   `test_a_dicts_keys_count_toward_the_size_limit`,
+  `test_a_dict_whose_keys_are_not_strings_counts_each_key_as_one_item`,
   `test_an_unnamed_command_skips_an_auto_name_the_record_already_holds`,
   `test_if_elif_else_runs_only_the_taken_branch_and_a_return_ends_the_program`,
   `test_a_command_inside_a_comprehension_reads_the_comprehensions_name`,
