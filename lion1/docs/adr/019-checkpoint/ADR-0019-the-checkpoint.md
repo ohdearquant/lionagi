@@ -62,7 +62,7 @@ and [[ADR-0017-the-desk|ADR-0017]]. Source: `lionagi/checkpoint.py`, `hub/contex
 | A1 | The transcript stays on disk after the session ends; a checkpoint points into it and never copies a tool call or its result. | `source.transcript`; a folded exchange is named by its row's uuid and time, and the restore prints the path | the folded exchanges are lost with the file, and the checkpoint must carry them |
 | A2 | Every value a fresh session needs is declared, read from a file the session keeps, or read from a store. | each kind is read by a function in `hub/context.py` or declared through `lion context set` | the checkpoint needs a model call to write the rest, and is prose again |
 | A3 | A Monitor ends at its deadline, 30 minutes at most, whatever `persistent` says. | `MONITOR_CAP_MS` in `hub/context.py`; 65 Monitor calls read from 18 days of one session directory's transcript, all persistent, none still running (2026-09-24) | a Monitor still running is left out of the restore and never re-armed |
-| A4 | A spawned Agent with no ending task notification 12 hours after its start died with a session restart. | `LEG_HOURS` in `hub/context.py`; without the bound a take read 29 spawns as running, the oldest two days old (2026-09-24) | a spawn running past 12 hours is left out of the restore |
+| A4 | A spawned Agent with no ending task notification 12 hours after its start died with a session restart. | `SPAWN_HOURS` in `hub/context.py`; without the bound a take read 29 spawns as running, the oldest two days old (2026-09-24) | a spawn running past 12 hours is left out of the restore |
 
 ## Claims
 
@@ -140,10 +140,10 @@ A lazy value shows its name, size and loader: its `ref` or `lion context show`.
   completed, stopped or older spawn counts as running.
 
 A Monitor's deadline is its timeout, five minutes when none is given, capped at 30 minutes whatever
-`persistent` says (A3). Of one command armed twice the newest arm decides, running or not. An inbox
-Monitor for the directory's actor is added when no kept `watch` runs the inbox script. A spawn
-counts only when its result named an agent id and it started within 12 hours (A4). A timestamp with
-no zone is read as UTC.
+`persistent` says (A3). Of one command armed twice the newest successful arm decides, running or
+not; an arm that failed is never kept and retires no older arm. An inbox Monitor for the directory's
+actor is added when no kept `watch` runs the inbox script. A spawn counts only when its result named
+an agent id and it started within 12 hours (A4). A timestamp with no zone is read as UTC.
 
 ### C6: A checkpoint lands only where git ignores it, and no take overwrites another _(enforced: mechanical)_ ^c6
 
@@ -270,8 +270,9 @@ take that fails is kept among the agent's errors and the run goes on.
   pins it.
 - **S6**: `hub/context.py` reads fixed places under the home directory: Claude Code's project
   directory, the hook ring, the typing log and the statusline's files; where no tool writes one, it
-  reads as absent. The script the added inbox Monitor runs is one absolute path, so on another host
-  that Monitor names a script that is not there.
+  reads as absent. The script the added inbox Monitor runs, and the actors it names after the
+  directory's own, come from the environment (`LION_INBOX_MONITOR`, `LION_INBOX_PRIORITY`); unset,
+  the Monitor names `inbox-monitor.sh` on the path of whoever runs it.
 - **S7**: The code removes no checkpoint: every take adds a file under `.khive/context/`, and each
   resident run's record file stays beside them.
 - **S8**: The boundary: the durable record and a session's continuity across processes are the

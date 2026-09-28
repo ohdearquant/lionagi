@@ -275,7 +275,8 @@ bypasses the handler: no refusals, no row, no send.
   test drives it past the identity claim. The `verdict-freshness` enumerator runs as the config
   gives it, outside anything that checks it only reads.
 - **S7**: The chore ledger is read whole on every check and never rotated, so a check's cost grows
-  with the agent's age; its stamps are local time without a zone.
+  with the agent's age. Its `at` stamps are local time without a zone; a row also carries `ts`, the
+  instant in epoch seconds, which the aged pass reads, and a row without one is read by its `at`.
 - **S8**: A front desk runs a chore's instrument through the same refusals to answer the owner's
   mail, and the digest's period becomes the desk's brief, every 12 hours unless set
   ([[ADR-0017-the-desk|ADR-0017]]).
