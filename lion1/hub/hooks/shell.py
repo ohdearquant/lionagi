@@ -99,6 +99,7 @@ def load(path: Path) -> list[Hook]:
 
 async def run_hook(hook: Hook, payload: dict, cwd: Path) -> tuple[int | None, str, str]:
     """(exit code, stdout, stderr); the code is None when the hook was killed at its timeout."""
+    data = json.dumps(payload, default=str).encode()  # a payload that cannot be encoded starts nothing
     proc = await asyncio.create_subprocess_shell(
         hook.run,
         stdin=asyncio.subprocess.PIPE,
@@ -107,22 +108,18 @@ async def run_hook(hook: Hook, payload: dict, cwd: Path) -> tuple[int | None, st
         cwd=str(cwd),
         start_new_session=True,  # the hook's whole process group: a timeout ends its children too
     )
+    done = False
     try:
-        out, err = await asyncio.wait_for(
-            proc.communicate(json.dumps(payload, default=str).encode()), hook.timeout
-        )
+        out, err = await asyncio.wait_for(proc.communicate(data), hook.timeout)
+        done = True
     except TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        await proc.wait()
-        await proc.communicate()  # drains and closes the pipes the cancelled read left open
         return None, "", ""
-    except asyncio.CancelledError:  # a cancelled run takes the hook's children with it too
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        await proc.wait()
-        await proc.communicate()
-        raise
+    finally:  # timed out, cancelled or failed: the group goes and is reaped before the hook returns
+        if not done:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            await proc.wait()
+            await proc.communicate()  # drains and closes the pipes the cancelled read left open
     return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
 
 
