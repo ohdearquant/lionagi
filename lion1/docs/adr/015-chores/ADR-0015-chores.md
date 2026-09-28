@@ -306,3 +306,6 @@ bypasses the handler: no refusals, no row, no send.
   (`test_a_page_that_is_not_a_page_fails_the_missed_tick_read_and_lets_no_id_go`). Seen ids are
   matched by set, so a long list costs each row one look
   (`test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look`).
+- **S11**: A missed tick of the chore a check is running is covered by that check: it is marked seen
+  and noted, never run a second time
+  (`test_a_missed_tick_of_the_chore_this_check_runs_is_covered_by_the_check_itself`).

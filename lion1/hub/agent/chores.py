@@ -702,7 +702,9 @@ class Chores:
                 done.append(f"{content}: {status}, digest sent now")
             elif chore == "aged":
                 done.append(f"{content}: {status}, " + await self.aged(None, run))
-            elif chore in self.instruments and chore != skip:
+            elif chore == skip:  # the chore this check runs: its run now covers the missed tick
+                done.append(f"{content}: {status}, this check runs it")
+            elif chore in self.instruments:
                 done.append(
                     f"{content}: {status}, ran now: "
                     + await self.check(Check(chore=chore, args={"missed_tick": it["id"]}), run)

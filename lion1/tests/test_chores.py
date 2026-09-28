@@ -1002,6 +1002,26 @@ def test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once(tmp
     ]  # asked once, on the second miss
 
 
+def test_a_missed_tick_of_the_chore_this_check_runs_is_covered_by_the_check_itself(tmp_path):
+    events = [
+        {
+            "id": f"ev{i}",
+            "content": "tick: disk",
+            "status": "missed",
+            "properties": {"created_by_actor": SELF},
+        }
+        for i in range(3)
+    ]
+    khive = FakeKhive(mail(SELF, "tick: disk"), events=events)
+    khive.filtered = True
+    chores, agent = build(tmp_path, khive, [CHECK, DONE], disk=Probe("disk", full()))
+    asyncio.run(agent.wake())
+    rows = chores.rows()
+    assert [r["chore"] for r in rows] == ["disk"]  # one run of disk, not four
+    assert rows[0]["caught_up"] == ["tick: disk: missed, this check runs it"] * 3
+    assert agent.state.get("missed_seen").value == ["ev0", "ev1", "ev2"]
+
+
 def test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page(tmp_path):
     noise = [
         {"id": f"n{i}", "content": "tick: disk", "status": status, "properties": {"created_by_actor": actor}}
