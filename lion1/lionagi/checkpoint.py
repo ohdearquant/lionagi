@@ -99,7 +99,8 @@ class Checkpoint:
 
 def entry_of(row: dict) -> Entry | None:
     """A log row (the chat log's `entry_row`, ADR-0018/D1) back as a record entry: a result as Result,
-    the inbound marks, each result's execution fact and the context directive kept, the seq as it was;
+    the inbound marks, each result's execution fact, the note versions it read and the context
+    directive kept, the seq as it was;
     None for a row of another kind (a USAGE row, or another app's: the log, not the record)."""
     if row["kind"] not in Kind.__members__:
         return None
@@ -109,6 +110,14 @@ def entry_of(row: dict) -> Entry | None:
         content = Result(**content)
     # `execution`: whether a result's handler was called; an older log has none, which says nothing
     meta = {k: v for k, v in (row.get("meta") or {}).items() if k in _KEEP}
+    # `notes`: the version each note was read at, kept when it is that shape; anything else says nothing
+    notes = (row.get("meta") or {}).get("notes")
+    if (
+        isinstance(notes, dict)
+        and notes
+        and all(isinstance(k, str) and type(v) is int for k, v in notes.items())
+    ):
+        meta["notes"] = dict(notes)
     if isinstance(d := (row.get("meta") or {}).get("directive"), dict):
         meta["directive"] = Directive(
             op=d["op"],

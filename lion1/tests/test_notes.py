@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
+from hub.chat import entry_row
 from lionagi import Actor, Kind, Profile, RunRequest
+from lionagi.checkpoint import entry_of
 from lionagi.lndl import guidance
 from lionagi.notes import FileNoteStore, MemoryNoteStore
 from tests.test_actor import scripted
@@ -124,6 +126,7 @@ def test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_na
     run = asyncio.run(actor.run(Profile("p", notes=store), RunRequest(max_rounds=2), backend))
     seen = run.record.get("p1")
     assert seen.content.value == ["first", "first", "first"] and seen.meta["notes"] == {"plan": 1}
+    assert entry_of(entry_row(seen)).meta["notes"] == {"plan": 1}  # the log keeps the versions read
     now = run.record.get("g1").content.value
     assert now["value"] != "first" and now["version"] > 1  # note.get always reads the store
     assert "notes" not in run.record.get("g1").meta  # a command that points at no note names none

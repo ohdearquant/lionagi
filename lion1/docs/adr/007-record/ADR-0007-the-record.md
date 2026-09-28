@@ -211,9 +211,9 @@ on writing, when decided, sits on those two.
 
 - **Landing evidence**: `tests/test_notes.py`; the bench records carry the live writes. A command's
   pointers and its handler's `Context.get` share one read per note, and its RESULT names each
-  version read under `notes`:
-  `test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_names_the_version`; the
-  cross-profile read: `test_note_read_reads_another_profiles_note_only_under_its_privilege`.
+  version read under `notes`, kept through the log
+  (`test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_names_the_version`);
+  the cross-profile read: `test_note_read_reads_another_profiles_note_only_under_its_privilege`.
 
 ### D4: The stores take a value as given, and `_note_find` cuts the preview ^d4
 

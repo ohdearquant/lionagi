@@ -285,6 +285,13 @@ def test_entry_of_reads_a_log_row_back_as_its_entry_and_skips_a_row_of_another_k
         {"seq": 4, "kind": "RESULT", "content": {"spec": "context", "ok": True}, "meta": {"directive": older}}
     )
     assert o.meta["directive"] == Directive("summarize", ("_m1",), text="s", at=0, seqs=None)
+    # the versions a result read its notes at come back as written; another shape under the key does not
+    read = {"seq": 5, "kind": "RESULT", "content": {"spec": "look", "ok": True}}
+    assert entry_of({**read, "meta": {"notes": {"cursor": 3, "spend": 1}}}).meta == {
+        "notes": {"cursor": 3, "spend": 1}
+    }
+    for odd in ([3], {}, {"cursor": "3"}, {"cursor": True}, {4: 1}, "cursor"):
+        assert entry_of({**read, "meta": {"notes": odd}}).meta == {}, odd
 
 
 def test_a_residents_take_folds_its_record_by_name_and_carries_none_of_its_text(tmp_path):
