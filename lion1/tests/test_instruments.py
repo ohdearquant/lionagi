@@ -176,7 +176,7 @@ def test_pr_state_verifies_a_pr_absent_from_a_full_page_before_calling_it_closed
     )
 
 
-@pytest.mark.parametrize("answer", ["{}", "", '""', "null"])
+@pytest.mark.parametrize("answer", ["{}", "", '""', "null", '[{"number": ' + "9" * 4301 + "}]"])
 def test_pr_state_a_pr_list_that_is_not_a_json_list_is_unread_and_keeps_the_last_rows(answer):
     sh = FakeSh(
         **{"api repos/o/r --jq": "o/r\n", "pr list -R o/r": json.dumps([PR]), "actions/runs?head_sha=": RUNS}
@@ -186,7 +186,7 @@ def test_pr_state_a_pr_list_that_is_not_a_json_list_is_unread_and_keeps_the_last
     kept = inst.state.get("pr-state:o/r").value
     sh.set("pr list -R o/r", answer)
     out = asyncio.run(inst.run({}))
-    assert not out.control and out.findings == (f"o/r: gh pr list gave no JSON list: {answer!r}",)
+    assert not out.control and out.findings == (f"o/r: gh pr list gave no JSON list: {answer[:120]!r}",)
     assert inst.state.get("pr-state:o/r").value == kept  # an unread list closes nothing
     sh.set("pr list -R o/r", "[]")  # a decoded empty list is a value: #7 is gone
     out = asyncio.run(inst.run({}))

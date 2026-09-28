@@ -351,7 +351,7 @@ class PrState:
                 continue
             try:
                 prs = json.loads(out)
-            except json.JSONDecodeError:
+            except ValueError:  # a JSONDecodeError, or an integer past the conversion limit
                 prs = None
             if not isinstance(prs, list):  # rc 0 without a decoded list is a broken read, not an empty set
                 control = False

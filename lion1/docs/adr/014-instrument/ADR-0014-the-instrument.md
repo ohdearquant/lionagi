@@ -219,7 +219,7 @@ Serves C5. `pr-state:<repo>`, `required-contexts:<repo>`, `ci-red:<repo>`, `work
 `verdict-freshness` are put once per run. An ask narrowed to named pull requests (`prs`) answers
 every named row and leaves the `required-contexts` and `ci-red` snapshots untouched.
 
-A `pr-state` list that is not a JSON list, or a worktree's pull request answer holding an integer
+A `pr-state` list or a worktree's pull request answer that is not a JSON list, or holds an integer
 past the conversion limit, is unread: the control fails and the last rows stay. `worktrees` reads
 `git worktree list --porcelain -z`, so a path holding a line break stays whole, and strips only a
 leading `refs/heads/`.
