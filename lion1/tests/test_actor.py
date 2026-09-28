@@ -1356,6 +1356,46 @@ def test_a_second_cancel_while_the_abort_reaps_still_lands_the_cancelled_result_
     assert run.record.entries[-1].kind is Kind.RESULT
 
 
+def test_a_cancel_during_a_defects_reap_ends_the_run_cancelled_with_the_defect_as_its_cause():
+    actor = _echo_actor("t-cancel-in-abort")
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @actor.handler(Halter)
+    async def halter(req: Halter, ctx):
+        await entered.wait()  # after the hang is under way
+        raise Halt("a defect while another command hangs")
+
+    @actor.handler(Hang)
+    async def hang(req: Hang, ctx) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+        return "never"
+
+    async def go():
+        # OUT{} names only the defective command: the hang is what the abort's reap sees through
+        turn = "<lact bad>halter()</lact><lact h1>hang()</lact> OUT{answer: [bad]}"
+        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",)), scripted(turn)))
+        await asyncio.wait_for(cleaning.wait(), 2)
+        task.cancel()  # aimed at the run while the defect's reap holds
+        done, _ = await asyncio.wait({task}, timeout=0.05)
+        assert not done
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await asyncio.wait_for(task, 2)
+        assert isinstance(caught.value.__cause__, Halt)  # the cancel ends it, the defect is its cause
+
+    asyncio.run(go())
+    (run,) = runs
+    assert run.pending == {} and actor.runs == {} and run.outcome is None
+    assert run.record.get("h1").content.reason == "cancelled"
+
+
 def test_a_command_that_never_returns_is_cancelled_at_the_deadline_and_the_run_ends_by_time():
     from lionagi import Exhausted
 
