@@ -1882,6 +1882,28 @@ def ci_red(sh: FakeSh, channel: str = "actions", state=None) -> CiRed:
     return CiRed([{"name": "o/r", "channel": channel}], state or MemoryNoteStore(), every=None, run=sh)
 
 
+@pytest.mark.parametrize("answer", ["", "{}", "null", '[{"number": ' + "9" * 4301 + "}]"])
+@pytest.mark.parametrize("which", ["required-contexts", "verdict-freshness", "ci-red"])
+def test_a_pr_list_that_is_not_a_json_list_is_unread_by_every_instrument_reading_through_it(
+    tmp_path, which, answer
+):
+    verdict(tmp_path, 7, SHA, head8=SHA[:8], mtime=1000)
+    build = {
+        "required-contexts": lambda sh: required(sh),
+        "verdict-freshness": lambda sh: VerdictFreshness(
+            MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh
+        ),
+        "ci-red": lambda sh: ci_red(sh),
+    }[which]
+    sh = {"required-contexts": required_sh, "verdict-freshness": freshness_sh, "ci-red": ci_sh}[which]()
+    assert asyncio.run(build(sh).run({})).control  # the control: a real list reads
+    sh.set("pr list -R o/r", answer)
+    out = asyncio.run(build(sh).run({}))
+    assert not out.control and f"o/r: gh pr list gave no JSON list: {answer[:120]!r}" in out.findings
+    sh.set("pr list -R o/r", "[]")  # a decoded empty list is a value: no pull request to judge
+    assert asyncio.run(build(sh).run({})).control
+
+
 def test_ci_red_actions_extracts_each_failed_run_strips_ansi_and_stamps_and_counts_the_dedupe():
     sh = ci_sh()
     out = asyncio.run(ci_red(sh).run({}))

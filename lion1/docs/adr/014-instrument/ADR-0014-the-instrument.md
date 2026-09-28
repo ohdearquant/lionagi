@@ -219,10 +219,10 @@ Serves C5. `pr-state:<repo>`, `required-contexts:<repo>`, `ci-red:<repo>`, `work
 `verdict-freshness` are put once per run. An ask narrowed to named pull requests (`prs`) answers
 every named row and leaves the `required-contexts` and `ci-red` snapshots untouched.
 
-A `pr-state` list or a worktree's pull request answer that is not a JSON list, or holds an integer
-past the conversion limit, is unread: the control fails and the last rows stay. `worktrees` reads
-`git worktree list --porcelain -z`, so a path holding a line break stays whole, and strips only a
-leading `refs/heads/`.
+A pull request list that is not a JSON list (empty output, `null` included), or holds an integer
+past the conversion limit, is unread by every instrument: the control fails and the last rows stay.
+`worktrees` reads `git worktree list --porcelain -z`, so a path holding a line break stays whole,
+and strips only a leading `refs/heads/`.
 
 - **Landing evidence**: in `tests/test_instruments.py`,
   `test_pr_state_first_sight_is_the_full_row_then_transitions_and_the_stale_crossing_once`,
@@ -233,6 +233,7 @@ leading `refs/heads/`.
   `test_worktrees_a_path_holding_a_line_break_is_read_whole`,
   `test_worktrees_strips_only_the_leading_refs_heads_from_a_branch`,
   `test_worktrees_a_pr_number_past_the_integer_conversion_limit_is_unread`,
+  `test_a_pr_list_that_is_not_a_json_list_is_unread_by_every_instrument_reading_through_it`,
   `test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed`.
 
 ### D5: The `disk` instrument ^d5

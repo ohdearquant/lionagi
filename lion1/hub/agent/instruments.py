@@ -146,9 +146,12 @@ async def _open_prs(run: Runner, repo: str, fields: str) -> tuple[list[dict] | N
     if rc != 0:
         return None, f"gh pr list failed: {err.strip()[:200]}"
     try:
-        return json.loads(out or "[]"), ""
-    except json.JSONDecodeError:  # rc 0 with unreadable output is a broken read, not an empty set
-        return None, f"gh pr list gave no JSON: {out[:120]!r}"
+        prs = json.loads(out)
+    except ValueError:  # a JSONDecodeError, or an integer past the conversion limit
+        prs = None
+    if not isinstance(prs, list):  # rc 0 without a decoded list is a broken read, not an empty set
+        return None, f"gh pr list gave no JSON list: {out[:120]!r}"
+    return prs, ""
 
 
 async def _runs_at(run: Runner, repo: str, sha: str) -> tuple[int, str, list[dict], dict[int, dict], str]:
