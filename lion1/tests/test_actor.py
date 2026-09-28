@@ -1277,6 +1277,85 @@ def test_a_run_cancelled_while_out_waits_reaps_every_pending_command_and_appends
     assert run.record.entries[-1].kind is Kind.RESULT  # an abort appends no closure
 
 
+class Halter(BaseModel):
+    pass
+
+
+class Halt(BaseException):
+    pass
+
+
+def test_a_defect_in_a_command_out_did_not_name_is_raised_before_the_run_returns():
+    # ADR-0002/S5: a task out by a door the loop does not watch is seen through by the reap, never dropped
+    actor = _echo_actor("t-defect-unnamed")
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+
+    @actor.handler(Halter)
+    async def halter(req: Halter, ctx):
+        raise Halt("out by a door the loop does not watch")
+
+    turn = '<lact bad>halter()</lact><lact good>echo(text="ok")</lact> OUT{answer: [good]}'
+    with pytest.raises(Halt, match="door the loop does not watch"):
+        asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), scripted(turn)))
+    (run,) = runs
+    assert run.outcome is None and actor.runs == {} and run.record.get("good").content.value == "ok"
+    assert run.record.entries[-1].kind is Kind.RESULT  # no closure: the run did not end by an outcome
+
+
+def test_a_deadline_on_the_last_turn_ends_the_run_by_time_not_by_rounds():
+    from lionagi import Exhausted
+
+    started: list[asyncio.Task] = []
+    actor = _hanging_actor("t-last-turn-deadline", started)
+    request = RunRequest(inputs=("go",), max_rounds=1, time_budget=0.2)
+
+    async def go():
+        run = await asyncio.wait_for(actor.run(Profile("p"), request, scripted("<lact h1>hang()</lact>")), 5)
+        assert run.pending == {} and started[0].done()
+        return run
+
+    run = asyncio.run(go())
+    assert run.outcome == Exhausted(1, "time") and run.record.get("h1").content.reason == "cancelled"
+    assert "outcome: Exhausted(rounds=1, reason='time')" in run.record.entries[-1].content
+
+
+def test_a_second_cancel_while_the_abort_reaps_still_lands_the_cancelled_result_and_unregisters():
+    actor = _echo_actor("t-cancel-twice")
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @actor.handler(Hang)
+    async def hang(req: Hang, ctx) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:  # cooperative cleanup that takes a while: the cancel is not suppressed
+            cleaning.set()
+            await release.wait()
+        return "never"
+
+    async def go():
+        turn = "<lact h1>hang()</lact> OUT{answer: [h1]}"
+        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",)), scripted(turn)))
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        await asyncio.wait_for(cleaning.wait(), 2)
+        task.cancel()  # a second cancel, aimed at the run while it reaps
+        done, _ = await asyncio.wait({task}, timeout=0.05)
+        assert not done  # the reap is held: the run does not return with its command still cleaning up
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(go())
+    (run,) = runs
+    assert run.pending == {} and actor.runs == {} and run.outcome is None
+    assert run.record.get("h1").content.reason == "cancelled"
+    assert run.record.entries[-1].kind is Kind.RESULT
+
+
 def test_a_command_that_never_returns_is_cancelled_at_the_deadline_and_the_run_ends_by_time():
     from lionagi import Exhausted
 

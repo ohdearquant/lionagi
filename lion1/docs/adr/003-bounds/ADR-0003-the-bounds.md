@@ -182,8 +182,9 @@ refused and listed under `hooks failed`, so the caller receives the value `accep
   command ends the run at the next check, so a model that wants a last `OUT{}` asks for more while
   there is room. A command that never returns is cancelled at a deadline beside the turn's wait,
   what `time_budget` leaves; unless the turn's `OUT{}` was accepted, the next check ends the run
-  `Exhausted(time)` (ADR-0005/S6);
-  `test_a_command_that_never_returns_is_cancelled_at_the_deadline_and_the_run_ends_by_time` pins it.
+  `Exhausted(time)` (ADR-0005/S6), on the last turn too; a refusal cap keeps `Refused`.
+  `test_a_command_that_never_returns_is_cancelled_at_the_deadline_and_the_run_ends_by_time` and
+  `test_a_deadline_on_the_last_turn_ends_the_run_by_time_not_by_rounds` pin it.
 - **S4**: Owed with D1-D3: initial bound resolution and the remaining checks (C1, C2), extension
   requests and grants (C3), and output dispatch through hooks (C4); the current behavior and the
   missing tests are stated in each decision's landing evidence.

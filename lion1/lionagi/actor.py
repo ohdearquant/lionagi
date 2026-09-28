@@ -267,6 +267,7 @@ class Run:
         self.values: dict[str, tuple[int, Any]] = {}  # alias -> (seq of the TEXT that declared it, value)
         self.fields: dict[str, str] = {}  # alias -> the output field it was declared for, for the whole run
         self.pending: dict[str, asyncio.Task] = {}
+        self.tasks: set[asyncio.Task] = set()  # every command task not yet seen through by a settle
         self.entered: set[str] = set()  # pending aliases whose handler has been called
         self.pointing: dict[str, set[str]] = {}  # command alias -> the names its arguments point at
         self.settled: list[str] = []  # aliases settled since the last notification
@@ -633,7 +634,7 @@ class Actor:
 
         try:
             for round_no in range(1, request.max_rounds + 1):
-                if request.time_budget is not None and run.elapsed >= request.time_budget:
+                if _spent(run):
                     run.outcome = Exhausted(run.round, "time")
                     break
                 run.round = round_no
@@ -720,7 +721,7 @@ class Actor:
                 referenced = _referenced(program)
                 tasks = self._dispatch(run, program, subset)
                 if program.out is None:
-                    await _settle(tasks, _left(run))
+                    await _settle(run, tasks, _left(run))
                     if (
                         request.reply_on_commands
                         and request.wait is not None
@@ -739,11 +740,11 @@ class Actor:
                     continue
                 # OUT{} waits for what it points at still running, and for nothing else: an accepted
                 # output ends the run and the reap takes the rest; one not accepted settles the turn
-                await _settle([run.pending[a] for a in referenced if a in run.pending], _left(run))
+                await _settle(run, [run.pending[a] for a in referenced if a in run.pending], _left(run))
                 try:
                     run.output = self._assemble(run, program)
                 except lndl.LNDLError as e:
-                    await _settle(tasks, _left(run))
+                    await _settle(run, tasks, _left(run))
                     # the error clears only once the whole turn, assembly included, read: a finish
                     # that fails the same way every round is counted as the same error (ADR-0002/C3)
                     self._retry(run, str(e))
@@ -758,7 +759,7 @@ class Actor:
                     except Exception as e:  # a gate that cannot judge admits nothing, and the run goes on
                         why = f"the gate could not judge it ({type(e).__name__}: {e}); fix that or try again"
                     if why:
-                        await _settle(tasks, _left(run))
+                        await _settle(run, tasks, _left(run))
                         run.output = None
                         run.refusals += 1
                         if run.refusals >= request.max_refusals:
@@ -769,8 +770,8 @@ class Actor:
                         continue
                 run.outcome = Success(run.output)
                 break
-            else:
-                run.outcome = Exhausted(request.max_rounds)
+            else:  # the round cap and the deadline can fall on the same turn; time is the reason then
+                run.outcome = Exhausted(run.round, "time") if _spent(run) else Exhausted(request.max_rounds)
             await _reap(run)
             run.record.append(Kind.SYSTEM, _closure(run), round=run.round)
         except BaseException as e:
@@ -778,9 +779,13 @@ class Actor:
             # answer hears that, with the error, or its own command waits forever. The run has no
             # outcome (ADR-0002/C4): the Continue a settled turn left is not its end
             run.outcome = None
-            await _reap(run)
-            self.runs.pop(run.id, None)
-            self._deliver(run, error=e)
+            try:
+                cancelled = await _reaped(run)
+            finally:
+                self.runs.pop(run.id, None)
+                self._deliver(run, error=e)
+            if cancelled and not isinstance(e, asyncio.CancelledError):
+                raise asyncio.CancelledError from e
             raise
         finally:
             for _alias, answer in run.asked.values():
@@ -870,6 +875,7 @@ class Actor:
                 task = asyncio.create_task(self._perform(run, la, subset, admitted))
                 task.add_done_callback(functools.partial(self._never_started, run, la))
                 run.pending[la.alias] = task
+                run.tasks.add(task)
                 tasks.append(task)
         finally:
             admitted.set_result(None)
@@ -1462,17 +1468,24 @@ def _output_guidance(emits: tuple[Spec, ...]) -> str:
     return "\n".join(lines)
 
 
-async def _settle(tasks: list[asyncio.Task], timeout: float | None = None) -> None:
+async def _settle(run: Run, tasks: list[asyncio.Task], timeout: float | None = None) -> None:
     """Wait for the turn's commands, for `timeout` seconds when it is given: one still running then is
     cancelled. A cancelled command has settled itself as a RESULT; any other way out of a command task
-    is the runtime's own defect and is raised, never dropped."""
+    is the runtime's own defect and is raised, never dropped. Each task is seen through once: what a
+    settle did not wait for (a command `OUT{}` did not name) is seen through by the reap."""
     if tasks:
         _, late = await asyncio.wait(tasks, timeout=timeout)
         for task in late:
             task.cancel()
-        for r in await asyncio.gather(*tasks, return_exceptions=True):
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        run.tasks.difference_update(tasks)
+        for r in results:
             if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
                 raise r
+
+
+def _spent(run: Run) -> bool:
+    return run.request.time_budget is not None and run.elapsed >= run.request.time_budget
 
 
 def _left(run: Run) -> float | None:
@@ -1484,11 +1497,26 @@ def _left(run: Run) -> float | None:
 
 async def _reap(run: Run) -> None:
     """At the run's end, whatever is still pending is cancelled and waited for, so its cancelled
-    RESULT is on the record when `run` returns and no command task outlives it (ADR-0002/C1)."""
-    tasks = list(run.pending.values())
-    for task in tasks:
+    RESULT is on the record when `run` returns and no command task outlives it (ADR-0002/C1); every
+    task no settle saw through is seen through here, so a defect in one `OUT{}` did not name is raised
+    before the run returns (ADR-0002/S5)."""
+    for task in run.pending.values():
         task.cancel()
-    await _settle(tasks)
+    await _settle(run, list(run.tasks))
+
+
+async def _reaped(run: Run) -> bool:
+    """The abort's reap, seen through whatever else cancels the run meanwhile: a second cancel is held
+    until the reap is done, so no command task outlives the run and its cancelled RESULT is on the
+    record. True when one arrived."""
+    reap, cancelled = asyncio.ensure_future(_reap(run)), False
+    while not reap.done():
+        try:
+            await asyncio.shield(reap)
+        except asyncio.CancelledError:
+            cancelled = True
+    reap.result()
+    return cancelled
 
 
 def _closure(run: Run) -> str:

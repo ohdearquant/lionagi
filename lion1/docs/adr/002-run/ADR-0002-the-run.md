@@ -159,4 +159,10 @@ dispatched, and the turn settles. The caller reads `run.outcome` after the loop 
 - **S5**: A command task that ends in neither its RESULT
   ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]) nor a cancel is the runtime's own defect: the
   turn's settle raises it and never drops it, and the run aborts (C4), as
-  `test_a_command_task_ending_in_neither_a_result_nor_a_cancel_aborts_the_run` pins.
+  `test_a_command_task_ending_in_neither_a_result_nor_a_cancel_aborts_the_run` pins. A task no
+  settle waited for (one `OUT{}` did not name) is seen through by the reap, so the defect is raised
+  before `run` returns:
+  `test_a_defect_in_a_command_out_did_not_name_is_raised_before_the_run_returns`. The abort's reap
+  holds through a second cancel aimed at the run, so the cancelled RESULT lands and the run
+  unregisters:
+  `test_a_second_cancel_while_the_abort_reaps_still_lands_the_cancelled_result_and_unregisters`.
