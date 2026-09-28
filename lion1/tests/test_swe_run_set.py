@@ -3,7 +3,9 @@ attempt, and what the launch records about the set it selected."""
 
 import argparse
 import asyncio
+import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -171,6 +173,71 @@ def test_the_launch_record_names_the_selected_set(tmp_path, monkeypatch, capsys)
     assert len(lines) == 1
     record = json.loads(Path(lines[0].removeprefix("launch record ")).read_text())
     assert record["selected"] == ["a"]  # after the repo and limit filters, not the set's size
+
+
+HEAD = "a" * 40
+
+
+def _git(monkeypatch, head=(0, HEAD + "\n", ""), status=(0, "", "")) -> None:
+    """git as the launch reads it: `rev-parse HEAD` and `status --porcelain` answer (rc, out, err)."""
+
+    def run(argv, *, capture_output, text, cwd):
+        rc, out, err = head if argv[1:] == ["rev-parse", "HEAD"] else status
+        assert argv[1:] in (["rev-parse", "HEAD"], ["status", "--porcelain"])
+        return subprocess.CompletedProcess(argv, rc, out, err)
+
+    monkeypatch.setattr(run_set.subprocess, "run", run)
+
+
+def _record(capsys) -> dict:
+    lines = [x for x in capsys.readouterr().out.splitlines() if x.startswith("launch record ")]
+    assert len(lines) == 1
+    return json.loads(Path(lines[0].removeprefix("launch record ")).read_text())
+
+
+def test_the_manifest_digests_the_bytes_the_rows_were_read_from(tmp_path, monkeypatch, capsys):
+    ran = _main(monkeypatch, tmp_path, [{"instance_id": "a", "repo": "x", "image": "img"}])
+    _git(monkeypatch)
+    data = tmp_path / "set.json"
+    read = data.read_bytes()
+    provenance = run_set.provenance
+
+    def replaced_while_launching() -> dict:
+        data.write_text(json.dumps([{"instance_id": "z", "repo": "x", "image": "img"}]))
+        return provenance()
+
+    monkeypatch.setattr(run_set, "provenance", replaced_while_launching)
+    asyncio.run(run_set.main(_args()))
+    record = _record(capsys)
+    assert [i for i, _ in ran] == ["a"] and record["selected"] == ["a"]
+    assert record["dataset"]["sha256"] == hashlib.sha256(read).hexdigest()
+    assert hashlib.sha256(data.read_bytes()).hexdigest() != hashlib.sha256(read).hexdigest()
+
+
+def test_a_git_read_that_fails_refuses_the_launch_before_anything_is_written(tmp_path, monkeypatch):
+    ran = _main(monkeypatch, tmp_path, [{"instance_id": "a", "repo": "x", "image": "img"}])
+    for git, refusal in (
+        (dict(status=(128, "", "fatal: not a git repository\n")), "git status --porcelain exited 128: fatal"),
+        (dict(head=(128, "HEAD\n", "fatal: ambiguous argument 'HEAD'\n")), "git rev-parse HEAD exited 128"),
+        (dict(head=(0, "abc1234\n", "")), "gave 'abc1234', not a commit id"),
+    ):
+        _git(monkeypatch, **git)
+        with pytest.raises(SystemExit, match=refusal):
+            asyncio.run(run_set.main(_args()))
+    assert ran == [] and not (tmp_path / "results").exists()  # no run directory, no manifest, no box
+
+
+def test_the_manifest_names_a_clean_tree_and_a_dirty_one_as_git_reads_them(tmp_path, monkeypatch, capsys):
+    ran = _main(monkeypatch, tmp_path, [{"instance_id": "a", "repo": "x", "image": "img"}])
+    _git(monkeypatch)
+    asyncio.run(run_set.main(_args(run_id="clean")))
+    clean = _record(capsys)
+    _git(monkeypatch, status=(0, " M bench/swe/run_set.py\n?? notes.txt\n", ""))
+    asyncio.run(run_set.main(_args(run_id="dirty")))
+    dirty = _record(capsys)
+    assert clean["head"] == dirty["head"] == HEAD and clean["dirty"] == ""
+    assert "bench/swe/run_set.py" in dirty["dirty"] and "?? notes.txt" in dirty["dirty"]
+    assert [i for i, _ in ran] == ["a", "a"]
 
 
 class TransportFailBox(FakeBox):

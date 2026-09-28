@@ -217,3 +217,32 @@ def test_a_cancellation_during_cleanup_still_leaves_the_record(tmp_path, monkeyp
     assert "error" not in rec and rec["cost_usd"] == 0.25 and "+x = 2" in rec["model_patch"]
     host = Path(next(c[2] for c in calls if c[0] == "cp"))
     assert not host.exists()  # the host copy still went, its patch being on the record
+
+
+def test_the_oracle_reads_only_a_report_its_own_evaluation_wrote(tmp_path, monkeypatch):
+    preds = tmp_path / "predictions.jsonl"
+    preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 2\n"}) + "\n")
+    report = tmp_path / "claude-code-naked-m.r1.json"
+    report.write_text(json.dumps({"resolved_ids": ["x__x-1"]}))  # an earlier evaluation under this run id
+
+    def evaluator(rc: int, writes: dict | None) -> None:
+        def run(argv, *, capture_output, text, cwd, timeout):
+            if writes is not None:
+                report.write_text(json.dumps(writes))
+            return subprocess.CompletedProcess(argv, rc, "evaluated\n", "failed\n" if rc else "")
+
+        monkeypatch.setattr(run_naked.subprocess, "run", run)
+
+    evaluator(1, None)  # the evaluation fails and writes nothing
+    with pytest.raises(RuntimeError, match="the harness exited 1; see oracle_r1.log"):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    assert (tmp_path / "oracle_r1.log").read_text() == "evaluated\n\n--- stderr ---\nfailed\n"
+    evaluator(1, {"resolved_ids": []})  # a report beside a failed exit is not a grade either
+    with pytest.raises(RuntimeError, match="the harness exited 1"):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    report.write_text(json.dumps({"resolved_ids": ["x__x-1"]}))
+    evaluator(0, None)  # a clean exit that wrote no report: the one on disk is still the earlier one
+    with pytest.raises(RuntimeError, match="no harness report from this evaluation"):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    evaluator(0, {"resolved_ids": []})  # the control: this evaluation's own report, under the same name
+    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1) == {"resolved_ids": []}
