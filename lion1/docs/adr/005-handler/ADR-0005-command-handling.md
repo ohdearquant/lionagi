@@ -119,15 +119,16 @@ fourth step of C1.
   model without its reason, or a shell hook's exit 0 without a JSON object refuses the command.
 
 Hooks run in registration order, each seeing the request as those before it left it: a guard after a
-rewriting hook judges the rewrite; the order is the operator's.
+rewriting hook judges the rewrite.
 
-None lets the command run; a string refuses it (`refused: <reason>`); a replacement is a dict or the
-Spec's instance, rebuilt (S8), and a change in place changes nothing. A hook that raises, exits
-non-zero or times out refuses the command.
+None lets the command run; a string refuses it (`refused: <reason>`). A Pydantic model of any class
+replaces the arguments as returned; any other value, a dict too, changes nothing; a change in place
+reaches the handler (S8 owes the rebuild and the copy). Raising, a non-zero exit or a timeout
+refuses the command.
 
-A hook runs in its own process group; a timeout, a cancel or an exception kills it, drains its pipes
-and reaps it, one that filled its pipe included. No hook sees `OUT{}` yet; it becomes the `out`
-command with [[ADR-0003-the-bounds#^d3|ADR-0003/D3]].
+A hook runs in its own process group; a timeout, a cancel or an exception kills, drains and reaps
+it, one that filled its pipe included. No hook sees `OUT{}` yet; it becomes the `out` command with
+[[ADR-0003-the-bounds#^d3|ADR-0003/D3]].
 
 ### C5: An after hook sees what ran, ok or not, and cannot undo it _(enforced: mechanical; owed, S8)_ ^c5
 
