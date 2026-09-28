@@ -295,12 +295,13 @@ bypasses the handler: no refusals, no row, no send.
   answer's message and thread go on the row. A later tick names that answer as its prior and does
   not resend the same findings, and the aged pass waits for the owner's reply on the ask's thread.
   `test_the_owners_own_ask_keeps_its_receipt_so_the_report_ages_and_is_not_repeated` pins it.
-- **S9**: Each of the two lists is paged, 200 to a page, by offset until the store says no more:
-  `has_more` false, or a bare page short of 200, so no number of the actor's missed rows leaves one
-  unread. A row an offset read skips on one pass is read by the next, its id still held
+- **S9**: Each list is paged, 200 to a page, by offset until the store says no more (`has_more`
+  false, or a bare page short of 200), so no number of missed rows leaves one unread. A row an
+  offset read skips is read by the next pass, its id held
   (`test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once`, both page shapes). An id
-  missed twice in a row is asked for by `get`: still held is kept, not-found is let go, a failed
-  read keeps it (`test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once`).
+  missed twice is asked for by `get`: still missed or failed is kept, moved on or not-found is let
+  go, a failed read or an answer with no status keeps it
+  (`test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once`).
 - **S10**: A page that is no page, with no list in it or empty while the store says more is behind
   it, fails the whole read: nothing runs and no id is let go
   (`test_a_page_that_is_not_a_page_fails_the_missed_tick_read_and_lets_no_id_go`). Seen ids are

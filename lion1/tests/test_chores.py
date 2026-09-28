@@ -966,7 +966,8 @@ def test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look(
 
 
 @pytest.mark.parametrize("bare_pages", [False, True])
-def test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once(tmp_path, bare_pages):
+@pytest.mark.parametrize("word", ["the row", "a row without a status", "fired"])
+def test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once(tmp_path, bare_pages, word):
     events = [
         {"id": f"ev{i}", "content": "tick: pr", "status": "missed", "properties": {"created_by_actor": SELF}}
         for i in range(201)
@@ -978,6 +979,11 @@ def test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once(tmp
     async def exec(ops):  # on the second and third pass a row ahead of ev200 leaves between the two page
         if ops.startswith("[list(") and "offset=" not in ops:  # reads, so ev200 shifts into the gap and
             passes.append(1)  # neither page shows it
+        if ops == 'get(id="ev200")' and word != "the row":  # the store's answer, as asked for
+            khive.ops.append(ops)
+            return [
+                {"id": "ev200"} if word == "a row without a status" else {"id": "ev200", "status": "fired"}
+            ]
         pages = await paged(ops)
         if 2 <= len(passes) <= 3 and "offset=200" in ops:
             pages = [
@@ -995,8 +1001,11 @@ def test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once(tmp
     for _ in range(4):
         asyncio.run(agent.wake())
     caught = [r["args"]["missed_tick"] for r in chores.rows() if r["chore"] == "pr"]
-    assert caught.count("ev200") == 1 and len(caught) == 201  # skipped twice, asked for by id, never re-run
-    assert "ev200" in agent.state.get("missed_seen").value
+    if word == "fired":  # the store's word: no longer missed, let go, and it runs again when it comes back
+        assert caught.count("ev200") == 2 and len(caught) == 202
+    else:  # skipped twice, asked for by id; a row, or an answer with no status, keeps it: never re-run
+        assert caught.count("ev200") == 1 and len(caught) == 201
+        assert "ev200" in agent.state.get("missed_seen").value
     assert [o for o in khive.ops if o.startswith("get(id=")] == [
         'get(id="ev200")'
     ]  # asked once, on the second miss

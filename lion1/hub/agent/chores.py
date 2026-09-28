@@ -730,7 +730,8 @@ class Chores:
                 ):  # only the store's not-found lets an id go; a failed read keeps it
                     held.add(i)
                 continue
-            if isinstance(row, dict) and row.get("status") in ("missed", "failed"):
+            status = row.get("status") if isinstance(row, dict) else None
+            if not isinstance(status, str) or status in ("missed", "failed"):  # no status = no word
                 held.add(i)
         kept = [i for i in seen if i in listed or i not in gone_before or i in held]
         if done or kept != seen:
