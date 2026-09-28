@@ -318,6 +318,21 @@ def test_the_oracle_reads_only_a_report_its_own_evaluation_wrote(tmp_path, monke
     assert run_naked.oracle(preds, "r1", ["x__x-1"], 1) == own
 
 
+def test_an_overlapping_evaluations_report_under_the_same_run_id_is_not_this_ones(tmp_path, monkeypatch):
+    preds = tmp_path / "predictions.jsonl"
+    preds.write_text(json.dumps({"instance_id": "y__y-2", "model_patch": "+y = 2\n"}) + "\n")
+
+    def run(argv, *, capture_output, text, cwd, timeout):
+        # another evaluation of other predictions under the same run id lands its report while this one
+        # runs, named as a harness handed the bare run id names it; this one writes nothing
+        (tmp_path / "claude-code-naked-m.r1.json").write_text(json.dumps({"submitted_ids": ["x__x-1"]}))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(run_naked.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="no harness report from this evaluation"):
+        run_naked.oracle(preds, "r1", ["y__y-2"], 1)
+
+
 @pytest.mark.parametrize("streams", [(b"so far\n", b"slow\n"), ("so far\n", "slow\n"), (None, None)])
 def test_an_evaluation_that_times_out_leaves_its_log_and_the_timeout_stands(tmp_path, monkeypatch, streams):
     preds = tmp_path / "predictions.jsonl"

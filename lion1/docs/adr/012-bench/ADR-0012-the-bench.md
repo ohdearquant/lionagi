@@ -283,7 +283,9 @@ model has no cost.
   Asking for a bench run by mail belongs to the long-running agent
   ([[ADR-0013-the-agent|ADR-0013]]).
 - **S9**: The oracle, `oracle` in `bench/swe/run_swe.py`, reads only a report its own evaluation
-  wrote, never one an earlier evaluation left under the same run id. It raises on a nonzero exit or
-  when none was written, and refuses a report not naming exactly the predictions handed in
+  wrote, never one an earlier or an overlapping evaluation left under the same run id: the id it
+  hands the harness carries the predictions' digest. It raises on a nonzero exit or when none was
+  written, and refuses a report not naming exactly the predictions handed in
   (`tests/test_swe_naked.py`: `test_the_oracle_reads_only_a_report_its_own_evaluation_wrote`,
+  `test_an_overlapping_evaluations_report_under_the_same_run_id_is_not_this_ones`,
   `test_a_report_that_does_not_name_the_predictions_handed_in_is_refused`).
