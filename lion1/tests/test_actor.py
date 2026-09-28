@@ -686,6 +686,31 @@ def test_a_turn_carrying_the_loops_own_frame_is_not_executed():
     assert run.resolve("a3") == "three"
 
 
+def test_a_turn_with_two_outs_is_not_executed_and_counts_as_a_repeat():
+    actor = Actor("t17b")
+    echoed: list[str] = []
+
+    @actor.handler(Echo)
+    async def echo(req: Echo, ctx) -> str:
+        echoed.append(req.text)
+        return req.text
+
+    twice = '<lvar v1>kept</lvar><lact a1>echo(text="a")</lact>\nOUT{done: [a1]}\nOUT{done: [a1]}'
+    single = '<lact a2>echo(text="OUT{b: 2}")</lact>OUT{done: {summary: "OUT{c: 3}", files: []}}'
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=3),
+            scripted(twice, twice, single),
+        )
+    )
+    assert echoed == ["OUT{b: 2}"] and "v1" not in run.values  # a1 never ran, v1 never declared
+    notices = [e.content for e in run.record if e.name.startswith("_sys")]
+    assert "this turn carries 2, so nothing in it was executed" in notices[1]
+    assert "(the same error 2 rounds running): one OUT{...} per turn" in notices[2]
+    assert isinstance(run.outcome, Success) and run.output["done"].summary == "OUT{c: 3}"
+
+
 class Ask(BaseModel):
     question: str
 

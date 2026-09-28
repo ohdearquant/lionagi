@@ -3,7 +3,7 @@
 | record | topic | status | liveness | depends on |
 |---|---|---|---|---|
 | [ADR-0001](001-actor/ADR-0001-the-actor.md) | 001-actor | draft | operating (the profile's `defaults` and the `run.more` handler are owed with ADR-0003) | none |
-| [ADR-0002](002-run/ADR-0002-the-run.md) | 002-run | draft | operating (the code still says round; the reference-only wait and the reap at the end are owed, S4) | ADR-0001 |
+| [ADR-0002](002-run/ADR-0002-the-run.md) | 002-run | draft | operating (two OUT{} refusing the message whole, a repeated accept refusal told with its count and a generated alias freed past a value are pinned by tests; the code still says round; the reference-only wait and the reap at the end are owed, S4) | ADR-0001 |
 | [ADR-0003](003-bounds/ADR-0003-the-bounds.md) | 003-bounds | draft | partial (max_rounds, time_budget, max_refusals and accept operate; the re-check between commands, max_idle, cost_budget, the context check and its job error, run.more, extend, the profile's defaults, out as a command and accept as its last hook are decided here and owed) | ADR-0001, ADR-0002 |
 | [ADR-0004](004-language/ADR-0004-the-language.md) | 004-language | draft | operating (the refusal of a mixed response and the move of DeepSeek markup into the backend are owed) | ADR-0001, ADR-0002 |
 | [ADR-0005](005-handler/ADR-0005-command-handling.md) | 005-handler | draft | operating (the replacement rebuilt from its fields, the three captures and the effect wait are owed) | ADR-0003, ADR-0001, ADR-0002, ADR-0004 |

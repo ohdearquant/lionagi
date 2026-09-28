@@ -781,13 +781,16 @@ def parse(text: str) -> Program:
                 problems.append(f"<lact {alias}>: {note}; if that is not the call you meant, write it again")
             lacts.append(Lact(alias=alias, name=name, args=args, spec=spec, field=fld))
 
+    if len(outs) > 1:  # a second finish refuses the message whole, as the loop's own frame does (ADR-0002/C1)
+        raise LNDLError(
+            f"one OUT{{...}} per turn and this turn carries {len(outs)}, so nothing in it was executed: "
+            "write it again with one OUT{...}"
+        )
     out = None
     if outs:
         # an unreadable finish does not lose the turn's commands: they run, and the model is told
         # why it has not finished, with its results in view for the next attempt
         try:
-            if len(outs) > 1:
-                raise LNDLError("one OUT{...} per turn")
             out = parse_out(outs[0])
         except LNDLError as e:
             problems.append(f"OUT{{...}} could not be read, so this turn ran without it: {e}")

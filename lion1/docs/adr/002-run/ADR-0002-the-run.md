@@ -1,7 +1,7 @@
 ---
 adr: ADR-0002
 status: draft
-liveness: operating (the code still says round; the reference-only wait and the reap at the end are owed, S4)
+liveness: operating (two OUT{} refusing the message whole, a repeated accept refusal told with its count and a generated alias freed past a value are pinned by tests; the code still says round; the reference-only wait and the reap at the end are owed, S4)
 date: "2026-09-23"
 area: run
 kind: new
@@ -70,7 +70,7 @@ turn means both. A command is admitted at alias reservation, entered when its ha
 settled when its RESULT lands; one cancelled before it entered is recorded by the loop. A construct
 that cannot be read is dropped and named while the rest runs
 ([[ADR-0004-the-language#^c3|ADR-0004/C3]]); only the frame and a second `OUT{}` refuse the message
-whole.
+whole (`test_a_turn_with_two_outs_is_not_executed_and_counts_as_a_repeat`).
 
 `OUT{}` waits for what it references, through pointers, and for no effect
 ([[ADR-0005-command-handling#^c6|ADR-0005/C6]]); "edit, then done" points `OUT{}` at the edit. An
@@ -87,7 +87,8 @@ turn.
 Within a turn the first use of an alias wins and the second is named. Across the run a re-declared
 value replaces the earlier one and drops its output binding; a command alias colliding with anything
 is refused and named. A generated `auto_` alias from a native tool call is re-suffixed instead,
-because the model never chose it.
+because the model never chose it: past every live binding, values included, to a name none of them
+holds. `test_a_generated_alias_a_value_holds_runs_under_a_free_suffix` pins it.
 
 ### C3: Repeats are counted, and stop is asked after the notification _(enforced: mechanical)_ ^c3
 
@@ -96,10 +97,13 @@ because the model never chose it.
   turn is not named, or `stop()` is consulted before the turn's sections have run.
 
 The notification says "the same error N turns running" and "your last turn was identical to the one
-before it (N times now)", so the next turn has a reason to differ. The sections have just looked at
-the world, and what they saw is what a stop decides on; asked before, the model got one more turn
-after every notice that the run was over. The run ends `Stopped(n)` with n the turn that did not
-run: the stopped iteration called no backend and is not a turn.
+before it (N times now)", so the next turn has a reason to differ. An `accept` refusal is counted
+like a parse error (`test_the_same_refusal_on_consecutive_turns_is_told_with_its_count`).
+
+The sections have just looked at the world, and what they saw is what a stop decides on; asked
+before, the model got one more turn after every notice that the run was over. The run ends
+`Stopped(n)` with n the turn that did not run: the stopped iteration called no backend and is not a
+turn.
 
 ### C4: A run ends in one of four values, and nothing else is an outcome _(enforced: mechanical)_ ^c4
 

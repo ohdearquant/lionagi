@@ -747,7 +747,6 @@ class Actor:
                     self._retry(run, str(e))
                     self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
                     continue
-                run.retry_error, run.same_errors = None, 0
                 if request.accept is not None:
                     try:
                         why = request.accept(run, run.output)
@@ -761,9 +760,10 @@ class Actor:
                         if run.refusals >= request.max_refusals:
                             run.outcome = Refused(why, run.refusals)
                             break
-                        run.retry_error = f"OUT{{}} not accepted: {why}"
+                        self._retry(run, f"OUT{{}} not accepted: {why}")
                         self.bus.emit("round.retry", run=run.id, round=round_no, error=why)
                         continue
+                run.retry_error, run.same_errors = None, 0
                 run.outcome = Success(run.output)
                 break
             else:
@@ -840,12 +840,13 @@ class Actor:
         tasks = []
         try:
             for la in program.lacts:
-                if la.alias.startswith("auto_") and (
-                    run.record.has_alias(la.alias) or la.alias in run.pending
-                ):
+                if la.alias.startswith("auto_"):
                     # a generated alias (native tool-call syntax, no name given) may recur verbatim in a
                     # later round; the model never chose it, so it is not held to uniqueness
-                    la = dataclasses.replace(la, alias=f"{la.alias}_{run.record.seq}")
+                    alias, n = la.alias, run.record.seq
+                    while run.record.has_alias(alias) or alias in run.pending or alias in run.values:
+                        alias, n = f"{la.alias}_{n}", n + 1
+                    la = dataclasses.replace(la, alias=alias)
                 if la.alias.startswith("_"):
                     run.refused.append((la.alias, _OWN.format(alias=la.alias)))
                     continue

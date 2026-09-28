@@ -252,6 +252,30 @@ def test_an_awaitable_accept_gate_and_an_awaitable_after_hook_are_awaited():
     assert "OUT{} not accepted: not yet" in notices(run)[1]
 
 
+@pytest.mark.parametrize(
+    "reasons, told",
+    [
+        (["not yet", "not yet"], "(the same error 2 rounds running): OUT{} not accepted: not yet"),
+        (["not yet", "still not"], "could not be read: OUT{} not accepted: still not"),
+    ],
+)
+def test_the_same_refusal_on_consecutive_turns_is_told_with_its_count(reasons, told):
+    judged = iter([*reasons, None])
+    finish = 'OUT{done: {summary: "s", files: []}}'
+    run = once(
+        _echo_actor("edge-refused-twice"),
+        Profile("p"),
+        finish,
+        finish,
+        finish,
+        emits=(Done,),
+        accept=lambda run, output: next(judged),
+    )
+    assert "rounds running" not in notices(run)[1] and "OUT{} not accepted: not yet" in notices(run)[1]
+    assert told in notices(run)[2]
+    assert isinstance(run.outcome, Success) and run.retry_error is None and run.same_errors == 0
+
+
 def test_an_alias_the_runtime_would_generate_may_recur_in_a_later_round():
     actor = _echo_actor("edge-auto-alias")
     run = once(
@@ -262,6 +286,23 @@ def test_an_alias_the_runtime_would_generate_may_recur_in_a_later_round():
     chosen = ('<lact a1>echo(text="a")</lact>', '<lact a1>echo(text="b")</lact>', "x")
     user = once(_echo_actor("edge-own-alias"), Profile("p"), *chosen)
     assert list(results(user)) == ["a1"]  # an alias the model chose is held to uniqueness
+
+
+def test_a_generated_alias_a_value_holds_runs_under_a_free_suffix():
+    actor = _echo_actor("edge-auto-value")
+    run = once(
+        actor,
+        Profile("p"),
+        "<lvar auto_1>kept</lvar>",
+        '<lvar auto_1_5>also kept</lvar><lact auto_1>echo(text="b")</lact>',
+        "x",
+    )
+    assert [(alias, r.value) for alias, r in results(run).items()] == [("auto_1_6", "b")]
+    assert run.values["auto_1"][1] == "kept" and run.values["auto_1_5"][1] == "also kept"
+    assert "already names" not in notices(run)[2]
+    chosen = ("<lvar a1>kept</lvar>", '<lact a1>echo(text="b")</lact>', "x")
+    user = once(_echo_actor("edge-own-value"), Profile("p"), *chosen)
+    assert results(user) == {} and "alias 'a1' already names a value" in notices(user)[2]
 
 
 def test_an_unknown_command_and_a_pointer_to_nothing_settle_without_their_handler():
