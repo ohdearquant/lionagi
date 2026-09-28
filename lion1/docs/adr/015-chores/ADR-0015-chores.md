@@ -222,10 +222,11 @@ with the expected actor asserted (C4).
 ### D4: Ticks are the store's reminders, and missed ones are caught up once ^d4
 
 Serves C3. `ensure_ticks` reads the actor's own pending reminders from `schedule.agenda` and creates
-each missing one with `schedule.remind`, first firing a minute out. `_catch_up` lists the scheduled
-rows 200 to a page, by offset, until the store answers no more, keeps the actor's own marked missed
-or failed, and runs each once, remembered under `missed_seen` while the store still lists its row.
-The CLI creates ticks at serve start and on `--ticks`, never for a chair.
+each missing one with `schedule.remind`, first firing a minute out. `_catch_up` pages the scheduled
+rows by offset until the store answers no more, keeps the actor's own marked missed or failed, and
+runs each once. An id stays under `missed_seen` while the store lists its row; two passes missing it
+let it go, since an offset read can skip a row once. The CLI creates ticks at serve start and on
+`--ticks`, never for a chair.
 
 - **Landing evidence**: `test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those`,
   `test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once`,
@@ -269,8 +270,8 @@ bypasses the handler: no refusals, no row, no send.
   store says no more: `has_more` false, or a bare page short of 200. It filters to the actor in
   code, so no number of missed rows leaves one unread
   (`test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once`, both page shapes). A row
-  a moving list skips on one pass is read by the next. The store's `list` filters by creator and by
-  status before the page, and the code passes neither; passing them is owed.
+  a moving list skips on one pass is read by the next, its id still held. The store's `list` filters
+  by creator and by status before the page, and the code passes neither; passing them is owed.
 - **S4**: A standing state is told once until it changes, a standing failure included: a chore that
   recovers quietly and fails again the same way is not resent. The digest carries the counts, and an
   owner who wants a state again asks.

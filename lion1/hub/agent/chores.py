@@ -689,11 +689,16 @@ class Chores:
                 )
             else:
                 done.append(f"{content}: {p['status']}, noted")
-        # an id is kept while the store lists its row: no count of rows lets one run twice
+        # an id is kept while the store lists its row: no count of rows lets one run twice. A list read
+        # by offset can skip a row one pass, so an id is let go only when two passes in a row miss it
         listed = {it["id"] for it in items}
-        kept = [i for i in seen if i in listed]
+        gone_before = set(_val(self.agent.state, "missed_gone", []))
+        gone = [i for i in seen if i not in listed]
+        kept = [i for i in seen if i in listed or i not in gone_before]
         if done or kept != seen:
             self.agent.state.put("missed_seen", kept, run=run.id, seq=run.record.seq)
+        if set(gone) != gone_before:
+            self.agent.state.put("missed_gone", gone, run=run.id, seq=run.record.seq)
         return done
 
     def profiles(self) -> tuple[Profile, Profile]:

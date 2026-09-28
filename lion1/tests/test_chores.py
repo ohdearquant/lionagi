@@ -846,24 +846,30 @@ def test_a_seen_missed_tick_is_remembered_while_the_store_lists_it_however_many_
         }
         for i in range(501)
     ]
-    khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"b{i:07x}") for i in range(4)), events=events)
-    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 4, disk=Probe("disk", full()))
+    khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"b{i:07x}") for i in range(5)), events=events)
+    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 5, disk=Probe("disk", full()))
     asyncio.run(agent.wake())
     asyncio.run(agent.wake())
     noted = [len(r["caught_up"]) for r in chores.rows()]
     assert noted == [501, 0]  # a chore this agent does not hold is noted, once each
     assert chores.rows()[0]["caught_up"][0] == "tick: gone: failed, noted"
-    khive.events = events[1:]  # the store no longer lists the first: its id is let go at the next note
+    khive.events = events[
+        1:
+    ]  # the store no longer lists the first: a list read by offset can skip a row once
     khive.events.append(
         {"id": "ev501", "content": "tick: gone", "properties": {"created_by_actor": SELF, "status": "missed"}}
     )
     asyncio.run(agent.wake())
     assert chores.rows()[-1]["caught_up"] == ["tick: gone: missed, noted"]
-    assert agent.state.get("missed_seen").value == [f"ev{i}" for i in range(1, 502)]
-    khive.events = events[400:]  # rows gone from the store are let go even when the pass notes nothing
+    assert agent.state.get("missed_seen").value == [f"ev{i}" for i in range(502)]  # ev0 missed once: kept
+    khive.events = events[400:]  # ev0 missed twice: let go, on a pass that notes nothing; the rest once
     asyncio.run(agent.wake())
     assert chores.rows()[-1]["caught_up"] == []
-    assert agent.state.get("missed_seen").value == [f"ev{i}" for i in range(400, 501)]
+    assert agent.state.get("missed_seen").value == [f"ev{i}" for i in range(1, 502)]
+    khive.events = events[400:] + [events[1]]  # ev1 is back and kept; the others missed twice: let go
+    asyncio.run(agent.wake())
+    assert chores.rows()[-1]["caught_up"] == []
+    assert agent.state.get("missed_seen").value == [f"ev{i}" for i in (1, *range(400, 501))]
 
 
 def test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those(tmp_path):
