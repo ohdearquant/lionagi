@@ -460,6 +460,35 @@ def test_a_value_bound_by_an_earlier_turn_reads_after_the_reading_programs_own_n
     )
     run = _run(actor, *turns)
     assert run.record.get("b").content.value == run.record.get("c").content.value == "new"
+    # and not after a write made later than its reader: the reader's line decides
+    actor.notes_for(PROGRAM).put("k", "old", run="r0", seq=0)
+    later = (
+        fenced('v = note["k"]'),
+        fenced("b = echo(text=*v)", "note.k = take(rows=[])", 'c = echo(text=note["k"])'),
+        "idle",
+    )
+    run = _run(actor, *later)
+    assert (run.record.get("b").content.value, run.record.get("c").content.value) == ("old", "new")
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("r = grid(n=1)", "OUT{x: *r[0] + *r.a + *r[True]}"),
+        ("r = grid(n=1)", "v = *r[0] + *r.a + *r[True]", "OUT{x: *v}"),
+        ("r = grid(n=1)", "if *r[0]:", "    OUT{x: *r[0] + *r.a + *r[True]}"),
+    ],
+)
+def test_a_dict_is_read_at_any_key_it_holds(lines):
+    actor = _actor("intkey-index", [])
+
+    @actor.handler(Grid)
+    async def grid(req: Grid, ctx) -> dict:
+        return {0: "zero", "a": "A", True: "yes"}
+
+    run = _run(actor, fenced(*lines), "idle")
+    assert isinstance(run.outcome, Success), _notices(run)
+    assert run.output["x"] == "zeroAyes"
 
 
 def test_a_value_whose_computation_failed_stays_failed_and_what_it_ran_never_runs_again():

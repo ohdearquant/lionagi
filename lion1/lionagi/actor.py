@@ -1532,12 +1532,12 @@ class _Walk:
         self.launch(Lact(alias, node.name, {}), args)
         return alias
 
-    async def value(self, name: str) -> Any:
+    async def value(self, name: str, writes: dict[str, asyncio.Task] | None = None) -> Any:
         if name not in self.computed:
-            seq, expr, writes = self.values[name]
-            if seq != self.seq:  # bound by an earlier turn: it reads after this program's writes so far
-                writes = None
-            self.computed[name] = asyncio.ensure_future(self._compute(name, seq, expr, _Reader(self, writes)))
+            seq, expr, bound = self.values[name]
+            # bound by an earlier turn: it reads after the writes this program made before its reader
+            reader = _Reader(self, bound if seq == self.seq else writes)
+            self.computed[name] = asyncio.ensure_future(self._compute(name, seq, expr, reader))
         return await asyncio.shield(self.computed[name])
 
     async def _compute(self, name: str, seq: int, expr: ast.expr, reader: _Reader) -> Any:
@@ -1599,7 +1599,7 @@ class _Reader:
     async def point(self, name: str) -> Any:
         walk = self.walk
         if name in walk.values:
-            value = await walk.value(name)
+            value = await walk.value(name, self.writes)
             self.reads |= walk.value_reads.get(name, set())
             return value
         task = walk.run.pending.get(name)
