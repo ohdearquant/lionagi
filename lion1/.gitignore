@@ -225,3 +225,8 @@ mutants/
 .codex/
 .claude/
 .DS_Store
+
+# the bench's sets, run results and private codex home stay on the machine that ran them
+bench/swe/data/
+bench/swe/results/
+bench/swe/codex-home/
