@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import subprocess
 import sys
 import time
@@ -134,6 +135,17 @@ UNAIDED = (  # the same sentence in both arms: the published fix is out of bound
 )
 
 
+async def baseline(box: Any) -> str:
+    """The commit the model is handed, read before it runs: the prediction is the diff against it
+    and the grade resets to it, so a commit the model makes neither vanishes from the patch nor
+    survives the reset. `HEAD` at diff time would move with that commit."""
+    rc, out = await box.run("git rev-parse HEAD")
+    sha = out.strip()
+    if rc != 0 or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise RuntimeError(f"no baseline commit: rev-parse exited {rc}: {out.strip()[:200]}")
+    return sha
+
+
 def _harvest(rec: dict, backend: Any) -> None:
     """What the backend spent, per round, so the cache curve over a long run can be read back. A call
     whose cost nobody reported is unknown, never $0: `cost_usd` is the known subtotal (None when no
@@ -220,7 +232,8 @@ async def solve(
     try:
         if owned:
             await box.start()
-        watch = Watch(box, settle_after=settle)
+        rec["base"] = await baseline(box)
+        watch = Watch(box, settle_after=settle, base=rec["base"])
         actor = build_actor(box, watch if criteria else None)
         actor.section(watch.section)
         progress = out_dir / "progress.log"  # one line per round across the whole set, appended
@@ -334,7 +347,7 @@ async def solve(
         rec["rounds"] = run.round
         rec["seconds_in_loop"] = run.elapsed
         rec["watch"] = watch.state()
-        rec["model_patch"] = await box.diff()
+        rec["model_patch"] = await box.diff(rec["base"])
         _harvest(rec, backend)
         if isinstance(run.outcome, Success):
             rec["done"] = run.output["done"].model_dump()
@@ -347,7 +360,8 @@ async def solve(
         if watch is not None:
             rec["watch"] = watch.state()
         try:
-            rec["model_patch"] = await box.diff()  # a fix on disk is graded whatever ended the loop
+            # a fix on disk is graded whatever ended the loop; with no baseline read, against HEAD
+            rec["model_patch"] = await box.diff(rec.get("base") or "HEAD")
         except Exception as e2:
             rec["diff_error"] = f"{type(e2).__name__}: {e2}"
     finally:

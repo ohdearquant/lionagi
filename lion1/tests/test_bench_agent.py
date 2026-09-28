@@ -345,3 +345,83 @@ def test_delivery_receipt_precedes_remember_failure(tmp_path, monkeypatch):
     assert len(khive.sent) == 1, f"the asker got the row {len(khive.sent)} times"
     assert result.ok and len(khive.ops) == 1 and "memory.remember" in khive.ops[0]  # the retry wrote it
     assert agent.state.get("jobs").value["t1"]["remember_pending"] is False
+
+
+def test_the_report_send_is_keyed_by_the_job_so_a_lost_receipt_replays_and_never_mails_twice(
+    tmp_path, monkeypatch
+):
+    _job(tmp_path, monkeypatch, "t1", [{"instance_id": "a", "resolved": True, "cost_usd": 0.01}])
+    khive = BenchKhive(
+        mail(bench_agent.ACTOR_ID, "job t1 finished with exit 0. Report it.", mid="f1"), cwd=tmp_path
+    )
+    keys = []
+
+    async def send(to, content, *, subject=None, thread_id=None, idempotency_key=None):
+        keys.append(idempotency_key)
+        return await BenchKhive.send(khive, to, content, subject=subject, thread_id=thread_id)
+
+    khive.send = send
+    agent = bench_agent.build(
+        khive,
+        Scripted(
+            '<lact r1>report(run_id="t1")</lact>', 'OUT{posture: {done: "x", awaiting: ""}}', khive=khive
+        ),
+    )
+    agent.state.put(
+        "jobs",
+        {
+            "t1": {
+                "asker": "lambda:a",
+                "thread": THREAD,
+                "pid": 1,
+                "started": "now",
+                "ask": {"set": "mini50", "model": "m"},
+            }
+        },
+        run="-",
+        seq=0,
+    )
+    asyncio.run(agent.wake(wait_ms=0))
+    assert keys == ["bench:lambda:a:bench:t1:report"]
+
+
+def test_a_launch_during_a_reports_send_is_not_written_away_by_the_report(tmp_path, monkeypatch):
+    # the report read the jobs map, awaited its send, and wrote that map back whole: a launch that
+    # ran in the same turn, during the await, was gone from the map, its child running unrecorded
+    _job(tmp_path, monkeypatch, "t1", [{"instance_id": "a", "resolved": True, "cost_usd": 0.01}])
+    fake_child(tmp_path / "results", monkeypatch)
+    monkeypatch.setattr(bench_agent, "DIR", tmp_path)
+
+    class Slow(BenchKhive):
+        async def send(self, *a, **k):
+            for _ in range(20):  # the transport's round trip: the launch runs meanwhile
+                await asyncio.sleep(0)
+            return await super().send(*a, **k)
+
+    khive = Slow(mail("lambda:a", "report t1 and launch t2"), cwd=tmp_path)
+    program = (
+        '<lact r1>report(run_id="t1")</lact>'
+        f'<lact l1>launch(asker="lambda:a", thread="{THREAD}", set="mini50", limit=1, run_id="t2")</lact>'
+    )
+    agent = bench_agent.build(
+        khive, Scripted(program, 'OUT{posture: {done: "x", awaiting: "t2"}}', khive=khive)
+    )
+    agent.state.put(
+        "jobs",
+        {
+            "t1": {
+                "asker": "lambda:a",
+                "thread": THREAD,
+                "pid": 1,
+                "started": "now",
+                "ask": {"set": "mini50", "model": "m"},
+            }
+        },
+        run="-",
+        seq=0,
+    )
+    run = asyncio.run(agent.wake(wait_ms=0))
+    results = {e.content.spec: e.content for e in run.record if e.kind is Kind.RESULT}
+    assert results["report"].ok and results["launch"].ok
+    jobs = agent.state.get("jobs").value
+    assert set(jobs) == {"t1", "t2"} and jobs["t1"]["reported"] and jobs["t2"]["pid"] > 0

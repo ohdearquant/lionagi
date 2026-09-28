@@ -216,16 +216,26 @@ def build(khive: Khive, backend) -> Agent:
         out, err = proc.communicate(timeout=30)
         if proc.returncode != 0 or not out.strip().isdigit():
             raise AgentError(f"launch failed rc={proc.returncode}: {err.strip() or out.strip()}")
-        jobs[run_id] = {
-            "asker": req.asker,
-            "thread": req.thread,
-            "pid": int(out.strip()),
-            "started": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "ask": req.model_dump(exclude={"asker", "thread"}),
-            "log": str(log),
-        }
-        state.put("jobs", jobs, run=ctx.run.id, seq=len(ctx.run.record))
+        put_job(
+            run_id,
+            {
+                "asker": req.asker,
+                "thread": req.thread,
+                "pid": int(out.strip()),
+                "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "ask": req.model_dump(exclude={"asker", "thread"}),
+                "log": str(log),
+            },
+            ctx,
+        )
         return f"launched job {run_id} as pid {out.strip()}; its finish will arrive as mail"
+
+    def put_job(run_id: str, job: dict, ctx: Context) -> None:
+        # the map is read again here, after any await: a launch and a report can run in one turn, and
+        # a map read before the report's send would write the launch's row away
+        jobs = dict(state.get("jobs").value) if state.get("jobs") else {}
+        jobs[run_id] = job
+        state.put("jobs", jobs, run=ctx.run.id, seq=len(ctx.run.record))
 
     reporting = asyncio.Lock()  # a job is reported once: the check and the marking are one step
 
@@ -243,20 +253,22 @@ def build(khive: Khive, backend) -> Agent:
             raise AgentError(f"job {req.run_id} was reported at {job['reported']}; not again")
         if not job.get("reported"):
             row = row_for(req.run_id)
-            # through the agent's own send: counted on the thread, under the hop limit, in the cursor
+            # through the agent's own send: counted on the thread, under the hop limit, in the cursor.
+            # The key names the job: a send that landed and lost its receipt is replayed by the store
+            # under the same key when the next finish mail reports it again, never mailed twice
             sent = await agent.deliver(
                 job["asker"],
                 json.dumps(row),
                 thread=job["thread"],
                 run=ctx.run,
                 subject=f"bench {req.run_id}",
+                idempotency_key=f"bench:{ACTOR_ID}:{req.run_id}:report",
             )
             # the receipt is written before anything else can fail: a second finish mail must find the
             # row delivered and owe only the memory write
             reported = time.strftime("%Y-%m-%d %H:%M:%S")
             job = {**job, "reported": reported, "sent": sent.get("id"), "row": row, "remember_pending": True}
-            jobs[req.run_id] = job
-            state.put("jobs", jobs, run=ctx.run.id, seq=len(ctx.run.record))
+            put_job(req.run_id, job, ctx)
         text = json.dumps(job["row"])
         note = f"bench {req.run_id} ({job['ask']['set']}, {job['ask']['model']}): {text}"
         try:
@@ -269,8 +281,7 @@ def build(khive: Khive, backend) -> Agent:
                 f"sent {job['sent']} to {job['asker']}; the memory write failed ({type(e).__name__}: {e}); "
                 "a report of this job again retries only the memory write"
             ) from None
-        jobs[req.run_id] = {**job, "remember_pending": False}
-        state.put("jobs", jobs, run=ctx.run.id, seq=len(ctx.run.record))
+        put_job(req.run_id, {**job, "remember_pending": False}, ctx)
         return f"sent {job['sent']} to {job['asker']} on thread {job['thread']}: {text}"
 
     return agent

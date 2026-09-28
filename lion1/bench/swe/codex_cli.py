@@ -30,7 +30,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from run_swe import PROMPT, UNAIDED
+from run_swe import PROMPT, UNAIDED, baseline
 from sandbox import close_code_hosts
 
 from hub.harness.openrouter import api_key
@@ -106,13 +106,18 @@ def parse_stream(text: str) -> dict:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(event, dict):  # a scalar line is no event
+            continue
         kind = event.get("type")
         item = event.get("item") or {}
         kinds[f"{kind}/{item['type']}" if item.get("type") else kind] += 1
         if kind == "turn.completed":
-            counts = {k: v for k, v in (event.get("usage") or {}).items() if isinstance(v, int)}
+            raw = event.get("usage")
+            counts = {k: v for k, v in raw.items() if isinstance(v, int)} if isinstance(raw, dict) else {}
             usage.update(counts)
-            metered += bool(counts)  # an explicit zero is a reading; no numbers is none
+            # a reading prices and counts the turn: input and output tokens, zeros included; a usage
+            # without them (a total alone) is no reading
+            metered += "input_tokens" in counts and "output_tokens" in counts
         elif kind == "turn.failed":
             failures.append(str((event.get("error") or {}).get("message"))[:300])
         elif kind == "error":
@@ -162,6 +167,7 @@ async def solve(
         await box.write(f"{HOME}/config.toml", CONFIG.format(model=model))
         prompt = PROMPT.format(problem=row["problem_statement"]) + (UNAIDED if unaided else "") + GUIDANCE
         await box.write(PROMPT_FILE, prompt)
+        rec["base"] = await baseline(box)
         deadline = f"timeout -s KILL {int(time_budget)} " if time_budget else ""
         cmd = (
             f"CODEX_HOME={HOME} {deadline}{BIN} exec --json --ephemeral "
@@ -197,7 +203,9 @@ async def solve(
         rec["last_message"] = last[:2000]
         u = parsed["usage"]
         started = parsed["kinds"].get("turn.started", 0)
-        unknown = started > 0 and not parsed["metered"]  # paid work and no usage record: no $0, no zeros
+        # paid work and no usage record is no $0, no zeros; a stream with no turn at all (empty, or
+        # nothing that parses) says nothing about paid work either: codex writes a turn for the prompt
+        unknown = not parsed["metered"]
         read = u.get("cached_input_tokens", 0)
         rec["tokens"] = (
             None
@@ -226,11 +234,17 @@ async def solve(
         # above are short by one turn (measured: a capped run recorded no usage, its patch resolved);
         # a transport failure leaves the same hole, and so does a failed turn: whole only when every
         # turn started was metered
-        rec["usage_complete"] = rc is not None and rc not in (124, 137) and parsed["metered"] >= started
+        # whole only when every turn started was metered, and at least one was: a stream without a
+        # single usage record is no complete reading of anything
+        rec["usage_complete"] = (
+            rc is not None and rc not in (124, 137) and parsed["metered"] >= max(started, 1)
+        )
         if rc is None:
             rec["outcome"] = "Error:transport"
         elif rc in (124, 137):
             rec["outcome"] = "Exhausted:time"
+        elif rc == 0 and not started and not parsed["metered"]:
+            rec["outcome"] = "Error:no-turn"  # exit 0 with no turn in the stream: no run to call a success
         elif rc == 0 and not parsed["failures"]:
             rec["outcome"] = "Success"
         else:
@@ -243,7 +257,7 @@ async def solve(
             rec["model_patch"] = ""  # codex may still be writing the tree: its diff is no patch
         else:
             try:
-                rec["model_patch"] = await box.diff()
+                rec["model_patch"] = await box.diff(rec.get("base") or "HEAD")
             except Exception as e:
                 rec["model_patch"] = ""
                 rec["diff_error"] = f"{type(e).__name__}: {e}"
