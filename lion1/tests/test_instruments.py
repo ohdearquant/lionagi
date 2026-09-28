@@ -174,6 +174,44 @@ def test_pr_state_verifies_a_pr_absent_from_a_full_page_before_calling_it_closed
     )
 
 
+@pytest.mark.parametrize("answer", ["{}", "", '""', "null"])
+def test_pr_state_a_pr_list_that_is_not_a_json_list_is_unread_and_keeps_the_last_rows(answer):
+    sh = FakeSh(
+        **{"api repos/o/r --jq": "o/r\n", "pr list -R o/r": json.dumps([PR]), "actions/runs?head_sha=": RUNS}
+    )
+    inst = pr_state(sh, ["o/r"])
+    assert asyncio.run(inst.run({})).control
+    kept = inst.state.get("pr-state:o/r").value
+    sh.set("pr list -R o/r", answer)
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == (f"o/r: gh pr list gave no JSON list: {answer!r}",)
+    assert inst.state.get("pr-state:o/r").value == kept  # an unread list closes nothing
+    sh.set("pr list -R o/r", "[]")  # a decoded empty list is a value: #7 is gone
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r#7: closed or merged",) and out.count == 0
+
+
+@pytest.mark.parametrize("state", ["", "\n", "UNKNOWN"])
+def test_pr_state_a_pr_beyond_a_full_page_is_retired_only_on_an_explicit_closure(monkeypatch, state):
+    monkeypatch.setattr(instr, "PR_PAGE", 2)
+    two = [PR, {**PR, "number": 8, "title": "second"}]
+    sh = FakeSh(
+        **{"api repos/o/r --jq": "o/r\n", "pr list -R o/r": json.dumps(two), "actions/runs?head_sha=": RUNS}
+    )
+    inst = pr_state(sh, ["o/r"])
+    asyncio.run(inst.run({}))
+    sh.set("pr list -R o/r", json.dumps([two[1], {**PR, "number": 9, "title": "third"}]))
+    sh.set("pr view 7 -R o/r", state)
+    out = asyncio.run(inst.run({}))
+    assert not out.control
+    assert f"o/r#7: absent from a full page and gh pr view gave no state: {state.strip()!r}" in out.findings
+    assert "o/r#7: closed or merged" not in out.findings and "7" in inst.state.get("pr-state:o/r").value
+    sh.set("pr view 7 -R o/r", "CLOSED\n")
+    out = asyncio.run(inst.run({}))
+    assert out.control and "o/r#7: closed or merged" in out.findings
+    assert "7" not in inst.state.get("pr-state:o/r").value
+
+
 def test_pr_state_reads_each_repos_declared_ci_channel_and_a_statuses_read_must_be_non_empty():
     sh = FakeSh(
         **{
@@ -292,6 +330,19 @@ def test_served_reads_the_cursor_first_then_the_pid_then_launchd_with_its_own_pi
     sh.set(f"-p {me} -o", "")
     out = asyncio.run(inst.run({}))
     assert not out.control and "NOT alive: read broken" in out.evidence
+
+
+@pytest.mark.parametrize("mount", ["/Volumes/My Disk", "/Volumes/two  spaces", "/"])
+def test_disk_names_the_mount_point_whole_when_it_holds_a_space(tmp_path, mount):
+    df = (
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+        f"/dev/disk4s1 1 1 {400 * 2**20} 1% {mount}\n"
+    )
+    sh = FakeSh(**{"/bin/df": df, "find ": ""})
+    out = asyncio.run(Disk([str(tmp_path)], every=None, floors=[], run=sh).run({}))
+    assert out.control and out.evidence.splitlines()[1] == (
+        f"/dev/disk4s1 ({tmp_path}): free 400.0 GiB base-1024 / 429.5 GB base-1000, mounted on {mount}"
+    )
 
 
 def test_disk_groups_roots_by_device_reads_each_floor_once_in_gib_and_escalates_only_an_enforcing_crossing(
@@ -510,8 +561,8 @@ def test_inbox_sla_probes_each_actor_and_a_dead_read_fails_the_control():
 
 def test_worktrees_first_sight_then_a_parked_dirty_tree_without_a_pr(tmp_path):
     porcelain = (
-        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
-        f"worktree {tmp_path}/wt\nHEAD def\nbranch refs/heads/feat\n"
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD def\0branch refs/heads/feat\0\0"
     )
     sh = FakeSh(
         **{
@@ -559,8 +610,8 @@ def test_worktrees_first_sight_then_a_parked_dirty_tree_without_a_pr(tmp_path):
 )
 def test_worktrees_an_origin_keeps_every_dot_of_its_repository(tmp_path, origin):
     porcelain = (
-        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
-        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD d\0branch refs/heads/feat\0\0"
     )
     sh = FakeSh(
         **{
@@ -579,8 +630,8 @@ def test_worktrees_an_origin_keeps_every_dot_of_its_repository(tmp_path, origin)
 @pytest.mark.parametrize("failing", ["status", "log", "pr"])
 def test_worktrees_a_failed_read_of_a_tree_fails_the_control_and_keeps_its_last_reading(tmp_path, failing):
     porcelain = (
-        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
-        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD d\0branch refs/heads/feat\0\0"
     )
     good = {
         "worktree list --porcelain": porcelain,
@@ -625,8 +676,8 @@ def test_worktrees_a_failed_read_of_a_tree_fails_the_control_and_keeps_its_last_
 )
 def test_worktrees_an_unread_origin_leaves_every_branch_pr_unread(tmp_path, origin, why):
     porcelain = (
-        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
-        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD d\0branch refs/heads/feat\0\0"
     )
     good = {
         "worktree list --porcelain": porcelain,
@@ -655,8 +706,8 @@ def test_worktrees_an_unread_origin_leaves_every_branch_pr_unread(tmp_path, orig
 )
 def test_worktrees_a_pr_answer_that_is_not_a_pr_list_is_unread(tmp_path, answer):
     porcelain = (
-        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
-        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD d\0branch refs/heads/feat\0\0"
     )
     sh = FakeSh(
         **{
@@ -674,8 +725,8 @@ def test_worktrees_a_pr_answer_that_is_not_a_pr_list_is_unread(tmp_path, answer)
 
 def test_worktrees_a_head_committed_ahead_of_the_clock_is_a_read(tmp_path):
     porcelain = (
-        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
-        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD d\0branch refs/heads/feat\0\0"
     )
     sh = FakeSh(
         **{
@@ -688,6 +739,79 @@ def test_worktrees_a_head_committed_ahead_of_the_clock_is_a_read(tmp_path):
     )
     out = asyncio.run(Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=sh).run({}))
     assert out.control and out.findings == (f"{tmp_path}/main: first snapshot, 1 worktree(s)",)
+
+
+def test_worktrees_strips_only_the_leading_refs_heads_from_a_branch(tmp_path):
+    porcelain = (
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/nested\0HEAD d\0branch refs/heads/topic/refs/heads/fix\0\0"
+        f"worktree {tmp_path}/plain\0HEAD e\0branch refs/heads/feat\0\0"
+    )
+    sh = FakeSh(
+        **{
+            "worktree list --porcelain -z": porcelain,
+            "remote get-url origin": "https://github.com/o/r.git\n",
+            "status --porcelain": "",
+            "log -1": f"{int(time.time())}\n",
+            "pr list -R o/r --head topic/refs/heads/fix": json.dumps([{"number": 4}]),
+            "pr list -R o/r --head feat": "[]",
+        }
+    )
+    store = MemoryNoteStore()
+    out = asyncio.run(Worktrees([str(tmp_path / "main")], store, every=None, run=sh).run({}))
+    assert out.control
+    snap = store.get(f"worktrees:{tmp_path}/main").value
+    assert snap[f"{tmp_path}/nested"]["branch"] == "topic/refs/heads/fix"
+    assert snap[f"{tmp_path}/nested"]["pr"] == "#4" and snap[f"{tmp_path}/plain"]["branch"] == "feat"
+    heads = [c[c.index("--head") + 1] for c in sh.calls if "--head" in c]
+    assert heads == ["topic/refs/heads/fix", "feat"]
+
+
+def test_worktrees_a_path_holding_a_line_break_is_read_whole(tmp_path):
+    paths = [f"{tmp_path}/new\nline", f"{tmp_path}/sep ar", f"{tmp_path}/plain", f"{tmp_path}/with space"]
+    porcelain = f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0" + "".join(
+        f"worktree {p}\0HEAD d\0branch refs/heads/feat\0\0" for p in paths
+    )
+    sh = FakeSh(
+        **{
+            "worktree list --porcelain -z": porcelain,
+            "remote get-url origin": "https://github.com/o/r.git\n",
+            "status --porcelain": "",
+            "log -1": f"{int(time.time())}\n",
+            "pr list -R o/r --head feat": "[]",
+        }
+    )
+    store = MemoryNoteStore()
+    out = asyncio.run(Worktrees([str(tmp_path / "main")], store, every=None, run=sh).run({}))
+    assert out.control and out.count == 4
+    assert sorted(store.get(f"worktrees:{tmp_path}/main").value) == sorted(paths)
+    assert sorted(c[2] for c in sh.calls if "status" in c) == sorted(paths)
+    assert sh.calls[0][1:] == ["-C", f"{tmp_path}/main", "worktree", "list", "--porcelain", "-z"]
+
+
+def test_worktrees_a_pr_number_past_the_integer_conversion_limit_is_unread(tmp_path):
+    porcelain = (
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD d\0branch refs/heads/feat\0\0"
+    )
+    sh = FakeSh(
+        **{
+            "worktree list --porcelain": porcelain,
+            "remote get-url origin": "https://github.com/o/r.git\n",
+            "status --porcelain": "",
+            "log -1": f"{int(time.time())}\n",
+            "pr list -R o/r --head feat": "[]",
+        }
+    )
+    store = MemoryNoteStore()
+    inst = Worktrees([str(tmp_path / "main")], store, every=None, run=sh)
+    assert asyncio.run(inst.run({})).control
+    kept = store.get(f"worktrees:{tmp_path}/main").value
+    sh.set("pr list -R o/r --head feat", '[{"number": ' + "1" * 4301 + "}]")
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == (f"{tmp_path}/wt: the PR read failed; the tree is unread",)
+    assert f"{tmp_path}/wt | feat | dirty 0 | HEAD 0.0d | PR not a PR list" in out.evidence
+    assert store.get(f"worktrees:{tmp_path}/main").value == kept
 
 
 def test_bench_jobs_reports_an_unreported_job_whose_process_is_gone(tmp_path):
