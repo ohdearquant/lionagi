@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from lionagi.actor import Actor, Handle, Inbound, Profile, Run, RunRequest
+from lionagi.actor import Actor, Handle, Inbound, Profile, Result, Run, RunRequest
 from lionagi.checkpoint import entry_of
 from lionagi.record import Directive, Entry, Kind
 
@@ -141,6 +141,10 @@ def entry_row(e: Entry) -> dict:
         meta["directive"] = row(d)
     if isinstance(ds := meta.get("consumed"), tuple):
         meta["consumed"] = [row(d) for d in ds]
+    if isinstance(vs := meta.get("values"), tuple):  # a value that failed to compute: its error, fourth
+        meta["values"] = [
+            [a, seq, None, v.error] if isinstance(v, Result) else [a, seq, v] for a, seq, v in vs
+        ]
     return {
         "seq": e.seq,
         "kind": e.kind.name,

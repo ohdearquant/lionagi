@@ -203,6 +203,7 @@ resumed chat folds it and recompiles nothing; the record keeps four kinds
   `test_a_comprehension_counts_each_item_it_builds_toward_the_size_limit`,
   `test_a_dicts_keys_count_toward_the_size_limit`,
   `test_a_dict_whose_keys_are_not_strings_counts_each_key_as_one_item`,
+  `test_a_missing_field_of_a_dict_with_mixed_keys_is_a_language_error_not_a_crash`,
   `test_an_unnamed_command_skips_an_auto_name_the_record_already_holds`,
   `test_if_elif_else_runs_only_the_taken_branch_and_a_return_ends_the_program`,
   `test_a_command_inside_a_comprehension_reads_the_comprehensions_name`,
@@ -249,15 +250,17 @@ placeholder.
 ### D4: A value is bound for the run, and a computed one rides the record ^d4
 
 Serves C3 and C6. A name is bound once for the run. A value nothing has read stays bound past its
-turn, its name taken; the turn that first reads it computes it then, after the note writes its own
-program made before it, reading each note as the store holds it at that moment. A computed value
-rides the next notification's `meta["values"]` as its alias, the seq of the turn that bound it and
-the value, so a replayed record binds it again and runs nothing.
+turn, its name taken; the turn that first reads it computes it then, after its program's earlier
+note writes, each note read as the store holds it. A computed value rides the next notification's
+`meta["values"]` (alias, the binding turn's seq, value), so a replayed record binds it again and
+runs nothing. A failed computation binds the name to its failure the same way: what it ran, ran
+once.
 
 - **Landing evidence**:
   `test_a_value_nothing_read_stays_bound_into_later_turns_and_its_name_stays_taken`,
-  `test_a_value_computed_on_the_record_resolves_after_the_log_replays_it_and_nothing_runs_again`.
-  Owed: a replay of a value nothing read, and a last turn's values on the closure (ADR-0006).
+  `test_a_value_computed_on_the_record_resolves_after_the_log_replays_it_and_nothing_runs_again`,
+  `test_a_value_whose_computation_failed_stays_failed_and_what_it_ran_never_runs_again`. Owed: a
+  replay of a value nothing read, and a last turn's values on the closure (ADR-0006).
 
 ## Alternatives
 

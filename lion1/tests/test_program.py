@@ -444,6 +444,56 @@ def test_a_value_computed_on_the_record_resolves_after_the_log_replays_it_and_no
     assert run.values["v"] == first.values["v"] == (2, "xx")
 
 
+def test_a_value_whose_computation_failed_stays_failed_and_what_it_ran_never_runs_again():
+    calls: list = []
+    actor = _actor("failed-value", calls)
+    turns = (
+        fenced('v = [DO echo(text="side")][0] + 1', 'w = [DO echo(text="fine")][0] + "!"'),
+        fenced("b = echo(text=*v)"),
+        fenced('v = "again"'),
+        fenced("c = echo(text=*v)", "d = echo(text=*w)"),
+        "idle",
+    )
+    first = _run(actor, *turns)
+    told = "line 1: cannot apply + to str and int"
+    assert first.record.get("b").content.error == f"*v: {told}"
+    assert first.record.get("c").content.error == f"*v did not settle ok: {told}"
+    assert first.record.get("d").content.value == "fine!"
+    assert "v is bound already: a name is bound once for the whole run" in _notices(first)
+    # the DO ran once, in the turn that first read the value; the failure is what the name holds
+    assert sorted(calls) == [("echo", "fine"), ("echo", "fine!"), ("echo", "side")]
+    assert not first.unread and first.values["v"][1].error == told
+    # the failure rides the log like a value, so a resumed run finds it and runs nothing
+    history = tuple(entry_of(json.loads(json.dumps(entry_row(e), default=str))) for e in first.record)
+    calls.clear()
+    run = _run(
+        _actor("resumed", calls), fenced("e = echo(text=*v)", "f = echo(text=*w)"), "idle", history=history
+    )
+    assert run.record.get("e").content.error == f"*v did not settle ok: {told}"
+    assert run.record.get("f").content.value == "fine!"
+    assert calls == [("echo", "fine!")]
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("r = grid(n=1)", "OUT{x: *r.missing}"),
+        ("r = grid(n=1)", "if *r.missing:", "    OUT{x: 1}", "else:", "    OUT{x: 2}"),
+        ("r = grid(n=1)", "b = echo(text=*r.missing)", "OUT{x: *b}"),
+    ],
+)
+def test_a_missing_field_of_a_dict_with_mixed_keys_is_a_language_error_not_a_crash(lines):
+    actor = _actor("mixed-keys", [])
+
+    @actor.handler(Grid)
+    async def grid(req: Grid, ctx) -> dict:
+        return {0: "zero", "a": "A"}
+
+    run = _run(actor, fenced(*lines), "idle")
+    assert not isinstance(run.outcome, Success)
+    assert "no field 'missing' in the dict (it has [0, 'a'])" in _notices(run)
+
+
 @pytest.mark.parametrize(
     ("lines", "repair", "told"),
     [
@@ -770,7 +820,8 @@ def test_a_comprehension_counts_each_item_it_builds_toward_the_size_limit():
         and a.reason == "invalid"
         and "line 2: the value built here is past the size limit" in a.error
     )
-    assert b.ok and len(run.values["fits"][1]) == LIMIT and "fits" in run.values and "big" not in run.values
+    assert b.ok and len(run.values["fits"][1]) == LIMIT
+    assert not run.values["big"][1].ok  # the name holds its failure, so the value is never built again
 
 
 def test_a_dicts_keys_count_toward_the_size_limit():

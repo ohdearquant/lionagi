@@ -1542,10 +1542,14 @@ class _Walk:
         try:
             value = await evaluate(expr, reader)
         except lndl.LNDLError as e:
-            raise EvalError(f"*{name}: {e}") from None
+            # a failed computation is the value's failure for the run: whatever it ran, ran once; a
+            # later read finds the failure, never the expression again
+            value = Result("value", False, error=str(e), reason="invalid")
         self.run.values[name] = (seq, value)
         self.run.unread.pop(name, None)
         self.run.computed.append(name)
+        if isinstance(value, Result):
+            raise EvalError(f"*{name}: {value.error}")
         self.value_reads[name] = reader.reads  # consumed only once a reader of the value settles ok
         return value
 

@@ -125,8 +125,14 @@ def entry_of(row: dict) -> Entry | None:
         meta["directive"] = directive(d)
     if isinstance(ds := kept.get("consumed"), list):  # a program's consumed results ride a notification too
         meta["consumed"] = tuple(directive(d) for d in ds)
-    if isinstance(vs := kept.get("values"), list):  # and the values it computed: alias, seq, value
-        meta["values"] = tuple((str(alias), int(seq), value) for alias, seq, value in vs)
+    if isinstance(vs := kept.get("values"), list):  # and the values it computed: alias, seq, value,
+        # or alias, seq, None, error for one that failed to compute, bound to its failure
+        meta["values"] = tuple(
+            (str(v[0]), int(v[1]), Result("value", False, error=str(v[3]), reason="invalid"))
+            if len(v) == 4
+            else (str(v[0]), int(v[1]), v[2])
+            for v in vs
+        )
     return Entry(
         seq=row["seq"],
         kind=kind,

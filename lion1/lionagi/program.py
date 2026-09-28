@@ -559,7 +559,8 @@ def _index(node: ast.expr, value: Any, key: Any) -> Any:
         return getattr(value, key)
     if isinstance(value, dict) and isinstance(key, str):
         if key not in value:
-            raise EvalError(f"line {node.lineno}: no field {key!r} in the dict (it has {sorted(value)[:10]})")
+            # the keys as the dict holds them: a mixed set has no order to sort by
+            raise EvalError(f"line {node.lineno}: no field {key!r} in the dict (it has {list(value)[:10]})")
         return value[key]
     if isinstance(value, list | tuple | str) and isinstance(key, int) and not isinstance(key, bool):
         if not -len(value) <= key < len(value):
