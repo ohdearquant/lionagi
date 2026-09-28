@@ -265,13 +265,13 @@ def manifest(args: argparse.Namespace, out_dir: Path, selected: list[str]) -> Pa
     import hashlib
     import subprocess
 
-    git = lambda *a: subprocess.run(["git", *a], capture_output=True, text=True, cwd=HERE).stdout.strip()  # noqa: E731
+    git = lambda *a: subprocess.run(["git", *a], capture_output=True, text=True, cwd=HERE).stdout  # noqa: E731
     data = SETS[args.set].read_bytes()
     doc = {
         "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "args": vars(args),
-        "head": git("rev-parse", "HEAD"),
-        "dirty": git("status", "--porcelain"),
+        "head": git("rev-parse", "HEAD").strip(),
+        "dirty": git("status", "--porcelain").rstrip("\n"),  # a line's first two columns are its state
         "dataset": {"path": str(SETS[args.set]), "sha256": hashlib.sha256(data).hexdigest()},
         "selected": selected,  # the instances this launch asked for, after every filter
         "run": "run.json",

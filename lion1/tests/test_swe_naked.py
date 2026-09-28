@@ -217,3 +217,68 @@ def test_a_cancellation_during_cleanup_still_leaves_the_record(tmp_path, monkeyp
     assert "error" not in rec and rec["cost_usd"] == 0.25 and "+x = 2" in rec["model_patch"]
     host = Path(next(c[2] for c in calls if c[0] == "cp"))
     assert not host.exists()  # the host copy still went, its patch being on the record
+
+
+def _harness(monkeypatch, resolves, report=None) -> list[str]:
+    """The harness as it grades: an instance whose per-instance report exists under the run id is
+    skipped, and the run's report is written fresh from the per-instance ones. `report` replaces
+    the run's report when given."""
+    ids: list[str] = []
+
+    def run(argv, *, capture_output, text, cwd, timeout):
+        rid = argv[argv.index("--run_id") + 1]
+        ids.append(rid)
+        preds = [
+            json.loads(line)
+            for line in Path(argv[argv.index("--predictions_path") + 1]).read_text().splitlines()
+        ]
+        resolved = []
+        for p in preds:
+            done = Path(cwd) / "logs" / "run_evaluation" / rid / "m" / p["instance_id"] / "report.json"
+            if not done.exists():
+                done.parent.mkdir(parents=True)
+                done.write_text(json.dumps({p["instance_id"]: {"resolved": resolves(p["model_patch"])}}))
+            if json.loads(done.read_text())[p["instance_id"]]["resolved"]:
+                resolved.append(p["instance_id"])
+        doc = {"submitted_ids": sorted(p["instance_id"] for p in preds), "resolved_ids": resolved}
+        (Path(cwd) / f"m.{rid}.json").write_text(json.dumps(report if report is not None else doc))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(run_naked.subprocess, "run", run)
+    return ids
+
+
+def test_new_predictions_under_a_reused_run_id_are_graded_not_read_from_an_earlier_evaluation(
+    tmp_path, monkeypatch
+):
+    preds = tmp_path / "predictions.jsonl"
+
+    def predict(patch: str) -> None:
+        preds.write_text(
+            json.dumps({"instance_id": "x__x-1", "model_name_or_path": "m", "model_patch": patch}) + "\n"
+        )
+
+    ids = _harness(monkeypatch, lambda patch: "+x = 2" in patch)
+    earlier = tmp_path / "logs" / "run_evaluation" / "r1" / "m" / "x__x-1" / "report.json"
+    earlier.parent.mkdir(parents=True)
+    earlier.write_text(json.dumps({"x__x-1": {"resolved": True}}))  # an earlier evaluation under this run id
+    predict("+x = 3\n")
+    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1)["resolved_ids"] == []
+    predict("+x = 2\n")  # new predictions, the same run id
+    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1)["resolved_ids"] == ["x__x-1"]
+    predict("+x = 3\n")  # the first predictions again: their own earlier grade is theirs
+    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1)["resolved_ids"] == []
+    assert ids[0] == ids[2] != ids[1] and all(i.startswith("r1.") for i in ids)
+
+
+def test_a_report_that_does_not_name_the_predictions_handed_in_is_refused(tmp_path, monkeypatch):
+    preds = tmp_path / "predictions.jsonl"
+    preds.write_text(
+        json.dumps({"instance_id": "x__x-1", "model_name_or_path": "m", "model_patch": "+x = 2\n"}) + "\n"
+    )
+    for report in ({"submitted_ids": ["y__y-2"], "resolved_ids": ["y__y-2"]}, {"resolved_ids": ["x__x-1"]}):
+        _harness(monkeypatch, lambda patch: True, report)
+        with pytest.raises(RuntimeError, match=r"not the predictions handed in \['x__x-1'\]"):
+            run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    _harness(monkeypatch, lambda patch: True)  # the control: the harness's own report on these predictions
+    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1)["resolved_ids"] == ["x__x-1"]

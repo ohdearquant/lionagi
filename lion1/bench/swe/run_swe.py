@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 import subprocess
@@ -385,6 +386,16 @@ def _dump(run) -> str:
 
 
 def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> dict:
+    """The harness's report on `preds`. The harness skips an instance whose per-instance report
+    exists under its run id and still writes a fresh top-level report from the cached ones, so the
+    id it is handed carries the predictions' digest: new predictions under a reused run id are
+    graded, never read from an earlier evaluation. A report that does not name exactly the
+    predictions handed in raises."""
+    digest = hashlib.sha256(preds.read_bytes()).hexdigest()[:16]
+    harness_id = f"{run_id}.{digest}"
+    submitted = sorted(
+        {json.loads(line)["instance_id"] for line in preds.read_text().splitlines() if line.strip()}
+    )
     cmd = [
         "uv",
         "run",
@@ -399,7 +410,7 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
         "--predictions_path",
         str(preds),
         "--run_id",
-        run_id,
+        harness_id,
         "--max_workers",
         str(workers),
         "--instance_ids",
@@ -407,10 +418,17 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(preds.parent), timeout=7200)
     (preds.parent / f"oracle_{run_id}.log").write_text(proc.stdout + "\n--- stderr ---\n" + proc.stderr)
-    reports = sorted(preds.parent.glob(f"*{run_id}.json"), key=lambda p: p.stat().st_mtime)
+    reports = sorted(preds.parent.glob(f"*{harness_id}.json"), key=lambda p: p.stat().st_mtime)
     if not reports:
         raise RuntimeError(f"no harness report; rc={proc.returncode}; see oracle_{run_id}.log")
-    return json.loads(reports[-1].read_text())
+    report = json.loads(reports[-1].read_text())
+    graded = sorted(report.get("submitted_ids", []))
+    if graded != submitted:
+        raise RuntimeError(
+            f"{reports[-1].name} reports {graded}, not the predictions handed in {submitted}; "
+            f"see oracle_{run_id}.log"
+        )
+    return report
 
 
 async def main(args: argparse.Namespace) -> None:

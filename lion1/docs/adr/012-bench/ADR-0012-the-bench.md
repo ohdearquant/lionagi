@@ -1,7 +1,7 @@
 ---
 adr: ADR-0012
 status: draft
-liveness: operating (the set runner, the in-box grader, the closure, the run identity and both arms are under tests; that compared bench runs share instances, head and budgets is the reader's check; no CLI-arm bench run on the hard set has the package indexes closed)
+liveness: operating (the set runner, the in-box grader, the closure, the run identity, the host-side oracle and both arms are under tests; that compared bench runs share instances, head and budgets is the reader's check; no CLI-arm bench run on the hard set has the package indexes closed)
 date: "2026-09-25"
 area: bench
 kind: new
@@ -106,10 +106,10 @@ The run id's `run.json` holds the four fields that make two launches one bench r
 written before it must agree and name all four; a row without the stamp refuses the launch. A
 resumed launch skips the instances its ledger holds.
 
-Each launch creates its own manifest: arguments, head and dirty files, the set's path and digest,
-the instances selected after every filter, and for the CLI arm its pinned version and configuration.
-The head is not one of the four: a resumed bench run may continue at another head, and each manifest
-says which.
+Each launch creates its own manifest: arguments, head, the dirty files as git's status lines with
+their state columns kept, the set's path and digest, the instances selected after every filter, and
+for the CLI arm its pinned version and configuration. The head is not one of the four: a resumed
+bench run may continue at another head, and each manifest says which.
 
 ### C4: The bench runs unaided unless a launch says otherwise _(enforced: mechanical)_ ^c4
 
@@ -204,7 +204,8 @@ criteria off, a 1200 s time budget, 100 turns as a backstop, a cost cap only on 
 
 - **Landing evidence**: `tests/test_swe_run_set.py`: the retried spend kept, a cap on an unmetered
   arm refused before any box, an unconfirmed stop not graded, a disagreeing resume refused, a
-  matching resume skipping ledger rows, manifests never overwritten.
+  matching resume skipping ledger rows, manifests never overwritten;
+  `test_the_manifest_keeps_the_status_columns_of_an_unstaged_change`.
 
 ### D2: The grader in `bench/swe/sandbox.py` ^d2
 
@@ -265,7 +266,13 @@ model has no cost.
   commands.
 - **S6**: The host-side baseline in `bench/swe/run_naked.py` runs the CLI with its own tools, one
   whole task per call (`ClaudeCodeAgentic`), over a copied tree and grades with the harness's own
-  evaluation. It has no ledger, manifest or closure, and it writes an unreported cost as zero.
+  evaluation. It has no ledger, manifest or closure, and it writes an unreported cost as zero. Since
+  swebench 5.0.2 skips an instance holding a per-instance report under its run id
+  (`get_dataset_from_preds`), the oracle in `bench/swe/run_swe.py` grades under the run id joined to
+  the predictions' digest and refuses a report not naming exactly those predictions
+  (`tests/test_swe_naked.py`:
+  `test_new_predictions_under_a_reused_run_id_are_graded_not_read_from_an_earlier_evaluation`,
+  `test_a_report_that_does_not_name_the_predictions_handed_in_is_refused`).
 - **S7**: A CLI row's `outcome` is read off the exec's exit code and names no run outcome; only a
   loop row's is one.
 - **S8**: The boundary: what any instrument declares, returns and reports when it fails, and who
