@@ -221,21 +221,23 @@ with the expected actor asserted (C4).
 
 ### D4: Ticks are the store's reminders, and missed ones are caught up once ^d4
 
-Serves C3. `ensure_ticks` reads the actor's own pending reminders from `schedule.agenda` and creates
+Serves C3. `ensure_ticks` reads the actor's pending reminders from `schedule.agenda` and creates
 each missing one with `schedule.remind`, first firing a minute out. The CLI creates ticks at serve
 start and on `--ticks`, never for a chair.
 
-`_catch_up` asks the store for the actor's own rows marked missed and those marked failed, filtered
-by creator and status before each page of 200, pages each list to its end, checks both again in code
-and runs each row once. An id stays under `missed_seen` while the store lists its row (S9).
+`_catch_up` asks the store for the actor's missed and failed rows, filtered before each page of 200,
+pages each list to its end, rechecks both in code and runs each row once. An id stays under
+`missed_seen` while the store lists it; two passes missing it let it go (S9).
 
 - **Landing evidence**: `test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those`,
   `test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once`,
   `test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page`,
   `test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once` (201 rows, two passes),
   `test_a_seen_missed_tick_is_remembered_while_the_store_lists_it_however_many_there_are` (501
-  rows); `test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread`
-  asserts `--ticks` creates nothing for a chair.
+  rows), `test_a_page_that_is_not_a_page_fails_the_missed_tick_read_and_lets_no_id_go`,
+  `test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look`;
+  `test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread` asserts
+  `--ticks` creates nothing for a chair.
 
 ### D5: `lion agent --check` prints and saves ^d5
 
@@ -294,5 +296,11 @@ bypasses the handler: no refusals, no row, no send.
   `test_the_owners_own_ask_keeps_its_receipt_so_the_report_ages_and_is_not_repeated` pins it.
 - **S9**: Each of the two lists is paged, 200 to a page, by offset until the store says no more:
   `has_more` false, or a bare page short of 200. So no number of the actor's own missed rows leaves
-  one unread, and a row a moving list skips on one pass is read by the next, its id still held
+  one unread. A row an offset read skips on one pass is read by the next, its id still held; a row
+  hidden on two passes in a row is let go, and runs again if it comes back
   (`test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once`, both page shapes).
+- **S10**: A page that is no page, with no list in it or empty while the store says more is behind
+  it, fails the whole read: nothing runs and no id is let go
+  (`test_a_page_that_is_not_a_page_fails_the_missed_tick_read_and_lets_no_id_go`). Seen ids are
+  matched by set, so a long list costs each row one look
+  (`test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look`).

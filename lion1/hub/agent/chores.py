@@ -669,22 +669,31 @@ class Chores:
                     + "]"
                 )
                 for s, rows in zip(live, pages, strict=True):
-                    got = rows.get("items", []) if isinstance(rows, dict) else (rows or [])
+                    # a page is a dict with a list under `items`, or a bare list; anything else, or an
+                    # empty page that says more is behind it, is a broken read: nothing runs or is let go
+                    if isinstance(rows, dict):
+                        got, more = rows.get("items"), rows.get("has_more")
+                        more = len(got) == 200 if more is None and isinstance(got, list) else more
+                    else:
+                        got, more = rows, isinstance(rows, list) and len(rows) == 200
+                    if not isinstance(got, list) or (not got and more):
+                        raise ValueError(
+                            f"the {s} page at offset {offsets[s]} is not a page: {str(rows)[:80]!r}"
+                        )
                     items += got
                     offsets[s] += len(got)
-                    more = (
-                        rows.get("has_more", len(got) == 200) if isinstance(rows, dict) else len(got) == 200
-                    )
                     if not got or not more:
                         del offsets[s]
         except Exception as e:
             return [f"missed-tick read failed: {type(e).__name__}: {e}"]
         seen, done = list(_val(self.agent.state, "missed_seen", [])), []
+        seen_ids = set(seen)  # membership by set: the list keeps the order the record shows
         for it in items:
             p, status = it.get("properties") or {}, it.get("status")  # status sits beside properties
-            if p.get("created_by_actor") != me or status not in ("missed", "failed") or it["id"] in seen:
+            if p.get("created_by_actor") != me or status not in ("missed", "failed") or it["id"] in seen_ids:
                 continue
             seen.append(it["id"])
+            seen_ids.add(it["id"])
             content = str(it.get("content") or "")
             m = re.match(r"tick: ([\w-]+)", content)
             chore = m.group(1) if m else None

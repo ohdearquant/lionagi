@@ -892,6 +892,73 @@ def test_a_seen_missed_tick_is_remembered_while_the_store_lists_it_however_many_
     assert agent.state.get("missed_seen").value == [f"ev{i}" for i in (1, *range(400, 501))]
 
 
+@pytest.mark.parametrize(
+    "page", [{"items": [], "has_more": True}, {"has_more": True}, {"items": None}, None, "rows"]
+)
+def test_a_page_that_is_not_a_page_fails_the_missed_tick_read_and_lets_no_id_go(tmp_path, page):
+    events = [
+        {"id": f"ev{i}", "content": "tick: pr", "status": "missed", "properties": {"created_by_actor": SELF}}
+        for i in range(201)
+    ]
+    khive = FakeKhive(mail(SELF, "tick: disk"), mail(SELF, "tick: disk", mid="b2c3d4e5"), events=events)
+    khive.filtered = True
+    paged = khive.exec
+
+    async def exec(ops):  # the store answers the second page with something that is no page
+        return [page] if "offset=200" in ops else await paged(ops)
+
+    khive.exec = exec
+    chores, agent = build(
+        tmp_path, khive, [CHECK, DONE] * 2, disk=Probe("disk", full()), pr=Probe("pr", full())
+    )
+    asyncio.run(agent.wake())
+    asyncio.run(agent.wake())
+    assert [r["chore"] for r in chores.rows()] == ["disk", "disk"]  # the first page's rows ran nowhere
+    failed = [r["caught_up"] for r in chores.rows()]
+    assert all(
+        len(f) == 1
+        and f[0].startswith(
+            "missed-tick read failed: ValueError: the missed page at offset 200 is not a page: "
+        )
+        for f in failed
+    ), failed
+    assert agent.state.get("missed_seen") is None  # nothing seen, so nothing let go
+    assert agent.state.get("missed_gone") is None
+
+
+def test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look(tmp_path):
+    looks = []
+
+    class Id(str):  # an id that counts how often the sweep compares it
+        __hash__ = str.__hash__
+
+        def __eq__(self, other):
+            looks.append(1)
+            return str.__eq__(self, other)
+
+    n = 2000
+    events = [
+        {
+            "id": f"ev{i}",
+            "content": "tick: gone",
+            "status": "failed",
+            "properties": {"created_by_actor": SELF},
+        }
+        for i in range(n)
+    ]
+    khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"c{i:07x}") for i in range(2)), events=events)
+    khive.filtered = True
+    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 2, disk=Probe("disk", full()))
+    asyncio.run(agent.wake())  # the warm pass: every id lands under missed_seen
+    assert len(chores.rows()[0]["caught_up"]) == n
+    for e in events:
+        e["id"] = Id(e["id"])
+    asyncio.run(agent.wake())  # the second pass sees every id already
+    assert chores.rows()[-1]["caught_up"] == []
+    assert agent.state.get("missed_seen").value == [f"ev{i}" for i in range(n)]  # the order kept
+    assert 0 < len(looks) < 10 * n, len(looks)  # a list scan would cost n * n / 2
+
+
 def test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page(tmp_path):
     noise = [
         {"id": f"n{i}", "content": "tick: disk", "status": status, "properties": {"created_by_actor": actor}}
