@@ -4,6 +4,7 @@ hook that raises refuses it. `after` sees every command that ran, ok or not: Non
 Result replaces it, and a hook that raises is told in the next notice while the result stands."""
 
 import asyncio
+from typing import Any
 
 import pytest
 from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field, computed_field, field_validator
@@ -371,6 +372,62 @@ def test_a_capture_copies_a_list_that_holds_itself_once():
 
     returned = results(run(actor, Profile("p"), '<lact g1>gather(items=["a"])</lact>'))["g1"].value
     assert returned is not made[0] and returned[0] == "a" and returned[1] is returned
+
+
+class Node(BaseModel):
+    kids: tuple
+
+
+def _diamond(k: int, shape: str) -> tuple[Any, list]:
+    """A value reached through two arms at each of k levels: 2**k paths to one shared list."""
+    leaf: list = ["leaf"]
+    v: Any = leaf
+    for _ in range(k):
+        v = (v, v) if shape == "tuple" else Node(kids=(v, v))
+    return v, leaf
+
+
+@pytest.mark.parametrize("shape", ["tuple", "model"])
+def test_a_capture_copies_a_value_reached_twice_once(shape):
+    from lionagi.actor import _captured
+
+    value, leaf = _diamond(20, shape)
+    calls: list[int] = []
+
+    class Counting(dict):  # the memo sees one entry per distinct node, however many paths reach it
+        def __setitem__(self, k, v):
+            calls.append(k)
+            super().__setitem__(k, v)
+
+    out = _captured(value, Counting())
+    assert (
+        len(calls) == {"tuple": 21, "model": 41}[shape]
+    )  # each node once (a model and its tuple), not 2 ** 20
+    inner = out
+    for _ in range(20):
+        inner = inner[0] if shape == "tuple" else inner.kids[0]
+    assert inner == ["leaf"] and inner is not leaf
+
+
+def test_a_result_too_deep_to_capture_settles_the_command_failed_and_the_run_goes_on():
+    actor = Actor("hooked-deep")
+
+    @actor.handler(Gather)
+    async def deep(req: Gather, ctx) -> list:
+        v: list = ["bottom"]
+        for _ in range(int(req.items[0])):
+            v = [v]
+        return v
+
+    got = results(
+        run(actor, Profile("p"), '<lact d>gather(items=["600"])</lact><lact s>gather(items=["3"])</lact>')
+    )
+    assert (
+        not got["d"].ok
+        and got["d"].reason == "failed"
+        and got["d"].error.startswith("the result cannot be captured, RecursionError")
+    )
+    assert got["s"].ok and got["s"].value == [[[["bottom"]]]]
 
 
 def test_a_capture_copies_what_a_tuple_holds():

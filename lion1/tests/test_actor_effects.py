@@ -53,6 +53,18 @@ def _actor(name: str, log: list[tuple[str, str]], released: asyncio.Event) -> Ac
     return actor
 
 
+def test_a_settled_commands_wait_row_is_released():
+    log: list[tuple[str, str]] = []
+    released = asyncio.Event()
+    actor = _actor("waits-released", log, released)
+    turns = ["".join(f'<lact {t}{i}>put(name="w{i}")</lact>' for i in range(3)) for t in ("a", "b")]
+    run = asyncio.run(
+        actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=3), scripted(*turns, "done"))
+    )
+    assert [n for at, n in log if at == "end"].count("w2") == 2  # two turns of three writes each ran
+    assert run.pending == {} and run.waits == {}  # nothing reads a settled command's row
+
+
 def test_each_class_waits_for_what_c6_says_and_reads_overlap():
     log: list[tuple[str, str]] = []
     turn = (

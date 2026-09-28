@@ -69,16 +69,16 @@ Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Ha
 - **Violated when**: a step is skipped, or a refusal carries no reason from the closed set.
 
 The name is in the profile's subset, else `unknown`. After the effect wait (C6), pointers are
-dereferenced, waiting on any still running; a pointer to nothing, or back to its own command, is
+dereferenced, waiting on any still running; one to nothing, or back to its own command, is
 `invalid`. The arguments validate against the Spec, else `invalid`. The handler's `requires` is
 within the profile's privileges, else `privilege`. The before hooks run (C4), else `refused`. The
 request is captured (C5), else `invalid`. The handler runs; the after hooks see its result.
 
 The return lands as `RESULT` under the command's alias, with its `execution` mark; a handler that
-raises produces a failed `RESULT` (`failed`, with the exception) and never breaks the loop. One that
-stops without returning settles too: `cancelled` when its work was cancelled underneath it,
-`invalid` when a validator's own exception refused the arguments. `pending` drops the alias on every
-exit.
+raises, or returns what cannot be captured (C5), produces a failed `RESULT` (`failed`, with the
+exception), never breaking the loop. One that stops without returning settles too: `cancelled` when
+cancelled underneath, `invalid` when a validator's own exception refused the arguments. `pending`
+drops the alias on exit.
 
 ### C2: Nothing is awaited inline; the bus observes _(enforced: mechanical)_ ^c2
 
@@ -143,8 +143,8 @@ The runtime captures three values: the request as the handler entered, the handl
 the first after hook, and the result as the hooks left it. Each hook works on a copy; a replacement
 is captured when returned, a failed hook's copy is dropped. The RESULT holds the third, what a
 pointer dereferences; the first two ride the entry as provenance, out of the model's reach. A
-capture shares an immutable value and copies a list, dict or set, and a Spec instance's fields and
-extras ([[ADR-0007-the-record#^c1|ADR-0007/C1]]).
+capture shares an immutable value and copies a list, dict, set or Spec instance
+([[ADR-0007-the-record#^c1|ADR-0007/C1]]); a value reached twice is copied once.
 
 ### C6: A handler's effect class orders the turn _(enforced: mechanical)_ ^c6
 
@@ -196,12 +196,12 @@ run, so two runs never compare against each other.
 
 Serves C1 to C6. `_dispatch` creates a task per `<lact>` under its alias in `pending`; `_perform`
 walks C1's order and appends the `RESULT`; `_execute` calls the hook lists around the handler. Every
-alias holder is checked at dispatch and `pending` empties at each turn's end, so no RESULT finds its
-alias taken at settle; that branch reports it under `execution`. The runtime knows nothing of files
-or shells.
+alias holder is checked at dispatch, and `pending` and the effect-wait rows empty as each command
+settles, so no RESULT finds its alias taken; that branch reports it under `execution`. The runtime
+knows nothing of files.
 
-`Handler.effect` defaults to `write`: the runtime cannot see what a handler touches, and a needless
-wait costs less than a missing one.
+`Handler.effect` defaults to `write`: the runtime cannot see what a handler touches; a needless wait
+costs less than a missing one.
 
 - **Landing evidence**: `tests/test_actor.py`, `tests/test_actor_hooks.py`,
   `tests/test_actor_effects.py`, `tests/test_swe_solve.py`. The replacement rebuilt from its fields
@@ -213,9 +213,12 @@ wait costs less than a missing one.
   `test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entry_as_copies`,
   `test_a_capture_copies_a_list_that_holds_itself_once`, `test_a_capture_copies_what_a_tuple_holds`,
   `test_a_hooks_change_in_place_to_an_extra_or_a_set_changes_nothing`,
-  `test_a_request_that_cannot_be_captured_settles_as_a_result_and_the_run_continues`. The effect
+  `test_a_capture_copies_a_value_reached_twice_once`,
+  `test_a_request_that_cannot_be_captured_settles_as_a_result_and_the_run_continues`,
+  `test_a_result_too_deep_to_capture_settles_the_command_failed_and_the_run_goes_on`. The effect
   wait (C6), with the class on `Handler` (S9):
   `test_each_class_waits_for_what_c6_says_and_reads_overlap`,
+  `test_a_settled_commands_wait_row_is_released`,
   `test_a_write_pointing_at_a_later_write_is_a_circle_and_a_pure_one_resolves`,
   `test_the_class_is_declared_on_the_handler_write_by_default_and_checked`.
 

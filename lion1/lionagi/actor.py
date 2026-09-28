@@ -908,6 +908,7 @@ class Actor:
         if run.pending.get(la.alias) is not task:
             return  # `_perform` ran and settled the command itself
         run.pending.pop(la.alias)
+        run.waits.pop(la.alias, None)
         result = Result(la.name, False, error="cancelled before it started", reason="cancelled")
         run.record.append(Kind.RESULT, result, alias=la.alias, round=run.round, execution="not executed")
         run.refused.append((la.alias, result.error))
@@ -986,6 +987,7 @@ class Actor:
             )
         finally:
             run.pending.pop(la.alias, None)
+            run.waits.pop(la.alias, None)  # its row is read by nobody once it has settled
             run.entered.discard(la.alias)
         if cancelled:
             raise asyncio.CancelledError
@@ -1058,17 +1060,24 @@ class Actor:
             result = Result(la.name, False, error=f"{type(e).__name__}: {e}", reason="failed")
         # the return before the first after hook rides the entry; each hook works on copies, so only
         # a replacement it returns changes the result, and a failed hook's copy is dropped
-        provenance["returned"], result = dict(vars(_captured(result))), _captured(result)
+        try:
+            result = _captured(result)
+        except Exception as e:  # a value too deep to copy, or a model holding itself: the command failed
+            error = f"the result cannot be captured, {type(e).__name__}: {e}"
+            result = Result(la.name, False, error=error, reason="failed")
+        provenance["returned"] = dict(vars(result))
         for hook in self.afters:
             try:
                 seen = hook(run, la, _captured(entered), _captured(result))
                 if inspect.isawaitable(seen):
                     seen = await seen
+                if isinstance(seen, Result):
+                    seen = _captured(seen)
             except Exception as e:
                 run.hook_errors.append((la.alias, f"{_hook_name(hook)}: {type(e).__name__}: {e}"))
                 continue
             if isinstance(seen, Result):
-                result = _captured(seen)
+                result = seen
         return result, (ctx.directive if result.ok else None)
 
     async def _deref(self, run: Run, la: Lact) -> dict[str, Any]:
@@ -1564,8 +1573,8 @@ def _deref(run: Run, key: str, value: Any) -> Any:
 
 def _captured(value: Any, memo: dict[int, Any] | None = None) -> Any:
     """A value as a capture holds it (ADR-0007/C1): a scalar shared, a list, dict, set or tuple copied,
-    a Spec instance or a Result rebuilt on captured fields and extras; a list or dict holding itself is
-    copied once."""
+    a Spec instance or a Result rebuilt on captured fields and extras; a value reached twice, or a list
+    or dict holding itself, is copied once."""
     memo = {} if memo is None else memo
     if id(value) in memo:
         return memo[id(value)]
@@ -1578,15 +1587,19 @@ def _captured(value: Any, memo: dict[int, Any] | None = None) -> Any:
         out.extend(_captured(v, memo) for v in value)
         return out
     if isinstance(value, tuple):
-        return tuple(_captured(v, memo) for v in value)
+        memo[id(value)] = out = tuple(_captured(v, memo) for v in value)
+        return out
     if isinstance(value, set):
-        return {_captured(v, memo) for v in value}
+        memo[id(value)] = out = {_captured(v, memo) for v in value}
+        return out
     if isinstance(value, BaseModel):
         update = {k: _captured(getattr(value, k), memo) for k in type(value).model_fields}
         update.update((k, _captured(v, memo)) for k, v in (value.model_extra or {}).items())
-        return value.model_copy(update=update)
+        memo[id(value)] = out = value.model_copy(update=update)
+        return out
     if isinstance(value, Result):
-        return dataclasses.replace(value, value=_captured(value.value, memo))
+        memo[id(value)] = out = dataclasses.replace(value, value=_captured(value.value, memo))
+        return out
     return value
 
 
