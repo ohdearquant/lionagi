@@ -491,6 +491,26 @@ def test_a_dict_is_read_at_any_key_it_holds(lines):
     assert run.output["x"] == "zeroAyes"
 
 
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("r = grid(n=1)", "OUT{x: *r[[1]]}"),
+        ("r = grid(n=1)", "if *r[[1]]:", "    OUT{x: 1}", "else:", "    OUT{x: 2}"),
+        ("r = grid(n=1)", "b = echo(text=*r[[1]])", "OUT{x: *b}"),
+    ],
+)
+def test_a_key_a_dict_cannot_hold_is_a_language_error_not_a_crash(lines):
+    actor = _actor("unhashable-key", [])
+
+    @actor.handler(Grid)
+    async def grid(req: Grid, ctx) -> dict:
+        return {0: "zero"}
+
+    run = _run(actor, fenced(*lines), "idle")
+    assert not isinstance(run.outcome, Success)
+    assert "list cannot name a field" in _notices(run)
+
+
 def test_a_value_whose_computation_failed_stays_failed_and_what_it_ran_never_runs_again():
     calls: list = []
     actor = _actor("failed-value", calls)

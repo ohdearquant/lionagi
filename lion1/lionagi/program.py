@@ -558,7 +558,11 @@ def _index(node: ast.expr, value: Any, key: Any) -> Any:
     if isinstance(value, BaseModel) and isinstance(key, str) and key in type(value).model_fields:
         return getattr(value, key)
     if isinstance(value, dict):  # any key the dict holds: `.field` for a string, `[i]` for the rest
-        if key not in value:
+        try:
+            missing = key not in value
+        except TypeError:  # a list or a dict as the key: nothing a dict can hold
+            raise EvalError(f"line {node.lineno}: {_kind(key)} cannot name a field") from None
+        if missing:
             # the keys as the dict holds them: a mixed set has no order to sort by
             raise EvalError(f"line {node.lineno}: no field {key!r} in the dict (it has {list(value)[:10]})")
         return value[key]

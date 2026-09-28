@@ -205,6 +205,7 @@ resumed chat folds it and recompiles nothing; the record keeps four kinds
   `test_a_dict_whose_keys_are_not_strings_counts_each_key_as_one_item`,
   `test_a_missing_field_of_a_dict_with_mixed_keys_is_a_language_error_not_a_crash`,
   `test_a_dict_is_read_at_any_key_it_holds`,
+  `test_a_key_a_dict_cannot_hold_is_a_language_error_not_a_crash`,
   `test_an_unnamed_command_skips_an_auto_name_the_record_already_holds`,
   `test_if_elif_else_runs_only_the_taken_branch_and_a_return_ends_the_program`,
   `test_a_command_inside_a_comprehension_reads_the_comprehensions_name`,
