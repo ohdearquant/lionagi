@@ -339,6 +339,14 @@ def test_the_cost_line_reads_what_was_billed_across_every_attempt():
     assert round(spent(calls), 4) == 0.014
 
 
+def test_the_cost_line_takes_a_total_of_zero_over_the_usage_cost_beside_it():
+    from lion_cli.chat import spent
+
+    assert spent([{"usage": {"cost": 0.005}, "total_cost_usd": 0}]) == 0
+    assert spent([{"usage": {"cost": 0.005}, "total_cost_usd": 0.0}, {"usage": {"cost": 0.002}}]) == 0.002
+    assert spent([{"usage": {"cost": 0.005}, "total_cost_usd": None}]) == 0.005
+
+
 def test_a_turn_with_out_is_refused_and_the_conversation_goes_on(tmp_path):
     actor, profile = reader(tmp_path)
     said: list = []

@@ -183,8 +183,13 @@ async def take_patch(
 
 def spent(calls: list[dict]) -> float:
     """What the session was billed: each call's `total_cost_usd` (every attempt, the failed ones
-    too), falling back to the last attempt's `usage.cost` for a backend that reports only that."""
-    return sum(float(c.get("total_cost_usd") or (c.get("usage") or {}).get("cost") or 0) for c in calls)
+    too), falling back to the last attempt's `usage.cost` for a backend that reports only that: a
+    total of 0 is a bill of 0, so only an absent total falls back."""
+    total = 0.0
+    for c in calls:
+        cost = c.get("total_cost_usd")
+        total += float(cost if cost is not None else (c.get("usage") or {}).get("cost") or 0)
+    return total
 
 
 def _branch(directory: Path) -> str:

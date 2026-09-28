@@ -1,7 +1,7 @@
 ---
 adr: ADR-0016
 status: draft
-liveness: partial (the command tree, the shared lock and the spend row are under tests; the text `--stats` prints has no test; a mark for an unknown or partial cost is owed)
+liveness: partial (the command tree, the shared lock, the spend row and the chat's total-first cost line are under tests; the text `--stats` prints has no test; a mark for an unknown or partial cost is owed, and it has to reach a day whose row predates it)
 date: "2026-09-25"
 area: command
 kind: new
@@ -187,11 +187,13 @@ the last turn stood in and the session restarts when present.
 Serves C4. `stats` loads `notes/agent.json` and the directory's ledgers. `resident` takes a
 resident's row from its own `chores.toml`, notes and lock, drops a row of another day, and names
 what it could not read; serving is the lock, never the pid in the file. `wakes` parses the serve log
-with the pattern the page shares. `spent` sums each call's `total_cost_usd`, else its `usage.cost`;
-the chat log keeps each envelope's cost as it came, null included.
+with the pattern the page shares. `spent` sums each call's `total_cost_usd`, its `usage.cost` only
+when the total is missing or null; the chat log keeps each envelope's cost as it came, null
+included.
 
 - **Landing evidence**: `tests/test_areas.py`: the resident's row read from its own files, serving
-  as the lock, the serve log's wake lines; `tests/test_chat.py`: the cost line over every attempt;
+  as the lock, the serve log's wake lines; `tests/test_chat.py`: the cost line over every attempt,
+  `test_the_cost_line_takes_a_total_of_zero_over_the_usage_cost_beside_it`;
   `test_once_refuses_served_identity`: `--stats` under a held lock.
 
 ## Alternatives
@@ -237,3 +239,6 @@ the chat log keeps each envelope's cost as it came, null included.
   ([[ADR-0013-the-agent#^c7|ADR-0013/C7]]). The lock, notes, ledgers and landing files are written
   wherever the directory is, so it belongs where no checkout tracks it. The implementation's own
   repository ignores `.khive/`, where the bench example keeps its directory.
+- **S10**: The mark S2 owes is owed on the day it lands too: a row written that day before it
+  carries no count of the calls it missed, and reading that absence as none would show the day as
+  complete.
