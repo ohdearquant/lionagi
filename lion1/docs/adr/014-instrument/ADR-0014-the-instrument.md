@@ -111,10 +111,10 @@ expect empty by default, the rest do not, and `expect_empty` in the config overr
   again on every run after it, or an answered run leaves the mark.
 
 `Chores._dead` counts the chore's unanswered rows back from the newest. At `dead_after`, three by
-default, it tells the owner and the steward once that the instrument is dead, and marks the chore
-told whether or not either send landed (S11). An answered run clears the mark, so the next crossing
-is told again. The desk writes no chore ledger row, so a measurement it received does not count
-here.
+default, it tells the owner and the steward once that the instrument is dead. Each recipient is
+marked told once its send lands, and the chore once every copy has (S11). An answered run clears the
+mark, so the next crossing is told again. The desk writes no chore ledger row, so a measurement it
+received does not count here.
 
 ### C5: First sight is the whole row, then transitions, and a crossing is told once _(enforced: mechanical)_ ^c5
 
@@ -182,8 +182,9 @@ the two and a blank `answers`. `every` is a store repeat such as `every:30m` or 
 `git` resolve once to an absolute path where one is found.
 
 - **Landing evidence**:
-  `test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_default` and
-  `test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_scheduled_jobs` in
+  `test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_default`,
+  `test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_scheduled_jobs` and
+  `test_scheduled_job_a_max_age_h_that_is_not_a_number_is_refused_at_build` in
   `tests/test_instruments.py`;
   `test_a_chore_without_an_error_direction_or_a_question_is_refused_at_build` in
   `tests/test_chores.py`.
@@ -250,15 +251,19 @@ Nothing is sent, no ledger row is written, and `_vet` is not called; the text's 
 
 Serves C1 and C7. `LockHolder.run` lists the named lock files and the agent's own pid file in one
 `lsof` call and resolves every pid to its full command line with one `ps` read; its control is this
-process holding its own pid file. `ScheduledJob.run` reads each artifact's age against its bound,
-then `launchctl print` for a named label's last exit.
+process holding its own pid file. A name `lsof` prints that no configured path resolves to, one it
+escaped, fails the control. `ScheduledJob.run` reads each artifact's age against its bound, then
+`launchctl print` for a named label's last exit. A bound that is not a number is refused at build.
 
 - **Landing evidence**: in `tests/test_instruments.py`,
   `test_lock_holder_resolves_each_holders_pid_to_its_full_command_line_beside_its_own_held_lock`,
   `test_lock_holder_fails_its_control_when_its_own_held_lock_does_not_read_as_its_own`,
+  `test_lock_holder_a_name_lsof_escaped_fails_the_control_and_is_named_as_unmapped`,
   `test_lock_holder_reads_a_lock_a_live_process_holds_through_the_real_lsof_and_ps`,
   `test_scheduled_job_reads_the_artifact_first_then_the_supervisors_last_exit`,
-  `test_scheduled_job_fails_its_control_on_an_absent_directory_or_a_row_without_its_exit` (S9).
+  `test_scheduled_job_fails_its_control_on_an_absent_directory_or_a_row_without_its_exit`,
+  `test_scheduled_job_an_artifact_that_is_not_a_regular_file_is_a_finding_never_fresh`,
+  `test_scheduled_job_a_supervisor_read_that_did_not_finish_is_unread_not_unloaded` (S9).
 
 ## Alternatives
 
@@ -302,9 +307,10 @@ then `launchctl print` for a named label's last exit.
   control, or an empty answer the control must catch (A1).
 - **S9**: Two instrument shapes are built (D7). `lock-holder` reads a pid resolved to its full
   command line beside a lock known to be held, the agent's own pid file, never by matching text or
-  by taking the lock. A waiter reads as a holder, a lock file `lsof` cannot stat reads unreadable,
-  and a lock with no file is held by nobody. `scheduled-job` reads the artifact's freshness first
-  and the supervisor's exit second, as `served` reads a last-wake note before a pid.
+  by taking the lock. A waiter reads as a holder, a lock file `lsof` cannot stat reads unreadable, a
+  name `lsof` escaped voids the read, and a lock with no file is held by nobody. `scheduled-job`
+  reads the artifact's freshness first and the supervisor's exit second, as `served` reads a
+  last-wake note before a pid.
 - **S10**: `comm.probe` returns a page of at most 100 rows and caps its stale count at 1000, where
   1000 means at least that many. `inbox-sla` prints the count as it came, so a capped count reads as
   exact; its population is the rows on the probe pages.

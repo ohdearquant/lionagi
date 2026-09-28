@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -21,6 +22,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from stat import S_ISREG
 from typing import Any
 from urllib.parse import quote
 
@@ -562,6 +564,9 @@ class LockHolder:
             head, _, why = line.rpartition(": ")
             if head.startswith("lsof: status error on "):
                 unread[head.removeprefix("lsof: status error on ")] = why.strip()
+        # lsof escapes some names (a tab reads `\t`, a newline `\n`, a byte outside the locale `\xNN`); a
+        # name no configured path resolves to cannot be mapped back, so the read is void, never unheld
+        unmapped = sorted({*opened, *unread} - {os.path.realpath(p) for p in paths})
         me = os.getpid()
         pids = sorted({me, *(p for ps in holders.values() for p in ps)})
         _, out, _ = await self.sh(["/bin/ps", "-ww", "-o", "pid=,command=", "-p", ",".join(map(str, pids))])
@@ -571,16 +576,23 @@ class LockHolder:
             if head.isdigit():
                 commands[int(head)] = command.strip()
         own = commands.get(me, "")
-        control = me in holders[self.held] and bool(own)
+        held = me in holders[self.held] and bool(own)
+        control = held and not unmapped
         positive = f"own lock {self.held} held by own pid {me}: {own[:120]}" if control else ""
         lines = [
             "control: "
             + (
                 positive
-                or f"own lock {self.held} open by {holders[self.held] or 'no pid'}, own pid {me}, its "
-                f"command line {'read' if own else 'unread'} (NOT held by this process: read broken)"
+                or (
+                    f"lsof named {len(unmapped)} file(s) no configured path resolves to, so a lock "
+                    "among them cannot be read (read broken)"
+                    if held
+                    else f"own lock {self.held} open by {holders[self.held] or 'no pid'}, own pid {me}, "
+                    f"its command line {'read' if own else 'unread'} (NOT held by this process: read broken)"
+                )
             )
         ]
+        lines += [f"unmapped: {name}" for name in unmapped]
         findings, matched = [], 0
         for lock in self.locks:
             why = unread.get(os.path.realpath(lock))
@@ -635,34 +647,51 @@ class ScheduledJob:
         for j in self.jobs:
             if "artifact" not in j or "max_age_h" not in j:
                 raise ValueError(f"a scheduled job names its artifact and its max_age_h: {j}")
+            b = j["max_age_h"]
+            # a NaN bound compares false against every age, so it would read every artifact fresh
+            if isinstance(b, bool) or not isinstance(b, int | float) or math.isnan(b):
+                raise ValueError(f"a scheduled job's max_age_h is a number of hours: {j}")
+            j["max_age_h"] = float(b)
 
     async def run(self, args: dict[str, Any]) -> Outcome:
         findings, lines, positives, control, matched = [], [], [], True, 0
         for j in self.jobs:
             art, bound = Path(j["artifact"]), float(j["max_age_h"])
             line, bad = f"{art}:", False
+            try:  # one stat for the type and the age, so the two cannot disagree
+                st = art.stat()
+            except (FileNotFoundError, NotADirectoryError):
+                st = None
             if not art.parent.is_dir():
                 control = False
                 line += " its directory is absent (a wrong path reads like a job that never ran)"
-            elif not art.exists():
+            elif st is None:
                 positives.append(f"{art.parent} present")
                 bad = True
                 line += " absent"
                 findings.append(f"{art}: absent, bound {bound:g}h")
+            elif not S_ISREG(st.st_mode):  # a directory where the job writes its file is not fresh
+                positives.append(f"{art.parent} present")
+                bad = True
+                line += " not a regular file"
+                findings.append(f"{art}: not a regular file, bound {bound:g}h")
             else:
                 positives.append(f"{art.parent} present")
-                age_h = (time.time() - art.stat().st_mtime) / 3600
+                age_h = (time.time() - st.st_mtime) / 3600
                 line += f" written {age_h:.1f}h ago, bound {bound:g}h"
                 if age_h > bound:
                     bad = True
                     findings.append(f"{art}: older than its {bound:g}h bound")
             if j.get("label"):
-                rc, out, _ = await self.sh([LAUNCHCTL, "print", f"gui/{os.getuid()}/{j['label']}"])
+                rc, out, err = await self.sh([LAUNCHCTL, "print", f"gui/{os.getuid()}/{j['label']}"])
                 m = re.search(r"^\s*last exit code = (\(never exited\)|-?\d+)", out, re.M)
-                if rc != 0:
+                if rc != 0 and "Could not find service" in out + err:
                     bad = True
                     line += f" | launchd {j['label']}: not loaded"
                     findings.append(f"{art}: its supervisor {j['label']} is not loaded")
+                elif rc != 0:  # a read that failed or did not finish says nothing about the row
+                    control = False
+                    line += f" | launchd {j['label']}: unread, rc {rc}: {err.strip()[:200]}"
                 elif m is None:
                     control = False
                     line += f" | launchd {j['label']}: loaded, no last exit code in its row (unread)"

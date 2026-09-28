@@ -1,7 +1,7 @@
 ---
 adr: ADR-0015
 status: draft
-liveness: operating (the handler, the gate, the store boundary, the ticks and the catch-up are pinned by tests with scripted backends and a fake store; no test drives a positive hand-run check; the catch-up's store-side filters are owed)
+liveness: operating (the handler, the gate, the store boundary, the ticks and the catch-up are pinned by tests with scripted backends and a fake store; a positive hand-run check is under test; the catch-up's store-side filters are owed)
 date: "2026-09-25"
 area: chores
 kind: new
@@ -154,10 +154,10 @@ answers ([[ADR-0017-the-desk#^c12|ADR-0017/C12]]).
 ### C6: A chore changes no tree, so its result lands by print and save _(enforced: process)_ ^c6
 
 The instruments' commands read: `gh` lists, views and GETs, `git` worktree lists, status, log and
-remote lookups, `ps`, `launchctl print`, `df`, `find` and `du`. The chores profile offers `check`,
-`digest`, `aged` and the handlers a front desk adds; none is a file tool or a note command, so a
-blank `note.find` ([[ADR-0007-the-record#^c5|ADR-0007/C5]]) never reaches a chore. The handler reads
-and writes the agent's notes by key. A chore has no diff to land.
+remote lookups, `ps`, `lsof`, `launchctl print`, `df`, `find` and `du`. The chores profile offers
+`check`, `digest`, `aged` and the handlers a front desk adds; none is a file tool or a note command,
+so a blank `note.find` ([[ADR-0007-the-record#^c5|ADR-0007/C5]]) never reaches a chore. The handler
+reads and writes the agent's notes by key. A chore has no diff to land.
 
 Its hand-run form is print and save: `lion agent --check <chore>` runs the instrument alone, prints
 it and saves the same text in the agent directory's `landing` folder, one file per chore and day; it
@@ -237,8 +237,9 @@ Serves C6. `agent_main` claims the identity, runs the named instrument with no a
 `render()` of it and writes the same text with `land()`, overwriting the day's file of that name. It
 bypasses the handler: no refusals, no row, no send.
 
-- **Landing evidence**: `test_once_refuses_served_identity` in `tests/test_agent.py` pins its
-  refusal while a live process holds the identity; no test drives a positive run.
+- **Landing evidence**: in `tests/test_agent.py`, `test_once_refuses_served_identity` pins its
+  refusal while a live process holds the identity, and
+  `test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing` drives a positive run.
 
 ## Alternatives
 
@@ -268,9 +269,10 @@ bypasses the handler: no refusals, no row, no send.
 - **S4**: A standing state is told once until it changes, a standing failure included: a chore that
   recovers quietly and fails again the same way is not resent. The digest carries the counts, and an
   owner who wants a state again asks.
-- **S5**: The hand-run check skips the handler's refusals, so it shows the raw measurement, and no
-  test drives it past the identity claim. The `verdict-freshness` enumerator runs as the config
-  gives it, outside anything that checks it only reads.
+- **S5**: The hand-run check skips the handler's refusals, so it shows the raw measurement;
+  `test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing` drives it past the identity
+  claim. The `verdict-freshness` enumerator runs as the config gives it, outside anything that
+  checks it only reads.
 - **S6**: The chore ledger is read whole on every check and never rotated, so a check's cost grows
   with the agent's age. Its `at` stamps are local time without a zone; a row also carries `ts`, the
   instant in epoch seconds, which the aged pass reads, and a row without one is read by its `at`.

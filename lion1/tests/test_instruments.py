@@ -779,6 +779,25 @@ def test_lock_holder_reports_a_lock_lsof_could_not_read_as_unreadable_not_unheld
     assert f"{gone}: no holder (no such file)" in out.evidence  # a lock with no file is held by nobody
 
 
+@pytest.mark.parametrize("stream", ["held", "unreadable"])
+@pytest.mark.parametrize("name", ["build\nline.lock", "build\ttab.lock", "build\\back.lock"])
+def test_lock_holder_a_name_lsof_escaped_fails_the_control_and_is_named_as_unmapped(tmp_path, stream, name):
+    own, lock = tmp_path / "agent.pid", tmp_path / name
+    me = os.getpid()
+    # lsof prints a name it escapes as the escape (`\n`, `\t`, `\\`), on stdout and on stderr alike
+    shown = os.path.realpath(lock).replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
+    listed = f"p{me}\nf3\nn{os.path.realpath(own)}\n"
+    answer = (
+        (0, listed + f"p4242\nf5\nn{shown}\n", "")
+        if stream == "held"
+        else (1, listed, f"lsof: status error on {shown}: Permission denied\n")
+    )
+    sh = FakeSh(**{"-F pn": answer, "-o pid=,command= -p": f"{me} python -m lion agent\n 4242 cargo build\n"})
+    out = asyncio.run(LockHolder([str(lock)], str(own), every=None, run=sh).run({}))
+    assert not out.control and out.positive == ""
+    assert "read broken" in out.evidence.splitlines()[0] and f"unmapped: {shown}" in out.evidence
+
+
 @pytest.mark.skipif(instr.LSOF == "lsof", reason="no lsof on this machine")
 def test_lock_holder_reads_a_lock_a_live_process_holds_through_the_real_lsof_and_ps(tmp_path):
     import fcntl
@@ -786,18 +805,24 @@ def test_lock_holder_reads_a_lock_a_live_process_holds_through_the_real_lsof_and
     import sys
 
     own, lock, free = tmp_path / "agent.pid", tmp_path / "held.lock", tmp_path / "free.lock"
+    tabbed = tmp_path / "held\ttab.lock"
     fd = os.open(own, os.O_RDWR | os.O_CREAT)
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     hold = (
-        "import fcntl, os, sys; fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT); "
-        "fcntl.flock(fd, fcntl.LOCK_EX); print('locked', flush=True); sys.stdin.read()"
+        "import fcntl, os, sys; fds = [os.open(p, os.O_RDWR | os.O_CREAT) for p in sys.argv[1:]]; "
+        "fcntl.flock(fds[0], fcntl.LOCK_EX); print('locked', flush=True); sys.stdin.read()"
     )
     holder = subprocess.Popen(
-        [sys.executable, "-c", hold, str(lock)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        [sys.executable, "-c", hold, str(lock), str(tabbed)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
     )
     try:
         assert holder.stdout.readline().strip() == "locked"
         out = asyncio.run(LockHolder([str(lock), str(free)], str(own), every=None).run({}))
+        # lsof prints the tab as `\t`: a held lock under a name it escaped voids the read, never unheld
+        escaped = asyncio.run(LockHolder([str(tabbed)], str(own), every=None).run({}))
     finally:
         holder.stdin.close()
         holder.wait(timeout=5)
@@ -807,10 +832,11 @@ def test_lock_holder_reads_a_lock_a_live_process_holds_through_the_real_lsof_and
     assert len(out.findings) == 1 and out.findings[0].startswith(f"{lock}: held by pid {holder.pid}: ")
     # the evidence carries the full command line, its argument included; the finding caps it
     assert any(
-        ln.startswith(f"{lock}: pid {holder.pid}: ") and ln.endswith(f" {lock}")
-        for ln in out.evidence.splitlines()
+        ln.startswith(f"{lock}: pid {holder.pid}: ") and f" {lock} " in ln for ln in out.evidence.splitlines()
     )
     assert f"{free}: no holder" in out.evidence
+    assert not escaped.control and escaped.positive == "", escaped.evidence
+    assert f"unmapped: {os.path.realpath(tabbed)}".replace("\t", "\\t") in escaped.evidence
 
 
 def test_scheduled_job_reads_the_artifact_first_then_the_supervisors_last_exit(tmp_path):
@@ -869,6 +895,58 @@ def test_scheduled_job_fails_its_control_on_an_absent_directory_or_a_row_without
     assert not out.control and out.findings == () and out.positive == ""
     reason = "its directory is absent" if broken == "directory" else "no last exit code in its row (unread)"
     assert reason in out.evidence
+
+
+@pytest.mark.parametrize("kind", ["dir", "symlink-to-dir", "file", "symlink-to-file"])
+def test_scheduled_job_an_artifact_that_is_not_a_regular_file_is_a_finding_never_fresh(tmp_path, kind):
+    (tmp_path / "out").mkdir()
+    artifact, real = tmp_path / "out" / "result.json", tmp_path / "real"
+    made = artifact if kind in ("dir", "file") else real
+    if kind.endswith("dir"):
+        made.mkdir()
+    else:
+        made.write_text("{}")
+    if made is real:
+        artifact.symlink_to(real)
+    inst = ScheduledJob([{"artifact": str(artifact), "max_age_h": 24}], every=None, run=FakeSh())
+    out = asyncio.run(inst.run({}))
+    assert out.control
+    if kind.endswith("dir"):
+        assert out.findings == (f"{artifact}: not a regular file, bound 24h",)
+        assert out.evidence == f"{artifact}: not a regular file"
+    else:
+        assert out.findings == () and out.evidence == f"{artifact}: written 0.0h ago, bound 24h"
+
+
+@pytest.mark.parametrize("stale", [False, True], ids=["fresh", "stale"])
+def test_scheduled_job_a_supervisor_read_that_did_not_finish_is_unread_not_unloaded(tmp_path, stale):
+    (tmp_path / "out").mkdir()
+    artifact = tmp_path / "out" / "a.json"
+    artifact.write_text("{}")
+    if stale:
+        old = time.time() - 30 * 3600
+        os.utime(artifact, (old, old))
+    sh = FakeSh(**{"/com.example.job": (124, "", "/bin/launchctl did not finish within 60s")})
+    job = {"artifact": str(artifact), "max_age_h": 24, "label": "com.example.job"}
+    out = asyncio.run(ScheduledJob([job], every=None, run=sh).run({}))
+    assert not out.control and out.positive == ""
+    assert out.findings == ((f"{artifact}: older than its 24h bound",) if stale else ())
+    assert "launchd com.example.job: unread, rc 124: /bin/launchctl did not finish within 60s" in out.evidence
+    assert "not loaded" not in out.evidence
+    sh.set("/com.example.job", (113, "", 'Could not find service "com.example.job" in domain'))
+    out = asyncio.run(ScheduledJob([job], every=None, run=sh).run({}))
+    assert out.control and out.findings[-1] == f"{artifact}: its supervisor com.example.job is not loaded"
+
+
+@pytest.mark.parametrize("bound", ["nan", '"soon"', "true"])
+def test_scheduled_job_a_max_age_h_that_is_not_a_number_is_refused_at_build(tmp_path, bound):
+    import tomllib
+    from types import SimpleNamespace
+
+    job = f'{{artifact = "/x/out.json", max_age_h = {bound}}}'
+    cfg = tomllib.loads(f'owner = "lambda:x"\n[chores.scheduled-job]\njobs = [{job}]\n')
+    with pytest.raises(ValueError, match="max_age_h is a number of hours"):
+        instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), MemoryNoteStore())
 
 
 def test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_scheduled_jobs(tmp_path):
