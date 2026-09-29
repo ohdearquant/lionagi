@@ -1,7 +1,7 @@
 ---
 adr: ADR-0007
 status: draft
-liveness: operating (the captures on the entry and the consumed directive on the closure are owed)
+liveness: operating (the freeze of a captured list or dict and the consumed directive on the closure are owed)
 date: "2026-09-23"
 area: record
 kind: new
@@ -189,7 +189,8 @@ out-of-view diff and the fold event (ADR-0006).
   `test_a_show_later_in_the_same_program_stands_over_the_hide_of_what_it_consumed`,
   `test_directives_apply_by_date_not_by_where_they_ride_on_the_record` and
   `test_a_directive_dated_before_its_carrier_reaches_only_entries_earlier_than_its_date` (the fold
-  by date).
+  by date). The captures on a RESULT, copied and not yet frozen:
+  `test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entry_as_copies`.
 
 ### D2: Directives ride the entry that made them ^d2
 
