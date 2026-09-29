@@ -15,6 +15,7 @@ from rich.markdown import Markdown
 from rich.markup import escape
 from rich.rule import Rule
 
+from hub.areas import partial
 from hub.chat import entry_row, line
 from lionagi import lndl
 from lionagi.record import Entry, Kind
@@ -75,13 +76,15 @@ class Console:
             self.out.print(f"[dim]continuing {escape(resumed[0])}, {resumed[1]} entries[/dim]")
         self.out.print(f"[dim]{escape(str(directory))} · {escape(', '.join(tools))} · /quit ends[/dim]")
 
-    def close(self, ended: str, calls: int, cost: float, log: Path | None) -> None:
+    def close(self, ended: str, calls: int, cost: float, unknown: int, log: Path | None) -> None:
         if self.log is not None and self.calls:  # a call cut short still cost: its row lands too
             with self.log.open("a") as fh:
                 self._bill(fh, 0)
         self.out.print(Rule(style="dim"))
         self.out.print(
-            f"[dim]{escape(ended)} · {calls} call(s) · ${cost:.4f} · {self.written} entries"
+            f"[dim]{escape(ended)} · {calls} call(s) · ${cost:.4f}"
+            + partial(unknown)
+            + f" · {self.written} entries"
             + (f" + {self.billed} usage rows" if self.billed else "")
             + (f" in {escape(str(log))} · continue it: lion chat -c" if log is not None else "")
             + "[/dim]"

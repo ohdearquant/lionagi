@@ -456,6 +456,7 @@ ROW_KEYS = [
     "runs_today",
     "mail_today",
     "cost_today",
+    "unknown_today",
     "problem",
     "controls",
     "waiting",
@@ -575,6 +576,34 @@ def test_the_wake_pattern_reads_a_line_with_and_without_the_context_suffixes_and
     }
     assert (rows[2]["context"], rows[2]["restarts"]) == (28324, 2)
     assert "context" not in rows[3] and rows[3]["restarts"] == 1
+
+
+def test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_every_view(tmp_path):
+    cursor = {"wake": 2, "at": f"{TODAY} 11:09:15", "outcome": "Success"}
+    partial = {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": 1}
+    d = agent_dir(tmp_path, "desk", role="desk", cursor=cursor, spend=partial)
+    whole_day = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3}
+    done = agent_dir(tmp_path, "whole", role="desk", cursor=cursor, spend=whole_day)
+    area = Area("x", "lambda:x", [str(d), str(done)])
+    r, whole = resident(area, str(d), TODAY), resident(area, str(done), TODAY)
+    assert (r.cost_today, r.unknown_today, whole.unknown_today) == (0.3, 1, 0)
+    mark = "$0.3000 (partial: 1 call(s) of unknown cost)"
+    text = table([area], [r, whole])
+    assert f"today 2 run(s), 2 mail, {mark}\n" in text and text.endswith("today 1 run(s), 1 mail, $0.3000")
+    html = page([area], [r, whole])
+    assert f"<td>2 run(s), 2 mail, {mark}</td>" in html and "<td>1 run(s), 1 mail, $0.3000</td>" in html
+    base = {"wake": 2, "outcome": "Success", "rounds": 1, "mail": ["a"], "sent": 1, "idle_polls": 4}
+    tokens = {"calls": 2, "in": 900, "out": 40, "cost": 0.3, "unknown": 1, "context": 800}
+    line = f"{TODAY} 11:09:15 {_line({**base, 'tokens': tokens})}"
+    m = _WAKE.match(line)
+    assert m and (m["cost"], m["unknown"], m["idle"], m["context"]) == ("0.3000", "1", "4", "800"), line
+    (d / "serve.log").write_text(f"{line}\n{WAKE_LINE}\n")
+    rows = wakes(str(d))[::-1]
+    assert (rows[0]["cost"], rows[0]["unknown"], rows[0]["context"]) == (0.3, 1, 800)
+    assert "unknown" not in rows[1]  # the older line prints no count
+    html = resident_page(r, wakes(str(d)), "", [], None, 7, str(d))
+    assert f"today 2 run(s), 2 mail, {mark}</p>" in html and f"<td>{mark}</td>" in html
+    assert "<td>$0.1234</td>" in html  # the complete wake beside it carries no mark
 
 
 def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_the_controls(tmp_path):

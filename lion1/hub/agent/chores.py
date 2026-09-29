@@ -51,6 +51,7 @@ from pydantic import BaseModel, Field
 from hub import guidance
 from lionagi.actor import Context, Profile, Run
 
+from ..areas import partial
 from ..khive import lit
 from .agent import Agent, AgentError, LoopLock
 
@@ -543,8 +544,10 @@ class Chores:
         if spend.get("day") == day:  # the cost of the day, the number the actor's question is about
             lines.append(
                 f"tokens {day}: {spend.get('calls', 0)} model call(s), {spend.get('in', 0)} in, "
-                f"{spend.get('out', 0)} out, ${spend.get('cost', 0.0):.4f}, over {spend.get('runs', 0)} "
-                f"wake(s) with {spend.get('mail', 0)} mail; {spend.get('idle', 0)} idle poll(s) at 0 tokens"
+                f"{spend.get('out', 0)} out, ${spend.get('cost', 0.0):.4f}"
+                + partial(spend.get("unknown", 0))
+                + f", over {spend.get('runs', 0)} wake(s) with {spend.get('mail', 0)} mail; "
+                f"{spend.get('idle', 0)} idle poll(s) at 0 tokens"
             )
         told = [r for r in rows if r["findings"] and r.get("msg")]
         if told:

@@ -187,10 +187,18 @@ def _git_apply(directory: Path, *args: str) -> list[str]:
     return ["git", "-C", str(directory), "apply", *args]
 
 
-def spent(calls: list[dict]) -> float:
+def spent(calls: list[dict]) -> tuple[float, int]:
     """What the session was billed: each call's `total_cost_usd` (every attempt, the failed ones
-    too), falling back to the last attempt's `usage.cost` for a backend that reports only that."""
-    return sum(float(c.get("total_cost_usd") or (c.get("usage") or {}).get("cost") or 0) for c in calls)
+    too), falling back to the last attempt's `usage.cost` for a backend that reports only that; and
+    how many calls that sum misses, with no figure at all or the router's `cost_complete` false."""
+    cost = sum(float(c.get("total_cost_usd") or (c.get("usage") or {}).get("cost") or 0) for c in calls)
+    unknown = sum(
+        1
+        for c in calls
+        if (c.get("total_cost_usd") is None and (c.get("usage") or {}).get("cost") is None)
+        or c.get("cost_complete") is False
+    )
+    return cost, unknown
 
 
 def _branch(directory: Path) -> str:
@@ -451,7 +459,7 @@ async def _chat_main(
             except asyncio.CancelledError:  # a third Ctrl-C while the VM stops: still close, still leave
                 ended, interrupted = "interrupted", True
     calls = getattr(backend, "calls", [])
-    say.close(ended, len(calls), spent(calls), log)
+    say.close(ended, len(calls), *spent(calls), log)
     if interrupted:
         # a backend call may still be on its thread; the loop's shutdown would wait for it
         # (measured: a Ctrl-C that seemed to do nothing). The log is written; leave now.
