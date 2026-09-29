@@ -118,16 +118,16 @@ fourth step of C1.
 - **Violated when**: a handler runs after a hook refused, raised or timed out, a refusal reaches the
   model without its reason, or a shell hook's exit 0 without a JSON object refuses the command.
 
-Hooks run in registration order, each seeing the request as earlier ones left it.
+Hooks run in registration order, each seeing the request as those before it left it: a guard after a
+rewriting hook judges the rewrite; the order is the operator's.
 
 None lets the command run; a string refuses it (`refused: <reason>`). A dict or an instance of the
 Spec replaces the arguments, rebuilt from its fields as its Spec reads them, extras kept; a model of
 another class refuses the command (S8); any other value changes nothing. A hook that raises, exits
 non-zero or times out refuses the command.
 
-A hook runs in its own process group; a timeout, a cancel or an exception kills the group, then
-tries five seconds each to drain and reap it, filled pipe included; a descendant that left is
-abandoned. `out` goes through them too ([[ADR-0003-the-bounds#^d3|ADR-0003/D3]]).
+A hook runs in its own process group (C9). `out` goes through them too
+([[ADR-0003-the-bounds#^d3|ADR-0003/D3]]).
 
 ### C5: An after hook sees what ran, ok or not, and cannot undo it _(enforced: mechanical)_ ^c5
 
@@ -191,6 +191,16 @@ and not ignored, `.lion/` aside, then a moved HEAD. It reports a failed listing 
 snapshot. Its state is `.lion/tree_state/`, one file per run named by its id's digest, so no run
 compares against or rewrites another's map.
 
+### C9: A hook that does not finish is killed and reaped _(enforced: mechanical)_ ^c9
+
+- **Subject**: every shell hook past its launch.
+- **Violated when**: a hook's process outlives the refusal it caused, or a refusal waits on a pipe
+  the hook filled.
+
+A hook runs in its own process group; a timeout, a cancel or an exception kills the group, then
+tries five seconds each to drain and reap it, filled pipe included; a descendant that left is
+abandoned.
+
 ## Decisions
 
 ### D1: Dispatch as one task per command; `Actor.before` and `Actor.after` beside `Actor.section` ^d1
@@ -231,7 +241,7 @@ Serves C2. One class, three operations: `subscribe`, `emit`, `drain`; a bounded 
 
 ### D3: `hub/hooks/`: `hooks.toml`, shell commands, JSON on stdin, the exit code as the verdict ^d3
 
-Serves C4, C5, C7 and C8 for a person. Three array tables, `before`, `after` and `round`, each row
+Serves C4, C5, C7 to C9 for a person. Three array tables, `before`, `after` and `round`, each row
 with `run`, optional `name`, `match` (fnmatch over the command name) and `timeout`. Exit 0 lets a
 command run, a JSON object on stdout replacing its arguments and other stdout a log line; exit 2
 refuses with stdout as the reason; a turn hook's stdout is a notification line. `lion chat` reads
@@ -241,9 +251,9 @@ runs under `-I` with lion's own interpreter (C7).
 - **Landing evidence**: `tests/test_hooks.py`, among them
   `test_a_before_hook_that_exits_zero_with_text_on_stdout_lets_the_command_run` and
   `test_a_before_hooks_json_keyed_by_a_fields_alias_replaces_that_field` (C4),
-  `test_an_after_hook_whose_payload_refers_to_itself_starts_nothing_and_the_result_stands` and
+  `test_an_after_hook_whose_payload_refers_to_itself_starts_nothing_and_the_result_stands` (C5),
   `test_a_hook_that_fails_after_its_launch_is_killed_and_reaped_before_it_returns` and
-  `test_a_timed_out_hook_that_filled_its_pipe_still_returns` (C4, C5),
+  `test_a_timed_out_hook_that_filled_its_pipe_still_returns` (C9),
   `test_writable_editable_hook_origin_is_refused` (C7),
   `test_git_global_options_cannot_hide_push_or_destructive_subcommand`,
   `test_the_tree_hook_names_the_files_that_changed_and_the_head_that_moved`,
