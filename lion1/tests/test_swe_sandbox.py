@@ -3,6 +3,8 @@ testbed environment as the prelude and /testbed as the directory; a box that nev
 replaced and a box that dies is named (through the hub's own start logic)."""
 
 import asyncio
+import os
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -197,7 +199,7 @@ class ResetBox:
 
     async def run(self, cmd, *, timeout=120.0, env=None):
         self.ran.append(cmd)
-        if cmd.startswith("git -c core.fileMode=false checkout"):
+        if cmd.startswith("git -c core.fileMode=false reset"):
             return self.reset_rc, "error: unable to unlink old 'tests/test_x.py': Permission denied\n"
         return 0, ""
 
@@ -252,3 +254,114 @@ def test_a_ledger_row_counts_only_when_it_says_it_came_from_this_run(tmp_path):
     assert [c.split()[0] for c in run_set.ledger_clash(ledger, aided)] == ["old-1", "unaided-1", "cli-1"]
     cli = {**run, "harness": "codex-cli"}
     assert [c.split()[0] for c in run_set.ledger_clash(ledger, cli)] == ["old-1", "aided-1", "unaided-1"]
+
+
+class LocalGitBox:
+    """A box over a real repository on this host: `exec` runs the argv here, `run` the shell line from
+    the repository. The box's absolute scratch paths land under `scratch`."""
+
+    prelude, dead = "", None
+
+    def __init__(self, repo: Path, scratch: Path):
+        self.workdir, self.scratch = str(repo), scratch
+
+    def _local(self, cmd: str) -> str:
+        return cmd.replace("/tmp/model.patch", str(self.scratch / "model.patch")).replace(
+            "/eval.sh", str(self.scratch / "eval.sh")
+        )
+
+    async def exec(self, argv, *, stdin=None, timeout=120.0, env=None):
+        r = subprocess.run(argv, input=stdin, capture_output=True, cwd=self.workdir)
+        return {"rc": r.returncode, "stdout": r.stdout.decode(), "stderr": r.stderr.decode()}
+
+    async def run(self, cmd, *, timeout=120.0, env=None):
+        r = subprocess.run(
+            ["bash", "-o", "pipefail", "-c", self._local(cmd)], capture_output=True, cwd=self.workdir
+        )
+        return r.returncode, r.stdout.decode() + r.stderr.decode()
+
+    async def write(self, path, text):
+        Path(self._local(path)).write_text(text)
+
+
+def _repo(tmp_path: Path) -> tuple[Path, str]:
+    """A repository at its base commit, holding a.py; returns it and the base sha."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+        "PATH": os.environ["PATH"],
+        "HOME": str(tmp_path),
+    }
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=repo, env=env, capture_output=True, text=True, check=True
+        ).stdout
+
+    git("init", "-q")
+    (repo / "a.py").write_text("x = 1\n")
+    git("add", "a.py")
+    git("commit", "-q", "-m", "base")
+    return repo, git("rev-parse", "HEAD").strip()
+
+
+PATCH = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
+
+
+@pytest.mark.parametrize("how", ["staged", "committed"])
+def test_the_grade_resets_index_and_tree_to_the_baseline_so_the_models_own_git_state_is_gone(
+    monkeypatch, tmp_path, how
+):
+    # a staged edit survived `git checkout -- .` (it restores from the index), a committed one moved
+    # HEAD; either way the patch, holding the same edit, then failed to apply forward and `patch
+    # --batch` applied it in reverse, and the tree the eval ran on was the base, graded as the fix
+    reports = _fake_swebench(monkeypatch)
+    repo, base = _repo(tmp_path)
+    (repo / "a.py").write_text("x = 2\n")
+    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
+    if how == "committed":
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "model"],
+            cwd=repo,
+            check=True,
+        )
+    box = LocalGitBox(repo, tmp_path)
+    row = {"instance_id": "x__x-1", "eval_script": "true", "base_commit": base}
+    verdict = asyncio.run(sandbox.grade(box, row, PATCH, "m", tmp_path / "log.txt", base=base))
+    assert verdict["status"] == "GRADED" and reports == ["x__x-1"]
+    assert (repo / "a.py").read_text() == "x = 2\n"  # the patch, applied forward onto the base
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True
+    ).stdout.strip()
+    assert head == base
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--stat"], cwd=repo, capture_output=True, text=True
+    ).stdout
+    assert staged == ""
+
+
+def test_the_grade_resets_to_the_rows_base_commit_when_the_caller_read_no_baseline(monkeypatch, tmp_path):
+    _fake_swebench(monkeypatch)
+    repo, base = _repo(tmp_path)
+    (repo / "a.py").write_text("x = 2\n")
+    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
+    row = {"instance_id": "x__x-1", "eval_script": "true", "base_commit": base}
+    verdict = asyncio.run(sandbox.grade(LocalGitBox(repo, tmp_path), row, PATCH, "m", tmp_path / "log.txt"))
+    assert verdict["status"] == "GRADED" and (repo / "a.py").read_text() == "x = 2\n"
+    # and a row naming none resets to HEAD, which still clears the index
+    (repo / "a.py").write_text("x = 3\n")
+    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
+    verdict = asyncio.run(
+        sandbox.grade(
+            LocalGitBox(repo, tmp_path),
+            {"instance_id": "x__x-1", "eval_script": "true"},
+            PATCH,
+            "m",
+            tmp_path / "log2.txt",
+        )
+    )
+    assert verdict["status"] == "GRADED" and (repo / "a.py").read_text() == "x = 2\n"

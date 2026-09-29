@@ -183,6 +183,8 @@ class TransportFailBox(FakeBox):
     async def run(self, cmd, *, timeout=120.0, env=None):
         if "curl -fsSL" in cmd:
             return 0, "codex-cli 0.153.4\n"
+        if cmd == "git rev-parse HEAD":
+            return 0, "c" * 40 + "\n"
         if f"{codex_cli.BIN} exec" in cmd:
             usage = {"input_tokens": 1000, "cached_input_tokens": 400, "output_tokens": 200}
             self.files[codex_cli.STREAM] = json.dumps({"type": "turn.completed", "usage": usage})
@@ -204,7 +206,7 @@ class TransportFailBox(FakeBox):
     async def write(self, path, text):
         self.files[path] = text
 
-    async def diff(self):
+    async def diff(self, base="HEAD"):
         self.diffs += 1
         return DIFF
 
@@ -213,7 +215,7 @@ def test_unconfirmed_quiescence_blocks_grading(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     graded: list[str] = []
 
-    async def fake_grade(box, row, patch, model_name, log, eval_timeout=1800.0):
+    async def fake_grade(box, row, patch, model_name, log, eval_timeout=1800.0, base=None):
         graded.append(row["instance_id"])
         return {"resolved": True, "status": "GRADED"}
 
@@ -335,3 +337,20 @@ def test_manifest_creation_never_overwrites(tmp_path, monkeypatch, capsys):
     first, second = (json.loads(r.read_text()) for r in records)
     assert first["selected"] == ["a"] and second["selected"] == ["b"]  # the first launch's record survives
     assert first["run"] == second["run"] == "run.json"
+
+
+def test_a_second_launch_of_a_running_run_is_refused(tmp_path, monkeypatch, capsys):
+    import fcntl
+
+    rows = [{"instance_id": "a", "repo": "x", "image": "img"}]
+    ran = _main(monkeypatch, tmp_path, rows)
+    out_dir = tmp_path / "results" / "r1"
+    out_dir.mkdir(parents=True)
+    held = (out_dir / "run.lock").open("w")
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)  # another launch of r1, still running
+    with pytest.raises(SystemExit, match="run.lock is held: another launch of this run is running"):
+        asyncio.run(run_set.main(_args()))
+    assert ran == []  # nothing was scheduled
+    held.close()  # that launch ended: the lock is free
+    asyncio.run(run_set.main(_args()))
+    assert [i for i, _ in ran] == ["a"]

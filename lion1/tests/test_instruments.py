@@ -12,8 +12,12 @@ import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from lion_cli import agent as cli_agent
+from lion_cli.agent import arm, build
 
+from hub.agent import AgentError
 from hub.agent import instruments as instr
+from hub.agent.chores import Bounded
 from hub.agent.instruments import (
     BenchJobs,
     CiRed,
@@ -27,6 +31,7 @@ from hub.agent.instruments import (
     Worktrees,
 )
 from lionagi import MemoryNoteStore
+from tests.test_chores import FakeKhive
 
 
 class FakeSh:
@@ -646,7 +651,19 @@ def test_worktrees_an_unread_origin_leaves_every_branch_pr_unread(tmp_path, orig
 
 
 @pytest.mark.parametrize(
-    "answer", ["null", "{}", "[1]", '[{"id": 1}]', '[{"number": null}]', '[{"number": true}]', "not json"]
+    "answer",
+    [
+        "null",
+        "{}",
+        "[1]",
+        '[{"id": 1}]',
+        '[{"number": null}]',
+        '[{"number": true}]',
+        '[{"number": 0}]',
+        '[{"number": -3}]',
+        '[{"number": 7}, {"number": 0}]',
+        "not json",
+    ],
 )
 def test_worktrees_a_pr_answer_that_is_not_a_pr_list_is_unread(tmp_path, answer):
     porcelain = (
@@ -703,6 +720,82 @@ def test_bench_jobs_reports_an_unreported_job_whose_process_is_gone(tmp_path):
     assert out.evidence.startswith(f"control: {d}/notes/agent.json read, 2 job(s) noted\n")
     out = asyncio.run(BenchJobs(str(tmp_path / "nope"), str(tmp_path), every=None).run({}))
     assert not out.control
+
+
+def test_build_reads_the_actors_config_bounds_the_client_and_gates_the_mail(tmp_path, kkernel_stub):
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (tmp_path / "chores.toml").write_text(
+        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
+        'trusted = ["daemon:review"]\n'
+        'aged_after = 3\n[chores.disk]\nevery = "every:2h"\nroots = ["/"]\n'
+        '[chores.inbox-sla]\nevery = "every:15m"\nactors = ["lambda:x"]\n'
+    )
+    chores, agent = build(tmp_path, backend=None)
+    assert chores.trusted == frozenset({"lambda:x", "lambda:owner", "lambda:x:agent", "daemon:review"})
+    assert chores.aged_after == 3 and sorted(chores.instruments) == ["disk", "inbox-sla"]
+    assert isinstance(agent.khive, Bounded) and agent.khive.recipients == chores.trusted
+    assert agent.admit({"properties": {"from_actor": "daemon:review"}}) is True
+    assert agent.admit({"properties": {"from_actor": "lambda:stranger"}}) is False
+    with pytest.raises(AgentError, match="agent boundary"):
+        asyncio.run(agent.khive.exec('gtd.complete(id="x")'))
+    assert sorted((n, i.direction) for n, i in chores.instruments.items()) == [
+        ("disk", "over-report"),
+        ("inbox-sla", "under-report"),
+    ]
+    assert agent.profile_for([]).name == "chores"
+
+
+def desk_dir(tmp_path, front: str = "") -> None:
+    """An agent directory whose `[desk]` reads the chair `lambda:x`; `front` is appended to the table."""
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    chair = tmp_path / "chair"
+    (chair / ".khive").mkdir(parents=True)
+    (chair / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    (tmp_path / "chores.toml").write_text(
+        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
+        + f"[desk]\nactor_dir = {json.dumps(str(chair))}\n{front}"
+    )
+
+
+def test_build_with_front_false_builds_no_front_desk(tmp_path, kkernel_stub):
+    """`[desk] front = false` wires no front desk: nothing sweeps, answers, routes, tasks or escalates
+    the chair's mail, and the digest keeps its own tick."""
+    desk_dir(tmp_path, front="front = false\n")
+    chores, agent = build(tmp_path, backend=None)
+    assert getattr(agent, "desk", None) is None and agent.watch is None and agent.accept is None
+    assert not {"sweep", "answer", "leave", "clarify", "route", "task"} & set(agent.actor.handlers)
+    assert chores.extra_specs == frozenset() and chores.digest_every == "daily"
+    assert agent.profile_for([]).specs == frozenset({"check", "digest", "aged"})
+    assert "front desk" not in agent.profile_for([]).system
+
+
+def test_build_with_front_false_refuses_desk_routes_and_no_route_only_recipient_is_reached(
+    tmp_path, monkeypatch
+):
+    """With `front = false` a `[desk.routes]` value would widen the bounded recipients with no Desk to
+    validate it, and the landing arm's outsider probe would reach that route-only recipient. The config
+    refuses at build."""
+    clients: list[FakeKhive] = []
+
+    def client(cwd, actor):
+        k = FakeKhive()
+        k.cwd, k.actor = cwd, actor
+        clients.append(k)
+        return k
+
+    monkeypatch.setattr(cli_agent, "Khive", client)
+    desk_dir(tmp_path, front='front = false\n[desk.routes]\nbuild = "email:outsider@example.com"\n')
+    refused = ""
+    try:
+        chores, agent = build(tmp_path, backend=None)
+    except ValueError as e:
+        refused = str(e)
+    else:
+        asyncio.run(arm(chores, agent))
+    assert [s["to"] for k in clients for s in k.sent] == []
+    assert refused == "[desk.routes] needs the front desk: front = false names no routes"
 
 
 SHA = "a" * 40

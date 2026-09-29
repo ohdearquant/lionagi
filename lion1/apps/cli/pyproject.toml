@@ -1,0 +1,22 @@
+[project]
+name = "lion-cli"
+version = "1.0.0a0"
+description = "`lion`: the command line of lionagi v1, one entry with subcommands."
+requires-python = ">=3.11"
+dependencies = [
+    "lionagi",
+    "rich>=13",
+]
+
+[project.scripts]
+lion = "lion_cli.main:main"
+
+[tool.uv.sources]
+lionagi = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["lion_cli"]

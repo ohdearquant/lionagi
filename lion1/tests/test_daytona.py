@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -185,7 +186,9 @@ def test_push_counts_what_was_actually_uploaded_not_what_git_listed(stubbed, tmp
     subprocess.run(["git", "init", "-q"], cwd=src, check=True)
     (src / "keep.py").write_text("x = 1\n")
     os.symlink("nowhere.py", src / "dangling.py")
-    subprocess.run(["git", "-c", "user.email=t@e.com", "-c", "user.name=t", "add", "-A"], cwd=src, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "add", "-A"], cwd=src, check=True
+    )
     assert asyncio.run(box.push(src, dest=str(work / "src2"))) == ["keep.py"]
     assert sorted(p.name for p in (work / "src2").iterdir()) == ["keep.py"]
 
@@ -251,3 +254,398 @@ def test_push_stops_on_a_repository_git_cannot_list(stubbed, tmp_path):
     with pytest.raises(OSError, match="git ls-files in .* exited 128"):
         asyncio.run(box.push(src, dest=str(work / "src3-again")))
     assert not (work / "src3-again").exists()  # nothing was sent
+
+
+def test_chat_in_a_box_pushes_the_directory_lists_it_and_brings_the_patch_back(stubbed, tmp_path, capsys):
+    """`lion chat --box daytona` end to end on the stub: the directory pushed at the same path, the
+    file tools over the box's tree, a git baseline for the copy, the diff saved as the chat's patch
+    and applied to the directory with --apply."""
+    from lion_cli.chat import prepare_box, take_patch
+
+    from hub import files
+
+    box, work, _, _ = stubbed
+    src = tmp_path / "proj"
+    src.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=src, check=True)
+    (src / "calc.py").write_text("def add(a, b):\n    return a - b\n")
+    (src / "sub").mkdir()
+    (src / "sub" / "note.txt").write_text("n\n")
+    subprocess.run(
+        ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "add", "-A"], cwd=src, check=True
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "one"],
+        cwd=src,
+        check=True,
+    )
+    said: list[str] = []
+    box.workdir = str(work)  # the stub's box: the copy lives under the test's work dir, not at src's path
+    baseline = asyncio.run(prepare_box(box, src, said.append))
+    assert said == [f"box img: 2 file(s) pushed to {work}"]
+    assert (work / ".git").is_dir() and (work / "calc.py").read_text().endswith("a - b\n")
+    tree = BoxTree(box)
+    assert asyncio.run(tree.list_dir(".")) == [".git/", "calc.py", "sub/"]
+    with pytest.raises(PermissionError, match="outside"):
+        asyncio.run(tree.list_dir(".."))
+    actor = Actor("d")
+    assert files(actor, tree) == {"read", "list_dir"}
+    specs = {"read", "list_dir"} | code(actor, tree) | {h.name for h in DEFAULT_HANDLERS}
+    profile = Profile(name="d", specs=frozenset(specs), system="x")
+    backend = scripted(
+        '<lact l1>list_dir(path="sub")</lact><lact r1>read(path="sub/note.txt")</lact>'
+        '<lact e1>edit(path="calc.py", old="a - b", new="a + b")</lact>',
+        "done",
+    )
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), backend))
+    r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
+    assert r["l1"].value == ["note.txt"] and r["r1"].value == "n\n" and r["e1"].ok
+    assert (src / "calc.py").read_text().endswith("a - b\n")  # the person's tree is untouched so far
+    # nothing changed: no patch. Then the edit: saved, printed, applied
+    said.clear()
+    chats = tmp_path / "chats"
+    subprocess.run(["git", "-C", str(work), "stash", "-q"], check=True)
+    assert (
+        asyncio.run(take_patch(box, src, chats, "c1", baseline=baseline, apply=False, say=said.append))
+        is None
+    )
+    assert said == ["box: no change in the copy"] and not chats.exists()
+    subprocess.run(["git", "-C", str(work), "stash", "pop", "-q"], check=True)
+    said.clear()
+    path = asyncio.run(take_patch(box, src, chats, "c1", baseline=baseline, apply=True, say=said.append))
+    assert path == chats / "c1.patch" and "-    return a - b\n+    return a + b\n" in path.read_text()
+    assert "+    return a + b" in capsys.readouterr().out
+    assert said[0].startswith("box: the copy's diff, ") and said[-1] == f"box: applied to {src} (git apply)"
+    assert (src / "calc.py").read_text().endswith("a + b\n")
+    # a patch that does not apply (the person's file moved on) is saved, said, and the file untouched
+    (src / "calc.py").write_text("def add(a, b):\n    return a * b\n")
+    said.clear()
+    path = asyncio.run(take_patch(box, src, chats, "c2", baseline=baseline, apply=True, say=said.append))
+    assert path.exists() and said[-1].startswith("box: not applied, git apply exited 1")
+    assert (src / "calc.py").read_text().endswith("a * b\n")
+
+
+def repo_git(cwd: Path, *args: str) -> str:
+    done = subprocess.run(
+        ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def box_chat(monkeypatch, make_box, directory: Path, *turns: str, **flags) -> BaseException | None:
+    """`lion chat --dir <directory> --box daytona` end to end: `make_box(image, workdir)` is the box,
+    the model's turns are scripted, the person says "hi" and nothing more. Returns what it raised."""
+    import argparse
+
+    from lion_cli.chat import chat_main
+
+    monkeypatch.setattr("lion_cli.chat.DaytonaSandbox", make_box)
+    monkeypatch.setattr("lion_cli.chat.backend_for", lambda model: scripted(*turns))
+
+    async def eof(*a, **k):
+        return None
+
+    monkeypatch.setattr("lion_cli.view.stdin_ask", eof)
+    a = dict(dir=str(directory), resume=None, log=None, shell=False, code=False, offline=False, model="x")
+    a |= dict(rounds=4, raw=True, say="hi", verbose=False, box="daytona", image="img", apply=False)
+    try:
+        asyncio.run(chat_main(argparse.Namespace(**(a | flags))))
+    except Exception as e:  # noqa: BLE001 - what the chat ended on is the evidence
+        return e
+    return None
+
+
+@pytest.fixture
+def stub_chat_box(tmp_path, monkeypatch):
+    """A stubbed Daytona box for `chat_main`, not yet started: its copy lives in `<tmp>/work`. Its git
+    runs on this machine, so this machine's global config (hooks included) is kept out, as a box's is."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setitem(sys.modules, "daytona", stub_daytona(tmp_path, [True]))
+    monkeypatch.setattr(daytona_mod, "api_key", lambda: "k")
+    (tmp_path / "tmp").mkdir()
+    work = tmp_path / "work"
+    made: list[DaytonaSandbox] = []
+
+    def make(image, workdir):
+        made.append(DaytonaSandbox(image, workdir=str(work)))
+        return made[-1]
+
+    return work, make, made
+
+
+def saved_patches(directory: Path) -> list[str]:
+    return [p.read_text() for p in sorted((directory / ".lion" / "chats").glob("*.patch"))]
+
+
+def test_subdir_apply_changes_only_selected_file(stub_chat_box, tmp_path, monkeypatch):
+    # from a subdirectory `git apply` skipped the box's patch, exited 0, and "applied"
+    _, make, _ = stub_chat_box
+    repo = tmp_path / "repo"
+    (repo / "sub").mkdir(parents=True)
+    (repo / "f.txt").write_text("old\n")
+    (repo / "sub" / "f.txt").write_text("old\n")
+    repo_git(repo, "init", "-q")
+    repo_git(repo, "add", "-A")
+    repo_git(repo, "commit", "-qm", "one")
+    turn = '<lact b1>bash(command="echo new > f.txt")</lact>'
+    assert box_chat(monkeypatch, make, repo / "sub", turn, "done", apply=True) is None
+    assert (repo / "sub" / "f.txt").read_text() == "new\n"
+    assert (repo / "f.txt").read_text() == "old\n"  # the root's file of the same name is not the target
+
+
+def test_baseline_diff_keeps_committed_and_uncommitted_edits(stub_chat_box, tmp_path, monkeypatch):
+    # a commit in the box moved HEAD past the baseline and its edit came back as no change
+    _, make, _ = stub_chat_box
+    src = tmp_path / "proj"
+    src.mkdir()
+    (src / "a.txt").write_text("a\n")
+    (src / "b.txt").write_text("b\n")
+    repo_git(src, "init", "-q")
+    repo_git(src, "add", "-A")
+    repo_git(src, "commit", "-qm", "one")
+    work = "echo A > a.txt && git -c user.email=m@x -c user.name=m commit -qam fix && echo B > b.txt"
+    work += " && echo C > c.txt && git add c.txt && echo D > d.txt"  # unstaged, staged, untracked
+    assert (
+        box_chat(monkeypatch, make, src, f'<lact b1>bash(command="{work}")</lact>', "done", apply=True)
+        is None
+    )
+    (patch,) = saved_patches(src)
+    assert "+A\n" in patch  # the committed edit
+    assert "+B\n" in patch and "+C\n" in patch and "+D\n" in patch
+    assert [(src / n).read_text() for n in ("a.txt", "b.txt", "c.txt", "d.txt")] == [
+        "A\n",
+        "B\n",
+        "C\n",
+        "D\n",
+    ]
+
+
+def test_ignored_pushed_source_in_baseline(stub_chat_box, tmp_path, monkeypatch):
+    # a tracked file .gitignore also matches is pushed; the baseline's `add -A` skipped it
+    _, make, _ = stub_chat_box
+    src = tmp_path / "proj"
+    src.mkdir()
+    (src / ".gitignore").write_text("settings.ini\nbuild/\n")
+    (src / "settings.ini").write_text("debug=false\n")
+    repo_git(src, "init", "-q")
+    repo_git(src, "add", ".gitignore")
+    repo_git(src, "add", "-f", "settings.ini")
+    repo_git(src, "commit", "-qm", "one")
+    turn = (
+        '<lact b1>bash(command="echo debug=true > settings.ini && mkdir build && echo o > build/x.o")</lact>'
+    )
+    assert box_chat(monkeypatch, make, src, turn, "done") is None
+    patches = saved_patches(src)
+    assert patches and "+debug=true" in patches[0]
+    assert "build/x.o" not in patches[0]  # an ignored build output is not source: never force-added
+
+
+def test_root_and_standalone_directories_apply_and_an_unchanged_copy_saves_nothing(
+    stub_chat_box, tmp_path, monkeypatch
+):
+    _, make, made = stub_chat_box
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "f.txt").write_text("old\n")
+    repo_git(root, "init", "-q")
+    repo_git(root, "add", "-A")
+    repo_git(root, "commit", "-qm", "one")
+    edit = '<lact b1>bash(command="echo new > f.txt")</lact>'
+    assert box_chat(monkeypatch, make, root, edit, "done", apply=True) is None
+    assert (root / "f.txt").read_text() == "new\n"
+    plain = tmp_path / "plain"  # no repository here or above: git apply works it as plain files
+    (plain / "d").mkdir(parents=True)
+    (plain / "d" / "f.txt").write_text("old\n")
+    outside = subprocess.run(["git", "-C", str(plain), "rev-parse", "--git-dir"], capture_output=True)
+    assert outside.returncode != 0, "the standalone fixture sits inside a repository"
+    shutil.rmtree(made[-1].workdir)  # a fresh box: the copy starts empty
+    edit = '<lact b1>bash(command="echo new > d/f.txt")</lact>'
+    assert box_chat(monkeypatch, make, plain, edit, "done", apply=True) is None
+    assert (plain / "d" / "f.txt").read_text() == "new\n"
+    shutil.rmtree(made[-1].workdir)
+    assert box_chat(monkeypatch, make, root, '<lact l1>bash(command="ls")</lact>', "done") is None
+    assert len(saved_patches(root)) == 1  # the first chat's; the unchanged one saved none
+    assert made[-1]._box is None and not made[-1].started  # and its box was stopped
+
+
+class ChatBox:
+    """A box for `chat_main` whose diff is whatever `patch` holds: the copy's git can be the model's."""
+
+    made: list[ChatBox] = []
+    patch = ""
+
+    def __init__(self, image, workdir):
+        self.image, self.workdir, self.prelude, self.dead = image, workdir, "", None
+        self.box_id = f"sbx-{len(ChatBox.made) + 1:04d}"
+        self.started = self.stopped = False
+        ChatBox.made.append(self)
+
+    async def start(self):
+        self.started = True
+        return self
+
+    async def push(self, directory):
+        return ["f.txt"]
+
+    async def run(self, cmd, *, timeout=120, env=None):
+        return 0, ""
+
+    async def exec(self, argv, *, stdin=None, timeout=120, env=None):
+        return {"rc": 0, "stdout": "ab" * 20 + "\n", "stderr": "", "elapsed": 0.0, "timed_out": False}
+
+    async def diff(self, base="HEAD"):
+        return type(self).patch
+
+    async def stop(self):
+        self.stopped = True
+
+
+def test_patch_rejects_traversal_and_symlink_escape(tmp_path, monkeypatch):
+    # plain `git apply` refuses both; this pins that no repair reached for `--unsafe-paths`
+    repo = tmp_path / "repo"
+    (repo / "sub").mkdir(parents=True)
+    (repo / "sub" / "f.txt").write_text("old\n")
+    repo_git(repo, "init", "-q")
+    repo_git(repo, "add", "-A")
+    repo_git(repo, "commit", "-qm", "one")
+    (tmp_path / "outside").mkdir()
+    escape = (
+        "diff --git a/../victim.txt b/../victim.txt\nnew file mode 100644\n"
+        "--- /dev/null\n+++ b/../victim.txt\n@@ -0,0 +1 @@\n+owned\n"
+    )
+    link = (
+        "diff --git a/link b/link\nnew file mode 120000\n--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n"
+        f"+{tmp_path / 'outside'}\n\\ No newline at end of file\n"
+        "diff --git a/link/owned.txt b/link/owned.txt\nnew file mode 100644\n"
+        "--- /dev/null\n+++ b/link/owned.txt\n@@ -0,0 +1 @@\n+owned\n"
+    )
+    for directory in (repo, repo / "sub"):
+        for patch in (escape, link):
+            monkeypatch.setattr(ChatBox, "patch", patch)
+            assert box_chat(monkeypatch, ChatBox, directory, "done", apply=True) is None
+            assert not (tmp_path / "victim.txt").exists() and not (repo / "victim.txt").exists()
+            assert not (tmp_path / "outside" / "owned.txt").exists() and not (repo / "link").exists()
+            assert not (repo / "sub" / "link").exists()
+
+
+def test_a_patch_that_will_not_apply_is_saved_whole_and_lands_nothing(tmp_path, monkeypatch, capsys):
+    src = tmp_path / "proj"
+    src.mkdir()
+    (src / "a.txt").write_text("a\n")
+    (src / "b.txt").write_text("b moved on\n")  # the person's file changed during the chat
+    repo_git(src, "init", "-q")
+    repo_git(src, "add", "-A")
+    repo_git(src, "commit", "-qm", "one")
+    long = "x" * 5000
+    patch = (
+        "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,2 @@\n a\n"
+        f"+{long}\n"
+        "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-b\n+B\n"
+    )
+    monkeypatch.setattr(ChatBox, "patch", patch)
+    ChatBox.made.clear()
+    assert box_chat(monkeypatch, ChatBox, src, "done", apply=True) is None
+    (saved,) = (src / ".lion" / "chats").glob("*.patch")
+    assert saved.read_bytes() == patch.encode()  # every byte, the long line whole
+    assert (src / "a.txt").read_text() == "a\n" and (src / "b.txt").read_text() == "b moved on\n"
+    out = capsys.readouterr().out
+    assert long in out and "not applied, git apply exited 1" in " ".join(out.split())
+    assert ChatBox.made[-1].stopped
+
+
+def test_apply_from_a_subdirectory_lands_or_is_said_not_to(stubbed, tmp_path):
+    # the baseline is passed explicitly
+    from lion_cli.chat import prepare_box, take_patch
+
+    box, work, _, _ = stubbed
+    repo = tmp_path / "repo"
+    sub = repo / "sub"
+    sub.mkdir(parents=True)
+    repo_git(repo, "init", "-q")
+    (sub / "calc.py").write_text("def add(a, b):\n    return a - b\n")
+    repo_git(repo, "add", "-A")
+    repo_git(repo, "commit", "-qm", "one")
+    said: list[str] = []
+    baseline = asyncio.run(prepare_box(box, sub, said.append))
+    (work / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+    said.clear()
+    path = asyncio.run(
+        take_patch(box, sub, tmp_path / "chats", "c1", baseline=baseline, apply=True, say=said.append)
+    )
+    assert path is not None and "+    return a + b" in path.read_text()
+    landed = (sub / "calc.py").read_text().endswith("a + b\n")
+    claims_applied = said[-1].startswith("box: applied")
+    assert landed or not claims_applied, (said[-1], (sub / "calc.py").read_text())
+
+
+def test_a_commit_in_the_box_still_comes_back_as_the_patch(stubbed, tmp_path):
+    # a baseline the box does not have, or a copy whose repository is gone, is an error and never
+    # "no change"
+    from lion_cli.chat import prepare_box, take_patch
+
+    box, work, _, _ = stubbed
+    src = tmp_path / "proj"
+    src.mkdir()
+    repo_git(src, "init", "-q")
+    (src / "calc.py").write_text("x = 1\n")
+    repo_git(src, "add", "-A")
+    repo_git(src, "commit", "-qm", "one")
+    said: list[str] = []
+    baseline = asyncio.run(prepare_box(box, src, said.append))
+    (work / "calc.py").write_text("x = 2\n")
+    repo_git(work, "commit", "-qam", "fix")
+    said.clear()
+    chats = tmp_path / "chats"
+    path = asyncio.run(take_patch(box, src, chats, "c1", baseline=baseline, apply=False, say=said.append))
+    assert path is not None, said
+    assert "+x = 2" in path.read_text()
+    for base in ("0" * 40, baseline):
+        if base == baseline:
+            shutil.rmtree(work / ".git")
+        with pytest.raises(RuntimeError, match="git diff"):
+            asyncio.run(take_patch(box, src, chats, "c2", baseline=base, apply=False, say=said.append))
+    assert not (chats / "c2.patch").exists()
+
+
+def test_an_edit_to_a_tracked_but_ignored_file_comes_back(stubbed, tmp_path):
+    # the baseline is passed explicitly
+    from lion_cli.chat import prepare_box, take_patch
+
+    box, work, _, _ = stubbed
+    src = tmp_path / "proj"
+    src.mkdir()
+    repo_git(src, "init", "-q")
+    (src / ".gitignore").write_text("settings.ini\n")
+    (src / "settings.ini").write_text("debug = false\n")
+    repo_git(src, "add", ".gitignore")
+    repo_git(src, "add", "-f", "settings.ini")
+    repo_git(src, "commit", "-qm", "one")
+    baseline = asyncio.run(prepare_box(box, src, lambda s: None))
+    assert (work / "settings.ini").read_text() == "debug = false\n"
+    (work / "settings.ini").write_text("debug = true\n")
+    said: list[str] = []
+    path = asyncio.run(
+        take_patch(box, src, tmp_path / "chats", "c1", baseline=baseline, apply=False, say=said.append)
+    )
+    assert path is not None, said
+    assert "+debug = true" in path.read_text()
+
+
+def test_a_copy_whose_repository_is_gone_keeps_the_real_box_and_names_its_provider_id(
+    stub_chat_box, tmp_path, monkeypatch, capsys
+):
+    _, make, made = stub_chat_box
+    src = tmp_path / "proj"
+    src.mkdir()
+    (src / "a.txt").write_text("a\n")
+    err = box_chat(monkeypatch, make, src, '<lact b1>bash(command="mv .git .git-gone")</lact>', "done")
+    box = made[-1]
+    assert isinstance(err, RuntimeError) and "git diff" in str(err)
+    assert box._box is not None and not box._box.deleted  # retained
+    assert "box stub-box-1: kept, not stopped" in " ".join(capsys.readouterr().out.split())
+    assert box.box_id == "stub-box-1"

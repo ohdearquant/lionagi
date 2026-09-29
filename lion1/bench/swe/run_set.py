@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import json
 import sys
 import time
@@ -175,6 +176,7 @@ async def one(row: dict, args: argparse.Namespace, out_dir: Path, ledger: Path, 
                         model_name,
                         out_dir / f"{iid}.test_output.log",
                         eval_timeout=eval_timeout,
+                        base=rec.get("base"),
                     )
                     rec["resolved"] = bool(verdict.get("resolved"))
                     rec["grade"] = {k: v for k, v in verdict.items() if k != "tests_status"}
@@ -357,6 +359,21 @@ async def main(args: argparse.Namespace) -> None:
             raise SystemExit(
                 f"{canonical} appeared while this launch started; launch again to check against it"
             ) from None
+    # one process per run: two launches resuming the same id would each read the same ledger and
+    # schedule the same unfinished instances; the lock is held until this process ends
+    lock_file = (out_dir / "run.lock").open("w")
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_file.close()
+        raise SystemExit(f"{out_dir / 'run.lock'} is held: another launch of this run is running") from None
+    try:
+        await _run(args, out_dir, ledger, rows)
+    finally:
+        lock_file.close()
+
+
+async def _run(args: argparse.Namespace, out_dir: Path, ledger: Path, rows: list[dict]) -> None:
     print(f"launch record {manifest(args, out_dir, [r['instance_id'] for r in rows])}", flush=True)
     done = ledger_ids(ledger)
     todo = [r for r in rows if r["instance_id"] not in done]

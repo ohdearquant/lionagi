@@ -140,8 +140,10 @@ class Watch:
         notice_after: int = 3,
         settle_after: int = 0,
         test: Callable[[str], bool] = is_test,
+        base: str = "HEAD",
     ):
         self.box = box
+        self.base = base  # the change is read against this commit: HEAD moves with a commit the model makes
         self.notice_after = notice_after
         self.settle_after = settle_after  # 0: never stop
         self.is_test = test
@@ -213,7 +215,7 @@ class Watch:
         return tests, scratch, source
 
     async def section(self, run: Any) -> str | None:
-        chunks = by_file(await self.box.diff())
+        chunks = by_file(await self.box.diff(self.base))
         self.tests, self.scratch, self.source = await self.classify(chunks)
         aside = []
         if self.tests:
@@ -263,7 +265,7 @@ class Watch:
 
     async def _moved(self, digest: str | None) -> bool:
         """Whether the source differs from `digest` now: read after the checks ran."""
-        chunks = by_file(await self.box.diff())
+        chunks = by_file(await self.box.diff(self.base))
         _, _, source = await self.classify(chunks)
         return digest_of(chunks, source) != digest
 
@@ -314,7 +316,7 @@ async def accept(watch: Watch, run: Any, output: Any) -> str | None:
     """The gate on OUT{}: an unchanged repository is not done; a change nothing ran against since is
     not verified (an edit and the command that checks it are two rounds: in one round they run
     together, so the command saw the tree before the edit); a failing declared check is not done."""
-    diff = await watch.box.diff()
+    diff = await watch.box.diff(watch.base)
     if not diff.strip():
         return "the repository has no changes; you declared done without editing anything"
     chunks = by_file(diff)
