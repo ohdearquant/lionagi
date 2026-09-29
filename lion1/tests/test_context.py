@@ -141,7 +141,7 @@ class TaskKhive:
             raise KhiveError(self.fail)
         if isinstance(self.mail, Exception):
             raise self.mail
-        return list(self.mail)[:limit]
+        return list(self.mail)[:limit] if isinstance(self.mail, list | tuple) else self.mail
 
 
 TASK = {"id": "1ane0001", "title": "placeholder lane", "priority": "p1", "status": "active", "properties": {}}
@@ -262,7 +262,10 @@ def test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_ope
     khive = TaskKhive([TASK], mail=box)
     done = checkpoint(d, "manual", transcript=FIXTURE, khive=khive, now=AT_TAKE)
     ckpt = load(d)
-    said = "gtd.tasks active; comm.inbox unread; gh pr list open, authored by @me"
+    said = (
+        "gtd.tasks active; comm.inbox unread (1 invalid; the first: str, not an object); "
+        "gh pr list open, authored by @me (1 invalid; the first: str, not an object)"
+    )
     assert ckpt.source["lanes"] == said
     got = {v.name: v.value for v in ckpt.vars if v.kind == "lane"}
     assert got == {
@@ -341,10 +344,62 @@ def test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_on
     assert (
         gh(out='{"number": 7}')[1] == "gh pr list unavailable: no list of pull requests in '{\"number\": 7}'"
     )
-    page = [{**PR, "number": n, "reviewDecision": ""} for n in range(100)]
+    page = [{**PR, "number": n, "reviewDecision": ""} for n in range(1, 101)]
     got, said = gh(out=json.dumps(page))
     assert len(got) == 100 and got[0].value["awaiting"] is None
     assert said == "gh pr list open, authored by @me (a full page of 100: more may be open)"
+
+
+def test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take(tmp_path, monkeypatch):
+    # a `properties` that was no object raised at `.get` and aborted the take; a pull request numbered 0
+    # or with no number became `lane.pr.0`, `lane.pr.None`
+    tasks = [{**TASK, "properties": 42}, {**TASK, "id": None}, TASK]
+    box = [
+        {**unread("m3", "lambda:peer", "placeholder three"), "properties": 42},
+        unread("m2", "lambda:peer", "placeholder two", "th2"),
+        {**unread("m1", "lambda:peer", "placeholder one"), "id": 5},
+        {**unread("m0", "lambda:peer", "placeholder zero"), "properties": {"thread_id": 42}},
+    ]
+    numbers = [0, None, True, -3, "8"]  # None: the row carries no number
+    prs = [{**PR, "number": n} if n is not None else {"title": "placeholder"} for n in numbers]
+    gh_says(monkeypatch, out=json.dumps([*prs, PR]))
+    d = actor_dir(tmp_path)
+    checkpoint(d, "manual", transcript=FIXTURE, khive=TaskKhive(tasks, mail=box), now=AT_TAKE)
+    ckpt = load(d)
+    assert ckpt.source["lanes"] == (
+        "gtd.tasks active (2 invalid; the first: properties int, not an object); "
+        "comm.inbox unread (3 invalid; the first: properties int, not an object); "
+        "gh pr list open, authored by @me (5 invalid; the first: number 0, not a positive int)"
+    )
+    lane_names = sorted(v.name for v in ckpt.vars if v.kind == "lane")
+    assert lane_names == ["lane.1ane0001", "lane.pr.7", "lane.thread.th2"]
+
+    def pr(row):
+        async def run(argv, **kw):
+            return 0, json.dumps([row]), ""
+
+        return asyncio.run(pulls(tmp_path, run))[1]
+
+    for n, row in zip(numbers, prs, strict=True):
+        why = f"number {n!r}, not a positive int"
+        assert pr(row) == f"gh pr list open, authored by @me (1 invalid; the first: {why})"
+    for row, why in [(tasks[1], "id None"), ({**TASK, "id": ""}, "id ''"), ({**TASK, "id": 9}, "id 9")]:
+        assert asyncio.run(lanes(TaskKhive([row])))[1].startswith(
+            f"gtd.tasks active (1 invalid; the first: {why}, not a non-empty string); "
+        )
+    # a null `properties` reads as an empty one
+    got, said = asyncio.run(lanes(TaskKhive([{**TASK, "properties": None}])))
+    assert [v.name for v in got] == ["lane.1ane0001"] and said == "gtd.tasks active; comm.inbox unread"
+    for row, why in [(box[2], "id 5"), (box[3], "id 42")]:
+        assert asyncio.run(lanes(TaskKhive(mail=[row])))[1].endswith(
+            f"comm.inbox unread (1 invalid; the first: {why}, not a non-empty string)"
+        )
+    # a box that is not a list of messages is no read, never an empty and complete one
+    for answer in ("placeholder box", {"m2": box[1]}):
+        got, said = asyncio.run(lanes(TaskKhive([TASK], mail=answer)))
+        assert [v.name for v in got] == ["lane.1ane0001"]
+        why = f"answered {type(answer).__name__}, not a list of messages"
+        assert said == f"gtd.tasks active; comm.inbox unavailable: {why}"
 
 
 def test_the_inbox_line_quotes_a_monitor_path_with_a_space(monkeypatch):
@@ -1151,3 +1206,20 @@ def test_a_claude_code_checkpoint_in_a_residents_directory_is_refused_by_its_nex
     first = list(run.record)[0]
     assert first.kind is Kind.INPUT and "one more" in first.content and "say hi back" not in first.content
     assert load(d, own.id) == own  # the resident's checkpoint is on disk, no longer the one latest names
+
+
+def test_only_the_first_invalid_row_is_spelled_out():
+    from hub.context import _valid
+
+    class Counted:
+        calls = 0
+
+        def __repr__(self):
+            Counted.calls += 1
+            return "x" * 200
+
+    rows = [{"number": Counted()} for _ in range(100)] + [{"number": 3}]
+    good, note = _valid(rows, "pr")
+    assert [r["number"] for r in good] == [3]
+    assert note == f" (100 invalid; the first: number {'x' * 40}, not a positive int)"
+    assert Counted.calls == 1  # the other 99 are counted, never rendered

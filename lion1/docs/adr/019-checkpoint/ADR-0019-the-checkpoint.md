@@ -1,7 +1,7 @@
 ---
 adr: ADR-0019
 status: draft
-liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests, the restore, the files, both transports, the status's staleness to the take's fraction of a second and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests)
+liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests)
 date: "2026-09-25"
 area: checkpoint
 kind: new
@@ -215,7 +215,8 @@ is a `posture` too.
   `test_the_ceiling_eight_directives_half_the_budget_and_the_watch_list`,
   `test_legs_are_agents_the_transcript_shows_running`; `tests/test_context.py`:
   `test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_open_pull_requests`,
-  `test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one`.
+  `test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one`,
+  `test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take`.
 
 ### D3: `lion context` and `/api/context/*`: one implementation, two transports ^d3
 
@@ -303,3 +304,8 @@ take that fails is kept among the agent's errors and the run goes on.
   take's second stale only when written after it, to the microsecond. A `taken_at` with no fraction
   reads as its second's start. The stamp is read before the transcript is, so a prompt that lands
   while the take reads is after it.
+- **S10**: A lane row is an object whose lane id is a non-empty string and whose `properties`, when
+  given, is an object; a pull request's number is a positive int, never a bool. A row of another
+  shape is counted in `source.lanes` as invalid, the first one named, and never aborts the take; a
+  box that is not a list is a read that could not be done, and the khive client refuses such a page
+  itself. Pinned by `test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take`.

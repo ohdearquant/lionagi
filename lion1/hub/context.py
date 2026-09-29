@@ -509,6 +509,34 @@ def topic(registry_path: str | Path) -> list[Var]:
     return [Var("topic", "topic", t, "registry", at)]
 
 
+def _valid(rows: list, kind: str) -> tuple[list[dict], str]:
+    """The rows of one read that make lanes of `kind` (task, thread or pr), and what `source.lanes`
+    adds for the rest: how many were invalid and what the first one was. A row is an object; a pull
+    request's number is a positive int, never a bool; any other row's `properties` is an object when
+    given, and the id its lane is named by is a non-empty string."""
+    good, bad, first = [], 0, ""  # the count and the first reason: only the first is ever spelled out
+    for r in rows:
+        if not isinstance(r, dict):
+            bad, first = bad + 1, first or f"{type(r).__name__}, not an object"
+            continue
+        if kind == "pr":
+            n = r.get("number")
+            if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+                bad, first = bad + 1, first or f"number {n!r:.40}, not a positive int"
+                continue
+        else:
+            props = r.get("properties")
+            if props is not None and not isinstance(props, dict):
+                bad, first = bad + 1, first or f"properties {type(props).__name__}, not an object"
+                continue
+            key = (props or {}).get("thread_id") or r.get("id") if kind == "thread" else r.get("id")
+            if not isinstance(key, str) or not key:
+                bad, first = bad + 1, first or f"id {key!r:.40}, not a non-empty string"
+                continue
+        good.append(r)
+    return good, f" ({bad} invalid; the first: {first})" if bad else ""
+
+
 async def lanes(khive: Khive) -> tuple[list[Var], str]:
     """The actor's active gtd rows and the threads its unread mail awaits a reply on, as lanes, and what
     `source.lanes` says of each read: done, or why it could not be. A thread is named by its newest
@@ -526,9 +554,8 @@ async def lanes(khive: Khive) -> tuple[list[Var], str]:
     elif not isinstance(rows, list):
         said.append(f"gtd.tasks unavailable: answered {type(found).__name__}, not a list of tasks")
     else:
-        for t in rows:
-            if not isinstance(t, dict):
-                continue
+        good, invalid = _valid(rows, "task")
+        for t in good:
             value = {
                 "kind": "task",
                 "id": t.get("id"),
@@ -537,16 +564,18 @@ async def lanes(khive: Khive) -> tuple[list[Var], str]:
                 "priority": t.get("priority"),
             }
             out.append(Var(f"lane.{t.get('id')}", "lane", value, "khive", now))
-        said.append("gtd.tasks active")
+        said.append(f"gtd.tasks active{invalid}")
     try:
         mail = await khive.inbox(limit=MAIL_PAGE)  # unread, no wait; nothing is marked read
     except Exception as e:
         said.append(f"comm.inbox unavailable: {type(e).__name__}: {e}")
         return out, "; ".join(said)
+    if not isinstance(mail, list):
+        said.append(f"comm.inbox unavailable: answered {type(mail).__name__}, not a list of messages")
+        return out, "; ".join(said)
+    good, invalid = _valid(mail, "thread")
     threads: dict[str, dict] = {}
-    for m in mail:  # newest first
-        if not isinstance(m, dict):
-            continue
+    for m in good:  # newest first
         props = m.get("properties") or {}
         thread = str(props.get("thread_id") or m.get("id"))
         awaiting = f"a reply to {props.get('from_actor')}"
@@ -555,7 +584,7 @@ async def lanes(khive: Khive) -> tuple[list[Var], str]:
         )
     out += [Var(f"lane.thread.{k}", "lane", v, "khive", now) for k, v in threads.items()]
     full = f" (a full page of {MAIL_PAGE}: more may be unread)" if len(mail) >= MAIL_PAGE else ""
-    said.append(f"comm.inbox unread{full}")
+    said.append(f"comm.inbox unread{full}{invalid}")
     return out, "; ".join(said)
 
 
@@ -576,10 +605,9 @@ async def pulls(directory: str | Path, run: Runner | None = None) -> tuple[list[
         why = (err.strip()[:200] or f"rc {rc}") if rc != 0 else f"no list of pull requests in {out[:120]!r}"
         return [], f"gh pr list unavailable: {why}"
     now = _now()
+    good, invalid = _valid(rows, "pr")
     found = []
-    for p in rows:
-        if not isinstance(p, dict):
-            continue
+    for p in good:
         value = {
             "kind": "pr",
             "id": p.get("number"),
@@ -589,7 +617,7 @@ async def pulls(directory: str | Path, run: Runner | None = None) -> tuple[list[
         }
         found.append(Var(f"lane.pr.{p.get('number')}", "lane", value, "gh", now))
     full = f" (a full page of {PR_PAGE}: more may be open)" if len(rows) >= PR_PAGE else ""
-    return found, f"gh pr list open, authored by @me{full}"
+    return found, f"gh pr list open, authored by @me{full}{invalid}"
 
 
 def context_figure(session_id: str | None, by_session: Path = BY_SESSION) -> dict:
