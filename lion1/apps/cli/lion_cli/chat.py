@@ -14,15 +14,18 @@ import time
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from hub import Box, BoxTree, DaytonaSandbox, LocalTree, Sandbox, code, files, guidance, khive_ops, shell
 from hub.agent.chores import Bounded
+from hub.areas import partial
+from hub.backend import ClaudeCodeSession
 from hub.chat import chat, load_log
 from hub.hooks import install, load
 from hub.khive import Khive, KhiveError
 from hub.tools.code import Tree
 from lionagi import Actor, Kind, Profile, lndl
-from lionagi.actor import DEFAULT_HANDLERS, Run
+from lionagi.actor import DEFAULT_HANDLERS, Run, _text
 from lionagi.record import Entry
 
 from .agent import backend_for
@@ -33,6 +36,7 @@ __all__ = (
     "prepare_box",
     "take_patch",
     "spent",
+    "status_line",
     "resolve_chat",
     "fresh_log",
     "unsettled",
@@ -53,13 +57,15 @@ def console(
     notify: Callable[[str], None] | None = None,
     tree: Tree | None = None,
     about_box: str | None = None,
+    own_tools: tuple[str, ...] = (),
 ) -> tuple[Actor, Profile]:
     """The actor a person talks to: the file and directory readers, khive when the directory is an
     actor's own (its `.khive/config.toml` names the actor the reads sign as), a shell when a sandbox
     is given, and with `coding` the tools a fix is found and written with (read_lines, search, edit)
     plus the tree's own rules (AGENTS.md, CLAUDE.md at the root) in the guidance. `tree` is where the
     file and code tools read and write: the directory itself by default, the copy of it in a box
-    with `about_box` saying so (the VM's own guidance otherwise)."""
+    with `about_box` saying so (the VM's own guidance otherwise). `own_tools` are the Claude Code
+    CLI's own tools a claude_code session runs inside each round, named in the guidance."""
     directory = Path(directory).resolve()
     tree = tree if tree is not None else LocalTree(directory)
     actor = Actor(name, notes_dir=directory / ".lion" / "notes")
@@ -103,6 +109,14 @@ def console(
                     f", khive_ops(ops) signing as {actor_id} ({len(khive.allowed)} verbs: reads, comm.read, "
                     "schedule.remind, memory.remember at spawn salience)"
                 )
+    if own_tools:
+        tools += (
+            f"; and your own Claude Code tools ({', '.join(own_tools)}) run inside each round in "
+            f"{directory}, called the way you always call them, never inside <lact> (that is for the "
+            "commands above only). Each call lands on the record as a result under its tool-use id, so "
+            "you can context.hide it once it has served; what the call taught you goes into a note first. "
+            "A context.hide or context.summarize restarts your session from the folded view"
+        )
     profile = Profile(
         name=name,
         specs=frozenset(specs) | {h.name for h in DEFAULT_HANDLERS},
@@ -205,6 +219,34 @@ def spent(calls: list[dict]) -> tuple[float, int]:
     return cost, unknown
 
 
+def status_line(actor: Actor, profile: Profile, runs: list[Run], backend: Any) -> str:
+    """`inbox N · ctx ~F/B (last call P) · notes N (S chars) · $C`, read off the live objects each
+    time: inbound not yet taken into a round, the context figure the round notice told against its
+    budget (and the prompt the backend last reported), the profile's notes, what was billed. Before
+    a run starts there is no context to tell."""
+    parts = [f"inbox {len(actor.inbox) + sum(len(r.inbox) for r in runs)}"]
+    if runs:
+        run = runs[0]
+        ctx = f"ctx ~{_k(run.context_figure)}/{_k(run.bounds['context_budget'])}"
+        if run.anchor is not None:
+            ctx += f" (last call {_k(run.anchor[0])})"
+        parts.append(ctx)
+    notes = actor.notes_for(profile).list()
+    size = sum(len(_text(n.value)) for n in notes)  # the size note.list tells the model
+    parts.append(f"notes {len(notes)} ({_k(size)} chars)")
+    cost, unknown = spent(getattr(backend, "calls", None) or [])
+    parts.append(f"${cost:.4f}" + partial(unknown))
+    return " · ".join(parts)
+
+
+def _k(n: float) -> str:
+    """12345 -> 12.3k, 200000 -> 200k: a count at a glance."""
+    for scale, unit in ((1_000_000, "M"), (1_000, "k")):
+        if n >= scale:
+            return f"{n / scale:.1f}".removesuffix(".0") + unit
+    return f"{n:g}"
+
+
 def _branch(directory: Path) -> str:
     """The checked-out branch, from git itself (so a linked worktree's `.git` file and a
     subdirectory both resolve), or `(no git)`."""
@@ -273,9 +315,9 @@ def unsettled(history: tuple[Entry, ...]) -> list[str]:
 
 
 class Interrupt:
-    """Ctrl-C. Mid-run, the first one hands the turn back at the next round boundary (the round in
-    flight finishes, its results land, then `you ▸`); the second one, or one at the prompt, ends the
-    conversation now. The counter resets each time the person is asked."""
+    """Ctrl-C. Mid-run, the first one cuts the model's call short and hands the turn back now (or,
+    with no call in flight, at the round's end once its results land); the second one, or one at the
+    prompt, ends the conversation now. The counter resets each time the person is asked."""
 
     def __init__(self, runs: list[Run], task: asyncio.Task, say: Console):
         self.runs, self.task, self.say = runs, task, say
@@ -284,8 +326,10 @@ class Interrupt:
     def __call__(self) -> None:
         self.presses += 1
         if self.presses == 1 and self.runs and not self.say.asking:
-            self.runs[0].pause = True
-            self.say.notice("stopping after this round; Ctrl-C again to quit now")
+            if self.runs[0].interrupt():
+                self.say.notice("cut: the model's call was abandoned; Ctrl-C again to quit")
+            else:
+                self.say.notice("stopping after this round; Ctrl-C again to quit now")
             return
         self.task.cancel()
 
@@ -361,6 +405,9 @@ async def _chat_main(
     elif a.shell or a.code:
         sandbox = Sandbox(directory, f"lion-{chat_id}", offline=a.offline)
     degraded: list[str] = []
+    own_tools = tuple(t.strip() for t in (getattr(a, "tools", None) or "").split(",") if t.strip())
+    if own_tools and not (a.model == "claude_code" or a.model.startswith("claude_code/")):
+        raise SystemExit("--tools is for a claude_code model: the CLI runs them, no other backend can")
     actor, profile = console(
         directory,
         model=a.model,
@@ -370,8 +417,16 @@ async def _chat_main(
         notify=degraded.append,
         tree=tree,
         about_box=about_box,
+        own_tools=own_tools,
     )
-    backend = backend_for(a.model)
+    if own_tools:  # the CLI's own tools run in this directory (khive signs as its actor when configured)
+        options = {"tools": list(own_tools), "max_turns": getattr(a, "max_turns", 0)}
+        backend = backend_for(a.model, options, cwd=directory)
+    else:
+        backend = backend_for(a.model)
+    if isinstance(backend, ClaudeCodeSession):  # the CLI's own tool calls ask this actor's gate (ADR-0009/C6)
+        backend.actor = actor
+    runs: list[Run] = []
     say = Console(
         a.model,
         log,
@@ -380,6 +435,8 @@ async def _chat_main(
         verbose=a.verbose,
         calls=getattr(backend, "calls", None),
         head={"kind": "BOX", "box": box} | ({"image": image} if boxed else {}),
+        history=directory / ".lion" / "history",
+        status=lambda: status_line(actor, profile, runs, backend),
     )
     say.quiet_until = len(history) - 1
     say.open(a.model, directory, chat_id, sorted(profile.specs), resumed)
@@ -401,7 +458,6 @@ async def _chat_main(
             raise SystemExit(f"the sandbox image {sandbox.image} did not build:\n{build}")
         say.notice(f"sandbox {sandbox.name}: a VM over {directory}" + (", no network" if a.offline else ""))
         await sandbox.start()
-    runs: list[Run] = []
     off = actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
     interrupt = Interrupt(runs, asyncio.current_task(), say)
     asyncio.get_running_loop().add_signal_handler(signal.SIGINT, interrupt)

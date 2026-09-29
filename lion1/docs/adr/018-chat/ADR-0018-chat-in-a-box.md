@@ -80,8 +80,8 @@ turn with commands runs them first.
 After the first line, `/quit`, `/exit`, `/q` or the end of input ends the run `Stopped`. The chat's
 `accept` refuses every `OUT{}`; three in a row end the run `Refused`
 ([[ADR-0003-the-bounds#^c4|ADR-0003/C4]]). Each entry reaches the log as it lands, and the record is
-flushed whole however the run ends. A first Ctrl-C lets the turn in flight settle, then hands back;
-a second, or one at the prompt, ends the chat.
+flushed whole however the run ends. A first Ctrl-C cuts the call in flight and hands back; a second,
+or one at an empty prompt, ends the chat.
 
 ### C2: The flags choose the tools and the guidance _(enforced: mechanical)_ ^c2
 

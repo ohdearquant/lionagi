@@ -88,7 +88,7 @@ class Message:
     role: str  # system | user | assistant
     content: str
     name: str | None = None  # the record entry this message renders, when it renders one
-    spec: str | None = None  # for a RESULT: the command that produced it
+    spec: str | None = None  # for a RESULT that landed: its command (a failed one changed nothing)
     run: str | None = None  # the run whose record this renders: a backend keeping sessions keys on it
 
 
@@ -372,6 +372,8 @@ class Run:
             # what goes through the runtime: sends, notes, context operations)
         )
         self.pause = False  # hand the turn back at the next round boundary (a person's interrupt)
+        self.call: asyncio.Future | None = None  # the backend call in flight, what `interrupt` cuts
+        self.cut = False  # `interrupt` cancelled the call: the round ends with no turn, not the run
         self.same_turns = 0  # consecutive turns byte-identical to the one before
         self.same_errors = 0  # consecutive rounds ending in the same retry error
         self.viewed: set[int] = set()  # RESULT seqs in view at the last render
@@ -397,6 +399,16 @@ class Run:
         self.bound: list[str] = []  # program values bound since the last notification, which carries them
         self.outcome: Outcome | None = None
         self.output: Any = None
+
+    def interrupt(self) -> bool:
+        """A person's interrupt. A backend call in flight is cut now and the turn is theirs (True);
+        otherwise the round in flight finishes and the turn is theirs at its end (False)."""
+        self.pause = True
+        if self.call is not None and not self.call.done():
+            self.cut = True
+            self.call.cancel()
+            return True
+        return False
 
     @property
     def elapsed(self) -> float:
@@ -886,7 +898,21 @@ class Actor:
                 messages = self._render(run, subset)
                 text = backend(messages)
                 if inspect.isawaitable(text):
-                    text = await text
+                    run.call = asyncio.ensure_future(text)
+                    try:
+                        text = await run.call
+                    except asyncio.CancelledError:
+                        if not run.cut:  # the run itself is being cancelled
+                            raise
+                        run.cut = False
+                        run.record.append(
+                            Kind.SYSTEM,
+                            "the person cut this round short: its call was abandoned and no turn came of it",
+                            round=round_no,
+                        )
+                        continue
+                    finally:
+                        run.call = None
                 reported = getattr(text, "prompt_tokens", None)
                 cost = getattr(text, "cost", None)
                 refused = getattr(text, "refused", None)
@@ -2381,7 +2407,9 @@ def _message(v: ViewEntry) -> Message:
     if e.kind is Kind.RESULT:
         res: Result = e.content
         body = _text(res.value) if res.ok else f"error: {res.error}"
-        return Message("user", f"[{e.name} {e.alias} {res.spec}] {body}", name=e.name, spec=res.spec)
+        # a session-keeping backend restarts on a directive's result; a failed one left the view as it was
+        spec = res.spec if res.ok else None
+        return Message("user", f"[{e.name} {e.alias} {res.spec}] {body}", name=e.name, spec=spec)
     label = e.name
     if e.meta.get("inbound"):
         label += f" from {e.meta['origin']}"
