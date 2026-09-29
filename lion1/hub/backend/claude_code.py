@@ -197,6 +197,7 @@ class ClaudeCodeSession:
                 # leaves the accepted socket open)
                 asks: set[asyncio.Task] = set()
                 arrived: dict[asyncio.Task, asyncio.Event] = {}  # set once the ask has read its request
+                writers: dict[asyncio.Task, asyncio.StreamWriter] = {}  # each ask's side of its hook
                 closed = asyncio.Event()
                 loop = asyncio.get_running_loop()
                 listener = stack.enter_context(socket.socket(socket.AF_UNIX))
@@ -213,12 +214,14 @@ class ClaudeCodeSession:
                         conn.close()
                         raise
                     writer = asyncio.StreamWriter(transport, protocol, reader, loop)
+                    writers[asyncio.current_task()] = writer
                     await _ask(self.actor, run, self.requires, closed, came, reader, writer)
 
                 def done(task: asyncio.Task) -> None:
                     # by callback, not in the task: one cancelled before its first step never runs
                     asks.discard(task)
                     arrived.pop(task, None)
+                    writers.pop(task, None)
 
                 def accept() -> list[asyncio.Task]:
                     # every connection waiting on the listener, each its own task; synchronous, so
@@ -253,10 +256,11 @@ class ClaudeCodeSession:
                             await asyncio.sleep(0)  # the arrivals land before the cancel pass
                     finally:
                         # a caller cancelling the call again while it settles still leaves no ask
-                        # running: each is cancelled and joined, the caller's cancel raised after.
-                        # The join is bounded: an ask that does not end within _JOIN_S is abandoned
-                        # with a warning, so a cancel (or the SIGINT that becomes one) still ends
-                        # the call instead of being swallowed on every turn of an unending join
+                        # able to answer: each is cancelled and joined, the caller's cancel raised
+                        # after. The join is bounded: an ask that does not end within _JOIN_S has
+                        # its hook connection dropped (the hook reads EOF and refuses, `_HOOK`), is
+                        # abandoned with a warning, and the call returns, so a cancel (or the SIGINT
+                        # that becomes one) is not swallowed on every turn of an unending join
                         cancelled = False
                         until = loop.time() + _JOIN_S
                         while asks:
@@ -273,6 +277,9 @@ class ClaudeCodeSession:
                                     break
                             if not join.done():
                                 stuck = [t.get_name() for t in pending if not t.done()]
+                                for task in pending:
+                                    if not task.done() and (writer := writers.get(task)):
+                                        writer.transport.abort()  # whatever it answers later goes nowhere
                                 warnings.warn(
                                     f"{len(stuck)} gate ask(s) did not end within {_JOIN_S}s of the "
                                     f"call's end and are abandoned: {', '.join(stuck)}",
