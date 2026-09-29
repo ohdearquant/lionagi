@@ -469,15 +469,16 @@ least two and at most all of them.
   store: 267 tests across `tests/test_desk.py`, `tests/test_desk_residuals.py`,
   `tests/test_areas.py`, `tests/test_lookups.py`, `tests/test_verdicts.py`, `tests/test_chores.py`
   and `tests/test_agent.py` pass on the code of 2026-09-24.
-- **S8**: Owed until 2026-09-28, now held: with `[desk] admit_replies` true (default false),
-  `Desk.admit` lets through a clarify's answer mailed to the desk's own actor, from the actor the
-  clarify addressed, on a thread whose clarify is still open; anything else meets C3's gate. The
-  answer joins `desk_pending` under its own id, the clarified message with the answer under it, and
-  the next sweep lists it. Pinned in `tests/test_desk.py` by
-  `test_a_clarifys_answer_mailed_to_the_desk_is_admitted_and_listed_under_the_clarified_message` and
-  the arms of
-  `test_mail_to_the_desk_that_answers_no_open_clarify_of_its_sender_is_dropped_at_the_gate`: another
-  actor, another thread, a closed clarify, the setting off.
+- **S8**: With `[desk] admit_replies` true (default false), `Desk.admit` admits a clarify's answer
+  mailed to the desk's own actor, from the actor the clarify addressed, on a thread whose clarify is
+  open. Anything else meets C3's gate, as does every message when the ledger cannot be read, the
+  failure among the agent's errors. The answer joins `desk_pending` under its own id, the clarified
+  message with it, and the next sweep lists it; the guidance says so only under the setting. Pinned
+  in `tests/test_desk.py` by
+  `test_a_clarifys_answer_mailed_to_the_desk_is_admitted_and_listed_under_the_clarified_message`,
+  `test_a_ledger_the_gate_cannot_read_leaves_the_mail_to_the_agents_gate_and_the_error_on_the_wake`,
+  `test_the_guidance_names_the_listing_of_an_answer_only_when_the_setting_admits_one` and
+  `test_mail_to_the_desk_that_answers_no_open_clarify_of_its_sender_is_dropped_at_the_gate`.
 - **S9**: `Record` reads no memory: a decision kept only in khive memory, in no note of the kinds
   `Decisions` searches, is missed.
 - **S10**: A resident whose directory the registry does not list is not counted; adding it is one
