@@ -61,7 +61,7 @@ _FRAMES = (
 )
 _REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-_KEEP = ("inbound", "origin", "reply", "execution")
+_KEEP = ("inbound", "origin", "reply", "execution", "unread", "refused")
 
 
 class CheckpointError(Exception):
@@ -78,7 +78,7 @@ class Var:
     kind: str  # fact | watch | spawn | lane | directive | topic | posture
     # watch {command, description, timeout_ms} · spawn {id, task, state} · lane {kind, id, title, awaiting}
     value: Any
-    source: str  # declared | hook | registry | notes | transcript | khive
+    source: str  # declared | hook | registry | notes | transcript | khive | gh
     at: str  # ISO time, or the record seq for a resident
     size: int | None = None  # set when the value is over LAZY: the restore names it, never prints it
     # where the value lives when not in the checkpoint (`note.get(key="posture")`); None: the file keeps it
@@ -99,8 +99,9 @@ class Checkpoint:
 
 def entry_of(row: dict) -> Entry | None:
     """A log row (the chat log's `entry_row`, ADR-0018/D1) back as a record entry: a result as Result,
-    the inbound marks, each result's execution fact and the context directive kept, the seq as it was;
-    None for a row of another kind (a USAGE row, or another app's: the log, not the record)."""
+    the inbound marks, each result's execution fact, a refused turn's reason and the context directive
+    kept, the seq as it was; None for a row of another kind (a USAGE row, or another app's: the log,
+    not the record)."""
     if row["kind"] not in Kind.__members__:
         return None
     kind = Kind[row["kind"]]
@@ -234,7 +235,7 @@ def take(
     return Checkpoint(
         id=f"ckpt-{now:%Y%m%d-%H%M%S}-{re.sub(r'[^A-Za-z0-9]+', '-', actor).strip('-')}",
         actor=actor,
-        taken_at=now.isoformat(timespec="seconds"),
+        taken_at=now.isoformat(),
         why=why,
         source=source,
         vars=tuple(named.values()),
@@ -261,13 +262,26 @@ def _shown(c: Checkpoint, v: Var) -> str:
     return f"{v.size} chars, not shown here; load it with `{how}`"
 
 
+def _listed(c: Checkpoint, then: str) -> Checkpoint:
+    """The checkpoint when its why and every var's kind are on the lists (ADR-0019/C1); otherwise
+    refused, the value named, never left out."""
+    if c.why not in WHYS:
+        raise CheckpointError(f"{c.id}: why {c.why!r} is not one of {', '.join(WHYS)}; {then}")
+    for v in c.vars:
+        if v.kind not in KINDS:
+            raise CheckpointError(
+                f"{c.id}: var {v.name!r} has kind {v.kind!r}, not one of {', '.join(KINDS)}; {then}"
+            )
+    return c
+
+
 def render_prompt(checkpoint: Checkpoint) -> str:
     """The first prompt of the fresh session. Its first line names the checkpoint, the actor and the
     context figure at the take, and asks for the watches to be re-armed before any other work; each
     watch's command follows verbatim. Then the person's words verbatim (the newest DIRECTIVES), the
     lanes, the running spawns, the topic, what was declared, the kept view, the posture, and what to do
     first. A lazy var is its name, its size and how to load it, never its body."""
-    c = checkpoint
+    c = _listed(checkpoint, "nothing was restored")
     of = {k: [v for v in c.vars if v.kind == k] for k in KINDS}
     watches, facts = of["watch"], {v.name: v for v in of["fact"]}
     ctx = c.source.get("context") or {}
@@ -404,11 +418,11 @@ def _replace_text(path: Path, text: str) -> None:
 def save(checkpoint: Checkpoint, directory: str | Path) -> Path:
     """`<dir>/.khive/context/<id>.json`, then `latest.json` pointing at it; the path written. An id
     already on disk (two takes in one second) gets `-02`, `-03`: nothing is overwritten. An id that is
-    not a name (`load` takes only a name; `latest` is the pointer's) and a value the file cannot carry
-    are refused before anything is written."""
+    not a name (`load` takes only a name; `latest` is the pointer's), a why or a kind off the lists and
+    a value the file cannot carry are refused before anything is written."""
     if not _ID.fullmatch(checkpoint.id) or checkpoint.id == "latest":
         raise CheckpointError(f"checkpoint id {checkpoint.id!r} is not a name; nothing was written")
-    doc = asdict(checkpoint)
+    doc = asdict(_listed(checkpoint, "nothing was written"))
     try:
         data = _bytes(doc)
     except ValueError as e:  # a lone surrogate: JSON carries it escaped, UTF-8 refuses it
@@ -440,7 +454,8 @@ def _bytes(doc: dict) -> bytes:
 
 
 def load(directory: str | Path, id: str | None = None) -> Checkpoint:
-    """The checkpoint `id` under `<dir>/.khive/context/`, the latest when None."""
+    """The checkpoint `id` under `<dir>/.khive/context/`, the latest when None; a file whose why or a
+    var's kind is off the lists is refused, never read as another checkpoint."""
     ctx = Path(directory) / ".khive" / "context"
     if id is None:
         try:
@@ -456,7 +471,7 @@ def load(directory: str | Path, id: str | None = None) -> Checkpoint:
         doc = json.loads(path.read_text())
     except FileNotFoundError:
         raise CheckpointError(f"no checkpoint {id!r} in {ctx}") from None
-    return Checkpoint(**{**doc, "vars": tuple(Var(**v) for v in doc["vars"])})
+    return _listed(Checkpoint(**{**doc, "vars": tuple(Var(**v) for v in doc["vars"])}), "nothing was loaded")
 
 
 def to_history(checkpoint: Checkpoint) -> tuple[Entry, ...]:
