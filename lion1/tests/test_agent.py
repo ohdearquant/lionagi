@@ -15,6 +15,7 @@ import pytest
 from lion_cli.agent import agent_main, stats
 
 from hub.agent import Agent, AgentError, Budget, Wake, WakeRule
+from hub.agent.chores import ALLOWED_VERBS
 from hub.backend import claude_code
 from hub.backend.claude_code import ClaudeCodeSession
 from hub.khive import Khive
@@ -1177,6 +1178,8 @@ def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the
         "signing as lambda:x:v1" in system
         and "Mail from lambda:owner, lambda:x, lambda:x:v1 is your work" in system
     )
+    named = ", ".join(sorted(ALLOWED_VERBS))  # the verbs by name, not a count and a summary
+    assert f"(these verbs and no other: {named}; memory.remember with an explicit salience" in system
     results = [e.content.value for e in run.record if e.kind is Kind.RESULT]
     assert any("twin: hello from the directory" in str(r) for r in results)
     sends = [op for op in ops if op.startswith("comm.send(")]

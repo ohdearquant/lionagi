@@ -320,6 +320,16 @@ them. The guidance says a turn that issues commands says what it is doing, never
 are: results are read only in the notice the loop writes. A turn that writes the notice is refused
 ([[ADR-0004-the-language#^c4|ADR-0004/C4]]).
 
+### C18: The khive tool names every verb it takes _(enforced: mechanical)_ ^c18
+
+- **Subject**: the `khive_ops` line of the guidance `console()` composes, and the chair's in `lion
+  agent`.
+- **Violated when**: a verb the bound client admits is missing from the line, or the line names a
+  verb the client refuses.
+
+The line lists the client's allow list by name, sorted, then the salience cap on `memory.remember`.
+It gave a count and a summary before, and a model learned a verb was allowed only by calling it.
+
 ## Decisions
 
 ### D1: `hub/chat.py`: `chat`, `entry_row`, `load_log` ^d1
@@ -487,6 +497,17 @@ of its own.
 - **Landing evidence**: `tests/test_guidance.py`:
   `test_each_guidance_file_is_read_by_name_and_its_fields_filled` holds the sentence. Control:
   without it the test fails.
+
+### D15: The tool line writes the client's own `allowed` ^d15
+
+Serves C18. `console` in `lion_cli/chat.py` and `chair` in `lion_cli/agent.py` join
+`sorted(khive.allowed)` of the `Bounded` client they register, so the line and the boundary read one
+set.
+
+- **Landing evidence**: `apps/cli/tests/test_chat_command.py`:
+  `test_a_console_in_an_actors_directory_gets_khive_signing_as_that_actor`; `tests/test_agent.py`:
+  `test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread`. Control:
+  the old line fails both.
 
 ## Alternatives
 

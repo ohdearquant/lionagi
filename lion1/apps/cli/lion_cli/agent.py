@@ -144,9 +144,9 @@ def chair(directory: Path, cfg: dict, actor: Actor, khive: Bounded) -> Profile:
     specs = files(actor, LocalTree(directory)) | khive_ops(actor, khive) | {"send"}
     specs |= {h.name for h in DEFAULT_HANDLERS}
     tools = (
-        f"read(path), list_dir(path), khive_ops(ops) signing as {khive.actor} ({len(khive.allowed)} verbs: "
-        f"reads, comm.read, schedule.remind, memory.remember with an explicit salience <= {SPAWN_SALIENCE}), "
-        "send(to, thread, text), note.get(key), note.list()"
+        f"read(path), list_dir(path), khive_ops(ops) signing as {khive.actor} (these verbs and no other: "
+        f"{', '.join(sorted(khive.allowed))}; memory.remember with an explicit salience <= "
+        f"{SPAWN_SALIENCE}), send(to, thread, text), note.get(key), note.list()"
     )
     senders = ", ".join(sorted(khive.recipients or ()))
     if own := (cfg.get("claude_code") or {}).get("tools"):

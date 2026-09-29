@@ -271,6 +271,18 @@ _BOUNDS: dict[str, float | None] = {
 }
 
 
+_NOTES_TOLD = 10  # the first notification names this many of the notes already kept, then counts the rest
+_TOKEN = re.compile(r"[\w.:/-]+")  # a store's key or run id written as itself; anything else is quoted
+
+
+def _said(text: str) -> str:
+    """A key or run id a note store supplied, as the notification writes it: a plain token as itself,
+    anything else by its repr, so none breaks the line, reads as another entry, or runs past 60."""
+    text = str.__str__(text)  # the plain string: a subclass's own formatting never runs
+    shown = text if _TOKEN.fullmatch(text) else repr(text)
+    return shown if len(shown) <= 60 else shown[:57] + "..."
+
+
 def _grant(run: Run, bound: str, amount: float, reason: str) -> bool:
     return True
 
@@ -1681,6 +1693,23 @@ class Actor:
                 lines.append(f"  {alias}: {why}")
         if run.notes_written:
             lines.append("notes written: " + ", ".join(run.notes_written))
+        if run.round == 1:  # the notes this profile already keeps, from earlier runs, so none goes unread
+            try:
+                kept = sorted(run.notes.list(), key=lambda n: n.key)  # a store need not list in order
+                told = []
+                for n in kept[:_NOTES_TOLD]:
+                    told.append(f"{_said(n.key)} ({len(_text(n.value))} chars, run {_said(n.run)})")
+            except Exception as e:  # a store that cannot be read is a line, not the run's end
+                try:
+                    why = repr(f"{type(e).__name__}: {e}")[1:-1]  # escaped onto one line, unquoted
+                    why = why if len(why) <= 200 else why[:197] + "..."
+                except Exception:  # an error that cannot be said is not said
+                    why = "an error that cannot be printed"
+                lines.append(f"notes kept: unknown, the store could not be read: {why}")
+            else:
+                if kept:
+                    more = f", and {len(kept) - _NOTES_TOLD} more" if len(kept) > _NOTES_TOLD else ""
+                    lines.append(f"notes kept: {', '.join(told)}{more}")
         if run.hook_errors:
             lines.append("hooks failed (the commands ran; their results stand):")
             for alias, what in run.hook_errors:

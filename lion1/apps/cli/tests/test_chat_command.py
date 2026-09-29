@@ -32,6 +32,12 @@ def test_a_console_in_an_actors_directory_gets_khive_signing_as_that_actor(tmp_p
     (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
     actor, profile = console(tmp_path, model="deepseek/deepseek-v4.1-flash")
     assert "khive_ops" in profile.specs and "signing as lambda:x" in profile.system
+    # every verb the boundary admits, by name: a count and a summary left a model to find them by failing
+    from hub.agent.chores import ALLOWED_VERBS
+
+    named = ", ".join(sorted(ALLOWED_VERBS))
+    assert f"(these verbs and no other: {named}; memory.remember with an explicit salience" in profile.system
+    assert "schedule.agenda" in named and "comm.send" not in named
     assert profile.system.startswith("You are deepseek/deepseek-v4.1-flash, talking with a person")
     assert "describe the people and agents who own this directory, not you" in profile.system
     assert "OUT{}" in profile.system  # the person ends the conversation, not the model
