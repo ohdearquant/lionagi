@@ -61,6 +61,8 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   run each time it is drawn.
 - **own tools**: with a `claude_code` model, the Claude Code CLI's tools `--tools` names, run by the
   CLI inside each round.
+- **voice**: Alt-V at the editor: a recording from the microphone, transcribed on this machine
+  (`mlx-whisper`, behind the `voice` extra) into the line at the cursor.
 - **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
   defaults for the flags.
 
@@ -203,6 +205,18 @@ settles first. Only a result that changed the view carries its `spec`, so a fail
 the session as it was. `--tools`, for a `claude_code` model only, names the CLI's own tools; each
 call passes the console's gate and lands on the record as a result the model can hide.
 
+### C10: A message can be spoken _(enforced: mechanical)_ ^c10
+
+- **Subject**: `Voice` and the editor's Alt-V on a terminal.
+- **Violated when**: a recording is sent without the person reading it, the transcription blocks the
+  prompt, a prompt that ends leaves a recording running, or a missing extra ends the chat.
+
+A first Alt-V records from the microphone and the toolbar says so; a second stops it and the words
+land at the cursor, after a space when the line already holds one, for the person to read before
+Enter sends them. The transcription runs off the loop; the prompt stays live. Enter, Ctrl-C or
+Ctrl-D drops a recording still running. Without the extra, a microphone or a model, the toolbar says
+why and the prompt goes on.
+
 ## Decisions
 
 ### D1: `hub/chat.py`: `chat`, `entry_row`, `load_log` ^d1
@@ -278,6 +292,18 @@ takes the tool names and `chat_main` hands the session the console's actor as it
   `apps/cli/tests/test_chat_command.py`: the Ctrl-C presses; `tests/test_claude_code.py`:
   `test_a_failed_context_directive_does_not_restart_the_session`.
 
+### D7: `Voice`, `_off_loop` and `_real` ^d7
+
+Serves C10. `Voice.press` toggles: it starts `record()` or stops it and hands the audio to
+`transcribe` on a daemon thread, whose outcome `_off_loop` settles on the loop with
+`call_soon_threadsafe` (not the loop's executor: its shutdown would join a transcription still
+running). `_real` builds the microphone through sounddevice at 16 kHz mono and Whisper through
+mlx_whisper, imported on the thread since the import takes seconds; both are injectable for tests.
+`Editor.ask` calls `Voice.reset` when the prompt ends.
+
+- **Landing evidence**: `tests/test_voice.py`: the toggle, the text at the cursor, the space after a
+  word, the failures said on the toolbar, one transcription at a time, the reset, the extra missing.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -291,6 +317,7 @@ takes the tool names and `chat_main` hands the session the console's actor as it
 | Reading the person's line through `input()` with bracketed paste | the tty's line discipline still splits a paste into lines on some terminals and macOS drops any line over 1024 bytes without a word |
 | A first Ctrl-C that waits for the round to settle | a long tool turn made the interrupt look ignored; the call is the person's to cut |
 | Environment variables for the chat's defaults | a file the person can read back with `lion config` says where each value came from |
+| Whisper through a remote API | the recording leaves the machine; the local model answers in seconds on Apple silicon and needs no key |
 
 ## Consequences
 
