@@ -184,7 +184,7 @@ the two and a blank `answers`. `every` is a store repeat such as `every:30m` or 
 - **Landing evidence**:
   `test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_default`,
   `test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_scheduled_jobs` and
-  `test_scheduled_job_a_max_age_h_that_is_not_a_number_is_refused_at_build` in
+  `test_scheduled_job_a_max_age_h_that_is_not_a_positive_number_is_refused_at_build` in
   `tests/test_instruments.py`;
   `test_a_chore_without_an_error_direction_or_a_question_is_refused_at_build` in
   `tests/test_chores.py`.
@@ -253,7 +253,8 @@ Serves C1 and C7. `LockHolder.run` lists the named lock files and the agent's ow
 `lsof` call and resolves every pid to its full command line with one `ps` read; its control is this
 process holding its own pid file. A name `lsof` prints that no configured path resolves to, one it
 escaped, fails the control. `ScheduledJob.run` reads each artifact's age against its bound, then
-`launchctl print` for a named label's last exit. A bound that is not a number is refused at build.
+`launchctl print` for a named label's last exit. A bound that is not a positive finite number is
+refused at build.
 
 - **Landing evidence**: in `tests/test_instruments.py`,
   `test_lock_holder_resolves_each_holders_pid_to_its_full_command_line_beside_its_own_held_lock`,

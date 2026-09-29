@@ -938,14 +938,14 @@ def test_scheduled_job_a_supervisor_read_that_did_not_finish_is_unread_not_unloa
     assert out.control and out.findings[-1] == f"{artifact}: its supervisor com.example.job is not loaded"
 
 
-@pytest.mark.parametrize("bound", ["nan", '"soon"', "true"])
-def test_scheduled_job_a_max_age_h_that_is_not_a_number_is_refused_at_build(tmp_path, bound):
+@pytest.mark.parametrize("bound", ["nan", '"soon"', "true", "inf", "-1.0", "0"])
+def test_scheduled_job_a_max_age_h_that_is_not_a_positive_number_is_refused_at_build(tmp_path, bound):
     import tomllib
     from types import SimpleNamespace
 
     job = f'{{artifact = "/x/out.json", max_age_h = {bound}}}'
     cfg = tomllib.loads(f'owner = "lambda:x"\n[chores.scheduled-job]\njobs = [{job}]\n')
-    with pytest.raises(ValueError, match="max_age_h is a number of hours"):
+    with pytest.raises(ValueError, match="max_age_h is a positive number of hours"):
         instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), MemoryNoteStore())
 
 

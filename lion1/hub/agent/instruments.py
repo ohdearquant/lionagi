@@ -648,9 +648,10 @@ class ScheduledJob:
             if "artifact" not in j or "max_age_h" not in j:
                 raise ValueError(f"a scheduled job names its artifact and its max_age_h: {j}")
             b = j["max_age_h"]
-            # a NaN bound compares false against every age, so it would read every artifact fresh
-            if isinstance(b, bool) or not isinstance(b, int | float) or math.isnan(b):
-                raise ValueError(f"a scheduled job's max_age_h is a number of hours: {j}")
+            # a NaN bound compares false against every age and an infinite one above every age, so
+            # either would read every artifact fresh; a bound of zero or less reads every one stale
+            if isinstance(b, bool) or not isinstance(b, int | float) or not math.isfinite(b) or b <= 0:
+                raise ValueError(f"a scheduled job's max_age_h is a positive number of hours: {j}")
             j["max_age_h"] = float(b)
 
     async def run(self, args: dict[str, Any]) -> Outcome:
