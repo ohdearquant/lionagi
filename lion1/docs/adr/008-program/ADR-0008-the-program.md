@@ -245,9 +245,10 @@ placeholder.
   `test_the_context_figure_counts_a_consumed_result_as_its_placeholder`,
   `test_a_result_read_through_a_value_is_consumed_only_when_the_values_reader_settles_ok`,
   `test_a_failed_producer_writes_nothing_and_the_assignment_is_told_not_written`,
-  `test_a_show_later_in_the_same_program_stands_over_the_hide_of_what_it_consumed`. The hide rides
-  the notification's `meta["consumed"]`, beside the fold's `meta["directive"]`. Owed: the closure's
-  half, with the closure (ADR-0006).
+  `test_a_show_later_in_the_same_program_stands_over_the_hide_of_what_it_consumed`,
+  `test_a_show_dated_with_the_branch_that_consumed_its_target_stands_over_the_hide` (a consumption
+  precedes the entry it is dated at). The hide rides the notification's `meta["consumed"]`, beside
+  the fold's `meta["directive"]`. Owed: the closure's half, with the closure (ADR-0006).
 
 ### D4: A value is bound for the run, and a computed one rides the record ^d4
 

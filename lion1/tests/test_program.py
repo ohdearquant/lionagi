@@ -433,6 +433,24 @@ def test_a_show_later_in_the_same_program_stands_over_the_hide_of_what_it_consum
     assert any(m.content.startswith("[hidden; *name or context.show reopens: _r4 b") for m in seen[1])
 
 
+def test_a_show_dated_with_the_branch_that_consumed_its_target_stands_over_the_hide():
+    # the branch reads `a` before the show lands, so the two are dated at the same seq: the show is
+    # the later of the two and stands
+    seen: list = []
+    actor = _actor("branch-then-show", [])
+    run = _run(
+        actor,
+        fenced('a = echo(text="kept")', "if *a:", '    shown = context.show(refs=["a"])'),
+        "idle",
+        seen=seen,
+    )
+    hides = [(d.refs, d.at) for e in run.record if e.kind is Kind.SYSTEM for d in e.meta.get("consumed", ())]
+    assert hides == [(("a",), 4)]
+    assert [(e.alias, e.seq) for e in run.record if e.kind is Kind.RESULT] == [("a", 3), ("shown", 4)]
+    assert "[_r3 a echo] kept" in [m.content for m in seen[1]]
+    assert not any(m.content.startswith("[hidden") for m in seen[1])
+
+
 def test_a_value_computed_on_the_record_resolves_after_the_log_replays_it_and_nothing_runs_again():
     calls: list = []
     turn = fenced('a = echo(text="x")', "v = *a + *a", "b = echo(text=*v)")

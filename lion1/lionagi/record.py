@@ -133,15 +133,20 @@ class ViewEntry:
 
 
 def directives(record: Record) -> list[Directive]:
-    """Directives in the order of their `at`, record order among equals, off the RESULT of a context
-    command or a notification's SYSTEM entry: the hides of what a program consumed, each dated at its
-    consumption and so earlier than the notification carrying it, then the fold event."""
-    out = []
+    """Directives in the order of their `at`, off the RESULT of a context command or a notification's
+    SYSTEM entry: the hides of what a program consumed, each dated at its consumption and so earlier
+    than the notification carrying it, then the fold event. A consumption dated `at` happened before
+    the entry at that seq landed (a reader settles before its RESULT, a branch or a note write reads
+    before the next entry), so among equals the consumed hides come first: a show carried by that
+    entry stands over them (ADR-0008/D3); record order settles the rest."""
+    out: list[tuple[int, int, Directive]] = []
     for e in record:
         if e.kind in (Kind.RESULT, Kind.SYSTEM):
-            ds = (*(e.meta.get("consumed") or ()), e.meta.get("directive"))
-            out += [d for d in ds if isinstance(d, Directive)]
-    return sorted(out, key=lambda d: d.at)
+            out += [(d.at, 0, d) for d in e.meta.get("consumed") or () if isinstance(d, Directive)]
+            d = e.meta.get("directive")
+            if isinstance(d, Directive):
+                out.append((d.at, 1, d))
+    return [d for _, _, d in sorted(out, key=lambda t: t[:2])]
 
 
 def fold(record: Record, *, protect_input: bool = True) -> list[ViewEntry]:
