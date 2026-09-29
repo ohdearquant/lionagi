@@ -317,6 +317,7 @@ class Run:
         # expression and the note writes before it; a value nothing has read stays bound (ADR-0008/C6)
         self.unread: dict[str, tuple[int, ast.expr, dict[str, asyncio.Task]]] = {}
         self.computed: list[str] = []  # program values computed since the last notification, which keeps them
+        self.bound: list[str] = []  # program values bound since the last notification, which carries them
         self.outcome: Outcome | None = None
         self.output: Any = None
 
@@ -647,8 +648,13 @@ class Actor:
                     continue
                 _admit(run, program, replayed.seq)
             if profile.language == "program":  # the values a program computed, bound again as they were
+                for alias, seq, line, source in e.meta.get("bound", ()):  # bound, and read by nothing yet
+                    expr = ast.parse(source, mode="eval").body
+                    ast.increment_lineno(expr, line - 1)
+                    run.unread[alias] = (seq, expr, {})
                 for alias, seq, value in e.meta.get("values", ()):
                     run.values[alias] = (seq, value)
+                    run.unread.pop(alias, None)
         for text in request.inputs:
             run.record.append(Kind.INPUT, text)
         self.runs[run.id] = run  # live from here: a history that does not replay leaves no run behind
@@ -686,6 +692,14 @@ class Actor:
                 if run.computed:  # the values a program computed, so a replayed record binds them again
                     notice.meta["values"] = tuple((a, *run.values[a]) for a in run.computed)
                     run.computed.clear()
+                if run.bound:  # the values it bound and nothing read yet: their expressions, for a replay
+                    notice.meta["bound"] = tuple(
+                        (a, seq, expr.lineno, ast.unparse(expr))
+                        for a in run.bound
+                        if a in run.unread
+                        for seq, expr, _ in (run.unread[a],)
+                    )
+                    run.bound.clear()
                 if stop is not None and stop():
                     # asked after the notification, not before it: the sections have just looked at
                     # the world, and what they saw (acceptance checks passing, a fix that has stood
@@ -1498,6 +1512,7 @@ class _Walk:
             elif isinstance(node, Value):
                 bound = (self.seq, node.expr, dict(self.writes))
                 self.values[node.alias] = self.run.unread[node.alias] = bound
+                self.run.bound.append(node.alias)
             else:
                 self.write(node)
         return None

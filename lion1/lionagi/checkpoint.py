@@ -125,6 +125,8 @@ def entry_of(row: dict) -> Entry | None:
         meta["directive"] = directive(d)
     if isinstance(ds := kept.get("consumed"), list):  # a program's consumed results ride a notification too
         meta["consumed"] = tuple(directive(d) for d in ds)
+    if isinstance(bs := kept.get("bound"), list):  # the values a program bound and nothing read yet
+        meta["bound"] = tuple((str(b[0]), int(b[1]), int(b[2]), str(b[3])) for b in bs)
     if isinstance(vs := kept.get("values"), list):  # and the values it computed: alias, seq, value,
         # or alias, seq, None, error for one that failed to compute, bound to its failure
         meta["values"] = tuple(

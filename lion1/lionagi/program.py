@@ -586,6 +586,8 @@ def _arith(node: ast.expr, op: tuple[str, Callable[[Any, Any], Any]], a: Any, b:
         raise EvalError(f"line {node.lineno}: cannot apply {sign} to {_kind(a)} and {_kind(b)}") from None
     except ZeroDivisionError:
         raise EvalError(f"line {node.lineno}: division by zero") from None
+    except OverflowError:
+        raise EvalError(f"line {node.lineno}: the result of {sign} is too large for a number") from None
     return _built(node, value)
 
 

@@ -8,7 +8,7 @@ import pytest
 from pydantic import BaseModel
 
 from hub.chat import entry_row
-from lionagi import Actor, Entry, Kind, Message, Profile, RunRequest, Success
+from lionagi import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Success
 from lionagi.actor import ProfileError, Result
 from lionagi.checkpoint import entry_of
 from lionagi.lndl import LNDLError
@@ -460,6 +460,35 @@ def test_a_value_computed_on_the_record_resolves_after_the_log_replays_it_and_no
     run = _run(_actor("resumed", calls), fenced("d = echo(text=*v)"), "idle", history=history)
     assert run.record.get("d").content.value == "xx" and calls == [("echo", "xx")]
     assert run.values["v"] == first.values["v"] == (2, "xx")
+
+
+def test_a_value_nothing_read_is_bound_again_after_the_log_replays_it_and_reads_as_it_would_have():
+    calls: list = []
+    first = _run(
+        _actor("first", calls),
+        fenced('a = echo(text="a")', 'v = "kept"', "", "n = *a + *v", "bad = *v / 0"),
+        "idle",
+    )
+    assert calls == [("echo", "a")] and list(first.unread) == ["v", "n", "bad"]
+    # the bindings ride the notification as their expressions, each with the line it was written on
+    notice = next(e for e in first.record if e.kind is Kind.SYSTEM and e.meta.get("bound"))
+    assert notice.meta["bound"] == (
+        ("v", 2, 2, "'kept'"),
+        ("n", 2, 4, "__ptr_a + __ptr_v"),
+        ("bad", 2, 5, "__ptr_v / 0"),
+    )
+    history = tuple(entry_of(json.loads(json.dumps(entry_row(e), default=str))) for e in first.record)
+    calls.clear()
+    run = _run(_actor("resumed", calls), fenced("OUT{x: *n}"), history=history)
+    assert run.output == {"x": "akept"} and calls == [] and run.values["n"] == (2, "akept")
+    run = _run(_actor("resumed-bad", calls), fenced("OUT{y: *bad}"), "idle", history=history)
+    assert run.output is None and "*bad: line 5: cannot apply / to str and int" in _notices(run)
+
+
+def test_an_arithmetic_result_too_large_for_a_number_is_a_language_error_not_a_crash():
+    run = _run(_actor("overflow", []), fenced(f"OUT{{x: {'9' * 401} / 1}}"), "idle")
+    assert run.outcome == Exhausted(2, "rounds")
+    assert "line 1: the result of / is too large for a number" in _notices(run)
 
 
 def test_a_value_bound_by_an_earlier_turn_reads_after_the_reading_programs_own_note_writes():
