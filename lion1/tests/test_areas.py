@@ -582,7 +582,7 @@ def test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_ever
     cursor = {"wake": 2, "at": f"{TODAY} 11:09:15", "outcome": "Success"}
     partial = {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": 1}
     d = agent_dir(tmp_path, "desk", role="desk", cursor=cursor, spend=partial)
-    whole_day = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3}
+    whole_day = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3, "unknown": 0}  # counted: none missed
     done = agent_dir(tmp_path, "whole", role="desk", cursor=cursor, spend=whole_day)
     area = Area("x", "lambda:x", [str(d), str(done)])
     r, whole = resident(area, str(d), TODAY), resident(area, str(done), TODAY)
@@ -604,6 +604,33 @@ def test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_ever
     html = resident_page(r, wakes(str(d)), "", [], None, 7, str(d))
     assert f"today 2 run(s), 2 mail, {mark}</p>" in html and f"<td>{mark}</td>" in html
     assert "<td>$0.1234</td>" in html  # the complete wake beside it carries no mark
+
+
+@pytest.mark.parametrize(
+    "before",
+    [
+        {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3},
+        {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": None},
+    ],
+)
+def test_a_days_row_from_before_the_count_is_marked_partial_by_an_unknown_number_in_every_view(
+    tmp_path, before
+):
+    # the row as the version before the count left it (no key), and as the first wake after it writes it
+    cursor = {"wake": 2, "at": f"{TODAY} 11:09:15", "outcome": "Success"}
+    d = agent_dir(tmp_path, "desk", role="desk", cursor=cursor, spend=before)
+    counted = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3, "unknown": 0}
+    done = agent_dir(tmp_path, "whole", role="desk", cursor=cursor, spend=counted)
+    area = Area("x", "lambda:x", [str(d), str(done)])
+    r, whole = resident(area, str(d), TODAY), resident(area, str(done), TODAY)
+    assert (r.cost_today, r.unknown_today, whole.unknown_today) == (0.3, None, 0)
+    mark = "$0.3000 (partial: calls of unknown cost before this count went uncounted)"
+    text = table([area], [r, whole])
+    assert f"today 2 run(s), 2 mail, {mark}\n" in text and text.endswith("today 1 run(s), 1 mail, $0.3000")
+    html = page([area], [r, whole])
+    assert f"<td>2 run(s), 2 mail, {mark}</td>" in html and "<td>1 run(s), 1 mail, $0.3000</td>" in html
+    html = resident_page(r, wakes(str(d)), "", [], None, 7, str(d))
+    assert f"today 2 run(s), 2 mail, {mark}</p>" in html
 
 
 def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_the_controls(tmp_path):

@@ -432,6 +432,76 @@ def test_a_call_of_unknown_or_incomplete_cost_adds_nothing_to_the_cost_and_the_r
     assert "0 out, $0.4000 (partial: 1 call(s) of unknown cost); 0 idle poll(s) before it" in last
 
 
+def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_number_to_its_end(tmp_path):
+    from hub.agent.agent import _day, _line
+
+    now = [1_000_000.0]
+    khive = FakeKhive()
+    envelopes = [
+        {"total_cost_usd": 0.3},
+        {"total_cost_usd": None},
+        {"total_cost_usd": 0.1},
+        {"total_cost_usd": 0.2},
+    ]
+
+    class Billed(Scripted):
+        async def __call__(self, messages):
+            text = await super().__call__(messages)
+            self.calls[-1] = envelopes.pop(0)
+            return text
+
+    state = FileNoteStore(tmp_path / "notes" / "agent.json")
+    # the day's row as the version before the count wrote it: dollars, no `unknown` key
+    state.put("spend", {"day": _day(now[0]), "cost": 0.5, "calls": 2, "wakes": [], "runs": 1}, run="-", seq=0)
+    backend = Billed(DONE, DONE, DONE, DONE, khive=khive)
+    agent = Agent(
+        Actor("echo", privileges={"comm.send"}),
+        khive,
+        backend,
+        profile_for,
+        state=state,
+        budget=Budget(cost_per_day=0.85),
+        clock=lambda: now[0],
+    )
+    uncounted = "(partial: calls of unknown cost before this count went uncounted)"
+    rows, lines = [], []
+    for n in range(3):
+        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        assert asyncio.run(agent.wake(wait_ms=0)) is not None
+        rows.append({k: agent.state.get("spend").value[k] for k in ("calls", "cost", "unknown")})
+        lines.append(_line(agent.state.get("cursor").value))
+    # the count stays None however many calls land after it: the ones before cannot be counted now
+    assert rows == [
+        {"calls": 3, "cost": 0.8, "unknown": None},
+        {"calls": 4, "cost": 0.8, "unknown": None},
+        {"calls": 5, "cost": pytest.approx(0.9), "unknown": None},
+    ]
+    assert "$0.3000; 0 idle poll(s)" in lines[0]  # the wake's own line counts its own calls
+    assert "$0.0000 (partial: 1 call(s) of unknown cost); 0 idle poll(s)" in lines[1]
+    assert "$0.1000; 0 idle poll(s)" in lines[2]
+    khive.mail.append(mail("lambda:a", "go", mid="m3"))
+    assert asyncio.run(agent.wake(wait_ms=0)) is None
+    assert agent.held == f"$0.9000 spent today {uncounted} (cap $0.85); next day"
+    day = stats(tmp_path).splitlines()[0]
+    assert f"$0.9000 {uncounted}; 4 wake(s)" in day
+    now[0] += 86_400  # the next day starts counted
+    khive.mail.append(mail("lambda:a", "go", mid="m4"))
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    assert {k: agent.state.get("spend").value[k] for k in ("calls", "cost", "unknown")} == {
+        "calls": 1,
+        "cost": 0.2,
+        "unknown": 0,
+    }
+    assert "partial" not in stats(tmp_path).splitlines()[0]
+    # a row from before the count that is already at the cap is held before any wake writes it: the
+    # hold and the stats line still say it is uncounted
+    state.put("spend", {"day": _day(now[0]), "cost": 0.9, "calls": 2, "wakes": [], "runs": 1}, run="-", seq=9)
+    khive.mail.append(mail("lambda:a", "go", mid="m5"))
+    assert asyncio.run(agent.wake(wait_ms=0)) is None
+    assert agent.held == f"$0.9000 spent today {uncounted} (cap $0.85); next day"
+    assert f"$0.9000 {uncounted}; 1 wake(s)" in stats(tmp_path).splitlines()[0]
+
+
 def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(tmp_path):
     notes_file = tmp_path / "notes" / "agent.json"
     assert stats(tmp_path) == f"no notes at {notes_file}: the agent has not run from this directory"

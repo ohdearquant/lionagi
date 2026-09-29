@@ -81,7 +81,8 @@ function esc(s) {
 }
 function money(n, unknown) {  // the mark hub.areas.partial() writes, beside the dollars it qualifies
   return '$' + (Number(n) || 0).toFixed(4) +
-    (unknown > 0 ? ' (partial: ' + unknown + ' call(s) of unknown cost)' : '');
+    (unknown === null ? ' (partial: calls of unknown cost before this count went uncounted)' :
+     unknown > 0 ? ' (partial: ' + unknown + ' call(s) of unknown cost)' : '');
 }
 // 32 hex characters, the token the server keys a send on; getRandomValues also runs over plain http
 function uid() {

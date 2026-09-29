@@ -189,9 +189,13 @@ def _git_apply(directory: Path, *args: str) -> list[str]:
 
 def spent(calls: list[dict]) -> tuple[float, int]:
     """What the session was billed: each call's `total_cost_usd` (every attempt, the failed ones
-    too), falling back to the last attempt's `usage.cost` for a backend that reports only that; and
-    how many calls that sum misses, with no figure at all or the router's `cost_complete` false."""
-    cost = sum(float(c.get("total_cost_usd") or (c.get("usage") or {}).get("cost") or 0) for c in calls)
+    too), falling back to the last attempt's `usage.cost` for a backend that reports only that, a
+    total of 0 being a bill of 0 so only an absent total falls back; and how many calls that sum
+    misses, with no figure at all or the router's `cost_complete` false."""
+    cost = 0.0
+    for c in calls:
+        billed = c.get("total_cost_usd")
+        cost += float(billed if billed is not None else (c.get("usage") or {}).get("cost") or 0)
     unknown = sum(
         1
         for c in calls

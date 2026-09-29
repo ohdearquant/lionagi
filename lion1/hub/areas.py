@@ -86,9 +86,12 @@ _WAKE = re.compile(
 )
 
 
-def partial(unknown: int) -> str:
-    """The mark beside a sum of costs that misses `unknown` calls; nothing when it misses none.
-    Every reader that sums prints this one text, and `_WAKE` reads it back off the wake line."""
+def partial(unknown: int | None) -> str:
+    """The mark beside a sum of costs that misses `unknown` calls; nothing when it misses none, and
+    a day whose row predates the count (None) is partial by an unknown number. Every reader that
+    sums prints this one text, and `_WAKE` reads the counted form back off the wake line."""
+    if unknown is None:
+        return " (partial: calls of unknown cost before this count went uncounted)"
     return f" (partial: {unknown} call(s) of unknown cost)" if unknown else ""
 
 
@@ -116,7 +119,7 @@ class Resident:
     runs_today: int
     mail_today: int
     cost_today: float
-    unknown_today: int  # today's calls of unknown cost: cost_today is partial while this is not 0
+    unknown_today: int | None  # today's calls of unknown cost: cost_today is partial while this is not 0
     problem: str = ""  # what could not be read, when something could not
 
 
@@ -193,6 +196,7 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
         problem.append("no notes yet: never ran from this directory")
     if spend.get("day") != today:
         spend = {}
+    unknown = spend.get("unknown") if spend else 0  # a row with no count is from before the count
     return Resident(
         area=area.name,
         chair=area.chair,
@@ -209,7 +213,7 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
         runs_today=int(spend.get("runs") or 0),
         mail_today=int(spend.get("mail") or 0),
         cost_today=float(spend.get("cost") or 0.0),
-        unknown_today=int(spend.get("unknown") or 0),
+        unknown_today=None if unknown is None else int(unknown or 0),
         problem="; ".join(problem),
     )
 

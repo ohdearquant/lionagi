@@ -451,7 +451,8 @@ class Agent:
             at = time.strftime("%H:%M:%S", time.localtime(min(recent) + 3600))
             return f"{len(recent)} wakes in the last hour (cap {self.budget.wakes_per_hour}); next at {at}"
         today = spend.get("day") == _day(now)
-        cost, unknown = (spend.get("cost", 0.0), spend.get("unknown", 0)) if today else (0.0, 0)
+        # a same-day row with no count is from before the count: uncounted, never complete
+        cost, unknown = (spend.get("cost", 0.0), spend.get("unknown")) if today else (0.0, 0)
         if cost >= self.budget.cost_per_day:
             return (
                 f"${cost:.4f} spent today"
@@ -1258,7 +1259,8 @@ class Agent:
         mail: int = 0,
         context: int | None = None,  # the last call's, read for the wake line; the day's row keeps none
     ) -> None:
-        """The hour's wakes (the rate cap) and the day's spend: dollars, the calls those dollars miss,
+        """The hour's wakes (the rate cap) and the day's spend: dollars, the calls those dollars miss
+        (None when the day began before they were counted),
         model calls, tokens in and out, mail handled, wakes that ran, and polls that found nothing and
         cost no call. The day's row is the measurement behind "does a long-running agent save tokens":
         tokens per handled message beside idle polls at zero."""
@@ -1270,10 +1272,13 @@ class Agent:
             self._last_wake = now
         day = _day(now)
         same_day = spend.get("day") == day
+        # a same-day row with no count is from before the count: its calls went uncounted, and no
+        # later wake can count them, so the day reads as partial to its end (None, never 0)
+        counted = spend.get("unknown") if same_day else 0
         row = {
             "day": day,
             "cost": (spend.get("cost", 0.0) if same_day else 0.0) + cost,
-            "unknown": (spend.get("unknown", 0) if same_day else 0) + unknown,
+            "unknown": None if counted is None else counted + unknown,
             "wakes": wakes,
             "calls": (spend.get("calls", 0) if same_day else 0) + calls,
             "in": (spend.get("in", 0) if same_day else 0) + tokens_in,
