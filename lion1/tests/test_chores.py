@@ -103,12 +103,12 @@ class FakeKhive:
 
     async def exec(self, ops: str):
         self.ops.append(ops)
-        if ops.startswith("schedule.agenda"):  # a str is this actor's reminder; (content, actor) another's
+        if ops.startswith("schedule.agenda"):  # a str is this actor's reminder; (content, actor[, status])
             events = [
                 {
                     "content": c if isinstance(c, str) else c[0],
-                    "properties": {
-                        "status": "pending",
+                    "properties": {  # the agenda keeps a row's status here, none beside properties
+                        "status": "pending" if isinstance(c, str) or len(c) < 3 else c[2],
                         "created_by_actor": self.actor if isinstance(c, str) else c[1],
                     },
                 }
@@ -850,6 +850,15 @@ def test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those(tmp_
     assert 'content="tick: digest"' in reminds[1] and 'repeat="daily"' in reminds[1]
     assert 'content="tick: aged"' in reminds[2] and 'repeat="every:1h"' in reminds[2]
     assert asyncio.run(chores.ensure_ticks()) == created  # the fake agenda does not grow; a real one would
+
+
+def test_the_tick_check_reads_a_reminders_status_inside_properties_where_the_agenda_keeps_it(tmp_path):
+    # a row the agenda holds under another status is not a pending tick: it is created again
+    khive = FakeKhive(agenda=["tick: disk", ("tick: pr", SELF, "cancelled")])
+    chores, _ = build(
+        tmp_path, khive, [], disk=Probe("disk", full()), pr=Probe("pr", full(), every="every:15m")
+    )
+    assert asyncio.run(chores.ensure_ticks()) == ["tick: pr", "tick: digest", "tick: aged"]
 
 
 def test_the_chores_profile_names_each_chore_with_its_direction_and_question_and_only_three_handlers(
