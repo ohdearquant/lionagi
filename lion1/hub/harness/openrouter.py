@@ -188,9 +188,20 @@ class OpenRouter:
         if len(spent) > 1:
             envelope["attempt_usage"] = spent
         self.calls.append(envelope)
+        refused = None
+        if message.get("content") and message.get("tool_calls"):
+            # the model's turn in both channels: read by halves, either could run without the other,
+            # so none of it runs and the model is told (ADR-0004/C4); the envelope keeps the calls
+            refused = (
+                "the turn came back in two channels, as text and as a native tool call, and nothing in "
+                "it was executed: write the whole turn as text, the tags included; this conversation "
+                "has no tool-call API"
+            )
         # the prompt the answering attempt sent; the envelope's usage sums every attempt for the bill
         # the provider's own markup around a tag is rewritten to the tag before the runtime reads it
-        return Reply(normalize(text), prompt_tokens=(data.get("usage") or {}).get("prompt_tokens"))
+        return Reply(
+            normalize(text), prompt_tokens=(data.get("usage") or {}).get("prompt_tokens"), refused=refused
+        )
 
     def _bill_failure(self, spent: list[dict], error: str, attempts: int, t0: float) -> None:
         """A call that ends in an error after the provider billed, or may have billed, an attempt (a
