@@ -242,12 +242,20 @@ class ClaudeCodeSession:
                             await asyncio.wait(list(asks), timeout=0.2)
                     finally:
                         # a caller cancelling the call again while it settles still leaves no ask
-                        # running: each is cancelled, and joined as far as the caller lets it
+                        # running: each is cancelled and joined, the caller's cancel raised after
+                        cancelled = False
                         while asks:
                             pending = list(asks)
                             for task in pending:
                                 task.cancel()
-                            await asyncio.shield(asyncio.gather(*pending, return_exceptions=True))
+                            join = asyncio.gather(*pending, return_exceptions=True)
+                            while not join.done():
+                                try:
+                                    await asyncio.shield(join)
+                                except asyncio.CancelledError:
+                                    cancelled = True
+                        if cancelled:
+                            raise asyncio.CancelledError
 
                 stack.push_async_callback(settle)
                 hook = {"type": "command", "command": shlex.join([sys.executable, "-I", "-c", _HOOK, sock])}

@@ -790,6 +790,8 @@ def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_
         entered, approved = asyncio.Event(), asyncio.Event()
         runs = []
 
+        cleaned = asyncio.Event()
+
         @actor.before
         async def approval(run, la, request):
             runs.append(run)
@@ -799,6 +801,9 @@ def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_
             except asyncio.CancelledError:
                 if mode != "insist":
                     raise
+            finally:
+                if mode == "cancel-in-join":  # a hook whose cleanup takes a while after its cancel
+                    await cleaned.wait()
 
         backend = ClaudeCodeSession(cli=cli, tools=("Read",), actor=actor, timeout=1.0)
         t0 = time.monotonic()
@@ -810,6 +815,12 @@ def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_
         if mode == "cancel-twice":  # cancelled again while it settles: the gate is still joined
             await asyncio.sleep(0.05)
             task.cancel()
+        if mode == "cancel-in-join":  # cancelled again while the hook cleans up: joined before the return
+            await asyncio.sleep(0.4)
+            task.cancel()
+            await asyncio.sleep(0.1)
+            assert not task.done() and len(runs[0].record.of_kind(Kind.RESULT)) == 0
+            cleaned.set()
         done, _ = await asyncio.wait({task}, timeout=2.5)
         assert done and time.monotonic() - t0 < 2.0, mode
         if mode.startswith("cancel"):
@@ -830,5 +841,5 @@ def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_
         await asyncio.sleep(0.3)
         assert len(run.record) == landed and errors == [], mode
 
-    for mode in ("fail", "deadline", "cancel", "cancel-twice", "insist"):
+    for mode in ("fail", "deadline", "cancel", "cancel-twice", "cancel-in-join", "insist"):
         asyncio.run(arm(mode))
