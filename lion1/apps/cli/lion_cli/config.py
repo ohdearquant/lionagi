@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import tomllib
 from pathlib import Path
 
-__all__ = ("CHAT", "chat_config", "config_main")
+__all__ = ("CHAT", "chat_config", "config_main", "instructions")
 
 # The `[chat]` keys: `lion chat`'s long flags with dashes as underscores, and what each takes. The
 # directory, the first message, the log and the chat to continue name one run, so no file sets them.
@@ -49,7 +50,7 @@ def _value(path: Path, key: str, v: object) -> object:
             return v
     elif type(v) is want:  # exact: a TOML true is not the integer 1
         if key == "khive_config" and not Path(v).expanduser().is_absolute():
-            return str(path.parent.parent / v)  # relative to the directory the file's .lion sits in
+            return os.path.normpath(path.parent.parent / v)  # beside the directory the file's .lion is in
         return v
     says = f"one of {', '.join(want)}" if isinstance(want, tuple) else _SAYS[want]
     raise SystemExit(f"{path}: [chat] {key} = {v!r} is not {says}")
@@ -79,9 +80,34 @@ def chat_config(directory: Path) -> dict[str, tuple[object, Path]]:
     return found
 
 
+def instructions(directory: Path) -> list[tuple[Path, str]]:
+    """The person's instruction files a chat in `directory` composes into its model's guidance, in
+    this order, those that exist and hold text: `~/.lion/CLAUDE.md` for every chat, the directory's
+    own `AGENTS.md` and `CLAUDE.md`, then its `.lion/CLAUDE.md`. A file reached twice (the home is the
+    directory) counts once."""
+    directory = Path(directory).resolve()
+    paths = (
+        Path.home() / ".lion" / "CLAUDE.md",
+        directory / "AGENTS.md",
+        directory / "CLAUDE.md",
+        directory / ".lion" / "CLAUDE.md",
+    )
+    out: list[tuple[Path, str]] = []
+    for path in dict.fromkeys(p.resolve() for p in paths):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(errors="replace").strip()
+        except OSError as e:  # a file there the chat cannot read: said by name, not skipped
+            raise SystemExit(f"{path}: {e}") from None
+        if text:
+            out.append((path, text))
+    return out
+
+
 def config_main(a: argparse.Namespace, built_in: argparse.Namespace) -> None:
     """Print what a bare `lion chat --dir <dir>` runs with, one TOML line per key, and where each
-    value came from."""
+    value came from, then the instruction files it composes."""
     found = chat_config(Path(a.dir))
     print("[chat]")
     for key in CHAT:
@@ -90,3 +116,8 @@ def config_main(a: argparse.Namespace, built_in: argparse.Namespace) -> None:
             print(f"# {key}: unset  # {source}")
         else:
             print(f"{key} = {json.dumps(value)}  # {source}")
+    composed = instructions(Path(a.dir))
+    for path, text in composed:
+        print(f"# instructions: {path} ({len(text)} chars)")
+    if not composed:
+        print("# instructions: none; ~/.lion/CLAUDE.md, AGENTS.md, CLAUDE.md, .lion/CLAUDE.md are read")

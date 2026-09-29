@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from hub import Box, BoxTree, DaytonaSandbox, LocalTree, Sandbox, code, files, guidance, khive_ops, shell
-from hub.agent.chores import Bounded
+from hub.agent.chores import SPAWN_SALIENCE, Bounded
 from hub.areas import partial
 from hub.backend import ClaudeCodeError, ClaudeCodeSession, CodexError, OpenRouterError
 from hub.chat import chat, load_log
@@ -29,6 +29,7 @@ from lionagi.actor import DEFAULT_HANDLERS, Run, _text
 from lionagi.record import Entry
 
 from .agent import backend_for
+from .config import instructions
 from .view import Console
 
 __all__ = (
@@ -64,8 +65,8 @@ def console(
     """The actor a person talks to: the file and directory readers, khive when the directory is an
     actor's own (its `.khive/config.toml` names the actor the reads sign as) or `khive_config` names
     the file to sign with instead (explicit: the directory's own is not read), a shell when a sandbox
-    is given, and with `coding` the tools a fix is found and written with (read_lines, search, edit)
-    plus the tree's own rules (AGENTS.md, CLAUDE.md at the root) in the guidance. `tree` is where the
+    is given, and with `coding` the tools a fix is found and written with (read_lines, search, edit).
+    The person's instruction files (`instructions`) close the guidance. `tree` is where the
     file and code tools read and write: the directory itself by default, the copy of it in a box
     with `about_box` saying so (the VM's own guidance otherwise). `own_tools` are the Claude Code
     CLI's own tools a claude_code session runs inside each round, named in the guidance."""
@@ -88,12 +89,7 @@ def console(
     if coding:
         specs |= code(actor, tree)
         tools += ", read_lines(path, start, end), search(pattern, path, include), edit(path, old, new)"
-        rules = "\n\n".join(
-            f"{name} at the root says:\n{(directory / name).read_text(errors='replace').strip()}"
-            for name in ("AGENTS.md", "CLAUDE.md")
-            if (directory / name).exists()
-        )
-        about_sandbox += "\n\n" + guidance("code", root=directory, branch=_branch(directory), rules=rules)
+        about_sandbox += "\n\n" + guidance("code", root=directory, branch=_branch(directory))
     config = khive_config if khive_config is not None else directory / ".khive" / "config.toml"
     if khive_config is not None and not config.is_file():  # explicit: said, never the directory's instead
         if notify is not None:
@@ -113,7 +109,7 @@ def console(
                 specs |= khive_ops(actor, khive)
                 tools += (
                     f", khive_ops(ops) signing as {actor_id} ({len(khive.allowed)} verbs: reads, comm.read, "
-                    "schedule.remind, memory.remember at spawn salience)"
+                    f"schedule.remind, memory.remember with an explicit salience <= {SPAWN_SALIENCE})"
                 )
     if own_tools:
         tools += (
@@ -123,12 +119,21 @@ def console(
             "you can context.hide it once it has served; what the call taught you goes into a note first. "
             "A context.hide or context.summarize restarts your session from the folded view"
         )
-    profile = Profile(
-        name=name,
-        specs=frozenset(specs) | {h.name for h in DEFAULT_HANDLERS},
-        system=system or guidance("console", model=model, tools=tools, rounds=rounds, sandbox=about_sandbox),
-    )
+    if not system:
+        system = guidance("console", model=model, tools=tools, rounds=rounds, sandbox=about_sandbox)
+        for path, text in instructions(directory):
+            system += f"\n\n{_shown(path, directory)} says:\n{text}"
+    profile = Profile(name=name, specs=frozenset(specs) | {h.name for h in DEFAULT_HANDLERS}, system=system)
     return actor, profile
+
+
+def _shown(path: Path, directory: Path) -> str:
+    """An instruction file as the guidance and the person read it: from the chat's directory, from
+    the home as `~/…`, else whole."""
+    for base, lead in ((Path(directory).resolve(), ""), (Path.home().resolve(), "~/")):
+        if path.is_relative_to(base):
+            return lead + str(path.relative_to(base))
+    return str(path)
 
 
 async def prepare_box(box: Box, directory: Path, say: Callable[[str], None]) -> str:
@@ -428,9 +433,9 @@ async def _chat_main(
     if getattr(a, "khive_config", None):  # explicit: refused outright rather than falling back
         khive_config = Path(a.khive_config).expanduser().resolve()
         if not khive_config.is_file():
-            raise SystemExit(f"--khive-config {khive_config}: no such file")
+            raise SystemExit(f"--khive-config {a.khive_config}: no such file")  # as typed, not resolved
         if signer(directory, khive_config) is None:
-            raise SystemExit(f"--khive-config {khive_config}: no [actor].id in it")
+            raise SystemExit(f"--khive-config {a.khive_config}: no [actor].id in it")
     own_tools = tuple(t.strip() for t in (getattr(a, "tools", None) or "").split(",") if t.strip())
     if own_tools and not (a.model == "claude_code" or a.model.startswith("claude_code/")):
         raise SystemExit("--tools is for a claude_code model: the CLI runs them, no other backend can")
@@ -473,6 +478,10 @@ async def _chat_main(
     say.open(a.model, directory, chat_id, sorted(profile.specs), resumed)
     for msg in degraded:
         say.notice(msg)
+    if composed := instructions(directory):
+        say.notice(
+            "instructions: " + ", ".join(f"{_shown(p, directory)} ({len(t)} chars)" for p, t in composed)
+        )
     if notice:
         say.notice(notice)
     if hooked := len(actor.befores) + len(actor.afters) + len(actor.sections):

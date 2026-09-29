@@ -26,6 +26,7 @@ from rich.text import Text
 from hub.areas import partial
 from hub.chat import entry_row, line
 from lionagi import lndl
+from lionagi.actor import _read
 from lionagi.record import Entry, Kind
 
 from .clipboard import to_clipboard
@@ -106,6 +107,7 @@ class Console:
         )
         self.resulted: set[str] = set()  # aliases whose result printed since the last notice
         self.responses: list[str] = []  # each response's prose as printed; `/copy N` counts back from the end
+        self.transcript: list[str] = []  # the chat in plain text, as `/copy all` copies it
         self.written = 0
         self.out = RichConsole(
             force_terminal=color,
@@ -126,7 +128,7 @@ class Console:
             self.out.print(f"[dim]continuing {escape(resumed[0])}, {resumed[1]} entries[/dim]")
         self.out.print(
             f"[dim]{escape(str(directory))} · {escape(', '.join(tools))} · "
-            "/copy [N] copies the last (Nth-last) response · /quit ends[/dim]"
+            "/copy [N] copies the last (Nth-last) response, /copy all the whole chat · /quit ends[/dim]"
         )
 
     def working(self, what: str) -> None:
@@ -206,14 +208,16 @@ class Console:
         self.out.print(f"[dim]{''.join(shown) + escape(text[at:])}[/dim]")
 
     def command(self, text: str) -> bool:
-        """Run `text` when it is the console's own command (`/copy`, `/copy N`) and say so; False
-        for anything else, which is the person's message."""
+        """Run `text` when it is the console's own command (`/copy`, `/copy N`, `/copy all`) and say
+        so; False for anything else, which is the person's message."""
         m = _COPY.fullmatch(text.strip())
         if m is None:
             return False
         which = (m.group(1) or "").strip()
-        if which and not which.isdigit():
-            self.notice(f"/copy takes a count back from the last response, from 1: not {which!r}")
+        if which == "all":
+            self.notice(self.copy_all())
+        elif which and not which.isdigit():
+            self.notice(f"/copy takes a count back from the last response, from 1, or all: not {which!r}")
         else:
             self.notice(self.copy(int(which) if which else None))
         return True
@@ -231,6 +235,30 @@ class Console:
         which = "the last response" if n == 1 else f"the response {n} back from the last"
         return f"copied {which} ({len(text)} chars)"
 
+    def copy_all(self) -> str:
+        """Put the whole chat on the clipboard as plain text, unwrapped: each message, each response
+        and each call and result line, a continued chat's replayed part first; the loop's notices stay
+        in the log. Returns what to tell the person."""
+        if not self.transcript:
+            return "nothing to copy: the chat is empty"
+        text = "\n".join(self.transcript).strip("\n")
+        to_clipboard(text)
+        return f"copied the whole chat ({len(text)} chars)"
+
+    def _plain(self, e: Entry) -> list[str]:
+        """An entry's lines in the transcript; a message or a response opens with a blank line."""
+        if e.kind is Kind.INPUT:
+            who = e.meta.get("origin")
+            return ["", f"{'you' if who in (None, 'console') else who} ▸ {e.content}"]
+        if e.kind is Kind.TEXT:
+            text = str(e.content)
+            calls, _ = self._calls(text)
+            head = ["", f"{self.model} ▸", prose] if (prose := _prose(text)) else []
+            return head + [Text.from_markup(c).plain for c in calls]
+        if e.kind is Kind.RESULT:
+            return [Text.from_markup(self._result(e)[0]).plain]
+        return []
+
     def __call__(self, e: Entry) -> None:
         if self.log is not None:
             with self.log.open("a") as fh:
@@ -241,6 +269,7 @@ class Console:
             self.written += 1
         if e.kind is Kind.TEXT and (prose := _prose(str(e.content))):  # a replayed reply counts too
             self.responses.append(prose)
+        self.transcript += self._plain(e)
         if e.seq <= self.quiet_until:
             return
         if self.raw:
@@ -249,6 +278,7 @@ class Console:
         if self.live is not None and e.kind is Kind.RESULT and self.verbose:
             # the detail shows under the spinner while it is fresh; the scrollback keeps the head
             head, self.detail = self._result(e)
+            self.resulted.add(e.alias or "?")
             self.out.print(head)
             self.live.update(self._below())
             return
@@ -292,13 +322,13 @@ class Console:
         if e.kind is Kind.TEXT:
             return self._turn(str(e.content), e.seq)
         head, detail = self._result(e)
+        self.resulted.add(e.alias or "?")
         return [head if detail is None else head + "\n" + detail]
 
     def _result(self, e: Entry) -> tuple[str, str | None]:
         """A result's line, and with `verbose` its first lines (already escaped markup)."""
         r = e.content
         alias = e.alias or "?"
-        self.resulted.add(alias)
         if not getattr(r, "ok", False):
             first = str(getattr(r, "error", r)).splitlines()[0] if str(getattr(r, "error", r)) else ""
             return (
@@ -331,22 +361,27 @@ class Console:
         )
         return head, escape(shown) + more
 
-    def _turn(self, text: str, seq: int) -> list[Any]:
-        calls: list[str] = []
+    def _calls(self, text: str) -> tuple[list[str], bool]:
+        """The lines under a turn's prose, as markup, and whether it asks for commands. The turn is
+        read the way the loop reads it: one the loop refuses (a frame only the loop writes, a tag it
+        cannot parse) is one line saying nothing in it ran, never calls that look pending."""
         try:
-            program = lndl.parse(text)
+            program = _read(text)
         except lndl.LNDLError as err:
-            calls.append(f"[yellow]? unreadable turn: {escape(str(err))}[/yellow]")
-        else:
-            for v in program.lvars:  # a value's shape only, like a result; its text is in the log
-                calls.append(f"[cyan]= {escape(v.alias)}[/cyan] [dim]· {len(v.value)} chars[/dim]")
-            self.commands = bool(program.lacts)
-            for la in program.lacts:
-                calls.append(f"[cyan]→ {escape(la.alias)} {escape(la.name)}({self._args(la.args)})[/cyan]")
-            if program.out is not None:
-                calls.append(f"[yellow]OUT {escape(json.dumps(program.out.fields, default=str))}[/yellow]")
-            for problem in program.problems:
-                calls.append(f"[yellow]? {escape(problem)}[/yellow]")
+            return [f"[red]✗ nothing in this turn ran: {escape(str(err))}[/red]"], False
+        calls: list[str] = []
+        for v in program.lvars:  # a value's shape only, like a result; its text is in the log
+            calls.append(f"[cyan]= {escape(v.alias)}[/cyan] [dim]· {len(v.value)} chars[/dim]")
+        for la in program.lacts:
+            calls.append(f"[cyan]→ {escape(la.alias)} {escape(la.name)}({self._args(la.args)})[/cyan]")
+        if program.out is not None:
+            calls.append(f"[yellow]OUT {escape(json.dumps(program.out.fields, default=str))}[/yellow]")
+        for problem in program.problems:
+            calls.append(f"[yellow]? {escape(problem)}[/yellow]")
+        return calls, bool(program.lacts)
+
+    def _turn(self, text: str, seq: int) -> list[Any]:
+        calls, self.commands = self._calls(text)
         prose = _prose(text)
         pieces: list[Any] = []
         if prose:
