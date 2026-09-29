@@ -336,7 +336,26 @@ def test_the_cost_line_reads_what_was_billed_across_every_attempt():
         {"usage": None, "total_cost_usd": 0.003},  # billed and failed: no usage at all
         {"usage": {"cost": 0.002}},  # a backend that reports only usage.cost
     ]
-    assert round(spent(calls), 4) == 0.014
+    cost, unknown = spent(calls)
+    assert round(cost, 4) == 0.014 and unknown == 0
+
+
+def test_the_cost_line_marks_a_sum_that_misses_calls_of_unknown_or_incomplete_cost(capsys):
+    from lion_cli.chat import spent
+    from lion_cli.view import Console
+
+    calls = [
+        {"usage": {"cost": 0.002}, "total_cost_usd": 0.004},
+        {"usage": {}, "total_cost_usd": None},  # no figure anywhere: a subscription CLI's call
+        {"usage": {}, "total_cost_usd": 0.001, "cost_complete": False},  # a retried attempt carried none
+    ]
+    cost, unknown = spent(calls)
+    assert round(cost, 4) == 0.005 and unknown == 2
+    Console("m", None, color=False, width=200).close("done", len(calls), cost, unknown, None)
+    out = capsys.readouterr().out
+    assert "done · 3 call(s) · $0.0050 (partial: 2 call(s) of unknown cost) · 0 entries" in out
+    Console("m", None, color=False, width=200).close("done", 1, 0.004, 0, None)
+    assert "done · 1 call(s) · $0.0040 · 0 entries" in capsys.readouterr().out
 
 
 def test_a_turn_with_out_is_refused_and_the_conversation_goes_on(tmp_path):
@@ -491,6 +510,51 @@ def test_saved_patch_then_apply_failure_cleans_up(tmp_path, monkeypatch, capsys)
     assert ChatBox.made[-1].stopped and "box: no change in the copy" in capsys.readouterr().out
 
 
+def test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch(
+    tmp_path, monkeypatch, capsys
+):
+    # the log recorded no box: `-c` without `--box daytona` went on over the person's own tree, and an
+    # unapplied patch stood in the record and not in the new copy, with nothing said
+    from lion_cli.chat import resolve_chat
+
+    from tests.test_daytona import ChatBox, box_chat, repo_git
+
+    (tmp_path / "f.txt").write_text("a\n")
+    patch = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n"
+    monkeypatch.setattr(ChatBox, "patch", patch)
+    ChatBox.made.clear()
+    assert box_chat(monkeypatch, ChatBox, tmp_path, "done", image="img-1") is None
+    chats = tmp_path / ".lion" / "chats"
+    first = resolve_chat(chats, "last")
+    ran = {"kind": "BOX", "box": "daytona", "image": "img-1"}
+    assert json.loads(first.read_text().splitlines()[0]) == ran
+    saved = chats / f"{first.stem}.patch"
+    assert saved.read_text() == patch and (tmp_path / "f.txt").read_text() == "a\n"
+    monkeypatch.setattr(ChatBox, "patch", "")
+    capsys.readouterr()
+    # `lion chat -c` with no box flag: the box and image its log names, and the model is told
+    assert box_chat(monkeypatch, ChatBox, tmp_path, "done", resume="last", box=None, image=None) is None
+    assert len(ChatBox.made) == 2 and ChatBox.made[-1].image == "img-1" and ChatBox.made[-1].stopped
+    rows = [json.loads(r) for r in resolve_chat(chats, "last").read_text().splitlines()]
+    assert rows[0] == ran and [r["kind"] for r in rows].count("BOX") == 1
+    told = [r["content"] for r in rows if r["kind"] == "INPUT" and r["meta"].get("origin") == "console"]
+    assert len(told) == 1 and f"saved as {saved}, are not applied to {tmp_path}" in told[0]
+    assert "are not applied to" in " ".join(capsys.readouterr().out.split())  # the person sees it too
+    # the patch applied, and `--box vm` given: the flag wins, and nothing is said of a patch that landed
+    repo_git(tmp_path, "apply", str(saved))
+    assert box_chat(monkeypatch, ChatBox, tmp_path, "done", resume=first.stem, box="vm", image=None) is None
+    assert len(ChatBox.made) == 2
+    rows = [json.loads(r) for r in resolve_chat(chats, "last").read_text().splitlines()]
+    assert rows[0] == {"kind": "BOX", "box": "vm"}
+    assert not [r for r in rows if r["kind"] == "INPUT" and r["meta"].get("origin") == "console"]
+    # no git on the machine: the check cannot run, the resume goes on, and the model is told that much
+    monkeypatch.setenv("PATH", str(tmp_path / "no-git-here"))
+    assert box_chat(monkeypatch, ChatBox, tmp_path, "done", resume=first.stem, box="vm", image=None) is None
+    rows = [json.loads(r) for r in resolve_chat(chats, "last").read_text().splitlines()]
+    told = [r["content"] for r in rows if r["kind"] == "INPUT" and r["meta"].get("origin") == "console"]
+    assert len(told) == 1 and f"saved as {saved}, could not be checked against {tmp_path}" in told[0]
+
+
 def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_path):
     from lionagi.record import fold
 
@@ -576,3 +640,36 @@ def test_a_write_cut_inside_a_character_is_a_torn_last_row(tmp_path):
     log.write_bytes(b'{"seq": 0, "kind": "TEXT", "content": "\xff"}\n' + whole)
     with pytest.raises(ValueError, match="line 1, with 1 after it"):
         load_log(log, torn=[])  # an unreadable row with rows after it is never a cut write
+
+
+def test_the_closure_rides_the_log_and_a_resumed_chat_folds_it_into_its_first_view(tmp_path):
+    actor, profile = reader(tmp_path)
+    log = tmp_path / "one.jsonl"
+    with log.open("w") as fh:
+        run1 = asyncio.run(
+            chat(
+                actor,
+                profile,
+                scripted("Hello."),
+                asks("hi", None),
+                say=lambda e: fh.write(json.dumps(entry_row(e)) + "\n"),
+            )
+        )
+    closure = run1.record.entries[-1]
+    assert closure.kind is Kind.SYSTEM and "outcome: Stopped(round=2)" in closure.content
+    history = load_log(log)
+    last = history[-1]
+    assert (last.seq, last.kind, last.content) == (closure.seq, Kind.SYSTEM, closure.content)
+    seen: list[list[Message]] = []
+    inner = scripted("Again.")
+
+    async def backend(messages):
+        seen.append(messages)
+        return await inner(messages)
+
+    actor2, profile2 = reader(tmp_path)
+    asyncio.run(chat(actor2, profile2, backend, asks("more", None), history=history))
+    # the first view carries the old run's closure where it landed, ahead of the new message
+    first = [(m.role, m.name, m.content) for m in seen[0]]
+    at = first.index(("system", closure.name, closure.content))
+    assert first[at + 1][1:] == (f"_in{closure.seq + 1}", f"[_in{closure.seq + 1}] more")

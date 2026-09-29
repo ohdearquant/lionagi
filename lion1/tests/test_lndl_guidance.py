@@ -48,8 +48,8 @@ or the view outgrows its budget, when the runtime folds the oldest results to pl
 one batch when a phase ends (context.hide(refs=["_r41", "_r42"])), replace a finished span with a few \
 lines (context.summarize), and bring an entry back when you need it again (context.show).
 A turn without OUT{} runs every <lact> and continues; their results arrive in the next system \
-notification under their aliases. A turn with OUT{} runs every <lact> too, waits for them and for \
-anything still running that OUT{} points at, then ends.
+notification under their aliases. A turn with OUT{} runs every <lact> too, but OUT{} waits only for what \
+it names or points at: once it is accepted the run ends and any <lact> not finished is cancelled.
 Aliases are unique within a turn. Tags are siblings; a complete tag quoted inside a value stays text."""
 
 NONE = """\
@@ -77,8 +77,8 @@ unverified. A few lines each; write the same key again as it changes.
 Your view is the record: everything stays in it where it landed, addressable by name, until you hide it \
 or the view outgrows its budget, when the runtime folds the oldest results to placeholders once.
 A turn without OUT{} runs every <lact> and continues; their results arrive in the next system \
-notification under their aliases. A turn with OUT{} runs every <lact> too, waits for them and for \
-anything still running that OUT{} points at, then ends.
+notification under their aliases. A turn with OUT{} runs every <lact> too, but OUT{} waits only for what \
+it names or points at: once it is accepted the run ends and any <lact> not finished is cancelled.
 Aliases are unique within a turn. Tags are siblings; a complete tag quoted inside a value stays text."""
 
 DEFAULTS = (

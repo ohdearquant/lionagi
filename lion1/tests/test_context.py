@@ -674,13 +674,12 @@ def test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_s
     (run,) = agent.runs
     folds = [e for e in run.record if e.kind is Kind.SYSTEM and "directive" in e.meta]
     assert len(folds) == 1 and folds[0].meta["directive"].refs and agent.errors == []
+    held_seq = run.record.seq - 1  # the closure lands when the run returns, after the checkpoint
     assert [line for line in lines if line.startswith("checkpoint ")] == [
-        f"checkpoint {load(tmp_path).id} (threshold) at seq {run.record.seq}"
+        f"checkpoint {load(tmp_path).id} (threshold) at seq {held_seq}"
     ]
     ckpt = load(tmp_path)
-    assert (
-        ckpt.why == "threshold" and ckpt.source["kind"] == "resident" and ckpt.source["seq"] == run.record.seq
-    )
+    assert ckpt.why == "threshold" and ckpt.source["kind"] == "resident" and ckpt.source["seq"] == held_seq
     assert ckpt.actor == khive.actor and ckpt.source["context"]["used"] > 60_000  # the figure the fold used
     # the posture note is over LAZY: carried by its key and size, the note keeps the body
     held = {v.name: v for v in ckpt.vars}
@@ -691,7 +690,9 @@ def test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_s
     text = next((tmp_path / ".khive" / "context").glob("ckpt-*.json")).read_text()
     assert "no note 'absent'" not in text and "no note 'absent'" in Path(ckpt.source["record"]).read_text()
     history = to_history(ckpt)
-    assert [(e.seq, e.kind, e.content) for e in history] == [(e.seq, e.kind, e.content) for e in run.record]
+    assert [(e.seq, e.kind, e.content) for e in history] == [
+        (e.seq, e.kind, e.content) for e in list(run.record)[:held_seq]
+    ]
     # the next process: its first run starts from the checkpoint, the view folded where it folded
     khive2 = FakeKhive(mail("lambda:a", "one more", mid="c3d4e5f6"), cwd=tmp_path)
     backend2 = Growing(("still here", 2_000))
@@ -699,7 +700,7 @@ def test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_s
     serve_one(agent2)
     (run2,) = agent2.runs
     n = len(history)
-    assert [e.content for e in list(run2.record)[:n]] == [e.content for e in run.record]
+    assert [e.content for e in list(run2.record)[:n]] == [e.content for e in list(run.record)[:n]]
 
     def shape(record, upto):
         return [
@@ -725,7 +726,8 @@ def test_the_resident_checkpoints_when_stop_ends_its_run(tmp_path):
     serve_one(agent)
     (run,) = agent.runs
     ckpt = load(tmp_path)
-    assert ckpt.why == "end" and ckpt.source["seq"] == run.record.seq and agent.errors == []
+    # taken by the stop, so it holds everything but the closure the run appends when it returns
+    assert ckpt.why == "end" and ckpt.source["seq"] == run.record.seq - 1 and agent.errors == []
     assert len(backend.calls) == 1  # the second round's notification ended the run before the model
 
 

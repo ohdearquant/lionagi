@@ -277,8 +277,9 @@ runs under `-I` with lion's own interpreter (C7).
 - **S6**: `Context.get` reads only what is settled: an alias's value, a record name or a note. A
   pending alias raises `KeyError` at once, as an unknown name does, so no handler waits on another
   through `get`; a value a handler needs from a pending command reaches it as a pointer in its call,
-  where the check at dispatch sees the edge. A command that never returns holds the turn's settle,
-  since time is read only at the turn's start; a deadline beside the settle is owed (ADR-0003/S3).
+  where the check at dispatch sees the edge. A command that never returns is cancelled at the
+  settle's deadline, what `time_budget` leaves (C1, ADR-0003/S3); with no budget it holds the
+  settle.
 - **S7**: On the 50-instance bench, 1722 commands in 733 turns: `run` 982, ordered whichever way,
   and 609 reads; three classes save 253 of 1458 serial steps over two on the 469 turns with two or
   more commands, 17%. One turn wrote 81 commands.
