@@ -1,7 +1,7 @@
 ---
 adr: ADR-0009
 status: draft
-liveness: partial (the router and both shapes of the session CLI operate and report the count; the subscription CLI hands back no count; the mixed-response refusal, the session CLI's failed-call envelope and the gate over an acting session are owed)
+liveness: partial (the router, both shapes of the session CLI and the subscription CLI operate and report the count; the mixed-response refusal and the session CLI's failed-call envelope are pinned by tests; the gate over an acting session is owed)
 date: "2026-09-25"
 area: backend
 kind: new
@@ -45,7 +45,7 @@ name and answers with text. Source: `Backend`, `Reply` and the anchor in `lionag
 - **prompt count**: the provider's own count of the prompt an attempt sent: fresh input, cache read
   and cache write together.
 - **`Reply`**: the text a backend hands back with the prompt count of the attempt that answered, or
-  none when the provider did not say.
+  none when the provider did not say, and why the backend refused the turn when it did.
 - **envelope**: what a backend keeps per call beside the text: usage, cost, attempts, timing, the
   provider's finish reason; a failed call keeps one too.
 - **session**: a CLI conversation a backend keeps across calls, one per run, each call sending only
@@ -77,8 +77,8 @@ holds.
 The subscription CLI takes the view as one transcript with its roles marked, every acting feature
 off by flag and a chat framing in place of its agent instructions. The session CLI keeps one
 conversation per run (C4). A native tool call in a router answer with empty content is rebuilt as
-the tag text ([[ADR-0004-the-language#^c4|ADR-0004/C4]]); beside content it is dropped today, and
-the refusal is owed.
+the tag text ([[ADR-0004-the-language#^c4|ADR-0004/C4]]); beside content the `Reply` carries a
+refusal and nothing runs.
 
 ### C2: A backend hands back the prompt count of the attempt that answered _(enforced: mechanical)_ ^c2
 
@@ -92,8 +92,9 @@ the bill, and a sum of two prompts is the size of neither.
 
 The session CLI hands back the last model turn's input, cache read and cache write when the CLI
 prints per-turn usage, else the call's sum over its turn count, an average that reads low. The
-subscription CLI keeps its usage on the envelope and hands back no count (S3). A boolean is an
-integer in Python, so a value that is not a positive integer is ignored.
+subscription CLI hands back the input count of the answering attempt's `turn.completed` event, cache
+read included (S3). A boolean is an integer in Python, so a value that is not a positive integer is
+ignored.
 
 ### C3: The fold measures the estimate plus the reported context above the floor _(enforced: mechanical)_ ^c3
 
@@ -128,7 +129,7 @@ session starts over from the folded view: one cache miss, and the CLI's tool-tur
 the old session. That restart bounds a run whose CLI runs its own tools (A3). Cost accumulates over
 a session; the envelope keeps this call's delta.
 
-### C5: Every call lands an envelope, failed ones too, and only a transient failure is retried _(enforced: mechanical; owed, S10)_ ^c5
+### C5: Every call lands an envelope, failed ones too, and only a transient failure is retried _(enforced: mechanical)_ ^c5
 
 - **Subject**: every backend call.
 - **Violated when**: a billed attempt's usage is lost, a failed call lands no envelope, a 401 or 403
@@ -168,7 +169,9 @@ The key comes from the environment or the keychain, never logged. `tool_calls_te
 native call when the content is empty; `calls` keeps the envelopes.
 
 - **Landing evidence**: `tests/test_openrouter.py`: the count of the attempt that answered, the
-  retried errored choice, the billed failure kept, the native call handed back as text.
+  retried errored choice, the billed failure kept, the native call handed back as text, the mixed
+  response refused
+  (`test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_told`).
 
 ### D2: The two CLI shapes in `hub/harness/claude_code.py` ^d2
 
@@ -176,11 +179,13 @@ Serves C1, C2, C4, C5 and C6. `ClaudeCode` runs the CLI once per turn: tools off
 settings loaded, strict MCP config. `ClaudeCodeSession` resumes one CLI session per run and restarts
 it on a directive or the fold mark; for a served run it may hand the CLI its own tools, a working
 directory and one MCP. Both hand back the last turn's count from the CLI's per-turn usage when
-printed. Cancellation kills and reaps the child.
+printed. A failed call lands its envelope before the error goes on. Cancellation kills and reaps the
+child.
 
 - **Landing evidence**: `tests/test_claude_code.py`: both shapes hand back this call's count, the
   last turn's when several ran, the session resumed with only the new entries, restarted by a
-  directive and by the fold, one session per run, cancellation stopping the child.
+  directive and by the fold, one session per run, cancellation stopping the child,
+  `test_a_failed_session_call_lands_its_envelope_and_the_next_call_bills_only_its_own_share`.
 
 ### D3: The subscription CLI backend in `hub/harness/codex.py` ^d3
 
@@ -188,11 +193,13 @@ Serves C1 and C5. `Codex` runs the CLI once per turn in a scratch directory with
 feature disabled: spawning removed by `agents.max_depth=0` (the feature flag alone does not), web
 search off, a chat framing replacing the base instructions, the environment context dropped. A
 private home holding a symlinked login is used when given. The view goes in as one transcript; usage
-comes from the `turn.completed` event; cost is unknown. It hands back plain text (S3).
+comes from the `turn.completed` event; cost is unknown. It hands back that event's input count for
+the answering attempt (S3).
 
 - **Landing evidence**: `tests/test_codex.py`: the transcript in and the usage shaped, the transient
   retry with attempts recorded, the empty answer retried with both attempts counted, the failed
-  envelope, cancellation joining the child.
+  envelope, cancellation joining the child, the count handed back and anchoring the next figure
+  (`test_the_input_count_of_turn_completed_is_handed_back_and_the_next_figure_stands_on_it`).
 
 ### D4: The anchor at the call site and the floor in `_notify` ^d4
 
@@ -222,12 +229,15 @@ anchor.
 ## Consequences
 
 - **S1**: A subscription CLI has no cost figure: the spend is unknown, never zero, and a reader that
-  sums it says so.
+  sums it says so. The agent's spend row counts such calls in `unknown`, beside the router's calls
+  whose `cost_complete` is false, and the readers [[ADR-0016-the-lion-command|ADR-0016]] S2 names
+  print the sum as partial.
 - **S2**: The same model through the loop and through its own CLI is comparable in one box
   ([[ADR-0012-the-bench|ADR-0012]], the bench).
-- **S3**: The subscription CLI hands back no count, so a run on it keeps the view estimate as its
-  figure and folds on the estimate alone; handing back the input count of its `turn.completed` event
-  is owed.
+- **S3**: The subscription CLI hands back the input count of its `turn.completed` event, cache read
+  included, and the next figure stands on it. It handed back no count before, so a run on it kept
+  the view estimate as its figure and folded on the estimate alone. The CLI's cache-write field is
+  not added to the count.
 - **S4**: A session call whose CLI ran several tool turns reports the last turn's context only when
   the CLI prints per-turn usage; otherwise the average reads low, and the figure with it, until the
   next call.
@@ -243,9 +253,12 @@ anchor.
 - **S9**: A backend that raises ends the run by its exception ([[ADR-0002-the-run#^c4|ADR-0002/C4]])
   with the notification already on the record ([[ADR-0006-the-notification#^d1|ADR-0006/D1]]); the
   reap of a cancelled call at the run's end is owed there ([[ADR-0002-the-run|ADR-0002]] S4).
-- **S10**: The session CLI appends no envelope when its call fails, against C5: the failure raises
-  before the call is kept, so a spend row misses it whole ([[ADR-0016-the-lion-command|ADR-0016]]
-  S2); the fix is owed.
+- **S10**: A failed session CLI call lands its envelope before the error goes on: the one the CLI
+  printed, as a delta kept as its last, else one whose cost is unknown. A running total missing
+  leaves this share and the next unknown; one below the last leaves this share unknown, never
+  negative. It is not retried, and a spend row counts it ([[ADR-0016-the-lion-command|ADR-0016]]
+  S2). Before, it landed none. That a failed call's cost is in the running total is read from
+  success envelopes, not measured on a failure.
 - **S11**: The gate over an acting session is owed: the CLI's pre-tool hook asks the runtime's
   privilege check ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]) and before hooks
   ([[ADR-0005-command-handling#^c4|ADR-0005/C4]]) for each tool call, and each act lands on the
