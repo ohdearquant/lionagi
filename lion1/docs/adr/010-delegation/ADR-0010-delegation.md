@@ -31,7 +31,7 @@ turn's rule ([[ADR-0002-the-run#^c1|ADR-0002/C1]]) with nothing awaited inline
 ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]); the notification names what arrived
 ([[ADR-0006-the-notification#^c2|ADR-0006/C2]]). Source: `Actor.queue`, `Actor._take_inbox`, the
 handle branch of dispatch, `Actor._deliver` and the `_ACTORS` registry in `lionagi/actor.py`;
-`examples/two_actors.py`.
+`notebooks/03_two_actors.ipynb`.
 
 ## Definitions
 
@@ -136,7 +136,7 @@ Serves C1. `queue` carries content and provenance only; the peer's profile, requ
 the asking handler's to choose, and it starts the peer's run as its own task. For mail, the
 long-running agent is the something outside the loop that runs the actor.
 
-- **Landing evidence**: `examples/two_actors.py` (the escalation handler queues, starts the
+- **Landing evidence**: `notebooks/03_two_actors.ipynb` (the escalation handler queues, starts the
   researcher's run and returns the handle); the tests' `_pair` helper does the same, and the
   round-trip test asserts the peer's INPUT names the asker.
 
@@ -156,8 +156,8 @@ long-running agent is the something outside the loop that runs the actor.
   it lands.
 - **S2**: The registry is per process, keyed by name: a second actor made with the same name takes
   the name, and answers to the first go to it.
-- **S3**: No bench exercises this path; the tests drive it with scripted backends, and
-  `examples/two_actors.py` runs it against a live model.
+- **S3**: No bench exercises this path; the tests and `notebooks/03_two_actors.ipynb` drive it with
+  scripted backends; nothing runs it against a live model.
 - **S4**: No budget is shared across peers, and a peer run started as its own task outlives an asker
   that ends: cancellation at the asking run's end reaches the ask's future, never the peer's run.
 - **S5**: The boundary: who may ask whom, the lineage of an ask, ending a peer with the asker,

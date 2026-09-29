@@ -1,7 +1,7 @@
 ---
 adr: ADR-0018
 status: draft
-liveness: operating (the chat, its resume and the boxed chat are pinned by tests against scripted backends and a stubbed box; the one real-box test runs only when enabled; no test interrupts a boxed chat)
+liveness: operating (the chat, its resume and the boxed chat, a resumed boxed chat included, are pinned by tests against scripted backends and a stubbed box; the one real-box test runs only when enabled; no test interrupts a boxed chat)
 date: "2026-09-25"
 area: chat
 kind: new
@@ -41,8 +41,9 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   one record, one chat log, and one box or none.
 - **console**: the actor and profile `lion chat` builds for a directory: the tools and the guidance
   its flags select.
-- **chat log**: `.lion/chats/<id>.jsonl` under the directory by default: every record entry as one
-  JSON line, written as it lands, with a usage row per backend call between them.
+- **chat log**: `.lion/chats/<id>.jsonl` under the directory by default: a `BOX` row naming where
+  the chat ran, then every record entry as one JSON line, written as it lands, with a usage row per
+  backend call between them.
 - **`wait`**: the job field that makes a run a conversation: called at a turn's start after a turn
   with no command, or after a pause, it puts the person's next line on the actor's inbox, or ends
   the run `Stopped`.
@@ -146,11 +147,11 @@ the box before the model works; a saved patch, an empty one and a refused apply 
 
 - **Subject**: `lion chat -c` and `lion chat -r <id, prefix or path>`.
 - **Violated when**: a resumed chat reruns a logged command, an old alias or value fails to resolve,
-  the old log is written to, or an unsettled command goes unnamed.
+  the old log is written to, or an unsettled command or an unapplied chat patch goes unnamed.
 
 `-c` continues the last log by id; `-r` takes an id, a unique prefix or a path. The log's rows come
-back as entries with their sequences, results, inbound marks and directives; usage rows are skipped.
-The loop admits each logged turn's values in order, and the fold lands where it did
+back as entries with their sequences, results, inbound marks and directives; usage and `BOX` rows
+are skipped. The loop admits each logged turn's values in order, and the fold lands where it did
 ([[ADR-0007-the-record#^c4|ADR-0007/C4]]).
 
 A last line cut mid-write is dropped and named; a bad line with lines after it refuses the resume.
@@ -187,10 +188,10 @@ directive as data; `load_log` reads rows back through `entry_of`, the reader the
 
 Serves C2 and C3. `console` takes the sandbox, the coding flag, a tree and `about_box`, and
 registers the tools over the `Tree`: `LocalTree` of the directory, or a `BoxTree` of the box.
-`--box` is `vm` by default, or `daytona`. Under `vm`, `chat_main` builds a `Sandbox` VM for
-`--shell` or `--code`; for a boxed chat, a `DaytonaSandbox` whose workdir is the directory's own
-path, `--image` defaulting to `python:3.12`, and as `about_box` the box guidance naming its kind and
-image. `--model` picks the backend ([[ADR-0009-backends|ADR-0009]]).
+`--box` is `vm` or `daytona`. Under `vm`, `chat_main` builds a `Sandbox` VM for `--shell` or
+`--code`; for a boxed chat, a `DaytonaSandbox` whose workdir is the directory's own path, `--image`
+defaulting to `python:3.12`, and as `about_box` the box guidance naming its kind and image.
+`--model` picks the backend ([[ADR-0009-backends|ADR-0009]]).
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py` (khive only in an actor's directory,
   the root rules, the hooks);
@@ -212,9 +213,11 @@ taking it keeps the box and names it. The default is print and save; `--apply` l
 Serves C6. `fresh_log` creates the chat log exclusively, with `-02`, `-03` when a session already
 took that second's id; a start that fails before logging removes its empty log so `-c` keeps the old
 one; `--log` refuses an existing path. `unsettled` parses each logged turn and names the aliases
-with no RESULT.
+with no RESULT. `load_log` hands back the `BOX` row, whose box and image stand in for a flag not
+given, else `vm` and `python:3.12`; `git apply --check -R` tests the continued session's patch.
 
-- **Landing evidence**: `tests/test_chat.py` (the exact id beside its sibling, the failed start);
+- **Landing evidence**: `tests/test_chat.py` (the exact id beside its sibling, the failed start,
+  `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch`);
   `apps/cli/tests/test_chat_command.py` (the whole record logged again, the unsettled commands, the
   missing log).
 
@@ -256,11 +259,13 @@ with no RESULT.
 - **S8**: With `--code` the root's `AGENTS.md` and `CLAUDE.md` enter the guidance whole, and the
   guidance goes out with every turn's call, so a long rules file adds its length to every turn's
   input.
-- **S9**: A resumed chat takes its box from the new command's flags, since the chat log records
-  none: `-c` without `--box daytona` continues a boxed chat's record over the person's own tree.
-  With it, edits from an unapplied chat patch stand in the record and not in the copy, and nothing
-  tells the model so; no test resumes a boxed chat. Starting the new copy from the saved chat patch
-  is an open choice, not built.
+- **S9**: The chat log's first row, `BOX`, names where the chat ran, and a resume runs there unless
+  its flags say otherwise; a log older than the row resumes under `vm`. An unapplied chat patch is
+  told, not built on: the new copy is a fresh push (S2). When the continued session's saved patch
+  does not come off the directory, or cannot be checked without git, the resume notice says so to
+  the model and the person; only that session's patch is checked.
+  `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch` resumes a
+  boxed chat.
 - **S10**: Nothing in the chat installs `uv` in a box: the default `python:3.12` is used as
   published, while the VM's own image copies `uv` into `python:3.12-slim`. The box guidance tells
   the model to install what the image lacks.
