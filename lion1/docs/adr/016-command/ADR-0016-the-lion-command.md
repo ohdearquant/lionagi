@@ -28,8 +28,8 @@ how a one-shot form shares the serving process's lock, and what the command leav
 The spend comes from the envelopes a backend keeps per call ([[ADR-0009-backends#^c5|ADR-0009/C5]]);
 the row lives in a note store ([[ADR-0007-the-record#^d3|ADR-0007/D3]]); the wake, the caps and the
 supervision are the long-running agent's ([[ADR-0013-the-agent|ADR-0013]]). Source:
-`apps/cli/pyproject.toml`; `main.py`, `agent.py`, `chat.py`, `view.py`, `areas.py` and `context.py`
-in `apps/cli/lion_cli/`; `Agent._claim`, `Agent._usage`, `Agent._spend` and `_line` in
+`apps/cli/pyproject.toml`; `main.py`, `agent.py`, `chat.py`, `view.py`, `config.py`, `areas.py` and
+`context.py` in `apps/cli/lion_cli/`; `Agent._claim`, `Agent._usage`, `Agent._spend` and `_line` in
 `hub/agent/agent.py`; `resident` and `wakes` in `hub/areas.py`.
 
 ## Definitions
@@ -42,7 +42,6 @@ in `apps/cli/lion_cli/`; `Agent._claim`, `Agent._usage`, `Agent._spend` and `_li
 - **landing file**: `landing/<date>-<name>.txt` in the agent directory, written by `--check` and
   `--arm` and overwritten by the day's latest run of that name.
 - **idle poll**: a poll of the agent's inbox that found nothing to run and made no model call.
-
 ## Assumptions
 
 | #  | statement | source | if false |
@@ -56,7 +55,7 @@ in `apps/cli/lion_cli/`; `Agent._claim`, `Agent._usage`, `Agent._spend` and `_li
 ### C1: One command, `lion`, holds every entry _(enforced: process)_ ^c1
 
 The workspace member `apps/cli`, package `lion_cli`, declares the one console script, `lion =
-"lion_cli.main:main"`; the root package declares none. `parser()` requires one of four subcommands.
+"lion_cli.main:main"`; the root package declares none. `parser()` requires one of five subcommands.
 The package composes the runtime and `hub` and talks to a terminal; the runtime package imports
 neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 
@@ -68,7 +67,8 @@ neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 | `lion agent --dir D --ticks` | the chores' missing reminders | the reminders on the khive schedule; none for a chair |
 | `lion agent --dir D --arm` | the identity read and the boundary probes (D2) | a landing file; exit 0 only when every probe holds |
 | `lion agent --dir D --stats` | a read of the notes and the ledgers (C4) | nothing |
-| `lion chat` | a console actor over a directory ([[ADR-0018-chat-in-a-box|ADR-0018]]) | `.lion/chats/<id>.jsonl` with a usage row per call; notes under `.lion/notes`; a box's patch, applied only under `--apply` |
+| `lion chat` | a console actor over a directory ([[ADR-0018-chat-in-a-box|ADR-0018]]); its flags default from the config file; `--tools` runs a `claude_code` model's own tools, `--khive-config` names the file its khive calls sign with | `.lion/chats/<id>.jsonl` with a usage row per call, and beside it `.lion/history`, a diagram page per mermaid block; notes under `.lion/notes`; a box's patch, applied only under `--apply`; the clipboard under `/copy` |
+| `lion config [--dir D]` | the chat's effective defaults for `D`, one TOML line per key with the file each came from | nothing |
 | `lion areas [--serve PORT]` | the residents by area, or a page and its API ([[ADR-0017-the-desk|ADR-0017]]) | nothing without `--serve`; with it, a resident's `hold`, `wake-now`, `[budget]` keys, `landing/controls.log`, mail, a launchd restart, and checkpoints through the `lion context` functions |
 | `lion context` `set`, `checkpoint`, `restore`, `status`, `show` | a Claude Code session's checkpoint and restore, no model call ([[ADR-0019-the-checkpoint|ADR-0019]]) | `.khive/context/pending.jsonl`, `<id>.json` and `latest.json` |
 
@@ -134,16 +134,18 @@ envelopes say, never a price table ([[ADR-0009-backends|ADR-0009]] S7). The gate
 
 ## Decisions
 
-### D1: `apps/cli/lion_cli/main.py`: one parser, four subcommands ^d1
+### D1: `apps/cli/lion_cli/main.py`: one parser, five subcommands ^d1
 
-Serves C1. `parser()` builds `agent`, `chat`, `areas` and `context`, each with its own flags;
-`main()` runs `agent` and `chat` under `asyncio.run`, `areas` and `context` directly, and ends a
-chat quietly on an interrupt. `context` takes its verbs as a second level of subcommands.
+Serves C1. `parser(chat=None)` builds `agent`, `chat`, `areas`, `context` and `config`, each with
+its own flags. `main()` parses `chat` twice, the second time with the config file's values as the
+chat parser's defaults; it runs `agent` and `chat` under `asyncio.run`, the rest directly, and ends
+a chat quietly on an interrupt. `context` takes its verbs as a second level of subcommands. At the
+chat's prompt a line the console owns (`/copy [N]`, `/quit`) runs there and never reaches the model.
 
-- **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the chat flags read through
-  `parser()`; `tests/test_areas.py`: the command printing the table from a given registry;
-  `tests/test_context.py`: `lion context` set, checkpoint, show, restore and status through the
-  command.
+- **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the chat flags through `parser()`;
+  `apps/cli/tests/test_config.py`: the two files, the flag over them, the refusals, `lion config`;
+  `apps/cli/tests/test_copy.py`: `/copy` never sent; `tests/test_areas.py`: the table from a given
+  registry; `tests/test_context.py`: `lion context` set, checkpoint, show, restore and status.
 
 ### D2: `agent_main`, `land` and `arm` in `apps/cli/lion_cli/agent.py` ^d2
 
