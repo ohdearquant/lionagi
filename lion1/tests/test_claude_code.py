@@ -702,6 +702,123 @@ def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_retur
         assert landed == [(f"toolu_{k}", 1, "started" if hooks else "not executed")], (k, landed)
 
 
+def test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_it_arrives(monkeypatch):
+    """The hook connected and sent half its request when the CLI exited: the call waits for the rest
+    (within the read's own bound), lands the tool call not executed, and the hook is refused; a hook
+    that never finishes sending asked nothing, and the call returns at the bound with nothing landed."""
+    import shlex
+    import socket
+    import time
+
+    async def late(finish: bool):
+        actor = Actor("gated")
+        hooks: list[str] = []
+        state = {"calls": 0, "client": None}
+
+        @actor.before
+        def h(run, la, request):
+            hooks.append(la.alias)
+
+        async def fake_exec(cli, args, prompt, **kw):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                settings = json.loads(args[args.index("--settings") + 1])
+                sock = shlex.split(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"])[-1]
+                client = socket.socket(socket.AF_UNIX)
+                client.connect(sock)
+                call = json.dumps(
+                    {"tool_name": "Read", "tool_use_id": "toolu_slow", "tool_input": {"file_path": "n"}}
+                )
+                client.sendall(call[:20].encode())  # the rest is still on its way when the CLI exits
+                state["client"], state["rest"] = client, call[20:].encode()
+                await asyncio.sleep(0)
+            else:
+                await asyncio.sleep(0.05)
+            return "ok", {"total_cost_usd": 0.0}
+
+        async def sender():
+            await asyncio.sleep(0.3)
+            if finish:
+                try:
+                    state["client"].sendall(state["rest"])
+                    state["client"].shutdown(socket.SHUT_WR)
+                except OSError:  # the call hung up on the half-sent request: nothing lands, asserted below
+                    pass
+
+        monkeypatch.setattr(claude_code, "_exec", fake_exec)
+        monkeypatch.setattr(claude_code, "_READ_S", 1.0, raising=False)
+        backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
+        took: list[float] = []
+
+        async def wrapped(messages):
+            t0 = time.monotonic()
+            try:
+                return await backend(messages)
+            finally:
+                took.append(time.monotonic() - t0)
+
+        send = asyncio.create_task(sender())
+        run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), wrapped)
+        await send
+        client = state["client"]
+        client.settimeout(1.0)
+        try:
+            answer = client.recv(4096)
+        except OSError as e:
+            answer = type(e).__name__
+        client.close()
+        landed = [
+            (e.alias, e.round, e.content.reason, e.meta.get("execution"))
+            for e in run.record.of_kind(Kind.RESULT)
+        ]
+        return hooks, landed, answer, took[0]
+
+    hooks, landed, answer, took = asyncio.run(late(True))
+    assert hooks == [] and landed == [("toolu_slow", 1, "cancelled", "not executed")], landed
+    assert json.loads(answer) == {"refuse": "cancelled before it started"}, answer
+    assert 0.3 <= took < 1.0, took  # the call waited for the request, not for the bound
+    hooks, landed, answer, took = asyncio.run(late(False))
+    assert hooks == [] and landed == [] and answer == b"", (landed, answer)  # nothing arrived: nothing lands
+    assert 1.0 <= took < 2.0, took  # the read's bound ended the wait
+
+
+def test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns(monkeypatch):
+    """The hook connects as the CLI exits, so its task is created by the call's own settle, and the run
+    is cancelled before that task takes its first step: the task never ran, the call still returns
+    cancelled with no task left (one that never started cannot take itself off the call's books)."""
+    import shlex
+    import socket
+    import time
+
+    async def go():
+        actor = Actor("gated")
+        state = {"calls": 0, "client": None}
+
+        async def fake_exec(cli, args, prompt, **kw):
+            state["calls"] += 1
+            settings = json.loads(args[args.index("--settings") + 1])
+            sock = shlex.split(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"])[-1]
+            client = socket.socket(socket.AF_UNIX)
+            client.connect(sock)
+            client.sendall(b"{")  # the rest never comes
+            state["client"] = client
+            asyncio.get_running_loop().call_soon(task.cancel)  # lands as the call's settle begins
+            return "ok", {"total_cost_usd": 0.0}
+
+        monkeypatch.setattr(claude_code, "_exec", fake_exec)
+        monkeypatch.setattr(claude_code, "_READ_S", 1.0, raising=False)
+        backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
+        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), backend))
+        t0 = time.monotonic()
+        done, _ = await asyncio.wait({task}, timeout=3)
+        state["client"].close()
+        assert done and task.cancelled(), "the call did not return under the cancel"
+        assert [t for t in asyncio.all_tasks() if t is not asyncio.current_task()] == []
+        return time.monotonic() - t0
+
+    assert asyncio.run(go()) < 2.0
+
+
 def test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once(monkeypatch):
     """Both pass the repeat check before either lands (both are at the before hook); the first to land
     is admitted, the second lands as a repeat under the suffixed id and its hook is refused, whether

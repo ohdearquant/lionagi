@@ -266,12 +266,14 @@ anchor.
   negative. It is not retried, and a spend row counts it ([[ADR-0016-the-lion-command|ADR-0016]]
   S2). Before, it landed none. That a failed call's cost is in the running total is read from
   success envelopes, not measured on a failure.
-- **S11**: The gate over an acting session, owed when this record landed, holds (C6), pinned with a
-  scripted CLI that runs the pre-tool hook: in `tests/test_claude_code.py`,
+- **S11**: The gate over an acting session holds (C6), pinned with a scripted CLI that runs the
+  pre-tool hook: in `tests/test_claude_code.py`,
   `test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record`,
   `test_the_gate_admits_nothing_when_it_cannot_decide`,
   `test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_before_it_returns`,
   `test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_returned`,
+  `test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_it_arrives`,
+  `test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns`,
   `test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once` and
   `test_a_request_the_hooks_left_that_cannot_be_sent_is_a_refusal_that_lands`; the wiring in `lion
   agent` by `tests/test_agent.py` `test_the_session_clis_own_tool_calls_ask_the_agents_actor`. The

@@ -195,6 +195,7 @@ class ClaudeCodeSession:
                 # holds, and the listener closes with no accept in flight (a server closed under one
                 # leaves the accepted socket open)
                 asks: set[asyncio.Task] = set()
+                arrived: dict[asyncio.Task, asyncio.Event] = {}  # set once the ask has read its request
                 closed = asyncio.Event()
                 loop = asyncio.get_running_loop()
                 listener = stack.enter_context(socket.socket(socket.AF_UNIX))
@@ -202,19 +203,21 @@ class ClaudeCodeSession:
                 listener.listen()
                 listener.setblocking(False)
 
-                async def ask(conn: socket.socket) -> None:
+                async def ask(conn: socket.socket, came: asyncio.Event) -> None:
+                    reader = asyncio.StreamReader()
+                    protocol = asyncio.StreamReaderProtocol(reader)
                     try:
-                        reader = asyncio.StreamReader()
-                        protocol = asyncio.StreamReaderProtocol(reader)
-                        try:
-                            transport, _ = await loop.connect_accepted_socket(lambda: protocol, conn)
-                        except BaseException:
-                            conn.close()
-                            raise
-                        writer = asyncio.StreamWriter(transport, protocol, reader, loop)
-                        await _ask(self.actor, run, self.requires, closed, reader, writer)
-                    finally:
-                        asks.discard(asyncio.current_task())
+                        transport, _ = await loop.connect_accepted_socket(lambda: protocol, conn)
+                    except BaseException:
+                        conn.close()
+                        raise
+                    writer = asyncio.StreamWriter(transport, protocol, reader, loop)
+                    await _ask(self.actor, run, self.requires, closed, came, reader, writer)
+
+                def done(task: asyncio.Task) -> None:
+                    # by callback, not in the task: one cancelled before its first step never runs
+                    asks.discard(task)
+                    arrived.pop(task, None)
 
                 def accept() -> list[asyncio.Task]:
                     # every connection waiting on the listener, each its own task; synchronous, so
@@ -224,7 +227,11 @@ class ClaudeCodeSession:
                         while True:
                             conn, _ = listener.accept()
                             conn.setblocking(False)
-                            taken.append(asyncio.create_task(ask(conn)))
+                            came = asyncio.Event()
+                            task = asyncio.create_task(ask(conn, came))
+                            arrived[task] = came
+                            task.add_done_callback(done)
+                            taken.append(task)
                     asks.update(taken)
                     return taken
 
@@ -236,10 +243,13 @@ class ClaudeCodeSession:
                     accept()  # a hook queued on the listener as the call ended is taken too
                     listener.close()
                     try:
-                        if asks:
-                            # a request already sent is read and lands not executed (C6); one at the
-                            # gate, or still being sent, is cancelled below and lands as it can
-                            await asyncio.wait(list(asks), timeout=0.2)
+                        # a request still on its way lands not executed once it arrives, within the
+                        # read's own bound (C6); one at the gate is cancelled below and lands cancelled
+                        coming = [e.wait() for e in arrived.values() if not e.is_set()]
+                        if coming:
+                            with contextlib.suppress(TimeoutError):
+                                await asyncio.wait_for(asyncio.gather(*coming), _READ_S)
+                            await asyncio.sleep(0)  # the arrivals land before the cancel pass
                     finally:
                         # a caller cancelling the call again while it settles still leaves no ask
                         # running: each is cancelled and joined, the caller's cancel raised after
@@ -452,6 +462,7 @@ _DIRECTIVES = frozenset({"context.hide", "context.show", "context.summarize", "f
 # the CLI's pre-tool hook, run by this interpreter isolated: the tool call on stdin goes to the gate's
 # socket and the verdict comes back. Exit 2 stops the tool with the reason; the CLI runs a tool whose
 # hook failed any other way, so a failure to ask exits 2 too
+_READ_S = 5.0  # how long a hook has to finish sending its request, once it has connected
 _HOOK = """import json, socket, sys
 try:
     s = socket.socket(socket.AF_UNIX)
@@ -479,6 +490,7 @@ async def _ask(
     run: str | None,
     requires: dict[str, tuple[str, ...]],
     closed: asyncio.Event,
+    arrived: asyncio.Event,
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
 ) -> None:
@@ -486,7 +498,12 @@ async def _ask(
     record, admitted with the arguments the hooks left or refused with the reason. A gate that fails
     admits nothing; a call that ends before the gate decides lands the tool call not executed."""
     try:
-        call = json.loads(await reader.read())
+        try:
+            call = json.loads(await asyncio.wait_for(reader.read(), _READ_S))
+        except TimeoutError:  # a hook that never finishes sending has asked nothing: it hears nothing
+            writer.close()
+            return
+        arrived.set()
         live = actor.runs.get(run)
         if live is None:
             raise LookupError(f"{actor.name} has no live run {run!r}")
