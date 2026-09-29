@@ -415,6 +415,11 @@ def check(script: Script, commands: Iterable[str], known: Callable[[str], bool])
     once. A pointer reaches only backwards, so no cycle over reference and control edges can form."""
     names = set(commands)
     taken: set[str] = set()
+    unknown: list[tuple[int, str]] = []  # every unknown command, so the refusal names them all (D2)
+
+    def refused() -> UnknownCommand:
+        lines = "; ".join(f"line {line}: unknown command {name!r}" for line, name in unknown)
+        return UnknownCommand(f"{lines}; the program was not run", tuple(name for _, name in unknown))
 
     def expr(node: ast.expr, visible: set[str]) -> None:
         for n in ast.walk(node):
@@ -423,11 +428,13 @@ def check(script: Script, commands: Iterable[str], known: Callable[[str], bool])
             elif isinstance(n, ast.Name) and n.id.startswith(_PTR) and n.id not in _NOTE:
                 name = n.id.removeprefix(_PTR)
                 if name not in visible and not known(name):
+                    if unknown:  # an unknown name earlier in the message is the first thing to say
+                        raise refused()
                     raise _refuse(n, f"*{name} names nothing bound on an earlier line or on the record")
 
     def command(line: int, name: str) -> None:
         if name not in names:
-            raise UnknownCommand(f"line {line}: unknown command {name!r}; the program was not run", (name,))
+            unknown.append((line, name))
 
     def block(nodes: Iterable[Node], visible: set[str]) -> None:
         visible = set(visible)
@@ -451,6 +458,8 @@ def check(script: Script, commands: Iterable[str], known: Callable[[str], bool])
             alias = getattr(node, "alias", None)
             if alias is not None:
                 if alias in taken or known(alias):
+                    if unknown:
+                        raise refused()
                     raise LNDLError(
                         f"line {node.line}: {alias} is bound already: a name is bound once for the whole "
                         "run; the program was not run"
@@ -459,6 +468,8 @@ def check(script: Script, commands: Iterable[str], known: Callable[[str], bool])
                 visible.add(alias)
 
     block(script.body, set())
+    if unknown:
+        raise refused()
 
 
 class Env(Protocol):

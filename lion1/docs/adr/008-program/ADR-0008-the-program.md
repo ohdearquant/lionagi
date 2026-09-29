@@ -223,11 +223,12 @@ name so the bench can say which slips models make.
 - **Landing evidence**: `test_the_tag_forms_repairs_are_counted_by_name`,
   `test_the_tag_form_counts_every_repair_one_call_needed`,
   `test_a_repair_is_counted_when_the_check_then_refuses_the_program`,
-  `test_an_unknown_name_is_measured_against_the_nearest_known_name_in_both_forms`, and in
+  `test_an_unknown_name_is_measured_against_the_nearest_known_name_in_both_forms`,
+  `test_every_unknown_command_in_a_message_is_named_and_measured_not_only_the_first`, and in
   `tests/test_swe_solve.py`
   `test_the_row_counts_the_repairs_by_name_and_measures_each_unknown_name`: the bench row carries
   `repairs` by name and `unknown_names` as name, nearest known name and Levenshtein distance. Owed:
-  a bench run that takes the measurement, and the name repairs it turns on.
+  a bench run taking the measurement, and the name repairs it turns on.
 
 ### D3: Note assignment and view curation in the dispatcher's settle ^d3
 

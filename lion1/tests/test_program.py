@@ -178,6 +178,21 @@ def test_an_unknown_name_is_measured_against_the_nearest_known_name_in_both_form
     assert calls == []
 
 
+def test_every_unknown_command_in_a_message_is_named_and_measured_not_only_the_first():
+    calls: list = []
+    run = _run(_actor("misnamed-two", calls), fenced('a = serch(text="x")', 'b = ecko(text="y")'), "idle")
+    assert run.misnamed == [("serch", "fetch", 2), ("ecko", "echo", 1)] and calls == []
+    assert (
+        "line 1: unknown command 'serch'; line 2: unknown command 'ecko'; the program was not run"
+        in _notices(run)
+    )
+    # an unknown name earlier in the message is what the model is told, whatever the check finds next
+    for later in ("b = *zz", 'a = "again"'):
+        run = _run(_actor("misnamed-first", calls), fenced('a = serch(text="x")', later), "idle")
+        assert run.misnamed == [("serch", "fetch", 2)] and calls == []
+        assert "line 1: unknown command 'serch'; the program was not run" in _notices(run)
+
+
 def test_a_name_already_on_the_record_cannot_be_bound_again():
     actor = _actor("taken", [])
     run = _run(actor, fenced('catalog = echo(text="x")'), history=HISTORY)
