@@ -43,19 +43,32 @@ _APPLY = (
 
 
 async def grade(
-    box: Box, row: dict, patch: str, model_name: str, log_path: Path, *, eval_timeout: float = 1800.0
+    box: Box,
+    row: dict,
+    patch: str,
+    model_name: str,
+    log_path: Path,
+    *,
+    eval_timeout: float = 1800.0,
+    base: str | None = None,
 ) -> dict:
     """The official verdict for `patch` on this instance, computed in the box it was written in.
 
     Mirrors swebench.harness.run_evaluation.run_instance: clean tree at the base commit, the
     harness's three apply attempts, the instance's eval script, the harness's log parser and
     report. Returns that report's row for the instance plus a `status` naming any early stop.
+
+    The reset is to `base`, the commit the model was handed (the row's `base_commit` when the
+    caller read none; HEAD when the row names none either): index and tree both, so an edit the
+    model staged or committed is gone before the patch goes on. A checkout from the index would keep
+    a staged edit, and the patch, which holds the same edit, would then fail to apply.
     """
     from swebench.harness.grading import get_eval_report
     from swebench.harness.utils import make_test_spec
 
     iid = row["instance_id"]
-    rc, out = await box.run("git -c core.fileMode=false checkout -- . && git clean -fdq")
+    base = shlex.quote(base or row.get("base_commit") or "HEAD")
+    rc, out = await box.run(f"git -c core.fileMode=false reset -q --hard {base} && git clean -fdq")
     if rc != 0:  # the model's own edits, tests included, would still be in the tree the eval runs on
         log_path.write_text(out)
         return {"resolved": False, "status": "RESET_FAIL", "error": f"reset exited {rc}: {out}"}
