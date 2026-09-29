@@ -254,11 +254,11 @@ anchor.
   with the notification already on the record ([[ADR-0006-the-notification#^d1|ADR-0006/D1]]); the
   reap of a cancelled call at the run's end is owed there ([[ADR-0002-the-run|ADR-0002]] S4).
 - **S10**: A failed session CLI call lands its envelope before the error goes on: the one the CLI
-  printed, as a delta kept as the session's last, else one whose cost is unknown. A printed envelope
-  missing the running total leaves its share, and the next call's, unknown too. It is not retried,
-  and a spend row counts it ([[ADR-0016-the-lion-command|ADR-0016]] S2). Before, it landed none.
-  That a failed call's cost is in the session's running total is read from success envelopes, not
-  measured on a failure.
+  printed, as a delta kept as its last, else one whose cost is unknown. A running total missing
+  leaves this share and the next unknown; one below the last leaves this share unknown, never
+  negative. It is not retried, and a spend row counts it ([[ADR-0016-the-lion-command|ADR-0016]]
+  S2). Before, it landed none. That a failed call's cost is in the running total is read from
+  success envelopes, not measured on a failure.
 - **S11**: The gate over an acting session is owed: the CLI's pre-tool hook asks the runtime's
   privilege check ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]) and before hooks
   ([[ADR-0005-command-handling#^c4|ADR-0005/C4]]) for each tool call, and each act lands on the

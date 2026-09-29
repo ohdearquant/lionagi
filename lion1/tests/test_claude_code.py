@@ -103,6 +103,36 @@ def test_a_resumed_call_records_its_own_usage_and_the_cost_it_added(monkeypatch)
     assert second["cumulative"] == {"total_cost_usd": pytest.approx(0.002), "duration_api_ms": 2000}
 
 
+def test_a_running_total_below_the_last_leaves_the_calls_share_unknown_and_never_negative(monkeypatch):
+    """A failed call's envelope, or a resumed one's, can print a running total below the one before it
+    (the CLI's total is read from what it printed, and a failure is not measured to accumulate). That
+    call's share is unknown, not the negative difference, so a spend row never counts it down; the
+    call after it is read against the total the CLI last printed."""
+    totals = iter([(0.4, 400), (0.1, 100), (0.15, 160)])
+
+    async def fake(cli, args, prompt, *, model, timeout, cwd=None, persist=False):
+        cost, ms = next(totals)
+        envelope = {
+            "usage": {"input_tokens": 10, "output_tokens": 1},
+            "total_cost_usd": cost,
+            "duration_api_ms": ms,
+        }
+        if cost == 0.1:
+            raise claude_code.ClaudeCodeError("claude reported error_max_turns: cap", envelope)
+        return "ok", envelope
+
+    monkeypatch.setattr(claude_code, "_exec", fake)
+    s = ClaudeCodeSession(cli="/bin/claude")
+    asyncio.run(s([SYSTEM, IN0, SYS1]))
+    with pytest.raises(claude_code.ClaudeCodeError, match="error_max_turns"):
+        asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
+    asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
+    shares = [(c["total_cost_usd"], c["duration_api_ms"]) for c in s.calls]
+    assert shares == [(pytest.approx(0.4), 400), (None, None), (pytest.approx(0.05), 60)]
+    assert [c["cumulative"]["total_cost_usd"] for c in s.calls] == [0.4, 0.1, 0.15]
+    assert "error_max_turns" in s.calls[1]["error"] and "error" not in s.calls[2]
+
+
 def test_another_run_on_the_same_backend_gets_its_own_session(monkeypatch):
     s, calls = _session(monkeypatch)
     asyncio.run(s([SYSTEM, IN0, SYS1]))
