@@ -20,7 +20,7 @@
 | [ADR-0016](016-command/ADR-0016-the-lion-command.md) | 016-command | draft | operating (the command tree, the shared lock, the spend row with its count of calls of unknown cost, the readers' mark of a partial sum and the text `--stats` prints are under tests; the phone page renders the mark untested) | ADR-0007, ADR-0009, ADR-0010 |
 | [ADR-0017](017-desk/ADR-0017-the-desk.md) | 017-desk | draft | operating (every claim is pinned by tests with scripted backends and a stubbed store; no bench exercises the desk; the gate for a clarify's answer mailed to the desk holds under `[desk] admit_replies`, S8) | ADR-0001, ADR-0002, ADR-0003, ADR-0010 |
 | [ADR-0018](018-chat/ADR-0018-chat-in-a-box.md) | 018-chat | draft | operating (the chat, its resume and the boxed chat, a resumed boxed chat included, are pinned by tests against scripted backends and a stubbed box; the one real-box test runs only when enabled; no test interrupts a boxed chat) | ADR-0002, ADR-0003, ADR-0005, ADR-0007 |
-| [ADR-0019](019-checkpoint/ADR-0019-the-checkpoint.md) | 019-checkpoint | draft | operating (the take and its refusals, the transcript scan, the restore, the files and both transports are pinned by tests; lanes from pull requests and threads are owed; nothing in the code starts a Claude Code session's checkpoint) | ADR-0006, ADR-0007, ADR-0009, ADR-0013, ADR-0016, ADR-0017 |
+| [ADR-0019](019-checkpoint/ADR-0019-the-checkpoint.md) | 019-checkpoint | draft | operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests, the restore, the files, both transports and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests) | ADR-0006, ADR-0007, ADR-0009, ADR-0013, ADR-0016, ADR-0017 |
 
 ## By topic
 

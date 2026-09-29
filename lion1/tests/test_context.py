@@ -3,6 +3,7 @@ transcript holding one row of every kind a live one carries, placeholder text th
 harvests its kind, and an absent source is a value."""
 
 import asyncio
+import io
 import json
 import shlex
 import subprocess
@@ -23,6 +24,7 @@ from hub.context import (
     directives,
     lanes,
     posture,
+    pulls,
     spawns,
     topic,
     transcript_turns,
@@ -119,11 +121,12 @@ def harvest(root: Path, now: datetime = AT_TAKE) -> list[Var]:
 
 
 class TaskKhive:
-    """gtd.tasks as khive answers it: a bare list of task rows."""
+    """gtd.tasks as khive answers it: a bare list of task rows; the unread box as `Khive.inbox` hands it
+    (a list of messages, or an error to raise)."""
 
-    def __init__(self, tasks=None, fail: str | None = None):
+    def __init__(self, tasks=None, fail: str | None = None, mail=()):
         self.actor, self.cwd, self.ops = ACTOR, None, []
-        self.tasks, self.fail = tasks or [], fail
+        self.tasks, self.fail, self.mail = tasks or [], fail, mail
 
     async def exec(self, ops: str) -> list:
         self.ops.append(ops)
@@ -131,8 +134,39 @@ class TaskKhive:
             raise KhiveError(self.fail)
         return [self.tasks]
 
+    async def inbox(self, *, limit: int = 50, **kw) -> list:
+        self.ops.append(f"inbox limit={limit} {kw}")
+        if self.fail:
+            raise KhiveError(self.fail)
+        if isinstance(self.mail, Exception):
+            raise self.mail
+        return list(self.mail)[:limit]
+
 
 TASK = {"id": "1ane0001", "title": "placeholder lane", "priority": "p1", "status": "active", "properties": {}}
+PR = {
+    "number": 7,
+    "title": "placeholder pull request",
+    "url": "https://example.invalid/pull/7",
+    "reviewDecision": "REVIEW_REQUIRED",
+}
+
+
+def unread(mid: str, sender: str, subject: str, thread: str | None = None) -> dict:
+    props = {"from_actor": sender, **({"thread_id": thread} if thread else {})}
+    return {"id": mid, "subject": subject, "content": "placeholder", "properties": props}
+
+
+def gh_says(monkeypatch, rc: int = 0, out: str = "[]", err: str = "") -> list:
+    """A gh that answers every call with (rc, out, err); each call's argv and cwd are kept."""
+    calls: list = []
+
+    async def run(argv, **kw):
+        calls.append((argv, kw.get("cwd")))
+        return rc, out, err
+
+    monkeypatch.setattr("hub.context.sh", run)
+    return calls
 
 
 def isolated_git(monkeypatch, root: Path) -> None:
@@ -188,11 +222,12 @@ def test_each_source_harvests_its_kind_and_an_absent_source_is_a_value(tmp_path)
         "awaiting": None,
         "priority": "p1",
     }
-    assert said == "gtd.tasks active; open PRs and threads not read"
+    assert said == "gtd.tasks active; comm.inbox unread"
     # khive down: no lanes, and the reason is the value; no registry, no topic; no figure filed, nulls
     assert asyncio.run(lanes(TaskKhive(fail="kkernel exited 1: down"))) == (
         [],
-        "unavailable: KhiveError: kkernel exited 1: down",
+        "gtd.tasks unavailable: KhiveError: kkernel exited 1: down; "
+        "comm.inbox unavailable: KhiveError: kkernel exited 1: down",
     )
     assert topic(tmp_path / "absent.json") == []
     assert context_figure("no-such-session", tmp_path) == {"used": None, "window": None, "pct": None}
@@ -208,6 +243,107 @@ def test_each_source_harvests_its_kind_and_an_absent_source_is_a_value(tmp_path)
         )
     )
     assert context_figure("s1", tmp_path) == {"used": 370, "window": 1000, "pct": 37}
+
+
+def test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_open_pull_requests(
+    tmp_path, monkeypatch
+):
+    # the lanes were the active tasks alone, and `source.lanes` said open PRs and threads were not read
+    box = [  # newest first, as the box hands it
+        unread("m3", "lambda:owner", "re: placeholder one", "th1"),
+        unread("m2", "lambda:peer", "placeholder two", "th2"),
+        unread("m1", "lambda:owner", "placeholder one", "th1"),
+        unread("m0", "lambda:peer", "placeholder three"),  # no thread: the message is its own
+        "not a message",
+    ]
+    calls = gh_says(monkeypatch, out=json.dumps([PR, "not a pull request"]))
+    d = actor_dir(tmp_path)
+    khive = TaskKhive([TASK], mail=box)
+    done = checkpoint(d, "manual", transcript=FIXTURE, khive=khive, now=AT_TAKE)
+    ckpt = load(d)
+    said = "gtd.tasks active; comm.inbox unread; gh pr list open, authored by @me"
+    assert ckpt.source["lanes"] == said
+    got = {v.name: v.value for v in ckpt.vars if v.kind == "lane"}
+    assert got == {
+        "lane.1ane0001": {
+            "kind": "task",
+            "id": "1ane0001",
+            "title": "placeholder lane",
+            "awaiting": None,
+            "priority": "p1",
+        },
+        "lane.thread.th1": {
+            "kind": "thread",
+            "id": "th1",
+            "title": "re: placeholder one",
+            "awaiting": "a reply to lambda:owner",
+        },
+        "lane.thread.th2": {
+            "kind": "thread",
+            "id": "th2",
+            "title": "placeholder two",
+            "awaiting": "a reply to lambda:peer",
+        },
+        "lane.thread.m0": {
+            "kind": "thread",
+            "id": "m0",
+            "title": "placeholder three",
+            "awaiting": "a reply to lambda:peer",
+        },
+        "lane.pr.7": {
+            "kind": "pr",
+            "id": 7,
+            "title": "placeholder pull request",
+            "awaiting": "REVIEW_REQUIRED",
+            "url": "https://example.invalid/pull/7",
+        },
+    }
+    assert set(got) <= set(done["vars"])
+    assert {v.source for v in ckpt.vars if v.kind == "lane"} == {"khive", "gh"}
+    # the box is read unread and without a wait; nothing marks it read
+    assert khive.ops[1:] == ["inbox limit=50 {}"]
+    # the directory's own repository, the gh account's own pull requests, open
+    ((argv, cwd),) = calls
+    assert cwd == str(d.resolve()) and argv[1:3] == ["pr", "list"]
+    assert argv[argv.index("--author") + 1] == "@me" and argv[argv.index("--state") + 1] == "open"
+    prompt = render_prompt(ckpt)
+    assert f"Lanes ({said}):" in prompt and "placeholder pull request" in prompt and '"id": "th2"' in prompt
+
+
+def test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one(tmp_path, monkeypatch):
+    many = [unread(f"m{i}", "lambda:peer", f"placeholder {i}", f"th{i}") for i in range(60)]
+    got, said = asyncio.run(lanes(TaskKhive(mail=many)))
+    assert (
+        len(got) == 50
+        and said == "gtd.tasks active; comm.inbox unread (a full page of 50: more may be unread)"
+    )
+    boxed = TaskKhive({"tasks": [TASK]}, mail=KhiveError("comm.inbox: down"))
+    got, said = asyncio.run(lanes(boxed))
+    assert [v.name for v in got] == ["lane.1ane0001"]
+    assert said == "gtd.tasks active; comm.inbox unavailable: KhiveError: comm.inbox: down"
+    assert asyncio.run(lanes(TaskKhive("not tasks")))[1].startswith(
+        "gtd.tasks unavailable: answered str, not a list of tasks; comm.inbox unread"
+    )
+
+    def gh(rc=0, out="[]", err="", raises=None):
+        async def run(argv, **kw):
+            if raises is not None:
+                raise raises
+            return rc, out, err
+
+        return asyncio.run(pulls(tmp_path, run))
+
+    assert gh(raises=FileNotFoundError("gh")) == ([], "gh pr list unavailable: FileNotFoundError: gh")
+    assert gh(rc=1, err="no git remotes found\n") == ([], "gh pr list unavailable: no git remotes found")
+    assert gh(rc=4) == ([], "gh pr list unavailable: rc 4")
+    assert gh(out="not json") == ([], "gh pr list unavailable: no list of pull requests in 'not json'")
+    assert (
+        gh(out='{"number": 7}')[1] == "gh pr list unavailable: no list of pull requests in '{\"number\": 7}'"
+    )
+    page = [{**PR, "number": n, "reviewDecision": ""} for n in range(100)]
+    got, said = gh(out=json.dumps(page))
+    assert len(got) == 100 and got[0].value["awaiting"] is None
+    assert said == "gh pr list open, authored by @me (a full page of 100: more may be open)"
 
 
 def test_the_inbox_line_quotes_a_monitor_path_with_a_space(monkeypatch):
@@ -577,6 +713,7 @@ def test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status(tmp_path
         raise AssertionError("a checkpoint ran a model")
 
     monkeypatch.setattr(Actor, "run", no_run)
+    gh_says(monkeypatch)
     d = actor_dir(tmp_path)
     done = checkpoint(d, "manual", transcript=FIXTURE, khive=TaskKhive([TASK]), now=AT_TAKE)
     got = restore(d)
@@ -757,6 +894,7 @@ def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp
         raise KhiveError("kkernel not found on PATH or under ~/.cargo/bin")
 
     monkeypatch.setattr(cli, "Khive", down)
+    gh_says(monkeypatch, rc=1, err="no git remotes found")
     d = actor_dir(tmp_path)
     big = "b" * (LAZY + 100)
     main(
@@ -777,7 +915,10 @@ def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp
         "window": None,
         "pct": None,
     }
-    assert load(d).source["lanes"].startswith("unavailable: kkernel not found")
+    assert load(d).source["lanes"] == (
+        "gtd.tasks and comm.inbox unavailable: kkernel not found on PATH or under ~/.cargo/bin; "
+        "gh pr list unavailable: no git remotes found"
+    )
     after = status(d)
     assert after["latest"] == done["id"] and after["pending_vars"] == 0  # the checkpoint drained them
     main(["context", "restore", "--dir", str(d)])
@@ -838,6 +979,7 @@ def test_the_context_routes_answer_for_a_registered_desk_only(tmp_path, monkeypa
     assert code == 409 and doc["ok"] is False and "no Claude Code transcript" in doc["detail"]
     monkeypatch.setattr(cli, "newest_transcript", lambda directory: FIXTURE)
     monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    gh_says(monkeypatch)
     code, doc = context_api(reg, "POST", "/api/context/checkpoint", {"dir": str(d), "why": "end"})
     assert code == 200 and doc["id"].startswith("ckpt-") and "lane.1ane0001" in doc["vars"]
     code, doc = context_api(reg, "GET", "/api/context/restore", {"dir": str(d), "id": doc["id"]})
@@ -872,3 +1014,84 @@ def test_the_served_context_routes_sit_behind_the_same_gates(tmp_path):
     code, text, _ = call(port, "POST", "/api/context/checkpoint", body, json_type)
     assert code == 409 and json.loads(text)["ok"] is False  # no transcript for this desk: refused, said
     assert not (d / ".khive" / "context").exists() or not list((d / ".khive" / "context").glob("ckpt-*.json"))
+
+
+def test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_hands_it(
+    tmp_path, monkeypatch, capsys
+):
+    # nothing in the code started a Claude Code session's checkpoint: a person or a program had to run
+    # `lion context checkpoint`, and the newest transcript stood in for the session compacting
+    import lion_cli.context as cli
+
+    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    gh_says(monkeypatch)
+    d = actor_dir(tmp_path)
+    given = {
+        "session_id": "s-compacting",
+        "transcript_path": str(FIXTURE),
+        "cwd": str(d),
+        "hook_event_name": "PreCompact",
+        "trigger": "auto",
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(given)))
+    main(["context", "checkpoint", "--hook"])  # no --dir: the hook's cwd names the session's directory
+    done = json.loads(capsys.readouterr().out)
+    ckpt = load(d)
+    assert ckpt.id == done["id"] and ckpt.why == "precompact" and "lane.1ane0001" in done["vars"]
+    assert (ckpt.source["session_id"], ckpt.source["transcript"], ckpt.source["cwd"]) == (
+        "s-compacting",
+        str(FIXTURE),
+        str(d.resolve()),
+    )
+    for text, said in (
+        ("not json", "the hook's input is not JSON"),
+        ("[]", "hook event None: only PreCompact takes a checkpoint; nothing was taken"),
+        (json.dumps({**given, "hook_event_name": "Stop"}), "hook event 'Stop': only PreCompact takes"),
+        # an event missing its identity is refused, never filled in from the directory's newest transcript
+        (
+            json.dumps({k: v for k, v in given.items() if k != "transcript_path"}),
+            "hook's transcript_path is missing",
+        ),
+        (json.dumps({**given, "session_id": ""}), "hook's session_id is missing"),
+        (json.dumps({**given, "cwd": 7}), "hook's cwd is missing or not a string"),
+    ):
+        monkeypatch.setattr("sys.stdin", io.StringIO(text))
+        with pytest.raises(SystemExit) as out:
+            main(["context", "checkpoint", "--hook"])
+        assert out.value.code == 1 and said in capsys.readouterr().err
+    assert [p.stem for p in (d / ".khive" / "context").glob("ckpt-*.json")] == [done["id"]]
+
+
+def test_a_claude_code_checkpoint_in_a_residents_directory_is_refused_by_its_next_process(
+    tmp_path, monkeypatch
+):
+    # one latest.json serves both arms: a take through the context routes, which reach a resident's
+    # directory only, becomes the latest; the resident's next process refuses it and starts fresh, and
+    # its own checkpoint stays on disk
+    import lion_cli.context as cli
+
+    d = actor_dir(tmp_path, "lambda:a:echo")
+    agent = resident(
+        FakeKhive(mail("lambda:a", "say hi back"), cwd=d),
+        Growing((FAILS.format("g1"), 1_000), ("never read", 1_000)),
+        max_rounds=1,
+    )
+    serve_one(agent)
+    own = load(d)
+    assert own.source["kind"] == "resident" and agent.errors == []
+    monkeypatch.setattr(cli, "newest_transcript", lambda directory: FIXTURE)
+    monkeypatch.setattr(cli, "Khive", lambda *a: TaskKhive([TASK]))
+    gh_says(monkeypatch)
+    code, doc = context_api(
+        registry(tmp_path, d), "POST", "/api/context/checkpoint", {"dir": str(d), "why": "manual"}
+    )
+    assert code == 200 and load(d).id == doc["id"] != own.id and load(d).source["kind"] == "claude-code"
+    again = resident(FakeKhive(mail("lambda:a", "one more", mid="c3d4e5f6"), cwd=d), Growing((REPLY, 1_000)))
+    lines = serve_one(again)
+    refused = f"{doc['id']} is a claude-code checkpoint: its restore is the first prompt"
+    assert again.errors == [f"restore: CheckpointError: {refused}"]
+    assert lines[0] == f"restore failed, the run starts fresh: restore: CheckpointError: {refused}"
+    (run,) = again.runs
+    first = list(run.record)[0]
+    assert first.kind is Kind.INPUT and "one more" in first.content and "say hi back" not in first.content
+    assert load(d, own.id) == own  # the resident's checkpoint is on disk, no longer the one latest names
