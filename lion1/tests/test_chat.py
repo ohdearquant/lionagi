@@ -1002,7 +1002,7 @@ def test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detai
     assert say.live is None
 
 
-def test_a_call_of_the_models_own_tools_prints_its_first_argument_and_an_unknown_name_says_where_it_lives(
+def test_an_own_tool_call_folds_to_one_line_and_an_unknown_name_is_told_where_it_lives(
     tmp_path,
 ):
     from lion_cli.view import Console
