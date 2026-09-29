@@ -14,6 +14,8 @@ import pytest
 from lion_cli.agent import agent_main
 
 from hub.agent import Agent, AgentError, Budget, Wake, WakeRule
+from hub.harness import claude_code
+from hub.harness.claude_code import ClaudeCodeSession
 from hub.khive import Khive
 from lionagi import Actor, Kind, MemoryNoteStore, Message, Profile, Success
 
@@ -383,6 +385,25 @@ def test_the_cost_cap_holds_the_agent_for_the_day_from_the_backends_own_cost_fig
     now[0] += 86_400  # the next day; the mail is still waiting
     assert asyncio.run(agent.wake(wait_ms=0)) is not None
     assert agent.state.get("spend").value["cost"] == pytest.approx(0.6)
+
+
+def test_a_failed_session_cli_call_is_counted_in_the_days_spend_row_and_still_ends_the_run(monkeypatch):
+    printed = {"total_cost_usd": 0.5, "usage": {"input_tokens": 9000, "output_tokens": 700}}
+
+    async def capped(cli, args, prompt, *, model, timeout, cwd=None, persist=False):
+        raise claude_code.ClaudeCodeError("claude reported error_max_turns: cap", printed)
+
+    monkeypatch.setattr(claude_code, "_exec", capped)
+    khive = FakeKhive(mail("lambda:a", "go"))
+    agent = Agent(
+        Actor("echo", privileges={"comm.send"}), khive, ClaudeCodeSession(cli="/bin/claude"), profile_for
+    )
+    with pytest.raises(claude_code.ClaudeCodeError, match="error_max_turns"):
+        asyncio.run(agent.wake(wait_ms=0))
+    spend = agent.state.get("spend").value
+    assert spend["calls"] == 1 and spend["cost"] == pytest.approx(0.5)
+    assert spend["in"] == 9000 and spend["out"] == 700
+    assert agent.state.get("cursor").value["outcome"].startswith("error ClaudeCodeError: ")
 
 
 def test_a_wake_killed_after_its_mark_read_is_reported_to_the_owner_and_rerun_takes_it_back():

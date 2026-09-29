@@ -169,16 +169,28 @@ class ClaudeCodeSession:
         # this run's own state, bound before the await: another run's call can switch the backend
         # to its session while this one is out, and what comes back belongs to this run
         sent, prev = self.sent, self._last
-        text, envelope = await _exec(
-            self.cli, args, prompt, model=self.model, timeout=self.timeout, cwd=self.cwd, persist=True
-        )
+        failed: ClaudeCodeError | None = None
+        try:
+            text, envelope = await _exec(
+                self.cli, args, prompt, model=self.model, timeout=self.timeout, cwd=self.cwd, persist=True
+            )
+        except ClaudeCodeError as e:
+            # a failed call lands its envelope before the error goes on (ADR-0009/C5); what the CLI
+            # printed accumulates over the session like an answer's, so it is taken the same way
+            if e.envelope is None:
+                self.calls.append({"total_cost_usd": None, "error": str(e)})
+                raise
+            failed, envelope = e, e.envelope
         # over a resumed session the CLI's cost and api time accumulate, its usage does not
-        self.calls.append(_delta(envelope, prev))
-        sent.update({m.name: hash(m.content) for m in body if m.name is not None})
+        call = _delta(envelope, prev)
+        self.calls.append(call if failed is None else {**call, "error": str(failed)})
         if run is None or run == self._run:
             self._last = envelope
         else:
             self._runs[run]["_last"] = envelope  # parked by the other run's switch
+        if failed is not None:
+            raise failed
+        sent.update({m.name: hash(m.content) for m in body if m.name is not None})
         return Reply(text, prompt_tokens=_prompt_tokens(envelope))
 
     def _switch(self, run: str) -> None:
@@ -271,8 +283,10 @@ def _delta(envelope: dict, prev: dict | None) -> dict:
     }
     if prev is None:
         return out
-    out["total_cost_usd"] = (envelope.get("total_cost_usd") or 0) - (prev.get("total_cost_usd") or 0)
-    out["duration_api_ms"] = (envelope.get("duration_api_ms") or 0) - (prev.get("duration_api_ms") or 0)
+    for k in ("total_cost_usd", "duration_api_ms"):
+        # a running total missing on either side leaves this call's share unknown, never negative
+        now, before = envelope.get(k), prev.get(k)
+        out[k] = None if now is None or before is None else now - before
     return out
 
 

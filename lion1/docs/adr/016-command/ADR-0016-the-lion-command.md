@@ -180,7 +180,8 @@ the last turn stood in and the session restarts when present.
 
 - **Landing evidence**: `tests/test_agent.py`: the cost cap from the backend's own figures, each
   burst of a continuous chair booked once, one serve line per wake, the last turn's context on the
-  line; `tests/test_chores.py`: the digest's tokens line.
+  line, `test_a_failed_session_cli_call_is_counted_in_the_days_spend_row_and_still_ends_the_run`;
+  `tests/test_chores.py`: the digest's tokens line.
 
 ### D5: The readers `stats`, `resident`, `wakes` and the chat's `spent` ^d5
 
@@ -216,8 +217,8 @@ the chat log keeps each envelope's cost as it came, null included.
 - **S2**: An unknown cost adds nothing to the row and leaves no mark: a router call whose attempts
   carry no cost figure reads as zero in `cost` while its call counts. The router's `cost_complete`
   flag is not read, and the day's cost cap compares the known sum. A failed session CLI call lands
-  no envelope today, so the row misses it whole. A mark that the day's cost is partial, as
-  [[ADR-0009-backends|ADR-0009]] S1 asks of a reader that sums, is owed.
+  its envelope and the row counts it; before that the row missed it whole. A mark that the day's
+  cost is partial, as [[ADR-0009-backends|ADR-0009]] S1 asks of a reader that sums, is owed.
 - **S3**: For `claude_code` the row's dollars are the figure the CLI prints, taken per call as a
   delta ([[ADR-0009-backends#^c4|ADR-0009/C4]]); whether that figure is a bill under a subscription
   login is not shown here.
