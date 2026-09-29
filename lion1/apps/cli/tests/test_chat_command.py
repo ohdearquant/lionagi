@@ -4,6 +4,7 @@ own log; the flags resolve to a chat id or say where the logs live."""
 
 import asyncio
 import json
+import re
 import subprocess
 
 import pytest
@@ -480,7 +481,8 @@ def test_every_chat_composes_the_persons_instruction_files_in_order_and_opens_by
     monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("Hi."))
     args = ["chat", "--dir", str(here), "--log", str(tmp_path / "c.jsonl"), "--say", "hi", "--rounds", "1"]
     asyncio.run(chat_main(parser().parse_args(args)))
-    out = " ".join(capsys.readouterr().out.split())  # the notice wraps at the console's width
+    out = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)  # CI forces color: FORCE_COLOR=1
+    out = " ".join(out.split())  # the notice wraps at the console's width
     assert (
         "instructions: ~/.lion/CLAUDE.md (18 chars), CLAUDE.md (20 chars), .lion/CLAUDE.md (16 chars)" in out
     )
