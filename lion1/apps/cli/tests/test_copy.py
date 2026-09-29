@@ -132,7 +132,7 @@ def test_a_copy_typed_at_the_chat_prompt_is_the_consoles_and_never_reaches_the_r
     assert "copied the last response (7 chars)" in out
     assert "copied the response 2 back from the last (6 chars)" in out
     assert "no response 9 back from the last: this chat has 2; nothing copied" in out
-    assert "/copy [N] copies the last (Nth-last) response" in out
+    assert "/copy [N]" in out and "(Nth-last)" in out  # the banner names it; the line wraps at 80 columns
 
 
 def test_alt_c_in_the_editor_copies_and_shows_the_notice_above_the_prompt_leaving_the_line_as_typed():
