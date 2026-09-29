@@ -86,15 +86,24 @@ class Message:
 class Reply(str):
     """A backend's text with the provider's prompt count for the call (fresh input, cache read and cache
     write), None when the provider did not say; the actor anchors its `context:` figure on it. `cost` is
-    what the call cost when the provider says, summed by the run against its `cost_budget`."""
+    what the call cost when the provider says, summed by the run against its `cost_budget`. With
+    `refused`, the backend would not hand the text on as a turn: none of it runs and the model is told why."""
 
     prompt_tokens: int | None
     cost: float | None
+    refused: str | None
 
-    def __new__(cls, text: str, prompt_tokens: int | None = None, cost: float | None = None) -> Reply:
+    def __new__(
+        cls,
+        text: str,
+        prompt_tokens: int | None = None,
+        cost: float | None = None,
+        refused: str | None = None,
+    ) -> Reply:
         reply = super().__new__(cls, text)
         reply.prompt_tokens = prompt_tokens
         reply.cost = cost
+        reply.refused = refused
         return reply
 
 
@@ -734,7 +743,7 @@ class Actor:
             replayed = run.record.append(e.kind, e.content, alias=e.alias, round=e.round, **e.meta)
             if e.kind is Kind.TEXT:  # the values that turn declared, admitted against the record so far
                 try:
-                    program = _read(str(e.content))
+                    program = _read(str(e.content), e.meta.get("refused"))
                 except lndl.LNDLError:
                     continue
                 _admit(run, program, replayed.seq)
@@ -784,6 +793,7 @@ class Actor:
                     text = await text
                 reported = getattr(text, "prompt_tokens", None)
                 cost = getattr(text, "cost", None)
+                refused = getattr(text, "refused", None)
                 if isinstance(text, str):
                     text = str(text)  # a Reply's count and cost are read; the record keeps a plain str
                 if isinstance(cost, int | float) and not isinstance(cost, bool):
@@ -798,12 +808,14 @@ class Actor:
                     beyond = reported - run.view_est
                     run.floor = beyond if run.floor is None else min(run.floor, beyond)
                 previous = run.record.latest(Kind.TEXT)
-                m = run.record.append(Kind.TEXT, text, round=round_no)
+                m = run.record.append(
+                    Kind.TEXT, text, round=round_no, **({"refused": refused} if refused else {})
+                )
                 run.same_turns = (
                     run.same_turns + 1 if previous is not None and previous.content == text else 0
                 )
                 try:
-                    program = _read(text)
+                    program = _read(text, refused)
                 except lndl.LNDLError as e:
                     run.idle_rounds = 0  # a turn refused whole held something: it was not idle
                     self._retry(run, str(e))
@@ -1498,8 +1510,10 @@ _OWN = "alias {alias!r} starts with _, which the record keeps for its own names 
 _TAKEN = "alias {alias!r} already names {where}; aliases are unique for the whole run"
 
 
-def _read(text: str) -> Program:
+def _read(text: str, refused: str | None = None) -> Program:
     """A turn as the loop reads it, live or resumed; LNDLError is what the model is told."""
+    if refused:  # the backend refused the turn (a mixed response, ADR-0004/C4); the record keeps why
+        raise lndl.LNDLError(refused)
     if _SYSTEM_FRAME.search(text):
         # the model wrote the loop's own frame and went on as if the results in it were real (9 of
         # 50 thinking-off runs, half their output tokens); none of it runs

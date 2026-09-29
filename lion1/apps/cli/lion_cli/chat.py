@@ -160,16 +160,7 @@ async def take_patch(
     path.write_text(patch)
     say(f"box: the copy's diff, {patch.count(chr(10))} line(s), saved as {path}")
     print(patch, end="" if patch.endswith("\n") else "\n")
-    top = subprocess.run(
-        ["git", "-C", str(directory), "rev-parse", "--show-toplevel", "--show-prefix"],
-        capture_output=True,
-        text=True,
-    )
-    if top.returncode == 0:  # from a subdirectory `git apply` skips every path and exits 0
-        root, prefix = top.stdout.split("\n")[:2]
-        argv = ["git", "-C", root, "apply", *([f"--directory={prefix}"] if prefix else []), str(path)]
-    else:  # not a repository: git apply works the directory as plain files
-        argv = ["git", "-C", str(directory), "apply", str(path)]
+    argv = _git_apply(directory, str(path))
     if apply:
         done = subprocess.run(argv, capture_output=True, text=True)
         if done.returncode == 0:
@@ -181,10 +172,33 @@ async def take_patch(
     return path
 
 
-def spent(calls: list[dict]) -> float:
+def _git_apply(directory: Path, *args: str) -> list[str]:
+    """`git apply <args>` for a chat patch over `directory`: from the top of the repository it sits in,
+    with its prefix, or over plain files when it sits in none."""
+    top = subprocess.run(
+        ["git", "-C", str(directory), "rev-parse", "--show-toplevel", "--show-prefix"],
+        capture_output=True,
+        text=True,
+    )
+    if top.returncode == 0:  # from a subdirectory `git apply` skips every path and exits 0
+        root, prefix = top.stdout.split("\n")[:2]
+        return ["git", "-C", root, "apply", *([f"--directory={prefix}"] if prefix else []), *args]
+    # not a repository: git apply works the directory as plain files
+    return ["git", "-C", str(directory), "apply", *args]
+
+
+def spent(calls: list[dict]) -> tuple[float, int]:
     """What the session was billed: each call's `total_cost_usd` (every attempt, the failed ones
-    too), falling back to the last attempt's `usage.cost` for a backend that reports only that."""
-    return sum(float(c.get("total_cost_usd") or (c.get("usage") or {}).get("cost") or 0) for c in calls)
+    too), falling back to the last attempt's `usage.cost` for a backend that reports only that; and
+    how many calls that sum misses, with no figure at all or the router's `cost_complete` false."""
+    cost = sum(float(c.get("total_cost_usd") or (c.get("usage") or {}).get("cost") or 0) for c in calls)
+    unknown = sum(
+        1
+        for c in calls
+        if (c.get("total_cost_usd") is None and (c.get("usage") or {}).get("cost") is None)
+        or c.get("cost_complete") is False
+    )
+    return cost, unknown
 
 
 def _branch(directory: Path) -> str:
@@ -278,8 +292,14 @@ async def chat_main(a: argparse.Namespace) -> None:
     prior = resolve_chat(chats, a.resume) if a.resume else None  # before this session's own log exists
     if a.log:
         log = Path(a.log)
-        if log.exists():
-            raise SystemExit(f"{log} exists; `lion chat -r {log}` continues it, another --log starts fresh")
+        log.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with log.open("x"):  # created here, exclusively, as `fresh_log` does: one session owns a log
+                pass
+        except FileExistsError:
+            raise SystemExit(
+                f"{log} exists; `lion chat -r {log}` continues it, another --log starts fresh"
+            ) from None
         chat_id = log.stem
     else:
         chat_id, log = fresh_log(chats, time.strftime("%Y%m%d-%H%M%S"))
@@ -288,7 +308,7 @@ async def chat_main(a: argparse.Namespace) -> None:
     except BaseException:
         # a start that failed before anything was logged (a bad hooks.toml, no image) must not leave
         # an empty log as `-c`'s next target: the previous history would be lost to the next session
-        if log.exists() and log.stat().st_size == 0:  # --log included: an existing path was refused above
+        if log.exists() and log.stat().st_size == 0:  # both paths created the log above, so it is ours
             log.unlink()
         raise
 
@@ -296,13 +316,44 @@ async def chat_main(a: argparse.Namespace) -> None:
 async def _chat_main(
     a: argparse.Namespace, directory: Path, chats: Path, prior: Path | None, chat_id: str, log: Path
 ) -> None:
-    boxed = getattr(a, "box", "vm") == "daytona"
+    history: tuple = ()
+    resumed = notice = None
+    ran: dict = {}  # where the continued chat ran, from its log's BOX row; a flag given now wins
+    if prior is not None:
+        torn: list[str] = []
+        history = load_log(prior, torn, ran)
+        resumed = (prior.stem, len(history))
+        notes = [f"the previous session's log ended mid-write: {t}" for t in torn]
+        if left := unsettled(history):
+            notes.append(
+                f"the previous session ended before these commands settled: {', '.join(left)}. "
+                "They did not run again; ask again for any you still need."
+            )
+        patch = chats / f"{prior.stem}.patch"
+        if patch.exists():
+            try:  # does the saved patch come off the directory as it stands?
+                off = subprocess.run(
+                    _git_apply(directory, "--check", "-R", str(patch)), capture_output=True
+                ).returncode
+                standing = "are not applied to" if off else None
+            except FileNotFoundError:  # no git here: unchecked, and the model is told that much
+                standing = "could not be checked against"
+            if standing is not None:
+                notes.append(
+                    f"the previous session's changes, saved as {patch}, {standing} {directory} as "
+                    "it stands, so edits the record shows may be missing from the files you work now; "
+                    "read a file before relying on an edit to it."
+                )
+        notice = " ".join(notes) or None
+    box = getattr(a, "box", None) or ran.get("box", "vm")
+    image = getattr(a, "image", None) or ran.get("image", "python:3.12")
+    boxed = box == "daytona"
     sandbox: Box | None = None
     tree = about_box = None
     if boxed:
-        sandbox = DaytonaSandbox(a.image, workdir=str(directory))
+        sandbox = DaytonaSandbox(image, workdir=str(directory))
         tree = BoxTree(sandbox)
-        about_box = guidance("box", kind="Daytona", image=a.image, root=directory)
+        about_box = guidance("box", kind="Daytona", image=image, root=directory)
     elif a.shell or a.code:
         sandbox = Sandbox(directory, f"lion-{chat_id}", offline=a.offline)
     degraded: list[str] = []
@@ -317,19 +368,6 @@ async def _chat_main(
         about_box=about_box,
     )
     backend = backend_for(a.model)
-    history: tuple = ()
-    resumed = notice = None
-    if prior is not None:
-        torn: list[str] = []
-        history = load_log(prior, torn)
-        resumed = (prior.stem, len(history))
-        notes = [f"the previous session's log ended mid-write: {t}" for t in torn]
-        if left := unsettled(history):
-            notes.append(
-                f"the previous session ended before these commands settled: {', '.join(left)}. "
-                "They did not run again; ask again for any you still need."
-            )
-        notice = " ".join(notes) or None
     say = Console(
         a.model,
         log,
@@ -337,6 +375,7 @@ async def _chat_main(
         echo=a.say is not None or not sys.stdin.isatty(),
         verbose=a.verbose,
         calls=getattr(backend, "calls", None),
+        head={"kind": "BOX", "box": box} | ({"image": image} if boxed else {}),
     )
     say.quiet_until = len(history) - 1
     say.open(a.model, directory, chat_id, sorted(profile.specs), resumed)
@@ -420,7 +459,7 @@ async def _chat_main(
             except asyncio.CancelledError:  # a third Ctrl-C while the VM stops: still close, still leave
                 ended, interrupted = "interrupted", True
     calls = getattr(backend, "calls", [])
-    say.close(ended, len(calls), spent(calls), log)
+    say.close(ended, len(calls), *spent(calls), log)
     if interrupted:
         # a backend call may still be on its thread; the loop's shutdown would wait for it
         # (measured: a Ctrl-C that seemed to do nothing). The log is written; leave now.
