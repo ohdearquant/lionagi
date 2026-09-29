@@ -769,6 +769,14 @@ def test_the_tag_forms_repairs_are_counted_by_name():
     actor = _actor("tag-repairs-refused", [])
     run = _run(actor, '<lact a>echo(text="x"</lact><lact b>echo(text=)</lact>', "idle", profile=Profile("p"))
     assert run.repairs == {"closers": 1} and "could not be read" in _notices(run)
+    # a call a repair read and the check then refused: the repair was applied, and is counted
+    run = _run(
+        _actor("tag-repairs-refused-call", []),
+        "<lact a>echo(text=1, **args</lact>",
+        "idle",
+        profile=Profile("p"),
+    )
+    assert run.repairs == {"closers": 1} and "** unpacking is not allowed" in _notices(run)
 
 
 @pytest.mark.parametrize(

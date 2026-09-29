@@ -449,6 +449,14 @@ def parse_call_noting(body: str) -> tuple[str, dict[str, Any], tuple[str, ...]]:
                 "cmd=<<EOF, then the lines verbatim, then EOF alone on a line, nothing escaped"
             )
         raise LNDLError(f"cannot read the call {body.strip()[:160]!r}: {msg}{hint}") from first
+    try:
+        return (*_call_of(node, body, docs), repairs)
+    except LNDLError as e:  # read by a repair and refused after: the repair was applied, and is counted
+        e.repairs = repairs
+        raise
+
+
+def _call_of(node: ast.expr, body: str, docs: list[str]) -> tuple[str, dict[str, Any]]:
     if not isinstance(node, ast.Call):
         raise LNDLError(f"{body.strip()!r} is not a call: write name(field=value, ...)")
     name = _dotted(node.func)
@@ -466,7 +474,7 @@ def parse_call_noting(body: str) -> tuple[str, dict[str, Any], tuple[str, ...]]:
             raise LNDLError(
                 f"{name}(...): {kw.arg}= must be a literal (string, number, list, dict) or a *pointer"
             ) from None
-    return name, args, repairs
+    return name, args
 
 
 class _JsonWords(ast.NodeTransformer):
@@ -761,8 +769,8 @@ def parse(text: str) -> Program:
     repairs: list[str] = []
     try:
         return _parse_constructs(text, repairs)
-    except LNDLError as e:
-        e.repairs = tuple(repairs)
+    except LNDLError as e:  # the readings before it, and the one that read the refused call
+        e.repairs = (*repairs, *getattr(e, "repairs", ()))
         raise
 
 
