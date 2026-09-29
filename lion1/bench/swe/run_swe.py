@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 import subprocess
@@ -394,6 +395,9 @@ def _dump(run) -> str:
 
 
 def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> dict:
+    """The harness's report on `preds`. A report an earlier evaluation left under the same run id is
+    not this one's: only a report this call wrote, new or changed since it started, is read, and a
+    nonzero exit or no such report raises; the log keeps both streams either way."""
     cmd = [
         "uv",
         "run",
@@ -414,12 +418,32 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
         "--instance_ids",
         *instance_ids,
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(preds.parent), timeout=7200)
-    (preds.parent / f"oracle_{run_id}.log").write_text(proc.stdout + "\n--- stderr ---\n" + proc.stderr)
-    reports = sorted(preds.parent.glob(f"*{run_id}.json"), key=lambda p: p.stat().st_mtime)
+    pattern = f"*{run_id}.json"
+    # what a report was when this call started, by time and digest: an earlier report's bytes are
+    # not held through the evaluation
+    before = {p: _seen(p) for p in preds.parent.glob(pattern)}
+    log = preds.parent / f"oracle_{run_id}.log"
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(preds.parent), timeout=7200)
+    except subprocess.TimeoutExpired as e:  # the streams so far, then the timeout stands
+        log.write_text(_text(e.stdout) + "\n--- stderr ---\n" + _text(e.stderr))
+        raise
+    log.write_text(proc.stdout + "\n--- stderr ---\n" + proc.stderr)
+    if proc.returncode != 0:
+        raise RuntimeError(f"the harness exited {proc.returncode}; see oracle_{run_id}.log")
+    after = {p: _seen(p) for p in preds.parent.glob(pattern)}
+    reports = sorted((p for p, seen in after.items() if before.get(p) != seen), key=lambda p: after[p][0])
     if not reports:
-        raise RuntimeError(f"no harness report; rc={proc.returncode}; see oracle_{run_id}.log")
+        raise RuntimeError(f"no harness report from this evaluation; see oracle_{run_id}.log")
     return json.loads(reports[-1].read_text())
+
+
+def _seen(report: Path) -> tuple[int, str]:
+    return report.stat().st_mtime_ns, hashlib.sha256(report.read_bytes()).hexdigest()
+
+
+def _text(stream: str | bytes | None) -> str:
+    return stream.decode(errors="replace") if isinstance(stream, bytes) else (stream or "")
 
 
 async def main(args: argparse.Namespace) -> None:

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -217,3 +218,71 @@ def test_a_cancellation_during_cleanup_still_leaves_the_record(tmp_path, monkeyp
     assert "error" not in rec and rec["cost_usd"] == 0.25 and "+x = 2" in rec["model_patch"]
     host = Path(next(c[2] for c in calls if c[0] == "cp"))
     assert not host.exists()  # the host copy still went, its patch being on the record
+
+
+def test_the_oracle_reads_only_a_report_its_own_evaluation_wrote(tmp_path, monkeypatch):
+    preds = tmp_path / "predictions.jsonl"
+    preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 2\n"}) + "\n")
+    report = tmp_path / "claude-code-naked-m.r1.json"
+    report.write_text(json.dumps({"resolved_ids": ["x__x-1"]}))  # an earlier evaluation under this run id
+
+    def evaluator(rc: int, writes: dict | None) -> None:
+        def run(argv, *, capture_output, text, cwd, timeout):
+            if writes is not None:
+                report.write_text(json.dumps(writes))
+            return subprocess.CompletedProcess(argv, rc, "evaluated\n", "failed\n" if rc else "")
+
+        monkeypatch.setattr(run_naked.subprocess, "run", run)
+
+    evaluator(1, None)  # the evaluation fails and writes nothing
+    with pytest.raises(RuntimeError, match="the harness exited 1; see oracle_r1.log"):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    assert (tmp_path / "oracle_r1.log").read_text() == "evaluated\n\n--- stderr ---\nfailed\n"
+    evaluator(1, {"resolved_ids": []})  # a report beside a failed exit is not a grade either
+    with pytest.raises(RuntimeError, match="the harness exited 1"):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    report.write_text(json.dumps({"resolved_ids": ["x__x-1"]}))
+    evaluator(0, None)  # a clean exit that wrote no report: the one on disk is still the earlier one
+    with pytest.raises(RuntimeError, match="no harness report from this evaluation"):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    evaluator(0, {"resolved_ids": []})  # the control: this evaluation's own report, under the same name
+    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1) == {"resolved_ids": []}
+
+
+def test_an_earlier_report_is_known_by_its_digest_and_not_held_through_the_evaluation(tmp_path, monkeypatch):
+    preds = tmp_path / "predictions.jsonl"
+    preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 2\n"}) + "\n")
+    report = tmp_path / "claude-code-naked-m.r1.json"
+    earlier = json.dumps({"resolved_ids": ["x__x-1"], "pad": "p" * 4000})
+    report.write_text(earlier)
+    held: list[str] = []
+
+    def run(argv, *, capture_output, text, cwd, timeout):
+        frame = sys._getframe(1)
+        assert frame.f_code.co_name == "oracle"
+        held.extend(k for k, v in frame.f_locals.items() if isinstance(v, bytes) and len(v) >= len(earlier))
+        held.extend(f"before.{k}" for k, v in frame.f_locals["before"].items() if bytes in map(type, v))
+        # rewritten within the same nanosecond as the earlier report: a different report all the same
+        stat = report.stat()
+        report.write_text(json.dumps({"resolved_ids": [], "pad": "q" * 4000}))
+        os.utime(report, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(run_naked.subprocess, "run", run)
+    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1) == {"resolved_ids": [], "pad": "q" * 4000}
+    assert held == []
+
+
+@pytest.mark.parametrize("streams", [(b"so far\n", b"slow\n"), ("so far\n", "slow\n"), (None, None)])
+def test_an_evaluation_that_times_out_leaves_its_log_and_the_timeout_stands(tmp_path, monkeypatch, streams):
+    preds = tmp_path / "predictions.jsonl"
+    preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 2\n"}) + "\n")
+
+    def run(argv, *, capture_output, text, cwd, timeout):
+        raise subprocess.TimeoutExpired(argv, timeout, output=streams[0], stderr=streams[1])
+
+    monkeypatch.setattr(run_naked.subprocess, "run", run)
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    so_far, slow = ("so far\n", "slow\n") if streams[0] else ("", "")
+    assert (tmp_path / "oracle_r1.log").read_text() == f"{so_far}\n--- stderr ---\n{slow}"
