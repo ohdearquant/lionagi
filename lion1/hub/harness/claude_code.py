@@ -284,9 +284,10 @@ def _delta(envelope: dict, prev: dict | None) -> dict:
     if prev is None:
         return out
     for k in ("total_cost_usd", "duration_api_ms"):
-        # a running total missing on either side leaves this call's share unknown, never negative
+        # a running total missing on either side, or one below the last, leaves this call's share
+        # unknown, never negative: a total that went down was not accumulated over the last one
         now, before = envelope.get(k), prev.get(k)
-        out[k] = None if now is None or before is None else now - before
+        out[k] = None if now is None or before is None or now < before else now - before
     return out
 
 
