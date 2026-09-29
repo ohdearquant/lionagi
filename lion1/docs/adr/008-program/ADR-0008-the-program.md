@@ -210,8 +210,9 @@ resumed chat folds it and recompiles nothing; the record keeps four kinds
   `test_an_unnamed_command_skips_an_auto_name_the_record_already_holds`,
   `test_if_elif_else_runs_only_the_taken_branch_and_a_return_ends_the_program`,
   `test_a_command_inside_a_comprehension_reads_the_comprehensions_name`,
-  `test_each_catalogue_repair_is_named_and_counted`. A pointer reaches an earlier line's name or the
-  record: no cycle can be written.
+  `test_each_catalogue_repair_is_named_and_counted`,
+  `test_a_cancelled_run_cancels_the_commands_its_program_launched_and_returns`. A pointer reaches an
+  earlier line's name or the record: no cycle.
 
 ### D2: The repair catalogue is data, and each repair is counted ^d2
 
@@ -254,18 +255,20 @@ placeholder.
 
 ### D4: A value is bound for the run, and a computed one rides the record ^d4
 
-Serves C3 and C6. A name is bound once for the run. A value nothing has read stays bound past its
-turn, its name taken; the turn that first reads it computes it then, after its program's earlier
-note writes, each note read as the store holds it. The next notification carries an unread value as
-its expression (`meta["bound"]`) and a computed one as its value (`meta["values"]`): a replayed
-record binds both again and runs nothing. A failed computation binds the name to its failure: what
-it ran, ran once.
+Serves C3 and C6. A name is bound once for the run; a value nothing has read stays bound past its
+turn. Its first reader computes it, after the note writes before that reader; the walk reads a
+branch or an output as it reaches it, a command's arguments when it starts; a write that reads the
+value comes after it. The notification carries an unread value as its expression (`meta["bound"]`),
+a computed one as its value (`meta["values"]`); a replay binds both, running nothing. A failed
+computation binds its failure.
 
 - **Landing evidence**:
   `test_a_value_nothing_read_stays_bound_into_later_turns_and_its_name_stays_taken`,
   `test_a_value_computed_on_the_record_resolves_after_the_log_replays_it_and_nothing_runs_again`,
   `test_a_value_whose_computation_failed_stays_failed_and_what_it_ran_never_runs_again`,
   `test_a_value_bound_by_an_earlier_turn_reads_after_the_reading_programs_own_note_writes`,
+  `test_a_value_bound_this_turn_reads_after_the_note_writes_before_its_first_reader_too`,
+  `test_a_write_that_reads_a_value_comes_after_the_value_so_a_later_reader_never_waits_on_itself`,
   `test_a_value_nothing_read_is_bound_again_after_the_log_replays_it_and_reads_as_it_would_have`.
   Owed: a last turn's values on the closure (ADR-0006).
 

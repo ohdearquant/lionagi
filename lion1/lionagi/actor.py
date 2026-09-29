@@ -31,7 +31,7 @@ from . import lndl
 from .bus import Bus
 from .lndl import Lact, Lvar, Pointer, Program
 from .notes import FileNoteStore, MemoryNoteStore, NoteStore, key_of
-from .program import Branch, Command, EvalError, Output, Script, Value, evaluate
+from .program import Branch, Command, EvalError, Output, Script, Value, evaluate, pointers
 from .program import check as check_script
 from .program import guidance as program_guidance
 from .program import read as read_script
@@ -313,9 +313,9 @@ class Run:
         self.thunks: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {}  # a program command's arguments
         # results a program consumed, each with the seq it was consumed at, hidden by the next notification
         self.intermediates: dict[str, int] = {}
-        # a program's values not computed yet, for the whole run: the seq of the TEXT that bound it, its
-        # expression and the note writes before it; a value nothing has read stays bound (ADR-0008/C6)
-        self.unread: dict[str, tuple[int, ast.expr, dict[str, asyncio.Task]]] = {}
+        # a program's values not computed yet, for the whole run: the seq of the TEXT that bound it and
+        # its expression; a value nothing has read stays bound (ADR-0008/C6)
+        self.unread: dict[str, tuple[int, ast.expr]] = {}
         self.computed: list[str] = []  # program values computed since the last notification, which keeps them
         self.bound: list[str] = []  # program values bound since the last notification, which carries them
         self.outcome: Outcome | None = None
@@ -651,7 +651,7 @@ class Actor:
                 for alias, seq, line, source in e.meta.get("bound", ()):  # bound, and read by nothing yet
                     expr = ast.parse(source, mode="eval").body
                     ast.increment_lineno(expr, line - 1)
-                    run.unread[alias] = (seq, expr, {})
+                    run.unread[alias] = (seq, expr)
                 for alias, seq, value in e.meta.get("values", ()):
                     run.values[alias] = (seq, value)
                     run.unread.pop(alias, None)
@@ -697,7 +697,7 @@ class Actor:
                         (a, seq, expr.lineno, ast.unparse(expr))
                         for a in run.bound
                         if a in run.unread
-                        for seq, expr, _ in (run.unread[a],)
+                        for seq, expr in (run.unread[a],)
                     )
                     run.bound.clear()
                 if stop is not None and stop():
@@ -1461,10 +1461,12 @@ class _Walk:
         self.tasks: list[asyncio.Task] = []
         self.lacts: list[Lact] = []
         # an earlier turn's values nothing read yet are in reach, computed when first read
-        self.values: dict[str, tuple[int, ast.expr, dict[str, asyncio.Task]]] = dict(run.unread)
+        self.values: dict[str, tuple[int, ast.expr]] = dict(run.unread)
         self.computed: dict[str, asyncio.Future] = {}
         self.value_reads: dict[str, set[str]] = {}  # a value's reads, charged to whoever reads the value
         self.writes: dict[str, asyncio.Task] = {}  # note key -> the latest assignment reached
+        # a write's task -> the values it reads (through the values they read) and the write before it
+        self.write_reads: dict[asyncio.Task, tuple[frozenset[str], asyncio.Task | None]] = {}
         self.reads: dict[str, set[str]] = {}  # this program's command -> the results its arguments read
         # results read by a reader that settled ok, or taken by a note: the seq each was first consumed at
         self.used: dict[str, int] = {}
@@ -1475,6 +1477,12 @@ class _Walk:
             return await self.block(script.body)
         except _Failed:
             return None
+        except (
+            asyncio.CancelledError
+        ):  # the run is cancelled: its commands with it, each settling as cancelled
+            for task in self.tasks:
+                task.cancel()
+            raise
         finally:
             await _settle(self.tasks)
             for alias, reads in self.reads.items():
@@ -1510,8 +1518,7 @@ class _Walk:
             elif isinstance(node, Command):
                 self.command(node)
             elif isinstance(node, Value):
-                bound = (self.seq, node.expr, dict(self.writes))
-                self.values[node.alias] = self.run.unread[node.alias] = bound
+                self.values[node.alias] = self.run.unread[node.alias] = (self.seq, node.expr)
                 self.run.bound.append(node.alias)
             else:
                 self.write(node)
@@ -1549,11 +1556,33 @@ class _Walk:
 
     async def value(self, name: str, writes: dict[str, asyncio.Task] | None = None) -> Any:
         if name not in self.computed:
-            seq, expr, bound = self.values[name]
-            # bound by an earlier turn: it reads after the writes this program made before its reader
-            reader = _Reader(self, bound if seq == self.seq else writes)
+            seq, expr = self.values[name]
+            # the reader's line decides: the value reads after the note writes before its first reader,
+            # whichever turn bound it (ADR-0008/D4)
+            reader = _Reader(self, self._before(name, self.writes if writes is None else writes))
             self.computed[name] = asyncio.ensure_future(self._compute(name, seq, expr, reader))
         return await asyncio.shield(self.computed[name])
+
+    def _before(self, name: str, writes: dict[str, asyncio.Task]) -> dict[str, asyncio.Task]:
+        """The writes a value reads after. A write that reads the value comes after the value, not
+        before it (waiting for it would wait for itself): the value reads after the write before that."""
+        out: dict[str, asyncio.Task] = {}
+        for key, task in writes.items():
+            while task is not None and name in self.write_reads[task][0]:
+                task = self.write_reads[task][1]
+            if task is not None:
+                out[key] = task
+        return out
+
+    def _reads(self, *exprs: ast.expr) -> frozenset[str]:
+        """The values the expressions read, and the values those read, as far as it goes."""
+        names, todo = set(), list(pointers(*exprs))
+        while todo:
+            n = todo.pop()
+            if n not in names and n in self.values:
+                names.add(n)
+                todo += pointers(self.values[n][1])
+        return frozenset(names)
 
     async def _compute(self, name: str, seq: int, expr: ast.expr, reader: _Reader) -> Any:
         try:
@@ -1597,6 +1626,12 @@ class _Walk:
             self.consume(reader.reads, len(self.run.record))
 
         task = asyncio.create_task(put())
+        self.write_reads[task] = (
+            self._reads(*(v for _, v in node.value.args))
+            if producer is not None
+            else self._reads(node.value),
+            prior,
+        )
         self.writes[node.key] = task
         self.tasks.append(task)
 

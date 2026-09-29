@@ -186,11 +186,19 @@ def test_every_unknown_command_in_a_message_is_named_and_measured_not_only_the_f
         "line 1: unknown command 'serch'; line 2: unknown command 'ecko'; the program was not run"
         in _notices(run)
     )
-    # an unknown name earlier in the message is what the model is told, whatever the check finds next
+    # an unknown name earlier in the message is what the model is told, whatever the check finds next,
+    # and an unknown command after that is still measured and named
     for later in ("b = *zz", 'a = "again"'):
         run = _run(_actor("misnamed-first", calls), fenced('a = serch(text="x")', later), "idle")
         assert run.misnamed == [("serch", "fetch", 2)] and calls == []
         assert "line 1: unknown command 'serch'; the program was not run" in _notices(run)
+        lines = ('a = serch(text="x")', later, 'c = ecko(text="y")')
+        run = _run(_actor("misnamed-between", calls), fenced(*lines), "idle")
+        assert run.misnamed == [("serch", "fetch", 2), ("ecko", "echo", 1)] and calls == []
+        assert "line 1: unknown command 'serch'; line 3: unknown command 'ecko'" in _notices(run)
+    # with every command known, the first pointer or binding refusal is the one said
+    run = _run(_actor("first-refusal", calls), fenced("b = *zz", 'a = "again"', 'a = "twice"'), "idle")
+    assert "*zz names nothing bound" in _notices(run) and "bound already" not in _notices(run)
 
 
 def test_a_name_already_on_the_record_cannot_be_bound_again():
@@ -298,6 +306,35 @@ def test_a_value_nothing_read_stays_bound_into_later_turns_and_its_name_stays_ta
     assert [e.round for e in run.record if e.kind is Kind.RESULT and e.content.value == "deferred"] == [2, 2]
     assert sorted(calls) == [("echo", "deferred"), ("echo", "deferred"), ("echo", "kept")]
     assert "later is bound already: a name is bound once for the whole run" in _notices(run)
+
+
+def test_a_cancelled_run_cancels_the_commands_its_program_launched_and_returns():
+    actor = _actor("cancelled", [])
+
+    class Hang(BaseModel):
+        pass
+
+    @actor.handler(Hang)
+    async def hang(req: Hang, ctx) -> str:
+        await asyncio.Event().wait()
+        return "never"
+
+    async def main():
+        before = asyncio.all_tasks()
+        # the walk itself waits on the command (an output reads it): the cancel lands there
+        turn = fenced("a = hang()", "OUT{x: *a}")
+        task = asyncio.create_task(actor.run(PROGRAM, RunRequest(inputs=("go",)), scripted(turn)))
+        await asyncio.sleep(0.1)
+        (run,) = actor.runs.values()
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=2)
+        # the run leaves, and the command with it (before, the run waited for the command forever)
+        assert task in done and task.cancelled() and asyncio.all_tasks() - before == set()
+        return run
+
+    run = asyncio.run(main())
+    a = run.record.get("a").content
+    assert not a.ok and a.reason == "cancelled" and run.outcome is None
 
 
 def test_a_value_whose_input_failed_fails_every_reader():
@@ -531,6 +568,49 @@ def test_a_value_bound_by_an_earlier_turn_reads_after_the_reading_programs_own_n
     )
     run = _run(actor, *later)
     assert (run.record.get("b").content.value, run.record.get("c").content.value) == ("old", "new")
+
+
+def test_a_value_bound_this_turn_reads_after_the_note_writes_before_its_first_reader_too():
+    actor = _actor("lazy-note-same-turn", [])
+
+    @actor.handler(Take)
+    async def take(req: Take, ctx) -> str:
+        await asyncio.sleep(0.2)
+        return "new"
+
+    actor.notes_for(PROGRAM).put("k", "old", run="r0", seq=0)
+    # the binding line reads nothing: the value reads when first read, after the slow write before that
+    run = _run(actor, fenced('v = note["k"]', "note.k = take(rows=[])", "OUT{x: *v}"))
+    assert run.output == {"x": "new"}
+    # the first reader in time decides: a branch reads as the walk reaches it, before the write after it
+    actor.notes_for(PROGRAM).put("k", "old", run="r0", seq=0)
+    lines = ('v = note["k"]', "if *v:", '    a = echo(text="taken")', "note.k = take(rows=[])", "OUT{x: *v}")
+    run = _run(actor, fenced(*lines))
+    assert run.output == {"x": "old"} and actor.notes_for(PROGRAM).get("k").value == "new"
+    # a command's arguments read when it starts, after the walk: the output read the value first
+    actor.notes_for(PROGRAM).put("k", "old", run="r0", seq=0)
+    run = _run(actor, fenced('v = note["k"]', "b = echo(text=*v)", "note.k = take(rows=[])", "OUT{x: *v}"))
+    assert run.output == {"x": "new"} and run.record.get("b").content.value == "new"
+
+
+@pytest.mark.parametrize(
+    ("turns", "written"),
+    [
+        ((fenced('v = note["k"]', 'note.k = *v + "!"', "if *v:", "    b = echo(text=*v)"),), "old!"),
+        ((fenced('v = note["k"]'), fenced('note.k = *v + "!"', "if *v:", "    b = echo(text=*v)")), "old!"),
+        ((fenced('v = note["k"]', "w = *v", "note.k = echo(text=*w)", "OUT{x: *v, y: *w}"),), "old"),
+    ],
+)
+def test_a_write_that_reads_a_value_comes_after_the_value_so_a_later_reader_never_waits_on_itself(
+    turns, written
+):
+    calls: list = []
+    actor = _actor("write-reads-value", calls)
+    actor.notes_for(PROGRAM).put("k", "old", run="r0", seq=0)
+    request = RunRequest(inputs=("go",), max_rounds=len(turns) + 1)
+    # bounded: a wait cycle between the write and the value fails here, never hangs the suite
+    asyncio.run(asyncio.wait_for(actor.run(PROGRAM, request, scripted(*turns, "idle")), 5))
+    assert calls == [("echo", "old")] and actor.notes_for(PROGRAM).get("k").value == written
 
 
 @pytest.mark.parametrize(
