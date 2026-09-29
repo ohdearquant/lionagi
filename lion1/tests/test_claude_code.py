@@ -808,7 +808,7 @@ def test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns(monkeypat
         monkeypatch.setattr(claude_code, "_exec", fake_exec)
         monkeypatch.setattr(claude_code, "_READ_S", 1.0, raising=False)
         backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
-        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), backend))
+        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend))
         t0 = time.monotonic()
         done, _ = await asyncio.wait({task}, timeout=3)
         state["client"].close()
@@ -817,6 +817,87 @@ def test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns(monkeypat
         return time.monotonic() - t0
 
     assert asyncio.run(go()) < 2.0
+
+
+def test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_caller_still_returns(
+    monkeypatch,
+):
+    """The call's end cancels and joins its asks; one that swallows its cancel would keep the join open
+    for ever, and a caller cancelling the call on every turn of that join would be swallowed with it
+    (that is what a SIGINT becomes under asyncio.run). The join is bounded: at _JOIN_S the ask is
+    abandoned with a warning, and the caller's cancel is raised, so the call returns either way."""
+    import shlex
+    import socket
+    import time
+    import warnings
+
+    free = {"it": None}
+
+    async def stuck(actor, run, requires, closed, came, reader, writer):
+        came.set()  # arrived; then a defect: it swallows every cancel until it is let go
+        try:
+            while not free["it"].is_set():
+                try:
+                    await free["it"].wait()
+                except asyncio.CancelledError:
+                    continue
+        finally:
+            writer.close()
+
+    async def go(cancelling: bool):
+        actor = Actor("gated")
+        state = {"client": None}
+        free["it"] = asyncio.Event()
+
+        async def fake_exec(cli, args, prompt, **kw):
+            settings = json.loads(args[args.index("--settings") + 1])
+            sock = shlex.split(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"])[-1]
+            client = socket.socket(socket.AF_UNIX)
+            client.connect(sock)
+            client.sendall(b"{")
+            state["client"] = client
+            await asyncio.sleep(0.05)  # the ask is accepted and running before the call ends
+            return "ok", {"total_cost_usd": 0.0}
+
+        monkeypatch.setattr(claude_code, "_exec", fake_exec)
+        monkeypatch.setattr(claude_code, "_ask", stuck)
+        monkeypatch.setattr(claude_code, "_JOIN_S", 0.5, raising=False)
+        backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
+        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend))
+        if cancelling:  # a caller that cancels on every turn, as a SIGINT storm would
+
+            async def storm():
+                await asyncio.sleep(0.1)
+                while not task.done():
+                    task.cancel()
+                    await asyncio.sleep(0)
+
+            asyncio.create_task(storm())
+        t0 = time.monotonic()
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always", RuntimeWarning)
+                done, _ = await asyncio.wait({task}, timeout=3)
+            took = time.monotonic() - t0
+            if state["client"] is not None:
+                state["client"].close()
+            left = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            assert done, f"the call did not return within 3s (cancelling={cancelling}), tasks left: {left}"
+        finally:
+            free["it"].set()  # the abandoned ask is let go so the loop can close
+            await asyncio.gather(
+                *[t for t in asyncio.all_tasks() if t is not asyncio.current_task()], return_exceptions=True
+            )
+        said = [str(w.message) for w in caught if "abandoned" in str(w.message)]
+        return task.cancelled(), took, said, len(left)
+
+    cancelled, took, said, left = asyncio.run(go(False))
+    assert not cancelled and 0.5 <= took < 2.0, (cancelled, took)
+    assert len(said) == 1 and "1 gate ask(s) did not end within 0.5s" in said[0], said
+    assert left == 1  # the abandoned ask, still there: abandoned is not killed
+    cancelled, took, said, left = asyncio.run(go(True))
+    assert cancelled and 0.5 <= took < 2.0, (cancelled, took)
+    assert len(said) == 1 and left == 1, (said, left)
 
 
 def test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once(monkeypatch):

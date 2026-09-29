@@ -32,6 +32,7 @@ import socket
 import sys
 import tempfile
 import uuid
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -252,18 +253,33 @@ class ClaudeCodeSession:
                             await asyncio.sleep(0)  # the arrivals land before the cancel pass
                     finally:
                         # a caller cancelling the call again while it settles still leaves no ask
-                        # running: each is cancelled and joined, the caller's cancel raised after
+                        # running: each is cancelled and joined, the caller's cancel raised after.
+                        # The join is bounded: an ask that does not end within _JOIN_S is abandoned
+                        # with a warning, so a cancel (or the SIGINT that becomes one) still ends
+                        # the call instead of being swallowed on every turn of an unending join
                         cancelled = False
+                        until = loop.time() + _JOIN_S
                         while asks:
                             pending = list(asks)
                             for task in pending:
                                 task.cancel()
                             join = asyncio.gather(*pending, return_exceptions=True)
-                            while not join.done():
+                            while not join.done() and (left := until - loop.time()) > 0:
                                 try:
-                                    await asyncio.shield(join)
+                                    await asyncio.wait_for(asyncio.shield(join), left)
                                 except asyncio.CancelledError:
                                     cancelled = True
+                                except TimeoutError:
+                                    break
+                            if not join.done():
+                                stuck = [t.get_name() for t in pending if not t.done()]
+                                warnings.warn(
+                                    f"{len(stuck)} gate ask(s) did not end within {_JOIN_S}s of the "
+                                    f"call's end and are abandoned: {', '.join(stuck)}",
+                                    RuntimeWarning,
+                                    stacklevel=2,
+                                )
+                                break
                         if cancelled:
                             raise asyncio.CancelledError
 
@@ -463,6 +479,7 @@ _DIRECTIVES = frozenset({"context.hide", "context.show", "context.summarize", "f
 # socket and the verdict comes back. Exit 2 stops the tool with the reason; the CLI runs a tool whose
 # hook failed any other way, so a failure to ask exits 2 too
 _READ_S = 5.0  # how long a hook has to finish sending its request, once it has connected
+_JOIN_S = 5.0  # how long the call's end waits for its cancelled asks to end before abandoning them
 _HOOK = """import json, socket, sys
 try:
     s = socket.socket(socket.AF_UNIX)
