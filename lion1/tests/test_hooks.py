@@ -465,6 +465,39 @@ def test_a_before_hook_that_exits_zero_with_text_on_stdout_lets_the_command_run(
     assert r["r"].ok is True, r["r"].error
 
 
+@pytest.mark.parametrize("default", [False, True], ids=["required", "with-default"])
+def test_a_before_hooks_json_keyed_by_a_fields_alias_replaces_that_field(tmp_path, default):
+    from pydantic import BaseModel, Field
+
+    from hub.hooks.shell import Hook, install
+
+    class Wire(BaseModel):
+        text: str = Field("unchanged", alias="wire_text") if default else Field(alias="wire_text")
+
+    actor = Actor("h")
+
+    @actor.handler(Wire)
+    def wire(req: Wire, ctx) -> str:
+        return req.text
+
+    rewrite = tmp_path / "rewrite.py"
+    rewrite.write_text('import sys; sys.stdin.read(); print(\'{"wire_text": "changed"}\')\n')
+    install(
+        actor,
+        [Hook(event="before", name="rewrite", match="wire", run=f"{sys.executable} {rewrite}", timeout=5)],
+        tmp_path,
+    )
+    run = asyncio.run(
+        actor.run(
+            Profile("h"),
+            RunRequest(inputs=("go",), max_rounds=2),
+            scripted('<lact w>wire(wire_text="asked")</lact>', "x"),
+        )
+    )
+    r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
+    assert r["w"].ok is True and r["w"].value == "changed", r["w"].error
+
+
 def test_the_tree_hook_survives_a_cut_state_file(tmp_path):
     # a state file cut mid-write raised on every later round; it starts over and writes whole
     from hub.hooks.scripts.tree_changed import state_path

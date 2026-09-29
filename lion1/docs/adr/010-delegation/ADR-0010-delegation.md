@@ -1,7 +1,7 @@
 ---
 adr: ADR-0010
 status: draft
-liveness: operating (the round trip, a peer ending without answering, a peer whose backend raises and an answer landing early are pinned by tests; no bench exercises the path)
+liveness: operating (the round trip, a peer ending without answering, a peer whose backend raises, an answer landing early, the ask dropped once read and a request no run took are pinned by tests; no bench exercises the path)
 date: "2026-09-25"
 area: delegation
 kind: new
@@ -31,7 +31,7 @@ turn's rule ([[ADR-0002-the-run#^c1|ADR-0002/C1]]) with nothing awaited inline
 ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]); the notification names what arrived
 ([[ADR-0006-the-notification#^c2|ADR-0006/C2]]). Source: `Actor.queue`, `Actor._take_inbox`, the
 handle branch of dispatch, `Actor._deliver` and the `_ACTORS` registry in `lionagi/actor.py`;
-`examples/two_actors.py`.
+`notebooks/03_two_actors.ipynb`.
 
 ## Definitions
 
@@ -80,7 +80,8 @@ task, or something outside the loop does.
 
 - **Subject**: every command whose handler returns a `Handle` on the run's ask table.
 - **Violated when**: the alias resolves to the handle, a peer run ending without `Success` or by
-  raising leaves the ask open, or an answer landing before the handler returns is lost.
+  raising leaves a taken request's ask open, or an answer landing before the handler returns is
+  lost.
 
 The command's value is the peer run's output made plain, under the alias the model chose; the next
 turn starts when it is in, by the settle rule. A peer that ends `Exhausted`, `Stopped` or `Refused`
@@ -88,8 +89,8 @@ settles the command failed as "<peer> ended <outcome> without answering". One wh
 settles it "ended in error (<error>) without answering" before the exception leaves the peer's run:
 the asker never waits on a dead run.
 
-The ask stays on the table until the command reads it, so an answer landing while the handler still
-runs is found; the command drops it once read. An ask still open when the asking run ends is
+The ask stays on the table until the command reads it, answer or failure, so an answer landing while
+the handler runs is found; then it is dropped. An ask still open when the asking run ends is
 cancelled.
 
 ### C3: An answer to a run that has ended is a reply on the origin's inbox _(enforced: mechanical)_ ^c3
@@ -126,9 +127,10 @@ Serves C2 and C3. `_ACTORS` maps names to actors; each actor keeps its live runs
 runs when a run ends by an outcome, and when an exception ends it, before the re-raise; it resolves
 the ask's future, or falls back to the origin's inbox.
 
-- **Landing evidence**: four tests in `tests/test_actor.py`: the answer settles the ask with the
-  peer's plain output; a peer ending `Exhausted` settles it failed naming the outcome; a backend
-  that raises settles it failed naming the error; an early answer still settles it.
+- **Landing evidence**: five tests in `tests/test_actor.py`: the answer settles the ask with the
+  peer's plain output; a peer ending `Exhausted` or whose backend raises settles it failed naming
+  why, and the read ask is dropped; an early answer still settles it;
+  `test_a_request_no_peer_run_took_waits_on_the_peers_inbox_for_its_next_run`.
 
 ### D2: The handler starts the peer; the runtime does not ^d2
 
@@ -136,7 +138,7 @@ Serves C1. `queue` carries content and provenance only; the peer's profile, requ
 the asking handler's to choose, and it starts the peer's run as its own task. For mail, the
 long-running agent is the something outside the loop that runs the actor.
 
-- **Landing evidence**: `examples/two_actors.py` (the escalation handler queues, starts the
+- **Landing evidence**: `notebooks/03_two_actors.ipynb` (the escalation handler queues, starts the
   researcher's run and returns the handle); the tests' `_pair` helper does the same, and the
   round-trip test asserts the peer's INPUT names the asker.
 
@@ -156,8 +158,8 @@ long-running agent is the something outside the loop that runs the actor.
   it lands.
 - **S2**: The registry is per process, keyed by name: a second actor made with the same name takes
   the name, and answers to the first go to it.
-- **S3**: No bench exercises this path; the tests drive it with scripted backends, and
-  `examples/two_actors.py` runs it against a live model.
+- **S3**: No bench exercises this path; the tests and `notebooks/03_two_actors.ipynb` drive it with
+  scripted backends; nothing runs it against a live model.
 - **S4**: No budget is shared across peers, and a peer run started as its own task outlives an asker
   that ends: cancellation at the asking run's end reaches the ask's future, never the peer's run.
 - **S5**: The boundary: who may ask whom, the lineage of an ask, ending a peer with the asker,
@@ -168,3 +170,8 @@ long-running agent is the something outside the loop that runs the actor.
   an actor that never runs again waits on its inbox for the process's life.
 - **S7**: The ask stays on the table until read only since 2026-09-20; before, a handler that
   yielded after starting the peer got its handle back as the value. The early-answer test pins it.
+- **S8**: The peer's end in C2 is the end of the run that took the request. A peer run that ends
+  before its first turn, at `max_rounds` 0 or with its time budget already spent, never took it, and
+  the request stays on the peer's inbox with its ask open. The asking command waits, and its turn
+  with it, until the next run of that actor takes the request.
+  `test_a_request_no_peer_run_took_waits_on_the_peers_inbox_for_its_next_run` pins both bounds.
