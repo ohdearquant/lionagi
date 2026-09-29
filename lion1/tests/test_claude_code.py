@@ -573,8 +573,8 @@ time.sleep(30)
 def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_returned(monkeypatch):
     """The CLI's hook connects, then the CLI exits a few event-loop turns later, before the gate's task
     for that connection has run: the gate does not run after the call returned, the hook is refused,
-    and nothing lands on a later round. Over the window of 0 to 7 turns, what lands is in the call's own
-    round: started when the hooks ran inside the call, not executed when the call ended under the read."""
+    and the call lands once in the call's own round, whatever the window (0 to 7 turns): started when the
+    hooks ran inside the call, not executed when the call ended first, its hook accepted at the end."""
     import shlex
     import socket
 
@@ -621,9 +621,8 @@ def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_retur
     for k in range(8):
         hooks, landed = asyncio.run(window(k))
         assert all(returned == 0 for _, returned in hooks), (k, hooks)  # no hook after the call returned
-        assert all(round == 1 for _, round, _ in landed), (k, landed)  # nothing lands on a later round
-        # what reached the gate lands in the call's round: started when its hooks ran, else not executed
-        assert [ex for _, _, ex in landed] == ["started" if hooks else "not executed"][: len(landed)], k
+        # the call lands once, in the call's own round: started when its hooks ran, else not executed
+        assert landed == [(f"toolu_{k}", 1, "started" if hooks else "not executed")], (k, landed)
 
 
 def test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once(monkeypatch):
@@ -666,13 +665,13 @@ def test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once(mo
                 release.set()
                 for _ in range(4):
                     await asyncio.sleep(0)
-            asyncio.get_running_loop().call_later(0.2, release.set)
             return "ok", {"total_cost_usd": 0.0}
 
         monkeypatch.setattr(claude_code, "_exec", fake_exec)
         backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
         run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend)
-        await asyncio.sleep(0.3)
+        release.set()  # after the call: the hooks it held were cancelled at its end
+        await asyncio.sleep(0.05)
         answers = []
         for client in clients:
             client.settimeout(0.5)

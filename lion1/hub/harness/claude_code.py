@@ -205,28 +205,39 @@ class ClaudeCodeSession:
                     try:
                         reader = asyncio.StreamReader()
                         protocol = asyncio.StreamReaderProtocol(reader)
-                        transport, _ = await loop.connect_accepted_socket(lambda: protocol, conn)
-                    except BaseException:
-                        conn.close()
-                        raise
-                    writer = asyncio.StreamWriter(transport, protocol, reader, loop)
-                    try:
+                        try:
+                            transport, _ = await loop.connect_accepted_socket(lambda: protocol, conn)
+                        except BaseException:
+                            conn.close()
+                            raise
+                        writer = asyncio.StreamWriter(transport, protocol, reader, loop)
                         await _ask(self.actor, run, self.requires, closed, reader, writer)
                     finally:
                         asks.discard(asyncio.current_task())
 
-                async def accept() -> None:
-                    while True:
-                        conn, _ = await loop.sock_accept(listener)
-                        asks.add(asyncio.create_task(ask(conn)))
+                def accept() -> list[asyncio.Task]:
+                    # every connection waiting on the listener, each its own task; synchronous, so
+                    # none is accepted and then lost between an accept and its task
+                    taken = []
+                    with contextlib.suppress(BlockingIOError):
+                        while True:
+                            conn, _ = listener.accept()
+                            conn.setblocking(False)
+                            taken.append(asyncio.create_task(ask(conn)))
+                    asks.update(taken)
+                    return taken
 
-                accepting = asyncio.create_task(accept())
+                loop.add_reader(listener.fileno(), accept)
 
                 async def settle() -> None:
                     closed.set()
-                    accepting.cancel()
-                    await asyncio.gather(accepting, return_exceptions=True)
-                    listener.close()  # a hook queued but not yet accepted hears nothing
+                    loop.remove_reader(listener.fileno())
+                    accept()  # a hook queued on the listener as the call ended is taken too
+                    listener.close()
+                    if asks:
+                        # a request already sent is read and lands not executed (C6); one at the
+                        # gate, or still being sent, is cancelled below and lands as it can
+                        await asyncio.wait(list(asks), timeout=0.2)
                     while asks:
                         pending = list(asks)
                         for task in pending:
@@ -503,6 +514,8 @@ def _land(live: Run, la: Lact, verdict: Result) -> Result:
         if verdict.ok:
             verdict = _repeat(la)
         alias = f"{alias}_{live.record.seq}"
+        while live.record.get(alias) is not None:  # the CLI named one like the suffix
+            alias += "_"
     execution = "started" if verdict.ok else "not executed"
     live.record.append(Kind.RESULT, verdict, alias=alias, round=live.round, execution=execution)
     return verdict
