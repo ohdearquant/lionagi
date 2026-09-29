@@ -69,6 +69,8 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   existing file to `vscode://file/<abs>[:line[:col]]`, which opens it in the editor.
 - **response**: a reply's prose as the console showed it, constructs cut; `/copy N` counts back from
   the last one (1 = the last), a continued chat's replayed ones included.
+- **diagram page**: `.lion/chats/<id>-<seq>-<n>.html`, a reply's `n`th mermaid block drawn by the
+  browser, linked under the reply.
 - **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
   defaults for the flags.
 
@@ -246,6 +248,18 @@ the one before the last), and Alt-C the last without leaving the line being type
 what it copied, or why nothing. The route is the platform's tool (pbcopy, wl-copy, xclip), and OSC
 52 through the terminal where there is none, as over ssh. A console command never reaches the model.
 
+### C13: A mermaid block in a reply is drawn _(enforced: mechanical)_ ^c13
+
+- **Subject**: `Console._turn` on a reply holding a ```` ```mermaid ```` fence.
+- **Violated when**: a mermaid block prints as its source only, a page is written outside the chat
+  log's directory, a fence inside a longer fence is taken as a block, or a chat without a log fails
+  on a diagram.
+
+Each closed mermaid block of a reply lands as a diagram page beside the chat log, named for the
+chat, the entry and the block's place in it, and the console prints a link to the page under the
+block's source. The page loads mermaid from a CDN and draws the block's text unchanged. A chat with
+no log says a diagram was not saved and goes on.
+
 ## Decisions
 
 ### D1: `hub/chat.py`: `chat`, `entry_row`, `load_log` ^d1
@@ -356,6 +370,17 @@ wl-copy fork a child that serves the selection), then writes the OSC 52 escape.
   out of range, the prose without its constructs, the route order and the OSC 52 fallback, the
   command never sent, Alt-C.
 
+### D10: `mermaid_blocks`, `diagram_page` and `_fences` ^d10
+
+Serves C13. `_fences` walks the reply line by line, split on newlines only (`splitlines` also breaks
+on characters a code line may hold). A fence closes on a bare run of its own character at least as
+long, so a fence inside a longer one is text. `Console._turn` splits the prose at each block's end,
+writes `diagram_page(source)` (the source HTML-escaped inside `<pre class="mermaid">`) and prints
+the page's `file:` URI as a link.
+
+- **Landing evidence**: `tests/test_mermaid.py`: the blocks found and the nested fence, the page's
+  escaping, the page written and linked, the chat without a log.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -372,6 +397,7 @@ wl-copy fork a child that serves the selection), then writes the OSC 52 escape.
 | A progress bar, or a line per second, while a call runs | nothing is known of a call's length; a spinner with the elapsed time says only that it is alive, and leaves the scrollback clean |
 | `file:` links for paths | rich's markdown drops them, and a browser shows a file where an editor at the line is what the person opens it for |
 | Ctrl-Y, or a mouse button, for the copy | Ctrl-Y is the editor's yank, and a terminal has no buttons; a key the line survives and a command the person can number |
+| Drawing the diagram in the terminal | no terminal draws mermaid; a page in the browser does, at full size, and the log keeps the source |
 
 ## Consequences
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
 import re
@@ -29,10 +30,11 @@ from lionagi.record import Entry, Kind
 
 from .clipboard import to_clipboard
 
-__all__ = ("RESULT_LINES", "Console", "linked", "Editor", "stdin_ask")
+__all__ = ("RESULT_LINES", "Console", "linked", "mermaid_blocks", "diagram_page", "Editor", "stdin_ask")
 
 _SYSTEM_TAGS = re.compile(r"</?system[^>]*>")
 _COPY = re.compile(r"/copy(?:\s+(.*))?", re.S)  # the console's own command: never sent to the model
+_MERMAID_JS = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs"
 RESULT_LINES = 12  # with --verbose a result shows this many lines; the log and the model have it whole
 
 _URL = re.compile(r"https?://[^\s<>\[\]`\"']+")
@@ -53,7 +55,7 @@ _TOKENS = re.compile(
     r"|(?P<url>" + _URL.pattern + ")"
     r"|" + _PATH
 )
-_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
+_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")  # a fence line: its run of backticks or tildes, then the rest
 
 
 class Console:
@@ -282,7 +284,7 @@ class Console:
                 pieces.append(f"[dim]{escape(self.status())}[/dim]")
             return pieces
         if e.kind is Kind.TEXT:
-            return self._turn(str(e.content))
+            return self._turn(str(e.content), e.seq)
         head, detail = self._result(e)
         return [head if detail is None else head + "\n" + detail]
 
@@ -323,7 +325,7 @@ class Console:
         )
         return head, escape(shown) + more
 
-    def _turn(self, text: str) -> list[Any]:
+    def _turn(self, text: str, seq: int) -> list[Any]:
         calls: list[str] = []
         try:
             program = lndl.parse(text)
@@ -343,7 +345,21 @@ class Console:
         pieces: list[Any] = []
         if prose:
             pieces.append(f"[bold]{escape(self.model)} ▸[/bold]")
-            pieces.append(Markdown(linked(prose, self.directory)))
+            at = 0
+            # a mermaid block prints as code, and under it the line that opens it drawn: a page beside
+            # the log, named for the chat, the entry and the block's place in it
+            for n, (end, source) in enumerate(_fences(prose), 1):
+                pieces.append(Markdown(linked(prose[at:end], self.directory)))
+                at = end
+                if self.log is None:
+                    pieces.append(f"[dim]diagram {n}: not saved, this chat has no log[/dim]")
+                    continue
+                page = self.log.parent / f"{self.log.stem}-{seq}-{n}.html"
+                page.write_text(diagram_page(source), encoding="utf-8")
+                uri = page.resolve().as_uri()
+                pieces.append(f"[dim][link={uri}]diagram {n}: {escape(uri)}[/link][/dim]")
+            if prose[at:].strip():
+                pieces.append(Markdown(linked(prose[at:], self.directory)))
         pieces.extend(calls)
         return pieces
 
@@ -431,7 +447,7 @@ def linked(text: str, directory: Path | None) -> str:
         if fence:
             out.append(ln)
             closing = m is not None and m[1][0] == fence[0] and len(m[1]) >= len(fence)
-            if closing and not ln[m.end() :].strip():
+            if closing and not m[2].strip():
                 fence = ""
         elif m is not None:
             out += [_TOKENS.sub(lambda t: _link(t, directory), "".join(prose)), ln]
@@ -509,6 +525,43 @@ _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 def _clip(text: str, width: int) -> str:
     text = text.replace("\n", " ")
     return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def mermaid_blocks(text: str) -> list[str]:
+    """The sources of the fenced ```mermaid blocks in `text`, in order."""
+    return [source for _, source in _fences(text)]
+
+
+def diagram_page(source: str) -> str:
+    """A page that draws one mermaid diagram in a browser; mermaid itself loads from the CDN."""
+    return (
+        '<!doctype html>\n<html>\n<head>\n<meta charset="utf-8">\n<title>diagram</title>\n</head>\n<body>\n'
+        f'<pre class="mermaid">\n{html.escape(source)}\n</pre>\n'
+        f'<script type="module">\nimport mermaid from "{_MERMAID_JS}";\n'
+        "mermaid.initialize({startOnLoad: true});\n</script>\n</body>\n</html>\n"
+    )
+
+
+def _fences(text: str) -> list[tuple[int, str]]:
+    """Each closed ```mermaid block in `text` as (the offset just past its closing fence, its source).
+    A fence closes on a bare run of its own character at least as long, so a ```mermaid inside a
+    longer fence is that fence's text; the info string's first word is the language."""
+    found: list[tuple[int, str]] = []
+    opened: tuple[str, bool, list[str]] | None = None  # the open fence, whether it is mermaid, its lines
+    at = 0
+    for ln in text.split("\n"):  # never splitlines: it also breaks on characters a code line may hold
+        at += len(ln) + 1
+        m = _FENCE.fullmatch(ln)
+        if opened is None:
+            if m:
+                opened = (m[1], m[2].split()[:1] == ["mermaid"], [])
+        elif m and m[1][0] == opened[0][0] and len(m[1]) >= len(opened[0]) and not m[2].strip():
+            if opened[1]:
+                found.append((min(at, len(text)), "\n".join(opened[2])))
+            opened = None
+        else:
+            opened[2].append(ln)
+    return found
 
 
 class Editor:
