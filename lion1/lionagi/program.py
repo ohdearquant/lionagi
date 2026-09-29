@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import io
+import math
 import operator
 import re
 import tokenize
@@ -360,6 +361,8 @@ def _expr(node: ast.expr, bound: frozenset[str]) -> None:
         case ast.Constant(value=v):
             if not (v is None or isinstance(v, str | int | float)):
                 raise _refuse(node, f"{v!r} is not a value: strings, numbers, true, false and null are")
+            if isinstance(v, float) and not math.isfinite(v):  # 1e999 parses as infinity
+                raise _refuse(node, f"{v!r} is not a value: a number is finite")
         case ast.Name(id=name):
             if name in _NOTE:
                 raise _refuse(node, 'a note is read as note["key"]')
@@ -611,6 +614,10 @@ def _arith(node: ast.expr, op: tuple[str, Callable[[Any, Any], Any]], a: Any, b:
         raise EvalError(f"line {node.lineno}: division by zero") from None
     except OverflowError:
         raise EvalError(f"line {node.lineno}: the result of {sign} is too large for a number") from None
+    if isinstance(value, float) and not math.isfinite(
+        value
+    ):  # a float past its range is infinity, not an error
+        raise EvalError(f"line {node.lineno}: the result of {sign} is too large for a number")
     return _built(node, value)
 
 

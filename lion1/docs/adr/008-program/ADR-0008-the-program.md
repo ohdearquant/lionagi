@@ -255,11 +255,11 @@ placeholder.
 
 ### D4: A value is bound for the run, and a computed one rides the record ^d4
 
-Serves C3 and C6. A name is bound once for the run; a value nothing has read stays bound past its
-turn. Its first reader computes it, after the note writes before that reader; the walk reads a
-branch or an output as it reaches it, a command's arguments when it starts; a write that reads the
-value comes after it. The notification carries an unread value as its expression (`meta["bound"]`),
-a computed one as its value (`meta["values"]`); a replay binds both, running nothing. A failed
+Serves C3 and C6. A name is bound once; a value nothing has read stays bound past its turn. Its
+first reader computes it, after the note writes before that reader; the walk reads a branch or an
+output as it reaches it, a command's arguments when it starts; a write naming it comes after it,
+reached or not. The notification carries an unread value as its expression (`meta["bound"]`), a
+computed one as its value (`meta["values"]`); a replay binds both, running nothing. A failed
 computation binds its failure.
 
 - **Landing evidence**:

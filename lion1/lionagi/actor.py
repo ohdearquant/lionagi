@@ -1612,11 +1612,23 @@ class _Walk:
         reader = _Reader(self)
         target = ".".join(("note", node.key, *node.path))
         producer = self.command(node.value) if isinstance(node.value, Command) else None
+        # what this write reads, and what the write it waits for reads: a value read by any write in
+        # the chain is read before the whole chain
+        reads = (
+            self._reads(*(v for _, v in node.value.args)) if producer is not None else self._reads(node.value)
+        )
+        if prior is not None:
+            reads |= self.write_reads[prior][0]
+        before = dict(self.writes)  # the writes before this one: what a value it names reads after
 
         async def put() -> None:
             if prior is not None:  # two assignments to one note are two writes, in the order written
                 await asyncio.shield(prior)
             try:
+                # a write that names a value comes after it, whether or not evaluating reaches the
+                # pointer (`false and *v`): the value reads the note before this write lands
+                for name in sorted(reads):
+                    await self.value(name, before)
                 value = await (
                     reader.point(producer) if producer is not None else evaluate(node.value, reader)
                 )
@@ -1634,13 +1646,6 @@ class _Walk:
             self.consume(reader.reads, len(self.run.record))
 
         task = asyncio.create_task(put())
-        # what this write reads, and what the write it waits for reads: a value read by any write in
-        # the chain is read before the whole chain
-        reads = (
-            self._reads(*(v for _, v in node.value.args)) if producer is not None else self._reads(node.value)
-        )
-        if prior is not None:
-            reads |= self.write_reads[prior][0]
         self.write_reads[task] = (reads, prior)
         self.writes[node.key] = task
         self.tasks.append(task)

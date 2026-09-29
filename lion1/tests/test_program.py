@@ -544,10 +544,20 @@ def test_a_value_nothing_read_is_bound_again_after_the_log_replays_it_and_reads_
     assert run.output is None and "*bad: line 5: cannot apply / to str and int" in _notices(run)
 
 
-def test_an_arithmetic_result_too_large_for_a_number_is_a_language_error_not_a_crash():
-    run = _run(_actor("overflow", []), fenced(f"OUT{{x: {'9' * 401} / 1}}"), "idle")
+@pytest.mark.parametrize(
+    ("expr", "sign"),
+    [(f"{'9' * 401} / 1", "/"), ("1e308 * 10", "*"), ("1e308 + 1e308", "+"), ("-1e308 - 1e308", "-")],
+)
+def test_an_arithmetic_result_too_large_for_a_number_is_a_language_error_not_a_crash_or_infinity(expr, sign):
+    run = _run(_actor("overflow", []), fenced(f"OUT{{x: {expr}}}"), "idle")
     assert run.outcome == Exhausted(2, "rounds")
-    assert "line 1: the result of / is too large for a number" in _notices(run)
+    assert f"line 1: the result of {sign} is too large for a number" in _notices(run)
+
+
+def test_a_number_too_large_to_write_is_refused_with_the_message():
+    run = _run(_actor("inf-literal", []), fenced("OUT{x: 1e999}"), "idle")
+    assert run.outcome == Exhausted(2, "rounds")
+    assert "line 1: inf is not a value: a number is finite" in _notices(run)
 
 
 def test_a_value_bound_by_an_earlier_turn_reads_after_the_reading_programs_own_note_writes():
@@ -606,6 +616,8 @@ def test_a_value_bound_this_turn_reads_after_the_note_writes_before_its_first_re
         ((fenced('v = note["k"]', 'note.k = *v + "!"', "if *v:", "    b = echo(text=*v)"),), "old!"),
         ((fenced('v = note["k"]'), fenced('note.k = *v + "!"', "if *v:", "    b = echo(text=*v)")), "old!"),
         ((fenced('v = note["k"]', "w = *v", "note.k = echo(text=*w)", "OUT{x: *v, y: *w}"),), "old"),
+        # naming the value is reading it, whether or not the evaluation reaches the pointer
+        ((fenced('v = note["k"]', "note.k = false and *v", "if *v:", "    b = echo(text=*v)"),), False),
         # a write queued behind one that reads the value waits for it: the value comes before both
         (
             (
