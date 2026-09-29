@@ -451,6 +451,13 @@ def test_the_context_figure_counts_a_consumed_result_as_its_placeholder():
     run = _run(actor, fenced('a = echo(text="x" * 8000)', "b = echo(text=*a[0])"), "idle")
     _, figure = map(int, re.findall(r"context: ~(\d+) /", _notices(run)))  # after the program
     assert run.record.get("b").content.value == "x" and figure < 500
+    # shown again by the same program: the show stands over the hide (D3) and the figure counts the
+    # result whole, as the backend receives it
+    seen: list = []
+    lines = ('a = echo(text="x" * 8000)', "b = echo(text=*a[0])", 'shown = context.show(refs=["a"])')
+    run = _run(_actor("figure-shown", []), fenced(*lines), "idle", seen=seen)
+    _, figure = map(int, re.findall(r"context: ~(\d+) /", _notices(run)))
+    assert figure > 1500 and any("x" * 8000 in str(m.content) for m in seen[-1])
 
 
 def test_a_result_the_output_names_is_never_consumed():
@@ -599,6 +606,15 @@ def test_a_value_bound_this_turn_reads_after_the_note_writes_before_its_first_re
         ((fenced('v = note["k"]', 'note.k = *v + "!"', "if *v:", "    b = echo(text=*v)"),), "old!"),
         ((fenced('v = note["k"]'), fenced('note.k = *v + "!"', "if *v:", "    b = echo(text=*v)")), "old!"),
         ((fenced('v = note["k"]', "w = *v", "note.k = echo(text=*w)", "OUT{x: *v, y: *w}"),), "old"),
+        # a write queued behind one that reads the value waits for it: the value comes before both
+        (
+            (
+                fenced(
+                    'v = note["k"]', 'note.k = *v + "!"', 'note.k = "new"', "if *v:", "    b = echo(text=*v)"
+                ),
+            ),
+            "new",
+        ),
     ],
 )
 def test_a_write_that_reads_a_value_comes_after_the_value_so_a_later_reader_never_waits_on_itself(
@@ -749,6 +765,10 @@ def test_the_tag_forms_repairs_are_counted_by_name():
     assert run.repairs == {"closers": 2}
     run = _run(actor, '<lact d>search_similar(input="x" candidates=[])</lact>', "idle", profile=Profile("p"))
     assert run.repairs == {"comma": 1}
+    # a tag no reading reads refuses the turn; the repairs of the tags read before it still count
+    actor = _actor("tag-repairs-refused", [])
+    run = _run(actor, '<lact a>echo(text="x"</lact><lact b>echo(text=)</lact>', "idle", profile=Profile("p"))
+    assert run.repairs == {"closers": 1} and "could not be read" in _notices(run)
 
 
 @pytest.mark.parametrize(

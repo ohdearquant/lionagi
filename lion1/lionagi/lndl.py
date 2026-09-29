@@ -756,11 +756,20 @@ def plain(text: str) -> str:
 
 
 def parse(text: str) -> Program:
-    """Every construct in the text, in order. Raises `LNDLError` on the first one that cannot be read."""
+    """Every construct in the text, in order. Raises `LNDLError` on the first one that cannot be read;
+    the error carries the repairs the readings before it applied, so they are counted (ADR-0008/D2)."""
+    repairs: list[str] = []
+    try:
+        return _parse_constructs(text, repairs)
+    except LNDLError as e:
+        e.repairs = tuple(repairs)
+        raise
+
+
+def _parse_constructs(text: str, repairs: list[str]) -> Program:
     lvars: list[Lvar] = []
     lacts: list[Lact] = []
     problems: list[str] = []
-    repairs: list[str] = []
     seen: set[str] = set()
 
     outs: list[str] = []

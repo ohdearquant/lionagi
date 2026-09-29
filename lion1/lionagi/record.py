@@ -132,14 +132,15 @@ class ViewEntry:
     hidden: bool = False  # a hidden entry: rendered as a placeholder that names it, never its value
 
 
-def directives(record: Record) -> list[Directive]:
+def directives(record: Record, consumed: Iterable[Directive] = ()) -> list[Directive]:
     """Directives in the order of their `at`, off the RESULT of a context command or a notification's
     SYSTEM entry: the hides of what a program consumed, each dated at its consumption and so earlier
     than the notification carrying it, then the fold event. A consumption dated `at` happened before
     the entry at that seq landed (a reader settles before its RESULT, a branch or a note write reads
     before the next entry), so among equals the consumed hides come first: a show carried by that
-    entry stands over them (ADR-0008/D3); record order settles the rest."""
-    out: list[tuple[int, int, Directive]] = []
+    entry stands over them (ADR-0008/D3); record order settles the rest. `consumed`: hides not on the
+    record yet, the ones the notification being written will carry, folded as they will be."""
+    out: list[tuple[int, int, Directive]] = [(d.at, 0, d) for d in consumed]
     for e in record:
         if e.kind in (Kind.RESULT, Kind.SYSTEM):
             out += [(d.at, 0, d) for d in e.meta.get("consumed") or () if isinstance(d, Directive)]
@@ -149,7 +150,9 @@ def directives(record: Record) -> list[Directive]:
     return [d for _, _, d in sorted(out, key=lambda t: t[:2])]
 
 
-def fold(record: Record, *, protect_input: bool = True) -> list[ViewEntry]:
+def fold(
+    record: Record, *, protect_input: bool = True, consumed: Iterable[Directive] = ()
+) -> list[ViewEntry]:
     """The view: the record after the directives.
 
     Nothing leaves the view on its own: every entry stays where it landed, so one render differs from
@@ -175,7 +178,7 @@ def fold(record: Record, *, protect_input: bool = True) -> list[ViewEntry]:
                 seqs.append(e.seq)
         return seqs
 
-    for d in directives(record):
+    for d in directives(record, consumed):
         targets = [s for s in (d.seqs if d.seqs is not None else resolve(d.refs)) if s < d.at]
         if protect_input:
             targets = [s for s in targets if entries[s].kind is not Kind.INPUT]

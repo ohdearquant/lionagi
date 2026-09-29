@@ -680,14 +680,7 @@ class Actor:
                         folded.op, folded.refs, folded.text, at=notice.seq, seqs=folded.seqs
                     )
                 if run.intermediates:  # the hide of what a program consumed, dated at each consumption
-                    # (ADR-0008/D3), so a show the program made after it stands over it
-                    by_at: dict[int, list[str]] = {}
-                    for alias, at in run.intermediates.items():
-                        by_at.setdefault(at, []).append(alias)
-                    notice.meta["consumed"] = tuple(
-                        Directive("hide", tuple(refs), at=at, seqs=tuple(run.record.get(a).seq for a in refs))
-                        for at, refs in sorted(by_at.items())
-                    )
+                    notice.meta["consumed"] = _consumed(run)
                     run.intermediates.clear()
                 if run.computed:  # the values a program computed, so a replayed record binds them again
                     notice.meta["values"] = tuple((a, *run.values[a]) for a in run.computed)
@@ -736,6 +729,7 @@ class Actor:
                     if isinstance(program, Script):  # whole, before anything runs (ADR-0008/C1)
                         check_script(program, subset.names(), run.known)
                 except lndl.LNDLError as e:
+                    run.repairs.update(getattr(e, "repairs", ()))  # the readings before the one that failed
                     run.misnamed += [_nearest(name, subset.names()) for name in getattr(e, "names", ())]
                     self._retry(run, str(e))
                     self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
@@ -1233,10 +1227,10 @@ class Actor:
         if run.request.time_budget is not None:
             clock += f"/{_clock(run.request.time_budget)}"
         lines = [f"<system round={run.round}/{run.request.max_rounds} time={clock} seq={r.seq}>"]
-        view = self._fold(run)
-        if run.intermediates:  # consumed since the last notification: hidden before the model sees them
-            unseen = {r.get(a).seq for a in run.intermediates}
-            view = [dataclasses.replace(v, hidden=True) if v.entry.seq in unseen else v for v in view]
+        # consumed since the last notification: hidden before the model sees them, folded with the hides
+        # this notification will carry, so a show the program made after a consumption stands over it
+        # here as it will on the record (ADR-0008/D3) and the figure counts what the backend receives
+        view = self._fold(run, _consumed(run))
         used = _tokens(_messages(view))
         context_line = len(lines)
         lines.append("")  # the context figure, written once the fold below has settled the view
@@ -1389,8 +1383,20 @@ class Actor:
         run.viewed = _shown(view)
         return [dataclasses.replace(m, run=run.id) for m in messages]
 
-    def _fold(self, run: Run) -> list[ViewEntry]:
-        return fold(run.record, protect_input=not run.request.fold_inputs)
+    def _fold(self, run: Run, consumed: tuple[Directive, ...] = ()) -> list[ViewEntry]:
+        return fold(run.record, protect_input=not run.request.fold_inputs, consumed=consumed)
+
+
+def _consumed(run: Run) -> tuple[Directive, ...]:
+    """The hides of what a program consumed since the last notification, dated at each consumption
+    (ADR-0008/D3), so a show the program made after one stands over it."""
+    by_at: dict[int, list[str]] = {}
+    for alias, at in run.intermediates.items():
+        by_at.setdefault(at, []).append(alias)
+    return tuple(
+        Directive("hide", tuple(refs), at=at, seqs=tuple(run.record.get(a).seq for a in refs))
+        for at, refs in sorted(by_at.items())
+    )
 
 
 # --- helpers -----------------------------------------------------------------------------------
@@ -1465,7 +1471,8 @@ class _Walk:
         self.computed: dict[str, asyncio.Future] = {}
         self.value_reads: dict[str, set[str]] = {}  # a value's reads, charged to whoever reads the value
         self.writes: dict[str, asyncio.Task] = {}  # note key -> the latest assignment reached
-        # a write's task -> the values it reads (through the values they read) and the write before it
+        # a write's task -> the values it and the writes before it read (through the values they read)
+        # and the write before it
         self.write_reads: dict[asyncio.Task, tuple[frozenset[str], asyncio.Task | None]] = {}
         self.reads: dict[str, set[str]] = {}  # this program's command -> the results its arguments read
         # results read by a reader that settled ok, or taken by a note: the seq each was first consumed at
@@ -1565,7 +1572,8 @@ class _Walk:
 
     def _before(self, name: str, writes: dict[str, asyncio.Task]) -> dict[str, asyncio.Task]:
         """The writes a value reads after. A write that reads the value comes after the value, not
-        before it (waiting for it would wait for itself): the value reads after the write before that."""
+        before it (waiting for it would wait for itself), and so does every write queued behind it: the
+        value reads after the last write before that."""
         out: dict[str, asyncio.Task] = {}
         for key, task in writes.items():
             while task is not None and name in self.write_reads[task][0]:
@@ -1626,12 +1634,14 @@ class _Walk:
             self.consume(reader.reads, len(self.run.record))
 
         task = asyncio.create_task(put())
-        self.write_reads[task] = (
-            self._reads(*(v for _, v in node.value.args))
-            if producer is not None
-            else self._reads(node.value),
-            prior,
+        # what this write reads, and what the write it waits for reads: a value read by any write in
+        # the chain is read before the whole chain
+        reads = (
+            self._reads(*(v for _, v in node.value.args)) if producer is not None else self._reads(node.value)
         )
+        if prior is not None:
+            reads |= self.write_reads[prior][0]
+        self.write_reads[task] = (reads, prior)
         self.writes[node.key] = task
         self.tasks.append(task)
 
