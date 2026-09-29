@@ -5,6 +5,8 @@ that the model sees whole; the person ends it, as Stopped; and a log read back i
 import asyncio
 import json
 
+import pytest
+
 from hub import files
 from hub.chat import chat, entry_row, load_log
 from lionagi import Actor, Kind, Profile, RunRequest
@@ -134,6 +136,73 @@ def test_a_paused_run_hands_the_turn_back_at_the_next_round_even_though_it_had_n
     inputs = [(e.content, e.round) for e in run.record if e.kind is Kind.INPUT]
     assert inputs == [("go", 0), ("still there?", 3)]
     assert [e.seq for e in said] == list(range(len(run.record)))
+
+
+def test_an_interrupt_during_the_call_cuts_it_now_and_the_person_speaks_next_while_the_run_goes_on(
+    tmp_path,
+):
+    """`run.interrupt()` with a backend call in flight cancels that call: the round ends with a notice
+    and no turn, the wait hook asks the person, and their next message continues the same run. The
+    control: an interrupt while no call is in flight only pauses (False), and a real cancellation of
+    the run still propagates through the same await."""
+    actor, profile = reader(tmp_path)
+    started = asyncio.Event()
+    calls: list[str] = []
+    cancelled: list[bool] = []
+
+    async def backend(messages):
+        calls.append("\n".join(m.content for m in messages))
+        if len(calls) == 1:
+            started.set()
+            try:
+                await asyncio.sleep(30)  # the model working, cut short
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+        return "Back to you."
+
+    interrupted: list[bool] = []
+
+    async def cut_when_started():
+        await started.wait()
+        run = next(iter(actor.runs.values()))
+        interrupted.append(run.interrupt())
+
+    async def main():
+        cutter = asyncio.ensure_future(cut_when_started())
+        try:
+            return await asyncio.wait_for(
+                chat(actor, profile, backend, asks("go", "still there?", None)), timeout=5
+            )
+        finally:
+            cutter.cancel()
+
+    run = asyncio.run(main())
+    assert interrupted == [True] and cancelled == [True]
+    assert isinstance(run.outcome, Stopped)
+    notices = [e.content for e in run.record if e.kind is Kind.SYSTEM and "cut this round short" in e.content]
+    assert len(notices) == 1
+    texts = [e.content for e in run.record if e.kind is Kind.TEXT]
+    assert texts == ["Back to you."]  # no turn from the cut round; the next call answered the person
+    inputs = [e.content for e in run.record if e.kind is Kind.INPUT]
+    assert inputs == ["go", "still there?"]
+    assert "still there?" in calls[1]
+    # control 1: nothing in flight means a pause, not a cut
+    assert run.interrupt() is False and run.pause is True
+    # control 2: cancelling the run itself still ends it through the same await
+    actor2, profile2 = reader(tmp_path)
+
+    async def slow(messages):
+        await asyncio.sleep(30)
+
+    async def cancel_run():
+        task = asyncio.ensure_future(chat(actor2, profile2, slow, asks("go", None)))
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_run())
 
 
 def test_a_console_notice_reaches_the_model_as_inbound_in_the_first_round(tmp_path):
@@ -684,3 +753,185 @@ def test_the_closure_rides_the_log_and_a_resumed_chat_folds_it_into_its_first_vi
     first = [(m.role, m.name, m.content) for m in seen[0]]
     at = first.index(("system", closure.name, closure.content))
     assert first[at + 1][1:] == (f"_in{closure.seq + 1}", f"[_in{closure.seq + 1}] more")
+
+
+def test_the_editor_sends_a_paste_whole_breaks_a_line_on_alt_enter_and_ends_on_ctrl_c_only_when_empty(
+    tmp_path,
+):
+    """The terminal editor: a bracketed paste of several lines is one message; Enter sends; Alt-Enter
+    breaks a line inside the message; Ctrl-C on a line with text clears it, on an empty line it ends
+    the chat (None); Up recalls the previous message from the history file."""
+    from lion_cli.view import Editor
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    async def typed(keys: list[str], history) -> list[str | None]:
+        got: list[str | None] = []
+        with create_pipe_input() as pipe:
+            ed = Editor(history, input=pipe, output=DummyOutput())
+            for k in keys:
+                pipe.send_text(k)
+            for _ in keys:
+                got.append(await ed.ask("you > "))
+                if got[-1] is None:
+                    break
+        return got
+
+    history = tmp_path / "history"
+    paste = "\x1b[200~one\ntwo\nthree\x1b[201~\r"
+    assert asyncio.run(typed([paste], history)) == ["one\ntwo\nthree"]
+    assert asyncio.run(typed(["ab\x1b\rcd\r"], history)) == ["ab\ncd"]  # Alt-Enter = Escape, Enter
+    assert asyncio.run(typed(["ab\x03cd\r", "\x03"], history)) == ["cd", None]
+    assert asyncio.run(typed(["\x1b[A\r"], history)) == ["cd"]  # Up: the last message sent
+
+
+def test_the_status_line_reads_inbox_context_notes_and_cost_off_the_live_run(tmp_path):
+    """The console's status line is computed from the actor, its run and the backend each time it is
+    read: before the run only what exists (inbox, notes, cost); at the prompt after a round that wrote
+    a note and ran a command, the round notice's own context figure; with a backend that reports its
+    prompt and cost, the last call's prompt and the partial mark for a call of unknown cost."""
+    import re
+
+    from lion_cli.chat import status_line
+
+    from lionagi import Reply
+    from lionagi.actor import Handle, Inbound
+
+    (tmp_path / "a.txt").write_text("alpha\n")
+
+    def drive(backend) -> tuple:
+        actor, profile = reader(tmp_path)
+        runs: list = []
+        off = actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+        before = status_line(actor, profile, runs, backend)
+        shown: list[str] = []
+        replies = iter(["go", None])
+
+        async def ask() -> str | None:
+            if runs:  # the prompt after the reply: what the toolbar shows there
+                shown.append(status_line(actor, profile, runs, backend))
+            return next(replies)
+
+        try:
+            run = asyncio.run(chat(actor, profile, backend, ask))
+        finally:
+            off()
+        notices = [
+            e.content for e in run.record if e.kind is Kind.SYSTEM and e.content.startswith("<system round=")
+        ]
+        figure = int(re.search(r"context: ~(\d+) / 200000 tokens", notices[-1]).group(1))
+        assert run.context_figure == figure  # the number the round notice told the model
+        return actor, profile, runs, before, shown, figure
+
+    turns = ('<lvar note.plan>ship it</lvar><lact r1>read(path="a.txt")</lact>', "Done.")
+    backend = scripted(*turns)
+    actor, profile, runs, before, shown, figure = drive(backend)
+    assert before == "inbox 0 · notes 0 (0 chars) · $0.0000"
+    assert 0 < figure < 1000 and runs[0].anchor is None  # a plain str reply reports no prompt
+    assert [e.alias for e in runs[0].record if e.kind is Kind.RESULT] == ["r1"]
+    assert shown == [f"inbox 0 · ctx ~{figure}/200k · notes 1 (7 chars) · $0.0000"]
+    # live, never a copy: a message queued now is counted on the next read
+    actor.inbox.append(Inbound(Handle("h1"), "later", "someone", "-", None))
+    assert status_line(actor, profile, runs, backend) == shown[0].replace("inbox 0", "inbox 1")
+
+    class Billed:  # the same turns, as a backend that reports its prompt and what each call cost
+        def __init__(self):
+            self.turns, self.calls = scripted(*turns), []
+
+        async def __call__(self, messages):
+            text = await self.turns(messages)
+            self.calls.append({"total_cost_usd": None if self.calls else 0.0125})
+            return Reply(text, prompt_tokens=14_100)
+
+    actor, profile, runs, before, shown, figure = drive(Billed())
+    assert before == "inbox 0 · notes 1 (7 chars) · $0.0000"  # the notes file outlives the actor
+    assert runs[0].anchor[0] == 14_100 and 14_100 < figure < 15_000
+    assert shown == [
+        f"inbox 0 · ctx ~{figure / 1000:.1f}k/200k (last call 14.1k) · notes 1 (7 chars) · "
+        "$0.0125 (partial: 1 call(s) of unknown cost)"
+    ]
+
+
+def test_the_console_prints_the_status_line_at_each_round_notice_only_when_verbose(tmp_path, capsys):
+    from lion_cli.view import Console
+
+    actor, profile = reader(tmp_path)
+    reads = []
+
+    def status() -> str:
+        reads.append(1)
+        return f"status read {len(reads)}"
+
+    backend = scripted('<lact l1>list_dir(path=".")</lact>', "Done.")
+    say = Console("m", None, color=False, width=200, verbose=True, status=status)
+    run = asyncio.run(chat(actor, profile, backend, asks("go", None), say=say))
+    out = capsys.readouterr().out
+    rounds = [e for e in run.record if e.kind is Kind.SYSTEM and e.content.startswith("<system round=")]
+    assert len(rounds) == 2 and len(reads) == 2  # the closure and every other entry print none
+    assert "status read 1" in out and "status read 2" in out
+    asyncio.run(
+        chat(*reader(tmp_path), scripted("Hi."), asks("go", None), say=Console("m", None, status=status))
+    )
+    assert len(reads) == 2  # not verbose: the line is the prompt's, never printed
+
+
+def test_the_editor_draws_the_status_line_under_the_prompt_as_it_stands_at_each_draw():
+    import io
+
+    from lion_cli.view import Editor
+    from prompt_toolkit.data_structures import Size
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output.vt100 import Vt100_Output
+
+    class Terminal(Vt100_Output):
+        # prompt_toolkit draws the toolbar once it knows the rows below the cursor; a terminal says so
+        # in its answer to a cursor-position request, which a pipe never sends
+        def get_rows_below_cursor_position(self) -> int:
+            return 20
+
+    waiting = [0]
+
+    async def typed() -> list[tuple[str | None, str]]:
+        got = []
+        with create_pipe_input() as pipe:
+            screen = io.StringIO()
+            out = Terminal(screen, lambda: Size(rows=24, columns=100), term="xterm")
+            ed = Editor(None, status=lambda: f"inbox {waiting[0]} · $0.0000", input=pipe, output=out)
+            for text, n in (("hi\r", 0), ("again\r", 3)):
+                waiting[0] = n
+                screen.seek(0)
+                screen.truncate()
+                pipe.send_text(text)
+                got.append((await ed.ask("you > "), screen.getvalue()))
+        return got
+
+    (first, drawn1), (second, drawn2) = asyncio.run(typed())
+    assert (first, second) == ("hi", "again")
+    assert "inbox 0 · $0.0000" in drawn1 and "inbox 3" not in drawn1
+    assert "inbox 3 · $0.0000" in drawn2 and "inbox 0" not in drawn2
+
+
+def test_the_editor_leaves_the_loops_sigint_handler_in_place_after_a_prompt(tmp_path):
+    """A mid-round Ctrl-C is a SIGINT the chat's own loop handler turns into a cut; a prompt must not
+    swap that handler out (prompt_toolkit's own SIGINT handling would, and remove it on exit)."""
+    import signal
+
+    from lion_cli.view import Editor
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    fired: list[int] = []
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGINT, lambda: fired.append(1))
+        with create_pipe_input() as pipe:
+            ed = Editor(tmp_path / "history", input=pipe, output=DummyOutput())
+            pipe.send_text("hi\r")
+            assert await ed.ask("you > ") == "hi"
+        signal.raise_signal(signal.SIGINT)
+        await asyncio.sleep(0.05)
+        loop.remove_signal_handler(signal.SIGINT)
+
+    asyncio.run(main())
+    assert fired == [1]

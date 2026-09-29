@@ -1,6 +1,7 @@
 """`lion`: the command line of lionagi v1, one entry with subcommands.
 
     lion chat [-c | -r <id>] [-v]                  # talk with an actor here; the record is the memory
+    lion config [--dir <dir>]                       # chat's defaults: ~/.lion, <dir>/.lion config.toml
     lion agent --dir <agent dir>                    # serve an actor's long-running agent until interrupted
     lion agent --dir <agent dir> --once [--wait 30] # one wake, the record printed
     lion agent --dir <agent dir> --check disk       # one instrument, printed and landed, no mail

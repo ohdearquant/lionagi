@@ -239,9 +239,13 @@ def test_a_resumed_log_names_the_commands_that_never_settled(tmp_path):
     assert unsettled(load_log(log)) == ["r2"]
 
 
-def test_ctrl_c_pauses_once_then_quits_and_quits_at_the_prompt():
+def test_ctrl_c_cuts_the_call_once_then_quits_and_quits_at_the_prompt(capsys):
     class Run:
-        pause = False
+        cut = 0
+
+        def interrupt(self) -> bool:  # the real one cuts a call in flight (True) or pauses (False)
+            self.cut += 1
+            return self.cut == 1
 
     class Task:
         cancelled = 0
@@ -253,13 +257,18 @@ def test_ctrl_c_pauses_once_then_quits_and_quits_at_the_prompt():
     run, task = Run(), Task()
     press = Interrupt([run], task, say)
     press()
-    assert run.pause and task.cancelled == 0  # the round in flight finishes, then `you ▸`
+    assert run.cut == 1 and task.cancelled == 0  # the call is cut, then `you ▸`
+    assert "cut: the model's call was abandoned" in capsys.readouterr().out
     press()
     assert task.cancelled == 1  # the second press ends it now
     press.presses = 0  # the person was asked: the counter is fresh
     say.asking = True
     press()
     assert task.cancelled == 2  # at the prompt, one press is a quit
+    press.presses, say.asking = 0, False
+    press()  # nothing in flight to cut: the round finishes first
+    assert run.cut == 2 and task.cancelled == 2
+    assert "stopping after this round" in capsys.readouterr().out
 
 
 def test_the_console_installs_the_directorys_hooks(tmp_path):

@@ -59,6 +59,37 @@ def test_round_one_opens_the_session_and_later_rounds_resume_it_with_only_the_ne
     assert s.restarts == 0
 
 
+def test_a_failed_context_directive_does_not_restart_the_session(monkeypatch, tmp_path):
+    """A hide of a ref that does not exist fails and leaves the view as it was: its result renders
+    with no spec, so the session goes on; the control is the same hide of a real ref, which does."""
+    from lionagi import Kind, RunRequest
+    from lionagi.actor import _messages
+    from lionagi.record import fold
+    from tests.test_actor import scripted
+    from tests.test_chat import reader
+
+    async def run(turns: list[str]):
+        actor, profile = reader(tmp_path)
+        return await actor.run(profile, RunRequest(inputs=("go",), max_rounds=3), scripted(*turns))
+
+    listing = '<lact f1>list_dir(path=".")</lact>'
+    failed = asyncio.run(run([listing, '<lact h1>context.hide(refs=["nope"])</lact>', "done"]))
+    landed = asyncio.run(run([listing, '<lact h1>context.hide(refs=["_r3"])</lact>', "done"]))
+
+    def hide(r):  # the hide's result entry and the spec its message carries
+        e = next(e for e in r.record if e.kind is Kind.RESULT and e.alias == "h1")
+        return e, next(m.spec for m in _messages(fold(r.record)) if m.name == e.name)
+
+    assert not hide(failed)[0].content.ok and hide(failed)[1] is None
+    assert hide(landed)[0].content.ok and hide(landed)[1] == "context.hide"
+    s, calls = _session(monkeypatch)
+    asyncio.run(s([SYSTEM, IN0, SYS1]))
+    asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
+    refused = Message("user", "[r6 h1 context.hide] error: no such ref: nope", name="r6", spec=None)
+    asyncio.run(s([SYSTEM, IN0, M2, R3, M5, refused, SYS7]))
+    assert s.restarts == 0 and "--resume" in calls[2]["args"]
+
+
 def test_a_context_directive_restarts_the_session_from_the_folded_view(monkeypatch):
     s, calls = _session(monkeypatch)
     asyncio.run(s([SYSTEM, IN0, SYS1]))

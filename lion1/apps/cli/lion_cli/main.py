@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from pathlib import Path
 
 from lionagi.checkpoint import KINDS, WHYS
 
 from .agent import agent_main
 from .areas import areas_main
 from .chat import chat_main
+from .config import chat_config, config_main
 from .context import BUDGET, context_main
 
 __all__ = ("parser", "main")
 
 
-def parser() -> argparse.ArgumentParser:
+def parser(chat: dict | None = None) -> argparse.ArgumentParser:
+    """The command tree; `chat` replaces `lion chat`'s built-in defaults (a flag on the line still wins)."""
     ap = argparse.ArgumentParser(prog="lion", description="lionagi v1")
     sub = ap.add_subparsers(dest="command", required=True)
     ag = sub.add_parser("agent", help="an actor's long-running agent, from its directory")
@@ -74,6 +77,20 @@ def parser() -> argparse.ArgumentParser:
         "--shell), and the root AGENTS.md/CLAUDE.md in the guidance",
     )
     ch.add_argument(
+        "--tools",
+        default=None,
+        metavar="NAMES",
+        help="with a claude_code model: the CLI's own tools inside each round, comma-separated (Bash, "
+        "Read, Edit, Write, Grep, Glob, WebSearch); every call passes this console's gate and lands on "
+        "the record as a result the model can hide; a fold restarts the session from the folded view",
+    )
+    ch.add_argument(
+        "--max-turns",
+        type=int,
+        default=0,
+        help="with --tools: the CLI's tool turns per round; 0 = no cap",
+    )
+    ch.add_argument(
         "--log", default=None, help="the record, one JSON line per entry; default .lion/chats/<time>.jsonl"
     )
     ch.add_argument(
@@ -92,6 +109,13 @@ def parser() -> argparse.ArgumentParser:
     )
     ch.add_argument(
         "-v", "--verbose", action="store_true", help="show results' first lines and the loop's notices"
+    )
+    ch.set_defaults(**(chat or {}))
+    cf = sub.add_parser(
+        "config", help="the [chat] values a bare `lion chat` runs with, and the file each came from"
+    )
+    cf.add_argument(
+        "--dir", default=".", help="the chat's directory: its .lion/config.toml wins over ~/.lion/config.toml"
     )
     ar = sub.add_parser(
         "areas", help="the residents by area: serving, in a wake, wakes, today's runs and cost"
@@ -157,12 +181,18 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     a = parser().parse_args(argv)
+    if a.command == "chat":
+        # the directory's file is found by --dir, so the first parse reads it; the second takes the
+        # files' values as defaults, which a flag given on the line beats even when it equals the default
+        a = parser({k: v for k, (v, _) in chat_config(Path(a.dir)).items()}).parse_args(argv)
     if a.command == "agent":
         asyncio.run(agent_main(a))
     elif a.command == "areas":
         areas_main(a)
     elif a.command == "context":
         context_main(a)
+    elif a.command == "config":
+        config_main(a, parser().parse_args(["chat"]))
     elif a.command == "chat":
         try:
             asyncio.run(chat_main(a))

@@ -7,6 +7,7 @@ import json
 import re
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,7 @@ from hub.chat import entry_row, line
 from lionagi import lndl
 from lionagi.record import Entry, Kind
 
-__all__ = ("RESULT_LINES", "Console", "stdin_ask")
+__all__ = ("RESULT_LINES", "Console", "Editor", "stdin_ask")
 
 _SYSTEM_TAGS = re.compile(r"</?system[^>]*>")
 RESULT_LINES = 12  # with --verbose a result shows this many lines; the log and the model have it whole
@@ -44,6 +45,8 @@ class Console:
         width: int | None = None,
         calls: list[dict] | None = None,  # the backend's call envelopes: usage and cost go to the log too
         head: dict | None = None,  # the log's first row, written with its first entry: where the chat ran
+        history: Path | None = None,  # the person's earlier lines, for Up at the prompt (a terminal only)
+        status: Callable[[], str] | None = None,  # the status line, read afresh each time it is shown
     ):
         self.model = model.split("/")[-1]
         self.calls = calls
@@ -55,6 +58,8 @@ class Console:
         self.verbose = verbose
         self.quiet_until = -1  # entries up to this seq are logged, not printed: a resumed history
         self.asking = False  # at the `you ▸` prompt: an interrupt there is a quit
+        self.status = status
+        self.editor = Editor(history, status=status) if sys.stdin.isatty() and sys.stdout.isatty() else None
         self.resulted: set[str] = set()  # aliases whose result printed since the last notice
         self.written = 0
         self.out = RichConsole(
@@ -94,6 +99,8 @@ class Console:
         """One line from the person, prompted on this console."""
         self.asking = True
         try:
+            if self.editor is not None:
+                return await self.editor.ask("you ▸ ")
             return await stdin_ask("[bold]you ▸[/bold] ", self.out)
         finally:
             self.asking = False
@@ -143,9 +150,13 @@ class Console:
                 ]
                 self.resulted.clear()
                 return items
-            return [
+            pieces = [
                 "[dim]" + escape("\n".join([f"· round {e.round}"] + ["  " + ln for ln in lines])) + "[/dim]"
             ]
+            # a round's own notice, not a cut or the closure: once per round boundary
+            if self.status is not None and str(e.content).startswith("<system round="):
+                pieces.append(f"[dim]{escape(self.status())}[/dim]")
+            return pieces
         if e.kind is Kind.TEXT:
             return self._turn(str(e.content))
         r = e.content  # RESULT
@@ -252,16 +263,77 @@ def _shape(value: Any) -> str:
     return f"· {type(value).__name__}"
 
 
+class Editor:
+    """The line a person types on a terminal: an editor over the whole message (prompt_toolkit), so a
+    paste of many lines is one message, Enter sends, Alt-Enter (or Ctrl-J) breaks a line, Up recalls
+    earlier messages from `history`, and Ctrl-C clears the line or, on an empty one, ends the chat.
+    Reading through the tty's line discipline lost all of that: a paste arrived one line per message
+    and macOS drops any line over 1024 bytes without a word (measured)."""
+
+    def __init__(
+        self,
+        history: Path | None = None,
+        *,
+        status: Callable[[], str] | None = None,  # the bottom toolbar, called on every redraw
+        **terminal: Any,  # `input`/`output`: a test's pipe
+    ):
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.history import FileHistory, InMemoryHistory
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.styles import Style
+
+        keys = KeyBindings()
+
+        @keys.add("enter")
+        def _send(event) -> None:
+            event.current_buffer.validate_and_handle()
+
+        @keys.add("escape", "enter")
+        @keys.add("c-j")
+        def _newline(event) -> None:
+            event.current_buffer.insert_text("\n")
+
+        @keys.add("c-c")
+        def _clear_or_quit(event) -> None:
+            if event.current_buffer.text:
+                event.current_buffer.reset()
+            else:
+                event.app.exit(exception=KeyboardInterrupt(), style="class:aborting")
+
+        if history is not None:
+            history.parent.mkdir(parents=True, exist_ok=True)
+        self.session: PromptSession[str] = PromptSession(
+            multiline=True,
+            key_bindings=keys,
+            history=FileHistory(str(history)) if history is not None else InMemoryHistory(),
+            enable_open_in_editor=False,
+            bottom_toolbar=status,
+            style=Style.from_dict({"bottom-toolbar": "noreverse ansibrightblack"}),  # a quiet line, not a bar
+            **terminal,
+        )
+
+    async def ask(self, prompt: str) -> str | None:
+        """One message, or None when the person is done (Ctrl-D, or Ctrl-C on an empty line)."""
+        try:
+            # Ctrl-C reaches the editor as a key (raw mode); with handle_sigint the prompt would
+            # replace the loop's SIGINT handler and remove it on exit, leaving a mid-round Ctrl-C ignored
+            return await self.session.prompt_async([("bold", prompt)], handle_sigint=False)
+        except (EOFError, KeyboardInterrupt):
+            return None
+
+
 async def stdin_ask(prompt: str = "you ▸ ", out: RichConsole | None = None) -> str | None:
-    """One line from the terminal, read on a daemon thread so a Ctrl-C ends the process instead of
-    hanging on the thread pool's exit join; None at EOF. With `out` the prompt is rich markup."""
+    """One message from a pipe, read on a daemon thread so a Ctrl-C ends the process instead of
+    hanging on the thread pool's exit join; None at EOF. With `out` a prompt on a terminal is rich
+    markup; a terminal normally gets an `Editor` instead."""
     loop = asyncio.get_running_loop()
     fut: asyncio.Future[str | None] = loop.create_future()
 
     def read() -> None:
+        tty = sys.stdin.isatty()
+        read_line = (lambda shown: out.input(shown)) if out is not None else input
         try:
-            shown = prompt if sys.stdin.isatty() else ""
-            line_: str | None = out.input(shown) if out is not None else input(shown)
+            line_: str | None = read_line(prompt if tty else "")
         except EOFError:
             line_ = None
         if not fut.done():

@@ -5,6 +5,7 @@ description = "`lion`: the command line of lionagi v1, one entry with subcommand
 requires-python = ">=3.11"
 dependencies = [
     "lionagi",
+    "prompt-toolkit>=3.0.36",
     "rich>=13",
 ]
 
