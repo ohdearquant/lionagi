@@ -142,7 +142,7 @@ chat quietly on an interrupt. `context` takes its verbs as a second level of sub
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the chat flags read through
   `parser()`; `tests/test_areas.py`: the command printing the table from a given registry;
-  `tests/test_checkpoint.py`: `lion context` set, checkpoint, show, restore and status through the
+  `tests/test_context.py`: `lion context` set, checkpoint, show, restore and status through the
   command.
 
 ### D2: `agent_main`, `land` and `arm` in `apps/cli/lion_cli/agent.py` ^d2
