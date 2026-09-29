@@ -67,6 +67,8 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   CLI inside each round.
 - **link**: a terminal hyperlink (OSC 8) the console draws: a URL to itself, a path naming an
   existing file to `vscode://file/<abs>[:line[:col]]`, which opens it in the editor.
+- **response**: a reply's prose as the console showed it, constructs cut; `/copy N` counts back from
+  the last one (1 = the last), a continued chat's replayed ones included.
 - **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
   defaults for the flags.
 
@@ -233,6 +235,16 @@ directory and never the cwd, is a link that opens it in VS Code at the line a `:
 code is left as written, a bare word never links, and a path the model wrote in a code span links
 whole. A call's `path` argument links to the file or directory it names; a URL in a notice links to
 itself.
+### C12: A response can be taken whole to the clipboard _(enforced: mechanical)_ ^c12
+
+- **Subject**: `Console.command`, `Console.copy` and the editor's Alt-C.
+- **Violated when**: `/copy` reaches the model as a message, the text copied differs from the prose
+  shown, a number outside the chat's responses copies anything, or a copy blocks the prompt.
+
+`/copy` at the prompt puts the last response on the clipboard, `/copy N` the Nth back from it (2 =
+the one before the last), and Alt-C the last without leaving the line being typed; the console says
+what it copied, or why nothing. The route is the platform's tool (pbcopy, wl-copy, xclip), and OSC
+52 through the terminal where there is none, as over ssh. A console command never reaches the model.
 
 ## Decisions
 
@@ -332,6 +344,17 @@ call's `path`, `Console.notice` a URL, both as rich markup.
 - **Landing evidence**: `apps/cli/tests/test_links.py`: a URL without its sentence, the common
   spellings of a path, the resolution against the chat's directory and never the cwd, a fence, a
   code span, a call's directory argument, a notice's hyperlink.
+### D9: `to_clipboard`, `Console.command`, `Console.copy` and `_prose` ^d9
+
+Serves C12. `_prose` cuts a turn's constructs by the parser's own spans, the one function the view
+and the copy share, so what is copied is what was shown; `Console.__call__` appends each reply's
+prose, a replayed one too, to `responses`. `Console.command` runs `/copy [N]` and the chat's `ask`
+loop asks again after one. `to_clipboard` tries each tool present on stdin, uncaptured (xclip and
+wl-copy fork a child that serves the selection), then writes the OSC 52 escape.
+
+- **Landing evidence**: `apps/cli/tests/test_copy.py`: the last and the Nth-back response, a number
+  out of range, the prose without its constructs, the route order and the OSC 52 fallback, the
+  command never sent, Alt-C.
 
 ## Alternatives
 
@@ -348,6 +371,7 @@ call's `path`, `Console.notice` a URL, both as rich markup.
 | Environment variables for the chat's defaults | a file the person can read back with `lion config` says where each value came from |
 | A progress bar, or a line per second, while a call runs | nothing is known of a call's length; a spinner with the elapsed time says only that it is alive, and leaves the scrollback clean |
 | `file:` links for paths | rich's markdown drops them, and a browser shows a file where an editor at the line is what the person opens it for |
+| Ctrl-Y, or a mouse button, for the copy | Ctrl-Y is the editor's yank, and a terminal has no buttons; a key the line survives and a command the person can number |
 
 ## Consequences
 
