@@ -58,7 +58,7 @@ Source: `Actor.run` in `lionagi/actor.py`.
 | --------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------- |
 | a bound is spent at the turn's start                      | nothing                                             | `Exhausted(reason)`, unless `run.more` was granted in an earlier turn (ADR-0003) |
 | `stop()` is true after the notification                   | nothing                                             | `Stopped(n)`                                                     |
-| the message carries the loop's own `<system round=` frame, or two `OUT{}` | nothing                             | a retry; the error rides the next notification                   |
+| the message carries the loop's own `<system round=` frame, two `OUT{}` or a backend's refusal | nothing                             | a retry; the error rides the next notification                   |
 | the message has no LNDL                                   | nothing                                             | the run continues, with an idle note                             |
 | the message has `OUT{}` and its fields do not assemble | every command; `OUT{}` waits, then fails to assemble; the turn settles | a retry; the error rides the next notification, a repeat counted (C3) |
 | the message has `OUT{}` and `accept` refuses it | every command; `OUT{}` refused; the turn settles | a retry with the reason; `Refused` after `max_refusals` in a row |
@@ -69,8 +69,8 @@ Every command in a turn is dispatched, `OUT{}` or not: a model that writes "edit
 turn means both. A command is admitted at alias reservation, entered when its handler is called,
 settled when its RESULT lands; one cancelled before it entered is recorded by the loop. A construct
 that cannot be read is dropped and named while the rest runs
-([[ADR-0004-the-language#^c3|ADR-0004/C3]]); only the frame and a second `OUT{}` refuse the message
-whole.
+([[ADR-0004-the-language#^c3|ADR-0004/C3]]); only the frame, two `OUT{}` and backend refusals refuse
+the message whole.
 
 `OUT{}` waits for what it references, through pointers, and for no effect
 ([[ADR-0005-command-handling#^c6|ADR-0005/C6]]); "edit, then done" points `OUT{}` at the edit. An

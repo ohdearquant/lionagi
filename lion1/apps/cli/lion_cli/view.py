@@ -15,6 +15,7 @@ from rich.markdown import Markdown
 from rich.markup import escape
 from rich.rule import Rule
 
+from hub.areas import partial
 from hub.chat import entry_row, line
 from lionagi import lndl
 from lionagi.record import Entry, Kind
@@ -42,9 +43,11 @@ class Console:
         verbose: bool = False,  # results' first lines and the loop's notices
         width: int | None = None,
         calls: list[dict] | None = None,  # the backend's call envelopes: usage and cost go to the log too
+        head: dict | None = None,  # the log's first row, written with its first entry: where the chat ran
     ):
         self.model = model.split("/")[-1]
         self.calls = calls
+        self.head = head
         self.billed = 0  # calls already written to the log
         self.log = log
         self.raw = raw
@@ -73,13 +76,15 @@ class Console:
             self.out.print(f"[dim]continuing {escape(resumed[0])}, {resumed[1]} entries[/dim]")
         self.out.print(f"[dim]{escape(str(directory))} · {escape(', '.join(tools))} · /quit ends[/dim]")
 
-    def close(self, ended: str, calls: int, cost: float, log: Path | None) -> None:
+    def close(self, ended: str, calls: int, cost: float, unknown: int, log: Path | None) -> None:
         if self.log is not None and self.calls:  # a call cut short still cost: its row lands too
             with self.log.open("a") as fh:
                 self._bill(fh, 0)
         self.out.print(Rule(style="dim"))
         self.out.print(
-            f"[dim]{escape(ended)} · {calls} call(s) · ${cost:.4f} · {self.written} entries"
+            f"[dim]{escape(ended)} · {calls} call(s) · ${cost:.4f}"
+            + partial(unknown)
+            + f" · {self.written} entries"
             + (f" + {self.billed} usage rows" if self.billed else "")
             + (f" in {escape(str(log))} · continue it: lion chat -c" if log is not None else "")
             + "[/dim]"
@@ -100,6 +105,8 @@ class Console:
     def __call__(self, e: Entry) -> None:
         if self.log is not None:
             with self.log.open("a") as fh:
+                if self.head is not None and not self.written:
+                    fh.write(json.dumps(self.head) + "\n")
                 fh.write(json.dumps(entry_row(e), default=str) + "\n")
                 self._bill(fh, e.round)
             self.written += 1

@@ -13,6 +13,8 @@ run's trace. Scripted backend; runs offline.
 from __future__ import annotations
 
 import asyncio
+import atexit
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from pydantic import BaseModel, Field
 from lionagi import Actor, Context, Kind, Profile, ProfileError, RunRequest
 
 root = Path(tempfile.mkdtemp())
+atexit.register(shutil.rmtree, root, ignore_errors=True)  # the scratch goes with the process
 (root / "a.txt").write_text("alpha\n")
 
 
