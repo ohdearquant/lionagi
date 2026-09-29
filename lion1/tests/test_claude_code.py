@@ -570,6 +570,62 @@ time.sleep(30)
 """
 
 
+def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_returned(monkeypatch):
+    """The CLI's hook connects, then the CLI exits a few event-loop turns later, before the gate's task
+    for that connection has run: the gate does not run after the call returned, the hook is refused,
+    and nothing lands on a later round. Over the window of 0 to 7 turns, what lands is in the call's own
+    round: started when the hooks ran inside the call, not executed when the call ended under the read."""
+    import shlex
+    import socket
+
+    async def window(k: int):
+        actor = Actor("gated")
+        hooks: list[tuple[str, int]] = []
+        state = {"returned": 0, "calls": 0, "client": None}
+
+        @actor.before
+        def h(run, la, request):
+            hooks.append((la.alias, state["returned"]))  # how many calls had returned when the hook ran
+
+        async def fake_exec(cli, args, prompt, **kw):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                settings = json.loads(args[args.index("--settings") + 1])
+                sock = shlex.split(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"])[-1]
+                client = socket.socket(socket.AF_UNIX)
+                client.connect(sock)
+                call = {"tool_name": "Read", "tool_use_id": f"toolu_{k}", "tool_input": {"file_path": "n"}}
+                client.sendall(json.dumps(call).encode())
+                client.shutdown(socket.SHUT_WR)
+                state["client"] = client
+                for _ in range(k):  # the CLI exits this many turns after its hook connected
+                    await asyncio.sleep(0)
+            else:
+                await asyncio.sleep(0.05)  # the run is still live during its next round
+            return "ok", {"total_cost_usd": 0.0}
+
+        monkeypatch.setattr(claude_code, "_exec", fake_exec)
+        backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
+
+        async def wrapped(messages):
+            try:
+                return await backend(messages)
+            finally:
+                state["returned"] += 1
+
+        run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), wrapped)
+        state["client"].close()
+        landed = [(e.alias, e.round, e.meta.get("execution")) for e in run.record.of_kind(Kind.RESULT)]
+        return hooks, landed
+
+    for k in range(8):
+        hooks, landed = asyncio.run(window(k))
+        assert all(returned == 0 for _, returned in hooks), (k, hooks)  # no hook after the call returned
+        assert all(round == 1 for _, round, _ in landed), (k, landed)  # nothing lands on a later round
+        # what reached the gate lands in the call's round: started when its hooks ran, else not executed
+        assert [ex for _, _, ex in landed] == ["started" if hooks else "not executed"][: len(landed)], k
+
+
 def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_before_it_returns(tmp_path):
     """The CLI fails, runs past the call's deadline, or the call is cancelled, while a before hook waits on an
     approval: the call's deadline ends it, the tool call lands not executed before it returns, nothing of the

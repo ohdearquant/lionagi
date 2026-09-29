@@ -196,14 +196,23 @@ class ClaudeCodeSession:
                     task = asyncio.current_task()
                     asks.add(task)
                     try:
-                        await _ask(self.actor, run, self.requires, closed, reader, writer)
+                        if closed.is_set():  # connected before the call ended, scheduled after: it is over
+                            await _answer(writer, {"refuse": "cancelled before it started"})
+                        else:
+                            await _ask(self.actor, run, self.requires, closed, reader, writer)
                     finally:
                         asks.discard(task)
 
                 async def settle() -> None:
                     closed.set()
-                    while asks:  # one that connected while the others were joined is cancelled too
-                        pending = list(asks)
+                    while True:
+                        # a hook that connected as the call ended is accepted over the next turns and
+                        # refuses itself; the server closing under that accept would leak the socket
+                        for _ in range(4):
+                            await asyncio.sleep(0)
+                        if not asks:
+                            break
+                        pending = list(asks)  # one that connected while the others were joined too
                         for task in pending:
                             task.cancel()
                         await asyncio.gather(*pending, return_exceptions=True)
@@ -438,17 +447,20 @@ async def _ask(
             alias = f"{alias}_{live.record.seq}"
         else:
             ended = Result(la.name, False, error="cancelled before it started", reason="cancelled")
-            try:
-                verdict = await actor.gate(
-                    live, la, _ToolInput.model_validate(la.args), frozenset(requires.get(la.name, ()))
-                )
-            except asyncio.CancelledError:
-                live.record.append(
-                    Kind.RESULT, ended, alias=alias, round=live.round, execution="not executed"
-                )
-                raise
-            if closed.is_set():  # the call is over: its CLI runs nothing, whatever the gate decided
+            if closed.is_set():  # the call ended while the request was read: no gate for a call that is over
                 verdict = ended
+            else:
+                try:
+                    verdict = await actor.gate(
+                        live, la, _ToolInput.model_validate(la.args), frozenset(requires.get(la.name, ()))
+                    )
+                except asyncio.CancelledError:
+                    live.record.append(
+                        Kind.RESULT, ended, alias=alias, round=live.round, execution="not executed"
+                    )
+                    raise
+                if closed.is_set():  # the call is over: its CLI runs nothing, whatever the gate decided
+                    verdict = ended
         if not isinstance(verdict, Result):
             try:
                 args = verdict.model_dump(mode="json")
@@ -462,8 +474,15 @@ async def _ask(
             result = Result(la.name, True, value=args)
             live.record.append(Kind.RESULT, result, alias=la.alias, round=live.round, execution="started")
             answer = {"allow": args}
+    except asyncio.CancelledError:  # the call ended while the request was read: the hook hears nothing
+        writer.close()
+        raise
     except Exception as e:
         answer = {"refuse": f"the runtime's gate failed: {type(e).__name__}: {e}"}
+    await _answer(writer, answer)
+
+
+async def _answer(writer: asyncio.StreamWriter, answer: dict) -> None:
     with contextlib.suppress(ConnectionError):  # a hook the call's end already stopped hears nothing
         writer.write(json.dumps(answer).encode())
         await writer.drain()
