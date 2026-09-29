@@ -78,10 +78,10 @@ job field and no bound ([[ADR-0007-the-record|ADR-0007]]) (D1).
 - **Violated when**: a spent bound admits a new turn, or a command's handler starts after
   `time_budget` or `cost_budget` is spent.
 
-The turn's first act is the check: turns, idle turns, elapsed time, reported cost and the context
-figure against their bounds. Time and cost are re-read before each handler starts, after its pointer
-waits; handlers already running finish, so a turn overruns by at most those. `max_idle` counts
-consecutive idle turns; any turn that is not idle resets it.
+The turn's first act is the check: elapsed time, reported cost, turns, idle turns and the context
+figure against their bounds, so a deadline on the last turn reads time. Time and cost are re-read
+before each handler starts, after its pointer waits; one running at the deadline is cancelled beside
+the turn's wait (S3). `max_idle` counts consecutive idle turns; any turn that is not idle resets it.
 
 `context_budget` compares the anchored figure ([[ADR-0006-the-notification#^c4|ADR-0006/C4]]) as the
 last notification left it; over it, the run ends `Exhausted(context)`. A job over it before any
@@ -139,7 +139,7 @@ the resolved values; nothing re-reads the profile.
   `test_max_rounds_defaults_to_a_hundred`,
   `test_idle_turns_in_a_row_end_the_run_and_any_other_turn_starts_the_count_over`,
   `test_a_time_budget_ends_the_run_as_exhausted_by_time_and_the_header_shows_the_clock`,
-  `test_a_handler_already_running_finishes_and_one_that_would_start_after_the_clock_is_refused`,
+  `test_a_handler_running_at_the_deadline_is_cancelled_with_the_one_waiting_on_it`,
   `test_reported_cost_ends_the_run_and_a_command_asked_once_it_is_spent_never_starts`,
   `test_the_context_figure_the_last_notification_told_ends_the_run_over_its_budget`,
   `test_a_job_over_its_context_budget_before_any_call_is_refused_as_a_job_error`,
@@ -206,8 +206,11 @@ refuse, and the caller receives the value it judged.
   authority once one exists, never to a human on call.
 - **S3**: The remainder is reported, not a final warning: a bound spent inside a backend call or a
   command ends the run at the next check, so a model that wants a last `OUT{}` asks for more while
-  there is room. A command that never returns reaches no check, since time is read only at the
-  turn's start and before a handler starts; a deadline beside the wait is owed (ADR-0005/S6).
+  there is room. A command that never returns is cancelled at a deadline beside the turn's wait,
+  what `time_budget` leaves; unless the turn's `OUT{}` was accepted, the next check ends the run
+  `Exhausted(time)` (ADR-0005/S6), on the last turn too; a refusal cap keeps `Refused`.
+  `test_a_command_that_never_returns_is_cancelled_at_the_deadline_and_the_run_ends_by_time` and
+  `test_a_deadline_on_the_last_turn_ends_the_run_by_time_not_by_rounds` pin it.
 - **S4**: D1-D3 landed with their tests: bound resolution and every check (C1, C2), extension
   requests and grants (C3), and output dispatch through hooks (C4). Still owed with C3: the
   notification naming idle turns, cost and refusals with their remainders. `Reply` carries a cost
