@@ -302,14 +302,16 @@ function token(key) {
 function sendControl(action, extra) {
   var dir = state.detailDir, view = state.view;
   if (!dir) return;
-  var key = JSON.stringify(['control', dir, action, extra || null]);
-  var body = Object.assign({ dir: dir, action: action, once: token(key) }, extra);
+  var key = JSON.stringify(['control', dir, action, extra || null]), once = token(key);
+  var body = Object.assign({ dir: dir, action: action, once: once }, extra);
   fetch('/control', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(function (r) { return r.json(); }).then(function (j) {
-    delete state.pending[key];  // answered, whatever the answer: the server keeps it for this token
+    // answered, whatever the answer: the server keeps it for this token; a later ask under the same
+    // key holds a newer token, and an old answer never takes it
+    if (state.pending[key] === once) delete state.pending[key];
     toast(j.detail || (j.ok ? 'ok' : 'failed'));
     if (state.view !== view) return;  // the page that asked is gone
     toggleInline('hold-inline', false);
@@ -326,14 +328,15 @@ function sendTalk() {
   btn.disabled = true;
   // an unsent message keeps its token: the same words to the same resident replay it, never mail twice
   var dir = state.detailDir, view = state.view, key = JSON.stringify(['send', dir, subject, content]);
-  var form = new URLSearchParams({ dir: dir, subject: subject, content: content, once: token(key) });
+  var once = token(key);
+  var form = new URLSearchParams({ dir: dir, subject: subject, content: content, once: once });
   fetch('/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
     body: form.toString(),
   }).then(function (r) { return r.json(); }).then(function (j) {
     if (!j.ok) throw new Error('send failed');
-    delete state.pending[key];
+    if (state.pending[key] === once) delete state.pending[key];  // never a newer ask's token
     toast('sent');
     if (state.view !== view) return;  // the page that asked is gone
     document.getElementById('talk-content').value = '';

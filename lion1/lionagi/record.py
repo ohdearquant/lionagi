@@ -157,10 +157,11 @@ def fold(
 
     Nothing leaves the view on its own: every entry stays where it landed, so one render differs from
     the last only by what was appended and the provider's prefix cache holds. Directives then apply
-    in the order of their `at`: `hide` removes, `show` brings back, `summarize` removes and puts its text in
-    front of where the span began. A hidden entry keeps a placeholder (`hidden=True`) so the model
-    knows what it can reopen; one under a summary does not, the summary names it. A directive
-    reaches only entries earlier than itself; INPUT is never hidden unless `protect_input` is False;
+    by date (`at`, record order among equal dates), wherever they ride: `hide` removes, `show` brings
+    back, `summarize` removes and puts its text in front of where the span began. A hidden entry
+    keeps a placeholder (`hidden=True`) so the model knows what it can reopen; one under a summary
+    does not, the summary names it. A directive reaches only entries earlier than its date; INPUT is
+    never hidden unless `protect_input` is False;
     a name that resolves to nothing is ignored, a directive cannot crash the fold. The runtime's own
     fold event (the view past its budget, ADR-0007/C2) is a `hide` directive on the notification
     that announces it, so it happens once and replays like any other.

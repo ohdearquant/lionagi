@@ -61,7 +61,7 @@ _FRAMES = (
 )
 _REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-_KEEP = ("inbound", "origin", "reply", "execution", "unread", "refused")
+_KEEP = ("inbound", "origin", "reply", "execution", "request", "returned", "unread", "refused")
 
 
 class CheckpointError(Exception):
@@ -99,9 +99,10 @@ class Checkpoint:
 
 def entry_of(row: dict) -> Entry | None:
     """A log row (the chat log's `entry_row`, ADR-0018/D1) back as a record entry: a result as Result,
-    the inbound marks, each result's execution fact, a refused turn's reason, the context directives
-    and a program's computed values kept, the seq as it was; None for a row of another kind (a USAGE
-    row, or another app's: the log, not the record)."""
+    the inbound marks, each result's execution fact and its two captures (the request the handler
+    entered, its return before the after hooks), the note versions it read, a refused turn's reason,
+    the context directives and a program's computed values kept, the seq as it was; None for a row of
+    another kind (a USAGE row, or another app's: the log, not the record)."""
     if row["kind"] not in Kind.__members__:
         return None
     kind = Kind[row["kind"]]
@@ -111,6 +112,14 @@ def entry_of(row: dict) -> Entry | None:
     # `execution`: whether a result's handler was called; an older log has none, which says nothing
     kept = row.get("meta") or {}
     meta = {k: v for k, v in kept.items() if k in _KEEP}
+    # `notes`: the version each note was read at, kept when it is that shape; anything else says nothing
+    notes = kept.get("notes")
+    if (
+        isinstance(notes, dict)
+        and notes
+        and all(isinstance(k, str) and type(v) is int for k, v in notes.items())
+    ):
+        meta["notes"] = dict(notes)
 
     def directive(d: dict) -> Directive:
         return Directive(
