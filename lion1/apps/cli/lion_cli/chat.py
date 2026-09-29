@@ -19,7 +19,7 @@ from typing import Any
 from hub import Box, BoxTree, DaytonaSandbox, LocalTree, Sandbox, code, files, guidance, khive_ops, shell
 from hub.agent.chores import SPAWN_SALIENCE, Bounded
 from hub.areas import partial
-from hub.backend import ClaudeCodeError, ClaudeCodeSession, CodexError, OpenRouterError
+from hub.backend import ClaudeCodeError, CodexError, OpenRouterError
 from hub.chat import chat, load_log
 from hub.hooks import install, load
 from hub.khive import Khive, KhiveError
@@ -59,7 +59,6 @@ def console(
     notify: Callable[[str], None] | None = None,
     tree: Tree | None = None,
     about_box: str | None = None,
-    own_tools: tuple[str, ...] = (),
     khive_config: Path | None = None,
 ) -> tuple[Actor, Profile]:
     """The actor a person talks to: the file and directory readers, khive when the directory is an
@@ -68,8 +67,7 @@ def console(
     is given, and with `coding` the tools a fix is found and written with (read_lines, search, edit).
     The person's instruction files (`instructions`) close the guidance. `tree` is where the
     file and code tools read and write: the directory itself by default, the copy of it in a box
-    with `about_box` saying so (the VM's own guidance otherwise). `own_tools` are the Claude Code
-    CLI's own tools a claude_code session runs inside each round, named in the guidance."""
+    with `about_box` saying so (the VM's own guidance otherwise)."""
     directory = Path(directory).resolve()
     tree = tree if tree is not None else LocalTree(directory)
     actor = Actor(name, notes_dir=directory / ".lion" / "notes")
@@ -111,14 +109,6 @@ def console(
                     f", khive_ops(ops) signing as {actor_id} ({len(khive.allowed)} verbs: reads, comm.read, "
                     f"schedule.remind, memory.remember with an explicit salience <= {SPAWN_SALIENCE})"
                 )
-    if own_tools:
-        tools += (
-            f"; and your own Claude Code tools ({', '.join(own_tools)}) run inside each round in "
-            f"{directory}, called the way you always call them, never inside <lact> (that is for the "
-            "commands above only). Each call lands on the record as a result under its tool-use id, so "
-            "you can context.hide it once it has served; what the call taught you goes into a note first. "
-            "A context.hide or context.summarize restarts your session from the folded view"
-        )
     if not system:
         system = guidance("console", model=model, tools=tools, rounds=rounds, sandbox=about_sandbox)
         for path, text in instructions(directory):
@@ -436,9 +426,6 @@ async def _chat_main(
             raise SystemExit(f"--khive-config {a.khive_config}: no such file")  # as typed, not resolved
         if signer(directory, khive_config) is None:
             raise SystemExit(f"--khive-config {a.khive_config}: no [actor].id in it")
-    own_tools = tuple(t.strip() for t in (getattr(a, "tools", None) or "").split(",") if t.strip())
-    if own_tools and not (a.model == "claude_code" or a.model.startswith("claude_code/")):
-        raise SystemExit("--tools is for a claude_code model: the CLI runs them, no other backend can")
     actor, profile = console(
         directory,
         model=a.model,
@@ -448,19 +435,11 @@ async def _chat_main(
         notify=degraded.append,
         tree=tree,
         about_box=about_box,
-        own_tools=own_tools,
         khive_config=khive_config,
     )
-    if own_tools:  # the CLI's own tools run in this directory (khive signs as its actor when configured)
-        options = {"tools": list(own_tools), "max_turns": getattr(a, "max_turns", 0)}
-        backend = backend_for(a.model, options, cwd=directory)
-    else:
-        backend = backend_for(a.model)
-    if isinstance(backend, ClaudeCodeSession):  # the CLI's own tool calls ask this actor's gate (ADR-0009/C6)
-        backend.actor = actor
-        actor.elsewhere = {
-            t: f"{t} is one of your own tools; call it as you always do, not inside <lact>" for t in own_tools
-        }
+    # a claude_code model gets no tools of its own: one turn per call, resumed, and everything it does
+    # is a command in its text that this console runs, gates and records
+    backend = backend_for(a.model)
     runs: list[Run] = []
     say = Console(
         a.model,

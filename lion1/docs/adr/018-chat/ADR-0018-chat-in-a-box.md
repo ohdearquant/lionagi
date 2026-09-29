@@ -63,8 +63,6 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
 - **working indicator**: `⠋ thinking · 12s` under the scrollback while a round's call is in flight,
   `running` once the turn's commands run; a finished result folds to its head, its detail parked
   under the indicator until the next result lands.
-- **own tools**: with a `claude_code` model, the Claude Code CLI's tools `--tools` names, run by the
-  CLI inside each round.
 - **link**: a terminal hyperlink (OSC 8) the console draws: a URL to itself, a path naming an
   existing file to `vscode://file/<abs>[:line[:col]]`, which opens it in the editor.
 - **response**: a reply's prose as the console showed it, constructs cut; `/copy N` counts back from
@@ -211,29 +209,29 @@ per key, a flag on the line over both.
 
 ### C9: A first Ctrl-C cuts the call; a fold, not a failed directive, restarts a session _(enforced: mechanical)_ ^c9
 
-- **Subject**: `Interrupt`, `Run.interrupt` and the `claude_code` session under `--tools`.
+- **Subject**: `Interrupt`, `Run.interrupt` and the `claude_code` session.
 - **Violated when**: a Ctrl-C mid-call waits for the round, a cut ends the run, a failed directive
-  restarts the session, or an own-tool call misses the record.
+  restarts the session, or the session's CLI is handed a tool of its own.
 
 Mid-round a first Ctrl-C cuts the backend call in flight: the round ends with a notice and no turn,
 the run goes on, and a `claude_code` session resumes where it was; with no call in flight the round
 settles first. Only a result that changed the view carries its `spec`, so a failed directive leaves
-the session as it was. `--tools`, for a `claude_code` model only, names the CLI's own tools; each
-call passes the console's gate and lands on the record as a result the model can hide.
+the session as it was.
+
+A `claude_code` model gets no tools of its own: each call is one turn with none, so everything it
+does is a command in its text that the console runs, gates and records.
 
 ### C10: The console shows the model working, and folds what finished _(enforced: mechanical)_ ^c10
 
 - **Subject**: `Console.working`, `Console.idle`, `_Working` and the status line's head on a
   terminal.
 - **Violated when**: a call in flight shows nothing moving, a finished result stays open above the
-  next, the status line names no model, or an own-tool call prints its arguments whole.
+  next, or the status line names no model.
 
 On a terminal the working indicator runs under the scrollback from a round's start until its turn
 lands, `running` while the turn's commands run. With `--verbose` a result prints its head to the
-scrollback and parks its detail under the indicator until the next lands; a call of the model's own
-tools prints as one line, `✓ Bash command=…`, clipped. The status line leads with the model and the
-actor. A pipe gets none of this. A command named like an own tool is refused with where that tool
-lives.
+scrollback and parks its detail under the indicator until the next lands. The status line leads with
+the model and the actor. A pipe gets none of this.
 ### C11: What the console shows, the person can open _(enforced: mechanical)_ ^c11
 
 - **Subject**: `linked`, `Console._args` and `Console.notice`.
@@ -379,25 +377,24 @@ as `--config`, over the cwd's (measured); missing, or naming no actor, it refuse
 
 Serves C9. `Run.interrupt` sets `pause` and cancels the call the loop holds in `run.call`; the loop
 reads `run.cut` to tell that cancellation from the run's own and continues. `_message` renders a
-failed result with `spec=None`, which `ClaudeCodeSession` reads before restarting. `backend_for`
-takes the tool names and `chat_main` hands the session the console's actor as its gate.
+failed result with `spec=None`, which `ClaudeCodeSession` reads before restarting. `chat_main` calls
+`backend_for` with the model alone, so the session runs `--tools ""` and `--max-turns 1`.
 
 - **Landing evidence**: `tests/test_chat.py`: the cut with its two controls;
-  `apps/cli/tests/test_chat_command.py`: the Ctrl-C presses; `tests/test_claude_code.py`:
-  `test_a_failed_context_directive_does_not_restart_the_session`.
+  `apps/cli/tests/test_chat_command.py`: the Ctrl-C presses,
+  `test_a_claude_code_model_gets_no_tools_of_its_own_one_turn_per_call_and_no_gate_hook`;
+  `tests/test_claude_code.py`: `test_a_failed_context_directive_does_not_restart_the_session`.
 
-### D7: `Console.working`, `Console.idle`, `signer` and `Actor.elsewhere` ^d7
+### D7: `Console.working`, `Console.idle` and `signer` ^d7
 
 Serves C10. `Console.working(what)` starts a transient rich `Live` at eight frames a second holding
 a `_Working` (frame, what, elapsed) and any parked detail; `idle()` stops it. `chat_main` subscribes
 `round.started` to `working("thinking")`, and `Console.__call__` turns it to `running` when a turn
-carries commands. `signer(directory)` reads the actor id for the status line. `Actor.elsewhere` maps
-a name to the sentence appended to the unknown-command error; the chat fills it with the own tools.
+carries commands. `signer(directory)` reads the actor id for the status line.
 
 - **Landing evidence**: `tests/test_chat.py`:
   `test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detail_under_it`,
-  `test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked`,
-  `test_an_own_tool_call_folds_to_one_line_and_an_unknown_name_is_told_where_it_lives`.
+  `test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked`.
 ### D8: `linked`, `_target` and the links in calls and notices ^d8
 
 Serves C11. `linked(text, directory)` walks the prose outside fences token by token (an escape, a
@@ -492,6 +489,7 @@ the banner; `config_main` prints one comment line each, or where it looked.
 | Letting the claude CLI read CLAUDE.md itself (its setting sources) | only one backend would get the files, and with them every setting and hook the CLI finds; composing them into the guidance serves every model alike |
 | Every CLAUDE.md from the directory up to the filesystem root | the directories above a repository hold other projects' rules; the home file is the one every chat means to share |
 | Copying the whole chat from the terminal's scrollback | the terminal wraps and indents what it shows; the copy is built from the entries, unwrapped |
+| The claude CLI's own tools inside each round (`--tools`) | a second channel beside the commands: a model that called a command natively was told it did not exist, then wrote the loop's result frame itself with invented results |
 
 ## Consequences
 
@@ -527,10 +525,9 @@ the banner; `config_main` prints one comment line each, or where it looked.
   the model and the person; only that session's patch is checked.
   `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch` resumes a
   boxed chat.
-- **S11**: A cut round leaves no turn on the record, only a notice; a `claude_code` session killed
-  mid-call resumes on the next call from the CLI's own persisted session. A hide of what the CLI's
-  own tools did folds the record; the CLI's session keeps its own transcript until a directive or a
-  fold restarts it from the folded view.
+- **S11**: A cut round leaves no turn on the record, only a notice. A `claude_code` session killed
+  mid-call resumes on the next call from the CLI's own persisted session, which keeps its own
+  transcript until a directive or a fold restarts it from the folded view.
 - **S12**: The config file cannot switch a `true` off for one run: the flags are switches, so a
   nearer file's `false` is the only override. `lion chat --help` shows the built-in defaults, not
   the files'.

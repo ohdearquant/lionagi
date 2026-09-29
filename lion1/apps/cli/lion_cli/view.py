@@ -337,12 +337,6 @@ class Console:
             )
         if isinstance(r.value, dict) and isinstance(r.value.get("rc"), int):  # a shell result: its own rc
             head = _shell_head(alias, r.spec, r.value)
-        elif alias.startswith("toolu_") and isinstance(r.value, dict) and r.value:
-            # a call of the model's own tools: the record holds its arguments; the first says what it did
-            k, v = next(iter(r.value.items()))
-            arg = v if isinstance(v, str) else json.dumps(v, default=str)
-            head = f"[green]✓ {escape(r.spec)}[/green] [dim]{escape(k)}={escape(_clip(arg, 80))}[/dim]"
-            return head, None  # its arguments are the whole of it; the log has them
         else:
             head = f"[green]✓ {escape(alias)} {escape(r.spec)}[/green] [dim]{escape(_shape(r.value))}[/dim]"
         if not self.verbose:
