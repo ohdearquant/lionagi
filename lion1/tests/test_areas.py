@@ -926,6 +926,45 @@ def test_a_running_wake_under_a_held_lock_is_not_idle_without_a_model_child(tmp_
         os.close(fd)
 
 
+def test_a_pid_file_that_cannot_be_read_or_locked_is_that_residents_problem_and_no_holder(
+    tmp_path, monkeypatch
+):
+    """Only a refused shared lock is a holder. A lock call that fails some other way, or a pid file
+    that cannot be opened, is said on that resident's row; the other residents still get theirs,
+    and the control surface reads the unknown as busy."""
+    import errno
+
+    from hub.areas import _held
+
+    d = agent_dir(tmp_path, "desk", role="desk", cursor={"wake": 3, "outcome": "Quiet"}, spend=None)
+    other = agent_dir(tmp_path, "chores", role="chores", cursor={"wake": 1, "outcome": "Quiet"}, spend=None)
+    (d / "agent.pid").write_text("424242")
+    area = Area("x", "lambda:x", [str(d), str(other)])
+    assert _held(tmp_path / "gone.pid") == (False, None)  # vanished between a listing and the read
+    real = fcntl.flock
+
+    def no_locks(fd, op):
+        if op & fcntl.LOCK_SH:
+            raise OSError(errno.ENOLCK, "No locks available")
+        return real(fd, op)
+
+    monkeypatch.setattr(fcntl, "flock", no_locks)
+    r = resident(area, str(d), TODAY)
+    assert r.serving is False and r.pid is None  # neither claim survives a lock call that failed
+    assert r.problem == f"agent.pid: [Errno {errno.ENOLCK}] No locks available"
+    assert controls_info(str(d))["idle"] is False  # unknown is not idle: a restart would take `force`
+    monkeypatch.setattr(fcntl, "flock", real)
+    assert resident(area, str(d), TODAY).problem == ""  # the control: the same file, locks working
+    os.chmod(d / "agent.pid", 0)
+    try:
+        rows = status([area], TODAY)
+        assert [r.problem.split(":")[0] for r in rows] == ["agent.pid", ""] and rows[0].serving is False
+        assert controls_info(str(d))["idle"] is False
+    finally:
+        os.chmod(d / "agent.pid", 0o644)
+    assert [r.problem for r in status([area], TODAY)] == ["", ""]
+
+
 def test_a_replayed_once_answers_the_first_result_and_acts_once(tmp_path, monkeypatch):
     record = tmp_path / "argv.txt"
     monkeypatch.setattr(areas_cli, "_LAUNCHCTL", str(recorder(tmp_path / "launchctl", record, 0)))

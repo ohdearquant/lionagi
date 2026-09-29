@@ -15,6 +15,8 @@ import pytest
 from lion_cli.agent import agent_main, stats
 
 from hub.agent import Agent, AgentError, Budget, Wake, WakeRule
+from hub.harness import claude_code
+from hub.harness.claude_code import ClaudeCodeSession
 from hub.khive import Khive
 from lionagi import Actor, FileNoteStore, Kind, MemoryNoteStore, Message, Profile, Success
 
@@ -553,6 +555,25 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
     assert stats(tmp_path).splitlines()[1] == "per handled message: no mail handled today"
 
 
+def test_a_failed_session_cli_call_is_counted_in_the_days_spend_row_and_still_ends_the_run(monkeypatch):
+    printed = {"total_cost_usd": 0.5, "usage": {"input_tokens": 9000, "output_tokens": 700}}
+
+    async def capped(cli, args, prompt, *, model, timeout, cwd=None, persist=False):
+        raise claude_code.ClaudeCodeError("claude reported error_max_turns: cap", printed)
+
+    monkeypatch.setattr(claude_code, "_exec", capped)
+    khive = FakeKhive(mail("lambda:a", "go"))
+    agent = Agent(
+        Actor("echo", privileges={"comm.send"}), khive, ClaudeCodeSession(cli="/bin/claude"), profile_for
+    )
+    with pytest.raises(claude_code.ClaudeCodeError, match="error_max_turns"):
+        asyncio.run(agent.wake(wait_ms=0))
+    spend = agent.state.get("spend").value
+    assert spend["calls"] == 1 and spend["cost"] == pytest.approx(0.5)
+    assert spend["in"] == 9000 and spend["out"] == 700
+    assert agent.state.get("cursor").value["outcome"].startswith("error ClaudeCodeError: ")
+
+
 def test_a_wake_killed_after_its_mark_read_is_reported_to_the_owner_and_rerun_takes_it_back():
     state = MemoryNoteStore()
     khive = FakeKhive(mail("lambda:a", "hi"))
@@ -899,6 +920,53 @@ def test_once_refuses_served_identity(tmp_path, kkernel_stub, monkeypatch):
         [],
         [".khive/config.toml", "agent.pid", "chores.toml"],
     )
+
+
+def test_check_with_the_identity_free_prints_and_lands_the_measurement_and_sends_nothing(
+    tmp_path, kkernel_stub, monkeypatch, capsys
+):
+    """With no live holder, --check claims the identity, runs the named instrument alone, prints it and
+    lands the same text, then lets the identity go: no send, no ledger row, no tick."""
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n\n[chores.gtd-inbox]\n'
+        'every = "every:1h"\n'
+    )
+    ops: list[str] = []
+
+    async def fake_exec(self, op):
+        ops.append(op)
+        old = {"id": "t1", "title": "triage me", "created_at": "2026-01-01T00:00:00Z"}
+        return [[old], [old]]
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    a = argparse.Namespace(
+        dir=str(d),
+        stats=False,
+        model=None,
+        check="gtd-inbox",
+        ticks=False,
+        arm=False,
+        once=False,
+        rerun=None,
+        wait=0,
+    )
+    asyncio.run(agent_main(a))
+    text, landed = capsys.readouterr().out.rsplit("\nlanded: ", 1)
+    path = Path(landed.strip())
+    assert text.startswith(
+        "gtd-inbox: control ok, 1 finding(s), escalate=False, count=1, direction under-report"
+    )
+    assert "- 1 gtd inbox row(s) older than 24h of 1 in inbox" in text
+    assert path.parent == d / "landing" and re.fullmatch(r"\d{8}-check-gtd-inbox\.txt", path.name)
+    assert path.read_text() == text
+    assert ops == [
+        '[gtd.tasks(status="inbox", assignee="lambda:x", limit=100), gtd.tasks(assignee="lambda:x", limit=1)]'
+    ]
+    files = sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.is_file())
+    assert files == [".khive/config.toml", "chores.toml", f"landing/{path.name}"]  # the identity let go
 
 
 def test_serve_keeps_the_lock_its_process_already_claimed(tmp_path):
