@@ -1,7 +1,7 @@
 ---
 adr: ADR-0008
 status: draft
-liveness: unimplemented
+liveness: operating (the consumed marks and computed values of a last turn on the closure, a replay of values nothing read, the normalised program on the TEXT entry, the tag form lowered to the same nodes and the name repairs with their bench measurement are owed)
 date: "2026-09-23"
 area: program
 kind: extends
@@ -106,13 +106,14 @@ applied repair rides the next notification ([[ADR-0006-the-notification#^c2|ADR-
 
 The expression language is the symbolic grammar's: a pointer `*a`, field access `.title`, index
 `[0]`, `+ - * /`, comparisons, `and`, `or`, `not`, literals, `note["key"]`, an inline `a if c else
-b`. One comprehension form is added, `(x for x in *r if x.score > 0.8)`.
+b`. One comprehension is added, `(x for x in *r if x.score > 0.8)`.
 
-The runtime's own evaluator (never `eval`) computes it when its node executes; a pending reference
-waits. Values are data (scalars, strings, lists, dicts, a Spec's fields); access and indexing read,
-never call. A type error settles the node `invalid`, naming both. The only loop is the
-comprehension; a call is a command node, `DO name(...)` (C6). `note["key"]` is read once per node,
-with its version: one expression, one version. A size limit on what it builds is owed.
+The runtime's evaluator (never `eval`) computes it when its node executes; a pending reference
+waits. Values are data (scalars, strings, lists, dicts, Spec fields); access and indexing never
+call. A type error settles the node `invalid`, naming both. The only loop is the comprehension,
+whose name a `DO` inside it reads; a call is a command node, `DO name(...)` (C6). `note["key"]` is
+read once per node: one expression, one version. A build past 100,000 characters and items settles
+`invalid`.
 
 ### C4: A command's result may be assigned to a note, and then it is not in the view _(enforced: mechanical)_ ^c4
 
@@ -194,8 +195,24 @@ consumption, on the next notification or the closure ([[ADR-0007-the-record#^d2|
 resumed chat folds it and recompiles nothing; the record keeps four kinds
 ([[ADR-0007-the-record#^c1|ADR-0007/C1]]).
 
-- **Landing evidence**: owed: `tests/test_program.py` with the example above resolving in one turn,
-  a syntax error refusing the whole message with nothing executed, and each catalogue repair named.
+- **Landing evidence**: `lionagi/program.py` (beside `lionagi/lndl.py`, which a `lionagi/lndl/`
+  package would shadow); `tests/test_program.py`: `test_the_records_example_resolves_in_one_turn`,
+  `test_a_syntax_error_refuses_the_whole_message_and_nothing_runs`,
+  `test_a_check_that_fails_refuses_the_whole_message_naming_the_line`,
+  `test_a_build_past_the_size_limit_settles_the_node_invalid`,
+  `test_a_comprehension_counts_each_item_it_builds_toward_the_size_limit`,
+  `test_a_dicts_keys_count_toward_the_size_limit`,
+  `test_a_dict_whose_keys_are_not_strings_counts_each_key_as_one_item`,
+  `test_a_missing_field_of_a_dict_with_mixed_keys_is_a_language_error_not_a_crash`,
+  `test_a_dict_is_read_at_any_key_it_holds`,
+  `test_a_key_a_dict_cannot_hold_is_a_language_error_not_a_crash`,
+  `test_an_arithmetic_result_too_large_for_a_number_is_a_language_error_not_a_crash`,
+  `test_an_unnamed_command_skips_an_auto_name_the_record_already_holds`,
+  `test_if_elif_else_runs_only_the_taken_branch_and_a_return_ends_the_program`,
+  `test_a_command_inside_a_comprehension_reads_the_comprehensions_name`,
+  `test_each_catalogue_repair_is_named_and_counted`,
+  `test_a_cancelled_run_cancels_the_commands_its_program_launched_and_returns`. A pointer reaches an
+  earlier line's name or the record: no cycle.
 
 ### D2: The repair catalogue is data, and each repair is counted ^d2
 
@@ -204,21 +221,56 @@ Serves C2. A table of repairs with a name, a matcher and a rewrite; the four rea
 as "<line>: read as X; if that is not what you meant, write it again", and the run counts repairs by
 name so the bench can say which slips models make.
 
-- **Landing evidence**: owed: the count in the run's usage row; unknown-name refusals with their
-  edit distance to the nearest known name, measured before the name repair is turned on.
+- **Landing evidence**: `test_the_tag_forms_repairs_are_counted_by_name`,
+  `test_the_tag_form_counts_every_repair_one_call_needed`,
+  `test_a_repair_is_counted_when_the_check_then_refuses_the_program`,
+  `test_an_unknown_name_is_measured_against_the_nearest_known_name_in_both_forms`,
+  `test_every_unknown_command_in_a_message_is_named_and_measured_not_only_the_first`, and in
+  `tests/test_swe_solve.py`
+  `test_the_row_counts_the_repairs_by_name_and_measures_each_unknown_name`: the bench row carries
+  `repairs` by name and `unknown_names` as name, nearest known name and Levenshtein distance. Owed:
+  a bench run taking the measurement, and the name repairs it turns on.
 
 ### D3: Note assignment and view curation in the dispatcher's settle ^d3
 
 Serves C4 and C5. At settle the node's target is read: a note path writes the store. A RESULT counts
-as consumed once a reader settled ok or its note was written; the runtime's hide, dated at that
-consumption, rides the next notification, or the closure when no turn follows
-([[ADR-0006-the-notification#^c1|ADR-0006/C1]]); a later `context.show` stands over it
-([[ADR-0007-the-record#^c3|ADR-0007/C3]]). A reader in an untaken branch, or one that failed,
-consumes nothing. A RESULT `OUT{}` names is never consumed; the fold renders a consumed RESULT as
-any hidden one, a placeholder.
+as consumed once a reader settled ok or its note was written. The runtime's hide, dated at that
+settle or write, rides the next notification, or the closure when no turn follows
+([[ADR-0006-the-notification#^c1|ADR-0006/C1]]); directives fold by date, so a later `context.show`
+stands over it ([[ADR-0007-the-record#^c3|ADR-0007/C3]]). A reader in an untaken branch, or failed,
+consumes nothing. A RESULT `OUT{}` names is never consumed; a consumed RESULT renders as a
+placeholder.
 
-- **Landing evidence**: owed: a test where the consumed result never appears in a backend's messages
-  while the pointer and `context.show` still reach it.
+- **Landing evidence**:
+  `test_a_consumed_result_never_reaches_the_backend_yet_its_pointer_and_context_show_do`,
+  `test_a_result_the_output_names_is_never_consumed`,
+  `test_the_consumed_hide_survives_the_log_as_a_directive`,
+  `test_the_context_figure_counts_a_consumed_result_as_its_placeholder`,
+  `test_a_result_read_through_a_value_is_consumed_only_when_the_values_reader_settles_ok`,
+  `test_a_failed_producer_writes_nothing_and_the_assignment_is_told_not_written`,
+  `test_a_show_later_in_the_same_program_stands_over_the_hide_of_what_it_consumed`,
+  `test_a_show_dated_with_the_branch_that_consumed_its_target_stands_over_the_hide` (a consumption
+  precedes the entry it is dated at). The hide rides the notification's `meta["consumed"]`, beside
+  the fold's `meta["directive"]`. Owed: the closure's half, with the closure (ADR-0006).
+
+### D4: A value is bound for the run, and a computed one rides the record ^d4
+
+Serves C3 and C6. A name is bound once; a value nothing has read stays bound past its turn. Its
+first reader computes it, after the note writes before that reader; the walk reads a branch or an
+output as it reaches it, a command's arguments when it starts; a write naming it comes after it,
+reached or not. The notification carries an unread value as its expression (`meta["bound"]`), a
+computed one as its value (`meta["values"]`); a replay binds both, running nothing. A failed
+computation binds its failure.
+
+- **Landing evidence**:
+  `test_a_value_nothing_read_stays_bound_into_later_turns_and_its_name_stays_taken`,
+  `test_a_value_computed_on_the_record_resolves_after_the_log_replays_it_and_nothing_runs_again`,
+  `test_a_value_whose_computation_failed_stays_failed_and_what_it_ran_never_runs_again`,
+  `test_a_value_bound_by_an_earlier_turn_reads_after_the_reading_programs_own_note_writes`,
+  `test_a_value_bound_this_turn_reads_after_the_note_writes_before_its_first_reader_too`,
+  `test_a_write_that_reads_a_value_comes_after_the_value_so_a_later_reader_never_waits_on_itself`,
+  `test_a_value_nothing_read_is_bound_again_after_the_log_replays_it_and_reads_as_it_would_have`.
+  Owed: a last turn's values on the closure (ADR-0006).
 
 ## Alternatives
 

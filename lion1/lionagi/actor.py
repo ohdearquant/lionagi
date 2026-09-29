@@ -20,6 +20,7 @@ import math
 import re
 import time
 import uuid
+from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +32,13 @@ from . import lndl
 from .bus import Bus
 from .lndl import Lact, Lvar, Pointer, Program
 from .notes import FileNoteStore, MemoryNoteStore, NoteStore, key_of
+from .program import Branch, Command, EvalError, Script, Value, evaluate, pointers
+from .program import (
+    Output as ProgramOutput,  # OUT{} inside a fenced program; `Output` below is the out command's request
+)
+from .program import check as check_script
+from .program import guidance as program_guidance
+from .program import read as read_script
 from .record import Directive, Entry, Kind, Record, ViewEntry, fold
 from .spec import Operable, Spec, render_guidance, spec_name
 
@@ -128,6 +136,7 @@ class Profile:
     privileges: frozenset[str] = frozenset()
     system: str = ""  # the role's own prose, ahead of the generated guidance
     notes: NoteStore | None = None  # None: the actor keeps one per profile name
+    language: str = "core"  # core: the three constructs; program: one fenced program (ADR-0008/C6)
     # the role's values for the job's bounds, taken where the job leaves one unset (ADR-0003/C1)
     defaults: dict[str, float] = field(default_factory=dict, hash=False)
 
@@ -135,6 +144,8 @@ class Profile:
         # the name is the notes file's name under `notes_dir`: one file per profile, none outside it
         if not _PROFILE_NAME.match(self.name) or ".." in self.name:
             raise ProfileError(f"profile name {self.name!r}: letters, digits, _ . - only, it names a file")
+        if self.language not in ("core", "program"):
+            raise ProfileError(f"profile language {self.language!r}: core or program")
         unknown = sorted(set(self.defaults) - set(_BOUNDS))
         if unknown:
             raise ProfileError(f"profile {self.name!r} defaults name no bound: {unknown}")
@@ -356,6 +367,18 @@ class Run:
         # history the record never saw (a session-keeping CLI's tool turns), which a fold does
         self.floor: int | None = None
         self.refusals = 0  # consecutive refusals of OUT{}
+        self.repairs: Counter[str] = Counter()  # repairs the reading applied to this run's turns, by name
+        # each unknown command name, the nearest name the profile has and the edit distance between them:
+        # what a name repair would have done, measured while it is off (ADR-0008/D2)
+        self.misnamed: list[tuple[str, str | None, int | None]] = []
+        self.thunks: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {}  # a program command's arguments
+        # results a program consumed, each with the seq it was consumed at, hidden by the next notification
+        self.intermediates: dict[str, int] = {}
+        # a program's values not computed yet, for the whole run: the seq of the TEXT that bound it and
+        # its expression; a value nothing has read stays bound (ADR-0008/C6)
+        self.unread: dict[str, tuple[int, ast.expr]] = {}
+        self.computed: list[str] = []  # program values computed since the last notification, which keeps them
+        self.bound: list[str] = []  # program values bound since the last notification, which carries them
         self.outcome: Outcome | None = None
         self.output: Any = None
 
@@ -387,7 +410,7 @@ class Run:
         try:
             self.resolve(name)
         except KeyError:
-            return name in self.pending
+            return name in self.pending or name in self.unread
         return True
 
 
@@ -742,11 +765,12 @@ class Actor:
         subset = self.subset(profile)
         for e in request.history:
             replayed = run.record.append(e.kind, e.content, alias=e.alias, round=e.round, **e.meta)
-            if e.kind is Kind.TEXT:  # the values that turn declared, admitted against the record so far
+            if e.kind is Kind.TEXT and profile.language == "core":  # the values that turn declared, admitted
+                # against the record so far; a program's prose is scratch and its turn is folded, not rerun
                 if replayed.meta.get("unread"):  # the live loop refused it: nothing of it was admitted
                     continue
                 try:
-                    program = _read(str(e.content), e.meta.get("refused"))
+                    program = _read(str(e.content), refused=e.meta.get("refused"))
                 except lndl.LNDLError as err:
                     # refused by today's reader and not by the one that ran it: what that reader
                     # admitted rides the error, or nothing does and the turn was refused then too
@@ -754,6 +778,14 @@ class Actor:
                     if program is None:
                         continue
                 _admit(run, program, replayed.seq)
+            if profile.language == "program":  # the values a program computed, bound again as they were
+                for alias, seq, line, source in e.meta.get("bound", ()):  # bound, and read by nothing yet
+                    expr = ast.parse(source, mode="eval").body
+                    ast.increment_lineno(expr, line - 1)
+                    run.unread[alias] = (seq, expr)
+                for alias, seq, value in e.meta.get("values", ()):
+                    run.values[alias] = (seq, value)
+                    run.unread.pop(alias, None)
         for text in request.inputs:
             run.record.append(Kind.INPUT, text)
         self.runs[run.id] = run  # live from here: a history that does not replay leaves no run behind
@@ -785,6 +817,20 @@ class Actor:
                         f"the job's view is ~{run.context_figure} tokens before any call, over its "
                         f"context_budget of {run.bounds['context_budget']}"
                     )
+                if run.intermediates:  # the hide of what a program consumed, dated at each consumption
+                    notice.meta["consumed"] = _consumed(run)
+                    run.intermediates.clear()
+                if run.computed:  # the values a program computed, so a replayed record binds them again
+                    notice.meta["values"] = tuple((a, *run.values[a]) for a in run.computed)
+                    run.computed.clear()
+                if run.bound:  # the values it bound and nothing read yet: their expressions, for a replay
+                    notice.meta["bound"] = tuple(
+                        (a, seq, expr.lineno, ast.unparse(expr))
+                        for a in run.bound
+                        if a in run.unread
+                        for seq, expr in (run.unread[a],)
+                    )
+                    run.bound.clear()
                 if stop is not None and stop():
                     # asked after the notification, not before it: the sections have just looked at
                     # the world, and what they saw (acceptance checks passing, a fix that has stood
@@ -822,17 +868,27 @@ class Actor:
                     run.same_turns + 1 if previous is not None and previous.content == text else 0
                 )
                 try:
-                    program = _read(text, refused)
+                    program = _read(text, run.profile.language, refused)
+                    run.repairs.update(program.repairs)  # applied by the reading, whatever the check says
+                    if isinstance(program, Script):  # whole, before anything runs (ADR-0008/C1)
+                        check_script(program, subset.names(), run.known)
                 except lndl.LNDLError as e:
                     m.meta["unread"] = True  # a resumed log reads the refusal, not the turn again
                     run.idle_rounds = 0  # a turn refused whole held something: it was not idle
+                    run.repairs.update(getattr(e, "repairs", ()))  # the readings before the one that failed
+                    run.misnamed += [_nearest(name, subset.names()) for name in getattr(e, "names", ())]
                     self._retry(run, str(e))
                     self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
                     continue
                 run.idle_note = None
-                if request.wait is not None and not program.lacts and program.out is None:
+                if isinstance(program, Script):
+                    acted = spoke = bool(program.body)
+                else:
+                    acted = bool(program.lacts) or program.out is not None
+                    spoke = acted or bool(program.lvars)
+                if request.wait is not None and not acted:
                     run.replied = True  # the reply; the other side speaks next
-                elif not program.lvars and not program.lacts and program.out is None:
+                elif not spoke:
                     run.idle_rounds += 1
                     stray = lndl.stray_tags(text, subset.names())
                     run.idle_note = "your last turn contained no LNDL, so nothing was executed" + (
@@ -847,7 +903,8 @@ class Actor:
                         )
                 else:
                     run.idle_rounds = 0
-                for var in program.lvars:  # a call written in a value tag runs nothing; say so by name
+                for var in () if isinstance(program, Script) else program.lvars:
+                    # a call written in a value tag runs nothing; say so by name
                     call = _CALL_SHAPED.match(var.value)
                     if call and call.group(1) in subset.names():
                         run.refused.append(
@@ -859,9 +916,21 @@ class Actor:
                         )
                 for problem in program.problems:
                     run.refused.append(("turn", problem))
-                self._declare(run, program, m.seq)
-                referenced = _referenced(program)
-                tasks = self._dispatch(run, program, subset)
+                if isinstance(program, Script):
+                    walk = _Walk(self, run, subset, m.seq)
+                    try:
+                        found = await walk.execute(program)
+                    except lndl.LNDLError as e:  # the output could not be computed: a retry (ADR-0008/C7)
+                        self._retry(run, str(e))
+                        self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
+                        continue
+                    program = Program(lacts=walk.lacts, out=None if found is None else lndl.Out(found))
+                    referenced: set[str] = set()
+                    tasks = walk.tasks
+                else:
+                    self._declare(run, program, m.seq)
+                    referenced = _referenced(program)
+                    tasks = self._dispatch(run, program, subset)
                 if program.out is None:
                     await _settle(run, tasks, _left(run))
                     if (
@@ -1125,6 +1194,7 @@ class Actor:
 
     async def _execute(self, run: Run, la: Lact, subset: Operable) -> tuple[Result, Directive | None]:
         if la.name not in subset:
+            run.misnamed.append(_nearest(la.name, subset.names()))
             return Result(la.name, False, error=f"unknown command {la.name!r}", reason="unknown"), None
         handler = self.handlers[la.name]
         try:
@@ -1201,6 +1271,9 @@ class Actor:
 
     async def _deref(self, run: Run, la: Lact) -> dict[str, Any]:
         """Wait for any pointer still pending, then substitute values for pointers."""
+        thunk = run.thunks.pop(la.alias, None)
+        if thunk is not None:  # a program's command: its expressions computed now, waiting on what they read
+            return await thunk()
         for p in la.pointers():
             task = run.pending.get(p.name)
             if task is not None and task is not asyncio.current_task():
@@ -1341,7 +1414,10 @@ class Actor:
         if run.bounds["time_budget"] is not None:
             clock += f"/{_clock(run.bounds['time_budget'])}"
         lines = [f"<system round={run.round}/{run.bounds['max_rounds']} time={clock} seq={r.seq}>"]
-        view = self._fold(run)
+        # consumed since the last notification: hidden before the model sees them, folded with the hides
+        # this notification will carry, so a show the program made after a consumption stands over it
+        # here as it will on the record (ADR-0008/D3) and the figure counts what the backend receives
+        view = self._fold(run, _consumed(run))
         used = _tokens(_messages(view))
         context_line = len(lines)
         lines.append("")  # the context figure, written once the fold below has settled the view
@@ -1432,6 +1508,9 @@ class Actor:
                 e = r.get(alias)
                 assert e is not None
                 res: Result = e.content
+                if alias in run.intermediates:  # its value stays out of the context, preview included
+                    lines.append(f"  {alias} ({e.name}, {res.spec}): {_typename(res.value)}, consumed")
+                    continue
                 lines.append(f"  {alias} ({e.name}, {res.spec}): {_typename(res.value)} {res.preview()}")
         for header, told in (("failed after starting:", run.failed), ("completion unknown:", run.unknown)):
             if told:  # the handler was called: what it did before it failed or was stopped stands
@@ -1478,9 +1557,10 @@ class Actor:
 
     def _render(self, run: Run, subset: Operable) -> list[Message]:
         outputs = tuple(spec_name(s) for s in run.request.emits)
+        language = lndl.guidance if run.profile.language == "core" else program_guidance
         parts = [
             run.profile.system.strip(),
-            lndl.guidance(outputs, commands=subset),
+            language(outputs, commands=subset),
             "COMMANDS\n" + subset.guidance(),
         ]
         if run.request.emits:
@@ -1491,8 +1571,20 @@ class Actor:
         run.viewed = _shown(view)
         return [dataclasses.replace(m, run=run.id) for m in messages]
 
-    def _fold(self, run: Run) -> list[ViewEntry]:
-        return fold(run.record, protect_input=not run.request.fold_inputs)
+    def _fold(self, run: Run, consumed: tuple[Directive, ...] = ()) -> list[ViewEntry]:
+        return fold(run.record, protect_input=not run.request.fold_inputs, consumed=consumed)
+
+
+def _consumed(run: Run) -> tuple[Directive, ...]:
+    """The hides of what a program consumed since the last notification, dated at each consumption
+    (ADR-0008/D3), so a show the program made after one stands over it."""
+    by_at: dict[int, list[str]] = {}
+    for alias, at in run.intermediates.items():
+        by_at.setdefault(at, []).append(alias)
+    return tuple(
+        Directive("hide", tuple(refs), at=at, seqs=tuple(run.record.get(a).seq for a in refs))
+        for at, refs in sorted(by_at.items())
+    )
 
 
 # --- helpers -----------------------------------------------------------------------------------
@@ -1535,7 +1627,7 @@ _OWN = "alias {alias!r} starts with _, which the record keeps for its own names 
 _TAKEN = "alias {alias!r} already names {where}; aliases are unique for the whole run"
 
 
-def _read(text: str, refused: str | None = None) -> Program:
+def _read(text: str, language: str = "core", refused: str | None = None) -> Program | Script:
     """A turn as the loop reads it, live or resumed; LNDLError is what the model is told."""
     if refused:  # the backend refused the turn (a mixed response, ADR-0004/C4); the record keeps why
         raise lndl.LNDLError(refused)
@@ -1547,7 +1639,7 @@ def _read(text: str, refused: str | None = None) -> Program:
             "inside it were never observed, so nothing in the turn was executed: write one program, "
             "end the turn, and read the real results in the next notification"
         )
-    return lndl.parse(text)
+    return lndl.parse(text) if language == "core" else read_script(text)
 
 
 def _admit(run: Run, program: Program, seq: int) -> list[tuple[Lvar, str | None]]:
@@ -1571,6 +1663,281 @@ def _admit(run: Run, program: Program, seq: int) -> list[tuple[Lvar, str | None]
             run.fields.pop(lv.alias, None)
         out.append((lv, None))
     return out
+
+
+class _Failed(Exception):
+    """A block finished Failed: nothing after it runs, in it or around it (ADR-0008/C7)."""
+
+
+class _Walk:
+    """One program over the dispatcher (ADR-0008/D1, D3): a command runs as its own task when its block
+    reaches it, a value is computed when first read, a note is written when its assignment is reached,
+    and a branch's control result gates the rest of its block. The results a reader that settled ok
+    read, and those a note took, are consumed: the next notification hides them."""
+
+    def __init__(self, actor: Actor, run: Run, subset: Operable, seq: int):
+        self.actor, self.run, self.subset, self.seq = actor, run, subset, seq
+        self.tasks: list[asyncio.Task] = []
+        self.lacts: list[Lact] = []
+        # an earlier turn's values nothing read yet are in reach, computed when first read
+        self.values: dict[str, tuple[int, ast.expr]] = dict(run.unread)
+        self.computed: dict[str, asyncio.Future] = {}
+        self.value_reads: dict[str, set[str]] = {}  # a value's reads, charged to whoever reads the value
+        self.writes: dict[str, asyncio.Task] = {}  # note key -> the latest assignment reached
+        # a write's task -> the values it and the writes before it read (through the values they read)
+        # and the write before it
+        self.write_reads: dict[asyncio.Task, tuple[frozenset[str], asyncio.Task | None]] = {}
+        self.reads: dict[str, set[str]] = {}  # this program's command -> the results its arguments read
+        # results read by a reader that settled ok, or taken by a note: the seq each was first consumed at
+        self.used: dict[str, int] = {}
+        self.named: set[str] = set()  # what OUT{} points at: never consumed
+
+    async def execute(self, script: Script) -> dict[str, Any] | None:
+        try:
+            return await self.block(script.body)
+        except _Failed:
+            return None
+        except (
+            asyncio.CancelledError
+        ):  # the run is cancelled: its commands with it, each settling as cancelled
+            for task in self.tasks:
+                task.cancel()
+            raise
+        finally:
+            await _settle(self.run, self.tasks, _left(self.run))  # the time budget bounds it as any turn's
+            for alias, reads in self.reads.items():
+                entry = self.run.record.get(alias)
+                if entry.content.ok:
+                    self.consume(reads, entry.seq)  # at the reader's settle
+            consumed = sorted(self.used.keys() - self.named, key=lambda a: self.run.record.get(a).seq)
+            self.run.intermediates.update((a, self.used[a]) for a in consumed)
+
+    def consume(self, reads: set[str], at: int) -> None:
+        for alias in reads:
+            self.used[alias] = min(at, self.used.get(alias, at))
+
+    async def block(self, nodes: tuple) -> dict[str, Any] | None:
+        for node in nodes:
+            if isinstance(node, Branch):
+                reader = _Reader(self)
+                try:
+                    taken = await evaluate(node.test, reader)
+                except lndl.LNDLError as e:
+                    self.run.refused.append((f"line {node.line}", f"if: {e}; nothing after it ran"))
+                    raise _Failed from None
+                self.consume(reader.reads, len(self.run.record))
+                ended = await self.block(node.body if taken else node.orelse)
+                if ended is not None:
+                    return ended
+            elif isinstance(node, ProgramOutput):
+                reader = _Reader(self)
+                self.named |= node.named
+                fields = {key: await evaluate(v, reader) for key, v in node.fields}
+                self.consume(reader.reads, len(self.run.record))
+                return fields
+            elif isinstance(node, Command):
+                self.command(node)
+            elif isinstance(node, Value):
+                self.values[node.alias] = self.run.unread[node.alias] = (self.seq, node.expr)
+                self.run.bound.append(node.alias)
+            else:
+                self.write(node)
+        return None
+
+    def auto(self) -> str:
+        n, taken = len(self.lacts), self.run.pending
+        while self.run.record.has_alias(f"r{self.seq}.{n}") or f"r{self.seq}.{n}" in taken:
+            n += 1  # a resumed record may hold the name already (its rows are renumbered on load)
+        return f"r{self.seq}.{n}"
+
+    def launch(self, la: Lact, args: Callable[[], Awaitable[dict[str, Any]]]) -> asyncio.Task:
+        run = self.run
+        admitted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        run.thunks[la.alias] = args
+        task = asyncio.create_task(self.actor._perform(run, la, self.subset, admitted))
+        task.add_done_callback(functools.partial(self.actor._never_started, run, la))
+        run.pending[la.alias] = task
+        admitted.set_result(None)  # registered before it runs, under any task factory
+        self.reads.setdefault(la.alias, set())
+        self.tasks.append(task)
+        self.lacts.append(la)
+        return task
+
+    def command(self, node: Command) -> str:
+        alias = node.alias or self.auto()
+        reader = _Reader(self)
+
+        async def args() -> dict[str, Any]:
+            return {key: await evaluate(v, reader) for key, v in node.args}
+
+        self.reads[alias] = reader.reads
+        self.launch(Lact(alias, node.name, {}), args)
+        return alias
+
+    async def value(self, name: str, writes: dict[str, asyncio.Task] | None = None) -> Any:
+        if name not in self.computed:
+            seq, expr = self.values[name]
+            # the reader's line decides: the value reads after the note writes before its first reader,
+            # whichever turn bound it (ADR-0008/D4)
+            reader = _Reader(self, self._before(name, self.writes if writes is None else writes))
+            self.computed[name] = asyncio.ensure_future(self._compute(name, seq, expr, reader))
+        return await asyncio.shield(self.computed[name])
+
+    def _before(self, name: str, writes: dict[str, asyncio.Task]) -> dict[str, asyncio.Task]:
+        """The writes a value reads after. A write that reads the value comes after the value, not
+        before it (waiting for it would wait for itself), and so does every write queued behind it: the
+        value reads after the last write before that."""
+        out: dict[str, asyncio.Task] = {}
+        for key, task in writes.items():
+            while task is not None and name in self.write_reads[task][0]:
+                task = self.write_reads[task][1]
+            if task is not None:
+                out[key] = task
+        return out
+
+    def _reads(self, *exprs: ast.expr) -> frozenset[str]:
+        """The values the expressions read, and the values those read, as far as it goes."""
+        names, todo = set(), list(pointers(*exprs))
+        while todo:
+            n = todo.pop()
+            if n not in names and n in self.values:
+                names.add(n)
+                todo += pointers(self.values[n][1])
+        return frozenset(names)
+
+    async def _compute(self, name: str, seq: int, expr: ast.expr, reader: _Reader) -> Any:
+        try:
+            value = await evaluate(expr, reader)
+        except lndl.LNDLError as e:
+            # a failed computation is the value's failure for the run: whatever it ran, ran once; a
+            # later read finds the failure, never the expression again
+            value = Result("value", False, error=str(e), reason="invalid")
+        self.run.values[name] = (seq, value)
+        self.run.unread.pop(name, None)
+        self.run.computed.append(name)
+        if isinstance(value, Result):
+            raise EvalError(f"*{name}: {value.error}")
+        self.value_reads[name] = reader.reads  # consumed only once a reader of the value settles ok
+        return value
+
+    def write(self, node: Any) -> None:
+        prior = self.writes.get(node.key)
+        reader = _Reader(self)
+        target = ".".join(("note", node.key, *node.path))
+        producer = self.command(node.value) if isinstance(node.value, Command) else None
+        # what this write reads, and what the write it waits for reads: a value read by any write in
+        # the chain is read before the whole chain
+        reads = (
+            self._reads(*(v for _, v in node.value.args)) if producer is not None else self._reads(node.value)
+        )
+        if prior is not None:
+            reads |= self.write_reads[prior][0]
+        # the values the expression itself names: computing one reaches what its branches reach and
+        # nothing more, so a command in a branch not taken never runs for a write (C3)
+        named = pointers(*(v for _, v in node.value.args)) if producer is not None else pointers(node.value)
+        named &= self.values.keys()
+        before = dict(self.writes)  # the writes before this one: what a value it names reads after
+
+        async def put() -> None:
+            if prior is not None:  # two assignments to one note are two writes, in the order written
+                await asyncio.shield(prior)
+            try:
+                # a write that names a value comes after it, whether or not evaluating reaches the
+                # pointer (`false and *v`): the value reads the note before this write lands
+                for name in sorted(named):
+                    await self.value(name, before)
+                value = await (
+                    reader.point(producer) if producer is not None else evaluate(node.value, reader)
+                )
+            except lndl.LNDLError as e:  # what it writes failed: the note keeps its value
+                self.run.refused.append((target, f"not written: {e}"))
+                return
+            try:
+                old = self.run.notes.get(node.key)
+                whole = _put_path(old.value if old is not None else {}, node.path, value)
+                self.run.notes.put(node.key, whole, run=self.run.id, seq=self.seq)
+            except Exception as e:  # the store refused: the result stands and no write is claimed
+                self.run.refused.append((target, f"not written: {type(e).__name__}: {e}"))
+                return
+            self.run.notes_written.append(target)
+            self.consume(reader.reads, len(self.run.record))
+
+        task = asyncio.create_task(put())
+        self.write_reads[task] = (reads, prior)
+        self.writes[node.key] = task
+        self.tasks.append(task)
+
+
+class _Reader:
+    """One node's reads while its expressions are computed: each note read once, so one expression
+    sees one version (ADR-0008/C3), and the program's results it read."""
+
+    def __init__(self, walk: _Walk, writes: dict[str, asyncio.Task] | None = None):
+        self.walk = walk
+        self.writes = dict(walk.writes if writes is None else writes)
+        self.reads: set[str] = set()
+        self.notes: dict[str, Any] = {}
+
+    async def point(self, name: str) -> Any:
+        walk = self.walk
+        if name in walk.values:
+            value = await walk.value(name, self.writes)
+            self.reads |= walk.value_reads.get(name, set())
+            return value
+        task = walk.run.pending.get(name)
+        if task is not None:
+            await asyncio.shield(task)
+        value = walk.run.resolve(name)
+        if isinstance(value, Result):  # a failed command resolves to its Result
+            raise EvalError(f"*{name} did not settle ok: {value.error}")
+        if name in walk.reads:
+            self.reads.add(name)
+        return value
+
+    async def note(self, key: str) -> Any:
+        if key not in self.notes:
+            write = self.writes.get(key)
+            if write is not None:
+                await asyncio.shield(write)
+            note = self.walk.run.notes.get(key)
+            if note is None:
+                raise EvalError(f"note[{key!r}] is not in the store")
+            self.notes[key] = note.value
+        return self.notes[key]
+
+    async def do(self, name: str, args: dict[str, Any], line: int) -> Any:
+        alias = self.walk.auto()
+
+        async def given() -> dict[str, Any]:
+            return args
+
+        await asyncio.shield(self.walk.launch(Lact(alias, name, {}), given))
+        return await self.point(alias)
+
+
+def _put_path(base: Any, path: tuple[str, ...], value: Any) -> Any:
+    """`value` written at `path` inside a note's JSON object, the rest of it kept."""
+    if not path:
+        return value
+    if not isinstance(base, dict):
+        raise EvalError(f"the note holds {type(base).__name__} where {path[0]!r} is written, not an object")
+    return {**base, path[0]: _put_path(base.get(path[0], {}), path[1:], value)}
+
+
+def _nearest(name: str, names: Iterable[str]) -> tuple[str, str | None, int | None]:
+    """An unknown command name, the nearest name in the subset and their edit distance."""
+    best = min(names, key=lambda n: (_distance(name, n), n), default=None)
+    return name, best, None if best is None else _distance(name, best)
+
+
+def _distance(a: str, b: str) -> int:
+    """Levenshtein: the fewest insertions, deletions and substitutions from `a` to `b`."""
+    row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        prev, row[0] = row[0], i
+        for j, cb in enumerate(b, 1):
+            prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (ca != cb))
+    return row[-1]
 
 
 def _referenced(program: Program) -> set[str]:

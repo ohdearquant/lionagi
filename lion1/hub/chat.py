@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from lionagi.actor import Actor, Handle, Inbound, Profile, Run, RunRequest
+from lionagi.actor import Actor, Handle, Inbound, Profile, Result, Run, RunRequest
 from lionagi.checkpoint import entry_of
 from lionagi.record import Directive, Entry, Kind
 
@@ -132,8 +132,19 @@ def entry_row(e: Entry) -> dict:
             "reason": content.reason,
         }
     meta = dict(e.meta)
-    if isinstance(d := meta.get("directive"), Directive):  # what this entry did to the view, as data
-        meta["directive"] = {"op": d.op, "refs": list(d.refs), "text": d.text, "at": d.at, "seqs": d.seqs}
+
+    def row(d: Directive) -> dict:
+        return {"op": d.op, "refs": list(d.refs), "text": d.text, "at": d.at, "seqs": d.seqs}
+
+    # what this entry did to the view, as data: a directive, and the hides of what a program consumed
+    if isinstance(d := meta.get("directive"), Directive):
+        meta["directive"] = row(d)
+    if isinstance(ds := meta.get("consumed"), tuple):
+        meta["consumed"] = [row(d) for d in ds]
+    if isinstance(vs := meta.get("values"), tuple):  # a value that failed to compute: its error, fourth
+        meta["values"] = [
+            [a, seq, None, v.error] if isinstance(v, Result) else [a, seq, v] for a, seq, v in vs
+        ]
     return {
         "seq": e.seq,
         "kind": e.kind.name,
