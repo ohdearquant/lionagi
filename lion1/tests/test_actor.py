@@ -816,9 +816,10 @@ def test_a_request_no_peer_run_took_waits_on_the_peers_inbox_for_its_next_run(bo
         assert idle.outcome == Exhausted(0, reason) and idle.consumed == []
         assert len(peer.inbox) == 1 and not asking.done()  # the request is queued, the ask open
         await peer.run(Profile("p"), RunRequest(emits=(Answer,), max_rounds=1), scripted('OUT{answer: "42"}'))
-        return await asyncio.wait_for(asking, 5)
+        return await asking
 
-    run = asyncio.run(main())
+    # the whole exchange is bounded: a regression fails, never hangs
+    run = asyncio.run(asyncio.wait_for(main(), 5))
     assert run.resolve("q1") == {"answer": {"text": "42"}} and run.asked == {}
 
 
