@@ -386,6 +386,12 @@ def test_disk_sizes_a_target_whose_path_holds_a_space_as_one_path(tmp_path):
     [
         ("target_cap_gib = nan", "target_cap_gib is a finite number of GiB, zero or more: nan"),
         ("target_cap_gib = -1", "target_cap_gib is a finite number of GiB, zero or more: -1"),
+        ("target_cap_gib = true", "target_cap_gib is a finite number of GiB, zero or more: True"),
+        ("target_cap_gib = 1" + "0" * 400, "target_cap_gib is a finite number of GiB, zero or more: 1000"),
+        (
+            "target_cap_gib = 0x" + "F" * 5000,
+            "target_cap_gib is a finite number of GiB, zero or more: an integer of 20000 bits",
+        ),
         (
             '[[chores.disk.floors]]\nname = "steady"\nfloor_gib = nan',
             "floor_gib of floor 'steady' is a finite",
@@ -399,6 +405,10 @@ def test_disk_sizes_a_target_whose_path_holds_a_space_as_one_path(tmp_path):
             "floor_gib of floor 'steady' is a finite",
         ),
         (
+            '[[chores.disk.floors]]\nname = "steady"\nfloor_gib = true',
+            "floor_gib of floor 'steady' is a finite number of GiB, zero or more: True",
+        ),
+        (
             '[[chores.disk.floors]]\nname = "admit"\nfloor_gib = 280\nbudget_gib = nan',
             "budget_gib of floor 'admit' is a finite number of GiB, zero or more: nan",
         ),
@@ -410,9 +420,13 @@ def test_disk_sizes_a_target_whose_path_holds_a_space_as_one_path(tmp_path):
     ids=[
         "cap-nan",
         "cap-negative",
+        "cap-bool",
+        "cap-too-large-for-a-float",
+        "cap-too-large-for-its-decimal-form",
         "floor-nan",
         "floor-inf",
         "floor-string",
+        "floor-bool",
         "budget-nan",
         "budget-negative",
     ],

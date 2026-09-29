@@ -632,6 +632,20 @@ class InboxSla:
         )
 
 
+def _finite(v: int | float) -> bool:
+    try:
+        return math.isfinite(v)
+    except OverflowError:
+        return False
+
+
+def _shown(v: Any) -> str:
+    try:
+        return repr(v)
+    except ValueError:  # an int past the interpreter's digit limit for its decimal form
+        return f"an integer of {v.bit_length()} bits"
+
+
 class Disk:
     """Free space per volume under the roots, against every floor the config names, and the build
     targets beneath the roots. Free space is a property of the volume, so roots on one device are
@@ -677,8 +691,10 @@ class Disk:
             if k in fl
         ]
         for field, v in gib:
-            if not isinstance(v, int | float) or isinstance(v, bool) or not math.isfinite(v) or v < 0:
-                raise ValueError(f"{field} is a finite number of GiB, zero or more: {v!r}")
+            # an int too large for a float is not finite either: isfinite raises OverflowError on it
+            fine = isinstance(v, int | float) and not isinstance(v, bool) and _finite(v) and v >= 0
+            if not fine:
+                raise ValueError(f"{field} is a finite number of GiB, zero or more: {_shown(v)}")
 
     async def run(self, args: dict[str, Any]) -> Outcome:
         findings, lines, control, escalate, matched = [], [], True, False, 0
