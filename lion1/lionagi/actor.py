@@ -1173,10 +1173,14 @@ class Actor:
             if inspect.isawaitable(value):
                 value = await value
             if isinstance(value, Handle) and value.id in run.asked:
-                # the answer, under the same alias; the ask is dropped once consumed, so an answer
-                # that lands before the handler returns is still found here
+                # the answer, under the same alias; the ask is dropped once consumed, answer or
+                # failure, so an answer that lands before the handler returns is still found here
                 handle_id = value.id
-                value = await run.asked[handle_id][1]
+                try:
+                    value = await run.asked[handle_id][1]
+                except Exception:
+                    run.asked.pop(handle_id, None)
+                    raise
                 run.asked.pop(handle_id, None)
             result = Result(la.name, True, value=value)
         except Exception as e:
