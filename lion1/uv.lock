@@ -1232,7 +1232,7 @@ voice = [
 requires-dist = [
     { name = "lionagi", editable = "." },
     { name = "mlx-whisper", marker = "extra == 'voice'", specifier = ">=0.4" },
-    { name = "prompt-toolkit", specifier = ">=3.0" },
+    { name = "prompt-toolkit", specifier = ">=3.0.36" },
     { name = "rich", specifier = ">=13" },
     { name = "sounddevice", marker = "extra == 'voice'", specifier = ">=0.5" },
 ]
