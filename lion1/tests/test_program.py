@@ -1,5 +1,6 @@
 """The program form (ADR-0008): read whole, checked before anything runs, evaluated over data."""
 
+import ast
 import asyncio
 import json
 import re
@@ -8,7 +9,7 @@ import pytest
 from pydantic import BaseModel
 
 from hub.chat import entry_row
-from lionagi import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Success
+from lionagi import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Success, program
 from lionagi.actor import ProfileError, Result
 from lionagi.checkpoint import entry_of
 from lionagi.lndl import LNDLError
@@ -948,9 +949,18 @@ def test_the_evaluator_computes_over_data(expr, want):
         (f'{{a: "{"a" * (LIMIT + 1)}"}}', "past the size limit"),
         (f"(*s * {LIMIT // 6} for i in [1, 2, 3])", "past the size limit"),
         ("[*big, *big]", "past the size limit"),
+        (f"*t * {LIMIT + 1}", "past the size limit"),
+        (f"{LIMIT + 1} * *t", "past the size limit"),
     ],
 )
-def test_the_evaluator_names_what_it_could_not_compute(expr, said):
+def test_the_evaluator_names_what_it_could_not_compute(expr, said, monkeypatch):
+    # a product past the limit is refused before it is built: the multiplication itself never runs
+    sign, mul = program._ARITH[ast.Mult]
+    monkeypatch.setitem(
+        program._ARITH,
+        ast.Mult,
+        (sign, lambda a, b: pytest.fail("built") if tuple in (type(a), type(b)) else mul(a, b)),
+    )
     with pytest.raises(EvalError, match=said.replace("[", r"\[").replace("*", r"\*")):
         value(
             expr,
@@ -958,6 +968,7 @@ def test_the_evaluator_names_what_it_could_not_compute(expr, said):
             s="abc",
             m=Book(title="Dune", year=1965),
             big=list(range(LIMIT // 2 + 1)),
+            t=(0,),
         )
 
 

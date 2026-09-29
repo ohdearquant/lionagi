@@ -604,7 +604,12 @@ def _index(node: ast.expr, value: Any, key: Any) -> Any:
 def _arith(node: ast.expr, op: tuple[str, Callable[[Any, Any], Any]], a: Any, b: Any) -> Any:
     sign, fn = op
     seq, times = (b, a) if isinstance(a, int) else (a, b)
-    if sign == "*" and isinstance(seq, list | str) and isinstance(times, int) and _size(seq) * times > LIMIT:
+    if (
+        sign == "*"
+        and isinstance(seq, list | tuple | str)
+        and isinstance(times, int)
+        and _size(seq) * times > LIMIT
+    ):
         raise _past(node)  # refused before it is built, not after
     try:
         value = fn(a, b)
