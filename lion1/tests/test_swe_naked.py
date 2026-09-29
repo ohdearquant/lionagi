@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -372,6 +373,22 @@ def test_the_snapshot_the_harness_reads_is_whole_or_absent(tmp_path, monkeypatch
     with pytest.raises(OSError, match="disk full"):
         run_naked.oracle(preds, "r1", ["x__x-1"], 1)
     assert not snapshot.exists()  # never a half-written snapshot under the name the harness reads
+    assert list(tmp_path.glob("*.part")) == []  # and no scratch file left behind
+    # the move fails: the snapshot is untouched, the scratch file gone, the harness never called
+    monkeypatch.setattr(Path, "write_bytes", real)
+    snapshot.write_bytes(b"earlier, whole\n")
+    calls: list = []
+
+    def refuse(*a):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    monkeypatch.setattr(run_naked.subprocess, "run", lambda *a, **k: calls.append(a))
+    with pytest.raises(OSError, match="replace failed"):
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    assert (
+        snapshot.read_bytes() == b"earlier, whole\n" and list(tmp_path.glob("*.part")) == [] and calls == []
+    )
 
 
 @pytest.mark.parametrize("streams", [(b"so far\n", b"slow\n"), ("so far\n", "slow\n"), (None, None)])

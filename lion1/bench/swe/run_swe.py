@@ -406,8 +406,13 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
     # whole or absent: two evaluations of the same bytes share the name, and a reader must never see
     # a half-written one, so the bytes land beside it and move in atomically
     part = snapshot.with_name(f"{snapshot.name}.{os.getpid()}.part")
-    part.write_bytes(data)
-    os.replace(part, snapshot)
+    try:
+        part.write_bytes(data)
+        os.replace(part, snapshot)
+    except BaseException:  # the snapshot is absent, and so is the scratch file
+        part.unlink(missing_ok=True)
+        raise
+    del data  # the harness reads the snapshot; the bytes are not held through its run
     cmd = [
         "uv",
         "run",
