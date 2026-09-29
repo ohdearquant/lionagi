@@ -1426,17 +1426,18 @@ def test_agent_marks_only_own_mail(tmp_path):
 
 
 def test_out_waits_while_a_listed_message_is_neither_answered_nor_left(tmp_path):
-    """A model can write OUT{} in the sweep's own round, and the one listed message is then never
-    routed. The gate refuses that OUT with the ids; the next
-    round routes them, and the round after ends the wake."""
+    """A model can write OUT{} before it has routed what its sweep listed. The gate refuses that OUT
+    with the ids, judged on the record as it stands: a leave beside the OUT has not landed, so both ids
+    are named, and the refusal settles the leave; the next OUT names the one still listed."""
     khive = FakeKhive(mail(SELF, "tick: sweep"))
     desk, chores, agent = build(
         tmp_path,
         khive,
         FakeReader(Q1, NOTICE),
         [
-            SWEEP + " " + DONE,  # the slip: OUT{} beside sweep()
-            '<lact l1>leave(msg="m-n1", why="notice")</lact> ' + DONE,  # one taken, one still listed
+            SWEEP,
+            '<lact l1>leave(msg="m-n1", why="notice")</lact> ' + DONE,  # both still listed when judged
+            DONE,  # one taken, one still listed
             '<lact l2>leave(msg="m-q1", why="no-instrument")</lact>',
             DONE,
             SWEEP,
@@ -1444,7 +1445,7 @@ def test_out_waits_while_a_listed_message_is_neither_answered_nor_left(tmp_path)
         ],
     )
     run = asyncio.run(agent.wake())
-    assert type(run.outcome).__name__ == "Success" and len(run.record) == 12  # 4 rounds
+    assert type(run.outcome).__name__ == "Success" and len(run.record) == 15  # 5 rounds, the closure
     retries = [str(e.content) for e in run.record if e.kind is Kind.SYSTEM]
     assert any(
         "listed 2 message(s) you have not answered or left: ['m-n1', 'm-q1']; call answer(" in str(r)
@@ -1456,7 +1457,7 @@ def test_out_waits_while_a_listed_message_is_neither_answered_nor_left(tmp_path)
     # a wake whose sweep listed nothing, and a wake with no sweep at all, end on their first OUT
     khive.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))
     run = asyncio.run(agent.wake())
-    assert type(run.outcome).__name__ == "Success" and len(run.record) == 6  # 2 rounds, no retry
+    assert type(run.outcome).__name__ == "Success" and len(run.record) == 7  # 2 rounds, no retry
 
 
 CQ = inbox_row(ASKER, "disk or pr?", "is it the disk under the roots or PR 12 that is red?", "m-c1", "t-c1")

@@ -258,8 +258,9 @@ anchor.
 - **S8**: The figure is an estimate for one turn after a session starts over from the folded view
   (C4); the next count corrects it ([[ADR-0006-the-notification|ADR-0006]] S3).
 - **S9**: A backend that raises ends the run by its exception ([[ADR-0002-the-run#^c4|ADR-0002/C4]])
-  with the notification already on the record ([[ADR-0006-the-notification#^d1|ADR-0006/D1]]); the
-  reap of a cancelled call at the run's end is owed there ([[ADR-0002-the-run|ADR-0002]] S4).
+  with the notification already on the record ([[ADR-0006-the-notification#^d1|ADR-0006/D1]]); a
+  command still pending then is reaped before the exception leaves `run`
+  ([[ADR-0002-the-run|ADR-0002]] S4).
 - **S10**: A failed session CLI call lands its envelope before the error goes on: the one the CLI
   printed, as a delta kept as its last, else one whose cost is unknown. A running total missing
   leaves this share and the next unknown; one below the last leaves this share unknown, never
