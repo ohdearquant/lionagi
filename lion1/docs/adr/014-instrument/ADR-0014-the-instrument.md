@@ -1,7 +1,7 @@
 ---
 adr: ADR-0014
 status: draft
-liveness: operating (eleven instruments build from one config and run under tests against scripted commands and stores; the command-line check prints a measurement unvetted and has no test; a lock-holder and a scheduled-job instrument are owed)
+liveness: operating (thirteen instruments build from one config and run under tests against scripted commands and stores, a lock holder and a scheduled job among them; the command-line check prints its measurement unvetted, says so, and is under test)
 date: "2026-09-25"
 area: instrument
 kind: new
@@ -111,10 +111,10 @@ expect empty by default, the rest do not, and `expect_empty` in the config overr
   again on every run after it, or an answered run leaves the mark.
 
 `Chores._dead` counts the chore's unanswered rows back from the newest. At `dead_after`, three by
-default, it tells the owner and the steward once that the instrument is dead, and marks the chore
-told whether or not either send landed (S11). An answered run clears the mark, so the next crossing
-is told again. The desk writes no chore ledger row, so a measurement it received does not count
-here.
+default, it tells the owner and the steward once that the instrument is dead. Each recipient is
+marked told once its send lands, and the chore once every copy has (S11). An answered run clears the
+mark, so the next crossing is told again. The desk writes no chore ledger row, so a measurement it
+received does not count here.
 
 ### C5: First sight is the whole row, then transitions, and a crossing is told once _(enforced: mechanical)_ ^c5
 
@@ -151,8 +151,8 @@ one default floor of 300 GiB; an empty list declines every floor.
 
 ### C7: An instrument reads and acts on nothing _(enforced: process)_ ^c7
 
-An instrument reads: `gh` reads, `git` reads, `ps`, `launchctl print`, `df`, `find` and `du`, and
-the store through the agent's bounded client, which admits only the verbs on its list
+An instrument reads: `gh` reads, `git` reads, `ps`, `lsof`, `launchctl print`, `df`, `find` and
+`du`, and the store through the agent's bounded client, which admits only the verbs on its list
 ([[ADR-0015-chores|ADR-0015]], chores). It writes only its snapshot or cursor to the agent's note
 store ([[ADR-0007-the-record#^d3|ADR-0007/D3]]) and sends nothing; the report is the handler's. A
 remedy, a restart or a removal, is the owner's.
@@ -178,13 +178,15 @@ direction, cadence and question.
 ### D1: One builder names the instruments from the config ^d1
 
 Serves C3 and C8. `instruments(cfg, khive, state)` builds only what the `[chores.<name>]` tables
-name, eleven names in all, with their arguments and a cadence from `every` (none: on ask only).
+name, thirteen names in all, with their arguments and a cadence from `every` (none: on ask only).
 Constructors refuse a malformed declaration at build; `Chores` refuses an error direction outside
 the two and a blank `answers`. `every` is a store repeat such as `every:30m` or `daily`; `gh` and
 `git` resolve once to an absolute path where one is found.
 
 - **Landing evidence**:
-  `test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_default` in
+  `test_instruments_wires_the_desk_chores_and_signs_as_the_owners_desk_by_default`,
+  `test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_scheduled_jobs` and
+  `test_scheduled_job_a_max_age_h_that_is_not_a_positive_number_is_refused_at_build` in
   `tests/test_instruments.py`;
   `test_a_chore_without_an_error_direction_or_a_question_is_refused_at_build` in
   `tests/test_chores.py`.
@@ -257,9 +259,31 @@ above.
 Serves C8, and stands outside C1 to C3. The command builds the agent from its directory, takes the
 identity's lock (refused while the agent serves there), calls `run({})`, prints `render()` and
 writes the text to a dated file in the agent directory, the day's latest run of that name kept.
-Nothing is sent, no ledger row is written, and `_vet` is not called.
+Nothing is sent, no ledger row is written, and `_vet` is not called; the text's second line says so.
 
-- **Landing evidence**: none; no test drives `--check`, `render` or `land` (S3).
+- **Landing evidence**: in `tests/test_agent.py`,
+  `test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing`,
+  `test_render_prints_the_measurement_unvetted_and_says_so`,
+  `test_land_writes_the_days_file_of_that_name_and_the_latest_run_wins` (S3).
+
+### D7: The `lock-holder` and `scheduled-job` instruments ^d7
+
+Serves C1 and C7. `LockHolder.run` lists the named lock files and the agent's own pid file in one
+`lsof` call and resolves every pid to its full command line with one `ps` read; its control is this
+process holding its own pid file. A name `lsof` prints that no configured path resolves to, one it
+escaped, fails the control. `ScheduledJob.run` reads each artifact's age against its bound, then
+`launchctl print` for a named label's last exit. A bound that is not a positive finite number is
+refused at build.
+
+- **Landing evidence**: in `tests/test_instruments.py`,
+  `test_lock_holder_resolves_each_holders_pid_to_its_full_command_line_beside_its_own_held_lock`,
+  `test_lock_holder_fails_its_control_when_its_own_held_lock_does_not_read_as_its_own`,
+  `test_lock_holder_a_name_lsof_escaped_fails_the_control_and_is_named_as_unmapped`,
+  `test_lock_holder_reads_a_lock_a_live_process_holds_through_the_real_lsof_and_ps`,
+  `test_scheduled_job_reads_the_artifact_first_then_the_supervisors_last_exit`,
+  `test_scheduled_job_fails_its_control_on_an_absent_directory_or_a_row_without_its_exit`,
+  `test_scheduled_job_an_artifact_that_is_not_a_regular_file_is_a_finding_never_fresh`,
+  `test_scheduled_job_a_supervisor_read_that_did_not_finish_is_unread_not_unloaded` (S9).
 
 ## Alternatives
 
@@ -284,8 +308,9 @@ Nothing is sent, no ledger row is written, and `_vet` is not called.
   transition is not reported to the owner again when its report was not delivered, or when a run off
   the chore path measured it: `lion agent --check`, or a desk answer (one narrowed to named pull
   requests spares only the `required-contexts` and `ci-red` snapshots).
-- **S3**: `lion agent --check` prints a measurement unvetted and has no test; a missing
-  known-positive prints as "(none)" and nothing refuses it.
+- **S3**: `lion agent --check` prints a measurement unvetted and its text says so: no refusal ran,
+  nothing was sent, no ledger row was written. A missing known-positive prints as "(none)" and
+  nothing refuses it; the tests in D6 drive the check, `render` and `land`.
 - **S4**: A full page of 100 open pull requests costs one `gh pr view` per pull request the last
   snapshot held and the page lacks, on every `pr-state` run. `verdict-freshness` has no full-page
   check and calls a pull request beyond the page no longer open.
@@ -300,14 +325,16 @@ Nothing is sent, no ledger row is written, and `_vet` is not called.
 - **S8**: The boundary: this record is product-side and names no kernel concern. An instrument reads
   with the credentials and namespace its process was started with; a read they deny is a failed
   control, or an empty answer the control must catch (A1).
-- **S9**: Two instrument shapes are decided and owed, and no code builds them. A lock holder is read
-  as a pid resolved to its full command line beside a lock known to be held, never by matching text
-  or by taking the lock. A scheduled job is read by its artifact's freshness first and its
-  supervisor's exit second, as `served` reads a served agent: its last-wake note before its pid and
-  its launchd row.
+- **S9**: Two instrument shapes are built (D7). `lock-holder` reads a pid resolved to its full
+  command line beside a lock known to be held, the agent's own pid file, never by matching text or
+  by taking the lock. A waiter reads as a holder, a lock file `lsof` cannot stat reads unreadable, a
+  name `lsof` escaped voids the read, and a lock with no file is held by nobody. `scheduled-job`
+  reads the artifact's freshness first and the supervisor's exit second, as `served` reads a
+  last-wake note before a pid.
 - **S10**: `comm.probe` returns a page of at most 100 rows and caps its stale count at 1000, where
   1000 means at least that many. `inbox-sla` prints the count as it came, so a capped count reads as
   exact; its population is the rows on the probe pages.
-- **S11**: A dead-instrument notice that reached neither the owner nor the steward still marks the
-  chore told, so that crossing is never told until an answered run clears the mark. Marking the
-  chore only once a send lands is owed; no test sends the notice undelivered.
+- **S11**: A dead-instrument notice marks its recipient told only once the send lands: a copy the
+  crossing refused is owed at the next run, and the chore's own mark waits for every copy. A notice
+  that reached nobody leaves the chore untold:
+  `test_a_dead_instrument_notice_that_reached_nobody_leaves_the_crossing_untold_until_a_send_lands`.

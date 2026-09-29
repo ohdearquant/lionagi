@@ -98,6 +98,20 @@ def test_a_note_is_read_back_by_pointer_in_a_later_run_of_the_same_profile_and_n
     )
 
 
+def test_a_reply_under_wait_with_no_command_still_writes_the_note_it_declares():
+    actor = Actor("edge-wait-declares")
+    store = MemoryNoteStore()
+    seen: list = []
+
+    async def wait(run) -> bool:
+        seen.append(store.get("plan"))  # the note is on the store before the wait is asked
+        return False
+
+    run = once(actor, Profile("own", notes=store), "<lvar note.plan>ship</lvar>", wait=wait, max_rounds=3)
+    assert run.outcome == Stopped(2) and run.notes_written == ["note.plan"]
+    assert seen[0] is not None and seen[0].value == "ship" and store.get("plan").value == "ship"
+
+
 def test_a_profile_that_brings_its_own_note_store_writes_its_notes_there():
     actor = Actor("edge-notes-own")
     store = MemoryNoteStore()
@@ -225,6 +239,12 @@ def test_with_reply_on_commands_a_turn_whose_commands_all_landed_is_the_reply_an
     )
     assert asked == [2, 4, 5]
     assert run.outcome == Stopped(5) and run.round == 4
+    # the false wait ends the run before a notification: the reply is the record's last entry before
+    # the closure the outcome writes (ADR-0006/C1)
+    *body, closure = run.record.entries
+    assert closure.kind is Kind.SYSTEM and closure.content.startswith("<system closure")
+    assert body[-1].kind is Kind.TEXT and run.record.latest(Kind.TEXT).content == "bye"
+    assert [e.kind for e in body].count(Kind.SYSTEM) == 4
 
 
 def test_an_awaitable_accept_gate_and_an_awaitable_after_hook_are_awaited():
@@ -249,7 +269,31 @@ def test_an_awaitable_accept_gate_and_an_awaitable_after_hook_are_awaited():
     )
     assert results(run)["a1"] == Result("echo", True, value="HI")
     assert judged == ["first", "second"] and run.output["done"].summary == "second"
-    assert "OUT{} not accepted: not yet" in notices(run)[1]
+    assert "OUT{} refused: not yet" in notices(run)[1]
+
+
+@pytest.mark.parametrize(
+    "reasons, told",
+    [
+        (["not yet", "not yet"], "(the same error 2 rounds running): OUT{} refused: not yet"),
+        (["not yet", "still not"], "could not be read: OUT{} refused: still not"),
+    ],
+)
+def test_the_same_refusal_on_consecutive_turns_is_told_with_its_count(reasons, told):
+    judged = iter([*reasons, None])
+    finish = 'OUT{done: {summary: "s", files: []}}'
+    run = once(
+        _echo_actor("edge-refused-twice"),
+        Profile("p"),
+        finish,
+        finish,
+        finish,
+        emits=(Done,),
+        accept=lambda run, output: next(judged),
+    )
+    assert "rounds running" not in notices(run)[1] and "OUT{} refused: not yet" in notices(run)[1]
+    assert told in notices(run)[2]
+    assert isinstance(run.outcome, Success) and run.retry_error is None and run.same_errors == 0
 
 
 def test_an_alias_the_runtime_would_generate_may_recur_in_a_later_round():
@@ -262,6 +306,23 @@ def test_an_alias_the_runtime_would_generate_may_recur_in_a_later_round():
     chosen = ('<lact a1>echo(text="a")</lact>', '<lact a1>echo(text="b")</lact>', "x")
     user = once(_echo_actor("edge-own-alias"), Profile("p"), *chosen)
     assert list(results(user)) == ["a1"]  # an alias the model chose is held to uniqueness
+
+
+def test_a_generated_alias_a_value_holds_runs_under_a_free_suffix():
+    actor = _echo_actor("edge-auto-value")
+    run = once(
+        actor,
+        Profile("p"),
+        "<lvar auto_1>kept</lvar>",
+        '<lvar auto_1_5>also kept</lvar><lact auto_1>echo(text="b")</lact>',
+        "x",
+    )
+    assert [(alias, r.value) for alias, r in results(run).items()] == [("auto_1_6", "b")]
+    assert run.values["auto_1"][1] == "kept" and run.values["auto_1_5"][1] == "also kept"
+    assert "already names" not in notices(run)[2]
+    chosen = ("<lvar a1>kept</lvar>", '<lact a1>echo(text="b")</lact>', "x")
+    user = once(_echo_actor("edge-own-value"), Profile("p"), *chosen)
+    assert results(user) == {} and "alias 'a1' already names a value" in notices(user)[2]
 
 
 def test_an_unknown_command_and_a_pointer_to_nothing_settle_without_their_handler():

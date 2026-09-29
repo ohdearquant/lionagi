@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hub.tools import BoxTree, DaytonaSandbox, DockerSandbox, git_diff
+from hub.tools import BoxTree, DaytonaSandbox, DockerSandbox, LocalTree, Sandbox, git_diff
 
 SHIM = """#!{python}
 import os, subprocess, sys
@@ -145,6 +145,81 @@ def test_the_docker_box_derives_run_read_write_and_diff_from_exec(tmp_path, monk
     assert box.started is False
 
 
+def test_the_box_tree_resolves_a_symlink_in_the_box_before_its_bound(tmp_path, monkeypatch):
+    # the bound read the path's text, so a link inside `workdir` read and wrote through to its target
+    for k, v in shim(tmp_path).items():
+        monkeypatch.setenv(k, v)
+    work, away = tmp_path / "work", tmp_path / "away"
+    (work / "pkg" / "inner").mkdir(parents=True)
+    away.mkdir()
+    (away / "secret.py").write_text("secret = 1\n")
+    (work / "a.py").write_text("a = 1\n")
+    (work / "link.py").symlink_to(away / "secret.py")
+    (work / "out").symlink_to(away)
+    (work / "rel").symlink_to("../away")
+    (work / "hop").symlink_to("pkg/inner")
+    (work / "same.py").symlink_to("a.py")  # a link that stays in the tree is followed
+    (work / "sub").symlink_to("pkg")
+    (work / "line\nbreak.py").write_text("lb = 1\n")  # a name holding a newline is still one path
+    twin = tmp_path / "work\n"  # a sibling named as the tree plus a newline: a link into it leads out
+    (twin / "sub").mkdir(parents=True)
+    (twin / "secret.py").write_text("twin = 1\n")
+    (work / "twin").symlink_to("../work\n")
+    (work / "sub\n").mkdir()  # a link whose target ends in a newline still lands on that target
+    (work / "sub\n" / "c.py").write_text("c = 1\n")
+    (work / "nl").symlink_to("sub\n")
+    tree, local = BoxTree(DockerSandbox("img", workdir=str(work))), LocalTree(work)
+
+    async def refused(op) -> None:
+        with pytest.raises(PermissionError, match="outside"):
+            await op
+
+    async def go():
+        for t in (tree, local):
+            for path in ("link.py", "out/secret.py", "rel/secret.py", str(work / "out" / "secret.py")):
+                await refused(t.read(path))
+                await refused(t.write(path, "owned\n"))
+            await refused(t.write("out/new.py", "owned\n"))  # a missing file behind a link out
+            await refused(t.list_dir("out"))
+            await refused(t.search("secret", "out", None))
+            assert await t.read("same.py") == "a = 1\n"
+            assert await t.read("line\nbreak.py") == "lb = 1\n"
+            assert await t.read("nl/c.py") == "c = 1\n"
+            await refused(t.read("twin/sub/../secret.py"))
+            await refused(t.write("twin/sub/../new.py", "owned\n"))
+            await t.write("sub/b.py", "b = 1\n")
+            assert await t.list_dir("sub") == ["b.py", "inner/"]
+        # `ls` opens `out/..` as the kernel does, past the link; `write` opens `hop/../out/x.py` as
+        # its text normalises, `out/x.py`: each form is bound
+        await refused(tree.list_dir("out/.."))
+        await refused(tree.write("hop/../out/x.py", "owned\n"))
+
+    asyncio.run(go())
+    assert sorted(p.name for p in away.iterdir()) == ["secret.py"]
+    assert sorted(p.name for p in twin.iterdir()) == ["secret.py", "sub"]
+    assert (away / "secret.py").read_text() == "secret = 1\n"
+    assert (work / "pkg" / "b.py").read_text() == "b = 1\n"
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    ["/w\0/w/a\0/w/a\0tail", "/w\0/w/a\0/w/a", "/w\0/w/a\0", "", "/w\0/w/a\0/w/a\0/w/b\0"],
+)
+def test_a_resolver_answer_that_is_not_three_nul_ended_paths_is_refused(stdout):
+    # a fourth record, a missing last NUL, two records, nothing, or bytes past the last NUL: not a frame
+    class Box:
+        workdir = "/w"
+
+        async def exec(self, argv, timeout=None):
+            return {"rc": 0, "stdout": stdout, "stderr": ""}
+
+    async def go():
+        with pytest.raises(PermissionError, match="did not resolve"):
+            await BoxTree(Box()).read("a")
+
+    asyncio.run(go())
+
+
 @pytest.mark.parametrize("timeout", [5.0, None])
 @pytest.mark.parametrize("transport", ["daytona", "docker"])
 def test_box_timeout_seam(monkeypatch, transport, timeout):
@@ -174,8 +249,16 @@ def test_box_timeout_seam(monkeypatch, transport, timeout):
         box._box = types.SimpleNamespace(process=types.SimpleNamespace(exec=sdk_stub))
     else:
         box = DockerSandbox("offline-fixture")
+    given, exec_ = [], box.exec
+
+    async def spy(argv, **kw):  # `run` hands the transport the deadline as given, None included
+        given.append(kw.get("timeout", "absent"))
+        return await exec_(argv, **kw)
+
+    monkeypatch.setattr(box, "exec", spy)
     result = asyncio.run(box.run("echo ok", timeout=timeout))
     assert result == (0, "ok") and len(calls) == 1
+    assert given == [timeout] if transport == "docker" else calls[0][1]["timeout"] == timeout
 
 
 @pytest.mark.parametrize("timeout", [5.0, None])
@@ -219,3 +302,21 @@ def test_no_deadline_reaches_exec_bare_never_as_a_large_number(monkeypatch, time
     else:
         assert sdk_timeout == 20 and waits == [20.0]
         assert "timeout -s KILL 5 " in line and "timeout -s KILL 5 echo ok" in " ".join(argv)
+
+
+def test_the_vm_box_refuses_a_missing_deadline_before_any_command_runs(tmp_path, monkeypatch):
+    # the docker and remote boxes take None as no deadline (above); the VM's guest `timeout` needs
+    # seconds, so None fails there before a `container` process starts
+    spawned = []
+
+    async def subprocess_stub(*argv, **kw):
+        spawned.append(argv)
+        raise AssertionError("a command ran")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", subprocess_stub)
+    box = Sandbox(tmp_path, "offline-fixture", cli="container")
+    with pytest.raises(TypeError):
+        asyncio.run(box.exec(["echo", "ok"], timeout=None))
+    with pytest.raises(TypeError):
+        asyncio.run(box.run("echo ok", timeout=None))
+    assert spawned == []
