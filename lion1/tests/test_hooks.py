@@ -235,6 +235,18 @@ def test_a_timed_out_hook_takes_its_children_with_it(tmp_path):
     assert not (tmp_path / "marker.txt").exists()  # the background child died with the hook
 
 
+@pytest.mark.parametrize("line", ["yes", "yes >&2"])
+def test_a_timed_out_hook_that_filled_its_pipe_still_returns(tmp_path, line):
+    from hub.hooks.shell import Hook
+
+    async def timed():  # a hook writing without end holds its pipe full; the kill alone never frees it
+        return await asyncio.wait_for(
+            run_hook(Hook("round", line, "flood", "*", 0.3), {"event": "x"}, tmp_path), 10
+        )
+
+    assert asyncio.run(timed()) == (None, "", "")
+
+
 def test_a_cancelled_hook_takes_its_children_with_it_too(tmp_path):
     # the timeout path reaped the process group; a cancelled run left the child to write on
     import time
@@ -256,6 +268,135 @@ def test_a_cancelled_hook_takes_its_children_with_it_too(tmp_path):
     assert asyncio.run(go()) == "cancelled"
     time.sleep(0.6)
     assert not (tmp_path / "marker.txt").exists()
+
+
+class HookProcess:
+    """A process double: `killpg` on its pid kills it, `wait` reaps it into a returncode, and waiting
+    on one nobody killed is the hang a real child would be."""
+
+    pid = 424242
+
+    def __init__(self, fail: Exception | None = None):
+        self.fail, self.alive, self.returncode = fail, True, None
+
+    async def communicate(self, data: bytes | None = None) -> tuple[bytes, bytes]:
+        if data is None and self.fail is not None:  # a pipe that failed the read fails its drain too
+            raise ValueError("I/O operation on closed pipe")
+        if data is not None and self.fail is not None:
+            raise self.fail
+        if data is not None:
+            self.alive, self.returncode = False, 0
+        return b"", b""
+
+    async def wait(self) -> int:
+        assert not self.alive, "waited on a child nobody killed"
+        self.returncode = -9 if self.returncode is None else self.returncode
+        return self.returncode
+
+
+def spawn_doubles(monkeypatch, *procs: HookProcess) -> tuple[list, list]:
+    import os
+
+    spawned, killed, queue = [], [], list(procs)
+
+    async def spawn(*args, **kwargs):
+        spawned.append(queue.pop(0))
+        return spawned[-1]
+
+    def killpg(pid, sig):
+        killed.append((pid, sig))
+        for p in spawned:
+            p.alive = p.alive and p.pid != pid
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", spawn)
+    monkeypatch.setattr(os, "killpg", killpg)
+    return spawned, killed
+
+
+def test_an_after_hook_whose_payload_refers_to_itself_starts_nothing_and_the_result_stands(
+    tmp_path, monkeypatch
+):
+    # the payload was encoded inside `communicate`, after the launch: its ValueError took neither the
+    # timeout nor the cancel branch, and the child, stdin open, was never killed or waited for
+    from pydantic import BaseModel
+
+    from hub.hooks.shell import Hook
+
+    class Loop(BaseModel):
+        n: int
+
+    actor = Actor("loop")
+
+    @actor.handler(Loop)
+    async def loop(req: Loop, ctx) -> list:
+        value: list = [req.n]
+        value.append(value)
+        return value
+
+    spawned, killed = spawn_doubles(monkeypatch, HookProcess())
+    install(actor, [Hook("after", "audit.sh", "audit", "*", 5)], tmp_path)
+    run = asyncio.run(
+        actor.run(
+            Profile(name="loop", specs=frozenset({"loop"} | {h.name for h in DEFAULT_HANDLERS}), system="x"),
+            RunRequest(inputs=("go",), max_rounds=2),
+            scripted("<lact a>loop(n=1)</lact>", "x"),
+        )
+    )
+    r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
+    notice = "\n".join(str(e.content) for e in run.record if e.kind is Kind.SYSTEM)
+    assert r["a"].ok is True and r["a"].value[0] == 1 and r["a"].value[1] is r["a"].value
+    assert "hooks failed" in notice and "a: audit: ValueError: Circular reference detected" in notice
+    assert spawned == [] and killed == []  # encoded before the launch: no child to leave running
+
+
+def test_a_hook_that_fails_after_its_launch_is_killed_and_reaped_before_it_returns(tmp_path, monkeypatch):
+    import signal
+
+    from hub.hooks.shell import Hook
+
+    hook = Hook("after", "audit.sh", "audit", "*", 5)
+    broken, fine = HookProcess(fail=OSError(5, "Input/output error")), HookProcess()
+    spawned, killed = spawn_doubles(monkeypatch, broken, fine)
+    with pytest.raises(OSError, match="Input/output error"):  # the read's error, never the drain's
+        asyncio.run(run_hook(hook, {"event": "after"}, tmp_path))
+    assert killed == [(broken.pid, signal.SIGKILL)]
+    assert broken.returncode is not None and not broken.alive  # the child is gone, and reaped
+    assert asyncio.run(run_hook(hook, {"event": "after"}, tmp_path)) == (0, "", "")  # control
+    assert killed == [(broken.pid, signal.SIGKILL)] and fine.returncode == 0
+    assert spawned == [broken, fine]
+
+
+def test_a_descendant_that_left_the_hooks_group_is_abandoned_at_the_grace_and_the_timeout_is_told(tmp_path):
+    import os
+    import signal
+    import time
+
+    from hub.hooks.shell import Hook
+
+    # the hook starts a child in a session of its own, holding the hook's pipes, and sleeps past its
+    # timeout: the group kill misses the child, the drain waits its grace, and the caller is told
+    pid_file = tmp_path / "escapee.pid"
+    script = tmp_path / "escape.py"
+    script.write_text(
+        "import os, pathlib, subprocess, sys, time\n"
+        "escapee = 'import os, pathlib, sys, time; "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)'\n"
+        f"subprocess.Popen([sys.executable, '-c', escapee, {str(pid_file)!r}], start_new_session=True)\n"
+        "time.sleep(30)\n"
+    )
+    hook = Hook("before", f"{sys.executable} {script}", "escape", "*", 0.3)
+
+    async def main():
+        started = time.monotonic()
+        result = await run_hook(hook, {"event": "before"}, tmp_path)
+        elapsed = time.monotonic() - started
+        # the test's own cleanup: the escapee goes, and the loop sees its pipes close before it ends
+        os.kill(int(pid_file.read_text()), signal.SIGKILL)
+        await asyncio.sleep(0.5)
+        return result, elapsed
+
+    result, elapsed = asyncio.run(main())
+    assert result == (None, "", "") and 5 <= elapsed < 8, elapsed
 
 
 TREE_HOOK = "hub.hooks.scripts.tree_changed"
@@ -395,6 +536,57 @@ def test_the_tree_hook_sees_a_file_inside_a_new_untracked_directory(tmp_path):
     assert tree_call(tmp_path, "run-4", 1) == ""
     (tmp_path / "newpkg" / "calc.py").write_text("x = 2\n")
     assert tree_call(tmp_path, "run-4", 2) == "tree: 1 file(s) changed since round 1: newpkg/calc.py"
+
+
+def test_the_tree_hook_keeps_its_baseline_when_git_cannot_list_the_files(tmp_path):
+    # a failed `ls-files` read as an empty tree: every file was named as changed, the empty map became
+    # the baseline, and the same files read as changed again once git recovered
+    from hub.hooks.scripts.tree_changed import state_path
+
+    git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("one\n")
+    (tmp_path / "b.txt").write_text("one\n")
+    git(tmp_path, "add", "a.txt", "b.txt")
+    git(tmp_path, "commit", "-qm", "one")
+    state = tmp_path / state_path("r")
+    assert tree_call(tmp_path, "r", 1) == ""
+    baseline = state.read_bytes()
+    assert sorted(json.loads(baseline)["files"]) == ["a.txt", "b.txt"]
+    index = tmp_path / ".git" / "index"
+    kept = index.read_bytes()
+    index.write_bytes(b"not an index")
+    listing = subprocess.run(["git", "ls-files", "-z"], cwd=tmp_path, capture_output=True)
+    assert listing.returncode == 128 and git(tmp_path, "rev-parse", "HEAD")  # HEAD resolves, the list fails
+    unread = "tree: could not be read (git ls-files failed); round 1 stays the baseline"
+    assert tree_call(tmp_path, "r", 2) == unread
+    assert state.read_bytes() == baseline
+    assert tree_call(tmp_path, "q", 1) == "" and not (tmp_path / state_path("q")).exists()  # first round
+    index.write_bytes(kept)
+    assert tree_call(tmp_path, "r", 3) == ""  # git is back and nothing moved: nothing is said to have
+    (tmp_path / "a.txt").write_text("two\n")
+    assert tree_call(tmp_path, "r", 4) == "tree: 1 file(s) changed since round 3: a.txt"
+    git(tmp_path, "rm", "-qf", "a.txt", "b.txt")
+    assert git(tmp_path, "ls-files") == ""  # an empty listing that git made is data
+    assert tree_call(tmp_path, "r", 5) == "tree: 2 file(s) changed since round 4: a.txt, b.txt"
+    assert json.loads(state.read_text())["files"] == {}
+    bare = tmp_path / "no-head"
+    bare.mkdir()
+    git(bare, "init", "-q")
+    (bare / "c.txt").write_text("one\n")
+    assert tree_call(bare, "r", 1) == tree_call(bare, "r", 2) == "" and not (bare / ".lion").exists()
+
+
+def test_the_tree_hooks_state_is_one_file_per_run_under_lion_tree_state(tmp_path):
+    import hashlib
+
+    git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("one\n")
+    git(tmp_path, "add", "a.txt")
+    git(tmp_path, "commit", "-qm", "one")
+    assert tree_call(tmp_path, "run-a", 1) == tree_call(tmp_path, "run-b", 1) == ""
+    named = [hashlib.blake2b(r.encode(), digest_size=8).hexdigest() + ".json" for r in ("run-a", "run-b")]
+    assert sorted(p.name for p in (tmp_path / ".lion" / "tree_state").iterdir()) == sorted(named)
+    assert sorted(p.name for p in (tmp_path / ".lion").iterdir()) == ["tree_state"]  # no shared map
 
 
 def plant_hub(proj: Path, escaped: Path) -> None:
