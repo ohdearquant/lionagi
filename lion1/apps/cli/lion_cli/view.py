@@ -21,9 +21,12 @@ from hub.chat import entry_row, line
 from lionagi import lndl
 from lionagi.record import Entry, Kind
 
+from .clipboard import to_clipboard
+
 __all__ = ("RESULT_LINES", "Console", "Editor", "stdin_ask")
 
 _SYSTEM_TAGS = re.compile(r"</?system[^>]*>")
+_COPY = re.compile(r"/copy(?:\s+(.*))?", re.S)  # the console's own command: never sent to the model
 RESULT_LINES = 12  # with --verbose a result shows this many lines; the log and the model have it whole
 
 
@@ -59,8 +62,13 @@ class Console:
         self.quiet_until = -1  # entries up to this seq are logged, not printed: a resumed history
         self.asking = False  # at the `you ▸` prompt: an interrupt there is a quit
         self.status = status
-        self.editor = Editor(history, status=status) if sys.stdin.isatty() and sys.stdout.isatty() else None
+        self.editor = (
+            Editor(history, status=status, copy_last=self.copy)
+            if sys.stdin.isatty() and sys.stdout.isatty()
+            else None
+        )
         self.resulted: set[str] = set()  # aliases whose result printed since the last notice
+        self.responses: list[str] = []  # each response's prose, as printed: what `/copy N` numbers from 1
         self.written = 0
         self.out = RichConsole(
             force_terminal=color,
@@ -79,7 +87,10 @@ class Console:
         self.out.print(Rule(f"[bold]{escape(model)}[/bold] · chat {escape(chat_id)}", style="dim"))
         if resumed is not None:
             self.out.print(f"[dim]continuing {escape(resumed[0])}, {resumed[1]} entries[/dim]")
-        self.out.print(f"[dim]{escape(str(directory))} · {escape(', '.join(tools))} · /quit ends[/dim]")
+        self.out.print(
+            f"[dim]{escape(str(directory))} · {escape(', '.join(tools))} · /copy [N] copies a response · "
+            "/quit ends[/dim]"
+        )
 
     def close(self, ended: str, calls: int, cost: float, unknown: int, log: Path | None) -> None:
         if self.log is not None and self.calls:  # a call cut short still cost: its row lands too
@@ -109,6 +120,31 @@ class Console:
         """A line from the console itself, dimmed: what it did on the person's behalf."""
         self.out.print(f"[dim]{escape(text)}[/dim]")
 
+    def command(self, text: str) -> bool:
+        """Run `text` when it is the console's own command (`/copy`, `/copy N`) and say so; False
+        for anything else, which is the person's message."""
+        m = _COPY.fullmatch(text.strip())
+        if m is None:
+            return False
+        which = (m.group(1) or "").strip()
+        if which and not which.isdigit():
+            self.notice(f"/copy takes a response number, from 1: not {which!r}")
+        else:
+            self.notice(self.copy(int(which) if which else None))
+        return True
+
+    def copy(self, n: int | None = None) -> str:
+        """Put response `n` (from 1, a continued chat's earlier ones counted) or the last one on the
+        clipboard; returns what to tell the person."""
+        if not self.responses:
+            return "nothing to copy: no response yet"
+        n = len(self.responses) if n is None else n
+        if not 1 <= n <= len(self.responses):
+            return f"no response {n}: this chat has {len(self.responses)}; nothing copied"
+        text = self.responses[n - 1]
+        to_clipboard(text)
+        return f"copied response {n} ({len(text)} chars)"
+
     def __call__(self, e: Entry) -> None:
         if self.log is not None:
             with self.log.open("a") as fh:
@@ -117,6 +153,8 @@ class Console:
                 fh.write(json.dumps(entry_row(e), default=str) + "\n")
                 self._bill(fh, e.round)
             self.written += 1
+        if e.kind is Kind.TEXT and (prose := _prose(str(e.content))):  # a replayed reply counts too
+            self.responses.append(prose)
         if e.seq <= self.quiet_until:
             return
         if self.raw:
@@ -187,7 +225,6 @@ class Console:
 
     def _turn(self, text: str) -> list[Any]:
         calls: list[str] = []
-        cut = lndl.spans(text)  # the parser's own spans: the prose shown is the prose that ran
         try:
             program = lndl.parse(text)
         except lndl.LNDLError as err:
@@ -202,18 +239,23 @@ class Console:
                 calls.append(f"[yellow]OUT {escape(json.dumps(program.out.fields, default=str))}[/yellow]")
             for problem in program.problems:
                 calls.append(f"[yellow]? {escape(problem)}[/yellow]")
-        prose, at = [], 0
-        for start, end in cut:
-            prose.append(text[at:start])
-            at = end
-        prose.append(text[at:])
-        prose = "".join(prose).strip()
+        prose = _prose(text)
         pieces: list[Any] = []
         if prose:
             pieces.append(f"[bold]{escape(self.model)} ▸[/bold]")
             pieces.append(Markdown(prose))
         pieces.extend(calls)
         return pieces
+
+
+def _prose(text: str) -> str:
+    """A turn's prose: the text between its constructs, as the console shows it and `/copy` copies it."""
+    prose, at = [], 0
+    for start, end in lndl.spans(text):  # the parser's own spans: the prose shown is the prose that ran
+        prose.append(text[at:start])
+        at = end
+    prose.append(text[at:])
+    return "".join(prose).strip()
 
 
 def _flagged(lines: list[str]) -> list[tuple[str, str, str, str]]:
@@ -266,18 +308,21 @@ def _shape(value: Any) -> str:
 class Editor:
     """The line a person types on a terminal: an editor over the whole message (prompt_toolkit), so a
     paste of many lines is one message, Enter sends, Alt-Enter (or Ctrl-J) breaks a line, Up recalls
-    earlier messages from `history`, and Ctrl-C clears the line or, on an empty one, ends the chat.
-    Reading through the tty's line discipline lost all of that: a paste arrived one line per message
-    and macOS drops any line over 1024 bytes without a word (measured)."""
+    earlier messages from `history`, Alt-C copies the last response with `copy_last`, and Ctrl-C
+    clears the line or, on an empty one, ends the chat. Reading through the tty's line discipline lost
+    all of that: a paste arrived one line per message and macOS drops any line over 1024 bytes without
+    a word (measured)."""
 
     def __init__(
         self,
         history: Path | None = None,
         *,
         status: Callable[[], str] | None = None,  # the bottom toolbar, called on every redraw
+        copy_last: Callable[[], str | None] | None = None,  # Alt-C: copies, returns the notice to show
         **terminal: Any,  # `input`/`output`: a test's pipe
     ):
-        from prompt_toolkit import PromptSession
+        from prompt_toolkit import PromptSession, print_formatted_text
+        from prompt_toolkit.application import run_in_terminal
         from prompt_toolkit.history import FileHistory, InMemoryHistory
         from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.styles import Style
@@ -299,6 +344,17 @@ class Editor:
                 event.current_buffer.reset()
             else:
                 event.app.exit(exception=KeyboardInterrupt(), style="class:aborting")
+
+        # Alt-C, not Ctrl-Y (the editor's yank): the line being typed stays as it is
+        if copy_last is not None:
+
+            @keys.add("escape", "c")
+            def _copy(event) -> None:
+                def show() -> None:  # above the prompt, which is redrawn under it
+                    if (said := copy_last()) is not None:
+                        print_formatted_text([("dim", said)], output=event.app.output)
+
+                run_in_terminal(show)
 
         if history is not None:
             history.parent.mkdir(parents=True, exist_ok=True)

@@ -463,8 +463,11 @@ async def _chat_main(
     asyncio.get_running_loop().add_signal_handler(signal.SIGINT, interrupt)
 
     async def ask() -> str | None:
-        interrupt.presses = 0
-        return await say.ask()
+        while True:
+            interrupt.presses = 0
+            text = await say.ask()
+            if text is None or not say.command(text):  # a console command is run here, then ask again
+                return text
 
     interrupted = False
     try:
