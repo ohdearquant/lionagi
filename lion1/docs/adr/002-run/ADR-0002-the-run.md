@@ -1,7 +1,7 @@
 ---
 adr: ADR-0002
 status: draft
-liveness: operating (the code still says round; the reference-only wait and the reap at the end are owed, S4)
+liveness: operating (two OUT{} refusing the message whole, a repeated accept refusal told with its count and a generated alias freed past a value are pinned by tests; the code still says round, S3; the opt-in wait for the whole turn is not built, S4)
 date: "2026-09-23"
 area: run
 kind: new
@@ -49,7 +49,7 @@ Source: `Actor.run` in `lionagi/actor.py`.
 
 ## Claims
 
-### C1: The turn rules are a closed table _(enforced: mechanical; owed, S4)_ ^c1
+### C1: The turn rules are a closed table _(enforced: mechanical)_ ^c1
 
 - **Subject**: every turn of every run.
 - **Violated when**: a turn executes or ends in a way that is not a row below.
@@ -57,20 +57,23 @@ Source: `Actor.run` in `lionagi/actor.py`.
 | when, first row that fits                                 | what executes                                       | outcome                                                          |
 | --------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------- |
 | a bound is spent at the turn's start                      | nothing                                             | `Exhausted(reason)`, unless `run.more` was granted in an earlier turn (ADR-0003) |
+| under `wait`, after a reply or a pause with no command pending, `wait` answers false at the turn's start | nothing, not even the notification | `Stopped(n)`                                     |
 | `stop()` is true after the notification                   | nothing                                             | `Stopped(n)`                                                     |
-| the message carries the loop's own `<system round=` frame, or two `OUT{}` | nothing                             | a retry; the error rides the next notification                   |
-| the message has no LNDL                                   | nothing                                             | the run continues, with an idle note                             |
+| the message carries the loop's own `<system round=` frame, two `OUT{}` or a backend's refusal | nothing                             | a retry; the error rides the next notification                   |
+| under `wait`, the message has no command and no `OUT{}`   | no command; a value or note it declares is taken   | the run continues as a reply; `wait` is asked at the next turn's start |
+| the message has no LNDL, in a run without `wait`          | nothing                                             | the run continues, with an idle note                             |
 | the message has `OUT{}` and its fields do not assemble | every command; `OUT{}` waits, then fails to assemble; the turn settles | a retry; the error rides the next notification, a repeat counted (C3) |
 | the message has `OUT{}` and `accept` refuses it | every command; `OUT{}` refused; the turn settles | a retry with the reason; `Refused` after `max_refusals` in a row |
 | the message has `OUT{}` | every command; `OUT{}` waits for what it references, then assembles | `Success` when the fields assemble and `accept` has nothing to say; the rest cancelled and reaped |
+| under `wait` with `reply_on_commands`, the message has commands and no `OUT{}`, every one lands ok and nothing is refused | every command | the run continues once they settle, as a reply; `wait` is asked at the next turn's start |
 | the message has no `OUT{}`                                | every command                                       | the run continues once they settle                               |
 
 Every command in a turn is dispatched, `OUT{}` or not: a model that writes "edit, then done" in one
 turn means both. A command is admitted at alias reservation, entered when its handler is called,
 settled when its RESULT lands; one cancelled before it entered is recorded by the loop. A construct
 that cannot be read is dropped and named while the rest runs
-([[ADR-0004-the-language#^c3|ADR-0004/C3]]); only the frame and a second `OUT{}` refuse the message
-whole.
+([[ADR-0004-the-language#^c3|ADR-0004/C3]]); only the frame, two `OUT{}` and backend refusals refuse
+the message whole.
 
 `OUT{}` waits for what it references, through pointers, and for no effect
 ([[ADR-0005-command-handling#^c6|ADR-0005/C6]]); "edit, then done" points `OUT{}` at the edit. An
@@ -87,7 +90,8 @@ turn.
 Within a turn the first use of an alias wins and the second is named. Across the run a re-declared
 value replaces the earlier one and drops its output binding; a command alias colliding with anything
 is refused and named. A generated `auto_` alias from a native tool call is re-suffixed instead,
-because the model never chose it.
+because the model never chose it: past every live binding, values included, to a name none of them
+holds. `test_a_generated_alias_a_value_holds_runs_under_a_free_suffix` pins it.
 
 ### C3: Repeats are counted, and stop is asked after the notification _(enforced: mechanical)_ ^c3
 
@@ -96,10 +100,13 @@ because the model never chose it.
   turn is not named, or `stop()` is consulted before the turn's sections have run.
 
 The notification says "the same error N turns running" and "your last turn was identical to the one
-before it (N times now)", so the next turn has a reason to differ. The sections have just looked at
-the world, and what they saw is what a stop decides on; asked before, the model got one more turn
-after every notice that the run was over. The run ends `Stopped(n)` with n the turn that did not
-run: the stopped iteration called no backend and is not a turn.
+before it (N times now)", so the next turn has a reason to differ. An `accept` refusal is counted
+like a parse error (`test_the_same_refusal_on_consecutive_turns_is_told_with_its_count`).
+
+The sections have just looked at the world, and what they saw is what a stop decides on; asked
+before, the model got one more turn after every notice that the run was over. The run ends
+`Stopped(n)` with n the turn that did not run: the stopped iteration called no backend and is not a
+turn.
 
 ### C4: A run ends in one of four values, and nothing else is an outcome _(enforced: mechanical)_ ^c4
 
@@ -112,24 +119,29 @@ context land with their bounds, [[ADR-0003-the-bounds#^c2|ADR-0003/C2]]), `Refus
 `Stopped(round)`. `Continue`, a state and not an outcome, is what a settled turn without `OUT{}`
 leaves; a retry shows as `retry_error` and the `round.retry` event, never as an outcome.
 
-Open asks are cancelled when the run ends, whichever value it ends in; no command is pending by
-then, since every turn settles its own (S4). An exception the loop does not catch, a backend that
-raises, a store that cannot be written or a command task's own defect (S5), propagates from `run` to
-the caller with `run.outcome` unset; the record holds what was appended. That is an abort, not an
-outcome.
+Open asks are cancelled when the run ends, whichever value it ends in, or an abort; a command still
+pending then is cancelled and reaped, its RESULT on the record before `run` returns or raises (S4).
+An exception the loop does not catch, a backend that raises, a store that cannot be written or a
+command task's own defect (S5), propagates from `run` to the caller with `run.outcome` unset; the
+record holds what was appended. That is an abort, not an outcome.
 
 ## Decisions
 
 ### D1: The loop is `Actor.run` as written ^d1
 
-Serves C1 to C4. Bounds are checked at the turn's start, the inbox is taken, the notification is
-appended, `stop` is asked, the backend is called once, the message is read, every command is
-dispatched, and the turn settles. The caller reads `run.outcome` after the loop returns.
+Serves C1 to C4. Bounds are checked at the turn's start; under `wait`, after a reply or pause,
+`wait` is asked, and false ends the run, appending nothing. Then the inbox is taken, the
+notification is appended, `stop` is asked, the backend is called once, the message is read, commands
+are dispatched, and the turn settles. Under `wait` a message with no command nor `OUT{}` replies,
+and with `reply_on_commands` so does one whose commands all landed;
+`test_with_reply_on_commands_a_turn_whose_commands_all_landed_is_the_reply_and_a_failed_one_is_not`
+pins the three `wait` rows. The caller reads `run.outcome` after the loop returns.
 
-- **Landing evidence**: `tests/test_actor.py`; tests compare `Exhausted`, `Refused` and `Stopped` by
-  value and `Success` by type. Owed: a cancelled command's RESULT is on the record when `run`
-  returns; the closure entry (ADR-0006/C1). One cancelled before it entered is recorded by
-  `_never_started`.
+- **Landing evidence**: `tests/test_actor.py`, `tests/test_actor_edges.py`; tests compare
+  `Exhausted`, `Refused` and `Stopped` by value and `Success` by type; the reap by
+  `test_out_waits_for_what_it_names_and_the_reap_lands_the_rest_cancelled_before_run_returns`; the
+  closure by `test_a_run_that_ends_by_an_outcome_closes_its_record_with_the_outcome`. One cancelled
+  before it entered is recorded by `_never_started`.
 
 ## Alternatives
 
@@ -142,18 +154,29 @@ dispatched, and the turn settles. The caller reads `run.outcome` after the loop 
 
 ## Consequences
 
-- **S1**: A retry costs a turn and appears in the record as an event; a caller counting outcomes
-  never sees it.
+- **S1**: A retry costs a turn, and its message stays on the record as TEXT; the retry itself is the
+  `round.retry` event on the actor's bus and `run.retry_error`. Its reason enters the record only in
+  the next turn's notification, so a retry on the run's last turn leaves none there; a caller
+  counting outcomes never sees it. The notification is pinned by
+  `test_an_out_that_does_not_assemble_is_a_retry_that_names_what_is_wrong`; no test pins the event.
 - **S2**: The idle row keeps a talking model alive; `max_idle` (ADR-0003) is what ends it.
 - **S3**: The code still says round where this corpus says turn: `max_rounds`, `Exhausted(rounds)`,
   `<system round=`, "rounds running", the `round.*` events, `Stopped(round)`. The rename is owed
   with the first change that touches them; the `Retry` class the code defines and never constructs
   goes with it.
-- **S4**: The loop today gathers every command of the turn before `OUT{}` assembles; the design
-  waits for the references only, and the gather goes with the first change that touches it. A wait
-  for the whole turn is at most an opt-in, later. Until then nothing is pending when the run ends,
-  so there is nothing there to cancel or reap; the reap is owed with the same change.
+- **S4**: The gather of every command of the turn before `OUT{}` assembled is gone: `OUT{}` waits
+  for what it references, and an assembly that fails or an output refused settles the rest of the
+  turn. What is pending when the run ends, by an outcome or an abort, is cancelled and reaped before
+  `run` returns;
+  `test_a_run_cancelled_while_out_waits_reaps_every_pending_command_and_appends_no_closure` pins the
+  abort. A wait for the whole turn is at most an opt-in, later, and not built.
 - **S5**: A command task that ends in neither its RESULT
   ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]) nor a cancel is the runtime's own defect: the
-  turn's settle raises it and never drops it, and the run aborts (C4), as
-  `test_a_command_task_ending_in_neither_a_result_nor_a_cancel_aborts_the_run` pins.
+  turn's settle raises it and the run aborts (C4):
+  `test_a_command_task_ending_in_neither_a_result_nor_a_cancel_aborts_the_run`. A task no settle
+  waited for (one `OUT{}` did not name) is seen through by the reap before `run` returns:
+  `test_a_defect_in_a_command_out_did_not_name_is_raised_before_the_run_returns`. The abort's reap
+  holds through a cancel aimed at the run (the cancelled RESULT lands, the run unregisters); a
+  cancel during a defect's reap ends the run cancelled with the defect as its cause:
+  `test_a_second_cancel_while_the_abort_reaps_still_lands_the_cancelled_result_and_unregisters`,
+  `test_a_cancel_during_a_defects_reap_ends_the_run_cancelled_with_the_defect_as_its_cause`.

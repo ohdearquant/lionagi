@@ -16,20 +16,29 @@ import dataclasses
 import functools
 import inspect
 import json
+import math
 import re
 import time
 import uuid
+from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import AliasChoices, BaseModel, Field, TypeAdapter, ValidationError
 
 from . import lndl
 from .bus import Bus
 from .lndl import Lact, Lvar, Pointer, Program
 from .notes import FileNoteStore, MemoryNoteStore, NoteStore, key_of
+from .program import Branch, Command, EvalError, Script, Value, evaluate, pointers
+from .program import (
+    Output as ProgramOutput,  # OUT{} inside a fenced program; `Output` below is the out command's request
+)
+from .program import check as check_script
+from .program import guidance as program_guidance
+from .program import read as read_script
 from .record import Directive, Entry, Kind, Record, ViewEntry, fold
 from .spec import Operable, Spec, render_guidance, spec_name
 
@@ -43,6 +52,7 @@ __all__ = (
     "AfterFn",
     "Handler",
     "ProfileError",
+    "JobError",
     "Result",
     "Success",
     "Continue",
@@ -63,7 +73,9 @@ __all__ = (
     "NoteFind",
     "NoteGet",
     "NoteDelete",
+    "RunMore",
     "DEFAULT_HANDLERS",
+    "Output",
     "Actor",
 )
 
@@ -81,13 +93,25 @@ class Message:
 
 class Reply(str):
     """A backend's text with the provider's prompt count for the call (fresh input, cache read and cache
-    write), None when the provider did not say; the actor anchors its `context:` figure on it."""
+    write), None when the provider did not say; the actor anchors its `context:` figure on it. `cost` is
+    what the call cost when the provider says, summed by the run against its `cost_budget`. With
+    `refused`, the backend would not hand the text on as a turn: none of it runs and the model is told why."""
 
     prompt_tokens: int | None
+    cost: float | None
+    refused: str | None
 
-    def __new__(cls, text: str, prompt_tokens: int | None = None) -> Reply:
+    def __new__(
+        cls,
+        text: str,
+        prompt_tokens: int | None = None,
+        cost: float | None = None,
+        refused: str | None = None,
+    ) -> Reply:
         reply = super().__new__(cls, text)
         reply.prompt_tokens = prompt_tokens
+        reply.cost = cost
+        reply.refused = refused
         return reply
 
 
@@ -112,23 +136,36 @@ class Profile:
     privileges: frozenset[str] = frozenset()
     system: str = ""  # the role's own prose, ahead of the generated guidance
     notes: NoteStore | None = None  # None: the actor keeps one per profile name
+    language: str = "core"  # core: the three constructs; program: one fenced program (ADR-0008/C6)
+    # the role's values for the job's bounds, taken where the job leaves one unset (ADR-0003/C1)
+    defaults: dict[str, float] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
         # the name is the notes file's name under `notes_dir`: one file per profile, none outside it
         if not _PROFILE_NAME.match(self.name) or ".." in self.name:
             raise ProfileError(f"profile name {self.name!r}: letters, digits, _ . - only, it names a file")
+        if self.language not in ("core", "program"):
+            raise ProfileError(f"profile language {self.language!r}: core or program")
+        unknown = sorted(set(self.defaults) - set(_BOUNDS))
+        if unknown:
+            raise ProfileError(f"profile {self.name!r} defaults name no bound: {unknown}")
 
 
 _PROFILE_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 
 
 HandlerFn = Callable[[BaseModel, "Context"], "Awaitable[Any] | Any"]
-# a hook before a command runs: None lets it run, a str refuses it with that reason, a request of the
-# same spec replaces its arguments; a hook that raises refuses it (a gate that fails admits nothing)
-BeforeFn = Callable[["Run", Lact, BaseModel], "Awaitable[str | BaseModel | None] | str | BaseModel | None"]
-# a hook after a command settled, ok or not: None keeps the result, a Result replaces it; a hook that
-# raises is told in the next notice and the result stands (the command already ran)
+# a hook before a command runs, on its own copy of the request: None lets it run, a str refuses it with
+# that reason, a dict or an instance of the spec replaces its arguments, rebuilt from its fields, and a
+# model of another class refuses it; a hook that raises refuses it (a gate that fails admits nothing)
+BeforeFn = Callable[
+    ["Run", Lact, BaseModel], "Awaitable[str | BaseModel | dict | None] | str | BaseModel | dict | None"
+]
+# a hook after a command settled, ok or not, on its own copies: None keeps the result, a Result replaces
+# it; a hook that raises is told in the next notice and the result stands (the command already ran)
 AfterFn = Callable[["Run", Lact, BaseModel, "Result"], "Awaitable[Result | None] | Result | None"]
+
+_EFFECTS = ("write", "read", "pure")  # what a handler does to live state, for the whole invocation
 
 
 @dataclass(frozen=True)
@@ -136,6 +173,13 @@ class Handler:
     spec: Spec
     fn: HandlerFn
     requires: frozenset[str] = frozenset()
+    # write: waits for every earlier command of its turn but the pure ones; read: for the nearest
+    # earlier write; pure: for its pointers only (ADR-0005/C6)
+    effect: str = "write"
+
+    def __post_init__(self) -> None:
+        if self.effect not in _EFFECTS:
+            raise ValueError(f"handler effect {self.effect!r} is not one of {', '.join(_EFFECTS)}")
 
     @property
     def name(self) -> str:
@@ -144,6 +188,10 @@ class Handler:
 
 class ProfileError(Exception):
     """A profile asks for what its actor does not have."""
+
+
+class JobError(Exception):
+    """A job the run refuses before any backend call: its view is over its `context_budget`."""
 
 
 # --- results and outcomes ----------------------------------------------------------------------
@@ -182,7 +230,8 @@ class Retry:
 
 @dataclass(frozen=True)
 class Exhausted:
-    """A budget ran out: `rounds` of them (the request's max_rounds) or the wall clock (time_budget)."""
+    """A bound was spent at a round's start, `rounds` rounds in: `reason` names it, rounds (max_rounds),
+    idle (max_idle), time (time_budget), cost (cost_budget) or context (context_budget)."""
 
     rounds: int
     reason: str = "rounds"
@@ -207,17 +256,37 @@ _CALL_SHAPED = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*\(.*\)\s*$", re.DOTALL)  # `
 _SYSTEM_FRAME = re.compile(r"<system round=")  # the notification's own opening tag
 
 
-@dataclass(frozen=True)
+# the runtime's value for each bound a job and its profile leave unset (ADR-0003/C1); None: unbounded
+_BOUNDS: dict[str, float | None] = {
+    "max_rounds": 100,
+    "max_idle": 3,
+    "time_budget": None,
+    "cost_budget": None,
+    "context_budget": 200_000,
+    "max_refusals": 3,
+}
+
+
+def _grant(run: Run, bound: str, amount: float, reason: str) -> bool:
+    return True
+
+
+@dataclass(frozen=True, kw_only=True)  # every field by name: the bounds are many and read alike
 class RunRequest:
     inputs: tuple[str, ...] = ()
     emits: tuple[Spec, ...] = ()  # what OUT{} fills; empty: OUT{} ends the run with its dereferenced fields
-    max_rounds: int = 10
-    time_budget: float | None = None  # seconds of wall clock for the whole run; None: unbounded
-    context_budget: int = 200_000  # tokens, estimated
+    # the bounds; one left None takes the profile's `defaults`, then the runtime's (`_BOUNDS`)
+    max_rounds: int | None = None
+    max_idle: int | None = None  # consecutive turns without LNDL
+    time_budget: float | None = None  # seconds of wall clock for the whole run
+    cost_budget: float | None = None  # what the backend's replies report the calls cost, summed
+    context_budget: int | None = None  # tokens, the notification's `context:` figure
     # the system's gate on OUT{} beyond validation: returns why the output is not acceptable, or None;
-    # a refusal is told to the model and the run continues
+    # the last before hook of `out`, and a refusal is told to the model and the run continues
     accept: Callable[[Run, Any], Awaitable[str | None] | str | None] | None = None
-    max_refusals: int = 3  # consecutive accept refusals before the run ends as Refused
+    max_refusals: int | None = None  # consecutive refusals of OUT{} before the run ends as Refused
+    # answers `run.more(bound, amount, reason)`: truthy grants, and the bound rises by the amount
+    extend: Callable[[Run, str, float, str], Awaitable[bool] | bool] = _grant
     # the view folds once, to about half, when it measures past this (tokens, estimated); until then
     # and after, nothing leaves it but by the model's own hides
     view_budget: int = 60_000
@@ -262,13 +331,26 @@ class Run:
         self.profile = profile
         self.request = request
         self.record = Record(self.id)
+        # each bound resolved once, here: the job's value, else the profile's default, else the
+        # runtime's; the checks read these, `run.more` raises them, nothing reads the profile's again
+        self.bounds: dict[str, float | None] = {
+            name: next(
+                (v for v in (getattr(request, name), profile.defaults.get(name)) if v is not None), value
+            )
+            for name, value in _BOUNDS.items()
+        }
+        self.extending = asyncio.Lock()  # `run.more` asks, answered one at a time in the order they came
+        self.cost = 0.0  # what the backend's replies reported, summed
+        self.context_figure = 0  # the `context:` figure the last notification told
         self.started = time.monotonic()
         self.round = 0
         self.values: dict[str, tuple[int, Any]] = {}  # alias -> (seq of the TEXT that declared it, value)
         self.fields: dict[str, str] = {}  # alias -> the output field it was declared for, for the whole run
         self.pending: dict[str, asyncio.Task] = {}
+        self.tasks: set[asyncio.Task] = set()  # every command task not yet seen through by a settle
         self.entered: set[str] = set()  # pending aliases whose handler has been called
         self.pointing: dict[str, set[str]] = {}  # command alias -> the names its arguments point at
+        self.waits: dict[str, set[str]] = {}  # command alias -> the earlier commands its effect waits for
         self.settled: list[str] = []  # aliases settled since the last notification
         self.refused: list[tuple[str, str]] = []  # (alias, why) since the last notification
         self.failed: list[tuple[str, str]] = []  # (alias, why) whose handler started, not succeeding
@@ -297,7 +379,19 @@ class Run:
         # view (system prompt, tools), which no fold takes off; what it later stands above that is
         # history the record never saw (a session-keeping CLI's tool turns), which a fold does
         self.floor: int | None = None
-        self.refusals = 0  # consecutive accept refusals
+        self.refusals = 0  # consecutive refusals of OUT{}
+        self.repairs: Counter[str] = Counter()  # repairs the reading applied to this run's turns, by name
+        # each unknown command name, the nearest name the profile has and the edit distance between them:
+        # what a name repair would have done, measured while it is off (ADR-0008/D2)
+        self.misnamed: list[tuple[str, str | None, int | None]] = []
+        self.thunks: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {}  # a program command's arguments
+        # results a program consumed, each with the seq it was consumed at, hidden by the next notification
+        self.intermediates: dict[str, int] = {}
+        # a program's values not computed yet, for the whole run: the seq of the TEXT that bound it and
+        # its expression; a value nothing has read stays bound (ADR-0008/C6)
+        self.unread: dict[str, tuple[int, ast.expr]] = {}
+        self.computed: list[str] = []  # program values computed since the last notification, which keeps them
+        self.bound: list[str] = []  # program values bound since the last notification, which carries them
         self.outcome: Outcome | None = None
         self.output: Any = None
 
@@ -329,7 +423,7 @@ class Run:
         try:
             self.resolve(name)
         except KeyError:
-            return name in self.pending
+            return name in self.pending or name in self.unread
         return True
 
 
@@ -418,6 +512,16 @@ class NoteDelete(BaseModel):
     key: str
 
 
+class RunMore(BaseModel):
+    """Ask for more of a bound before it is spent; the job decides. A grant raises the bound from the
+    next check on; a refusal leaves it as it was, and the run ends when it is spent."""
+
+    __spec_name__ = "run.more"
+    bound: Literal["max_rounds", "max_idle", "time_budget", "cost_budget", "context_budget", "max_refusals"]
+    amount: float = Field(gt=0)
+    reason: str
+
+
 async def _hide(req: ContextHide, ctx: Context) -> str:
     ctx.direct("hide", req.refs)
     return f"hidden: {', '.join(req.refs)}"
@@ -467,6 +571,23 @@ async def _note_delete(req: NoteDelete, ctx: Context) -> str:
     return f"deleted note {n.key!r} (version {n.version}, written by run {n.run})"
 
 
+async def _more(req: RunMore, ctx: Context) -> str:
+    run = ctx.run
+    async with run.extending:  # the next ask is judged against the total this one leaves
+        now = run.bounds[req.bound]
+        if now is None:
+            raise ValueError(f"{req.bound} is not bounded in this run; there is nothing to raise")
+        # a count rises by whole turns, refusals or tokens; seconds and cost keep their fraction
+        amount = req.amount if req.bound in ("time_budget", "cost_budget") else math.ceil(req.amount)
+        granted = run.request.extend(run, req.bound, amount, req.reason)
+        if inspect.isawaitable(granted):
+            granted = await granted
+        if not granted:
+            raise PermissionError(f"{req.bound} stays at {now}: the job did not grant {amount} more")
+        run.bounds[req.bound] = now + amount
+    return f"{req.bound} raised from {now} to {now + amount}"
+
+
 DEFAULT_HANDLERS: tuple[Handler, ...] = (
     Handler(ContextHide, _hide),
     Handler(ContextShow, _show),
@@ -475,7 +596,44 @@ DEFAULT_HANDLERS: tuple[Handler, ...] = (
     Handler(NoteFind, _note_find),
     Handler(NoteGet, _note_get),
     Handler(NoteDelete, _note_delete),
+    Handler(RunMore, _more),
 )
+
+
+class Output(BaseModel):
+    """What OUT{} filled, assembled and validated: the `out` command's request, which a before hook may
+    rewrite and the job's `accept` judges last (ADR-0003/C4). OUT{} is how the model asks for it, so
+    the Operable does not list it as a command."""
+
+    __spec_name__ = "out"
+    fields: dict[str, Any]
+
+
+def _held(run: Run, fields: dict[str, Any]) -> dict[str, Any]:
+    """OUT{} held to the run's outputs: a field off the list, a required output missing or a value
+    its output refuses is an error. The assembled fields and a before hook's rewrite of them go
+    through the same rule, so a rewrite cannot hand back what the model could not (ADR-0003/C4)."""
+    emits = {spec_name(s): s for s in run.request.emits}
+    if emits and set(fields) - set(emits):
+        raise ValueError(f"OUT{{}} holds {sorted(set(fields) - set(emits))}; the outputs are {sorted(emits)}")
+    missing = [
+        n
+        for n, s in emits.items()
+        if n not in fields and any(f.is_required() for f in s.model_fields.values())
+    ]
+    if missing:
+        raise ValueError(f"OUT{{...}} must fill: {missing}")
+    return {
+        k: v if (spec := emits.get(k)) is None or isinstance(v, spec) else spec.model_validate(v)
+        for k, v in fields.items()
+    }
+
+
+async def _out(req: Output, ctx: Context) -> dict[str, Any]:
+    return _held(ctx.run, req.fields)
+
+
+_OUT = Handler(Output, _out)
 
 
 # --- the actor ---------------------------------------------------------------------------------
@@ -519,14 +677,21 @@ class Actor:
                 raise TypeError(
                     "register() takes a Handler or an object with a .spec and a __call__(request, context)"
                 )
-            handler = Handler(spec, handler, frozenset(getattr(handler, "requires", ())))
+            handler = Handler(
+                spec,
+                handler,
+                frozenset(getattr(handler, "requires", ())),
+                getattr(handler, "effect", "write"),
+            )
         name = self.operable.add(handler.spec)
         self.handlers[name] = handler
         return handler
 
-    def handler(self, spec: Spec, *, requires: Iterable[str] = ()) -> Callable[[HandlerFn], HandlerFn]:
+    def handler(
+        self, spec: Spec, *, requires: Iterable[str] = (), effect: str = "write"
+    ) -> Callable[[HandlerFn], HandlerFn]:
         def deco(fn: HandlerFn) -> HandlerFn:
-            self.register(Handler(spec, fn, frozenset(requires)))
+            self.register(Handler(spec, fn, frozenset(requires), effect))
             return fn
 
         return deco
@@ -620,23 +785,39 @@ class Actor:
         subset = self.subset(profile)
         for e in request.history:
             replayed = run.record.append(e.kind, e.content, alias=e.alias, round=e.round, **e.meta)
-            if e.kind is Kind.TEXT:  # the values that turn declared, admitted against the record so far
-                try:
-                    program = _read(str(e.content))
-                except lndl.LNDLError:
+            if e.kind is Kind.TEXT and profile.language == "core":  # the values that turn declared, admitted
+                # against the record so far; a program's prose is scratch and its turn is folded, not rerun
+                if replayed.meta.get("unread"):  # the live loop refused it: nothing of it was admitted
                     continue
+                try:
+                    program = _read(str(e.content), refused=e.meta.get("refused"))
+                except lndl.LNDLError as err:
+                    # refused by today's reader and not by the one that ran it: what that reader
+                    # admitted rides the error, or nothing does and the turn was refused then too
+                    program = getattr(err, "program", None)
+                    if program is None:
+                        continue
                 _admit(run, program, replayed.seq)
+            if profile.language == "program":  # the values a program computed, bound again as they were
+                for alias, seq, line, source in e.meta.get("bound", ()):  # bound, and read by nothing yet
+                    expr = ast.parse(source, mode="eval").body
+                    ast.increment_lineno(expr, line - 1)
+                    run.unread[alias] = (seq, expr)
+                for alias, seq, value in e.meta.get("values", ()):
+                    run.values[alias] = (seq, value)
+                    run.unread.pop(alias, None)
         for text in request.inputs:
             run.record.append(Kind.INPUT, text)
         self.runs[run.id] = run  # live from here: a history that does not replay leaves no run behind
         self.bus.emit("run.started", run=run.id, actor=self.name, profile=profile.name)
 
         try:
-            for round_no in range(1, request.max_rounds + 1):
-                if request.time_budget is not None and run.elapsed >= request.time_budget:
-                    run.outcome = Exhausted(run.round, "time")
+            while True:
+                spent = _spent(run)  # the round's first act: every bound, as resolved or raised
+                if spent is not None:
+                    run.outcome = Exhausted(run.round, spent)
                     break
-                run.round = round_no
+                round_no = run.round = run.round + 1
                 if request.wait is not None and (run.replied or run.pause) and not run.pending:
                     run.replied = run.pause = False
                     if not await request.wait(run):
@@ -650,6 +831,26 @@ class Actor:
                     notice.meta["directive"] = Directive(
                         folded.op, folded.refs, folded.text, at=notice.seq, seqs=folded.seqs
                     )
+                if round_no == 1 and run.context_figure > run.bounds["context_budget"]:
+                    # over before any backend call: the job is the caller's error, not a run that ended
+                    raise JobError(
+                        f"the job's view is ~{run.context_figure} tokens before any call, over its "
+                        f"context_budget of {run.bounds['context_budget']}"
+                    )
+                if run.intermediates:  # the hide of what a program consumed, dated at each consumption
+                    notice.meta["consumed"] = _consumed(run)
+                    run.intermediates.clear()
+                if run.computed:  # the values a program computed, so a replayed record binds them again
+                    notice.meta["values"] = tuple((a, *run.values[a]) for a in run.computed)
+                    run.computed.clear()
+                if run.bound:  # the values it bound and nothing read yet: their expressions, for a replay
+                    notice.meta["bound"] = tuple(
+                        (a, seq, expr.lineno, ast.unparse(expr))
+                        for a in run.bound
+                        if a in run.unread
+                        for seq, expr in (run.unread[a],)
+                    )
+                    run.bound.clear()
                 if stop is not None and stop():
                     # asked after the notification, not before it: the sections have just looked at
                     # the world, and what they saw (acceptance checks passing, a fix that has stood
@@ -664,8 +865,12 @@ class Actor:
                 if inspect.isawaitable(text):
                     text = await text
                 reported = getattr(text, "prompt_tokens", None)
+                cost = getattr(text, "cost", None)
+                refused = getattr(text, "refused", None)
                 if isinstance(text, str):
-                    text = str(text)  # a Reply's count is read; the record keeps a plain str
+                    text = str(text)  # a Reply's count and cost are read; the record keeps a plain str
+                if isinstance(cost, int | float) and not isinstance(cost, bool):
+                    run.cost += cost
                 if isinstance(reported, int) and not isinstance(reported, bool) and reported > 0:
                     if run.anchor is not None and run.view_est > run.anchor[1]:
                         run.grown = (
@@ -676,20 +881,34 @@ class Actor:
                     beyond = reported - run.view_est
                     run.floor = beyond if run.floor is None else min(run.floor, beyond)
                 previous = run.record.latest(Kind.TEXT)
-                m = run.record.append(Kind.TEXT, text, round=round_no)
+                m = run.record.append(
+                    Kind.TEXT, text, round=round_no, **({"refused": refused} if refused else {})
+                )
                 run.same_turns = (
                     run.same_turns + 1 if previous is not None and previous.content == text else 0
                 )
                 try:
-                    program = _read(text)
+                    program = _read(text, run.profile.language, refused)
+                    run.repairs.update(program.repairs)  # applied by the reading, whatever the check says
+                    if isinstance(program, Script):  # whole, before anything runs (ADR-0008/C1)
+                        check_script(program, subset.names(), run.known)
                 except lndl.LNDLError as e:
+                    m.meta["unread"] = True  # a resumed log reads the refusal, not the turn again
+                    run.idle_rounds = 0  # a turn refused whole held something: it was not idle
+                    run.repairs.update(getattr(e, "repairs", ()))  # the readings before the one that failed
+                    run.misnamed += [_nearest(name, subset.names()) for name in getattr(e, "names", ())]
                     self._retry(run, str(e))
                     self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
                     continue
                 run.idle_note = None
-                if request.wait is not None and not program.lacts and program.out is None:
+                if isinstance(program, Script):
+                    acted = spoke = bool(program.body)
+                else:
+                    acted = bool(program.lacts) or program.out is not None
+                    spoke = acted or bool(program.lvars)
+                if request.wait is not None and not acted:
                     run.replied = True  # the reply; the other side speaks next
-                elif not program.lvars and not program.lacts and program.out is None:
+                elif not spoke:
                     run.idle_rounds += 1
                     stray = lndl.stray_tags(text, subset.names())
                     run.idle_note = "your last turn contained no LNDL, so nothing was executed" + (
@@ -704,7 +923,8 @@ class Actor:
                         )
                 else:
                     run.idle_rounds = 0
-                for var in program.lvars:  # a call written in a value tag runs nothing; say so by name
+                for var in () if isinstance(program, Script) else program.lvars:
+                    # a call written in a value tag runs nothing; say so by name
                     call = _CALL_SHAPED.match(var.value)
                     if call and call.group(1) in subset.names():
                         run.refused.append(
@@ -716,11 +936,23 @@ class Actor:
                         )
                 for problem in program.problems:
                     run.refused.append(("turn", problem))
-                self._declare(run, program, m.seq)
-                referenced = _referenced(program)
-                tasks = self._dispatch(run, program, subset)
+                if isinstance(program, Script):
+                    walk = _Walk(self, run, subset, m.seq)
+                    try:
+                        found = await walk.execute(program)
+                    except lndl.LNDLError as e:  # the output could not be computed: a retry (ADR-0008/C7)
+                        self._retry(run, str(e))
+                        self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
+                        continue
+                    program = Program(lacts=walk.lacts, out=None if found is None else lndl.Out(found))
+                    referenced: set[str] = set()
+                    tasks = walk.tasks
+                else:
+                    self._declare(run, program, m.seq)
+                    referenced = _referenced(program)
+                    tasks = self._dispatch(run, program, subset)
                 if program.out is None:
-                    await _settle(tasks)
+                    await _settle(run, tasks, _left(run))
                     if (
                         request.reply_on_commands
                         and request.wait is not None
@@ -737,44 +969,70 @@ class Actor:
                     run.retry_error, run.same_errors = None, 0  # a turn that read whole ends the error
                     run.outcome = Continue()
                     continue
-                # OUT{} waits for this turn's commands and for anything it points at still running
-                await _settle(list({*tasks, *(run.pending[a] for a in referenced if a in run.pending)}))
+                # OUT{} waits for what it points at still running, and for nothing else: an accepted
+                # output ends the run and the reap takes the rest; one not accepted settles the turn
+                await _settle(run, [run.pending[a] for a in referenced if a in run.pending], _left(run))
                 try:
                     run.output = self._assemble(run, program)
                 except lndl.LNDLError as e:
+                    await _settle(run, tasks, _left(run))
                     # the error clears only once the whole turn, assembly included, read: a finish
                     # that fails the same way every round is counted as the same error (ADR-0002/C3)
                     self._retry(run, str(e))
                     self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
                     continue
-                run.retry_error, run.same_errors = None, 0
+                # OUT{} is the `out` command: the actor's before hooks see the assembled output, and
+                # the job's `accept` is the last of them, so it judges what they left (ADR-0003/C4)
+                befores = list(self.befores)
                 if request.accept is not None:
-                    try:
-                        why = request.accept(run, run.output)
-                        if inspect.isawaitable(why):
-                            why = await why
-                    except Exception as e:  # a gate that cannot judge admits nothing, and the run goes on
-                        why = f"the gate could not judge it ({type(e).__name__}: {e}); fix that or try again"
-                    if why:
-                        run.output = None
-                        run.refusals += 1
-                        if run.refusals >= request.max_refusals:
-                            run.outcome = Refused(why, run.refusals)
-                            break
-                        run.retry_error = f"OUT{{}} not accepted: {why}"
-                        self.bus.emit("round.retry", run=run.id, round=round_no, error=why)
-                        continue
+
+                    async def judge(run: Run, la: Lact, out: Output, accept=request.accept) -> Any:
+                        # accept judges the rewrite held and validated, and what it approved is
+                        # what leaves: a rewrite the outputs refuse never reaches it
+                        try:
+                            fields = _held(run, out.fields)
+                        except ValueError as held:
+                            return str(held)
+                        verdict = accept(run, fields)
+                        if inspect.isawaitable(verdict):
+                            verdict = await verdict
+                        return verdict if isinstance(verdict, str | BaseModel) else Output(fields=fields)
+
+                    judge.__name__ = _hook_name(request.accept)
+                    befores.append(judge)
+                result, _ = await self._handle(
+                    run, Lact("OUT", "out", {}), _OUT, Output(fields=run.output), befores, {}
+                )
+                run.entered.discard("OUT")
+                if not result.ok:  # told as any refusal is, and the run goes on; the turn settles
+                    await _settle(run, tasks, _left(run))
+                    run.output = None
+                    run.refusals += 1
+                    why = result.error.removeprefix("refused: ")
+                    if run.refusals >= run.bounds["max_refusals"]:
+                        run.outcome = Refused(why, run.refusals)
+                        break
+                    self._retry(run, f"OUT{{}} {result.error}")
+                    self.bus.emit("round.retry", run=run.id, round=round_no, error=why)
+                    continue
+                run.output = result.value
+                run.retry_error, run.same_errors = None, 0
                 run.outcome = Success(run.output)
                 break
-            else:
-                run.outcome = Exhausted(request.max_rounds)
+            await _reap(run)
+            run.record.append(Kind.SYSTEM, _closure(run), round=run.round)
         except BaseException as e:
             # a backend that raised ends this run; whoever queued work here and is waiting on the
             # answer hears that, with the error, or its own command waits forever. The run has no
             # outcome (ADR-0002/C4): the Continue a settled turn left is not its end
             run.outcome = None
-            self.runs.pop(run.id, None)
-            self._deliver(run, error=e)
+            try:
+                cancelled = await _reaped(run)
+            finally:
+                self.runs.pop(run.id, None)
+                self._deliver(run, error=e)
+            if cancelled and not isinstance(e, asyncio.CancelledError):
+                raise asyncio.CancelledError from e
             raise
         finally:
             for _alias, answer in run.asked.values():
@@ -838,14 +1096,17 @@ class Actor:
         # command of the same turn would find nothing to wait for
         admitted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         tasks = []
+        effectful: list[str] = []  # this turn's write and read commands so far, in source order
+        last_write: str | None = None
         try:
             for la in program.lacts:
-                if la.alias.startswith("auto_") and (
-                    run.record.has_alias(la.alias) or la.alias in run.pending
-                ):
+                if la.alias.startswith("auto_"):
                     # a generated alias (native tool-call syntax, no name given) may recur verbatim in a
                     # later round; the model never chose it, so it is not held to uniqueness
-                    la = dataclasses.replace(la, alias=f"{la.alias}_{run.record.seq}")
+                    alias, n = la.alias, run.record.seq
+                    while run.record.has_alias(alias) or alias in run.pending or alias in run.values:
+                        alias, n = f"{la.alias}_{n}", n + 1
+                    la = dataclasses.replace(la, alias=alias)
                 if la.alias.startswith("_"):
                     run.refused.append((la.alias, _OWN.format(alias=la.alias)))
                     continue
@@ -861,9 +1122,20 @@ class Actor:
                 if la.field is not None:
                     run.fields[la.alias] = la.field
                 run.pointing[la.alias] = {p.name for p in la.pointers()}
+                # an unknown command has no handler and nothing to wait for: it settles at once
+                effect = self.handlers[la.name].effect if la.name in subset else "pure"
+                if effect == "write":
+                    run.waits[la.alias] = set(effectful)
+                elif effect == "read":
+                    run.waits[la.alias] = {last_write} if last_write is not None else set()
+                if effect != "pure":
+                    effectful.append(la.alias)
+                if effect == "write":
+                    last_write = la.alias
                 task = asyncio.create_task(self._perform(run, la, subset, admitted))
                 task.add_done_callback(functools.partial(self._never_started, run, la))
                 run.pending[la.alias] = task
+                run.tasks.add(task)
                 tasks.append(task)
         finally:
             admitted.set_result(None)
@@ -876,6 +1148,7 @@ class Actor:
         if run.pending.get(la.alias) is not task:
             return  # `_perform` ran and settled the command itself
         run.pending.pop(la.alias)
+        run.waits.pop(la.alias, None)
         result = Result(la.name, False, error="cancelled before it started", reason="cancelled")
         run.record.append(Kind.RESULT, result, alias=la.alias, round=run.round, execution="not executed")
         run.refused.append((la.alias, result.error))
@@ -896,9 +1169,10 @@ class Actor:
         await admitted  # set once the whole turn is in `pending`; already set under the default factory
         self.bus.emit("command.requested", run=run.id, alias=la.alias, name=la.name)
         cancelled = False
+        provenance: dict[str, Any] = {}  # the request the handler entered and its return, once reached
         try:
             try:
-                result, directive = await self._execute(run, la, subset)
+                result, directive = await self._execute(run, la, subset, provenance)
             except asyncio.CancelledError:
                 result = Result(la.name, False, error="cancelled before it finished", reason="cancelled")
                 directive, cancelled = None, True
@@ -923,7 +1197,12 @@ class Actor:
                     directive = None
             try:
                 entry = run.record.append(
-                    Kind.RESULT, result, alias=la.alias, round=run.round, execution=execution
+                    Kind.RESULT,
+                    result,
+                    alias=la.alias,
+                    round=run.round,
+                    execution=execution,
+                    **provenance,
                 )
             except ValueError as e:  # the alias was taken meanwhile; the call ran, its result has no name
                 told.append((la.alias, str(e)))
@@ -948,14 +1227,21 @@ class Actor:
             )
         finally:
             run.pending.pop(la.alias, None)
+            run.waits.pop(la.alias, None)  # its row is read by nobody once it has settled
             run.entered.discard(la.alias)
         if cancelled:
             raise asyncio.CancelledError
 
-    async def _execute(self, run: Run, la: Lact, subset: Operable) -> tuple[Result, Directive | None]:
+    async def _execute(
+        self, run: Run, la: Lact, subset: Operable, provenance: dict[str, Any]
+    ) -> tuple[Result, Directive | None]:
         if la.name not in subset:
+            run.misnamed.append(_nearest(la.name, subset.names()))
             return Result(la.name, False, error=f"unknown command {la.name!r}", reason="unknown"), None
         handler = self.handlers[la.name]
+        prior = [run.pending[a] for a in run.waits.get(la.alias, ()) if a in run.pending]
+        if prior:  # the effect wait (C6); a command it waits for settles itself, however it ends
+            await asyncio.wait(prior)
         try:
             args = await self._deref(run, la)
             request = handler.spec.model_validate(args)
@@ -969,21 +1255,53 @@ class Actor:
         except Exception as e:  # a validator's own exception: the arguments were not accepted
             error = f"invalid arguments: {type(e).__name__}: {e}"
             return Result(la.name, False, error=error, reason="invalid"), None
+        return await self._handle(run, la, handler, request, self.befores, provenance)
+
+    async def _handle(
+        self,
+        run: Run,
+        la: Lact,
+        handler: Handler,
+        request: BaseModel,
+        befores: list[BeforeFn],
+        provenance: dict[str, Any],
+    ) -> tuple[Result, Directive | None]:
+        """A validated request, from the privilege check on: every command's path, `out`'s too.
+        `provenance` takes the request the handler entered and its return, once reached."""
         if not handler.requires <= run.profile.privileges:
             missing = sorted(handler.requires - run.profile.privileges)
             return Result(la.name, False, error=f"{la.name} requires {missing}", reason="privilege"), None
-        for hook in self.befores:
+        for hook in befores:
             try:
-                verdict = hook(run, la, request)
+                verdict = hook(run, la, _captured(request))
                 if inspect.isawaitable(verdict):
                     verdict = await verdict
+                # a class is no receipt: a replacement is rebuilt from its fields by the Spec itself
+                if isinstance(verdict, dict | handler.spec):
+                    fields = verdict if isinstance(verdict, dict) else _fields(verdict)
+                    request = handler.spec.model_validate(fields)
             except Exception as e:
                 why = f"refused: {_hook_name(hook)} failed, {type(e).__name__}: {e}"
                 return Result(la.name, False, error=why, reason="refused"), None
             if isinstance(verdict, str):
                 return Result(la.name, False, error=f"refused: {verdict}", reason="refused"), None
-            if isinstance(verdict, BaseModel):
-                request = verdict
+            if isinstance(verdict, BaseModel) and not isinstance(verdict, handler.spec):
+                why = (
+                    f"refused: {_hook_name(hook)} returned {type(verdict).__name__}, "
+                    f"neither a dict nor {handler.spec.__name__}"
+                )
+                return Result(la.name, False, error=why, reason="refused"), None
+        try:
+            entered = _captured(request)  # the request as the handler entered, whatever it does to its own
+            provenance["request"] = entered.model_dump()
+        except Exception as e:  # a computed field or a serializer raised: nothing ran, the run goes on
+            error = f"invalid arguments: the request cannot be captured, {type(e).__name__}: {e}"
+            return Result(la.name, False, error=error, reason="invalid"), None
+        spent = _over(run)  # re-read after the pointer waits and the hooks, before the handler starts
+        if spent is not None:
+            bound = f"{spent}_budget"
+            why = f"refused: the {bound} of {run.bounds[bound]:g} is spent"
+            return Result(la.name, False, error=why, reason="refused"), None
         ctx = Context(run, la.alias, handler)
         run.entered.add(la.alias)  # from here the handler may have acted on the world
         try:
@@ -991,34 +1309,56 @@ class Actor:
             if inspect.isawaitable(value):
                 value = await value
             if isinstance(value, Handle) and value.id in run.asked:
-                # the answer, under the same alias; the ask is dropped once consumed, so an answer
-                # that lands before the handler returns is still found here
+                # the answer, under the same alias; the ask is dropped once consumed, answer or
+                # failure, so an answer that lands before the handler returns is still found here
                 handle_id = value.id
-                value = await run.asked[handle_id][1]
+                try:
+                    value = await run.asked[handle_id][1]
+                except Exception:
+                    run.asked.pop(handle_id, None)
+                    raise
                 run.asked.pop(handle_id, None)
             result = Result(la.name, True, value=value)
         except Exception as e:
             result = Result(la.name, False, error=f"{type(e).__name__}: {e}", reason="failed")
+        # the return before the first after hook rides the entry; each hook works on copies, so only
+        # a replacement it returns changes the result, and a failed hook's copy is dropped. The out
+        # command returns the record's own captures, held: taken as they are, the output holds what
+        # its names resolve to (ADR-0007/C1), not a copy of it
+        try:
+            result = result if handler is _OUT else _captured(result)
+        except Exception as e:  # a value too deep to copy, or a model holding itself: the command failed
+            error = f"the result cannot be captured, {type(e).__name__}: {e}"
+            result = Result(la.name, False, error=error, reason="failed")
+        provenance["returned"] = dict(vars(result))
         for hook in self.afters:
             try:
-                seen = hook(run, la, request, result)
+                seen = hook(run, la, _captured(entered), _captured(result))
                 if inspect.isawaitable(seen):
                     seen = await seen
+                if isinstance(seen, Result):
+                    seen = _captured(seen)
             except Exception as e:
                 run.hook_errors.append((la.alias, f"{_hook_name(hook)}: {type(e).__name__}: {e}"))
                 continue
-            if isinstance(seen, Result):
+            if isinstance(seen, Result) and handler is _OUT:  # the caller receives what accept approved
+                run.hook_errors.append((la.alias, f"{_hook_name(hook)}: a replacement of out is refused"))
+            elif isinstance(seen, Result):
                 result = seen
         return result, (ctx.directive if result.ok else None)
 
     async def _deref(self, run: Run, la: Lact) -> dict[str, Any]:
         """Wait for any pointer still pending, then substitute values for pointers."""
+        thunk = run.thunks.pop(la.alias, None)
+        if thunk is not None:  # a program's command: its expressions computed now, waiting on what they read
+            return await thunk()
         for p in la.pointers():
             task = run.pending.get(p.name)
             if task is not None and task is not asyncio.current_task():
                 if _reaches(run, p.name, la.alias):
                     raise lndl.LNDLError(
-                        f"*{p.name} points back at {la.alias}: a circle of pointers never settles"
+                        f"*{p.name} waits on {la.alias}: a circle of pointers never settles, and a "
+                        "command that writes or reads waits for earlier commands of its turn"
                     )
                 await asyncio.shield(task)
 
@@ -1102,14 +1442,10 @@ class Actor:
                     )
             except ValidationError as e:
                 raise lndl.LNDLError(f"OUT{{{key}: ...}}: {_validation_text(e)}") from None
-        missing = [
-            n
-            for n, s in emits.items()
-            if n not in out and any(f.is_required() for f in s.model_fields.values())
-        ]
-        if missing:
-            raise lndl.LNDLError(f"OUT{{...}} must fill: {missing}")
-        return out
+        try:
+            return _held(run, out)
+        except ValueError as e:
+            raise lndl.LNDLError(str(e)) from None
 
     def _deliver(self, run: Run, error: BaseException | None = None) -> None:
         """An answered inbound goes back to its origin under the same handle (ADR-0010/C3)."""
@@ -1154,10 +1490,13 @@ class Actor:
         """The round's notification, and the fold event when the view has outgrown its budget."""
         r = run.record
         clock = _clock(run.elapsed)
-        if run.request.time_budget is not None:
-            clock += f"/{_clock(run.request.time_budget)}"
-        lines = [f"<system round={run.round}/{run.request.max_rounds} time={clock} seq={r.seq}>"]
-        view = self._fold(run)
+        if run.bounds["time_budget"] is not None:
+            clock += f"/{_clock(run.bounds['time_budget'])}"
+        lines = [f"<system round={run.round}/{run.bounds['max_rounds']} time={clock} seq={r.seq}>"]
+        # consumed since the last notification: hidden before the model sees them, folded with the hides
+        # this notification will carry, so a show the program made after a consumption stands over it
+        # here as it will on the record (ADR-0008/D3) and the figure counts what the backend receives
+        view = self._fold(run, _consumed(run))
         used = _tokens(_messages(view))
         context_line = len(lines)
         lines.append("")  # the context figure, written once the fold below has settled the view
@@ -1230,7 +1569,8 @@ class Actor:
             else:
                 rate = run.grown[0] / run.grown[1] if run.grown[1] > 0 else 1.0
                 shown = max(round(reported - rate * (sent - keep)), keep)
-        lines[context_line] = f"context: ~{shown} / {run.request.context_budget} tokens"
+        run.context_figure = shown  # what the next round's start checks against the budget
+        lines[context_line] = f"context: ~{shown} / {run.bounds['context_budget']} tokens"
         if run.retry_error:
             again = f" (the same error {run.same_errors + 1} rounds running)" if run.same_errors else ""
             lines.append(f"your last turn could not be read{again}: {run.retry_error}")
@@ -1247,6 +1587,9 @@ class Actor:
                 e = r.get(alias)
                 assert e is not None
                 res: Result = e.content
+                if alias in run.intermediates:  # its value stays out of the context, preview included
+                    lines.append(f"  {alias} ({e.name}, {res.spec}): {_typename(res.value)}, consumed")
+                    continue
                 lines.append(f"  {alias} ({e.name}, {res.spec}): {_typename(res.value)} {res.preview()}")
         for header, told in (("failed after starting:", run.failed), ("completion unknown:", run.unknown)):
             if told:  # the handler was called: what it did before it failed or was stopped stands
@@ -1293,9 +1636,10 @@ class Actor:
 
     def _render(self, run: Run, subset: Operable) -> list[Message]:
         outputs = tuple(spec_name(s) for s in run.request.emits)
+        language = lndl.guidance if run.profile.language == "core" else program_guidance
         parts = [
             run.profile.system.strip(),
-            lndl.guidance(outputs, commands=subset),
+            language(outputs, commands=subset),
             "COMMANDS\n" + subset.guidance(),
         ]
         if run.request.emits:
@@ -1306,8 +1650,20 @@ class Actor:
         run.viewed = _shown(view)
         return [dataclasses.replace(m, run=run.id) for m in messages]
 
-    def _fold(self, run: Run) -> list[ViewEntry]:
-        return fold(run.record, protect_input=not run.request.fold_inputs)
+    def _fold(self, run: Run, consumed: tuple[Directive, ...] = ()) -> list[ViewEntry]:
+        return fold(run.record, protect_input=not run.request.fold_inputs, consumed=consumed)
+
+
+def _consumed(run: Run) -> tuple[Directive, ...]:
+    """The hides of what a program consumed since the last notification, dated at each consumption
+    (ADR-0008/D3), so a show the program made after one stands over it."""
+    by_at: dict[int, list[str]] = {}
+    for alias, at in run.intermediates.items():
+        by_at.setdefault(at, []).append(alias)
+    return tuple(
+        Directive("hide", tuple(refs), at=at, seqs=tuple(run.record.get(a).seq for a in refs))
+        for at, refs in sorted(by_at.items())
+    )
 
 
 # --- helpers -----------------------------------------------------------------------------------
@@ -1323,12 +1679,37 @@ def _clock(seconds: float) -> str:
     return f"{s // 3600}h{(s % 3600) // 60:02d}m"
 
 
+def _spent(run: Run) -> str | None:
+    """The bound spent at a round's start, in the order the record names them (ADR-0003/C2): time,
+    cost, rounds, idle rounds, and the context figure the last notification told; a deadline that
+    falls on the last turn reads time."""
+    if over := _over(run):
+        return over
+    if run.round >= run.bounds["max_rounds"]:
+        return "rounds"
+    if run.idle_rounds >= run.bounds["max_idle"]:
+        return "idle"
+    return "context" if run.context_figure > run.bounds["context_budget"] else None
+
+
+def _over(run: Run) -> str | None:
+    """Time or cost spent: read at a round's start and again before each handler starts."""
+    if run.bounds["time_budget"] is not None and run.elapsed >= run.bounds["time_budget"]:
+        return "time"
+    # written as "not under" so a cost that is not a number (nan) reads as spent, never as room
+    if run.bounds["cost_budget"] is not None and not run.cost < run.bounds["cost_budget"]:
+        return "cost"
+    return None
+
+
 _OWN = "alias {alias!r} starts with _, which the record keeps for its own names (_r41, _m12); pick another"
 _TAKEN = "alias {alias!r} already names {where}; aliases are unique for the whole run"
 
 
-def _read(text: str) -> Program:
+def _read(text: str, language: str = "core", refused: str | None = None) -> Program | Script:
     """A turn as the loop reads it, live or resumed; LNDLError is what the model is told."""
+    if refused:  # the backend refused the turn (a mixed response, ADR-0004/C4); the record keeps why
+        raise lndl.LNDLError(refused)
     if _SYSTEM_FRAME.search(text):
         # the model wrote the loop's own frame and went on as if the results in it were real (9 of
         # 50 thinking-off runs, half their output tokens); none of it runs
@@ -1337,7 +1718,7 @@ def _read(text: str) -> Program:
             "inside it were never observed, so nothing in the turn was executed: write one program, "
             "end the turn, and read the real results in the next notification"
         )
-    return lndl.parse(text)
+    return lndl.parse(text) if language == "core" else read_script(text)
 
 
 def _admit(run: Run, program: Program, seq: int) -> list[tuple[Lvar, str | None]]:
@@ -1363,6 +1744,281 @@ def _admit(run: Run, program: Program, seq: int) -> list[tuple[Lvar, str | None]
     return out
 
 
+class _Failed(Exception):
+    """A block finished Failed: nothing after it runs, in it or around it (ADR-0008/C7)."""
+
+
+class _Walk:
+    """One program over the dispatcher (ADR-0008/D1, D3): a command runs as its own task when its block
+    reaches it, a value is computed when first read, a note is written when its assignment is reached,
+    and a branch's control result gates the rest of its block. The results a reader that settled ok
+    read, and those a note took, are consumed: the next notification hides them."""
+
+    def __init__(self, actor: Actor, run: Run, subset: Operable, seq: int):
+        self.actor, self.run, self.subset, self.seq = actor, run, subset, seq
+        self.tasks: list[asyncio.Task] = []
+        self.lacts: list[Lact] = []
+        # an earlier turn's values nothing read yet are in reach, computed when first read
+        self.values: dict[str, tuple[int, ast.expr]] = dict(run.unread)
+        self.computed: dict[str, asyncio.Future] = {}
+        self.value_reads: dict[str, set[str]] = {}  # a value's reads, charged to whoever reads the value
+        self.writes: dict[str, asyncio.Task] = {}  # note key -> the latest assignment reached
+        # a write's task -> the values it and the writes before it read (through the values they read)
+        # and the write before it
+        self.write_reads: dict[asyncio.Task, tuple[frozenset[str], asyncio.Task | None]] = {}
+        self.reads: dict[str, set[str]] = {}  # this program's command -> the results its arguments read
+        # results read by a reader that settled ok, or taken by a note: the seq each was first consumed at
+        self.used: dict[str, int] = {}
+        self.named: set[str] = set()  # what OUT{} points at: never consumed
+
+    async def execute(self, script: Script) -> dict[str, Any] | None:
+        try:
+            return await self.block(script.body)
+        except _Failed:
+            return None
+        except (
+            asyncio.CancelledError
+        ):  # the run is cancelled: its commands with it, each settling as cancelled
+            for task in self.tasks:
+                task.cancel()
+            raise
+        finally:
+            await _settle(self.run, self.tasks, _left(self.run))  # the time budget bounds it as any turn's
+            for alias, reads in self.reads.items():
+                entry = self.run.record.get(alias)
+                if entry.content.ok:
+                    self.consume(reads, entry.seq)  # at the reader's settle
+            consumed = sorted(self.used.keys() - self.named, key=lambda a: self.run.record.get(a).seq)
+            self.run.intermediates.update((a, self.used[a]) for a in consumed)
+
+    def consume(self, reads: set[str], at: int) -> None:
+        for alias in reads:
+            self.used[alias] = min(at, self.used.get(alias, at))
+
+    async def block(self, nodes: tuple) -> dict[str, Any] | None:
+        for node in nodes:
+            if isinstance(node, Branch):
+                reader = _Reader(self)
+                try:
+                    taken = await evaluate(node.test, reader)
+                except lndl.LNDLError as e:
+                    self.run.refused.append((f"line {node.line}", f"if: {e}; nothing after it ran"))
+                    raise _Failed from None
+                self.consume(reader.reads, len(self.run.record))
+                ended = await self.block(node.body if taken else node.orelse)
+                if ended is not None:
+                    return ended
+            elif isinstance(node, ProgramOutput):
+                reader = _Reader(self)
+                self.named |= node.named
+                fields = {key: await evaluate(v, reader) for key, v in node.fields}
+                self.consume(reader.reads, len(self.run.record))
+                return fields
+            elif isinstance(node, Command):
+                self.command(node)
+            elif isinstance(node, Value):
+                self.values[node.alias] = self.run.unread[node.alias] = (self.seq, node.expr)
+                self.run.bound.append(node.alias)
+            else:
+                self.write(node)
+        return None
+
+    def auto(self) -> str:
+        n, taken = len(self.lacts), self.run.pending
+        while self.run.record.has_alias(f"r{self.seq}.{n}") or f"r{self.seq}.{n}" in taken:
+            n += 1  # a resumed record may hold the name already (its rows are renumbered on load)
+        return f"r{self.seq}.{n}"
+
+    def launch(self, la: Lact, args: Callable[[], Awaitable[dict[str, Any]]]) -> asyncio.Task:
+        run = self.run
+        admitted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        run.thunks[la.alias] = args
+        task = asyncio.create_task(self.actor._perform(run, la, self.subset, admitted))
+        task.add_done_callback(functools.partial(self.actor._never_started, run, la))
+        run.pending[la.alias] = task
+        admitted.set_result(None)  # registered before it runs, under any task factory
+        self.reads.setdefault(la.alias, set())
+        self.tasks.append(task)
+        self.lacts.append(la)
+        return task
+
+    def command(self, node: Command) -> str:
+        alias = node.alias or self.auto()
+        reader = _Reader(self)
+
+        async def args() -> dict[str, Any]:
+            return {key: await evaluate(v, reader) for key, v in node.args}
+
+        self.reads[alias] = reader.reads
+        self.launch(Lact(alias, node.name, {}), args)
+        return alias
+
+    async def value(self, name: str, writes: dict[str, asyncio.Task] | None = None) -> Any:
+        if name not in self.computed:
+            seq, expr = self.values[name]
+            # the reader's line decides: the value reads after the note writes before its first reader,
+            # whichever turn bound it (ADR-0008/D4)
+            reader = _Reader(self, self._before(name, self.writes if writes is None else writes))
+            self.computed[name] = asyncio.ensure_future(self._compute(name, seq, expr, reader))
+        return await asyncio.shield(self.computed[name])
+
+    def _before(self, name: str, writes: dict[str, asyncio.Task]) -> dict[str, asyncio.Task]:
+        """The writes a value reads after. A write that reads the value comes after the value, not
+        before it (waiting for it would wait for itself), and so does every write queued behind it: the
+        value reads after the last write before that."""
+        out: dict[str, asyncio.Task] = {}
+        for key, task in writes.items():
+            while task is not None and name in self.write_reads[task][0]:
+                task = self.write_reads[task][1]
+            if task is not None:
+                out[key] = task
+        return out
+
+    def _reads(self, *exprs: ast.expr) -> frozenset[str]:
+        """The values the expressions read, and the values those read, as far as it goes."""
+        names, todo = set(), list(pointers(*exprs))
+        while todo:
+            n = todo.pop()
+            if n not in names and n in self.values:
+                names.add(n)
+                todo += pointers(self.values[n][1])
+        return frozenset(names)
+
+    async def _compute(self, name: str, seq: int, expr: ast.expr, reader: _Reader) -> Any:
+        try:
+            value = await evaluate(expr, reader)
+        except lndl.LNDLError as e:
+            # a failed computation is the value's failure for the run: whatever it ran, ran once; a
+            # later read finds the failure, never the expression again
+            value = Result("value", False, error=str(e), reason="invalid")
+        self.run.values[name] = (seq, value)
+        self.run.unread.pop(name, None)
+        self.run.computed.append(name)
+        if isinstance(value, Result):
+            raise EvalError(f"*{name}: {value.error}")
+        self.value_reads[name] = reader.reads  # consumed only once a reader of the value settles ok
+        return value
+
+    def write(self, node: Any) -> None:
+        prior = self.writes.get(node.key)
+        reader = _Reader(self)
+        target = ".".join(("note", node.key, *node.path))
+        producer = self.command(node.value) if isinstance(node.value, Command) else None
+        # what this write reads, and what the write it waits for reads: a value read by any write in
+        # the chain is read before the whole chain
+        reads = (
+            self._reads(*(v for _, v in node.value.args)) if producer is not None else self._reads(node.value)
+        )
+        if prior is not None:
+            reads |= self.write_reads[prior][0]
+        # the values the expression itself names: computing one reaches what its branches reach and
+        # nothing more, so a command in a branch not taken never runs for a write (C3)
+        named = pointers(*(v for _, v in node.value.args)) if producer is not None else pointers(node.value)
+        named &= self.values.keys()
+        before = dict(self.writes)  # the writes before this one: what a value it names reads after
+
+        async def put() -> None:
+            if prior is not None:  # two assignments to one note are two writes, in the order written
+                await asyncio.shield(prior)
+            try:
+                # a write that names a value comes after it, whether or not evaluating reaches the
+                # pointer (`false and *v`): the value reads the note before this write lands
+                for name in sorted(named):
+                    await self.value(name, before)
+                value = await (
+                    reader.point(producer) if producer is not None else evaluate(node.value, reader)
+                )
+            except lndl.LNDLError as e:  # what it writes failed: the note keeps its value
+                self.run.refused.append((target, f"not written: {e}"))
+                return
+            try:
+                old = self.run.notes.get(node.key)
+                whole = _put_path(old.value if old is not None else {}, node.path, value)
+                self.run.notes.put(node.key, whole, run=self.run.id, seq=self.seq)
+            except Exception as e:  # the store refused: the result stands and no write is claimed
+                self.run.refused.append((target, f"not written: {type(e).__name__}: {e}"))
+                return
+            self.run.notes_written.append(target)
+            self.consume(reader.reads, len(self.run.record))
+
+        task = asyncio.create_task(put())
+        self.write_reads[task] = (reads, prior)
+        self.writes[node.key] = task
+        self.tasks.append(task)
+
+
+class _Reader:
+    """One node's reads while its expressions are computed: each note read once, so one expression
+    sees one version (ADR-0008/C3), and the program's results it read."""
+
+    def __init__(self, walk: _Walk, writes: dict[str, asyncio.Task] | None = None):
+        self.walk = walk
+        self.writes = dict(walk.writes if writes is None else writes)
+        self.reads: set[str] = set()
+        self.notes: dict[str, Any] = {}
+
+    async def point(self, name: str) -> Any:
+        walk = self.walk
+        if name in walk.values:
+            value = await walk.value(name, self.writes)
+            self.reads |= walk.value_reads.get(name, set())
+            return value
+        task = walk.run.pending.get(name)
+        if task is not None:
+            await asyncio.shield(task)
+        value = walk.run.resolve(name)
+        if isinstance(value, Result):  # a failed command resolves to its Result
+            raise EvalError(f"*{name} did not settle ok: {value.error}")
+        if name in walk.reads:
+            self.reads.add(name)
+        return value
+
+    async def note(self, key: str) -> Any:
+        if key not in self.notes:
+            write = self.writes.get(key)
+            if write is not None:
+                await asyncio.shield(write)
+            note = self.walk.run.notes.get(key)
+            if note is None:
+                raise EvalError(f"note[{key!r}] is not in the store")
+            self.notes[key] = note.value
+        return self.notes[key]
+
+    async def do(self, name: str, args: dict[str, Any], line: int) -> Any:
+        alias = self.walk.auto()
+
+        async def given() -> dict[str, Any]:
+            return args
+
+        await asyncio.shield(self.walk.launch(Lact(alias, name, {}), given))
+        return await self.point(alias)
+
+
+def _put_path(base: Any, path: tuple[str, ...], value: Any) -> Any:
+    """`value` written at `path` inside a note's JSON object, the rest of it kept."""
+    if not path:
+        return value
+    if not isinstance(base, dict):
+        raise EvalError(f"the note holds {type(base).__name__} where {path[0]!r} is written, not an object")
+    return {**base, path[0]: _put_path(base.get(path[0], {}), path[1:], value)}
+
+
+def _nearest(name: str, names: Iterable[str]) -> tuple[str, str | None, int | None]:
+    """An unknown command name, the nearest name in the subset and their edit distance."""
+    best = min(names, key=lambda n: (_distance(name, n), n), default=None)
+    return name, best, None if best is None else _distance(name, best)
+
+
+def _distance(a: str, b: str) -> int:
+    """Levenshtein: the fewest insertions, deletions and substitutions from `a` to `b`."""
+    row = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        prev, row[0] = row[0], i
+        for j, cb in enumerate(b, 1):
+            prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (ca != cb))
+    return row[-1]
+
+
 def _referenced(program: Program) -> set[str]:
     """What OUT{} waits for: the aliases it names, and the pointers inside its literals. A literal
     list is data, never a list of names."""
@@ -1378,7 +2034,8 @@ def _referenced(program: Program) -> set[str]:
 
 
 def _reaches(run: Run, start: str, target: str) -> bool:
-    """Whether following pointers from the pending command `start` comes back to `target`."""
+    """Whether following pointers and effect waits from the pending command `start` comes back to
+    `target`."""
     seen, stack = set(), [start]
     while stack:
         a = stack.pop()
@@ -1387,7 +2044,7 @@ def _reaches(run: Run, start: str, target: str) -> bool:
         if a in seen:
             continue
         seen.add(a)
-        stack.extend(n for n in run.pointing.get(a, ()) if n in run.pending)
+        stack.extend(n for n in run.pointing.get(a, set()) | run.waits.get(a, set()) if n in run.pending)
     return False
 
 
@@ -1456,13 +2113,69 @@ def _output_guidance(emits: tuple[Spec, ...]) -> str:
     return "\n".join(lines)
 
 
-async def _settle(tasks: list[asyncio.Task]) -> None:
-    """Wait for the turn's commands. A cancelled command has settled itself as a RESULT; any other
-    way out of a command task is the runtime's own defect and is raised, never dropped."""
+async def _settle(run: Run, tasks: list[asyncio.Task], timeout: float | None = None) -> None:
+    """Wait for the turn's commands, for `timeout` seconds when it is given: one still running then is
+    cancelled. A cancelled command has settled itself as a RESULT; any other way out of a command task
+    is the runtime's own defect and is raised, never dropped. Each task is seen through once: what a
+    settle did not wait for (a command `OUT{}` did not name) is seen through by the reap."""
     if tasks:
-        for r in await asyncio.gather(*tasks, return_exceptions=True):
+        _, late = await asyncio.wait(tasks, timeout=timeout)
+        for task in late:
+            task.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        run.tasks.difference_update(tasks)
+        for r in results:
             if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
                 raise r
+
+
+def _left(run: Run) -> float | None:
+    """What the time budget leaves: the deadline beside a settle (ADR-0003/S3); None without one."""
+    if run.bounds["time_budget"] is None:
+        return None
+    return max(0.0, run.bounds["time_budget"] - run.elapsed)
+
+
+async def _reap(run: Run) -> None:
+    """At the run's end, whatever is still pending is cancelled and waited for, so its cancelled
+    RESULT is on the record when `run` returns and no command task outlives it (ADR-0002/C1); every
+    task no settle saw through is seen through here, so a defect in one `OUT{}` did not name is raised
+    before the run returns (ADR-0002/S5)."""
+    for task in run.pending.values():
+        task.cancel()
+    await _settle(run, list(run.tasks))
+
+
+async def _reaped(run: Run) -> bool:
+    """The abort's reap, seen through whatever else cancels the run meanwhile: a second cancel is held
+    until the reap is done, so no command task outlives the run and its cancelled RESULT is on the
+    record. True when one arrived."""
+    reap, cancelled = asyncio.ensure_future(_reap(run)), False
+    while not reap.done():
+        try:
+            await asyncio.shield(reap)
+        except asyncio.CancelledError:
+            cancelled = True
+    reap.result()
+    return cancelled
+
+
+def _closure(run: Run) -> str:
+    """The SYSTEM entry a run that ends by an outcome appends after the reap (ADR-0006/C1): the outcome
+    and the commands cancelled since the last notification, which no notification told."""
+    last = run.record.latest(Kind.SYSTEM)
+    since = last.seq if last is not None else -1
+    cancelled = [
+        e.alias
+        for e in run.record
+        if e.kind is Kind.RESULT and e.seq > since and getattr(e.content, "reason", None) == "cancelled"
+    ]
+    outcome = "Success" if isinstance(run.outcome, Success) else repr(run.outcome)
+    lines = [f"<system closure seq={run.record.seq}>", f"outcome: {outcome}"]
+    if cancelled:
+        lines.append("cancelled: " + ", ".join(cancelled))
+    lines.append("</system>")
+    return "\n".join(lines)
 
 
 def _hook_name(fn: Any) -> str:
@@ -1498,6 +2211,56 @@ def _deref(run: Run, key: str, value: Any) -> Any:
     if isinstance(value, list | tuple):
         return [_deref(run, key, v) for v in value]
     return value
+
+
+def _captured(value: Any, memo: dict[int, Any] | None = None) -> Any:
+    """A value as a capture holds it (ADR-0007/C1): a scalar shared, a list, dict, set or tuple copied,
+    a Spec instance or a Result rebuilt on captured fields and extras; a value reached twice, or a list
+    or dict holding itself, is copied once."""
+    memo = {} if memo is None else memo
+    if id(value) in memo:
+        return memo[id(value)]
+    if isinstance(value, dict):
+        memo[id(value)] = out = {}
+        out.update((k, _captured(v, memo)) for k, v in value.items())
+        return out
+    if isinstance(value, list):
+        memo[id(value)] = out = []
+        out.extend(_captured(v, memo) for v in value)
+        return out
+    if isinstance(value, tuple):
+        memo[id(value)] = out = tuple(_captured(v, memo) for v in value)
+        return out
+    if isinstance(value, set):
+        memo[id(value)] = out = {_captured(v, memo) for v in value}
+        return out
+    if isinstance(value, BaseModel):
+        update = {k: _captured(getattr(value, k), memo) for k in type(value).model_fields}
+        update.update((k, _captured(v, memo)) for k, v in (value.model_extra or {}).items())
+        memo[id(value)] = out = value.model_copy(update=update)
+        return out
+    if isinstance(value, Result):
+        memo[id(value)] = out = dataclasses.replace(value, value=_captured(value.value, memo))
+        return out
+    return value
+
+
+def _fields(spec: BaseModel) -> dict[Any, Any]:
+    # the declared fields only: a computed field is no input, and a spec that forbids extras refuses it.
+    # Each sits where validation reads it, under its alias unless the spec reads names only, and the
+    # extras a spec keeps come along; an alias path reads an int key from a dict as from a list
+    cls = type(spec)
+    out: dict[Any, Any] = dict(spec.model_extra or {})
+    for name, info in cls.model_fields.items():
+        alias = info.validation_alias if cls.model_config.get("validate_by_alias", True) else None
+        if isinstance(alias, AliasChoices):  # validation reads any one of them
+            alias = alias.choices[0]
+        *walk, last = [name] if alias is None else [alias] if isinstance(alias, str) else alias.path
+        node = out
+        for key in walk:
+            node = node.setdefault(key, {})
+        node[last] = getattr(spec, name)
+    return out
 
 
 def _plain(value: Any) -> Any:

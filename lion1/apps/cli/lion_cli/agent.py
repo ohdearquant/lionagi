@@ -16,6 +16,7 @@ from hub.agent.chores import Bounded, Chores, Outcome
 from hub.agent.desk import Desk, Reader
 from hub.agent.instruments import GH, GIT, LAUNCHCTL, instruments
 from hub.agent.verdicts import Verdicts
+from hub.areas import partial
 from hub.guidance import guidance
 from hub.harness import ClaudeCodeSession, OpenRouter
 from hub.hooks import install, load
@@ -109,6 +110,7 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
             escalations_per_day=int(d.get("escalations_per_day", 40)),
             routes=routes,
             tasks_per_day=int(d.get("tasks_per_day", 20)),
+            admit_replies=d.get("admit_replies") is True,  # on for the boolean only: a string reads as off
             verdicts=None
             if v is None
             else Verdicts(
@@ -219,11 +221,13 @@ async def arm(chores: Chores, agent: Agent) -> tuple[int, list[str]]:
 
 
 def render(name: str, inst: Any, out: Outcome) -> str:
-    """One instrument's outcome as the landing file and the console show it."""
+    """One instrument's outcome as the landing file and the console show it, unvetted, and saying so."""
     control = "ok" if out.control else "FAILED"
     lines = [
         f"{name}: control {control}, {len(out.findings)} finding(s), escalate={out.escalate}, "
         f"count={out.count}, direction {inst.direction}",
+        "unvetted: run outside the chore path, so no refusal ran over it (a blank population, predicate, "
+        "count or known-positive passes), nothing was sent and no ledger row was written",
         f"answers: {inst.answers}",
         f"known-positive: {out.positive or '(none)'}",
         f"population: {out.population}\npredicate: {out.predicate}",
@@ -246,8 +250,10 @@ def stats(directory: Path) -> str:
     mail = spend.get("mail", 0)
     lines = [
         f"day {spend.get('day')}: {spend.get('calls', 0)} model call(s), {spend.get('in', 0)} in, "
-        f"{spend.get('out', 0)} out, ${spend.get('cost', 0.0):.4f}; {spend.get('runs', 0)} wake(s) with "
-        f"{mail} mail; {spend.get('idle', 0)} idle poll(s) at 0 tokens",
+        f"{spend.get('out', 0)} out, ${spend.get('cost', 0.0):.4f}"
+        + partial(spend.get("unknown", 0))
+        + f"; {spend.get('runs', 0)} wake(s) with {mail} mail; "
+        f"{spend.get('idle', 0)} idle poll(s) at 0 tokens",
         (
             f"per handled message: {(spend.get('in', 0) + spend.get('out', 0)) / mail:.0f} tokens"
             if mail
@@ -256,7 +262,9 @@ def stats(directory: Path) -> str:
         f"last wake {cursor.get('wake')} at {cursor.get('at')}: {cursor.get('outcome')} after "
         f"{cursor.get('rounds')} round(s), {len(cursor.get('mail') or [])} mail, {cursor.get('sent')} sent; "
         f"{tokens.get('calls', 0)} call(s), {tokens.get('in', 0)} in, {tokens.get('out', 0)} out, "
-        f"${tokens.get('cost', 0.0):.4f}; {cursor.get('idle_polls', 0)} idle poll(s) before it",
+        f"${tokens.get('cost', 0.0):.4f}"
+        + partial(tokens.get("unknown", 0))
+        + f"; {cursor.get('idle_polls', 0)} idle poll(s) before it",
     ]
     ledger = directory / "ledger.jsonl"
     if ledger.exists():
