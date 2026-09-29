@@ -71,6 +71,8 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   the last one (1 = the last), a continued chat's replayed ones included.
 - **diagram page**: `.lion/chats/<id>-<seq>-<n>.html`, a reply's `n`th mermaid block drawn by the
   browser, linked under the reply.
+- **voice**: Alt-V at the editor: a recording from the microphone, transcribed on this machine
+  (`mlx-whisper`, behind the `voice` extra) into the line at the cursor.
 - **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
   defaults for the flags.
 
@@ -259,6 +261,17 @@ Each closed mermaid block of a reply lands as a diagram page beside the chat log
 chat, the entry and the block's place in it, and the console prints a link to the page under the
 block's source. The page loads mermaid from a CDN and draws the block's text unchanged. A chat with
 no log says a diagram was not saved and goes on.
+### C14: A message can be spoken _(enforced: mechanical)_ ^c14
+
+- **Subject**: `Voice` and the editor's Alt-V on a terminal.
+- **Violated when**: a recording is sent without the person reading it, the transcription blocks the
+  prompt, a prompt that ends leaves a recording running, or a missing extra ends the chat.
+
+A first Alt-V records from the microphone and the toolbar says so; a second stops it and the words
+land at the cursor, after a space when the line already holds one, for the person to read before
+Enter sends them. The transcription runs off the loop; the prompt stays live. Enter, Ctrl-C or
+Ctrl-D drops a recording still running. Without the extra, a microphone or a model, the toolbar says
+why and the prompt goes on.
 
 ## Decisions
 
@@ -380,6 +393,17 @@ the page's `file:` URI as a link.
 
 - **Landing evidence**: `tests/test_mermaid.py`: the blocks found and the nested fence, the page's
   escaping, the page written and linked, the chat without a log.
+### D11: `Voice`, `_off_loop` and `_real` ^d11
+
+Serves C14. `Voice.press` toggles: it starts `record()` or stops it and hands the audio to
+`transcribe` on a daemon thread, whose outcome `_off_loop` settles on the loop with
+`call_soon_threadsafe` (not the loop's executor: its shutdown would join a transcription still
+running). `_real` builds the microphone through sounddevice at 16 kHz mono and Whisper through
+mlx_whisper, imported on the thread since the import takes seconds; both are injectable for tests.
+`Editor.ask` calls `Voice.reset` when the prompt ends.
+
+- **Landing evidence**: `tests/test_voice.py`: the toggle, the text at the cursor, the space after a
+  word, the failures said on the toolbar, one transcription at a time, the reset, the extra missing.
 
 ## Alternatives
 
@@ -398,6 +422,7 @@ the page's `file:` URI as a link.
 | `file:` links for paths | rich's markdown drops them, and a browser shows a file where an editor at the line is what the person opens it for |
 | Ctrl-Y, or a mouse button, for the copy | Ctrl-Y is the editor's yank, and a terminal has no buttons; a key the line survives and a command the person can number |
 | Drawing the diagram in the terminal | no terminal draws mermaid; a page in the browser does, at full size, and the log keeps the source |
+| Whisper through a remote API | the recording leaves the machine; the local model answers in seconds on Apple silicon and needs no key |
 
 ## Consequences
 

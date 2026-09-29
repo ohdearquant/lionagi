@@ -29,6 +29,7 @@ from lionagi import lndl
 from lionagi.record import Entry, Kind
 
 from .clipboard import to_clipboard
+from .voice import Voice
 
 __all__ = ("RESULT_LINES", "Console", "linked", "mermaid_blocks", "diagram_page", "Editor", "stdin_ask")
 
@@ -99,7 +100,7 @@ class Console:
         self.commands = False  # the last turn printed asked for commands: the round runs them next
         self.status = status
         self.editor = (
-            Editor(history, status=status, copy_last=self.copy)
+            Editor(history, status=status, copy_last=self.copy, voice=Voice())
             if sys.stdin.isatty() and sys.stdout.isatty()
             else None
         )
@@ -568,9 +569,10 @@ class Editor:
     """The line a person types on a terminal: an editor over the whole message (prompt_toolkit), so a
     paste of many lines is one message, Enter sends, Alt-Enter (or Ctrl-J) breaks a line, Up recalls
     earlier messages from `history`, Alt-C copies the last response with `copy_last`, and Ctrl-C
-    clears the line or, on an empty one, ends the chat. Reading through the tty's line discipline lost
-    all of that: a paste arrived one line per message and macOS drops any line over 1024 bytes without
-    a word (measured)."""
+    clears the line or, on an empty one, ends the chat. With `voice`, Alt-V records and Alt-V again
+    puts what was said at the cursor (`Voice`). Reading through the tty's line discipline lost all of
+    that: a paste arrived one line per message and macOS drops any line over 1024 bytes without a
+    word (measured)."""
 
     def __init__(
         self,
@@ -578,6 +580,7 @@ class Editor:
         *,
         status: Callable[[], str] | None = None,  # the bottom toolbar, called on every redraw
         copy_last: Callable[[], str | None] | None = None,  # Alt-C: copies, returns the notice to show
+        voice: Voice | None = None,
         **terminal: Any,  # `input`/`output`: a test's pipe
     ):
         from prompt_toolkit import PromptSession, print_formatted_text
@@ -615,6 +618,16 @@ class Editor:
 
                 run_in_terminal(show)
 
+        if voice is not None:
+
+            @keys.add("escape", "v")
+            def _speak(event) -> None:
+                voice.press(event.app, event.current_buffer)
+
+        def toolbar() -> str:  # the voice's own line first while it has one
+            return " · ".join(p for p in (voice.note if voice else "", status() if status else "") if p)
+
+        self.voice = voice
         if history is not None:
             history.parent.mkdir(parents=True, exist_ok=True)
         self.session: PromptSession[str] = PromptSession(
@@ -622,7 +635,7 @@ class Editor:
             key_bindings=keys,
             history=FileHistory(str(history)) if history is not None else InMemoryHistory(),
             enable_open_in_editor=False,
-            bottom_toolbar=status,
+            bottom_toolbar=toolbar if status is not None or voice is not None else None,
             style=Style.from_dict({"bottom-toolbar": "noreverse ansibrightblack"}),  # a quiet line, not a bar
             **terminal,
         )
@@ -635,6 +648,9 @@ class Editor:
             return await self.session.prompt_async([("bold", prompt)], handle_sigint=False)
         except (EOFError, KeyboardInterrupt):
             return None
+        finally:
+            if self.voice is not None:
+                self.voice.reset()
 
 
 async def stdin_ask(prompt: str = "you ▸ ", out: RichConsole | None = None) -> str | None:
