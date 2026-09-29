@@ -1,8 +1,8 @@
 """A provider's own markup around LNDL is the backend's to rewrite: the parser knows no provider
-(ADR-0004/D2), so `hub.harness.markup` turns a model's native tool-call syntax, in the text or
+(ADR-0004/D2), so `hub.backend.markup` turns a model's native tool-call syntax, in the text or
 parsed out into `tool_calls`, into the tags the parser reads."""
 
-from hub.harness.markup import normalize, tool_calls_text
+from hub.backend.markup import normalize, tool_calls_text
 from lionagi.lndl import parse
 
 

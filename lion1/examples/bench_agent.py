@@ -33,7 +33,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from hub.agent import Agent, AgentError
-from hub.harness import OpenRouter
+from hub.backend import OpenRouter
 from hub.khive import Khive, lit
 from lionagi import Actor, Context, Profile
 

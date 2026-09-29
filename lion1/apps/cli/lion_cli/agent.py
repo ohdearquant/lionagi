@@ -17,8 +17,8 @@ from hub.agent.desk import Desk, Reader
 from hub.agent.instruments import GH, GIT, LAUNCHCTL, instruments
 from hub.agent.verdicts import Verdicts
 from hub.areas import partial
+from hub.backend import ClaudeCodeSession, OpenRouter
 from hub.guidance import guidance
-from hub.harness import ClaudeCodeSession, OpenRouter
 from hub.hooks import install, load
 from hub.khive import Khive
 from hub.tools import LocalTree, files, khive_ops

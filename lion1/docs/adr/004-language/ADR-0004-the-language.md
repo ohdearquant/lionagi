@@ -164,7 +164,7 @@ line break escaped in a string is counted and carries no note.
 Serves C4. The backend adapts a provider's output before `parse` reads it, so `lionagi/lndl.py`
 reads LNDL and knows no provider. `tool_calls_text` is applied by the OpenRouter backend when the
 message content is empty ([[ADR-0009-backends#^d1|ADR-0009/D1]]). `normalize`, which reads DeepSeek
-markup and closes a swallowed closer, lives in `hub/harness/markup.py` and runs in that backend. A
+markup and closes a swallowed closer, lives in `hub/backend/markup.py` and runs in that backend. A
 mixed response returns a `Reply` carrying `refused`: a retry, its reason kept on the turn's entry so
 a resumed run declares nothing from it.
 

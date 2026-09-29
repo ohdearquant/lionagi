@@ -33,7 +33,7 @@ from typing import Any
 from run_swe import PROMPT, UNAIDED, baseline
 from sandbox import close_code_hosts
 
-from hub.harness.openrouter import api_key
+from hub.backend.openrouter import api_key
 
 CODEX_VERSION = "0.153.4"
 CODEX_URL = (

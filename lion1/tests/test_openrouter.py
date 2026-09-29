@@ -4,9 +4,9 @@ import json
 
 import pytest
 
+from hub.backend import OpenRouter, OpenRouterError
+from hub.backend import openrouter as mod
 from hub.chat import entry_row
-from hub.harness import OpenRouter, OpenRouterError
-from hub.harness import openrouter as mod
 from lionagi import Actor, Kind, Message, Profile, RunRequest
 from lionagi.checkpoint import entry_of
 from lionagi.lndl import parse

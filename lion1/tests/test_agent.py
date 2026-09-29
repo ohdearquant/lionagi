@@ -15,8 +15,8 @@ import pytest
 from lion_cli.agent import agent_main, stats
 
 from hub.agent import Agent, AgentError, Budget, Wake, WakeRule
-from hub.harness import claude_code
-from hub.harness.claude_code import ClaudeCodeSession
+from hub.backend import claude_code
+from hub.backend.claude_code import ClaudeCodeSession
 from hub.khive import Khive
 from lionagi import Actor, FileNoteStore, Kind, MemoryNoteStore, Message, Profile, Success
 
@@ -1083,9 +1083,9 @@ def test_serve_keeps_the_lock_its_process_already_claimed(tmp_path):
 def test_backend_for_claude_code_is_the_cli_chat_shape_on_the_named_model(monkeypatch):
     from lion_cli.agent import backend_for
 
-    from hub.harness import ClaudeCodeSession
+    from hub.backend import ClaudeCodeSession
 
-    monkeypatch.setattr("hub.harness.claude_code.shutil.which", lambda name: "/opt/bin/claude")
+    monkeypatch.setattr("hub.backend.claude_code.shutil.which", lambda name: "/opt/bin/claude")
     b = backend_for("claude_code/claude-opus-5-5")
     assert isinstance(b, ClaudeCodeSession) and (b.model, b.cli) == ("claude-opus-5-5", "/opt/bin/claude")
     assert isinstance(backend_for("claude_code"), ClaudeCodeSession)
@@ -1226,7 +1226,7 @@ def test_a_chair_that_is_not_a_table_is_refused_by_name(tmp_path, kkernel_stub):
 def test_the_session_clis_own_tool_calls_ask_the_agents_actor(tmp_path, kkernel_stub):
     from lion_cli.agent import build
 
-    from hub.harness import ClaudeCodeSession
+    from hub.backend import ClaudeCodeSession
 
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)

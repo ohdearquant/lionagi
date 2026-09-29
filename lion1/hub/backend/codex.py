@@ -1,4 +1,4 @@
-"""Codex CLI as a chat-completion harness (ADR-0009): `codex exec`, one call per round.
+"""Codex CLI as a chat-completion backend (ADR-0009): `codex exec`, one call per round.
 
 The view goes in as one prompt with its roles marked, the model's final message comes out. The
 CLI is an agent, so every feature that lets the model act is switched off by flag (shell, exec,

@@ -1,4 +1,4 @@
-"""Claude Code as a harness (ADR-0009), in both shapes.
+"""Claude Code as a backend (ADR-0009), in both shapes.
 
 `ClaudeCode` is the chat-completion shape: one `claude -p` per round, tools off, one turn, so the
 only way the model acts is LNDL in its text and every command goes through this runtime's handlers.

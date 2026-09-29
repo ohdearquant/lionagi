@@ -25,7 +25,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from hub.harness import ClaudeCode, ClaudeCodeSession, Codex, OpenRouter
+from hub.backend import ClaudeCode, ClaudeCodeSession, Codex, OpenRouter
 from hub.tools import Box, BoxTree, SandboxDead, code, shell
 from hub.tools import watch as watching
 from hub.tools.watch import Watch

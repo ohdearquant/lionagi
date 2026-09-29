@@ -25,7 +25,7 @@ import asyncio
 
 from pydantic import BaseModel, Field
 
-from hub.harness import (
+from hub.backend import (
     ClaudeCode,
     ClaudeCodeError,
     ClaudeCodeSession,
