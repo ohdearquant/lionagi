@@ -220,6 +220,20 @@ anchor.
   since, the fold at the measured rate, the fold deciding on the reported context and folding old
   inputs, a plain string on the record, a boolean not a count.
 
+### D5: The call's end joins its asks within a bound; none answers after it ^d5
+
+Serves C6. When a session call ends, every hook still asking is cancelled and joined; a caller's
+cancel arriving during the join is raised once it is done. The join is bounded by `_JOIN_S`: an ask
+still running at the bound has its hook connection dropped, so the hook reads EOF and refuses, and
+is abandoned with a `RuntimeWarning` naming it; the call returns. Unbounded, an ask that swallowed
+its cancel held the join open and a caller cancelling each turn (a SIGINT under `asyncio.run`) was
+swallowed too: a spin.
+
+- **Landing evidence**: `tests/test_claude_code.py`:
+  `test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_caller_still_returns`:
+  the call returns at the bound with the warning, under a caller cancelling every turn too, and the
+  real hook exits 2 while the abandoned ask's later allow reaches nothing.
+
 ## Alternatives
 
 | approach                                                        | rejected because                                                                                                                       |
