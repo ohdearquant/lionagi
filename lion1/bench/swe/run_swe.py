@@ -229,6 +229,7 @@ async def solve(
         "outcome": None,
     }
     watch = None
+    live: dict = {}  # the run, held past a backend failure: what its readings counted is evidence
     try:
         if owned:
             await box.start()
@@ -322,6 +323,7 @@ async def solve(
         stopped_by: list[str] = []
 
         def stop() -> bool:
+            live.update(actor.runs)
             if getattr(box, "dead", None):  # every command would fail the same way; end it now
                 stopped_by.append("box")
                 return True
@@ -361,6 +363,9 @@ async def solve(
         if backend is not None:  # the rounds that ran before the failure are still evidence
             rec.setdefault("rounds", sum(1 for c in backend.calls if "error" not in c))
             _harvest(rec, backend)
+            run = next(iter(live.values()), None)  # none: the failure came before any reading
+            rec.setdefault("repairs", dict(run.repairs) if run else {})
+            rec.setdefault("unknown_names", [list(m) for m in run.misnamed] if run else [])
         if watch is not None:
             rec["watch"] = watch.state()
         try:

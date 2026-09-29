@@ -1619,6 +1619,10 @@ class _Walk:
         )
         if prior is not None:
             reads |= self.write_reads[prior][0]
+        # the values the expression itself names: computing one reaches what its branches reach and
+        # nothing more, so a command in a branch not taken never runs for a write (C3)
+        named = pointers(*(v for _, v in node.value.args)) if producer is not None else pointers(node.value)
+        named &= self.values.keys()
         before = dict(self.writes)  # the writes before this one: what a value it names reads after
 
         async def put() -> None:
@@ -1627,7 +1631,7 @@ class _Walk:
             try:
                 # a write that names a value comes after it, whether or not evaluating reaches the
                 # pointer (`false and *v`): the value reads the note before this write lands
-                for name in sorted(reads):
+                for name in sorted(named):
                     await self.value(name, before)
                 value = await (
                     reader.point(producer) if producer is not None else evaluate(node.value, reader)

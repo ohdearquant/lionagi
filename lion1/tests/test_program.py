@@ -616,7 +616,20 @@ def test_a_value_bound_this_turn_reads_after_the_note_writes_before_its_first_re
         ((fenced('v = note["k"]', 'note.k = *v + "!"', "if *v:", "    b = echo(text=*v)"),), "old!"),
         ((fenced('v = note["k"]'), fenced('note.k = *v + "!"', "if *v:", "    b = echo(text=*v)")), "old!"),
         ((fenced('v = note["k"]', "w = *v", "note.k = echo(text=*w)", "OUT{x: *v, y: *w}"),), "old"),
-        # naming the value is reading it, whether or not the evaluation reaches the pointer
+        # naming the value is reading it, whether or not the evaluation reaches the pointer; computing
+        # the value reaches only what its own branches reach (the `else` and its command stay unrun)
+        (
+            (
+                fenced(
+                    'x = [DO echo(text="side")]',
+                    'v = note["k"] if true else *x',
+                    "note.k = false and *v",
+                    "if *v:",
+                    "    b = echo(text=*v)",
+                ),
+            ),
+            False,
+        ),
         ((fenced('v = note["k"]', "note.k = false and *v", "if *v:", "    b = echo(text=*v)"),), False),
         # a write queued behind one that reads the value waits for it: the value comes before both
         (
