@@ -90,32 +90,44 @@ async def main(kind: str, model: str | None) -> None:
         return max(req.text.split(), key=len)
 
     backend = build_backend(kind, model)
-    run = await actor.run(
-        Profile(
-            "counter", system="Use the commands; point at values; finish with OUT{} when both numbers are in."
-        ),
-        RunRequest(
-            inputs=(f"How many words, and which is the longest? Text: {TEXT!r}",),
-            emits=(Report,),
-            max_rounds=6,
-            time_budget=180,
-        ),
-        backend,
-    )
+    try:
+        run = await actor.run(
+            Profile(
+                "counter",
+                system="Use the commands; point at values; finish with OUT{} when both numbers are in.",
+            ),
+            RunRequest(
+                inputs=(f"How many words, and which is the longest? Text: {TEXT!r}",),
+                emits=(Report,),
+                max_rounds=6,
+                time_budget=180,
+            ),
+            backend,
+        )
+    except BaseException:  # an interrupt too: the calls that completed before it were paid for
+        if backend.calls:
+            spent(backend)
+        raise
     print(f"{kind}: {type(run.outcome).__name__} after {run.round} rounds")
     for e in run.record:
         if e.kind is Kind.TEXT:
             print(f"  [{e.name}] {e.content.strip()[:160]!r}")
     if isinstance(run.outcome, Success):
         print("  output:", run.output["report"].model_dump())
+    spent(backend)
 
+
+def spent(backend) -> None:
+    """One line per call the backend made, whatever the run came to."""
     print(
         f"\n{'call':>4} {'ms':>6} {'input':>6} {'cached':>6} {'output':>6} {'think':>6} "
         f"{'cost $':>9}  finish / provider"
     )
 
-    def cost(v) -> str:
-        return "unknown" if v is None else f"{float(v):.5f}"
+    def cost(v, complete) -> str:
+        # a subtotal with an attempt uncounted (the call was cut off, or an attempt answered without
+        # a price) is at least what was counted, and says so
+        return "unknown" if v is None else f"{'' if complete is not False else '>='}{float(v):.5f}"
 
     for i, c in enumerate(backend.calls, 1):
         u = c.get("usage") or {}
@@ -123,10 +135,15 @@ async def main(kind: str, model: str | None) -> None:
         print(
             f"{i:>4} {ms:>6} {u.get('input_tokens', 0):>6} "
             f"{u.get('cache_read_input_tokens', 0):>6} {u.get('output_tokens', 0):>6} "
-            f"{u.get('reasoning_output_tokens') or 0:>6} {cost(c.get('total_cost_usd')):>9}  "
-            f"{c.get('finish_reason')} / {c.get('provider')}"
+            f"{u.get('reasoning_output_tokens') or 0:>6} "
+            f"{cost(c.get('total_cost_usd'), c.get('cost_complete')):>9}  "
+            + (  # one line per call: a CLI's error can run to several
+                c["error"].splitlines()[0]
+                if c.get("error")
+                else f"{c.get('finish_reason')} / {c.get('provider')}"
+            )
         )
-    print("cost is None on a subscription CLI: the spend is unknown, not zero")
+    print("cost is None on a subscription CLI: the spend is unknown, not zero; >= marks a subtotal")
 
 
 if __name__ == "__main__":

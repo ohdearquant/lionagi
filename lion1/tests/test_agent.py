@@ -4,6 +4,7 @@ long-running actor from answering forever or spending without bound."""
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import subprocess
@@ -11,11 +12,13 @@ import sys
 from pathlib import Path
 
 import pytest
-from lion_cli.agent import agent_main
+from lion_cli.agent import agent_main, stats
 
 from hub.agent import Agent, AgentError, Budget, Wake, WakeRule
+from hub.backend import claude_code
+from hub.backend.claude_code import ClaudeCodeSession
 from hub.khive import Khive
-from lionagi import Actor, Kind, MemoryNoteStore, Message, Profile, Success
+from lionagi import Actor, FileNoteStore, Kind, MemoryNoteStore, Message, Profile, Success
 
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
 HOLD = (  # a process that takes the pid file's lock and keeps it until its stdin closes
@@ -385,6 +388,192 @@ def test_the_cost_cap_holds_the_agent_for_the_day_from_the_backends_own_cost_fig
     assert agent.state.get("spend").value["cost"] == pytest.approx(0.6)
 
 
+def test_a_call_of_unknown_or_incomplete_cost_adds_nothing_to_the_cost_and_the_readers_mark_the_sum(tmp_path):
+    from hub.agent.agent import _line
+
+    now = [1_000_000.0]
+    khive = FakeKhive()
+    envelopes = [
+        {"total_cost_usd": 0.3},
+        {"total_cost_usd": None},  # no figure: a subscription, or a CLI call that died before its result
+        {"total_cost_usd": 0.4, "cost_complete": False},  # the router's known subtotal of its attempts
+    ]
+
+    class Billed(Scripted):
+        async def __call__(self, messages):
+            text = await super().__call__(messages)
+            self.calls[-1] = envelopes.pop(0)
+            return text
+
+    state = FileNoteStore(tmp_path / "notes" / "agent.json")
+    backend = Billed(DONE, DONE, DONE, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"})
+    cap = Budget(cost_per_day=0.65)
+    agent = Agent(actor, khive, backend, profile_for, state=state, budget=cap, clock=lambda: now[0])
+    rows, lines = [], []
+    for n in range(3):
+        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        assert asyncio.run(agent.wake(wait_ms=0)) is not None
+        rows.append({k: agent.state.get("spend").value[k] for k in ("calls", "cost", "unknown")})
+        lines.append(_line(agent.state.get("cursor").value))
+    assert rows == [
+        {"calls": 1, "cost": 0.3, "unknown": 0},
+        {"calls": 2, "cost": 0.3, "unknown": 1},  # the call counts; the cost is as it was
+        {"calls": 3, "cost": pytest.approx(0.7), "unknown": 2},
+    ]
+    assert "$0.3000; 0 idle poll(s)" in lines[0] and "partial" not in lines[0]
+    assert "$0.0000 (partial: 1 call(s) of unknown cost); 0 idle poll(s)" in lines[1]
+    assert "$0.4000 (partial: 1 call(s) of unknown cost); 0 idle poll(s)" in lines[2]
+    khive.mail.append(mail("lambda:a", "go", mid="m3"))
+    assert asyncio.run(agent.wake(wait_ms=0)) is None
+    assert agent.held == "$0.7000 spent today (partial: 2 call(s) of unknown cost) (cap $0.65); next day"
+    day, _, last = stats(tmp_path).splitlines()
+    assert "0 out, $0.7000 (partial: 2 call(s) of unknown cost); 3 wake(s) with 3 mail;" in day
+    assert "0 out, $0.4000 (partial: 1 call(s) of unknown cost); 0 idle poll(s) before it" in last
+
+
+def test_a_same_day_row_from_before_the_count_reads_as_partial_by_an_unknown_number_to_its_end(tmp_path):
+    from hub.agent.agent import _day, _line
+
+    now = [1_000_000.0]
+    khive = FakeKhive()
+    envelopes = [
+        {"total_cost_usd": 0.3},
+        {"total_cost_usd": None},
+        {"total_cost_usd": 0.1},
+        {"total_cost_usd": 0.2},
+    ]
+
+    class Billed(Scripted):
+        async def __call__(self, messages):
+            text = await super().__call__(messages)
+            self.calls[-1] = envelopes.pop(0)
+            return text
+
+    state = FileNoteStore(tmp_path / "notes" / "agent.json")
+    # the day's row as the version before the count wrote it: dollars, no `unknown` key
+    state.put("spend", {"day": _day(now[0]), "cost": 0.5, "calls": 2, "wakes": [], "runs": 1}, run="-", seq=0)
+    backend = Billed(DONE, DONE, DONE, DONE, khive=khive)
+    agent = Agent(
+        Actor("echo", privileges={"comm.send"}),
+        khive,
+        backend,
+        profile_for,
+        state=state,
+        budget=Budget(cost_per_day=0.85),
+        clock=lambda: now[0],
+    )
+    uncounted = "(partial: calls of unknown cost before this count went uncounted)"
+    rows, lines = [], []
+    for n in range(3):
+        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        assert asyncio.run(agent.wake(wait_ms=0)) is not None
+        rows.append({k: agent.state.get("spend").value[k] for k in ("calls", "cost", "unknown")})
+        lines.append(_line(agent.state.get("cursor").value))
+    # the count stays None however many calls land after it: the ones before cannot be counted now
+    assert rows == [
+        {"calls": 3, "cost": 0.8, "unknown": None},
+        {"calls": 4, "cost": 0.8, "unknown": None},
+        {"calls": 5, "cost": pytest.approx(0.9), "unknown": None},
+    ]
+    assert "$0.3000; 0 idle poll(s)" in lines[0]  # the wake's own line counts its own calls
+    assert "$0.0000 (partial: 1 call(s) of unknown cost); 0 idle poll(s)" in lines[1]
+    assert "$0.1000; 0 idle poll(s)" in lines[2]
+    khive.mail.append(mail("lambda:a", "go", mid="m3"))
+    assert asyncio.run(agent.wake(wait_ms=0)) is None
+    assert agent.held == f"$0.9000 spent today {uncounted} (cap $0.85); next day"
+    day = stats(tmp_path).splitlines()[0]
+    assert f"$0.9000 {uncounted}; 4 wake(s)" in day
+    now[0] += 86_400  # the next day starts counted
+    khive.mail.append(mail("lambda:a", "go", mid="m4"))
+    assert asyncio.run(agent.wake(wait_ms=0)) is not None
+    assert {k: agent.state.get("spend").value[k] for k in ("calls", "cost", "unknown")} == {
+        "calls": 1,
+        "cost": 0.2,
+        "unknown": 0,
+    }
+    assert "partial" not in stats(tmp_path).splitlines()[0]
+    # a row from before the count that is already at the cap is held before any wake writes it: the
+    # hold and the stats line still say it is uncounted
+    state.put("spend", {"day": _day(now[0]), "cost": 0.9, "calls": 2, "wakes": [], "runs": 1}, run="-", seq=9)
+    khive.mail.append(mail("lambda:a", "go", mid="m5"))
+    assert asyncio.run(agent.wake(wait_ms=0)) is None
+    assert agent.held == f"$0.9000 spent today {uncounted} (cap $0.85); next day"
+    assert f"$0.9000 {uncounted}; 1 wake(s)" in stats(tmp_path).splitlines()[0]
+
+
+def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(tmp_path):
+    notes_file = tmp_path / "notes" / "agent.json"
+    assert stats(tmp_path) == f"no notes at {notes_file}: the agent has not run from this directory"
+    spend = {
+        "day": "2026-09-22",
+        "cost": 0.0123,
+        "unknown": 0,
+        "calls": 5,
+        "in": 12000,
+        "out": 800,
+        "mail": 4,
+        "runs": 3,
+        "idle": 17,
+        "idle_last": 2,
+        "wakes": [],
+    }
+    cursor = {
+        "wake": 3,
+        "at": "2026-09-22 11:09:15",
+        "outcome": "Success",
+        "rounds": 2,
+        "mail": ["a1b2c3d4", "b2c3d4e5"],
+        "sent": 1,
+        "tokens": {"calls": 2, "in": 5000, "out": 300, "cost": 0.004, "unknown": 0, "context": 2400},
+        "idle_polls": 2,
+    }
+    values = {"spend": spend, "cursor": cursor}
+    notes = {"version": 2, "notes": {k: {"key": k, "value": v} for k, v in values.items()}}
+    notes_file.parent.mkdir()
+    notes_file.write_text(json.dumps(notes))
+    (tmp_path / "ledger.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in ({"answered": True}, {"control": True}, {"control": False})) + "\n"
+    )
+    desk = [
+        {"at": "2026-09-22 09:00:00", "class": "answered"},
+        {"at": "2026-09-22 10:00:00", "class": "routed"},
+        {"at": "2026-09-21 23:00:00", "class": "answered"},  # another day's row is not today's
+    ]
+    (tmp_path / "desk.jsonl").write_text("\n".join(json.dumps(r) for r in desk) + "\n")
+    assert stats(tmp_path) == (
+        "day 2026-09-22: 5 model call(s), 12000 in, 800 out, $0.0123; 3 wake(s) with 4 mail; "
+        "17 idle poll(s) at 0 tokens\n"
+        "per handled message: 3200 tokens\n"
+        "last wake 3 at 2026-09-22 11:09:15: Success after 2 round(s), 2 mail, 1 sent; 2 call(s), 5000 in, "
+        "300 out, $0.0040; 2 idle poll(s) before it\n"
+        "ledger: 3 check(s), 2 answered, 1 not\n"
+        "desk: 2 of the owner's message(s) read today, 1 answered, 1 left"
+    )
+    notes["notes"]["spend"]["value"] = {**spend, "mail": 0}
+    notes_file.write_text(json.dumps(notes))
+    assert stats(tmp_path).splitlines()[1] == "per handled message: no mail handled today"
+
+
+def test_a_failed_session_cli_call_is_counted_in_the_days_spend_row_and_still_ends_the_run(monkeypatch):
+    printed = {"total_cost_usd": 0.5, "usage": {"input_tokens": 9000, "output_tokens": 700}}
+
+    async def capped(cli, args, prompt, *, model, timeout, cwd=None, persist=False):
+        raise claude_code.ClaudeCodeError("claude reported error_max_turns: cap", printed)
+
+    monkeypatch.setattr(claude_code, "_exec", capped)
+    khive = FakeKhive(mail("lambda:a", "go"))
+    agent = Agent(
+        Actor("echo", privileges={"comm.send"}), khive, ClaudeCodeSession(cli="/bin/claude"), profile_for
+    )
+    with pytest.raises(claude_code.ClaudeCodeError, match="error_max_turns"):
+        asyncio.run(agent.wake(wait_ms=0))
+    spend = agent.state.get("spend").value
+    assert spend["calls"] == 1 and spend["cost"] == pytest.approx(0.5)
+    assert spend["in"] == 9000 and spend["out"] == 700
+    assert agent.state.get("cursor").value["outcome"].startswith("error ClaudeCodeError: ")
+
+
 def test_a_wake_killed_after_its_mark_read_is_reported_to_the_owner_and_rerun_takes_it_back():
     state = MemoryNoteStore()
     khive = FakeKhive(mail("lambda:a", "hi"))
@@ -733,6 +922,148 @@ def test_once_refuses_served_identity(tmp_path, kkernel_stub, monkeypatch):
     )
 
 
+class Measured:
+    """An instrument whose one outcome the test chooses."""
+
+    direction, answers, every, about, mechanism, empty_expected = (
+        "under-report",
+        "what the test pointed it at",
+        None,
+        "a scripted instrument",
+        "the test says so",
+        False,
+    )
+
+    def __init__(self, out):
+        self.out, self.args = out, []
+
+    async def run(self, args):
+        self.args.append(args)
+        return self.out
+
+
+def test_render_prints_the_measurement_unvetted_and_says_so():
+    from lion_cli.agent import render
+
+    from hub.agent.chores import Outcome
+
+    blank = Outcome(findings=("a finding",), evidence="the instrument's own line")
+    assert render("probe", Measured(blank), blank).splitlines() == [
+        "probe: control ok, 1 finding(s), escalate=False, count=None, direction under-report",
+        "unvetted: run outside the chore path, so no refusal ran over it (a blank population, predicate, "
+        "count or known-positive passes), nothing was sent and no ledger row was written",
+        "answers: what the test pointed it at",
+        "known-positive: (none)",
+        "population: ",
+        "predicate: ",
+        "- a finding",
+        "the instrument's own line",
+    ]
+    failed = Outcome(control=False, escalate=True, population="rows", predicate="p", count=0, positive="x")
+    text = render("probe", Measured(failed), failed)
+    assert text.startswith("probe: control FAILED, 0 finding(s), escalate=True, count=0,")
+    assert "known-positive: x\npopulation: rows\npredicate: p" in text
+
+
+def test_land_writes_the_days_file_of_that_name_and_the_latest_run_wins(tmp_path):
+    from lion_cli.agent import land
+
+    path = land(tmp_path, "check-probe", "first")
+    assert path.parent == tmp_path / "landing" and re.fullmatch(r"\d{8}-check-probe\.txt", path.name)
+    assert land(tmp_path, "check-probe", "second") == path and path.read_text() == "second"
+    assert sorted(p.name for p in (tmp_path / "landing").iterdir()) == [path.name]
+
+
+def test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing(
+    tmp_path, kkernel_stub, monkeypatch, capsys
+):
+    """`--check <name>`: the instrument runs once with no args under the identity's lock, its unvetted
+    measurement is printed and landed, and no mail, ledger row or store call follows."""
+    from hub.agent.chores import Outcome
+
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (d / "chores.toml").write_text('actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n')
+    ops: list[str] = []
+
+    async def fake_exec(self, op):
+        ops.append(op)
+        return [{}]
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    held: list[bool] = []
+    probe = Measured(Outcome(population="rows", predicate="probed", count=0, evidence="read 0 rows"))
+    orig = probe.run
+
+    async def run(args):  # the identity is held while the instrument runs
+        held.append((d / "agent.pid").read_text().strip() == str(os.getpid()))
+        return await orig(args)
+
+    probe.run = run
+    monkeypatch.setattr("lion_cli.agent.instruments", lambda cfg, khive, state: {"probe": probe})
+    base = dict(dir=str(d), stats=False, model=None, ticks=False, arm=False, once=False, rerun=None, wait=0)
+    asyncio.run(agent_main(argparse.Namespace(**base, check="probe")))
+    printed = capsys.readouterr().out
+    landed = Path(printed.splitlines()[-1].removeprefix("landed: "))
+    assert landed.parent == d / "landing" and re.fullmatch(r"\d{8}-check-probe\.txt", landed.name)
+    assert printed == landed.read_text() + f"\nlanded: {landed}\n"
+    assert printed.startswith(
+        "probe: control ok, 0 finding(s), escalate=False, count=0, direction under-report\n"
+    )
+    # unvetted: an empty population nobody declared expected and a blank known-positive pass unrefused
+    assert "unvetted: run outside the chore path" in printed and "known-positive: (none)" in printed
+    assert probe.args == [{}] and held == [True] and ops == []
+    assert not (d / "ledger.jsonl").exists() and not (d / "agent.pid").exists()
+
+
+def test_check_with_the_identity_free_prints_and_lands_the_measurement_and_sends_nothing(
+    tmp_path, kkernel_stub, monkeypatch, capsys
+):
+    """With no live holder, --check claims the identity, runs the named instrument alone, prints it and
+    lands the same text, then lets the identity go: no send, no ledger row, no tick."""
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n\n[chores.gtd-inbox]\n'
+        'every = "every:1h"\n'
+    )
+    ops: list[str] = []
+
+    async def fake_exec(self, op):
+        ops.append(op)
+        old = {"id": "t1", "title": "triage me", "created_at": "2026-01-01T00:00:00Z"}
+        return [[old], [old]]
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    a = argparse.Namespace(
+        dir=str(d),
+        stats=False,
+        model=None,
+        check="gtd-inbox",
+        ticks=False,
+        arm=False,
+        once=False,
+        rerun=None,
+        wait=0,
+    )
+    asyncio.run(agent_main(a))
+    text, landed = capsys.readouterr().out.rsplit("\nlanded: ", 1)
+    path = Path(landed.strip())
+    assert text.startswith(
+        "gtd-inbox: control ok, 1 finding(s), escalate=False, count=1, direction under-report"
+    )
+    assert "- 1 gtd inbox row(s) older than 24h of 1 in inbox" in text
+    assert path.parent == d / "landing" and re.fullmatch(r"\d{8}-check-gtd-inbox\.txt", path.name)
+    assert path.read_text() == text
+    assert ops == [
+        '[gtd.tasks(status="inbox", assignee="lambda:x", limit=100), gtd.tasks(assignee="lambda:x", limit=1)]'
+    ]
+    files = sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.is_file())
+    assert files == [".khive/config.toml", "chores.toml", f"landing/{path.name}"]  # the identity let go
+
+
 def test_serve_keeps_the_lock_its_process_already_claimed(tmp_path):
     """The CLI claims before its first act; serve takes that lock over instead of claiming it again, and
     lets it go when it stops."""
@@ -770,9 +1101,11 @@ def test_backend_for_claude_code_is_the_cli_chat_shape_on_the_named_model(monkey
             "add_dirs": ["/r"],
             "mcp_config": "/m",
             "cli": "/opt/bin/claude-named",
+            "requires": {"Bash": ["comm.send"]},
         },
         cwd=Path("/a"),
     )
+    assert p.requires == {"Bash": ("comm.send",)} and backend_for("claude_code").requires == {}
     assert (p.tools, p.allowed, p.max_turns, p.cwd, p.add_dirs, p.mcp_config) == (
         ("Bash", "Read"),
         ("mcp__khive",),
@@ -888,6 +1221,20 @@ def test_a_chair_that_is_not_a_table_is_refused_by_name(tmp_path, kkernel_stub):
     (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\nchair = true\n')
     with pytest.raises(ValueError, match=r"\[chair\] is a table"):
         build(d, Scripted())
+
+
+def test_the_session_clis_own_tool_calls_ask_the_agents_actor(tmp_path, kkernel_stub):
+    from lion_cli.agent import build
+
+    from hub.backend import ClaudeCodeSession
+
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:v1"\n')
+    (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n')
+    backend = ClaudeCodeSession(cli="/bin/claude", tools=("Bash",))
+    _, agent = build(d, backend)
+    assert backend.actor is agent.actor
 
 
 def test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_key(

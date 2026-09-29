@@ -1,7 +1,7 @@
 ---
 adr: ADR-0007
 status: draft
-liveness: operating (the note read pinned per command, the captures on the entry, the consumed directive, the fold by date and the cross-profile note read are owed)
+liveness: operating (the freeze of a captured list or dict and the consumed directive on the closure are owed)
 date: "2026-09-23"
 area: record
 kind: new
@@ -34,7 +34,7 @@ any command ([[ADR-0005-command-handling|ADR-0005]]). Source: `lionagi/record.py
 - **view**: what the model sees of the record: every entry in order, some hidden or summarised.
 - **directive**: an instruction to the view, stored on the entry that made it: hide, show, or
   summarise named entries.
-- **fold**: the pass that applies the directives in record order and renders the view.
+- **fold**: the pass that applies the directives by date and renders the view.
 - **fold event**: the runtime's own hide directive, made when the view crosses `view_budget`.
 
 - **placeholder**: the line a hidden entry renders as: its name and size, with a RESULT's alias and
@@ -45,8 +45,8 @@ any command ([[ADR-0005-command-handling|ADR-0005]]). Source: `lionagi/record.py
 - **note**: a value written under a `note.` key that outlives the run, per profile.
 - **note store**: the notes' carrier: the store a profile brings, else memory for the actor's
   lifetime, or one JSON file per profile under `notes_dir`.
-- **note commands**: `note.list(prefix)`, `note.find(query)`, `note.get(key)`, `note.delete(key)`;
-  default handlers of every actor.
+- **note commands**: `note.list(prefix)`, `note.find(query)`, `note.get(key)`, `note.delete(key)`,
+  `note.read(profile, key)`; default handlers of every actor.
 
 ## Assumptions
 
@@ -91,7 +91,7 @@ pointer reaches (ADR-0005/C5).
 
 Every entry stays in view where it landed: one render adds to the last and the provider's prefix
 holds. INPUT is never hidden (`fold_inputs` excepted, [[ADR-0009-backends#^c3|ADR-0009/C3]]).
-Directives apply in record order. A hidden entry renders as a placeholder, one summarised as its
+Directives apply by date (C3). A hidden entry renders as a placeholder, one summarised as its
 summary. A value is never truncated: it stays whole on the record, a pointer away.
 
 Past `view_budget` (60,000 tokens, ADR-0009/C3) the runtime hides the oldest RESULTs the model has
@@ -109,8 +109,8 @@ hidden unseen.
 
 The handler calls `Context.direct`; the directive rides the command's RESULT, dated at its sequence.
 The runtime's ride the notification or the closure, dated at their event. The fold applies
-directives by date (today record order, C2), so a `context.show` after a consumption stands over its
-hide, and a directive reaches only entries earlier than its date.
+directives by date, record order among equals, so a `context.show` after a consumption stands over
+its hide, and a directive reaches only entries earlier than its date.
 
 A directive pins its targets' sequences when made; the fold reads those, never the names. A summary
 stands where the span began and keeps the names it replaced. Hiding changes the rendering only;
@@ -148,7 +148,7 @@ carries the run and sequence that wrote it and its version. The carrier is memor
 `notes_dir` one JSON file per profile.
 
 `note.list` returns key, size, run and version for an exact prefix; `note.find` refuses a blank
-query. Reading another profile's notes is not built.
+query. `note.read` reads another profile's notes (S6).
 
 ### C6: A context command names only entries on the record _(enforced: mechanical)_ ^c6
 
@@ -180,12 +180,17 @@ brought store.
 ### D1: `record.py` and `fold` ^d1
 
 Serves C1 to C4. The record is a list of frozen entries with a sequence counter. `fold` walks it
-once, applying each directive at its sequence, and returns view entries with a hidden flag and the
-summary text; `_notify` calls it once per turn for the size, the out-of-view diff and the fold event
-(ADR-0006).
+once, applying the directives in date order, record order among equal dates, and returns view
+entries with a hidden flag and the summary text; `_notify` calls it once per turn for the size, the
+out-of-view diff and the fold event (ADR-0006).
 
 - **Landing evidence**: `tests/test_actor.py` (the fold event, the placeholder, the summary, the
-  context figure across a fold), `tests/test_chat.py` (resume by replaying the chat log).
+  context figure across a fold), `tests/test_chat.py` (resume by replaying the chat log),
+  `test_a_show_later_in_the_same_program_stands_over_the_hide_of_what_it_consumed`,
+  `test_directives_apply_by_date_not_by_where_they_ride_on_the_record` and
+  `test_a_directive_dated_before_its_carrier_reaches_only_entries_earlier_than_its_date` (the fold
+  by date). The captures on a RESULT, copied and not yet frozen:
+  `test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entry_as_copies`.
 
 ### D2: Directives ride the entry that made them ^d2
 
@@ -195,18 +200,24 @@ date and a resumed chat replays them by folding. `_perform` pins the targets' se
 a command's directive, and stores none when a ref names nothing on the record.
 
 - **Landing evidence**: `test_a_hidden_result_is_a_placeholder_and_a_summarized_one_is_not`,
-  `test_a_directive_naming_nothing_on_the_record_is_refused_not_stored_empty`.
+  `test_a_directive_naming_nothing_on_the_record_is_refused_not_stored_empty`; the consumed marks on
+  the notification, `meta["consumed"]`: `test_the_consumed_hide_survives_the_log_as_a_directive` and
+  `test_a_consumed_result_never_reaches_the_backend_yet_its_pointer_and_context_show_do`.
 
 ### D3: `notes.py` with a memory store and a file store ^d3
 
 Serves C5. `FileNoteStore` subclasses `MemoryNoteStore`; a put re-reads the file, replaces the whole
 value and rewrites the file atomically, under a lock every process on the directory shares. Two runs
 writing one key: the later put wins, and `version` says a write happened, never which was lost. The
-four note Specs and the three context Specs are the default handlers every actor gets. Every write
+five note Specs and the three context Specs are the default handlers every actor gets. Every write
 is a put, from the `note.` declaration or a program's assignment, or `note.delete`'s delete; a gate
 on writing, when decided, sits on those two.
 
-- **Landing evidence**: `tests/test_notes.py`; the bench records carry the live writes.
+- **Landing evidence**: `tests/test_notes.py`; the bench records carry the live writes. A command's
+  pointers and its handler's `Context.get` share one read per note, and its RESULT names each
+  version read under `notes`, kept through the log
+  (`test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_names_the_version`);
+  the cross-profile read: `test_note_read_reads_another_profiles_note_only_under_its_privilege`.
 
 ### D4: The stores take a value as given, and `_note_find` cuts the preview ^d4
 
@@ -247,8 +258,10 @@ its own.
   hides what the model has not seen, and the backend's own limit is what ends the run. A sized
   preview with the value kept whole is proposed in review and not decided.
 - **S6**: Reading another profile's notes is decided as its own default command, naming the profile
-  and gated by a privilege ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]); it is owed, with a test that a
-  profile lacking the privilege is refused.
+  and gated by a privilege ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]). `note.read(profile, key)`
+  requires `note.read`, checked before the handler reads anything, and reads the store the actor
+  keeps under that profile's name, never one a profile brought. A profile lacking the privilege is
+  refused with nothing read: `test_note_read_reads_another_profiles_note_only_under_its_privilege`.
 - **S7**: A fold event makes the provider re-read, once, what stays in view after the first entry it
   hides, and spares every later turn the hidden tokens. Folding to half the budget keeps that
   re-read no larger than about what was hidden, so the event pays for itself within about r turns, r

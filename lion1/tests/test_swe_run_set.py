@@ -3,7 +3,10 @@ attempt, and what the launch records about the set it selected."""
 
 import argparse
 import asyncio
+import hashlib
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -171,6 +174,120 @@ def test_the_launch_record_names_the_selected_set(tmp_path, monkeypatch, capsys)
     assert len(lines) == 1
     record = json.loads(Path(lines[0].removeprefix("launch record ")).read_text())
     assert record["selected"] == ["a"]  # after the repo and limit filters, not the set's size
+
+
+def test_the_dataset_bytes_are_not_held_through_the_batch(tmp_path, monkeypatch):
+    rows = [{"instance_id": "a", "repo": "x", "image": "img", "pad": "p" * 5000}]
+    _main(monkeypatch, tmp_path, rows)
+    _git(monkeypatch)
+    size = (tmp_path / "set.json").stat().st_size
+    one = run_set.one
+    held: list[str] = []
+
+    async def probe(row, args, out_dir, ledger, lock):
+        # the launch's own coroutines, main awaiting _run, as they stand while an instance runs
+        for task in asyncio.all_tasks():
+            coro = task.get_coro()
+            while getattr(coro, "cr_frame", None) is not None:
+                held.extend(
+                    f"{coro.cr_frame.f_code.co_name}.{k}"
+                    for k, v in coro.cr_frame.f_locals.items()
+                    if isinstance(v, bytes) and len(v) >= size
+                )
+                coro = getattr(coro, "cr_await", None)
+        await one(row, args, out_dir, ledger, lock)
+
+    monkeypatch.setattr(run_set, "one", probe)
+    asyncio.run(run_set.main(_args()))
+    assert held == []  # the rows are what the batch holds; the file's bytes were let go once read
+
+
+HEAD = "a" * 40
+
+
+def _git(monkeypatch, head=(0, HEAD + "\n", ""), status=(0, "", "")) -> None:
+    """git as the launch reads it: `rev-parse HEAD` and `status --porcelain` answer (rc, out, err)."""
+
+    def run(argv, *, capture_output, text, cwd):
+        rc, out, err = head if argv[1:] == ["rev-parse", "HEAD"] else status
+        assert argv[1:] in (["rev-parse", "HEAD"], ["status", "--porcelain", "--untracked-files=normal"])
+        return subprocess.CompletedProcess(argv, rc, out, err)
+
+    monkeypatch.setattr(run_set.subprocess, "run", run)
+
+
+def _record(capsys) -> dict:
+    lines = [x for x in capsys.readouterr().out.splitlines() if x.startswith("launch record ")]
+    assert len(lines) == 1
+    return json.loads(Path(lines[0].removeprefix("launch record ")).read_text())
+
+
+def test_the_manifest_digests_the_bytes_the_rows_were_read_from(tmp_path, monkeypatch, capsys):
+    ran = _main(monkeypatch, tmp_path, [{"instance_id": "a", "repo": "x", "image": "img"}])
+    _git(monkeypatch)
+    data = tmp_path / "set.json"
+    read = data.read_bytes()
+    provenance = run_set.provenance
+
+    def replaced_while_launching() -> dict:
+        data.write_text(json.dumps([{"instance_id": "z", "repo": "x", "image": "img"}]))
+        return provenance()
+
+    monkeypatch.setattr(run_set, "provenance", replaced_while_launching)
+    asyncio.run(run_set.main(_args()))
+    record = _record(capsys)
+    assert [i for i, _ in ran] == ["a"] and record["selected"] == ["a"]
+    assert record["dataset"]["sha256"] == hashlib.sha256(read).hexdigest()
+    assert hashlib.sha256(data.read_bytes()).hexdigest() != hashlib.sha256(read).hexdigest()
+
+
+def test_a_git_read_that_fails_refuses_the_launch_before_anything_is_written(tmp_path, monkeypatch):
+    ran = _main(monkeypatch, tmp_path, [{"instance_id": "a", "repo": "x", "image": "img"}])
+    for git, refusal in (
+        (
+            dict(status=(128, "", "fatal: not a git repository\n")),
+            "git status --porcelain .* exited 128: fatal",
+        ),
+        (dict(head=(128, "HEAD\n", "fatal: ambiguous argument 'HEAD'\n")), "git rev-parse HEAD exited 128"),
+        (dict(head=(0, "abc1234\n", "")), "gave 'abc1234', not a commit id"),
+    ):
+        _git(monkeypatch, **git)
+        with pytest.raises(SystemExit, match=refusal):
+            asyncio.run(run_set.main(_args()))
+    assert ran == [] and not (tmp_path / "results").exists()  # no run directory, no manifest, no box
+
+
+def test_an_untracked_file_is_dirty_whatever_the_local_git_configuration_says(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "none"))  # this repository's config alone
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    for argv in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "one"]):
+        subprocess.run([*git, *argv], cwd=repo, check=True)
+    subprocess.run([*git, "config", "status.showUntrackedFiles", "no"], cwd=repo, check=True)
+    (repo / "notes.txt").write_text("untracked\n")
+    monkeypatch.setattr(run_set, "HERE", repo)
+    bare = subprocess.run([*git, "status", "--porcelain"], cwd=repo, capture_output=True, text=True)
+    assert bare.stdout == ""  # the configuration hides it from a bare status
+    src = run_set.provenance()
+    assert re.fullmatch(r"[0-9a-f]{40}", src["head"]) and src["dirty"] == "?? notes.txt"
+
+
+def test_the_manifest_names_a_clean_tree_and_a_dirty_one_as_git_reads_them(tmp_path, monkeypatch, capsys):
+    ran = _main(monkeypatch, tmp_path, [{"instance_id": "a", "repo": "x", "image": "img"}])
+    _git(monkeypatch)
+    asyncio.run(run_set.main(_args(run_id="clean")))
+    clean = _record(capsys)
+    _git(monkeypatch, status=(0, " M bench/swe/run_set.py\n?? notes.txt\n", ""))
+    asyncio.run(run_set.main(_args(run_id="dirty")))
+    dirty = _record(capsys)
+    assert clean["head"] == dirty["head"] == HEAD and clean["dirty"] == ""
+    assert "bench/swe/run_set.py" in dirty["dirty"] and "?? notes.txt" in dirty["dirty"]
+    _git(monkeypatch, head=(0, "b" * 64 + "\n", ""))  # a sha256 repository's head is a commit id too
+    asyncio.run(run_set.main(_args(run_id="sha256")))
+    assert _record(capsys)["head"] == "b" * 64
+    assert [i for i, _ in ran] == ["a", "a", "a"]
 
 
 class TransportFailBox(FakeBox):
@@ -354,3 +471,37 @@ def test_a_second_launch_of_a_running_run_is_refused(tmp_path, monkeypatch, caps
     held.close()  # that launch ended: the lock is free
     asyncio.run(run_set.main(_args()))
     assert [i for i, _ in ran] == ["a"]
+
+
+def test_the_manifest_keeps_the_status_columns_of_an_unstaged_change(tmp_path, monkeypatch):
+    import os
+    import re
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+        "PATH": os.environ["PATH"],
+    }
+    git = lambda *a: subprocess.run(["git", *a], cwd=repo, env=env, check=True)  # noqa: E731
+    git("init", "-q")
+    for name in ("a.py", "b.py"):
+        (repo / name).write_text("x = 1\n")
+    git("add", "a.py", "b.py")
+    git("commit", "-q", "-m", "base")
+    (repo / "a.py").write_text("x = 2\n")  # modified, unstaged
+    (repo / "b.py").write_text("x = 2\n")
+    git("add", "b.py")  # modified, staged
+    data = tmp_path / "set.json"
+    data.write_text("[]")
+    monkeypatch.setattr(run_set, "SETS", {"t": data})
+    monkeypatch.setattr(run_set, "HERE", repo)
+    doc = json.loads(
+        run_set.manifest(_args(), tmp_path, [], data.read_bytes(), run_set.provenance()).read_text()
+    )
+    assert doc["dirty"] == " M a.py\nM  b.py"
+    assert re.fullmatch(r"[0-9a-f]{40}", doc["head"])

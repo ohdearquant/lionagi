@@ -1,7 +1,8 @@
 """What a Claude Code actor's checkpoint reads (ADR-0019/D2). Each source is a small function that
 returns `Var`s: the transcript's own prompts, final texts and Monitor, TaskStop and Agent calls; the
-hook tracker's directive ring; the sessions registry's topic; the actor's active gtd rows; the
-statusline's per-session figure. A source that is absent is a value, never a failed take.
+hook tracker's directive ring; the sessions registry's topic; the actor's active gtd rows and the
+threads its unread mail awaits a reply on; its open pull requests; the statusline's per-session
+figure. A source that is absent is a value, never a failed take.
 
 The transcript is read once per file state (its size and mtime) for all of them. A prompt is a `user`
 row whose content is a string or text blocks and which no hook or harness wrote: never a tool result,
@@ -25,6 +26,7 @@ from pathlib import Path
 from lionagi.checkpoint import DIRECTIVES, CheckpointError, Var, fold_turns
 from lionagi.lndl import plain
 
+from .agent.instruments import GH, PR_PAGE, Runner, sh
 from .khive import Khive, lit
 
 __all__ = (
@@ -36,6 +38,7 @@ __all__ = (
     "MONITOR_DEFAULT_MS",
     "MONITOR_CAP_MS",
     "SPAWN_HOURS",
+    "MAIL_PAGE",
     "actor_id",
     "slug",
     "newest_transcript",
@@ -46,6 +49,7 @@ __all__ = (
     "spawns",
     "topic",
     "lanes",
+    "pulls",
     "context_figure",
     "cursor",
     "posture",
@@ -64,6 +68,7 @@ INBOX_PRIORITY = tuple(os.environ.get("LION_INBOX_PRIORITY", "").split())
 MONITOR_DEFAULT_MS = 300_000  # the Monitor tool's default timeout
 MONITOR_CAP_MS = 1_800_000  # and its cap: every monitor, persistent or not, is killed at its deadline
 SPAWN_HOURS = 12  # an Agent spawn older than this with no terminal notice is taken as dead
+MAIL_PAGE = 50  # unread messages one read returns; a full page is not every thread awaiting a reply
 
 _FRAMES = (
     "<command-name>",
@@ -504,30 +509,115 @@ def topic(registry_path: str | Path) -> list[Var]:
     return [Var("topic", "topic", t, "registry", at)]
 
 
+def _valid(rows: list, kind: str) -> tuple[list[dict], str]:
+    """The rows of one read that make lanes of `kind` (task, thread or pr), and what `source.lanes`
+    adds for the rest: how many were invalid and what the first one was. A row is an object; a pull
+    request's number is a positive int, never a bool; any other row's `properties` is an object when
+    given, and the id its lane is named by is a non-empty string."""
+    good, bad, first = [], 0, ""  # the count and the first reason: only the first is ever spelled out
+    for r in rows:
+        if not isinstance(r, dict):
+            bad, first = bad + 1, first or f"{type(r).__name__}, not an object"
+            continue
+        if kind == "pr":
+            n = r.get("number")
+            if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+                bad, first = bad + 1, first or f"number {n!r:.40}, not a positive int"
+                continue
+        else:
+            props = r.get("properties")
+            if props is not None and not isinstance(props, dict):
+                bad, first = bad + 1, first or f"properties {type(props).__name__}, not an object"
+                continue
+            key = (props or {}).get("thread_id") or r.get("id") if kind == "thread" else r.get("id")
+            if not isinstance(key, str) or not key:
+                bad, first = bad + 1, first or f"id {key!r:.40}, not a non-empty string"
+                continue
+        good.append(r)
+    return good, f" ({bad} invalid; the first: {first})" if bad else ""
+
+
 async def lanes(khive: Khive) -> tuple[list[Var], str]:
-    """The actor's active gtd rows as lanes, and what `source.lanes` says: which were read, or why none
-    could be. Open PRs and threads awaiting a reply are not read by this source."""
+    """The actor's active gtd rows and the threads its unread mail awaits a reply on, as lanes, and what
+    `source.lanes` says of each read: done, or why it could not be. A thread is named by its newest
+    unread message. The open pull requests are `pulls`'."""
+    now = _now()
+    out: list[Var] = []
+    said: list[str] = []
     try:
         (found,) = await khive.exec(f"gtd.tasks(status={lit('active')}, assignee={lit(khive.actor)})")
     except Exception as e:  # khive down is a value in the checkpoint, never a failed take
-        return [], f"unavailable: {type(e).__name__}: {e}"
+        found = e
     rows = found.get("tasks") if isinstance(found, dict) else found
+    if isinstance(found, Exception):
+        said.append(f"gtd.tasks unavailable: {type(found).__name__}: {found}")
+    elif not isinstance(rows, list):
+        said.append(f"gtd.tasks unavailable: answered {type(found).__name__}, not a list of tasks")
+    else:
+        good, invalid = _valid(rows, "task")
+        for t in good:
+            value = {
+                "kind": "task",
+                "id": t.get("id"),
+                "title": t.get("title"),
+                "awaiting": (t.get("properties") or {}).get("awaiting"),
+                "priority": t.get("priority"),
+            }
+            out.append(Var(f"lane.{t.get('id')}", "lane", value, "khive", now))
+        said.append(f"gtd.tasks active{invalid}")
+    try:
+        mail = await khive.inbox(limit=MAIL_PAGE)  # unread, no wait; nothing is marked read
+    except Exception as e:
+        said.append(f"comm.inbox unavailable: {type(e).__name__}: {e}")
+        return out, "; ".join(said)
+    if not isinstance(mail, list):
+        said.append(f"comm.inbox unavailable: answered {type(mail).__name__}, not a list of messages")
+        return out, "; ".join(said)
+    good, invalid = _valid(mail, "thread")
+    threads: dict[str, dict] = {}
+    for m in good:  # newest first
+        props = m.get("properties") or {}
+        thread = str(props.get("thread_id") or m.get("id"))
+        awaiting = f"a reply to {props.get('from_actor')}"
+        threads.setdefault(
+            thread, {"kind": "thread", "id": thread, "title": m.get("subject"), "awaiting": awaiting}
+        )
+    out += [Var(f"lane.thread.{k}", "lane", v, "khive", now) for k, v in threads.items()]
+    full = f" (a full page of {MAIL_PAGE}: more may be unread)" if len(mail) >= MAIL_PAGE else ""
+    said.append(f"comm.inbox unread{full}{invalid}")
+    return out, "; ".join(said)
+
+
+async def pulls(directory: str | Path, run: Runner | None = None) -> tuple[list[Var], str]:
+    """The open pull requests the gh account authored in the directory's repository, as lanes, and what
+    `source.lanes` says of the read: done, or why it could not be."""
+    argv = [GH, "pr", "list", "--author", "@me", "--state", "open", "--limit", str(PR_PAGE)]
+    argv += ["--json", "number,title,url,reviewDecision"]
+    try:
+        rc, out, err = await (run or sh)(argv, cwd=str(directory))
+    except OSError as e:  # no gh to run is a value in the checkpoint, never a failed take
+        return [], f"gh pr list unavailable: {type(e).__name__}: {e}"
+    try:
+        rows = json.loads(out) if rc == 0 else None
+    except ValueError:
+        rows = None
     if not isinstance(rows, list):
-        return [], f"unavailable: gtd.tasks answered {type(found).__name__}, not a list of tasks"
+        why = (err.strip()[:200] or f"rc {rc}") if rc != 0 else f"no list of pull requests in {out[:120]!r}"
+        return [], f"gh pr list unavailable: {why}"
     now = _now()
-    out = []
-    for t in rows:
-        if not isinstance(t, dict):
-            continue
+    good, invalid = _valid(rows, "pr")
+    found = []
+    for p in good:
         value = {
-            "kind": "task",
-            "id": t.get("id"),
-            "title": t.get("title"),
-            "awaiting": (t.get("properties") or {}).get("awaiting"),
-            "priority": t.get("priority"),
+            "kind": "pr",
+            "id": p.get("number"),
+            "title": p.get("title"),
+            "awaiting": p.get("reviewDecision") or None,
+            "url": p.get("url"),
         }
-        out.append(Var(f"lane.{t.get('id')}", "lane", value, "khive", now))
-    return out, "gtd.tasks active; open PRs and threads not read"
+        found.append(Var(f"lane.pr.{p.get('number')}", "lane", value, "gh", now))
+    full = f" (a full page of {PR_PAGE}: more may be open)" if len(rows) >= PR_PAGE else ""
+    return found, f"gh pr list open, authored by @me{full}{invalid}"
 
 
 def context_figure(session_id: str | None, by_session: Path = BY_SESSION) -> dict:

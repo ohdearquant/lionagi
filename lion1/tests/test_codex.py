@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import stat
 import sys
 import time
@@ -13,7 +14,7 @@ import pytest
 from hub.backend import Codex, CodexError
 from hub.backend import codex as codex_mod
 from hub.backend.codex import DISABLED, INSTRUCTIONS
-from lionagi import Message
+from lionagi import Actor, Message, Profile, RunRequest
 
 # The fake keeps a per-scratch attempt counter beside `last.txt`, so a prompt can ask for a
 # failure on the first attempt and an answer on the second. With FAKE_CODEX_LOG set it also writes
@@ -266,6 +267,27 @@ def test_an_empty_answer_is_retried_and_both_attempts_usage_is_counted(fake_cli)
     assert call["usage"]["output_tokens"] == 909 and call["usage"]["reasoning_output_tokens"] == 904
     assert call["usage"]["cache_read_input_tokens"] == 200 and call["usage"]["input_tokens"] == 40
     assert any(n.startswith("attempt 1 failed: no message: events") for n in call["notes"])
+
+
+def test_the_input_count_of_turn_completed_is_handed_back_and_the_next_figure_stands_on_it(fake_cli):
+    # the answering attempt's count, cache read included; the envelope's sum over two attempts is the
+    # size of neither prompt (ADR-0009/C2)
+    backend = Codex(cli=fake_cli)
+    text = asyncio.run(backend([Message("user", "EMPTY first")]))
+    assert text.prompt_tokens == 120 and backend.calls[-1]["usage"]["cache_read_input_tokens"] == 200
+    seen: list[tuple[int, int]] = []
+
+    async def watched(messages: list[Message]) -> str:
+        figure = int(re.search(r"context: ~(\d+) /", messages[-1].content).group(1))
+        seen.append((figure, sum(len(m.content) for m in messages[1:-1]) // 4))
+        return await backend(messages)
+
+    run = asyncio.run(
+        Actor("codex-count").run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), watched)
+    )
+    (f1, v1), (f2, v2) = seen
+    assert f1 == v1 and v2 > v1  # nothing reported yet: the view estimate
+    assert f2 == 120 + (v2 - v1) and run.anchor[0] == 120  # then the CLI's own count, plus what was added
 
 
 def test_a_blank_final_message_yields_the_last_non_empty_one_without_a_retry(fake_cli):

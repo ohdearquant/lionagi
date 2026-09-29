@@ -3,10 +3,21 @@ import re
 from typing import Literal
 
 import pytest
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, computed_field, field_validator
 
-from lionagi import Actor, Kind, Message, Profile, Refused, Retry, RunRequest, Success
-from lionagi.actor import ProfileError
+from lionagi import (
+    Actor,
+    Exhausted,
+    Kind,
+    Message,
+    Profile,
+    Refused,
+    Result,
+    Retry,
+    RunRequest,
+    Success,
+)
+from lionagi.actor import JobError, Output, ProfileError
 from lionagi.spec import spec_name
 
 
@@ -58,7 +69,7 @@ def test_accept_gate_refuses_then_lets_a_later_turn_through():
     assert seen == ["first", "second"]
     assert isinstance(run.outcome, Success) and run.output["done"].summary == "second"
     sys_entries = [e.content for e in run.record if e.name.startswith("_sys")]
-    assert any("OUT{} not accepted: not yet" in c for c in sys_entries)
+    assert any("OUT{} refused: not yet" in c for c in sys_entries)
 
 
 def test_unreadable_turn_is_a_retry_not_an_end():
@@ -95,7 +106,7 @@ class Echo(BaseModel):
 def _echo_actor(name: str) -> Actor:
     actor = Actor(name)
 
-    @actor.handler(Echo)
+    @actor.handler(Echo, effect="pure")
     async def echo(req: Echo, ctx) -> str:
         return req.text
 
@@ -202,10 +213,7 @@ def test_a_gate_that_raises_refuses_the_finish_instead_of_ending_the_run():
     )
     assert isinstance(run.outcome, Success) and run.output["done"].summary == "second"
     sys_entries = [e.content for e in run.record if e.name.startswith("_sys")]
-    assert any(
-        "not accepted: the gate could not judge it (RuntimeError: git diff exited 128)" in c
-        for c in sys_entries
-    )
+    assert any("OUT{} refused: accept failed, RuntimeError: git diff exited 128" in c for c in sys_entries)
 
 
 def test_a_section_that_raises_is_a_line_in_the_notice_not_the_end_of_the_run():
@@ -576,7 +584,10 @@ def test_a_time_budget_ends_the_run_as_exhausted_by_time_and_the_header_shows_th
     run = asyncio.run(actor.run(Profile("p"), req, slow))
     assert run.outcome == Exhausted(1, "time")  # round 1 ran; round 2 found the clock spent
     assert run.round == 1
-    assert run.resolve("a1") == "one"
+    # the call spent the clock, so the command it asked for never started
+    assert run.resolve("a1") == Result(
+        "echo", False, error="refused: the time_budget of 0.03 is spent", reason="refused"
+    )
     header = next(e.content for e in run.record if e.name.startswith("_sys")).splitlines()[0]
     assert " time=0s/0s " in header
 
@@ -617,7 +628,7 @@ def test_an_out_dict_literal_may_point_at_values():
     assert "'nothing' was never declared" in run.record.by_seq(3).content
 
 
-def test_an_unreadable_out_runs_the_commands_and_so_does_a_finishing_turn():
+def test_an_unreadable_out_runs_the_commands_and_an_accepted_one_reaps_what_it_does_not_name():
     actor = _echo_actor("t16")
     run = asyncio.run(
         actor.run(
@@ -633,8 +644,11 @@ def test_an_unreadable_out_runs_the_commands_and_so_does_a_finishing_turn():
     assert run.resolve("a1") == "ran anyway"  # the command ran although the finish was unreadable
     sys_entries = [e.content for e in run.record if e.name.startswith("_sys")]
     assert "ran without it" in sys_entries[1] and "key: value" in sys_entries[1]
-    assert run.resolve("a2") == "beside the finish"  # a command beside OUT{} runs before the finish
-    assert run.refused == []
+    # OUT{} names nothing that runs, so the accepted output ends the run and the command beside it is
+    # cancelled before it started, on the record and in the closure
+    a2 = run.record.get("a2")
+    assert a2.content.reason == "cancelled" and a2.meta["execution"] == "not executed"
+    assert run.record.entries[-1].content.splitlines()[1:3] == ["outcome: Success", "cancelled: a2"]
 
 
 def test_a_stop_is_asked_after_the_notification_so_what_a_section_saw_can_end_the_run():
@@ -661,7 +675,7 @@ def test_a_stop_is_asked_after_the_notification_so_what_a_section_saw_can_end_th
     assert run.outcome == Stopped(2) and run.round == 1
     assert run.resolve("a1") == "one"
     notices = [e.content for e in run.record if e.name.startswith("_sys")]
-    assert len(notices) == 2 and "the world says: done" in notices[-1]  # the notice that ended it is kept
+    assert len(notices) == 3 and "the world says: done" in notices[1]  # the notice that ended it is kept
 
 
 def test_a_turn_carrying_the_loops_own_frame_is_not_executed():
@@ -684,6 +698,32 @@ def test_a_turn_carrying_the_loops_own_frame_is_not_executed():
         and "nothing in the turn was executed" in notices[1]
     )
     assert run.resolve("a3") == "three"
+
+
+def test_a_turn_with_two_outs_is_not_executed_and_counts_as_a_repeat():
+    actor = Actor("t17b")
+    echoed: list[str] = []
+
+    @actor.handler(Echo)
+    async def echo(req: Echo, ctx) -> str:
+        echoed.append(req.text)
+        return req.text
+
+    twice = '<lvar v1>kept</lvar><lact a1>echo(text="a")</lact>\nOUT{done: [a1]}\nOUT{done: [a1]}'
+    # the braces inside a value are not a second OUT{}; the output names a2, so the reap leaves it
+    single = '<lact a2>echo(text="OUT{c: 3}")</lact>OUT{done: {summary: *a2, files: []}}'
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=3),
+            scripted(twice, twice, single),
+        )
+    )
+    assert echoed == ["OUT{c: 3}"] and "v1" not in run.values  # a1 never ran, v1 never declared
+    notices = [e.content for e in run.record if e.name.startswith("_sys")]
+    assert "this turn carries 2, so nothing in it was executed" in notices[1]
+    assert "(the same error 2 rounds running): one OUT{...} per turn" in notices[2]
+    assert isinstance(run.outcome, Success) and run.output["done"].summary == "OUT{c: 3}"
 
 
 class Ask(BaseModel):
@@ -730,7 +770,7 @@ def test_a_handler_returning_the_handle_is_settled_by_the_peers_answer():
         return run
 
     run = asyncio.run(main())
-    assert run.resolve("q1") == {"answer": {"text": "42"}}
+    assert run.resolve("q1") == {"answer": {"text": "42"}} and run.asked == {}
     peer_input = tasks[0].result().record.by_seq(0)
     assert peer_input.meta["origin"] == "rt-asker" and peer_input.meta["inbound"]
     sys2 = [e.content for e in run.record if e.name.startswith("_sys")][1]
@@ -755,6 +795,7 @@ def test_a_peer_that_ends_without_answering_settles_the_ask_as_failed():
     run = asyncio.run(main())
     res = run.record.get("q1").content
     assert not res.ok and res.error == "RuntimeError: nx-peer ended Exhausted without answering"
+    assert run.asked == {}  # the failure was read, so the ask is dropped as an answer is
 
 
 def test_a_peer_whose_backend_raises_settles_the_ask_as_failed_instead_of_hanging_it():
@@ -784,6 +825,42 @@ def test_a_peer_whose_backend_raises_settles_the_ask_as_failed_instead_of_hangin
     res = run.record.get("q1").content
     assert not res.ok
     assert res.error == "RuntimeError: er-peer ended in error (RuntimeError: backend down) without answering"
+    assert run.asked == {}
+
+
+@pytest.mark.parametrize("bound, reason", [({"max_rounds": 0}, "rounds"), ({"time_budget": 0}, "time")])
+def test_a_request_no_peer_run_took_waits_on_the_peers_inbox_for_its_next_run(bound, reason):
+    from lionagi import Exhausted
+
+    peer, asker, tasks = Actor(f"t-idle-{reason}-peer"), Actor(f"t-idle-{reason}-asker"), []
+
+    @asker.handler(Ask)
+    async def ask(req: Ask, ctx):
+        handle = peer.queue(req, ctx)
+        tasks.append(
+            asyncio.create_task(peer.run(Profile("p"), RunRequest(emits=(Answer,), **bound), scripted()))
+        )
+        return handle
+
+    async def main():
+        asking = asyncio.create_task(
+            asker.run(
+                Profile("p"),
+                RunRequest(inputs=("go",), max_rounds=2),
+                scripted('<lact q1>ask(question="x")</lact>', "done"),
+            )
+        )
+        while not tasks:
+            await asyncio.sleep(0)
+        idle = await tasks[0]
+        assert idle.outcome == Exhausted(0, reason) and idle.consumed == []
+        assert len(peer.inbox) == 1 and not asking.done()  # the request is queued, the ask open
+        await peer.run(Profile("p"), RunRequest(emits=(Answer,), max_rounds=1), scripted('OUT{answer: "42"}'))
+        return await asking
+
+    # the whole exchange is bounded: a regression fails, never hangs
+    run = asyncio.run(asyncio.wait_for(main(), 5))
+    assert run.resolve("q1") == {"answer": {"text": "42"}} and run.asked == {}
 
 
 class Rows(BaseModel):
@@ -1089,6 +1166,41 @@ def test_a_command_that_stops_without_returning_still_settles_as_a_result():
     assert not any("still running" in n for n in notices)
 
 
+class Reciprocal(BaseModel):
+    n: int
+
+    @computed_field
+    @property
+    def inverse(self) -> float:
+        return 1 / self.n
+
+
+def test_a_request_that_cannot_be_captured_settles_as_a_result_and_the_run_continues():
+    actor = Actor("t-capture")
+    called: list[int] = []
+
+    @actor.handler(Reciprocal)
+    def reciprocal(req: Reciprocal, ctx) -> float:
+        called.append(req.n)
+        return req.inverse
+
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(max_rounds=2, emits=(Done,)),
+            scripted(
+                "<lact z>reciprocal(n=0)</lact><lact h>reciprocal(n=2)</lact>",
+                'OUT{done: {summary: "s", files: []}}',
+            ),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.pending == {}
+    z, h = run.record.get("z"), run.record.get("h")
+    assert z.content.reason == "invalid" and z.meta["execution"] == "not executed"
+    assert "ZeroDivisionError: division by zero" in z.content.error
+    assert h.content.ok and h.content.value == 0.5 and called == [2]
+
+
 class GetCount(BaseModel):
     pass
 
@@ -1192,7 +1304,7 @@ def test_the_fold_decides_on_the_reported_context_and_may_fold_old_inputs():
     run = asyncio.run(Actor("folder").run(Profile("p", system="s"), request, backend))
     notices = [e for e in run.record if e.kind is Kind.SYSTEM]
     # the count reported after round 2 decides round 3's notification; the first count is the floor
-    assert len(notices) == 3 and all("directive" not in n.meta for n in notices[:2])
+    assert len(notices) == 4 and all("directive" not in n.meta for n in notices[:2])  # the fourth closes
     assert "of session history beyond it" in notices[2].content
     directive = notices[2].meta["directive"]
     assert directive.op == "hide" and directive.refs == ("_in0", "_m2", "_in3")  # the third mail stays
@@ -1213,3 +1325,598 @@ def test_the_fold_decides_on_the_reported_context_and_may_fold_old_inputs():
     run = asyncio.run(Actor("folder").run(Profile("p", system="s"), bare, backend))
     third = [e for e in run.record if e.kind is Kind.SYSTEM][2]
     assert "nothing older to fold" in third.content and third.meta["directive"].refs == ()
+
+
+def forever(text: str):
+    async def backend(messages: list[Message]) -> str:
+        return text
+
+    return backend
+
+
+def test_every_bound_resolves_once_at_run_start_the_job_over_the_profile_over_the_runtime():
+    actor = _echo_actor("b-resolve")
+    profile = Profile("p", defaults={"max_rounds": 5, "time_budget": 60})
+
+    @actor.section
+    def reread(run):  # a profile changed mid-run is never read again
+        profile.defaults["time_budget"] = 0
+        return None
+
+    request = RunRequest(inputs=("go",), max_rounds=2, max_idle=4)
+    run = asyncio.run(actor.run(profile, request, forever("<lvar v>x</lvar>")))
+    assert run.bounds == {
+        "max_rounds": 2,
+        "max_idle": 4,
+        "time_budget": 60,
+        "cost_budget": None,
+        "context_budget": 200_000,
+        "max_refusals": 3,
+    }
+    assert run.outcome == Exhausted(2)
+    header = next(e.content for e in run.record if e.kind is Kind.SYSTEM).splitlines()[0]
+    assert " time=0s/1m00s " in header and "round=1/2 " in header
+
+
+def test_a_profile_default_naming_no_bound_is_refused():
+    with pytest.raises(ProfileError, match=r"^profile 'p' defaults name no bound: \['max_turns'\]$"):
+        Profile("p", defaults={"max_turns": 5})
+
+
+def test_max_rounds_defaults_to_a_hundred():
+    run = asyncio.run(
+        _echo_actor("b-hundred").run(Profile("p"), RunRequest(inputs=("go",)), forever("<lvar v>x</lvar>"))
+    )
+    assert run.outcome == Exhausted(100) and run.round == 100
+
+
+def test_idle_turns_in_a_row_end_the_run_and_any_other_turn_starts_the_count_over():
+    turns = ("hm", "hm", "<lvar v>x</lvar>", "hm", "hm", "<system round=9/9>", "hm", "hm", "hm")
+    run = asyncio.run(
+        _echo_actor("b-idle").run(Profile("p"), RunRequest(inputs=("go",), max_rounds=20), scripted(*turns))
+    )
+    assert run.outcome == Exhausted(9, "idle")
+
+
+class Nap(BaseModel):
+    seconds: float
+
+
+def test_a_handler_running_at_the_deadline_is_cancelled_with_the_one_waiting_on_it():
+    actor = _echo_actor("b-between")
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> str:
+        await asyncio.sleep(req.seconds)
+        return "rested"
+
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), max_rounds=3, time_budget=0.05),
+            scripted("<lact a1>nap(seconds=0.1)</lact><lact a2>echo(text=*a1)</lact>"),
+        )
+    )
+    # the nap outlives the budget: cancelled at the deadline beside the turn's wait (ADR-0003/S3), and
+    # the echo waiting on it with it; the cost check before a start is what refuses (the cost test below)
+    assert run.resolve("a1") == Result("nap", False, error="cancelled before it finished", reason="cancelled")
+    assert run.resolve("a2").reason == "cancelled"
+    assert run.outcome == Exhausted(1, "time")
+
+
+def test_reported_cost_ends_the_run_and_a_command_asked_once_it_is_spent_never_starts():
+    from lionagi.actor import Reply as Said
+
+    turns = iter(range(1, 10))
+
+    async def backend(messages: list[Message]) -> str:
+        return Said(f'<lact a{next(turns)}>echo(text="x")</lact>', cost=0.6)
+
+    run = asyncio.run(
+        _echo_actor("b-cost").run(
+            Profile("p"), RunRequest(inputs=("go",), max_rounds=5, cost_budget=1.0), backend
+        )
+    )
+    assert run.cost == 1.2 and run.outcome == Exhausted(2, "cost")
+    assert run.resolve("a1") == "x"  # 0.6 spent when it started
+    why = "refused: the cost_budget of 1 is spent"
+    assert run.resolve("a2") == Result("echo", False, error=why, reason="refused")
+
+
+def test_the_context_figure_the_last_notification_told_ends_the_run_over_its_budget():
+    run = asyncio.run(
+        _echo_actor("b-context").run(
+            Profile("p"),
+            RunRequest(inputs=("go",), max_rounds=5, context_budget=100),
+            scripted("x" * 800, "y", "z"),
+        )
+    )
+    assert run.outcome == Exhausted(2, "context")
+    second = [e.content for e in run.record if e.kind is Kind.SYSTEM][1]
+    assert re.search(r"^context: ~2\d\d / 100 tokens$", second, re.M)
+
+
+def test_a_job_over_its_context_budget_before_any_call_is_refused_as_a_job_error():
+    actor = _echo_actor("b-job")
+    called: list[int] = []
+
+    def backend(messages) -> str:
+        called.append(1)
+        return "never"
+
+    with pytest.raises(JobError, match=r"over its context_budget of 10$"):
+        asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("x" * 400,), context_budget=10), backend))
+    assert called == [] and actor.runs == {}
+
+
+MORE = '<lact m1>run.more(bound="max_rounds", amount=2, reason="two files left")</lact>'
+
+
+def test_a_granted_ask_for_more_rounds_continues_past_max_rounds():
+    run = asyncio.run(
+        _echo_actor("b-more").run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=2),
+            scripted(MORE, "working", 'OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.round == 3
+    assert run.bounds["max_rounds"] == 4 and run.resolve("m1") == "max_rounds raised from 2 to 4"
+    notices = [e for e in run.record if e.kind is Kind.SYSTEM and not e.content.startswith("<system closure")]
+    assert [e.content.split()[1] for e in notices] == ["round=1/2", "round=2/4", "round=3/4"]
+
+
+def test_a_refused_ask_leaves_the_bound_and_the_run_ends_at_the_cap_not_at_the_refusal():
+    asks: list[tuple[str, float, str]] = []
+
+    def extend(run, bound, amount, reason) -> bool:
+        asks.append((bound, amount, reason))
+        return False
+
+    run = asyncio.run(
+        _echo_actor("b-refused").run(
+            Profile("p"),
+            RunRequest(inputs=("go",), max_rounds=2, extend=extend),
+            scripted(MORE, "still working"),
+        )
+    )
+    assert asks == [("max_rounds", 2, "two files left")]
+    assert run.outcome == Exhausted(2) and run.bounds["max_rounds"] == 2
+    second = [e.content for e in run.record if e.kind is Kind.SYSTEM][1]
+    assert "m1: PermissionError: max_rounds stays at 2: the job did not grant 2 more" in second
+
+
+def test_two_asks_in_one_turn_are_answered_in_order_against_one_total():
+    seen: list[tuple[str, float]] = []
+
+    async def extend(run, bound, amount, reason) -> bool:
+        seen.append((reason, run.bounds[bound]))
+        await asyncio.sleep(0)  # the second ask arrives meanwhile; it is judged after this one
+        return run.bounds[bound] + amount <= 6
+
+    turn = (
+        '<lact m1>run.more(bound="max_rounds", amount=2, reason="first")</lact>'
+        '<lact m2>run.more(bound="max_rounds", amount=2, reason="second")</lact>'
+    )
+    run = asyncio.run(
+        _echo_actor("b-two").run(
+            Profile("p"),
+            RunRequest(inputs=("go",), max_rounds=3, max_idle=10, extend=extend),
+            scripted(turn, "a", "b", "c", "d"),
+        )
+    )
+    assert seen == [("first", 3), ("second", 5)]
+    assert run.resolve("m1") == "max_rounds raised from 3 to 5" and not run.resolve("m2").ok
+    assert run.outcome == Exhausted(5)
+
+
+def test_an_ask_on_an_unbounded_bound_raises_nothing_and_only_a_count_is_rounded_up():
+    turn = (
+        '<lact m1>run.more(bound="cost_budget", amount=1, reason="r")</lact>'
+        '<lact m2>run.more(bound="time_budget", amount=0.5, reason="r")</lact>'
+        '<lact m3>run.more(bound="max_refusals", amount=0.5, reason="r")</lact>'
+    )
+    run = asyncio.run(
+        _echo_actor("b-kinds").run(
+            Profile("p"), RunRequest(inputs=("go",), max_rounds=1, time_budget=100), scripted(turn)
+        )
+    )
+    m1 = run.resolve("m1")
+    assert m1.error == "ValueError: cost_budget is not bounded in this run; there is nothing to raise"
+    assert run.bounds["cost_budget"] is None
+    assert run.bounds["time_budget"] == 100.5 and run.bounds["max_refusals"] == 4
+
+
+def test_a_before_hook_sees_out_and_its_rewrite_is_what_accept_judges():
+    actor = Actor("b-out-before")
+    order: list[tuple[str, ...]] = []
+
+    @actor.before
+    def rewrite(run, la, req):
+        order.append(("hook", la.alias, la.name))
+        return Output(fields={"done": Done(summary="rewritten", files=[])})
+
+    def accept(run, output):
+        order.append(("accept", output["done"].summary))
+
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=1, accept=accept),
+            scripted('OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert order == [("hook", "OUT", "out"), ("accept", "rewritten")]
+    assert isinstance(run.outcome, Success) and run.output["done"].summary == "rewritten"
+
+
+@pytest.mark.parametrize(
+    ("fields", "told"),
+    [
+        ({"done": "not a Done"}, "validation error"),  # held to the output's spec as the model's is
+        ({"done": {"summary": "as a dict", "files": []}}, None),  # a dict is validated into it
+        ({"other": Done(summary="s", files=[])}, "the outputs are ['done']"),
+        ({}, "must fill: ['done']"),  # a required output dropped, as the model could not
+    ],
+)
+def test_a_before_hooks_rewrite_of_out_is_held_to_the_runs_outputs(fields, told):
+    actor = Actor("b-out-rewrite-shape")
+    actor.before(lambda run, la, req: Output(fields=fields))
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=2, max_refusals=5),
+            scripted('OUT{done: {summary: "s", files: []}}', 'OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    if told is None:
+        assert isinstance(run.outcome, Success) and run.output["done"] == Done(summary="as a dict", files=[])
+    else:
+        assert isinstance(run.outcome, Exhausted) and run.output is None
+        assert told in "\n".join(str(e.content) for e in run.record if e.kind is Kind.SYSTEM)
+
+
+def test_a_before_hooks_rewrite_may_drop_an_output_whose_fields_all_default():
+    class Note(BaseModel):
+        text: str = ""
+
+    actor = Actor("b-out-rewrite-default")
+    actor.before(lambda run, la, req: Output(fields={"done": req.fields["done"]}))
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done, Note), max_rounds=1),
+            scripted('OUT{done: {summary: "s", files: []}, note: {text: "n"}}'),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.output == {"done": Done(summary="s", files=[])}
+
+
+def test_accept_judges_the_rewrite_validated_and_the_caller_receives_what_it_approved():
+    actor = Actor("b-out-accept-validated")
+    actor.before(lambda run, la, req: Output(fields={"done": {"summary": "rewritten", "files": []}}))
+    judged: list[dict] = []
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(
+                inputs=("go",), emits=(Done,), max_rounds=1, accept=lambda run, out: judged.append(out)
+            ),
+            scripted('OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.output["done"] == Done(summary="rewritten", files=[])
+    assert judged == [run.output] and judged[0]["done"] is run.output["done"]
+
+
+def test_accept_is_not_asked_about_a_rewrite_the_outputs_refuse():
+    actor = Actor("b-out-accept-unasked")
+    actor.before(lambda run, la, req: Output(fields={"done": "not a Done"}))
+    judged: list[dict] = []
+    run = asyncio.run(
+        actor.run(
+            Profile("p", defaults={"max_refusals": 1}),
+            RunRequest(
+                inputs=("go",), emits=(Done,), max_rounds=1, accept=lambda run, out: judged.append(out)
+            ),
+            scripted('OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert judged == [] and run.output is None
+    assert isinstance(run.outcome, Refused) and "validation error" in run.outcome.why
+
+
+def test_a_reported_cost_that_is_not_a_number_reads_as_spent():
+    from lionagi.actor import Reply as Said
+
+    turns = iter(['<lact a1>echo(text="x")</lact>', '<lact a2>echo(text="y")</lact>'])
+
+    async def backend(messages: list[Message]) -> str:
+        return Said(next(turns), cost=float("nan"))  # a cost with no number in it is not room
+
+    run = asyncio.run(
+        _echo_actor("b-cost-nan").run(
+            Profile("p"), RunRequest(inputs=("go",), max_rounds=5, cost_budget=1.0), backend
+        )
+    )
+    assert run.outcome == Exhausted(1, "cost")
+    assert run.resolve("a1") == Result(
+        "echo", False, error="refused: the cost_budget of 1 is spent", reason="refused"
+    )
+
+
+def test_a_run_request_takes_its_fields_by_name_only():
+    with pytest.raises(TypeError):
+        RunRequest(("go",), (Done,), 10)
+
+
+def test_a_before_hook_refusing_out_is_a_refusal_the_profile_default_counts():
+    actor = Actor("b-out-gate")
+    actor.before(lambda run, la, req: "closed for the night")
+    judged: list[object] = []
+    run = asyncio.run(
+        actor.run(
+            Profile("p", defaults={"max_refusals": 1}),
+            RunRequest(
+                inputs=("go",), emits=(Done,), max_rounds=3, accept=lambda run, out: judged.append(out)
+            ),
+            scripted('OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert run.outcome == Refused("closed for the night", 1) and judged == [] and run.output is None
+
+
+def test_an_after_hooks_replacement_of_out_is_refused_and_listed():
+    actor = Actor("b-out-after")
+
+    @actor.after
+    def swap(run, la, req, result):
+        return Result(result.spec, True, value={"done": "swapped"})
+
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=1),
+            scripted('OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.output["done"] == Done(summary="s", files=[])
+    assert run.hook_errors == [("OUT", "swap: a replacement of out is refused")]
+
+
+class Hang(BaseModel):
+    pass
+
+
+def _hanging_actor(name: str, started: list[asyncio.Task]) -> Actor:
+    actor = _echo_actor(name)
+
+    @actor.handler(Hang, effect="pure")  # the hangs run side by side: what the reap sees through
+    async def hang(req: Hang, ctx) -> str:
+        started.append(asyncio.current_task())
+        await asyncio.Event().wait()
+        return "never"
+
+    return actor
+
+
+def test_out_waits_for_what_it_names_and_the_reap_lands_the_rest_cancelled_before_run_returns():
+    from lionagi.actor import Result
+
+    started: list[asyncio.Task] = []
+    actor = _hanging_actor("t-reap", started)
+    turn = '<lact h1>hang()</lact><lact a1>echo(text="named")</lact> OUT{answer: [a1]}'
+
+    async def go():
+        # a wait for the whole turn would hold OUT{} on h1 forever
+        run = await asyncio.wait_for(actor.run(Profile("p"), RunRequest(inputs=("go",)), scripted(turn)), 5)
+        # asked before asyncio.run's own shutdown cancels what is left, so the reap is what is measured
+        assert run.pending == {} and len(started) == 1 and started[0].done()
+        return run
+
+    run = asyncio.run(go())
+    assert isinstance(run.outcome, Success) and run.output == {"answer": "named"}
+    h1 = run.record.get("h1")
+    assert h1.content == Result("hang", False, error="cancelled before it finished", reason="cancelled")
+    assert h1.meta["execution"] == "completion unknown"  # its handler had started
+    closure = run.record.entries[-1]
+    assert closure.kind is Kind.SYSTEM and closure.seq > h1.seq and "cancelled: h1" in closure.content
+
+
+def test_a_run_cancelled_while_out_waits_reaps_every_pending_command_and_appends_no_closure():
+    started: list[asyncio.Task] = []
+    actor = _hanging_actor("t-abort", started)
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+    turn = "<lact h1>hang()</lact><lact h2>hang()</lact> OUT{answer: [h1]}"
+
+    async def go():
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(actor.run(Profile("p"), RunRequest(inputs=("go",)), scripted(turn)), 0.2)
+        (run,) = runs
+        assert run.pending == {} and len(started) == 2 and all(t.done() for t in started)
+        return run
+
+    run = asyncio.run(go())
+    assert run.outcome is None and actor.runs == {}
+    assert [run.record.get(a).content.reason for a in ("h1", "h2")] == ["cancelled", "cancelled"]
+    assert run.record.entries[-1].kind is Kind.RESULT  # an abort appends no closure
+
+
+class Halter(BaseModel):
+    pass
+
+
+class Halt(BaseException):
+    pass
+
+
+def test_a_defect_in_a_command_out_did_not_name_is_raised_before_the_run_returns():
+    # ADR-0002/S5: a task out by a door the loop does not watch is seen through by the reap, never dropped
+    actor = _echo_actor("t-defect-unnamed")
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+
+    @actor.handler(Halter)
+    async def halter(req: Halter, ctx):
+        raise Halt("out by a door the loop does not watch")
+
+    turn = '<lact bad>halter()</lact><lact good>echo(text="ok")</lact> OUT{answer: [good]}'
+    with pytest.raises(Halt, match="door the loop does not watch"):
+        asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), scripted(turn)))
+    (run,) = runs
+    assert run.outcome is None and actor.runs == {} and run.record.get("good").content.value == "ok"
+    assert run.record.entries[-1].kind is Kind.RESULT  # no closure: the run did not end by an outcome
+
+
+def test_a_deadline_on_the_last_turn_ends_the_run_by_time_not_by_rounds():
+    from lionagi import Exhausted
+
+    started: list[asyncio.Task] = []
+    actor = _hanging_actor("t-last-turn-deadline", started)
+    request = RunRequest(inputs=("go",), max_rounds=1, time_budget=0.2)
+
+    async def go():
+        run = await asyncio.wait_for(actor.run(Profile("p"), request, scripted("<lact h1>hang()</lact>")), 5)
+        assert run.pending == {} and started[0].done()
+        return run
+
+    run = asyncio.run(go())
+    assert run.outcome == Exhausted(1, "time") and run.record.get("h1").content.reason == "cancelled"
+    assert "outcome: Exhausted(rounds=1, reason='time')" in run.record.entries[-1].content
+
+
+def test_a_second_cancel_while_the_abort_reaps_still_lands_the_cancelled_result_and_unregisters():
+    actor = _echo_actor("t-cancel-twice")
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @actor.handler(Hang)
+    async def hang(req: Hang, ctx) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:  # cooperative cleanup that takes a while: the cancel is not suppressed
+            cleaning.set()
+            await release.wait()
+        return "never"
+
+    async def go():
+        turn = "<lact h1>hang()</lact> OUT{answer: [h1]}"
+        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",)), scripted(turn)))
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        await asyncio.wait_for(cleaning.wait(), 2)
+        task.cancel()  # a second cancel, aimed at the run while it reaps
+        done, _ = await asyncio.wait({task}, timeout=0.05)
+        assert not done  # the reap is held: the run does not return with its command still cleaning up
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(go())
+    (run,) = runs
+    assert run.pending == {} and actor.runs == {} and run.outcome is None
+    assert run.record.get("h1").content.reason == "cancelled"
+    assert run.record.entries[-1].kind is Kind.RESULT
+
+
+def test_a_cancel_during_a_defects_reap_ends_the_run_cancelled_with_the_defect_as_its_cause():
+    actor = _echo_actor("t-cancel-in-abort")
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @actor.handler(Halter, effect="pure")  # side by side: the defect lands while the hang is under way
+    async def halter(req: Halter, ctx):
+        await entered.wait()  # after the hang is under way
+        raise Halt("a defect while another command hangs")
+
+    @actor.handler(Hang, effect="pure")
+    async def hang(req: Hang, ctx) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+        return "never"
+
+    async def go():
+        # OUT{} names only the defective command: the hang is what the abort's reap sees through
+        turn = "<lact bad>halter()</lact><lact h1>hang()</lact> OUT{answer: [bad]}"
+        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",)), scripted(turn)))
+        await asyncio.wait_for(cleaning.wait(), 2)
+        task.cancel()  # aimed at the run while the defect's reap holds
+        done, _ = await asyncio.wait({task}, timeout=0.05)
+        assert not done
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await asyncio.wait_for(task, 2)
+        assert isinstance(caught.value.__cause__, Halt)  # the cancel ends it, the defect is its cause
+
+    asyncio.run(go())
+    (run,) = runs
+    assert run.pending == {} and actor.runs == {} and run.outcome is None
+    assert run.record.get("h1").content.reason == "cancelled"
+
+
+def test_a_command_that_never_returns_is_cancelled_at_the_deadline_and_the_run_ends_by_time():
+    from lionagi import Exhausted
+
+    started: list[asyncio.Task] = []
+    actor = _hanging_actor("t-deadline", started)
+    request = RunRequest(inputs=("go",), max_rounds=5, time_budget=0.2)
+
+    async def go():
+        # without the deadline the turn's settle waits on h1 forever
+        run = await asyncio.wait_for(actor.run(Profile("p"), request, scripted("<lact h1>hang()</lact>")), 5)
+        assert run.pending == {} and started[0].done()
+        return run
+
+    run = asyncio.run(go())
+    assert run.outcome == Exhausted(1, "time") and 0.2 <= run.elapsed < 2
+    h1 = run.record.get("h1")
+    assert h1.content.reason == "cancelled" and h1.meta["execution"] == "completion unknown"
+    assert run.record.entries[-1].content.splitlines()[1:3] == [
+        "outcome: Exhausted(rounds=1, reason='time')",
+        "cancelled: h1",
+    ]
+
+
+@pytest.mark.parametrize(
+    "turn, extra, stop, outcome",
+    [
+        ('OUT{answer: "done"}', {}, None, "Success"),
+        ("hello", {"max_rounds": 1}, None, "Exhausted(rounds=1, reason='rounds')"),
+        (
+            'OUT{answer: "done"}',
+            {"accept": lambda r, o: "no", "max_refusals": 1},
+            None,
+            "Refused(why='no', times=1)",
+        ),
+        ("never sent", {}, lambda: True, "Stopped(round=1)"),
+    ],
+)
+def test_a_run_that_ends_by_an_outcome_closes_its_record_with_the_outcome(turn, extra, stop, outcome):
+    actor = _echo_actor("t-closure")
+    request = RunRequest(inputs=("go",), **extra)
+    run = asyncio.run(actor.run(Profile("p"), request, scripted(turn), stop=stop))
+    closure = run.record.entries[-1]
+    assert closure.kind is Kind.SYSTEM and closure.round == run.round and "directive" not in closure.meta
+    assert closure.content == f"<system closure seq={closure.seq}>\noutcome: {outcome}\n</system>"
+
+
+def test_a_run_that_aborts_appends_no_closure():
+    async def raises(messages):
+        raise RuntimeError("down")
+
+    actor = _echo_actor("t-no-closure")
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+    with pytest.raises(RuntimeError, match="down"):
+        asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",)), raises))
+    (run,) = runs
+    assert [e.kind for e in run.record] == [Kind.INPUT, Kind.SYSTEM]
+    assert run.record.entries[-1].content.startswith("<system round=1/")

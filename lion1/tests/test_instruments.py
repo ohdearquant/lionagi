@@ -8,7 +8,9 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
+import tomllib
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -24,8 +26,10 @@ from hub.agent.instruments import (
     Disk,
     GtdInbox,
     InboxSla,
+    LockHolder,
     PrState,
     RequiredContexts,
+    ScheduledJob,
     Served,
     VerdictFreshness,
     Worktrees,
@@ -174,6 +178,44 @@ def test_pr_state_verifies_a_pr_absent_from_a_full_page_before_calling_it_closed
     )
 
 
+@pytest.mark.parametrize("answer", ["{}", "", '""', "null", '[{"number": ' + "9" * 4301 + "}]"])
+def test_pr_state_a_pr_list_that_is_not_a_json_list_is_unread_and_keeps_the_last_rows(answer):
+    sh = FakeSh(
+        **{"api repos/o/r --jq": "o/r\n", "pr list -R o/r": json.dumps([PR]), "actions/runs?head_sha=": RUNS}
+    )
+    inst = pr_state(sh, ["o/r"])
+    assert asyncio.run(inst.run({})).control
+    kept = inst.state.get("pr-state:o/r").value
+    sh.set("pr list -R o/r", answer)
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == (f"o/r: gh pr list gave no JSON list: {answer[:120]!r}",)
+    assert inst.state.get("pr-state:o/r").value == kept  # an unread list closes nothing
+    sh.set("pr list -R o/r", "[]")  # a decoded empty list is a value: #7 is gone
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r#7: closed or merged",) and out.count == 0
+
+
+@pytest.mark.parametrize("state", ["", "\n", "UNKNOWN"])
+def test_pr_state_a_pr_beyond_a_full_page_is_retired_only_on_an_explicit_closure(monkeypatch, state):
+    monkeypatch.setattr(instr, "PR_PAGE", 2)
+    two = [PR, {**PR, "number": 8, "title": "second"}]
+    sh = FakeSh(
+        **{"api repos/o/r --jq": "o/r\n", "pr list -R o/r": json.dumps(two), "actions/runs?head_sha=": RUNS}
+    )
+    inst = pr_state(sh, ["o/r"])
+    asyncio.run(inst.run({}))
+    sh.set("pr list -R o/r", json.dumps([two[1], {**PR, "number": 9, "title": "third"}]))
+    sh.set("pr view 7 -R o/r", state)
+    out = asyncio.run(inst.run({}))
+    assert not out.control
+    assert f"o/r#7: absent from a full page and gh pr view gave no state: {state.strip()!r}" in out.findings
+    assert "o/r#7: closed or merged" not in out.findings and "7" in inst.state.get("pr-state:o/r").value
+    sh.set("pr view 7 -R o/r", "CLOSED\n")
+    out = asyncio.run(inst.run({}))
+    assert out.control and "o/r#7: closed or merged" in out.findings
+    assert "7" not in inst.state.get("pr-state:o/r").value
+
+
 def test_pr_state_reads_each_repos_declared_ci_channel_and_a_statuses_read_must_be_non_empty():
     sh = FakeSh(
         **{
@@ -294,16 +336,50 @@ def test_served_reads_the_cursor_first_then_the_pid_then_launchd_with_its_own_pi
     assert not out.control and "NOT alive: read broken" in out.evidence
 
 
+@pytest.mark.parametrize("device", ["/dev/disk4s1", "map auto_home", "a  b 7"])
+@pytest.mark.parametrize("mount", ["/Volumes/My Disk", "/Volumes/two  spaces", "/"])
+def test_disk_names_the_device_and_the_mount_point_whole_when_either_holds_a_space(tmp_path, device, mount):
+    df = (
+        "Filesystem    1024-blocks Used Available Capacity  Mounted on\n"
+        f"{device}     1 1    {400 * 2**20}   1%    {mount}\n"
+    )
+    sh = FakeSh(**{"/bin/df": df, "find ": ""})
+    out = asyncio.run(Disk([str(tmp_path)], every=None, floors=[], run=sh).run({}))
+    assert out.control and out.evidence.splitlines()[1] == (
+        f"{device} ({tmp_path}): free 400.0 GiB base-1024 / 429.5 GB base-1000, mounted on {mount}"
+    )
+
+
+@pytest.mark.parametrize("text", ["\u00b2", "\u0662", "12a", ""])
+def test_served_reads_a_pid_file_as_ascii_digits_or_as_unreadable_and_probes_no_process_for_it(
+    tmp_path, text
+):
+    d = tmp_path / "bench"
+    (d / "notes").mkdir(parents=True)
+    (d / "agent.pid").write_text(text)
+    me = os.getpid()
+    sh = FakeSh(**{f"-p {me} -o": "S+ 01:02\n"})
+    inst = Served([{"dir": str(d), "stale_min": 60, "label": "com.example.x"}], every="every:15m", run=sh)
+    out = asyncio.run(inst.run({}))
+    assert (
+        out.control
+        and out.findings[0] == f"bench: pid file names {text} and it is not running (unreadable pid file)"
+    )
+    assert [
+        c for c in sh.calls if "-p" in c and str(me) not in c
+    ] == []  # no ps for the pid it could not read
+
+
 def test_disk_groups_roots_by_device_reads_each_floor_once_in_gib_and_escalates_only_an_enforcing_crossing(
     tmp_path,
 ):
     free_kib = 290 * 2**20  # 290 GiB base-1024 = 311.4 GB base-1000
     df = (
-        "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on\n"
-        f"/dev/disk0s1 1948 1500 {free_kib} 84% 1 2 0% /\n"
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+        f"/dev/disk0s1 1948 1500 {free_kib} 84% /\n"
     )
     sh = FakeSh(
-        **{"df -k": df, "find ": f"{tmp_path}/x/target\0", "du -sk": f"26000000\t{tmp_path}/x/target\n"}
+        **{"df -P -k": df, "find ": f"{tmp_path}/x/target\0", "du -sk": f"26000000\t{tmp_path}/x/target\n"}
     )
     floors = [
         {"name": "build admission", "budget_gib": 16, "floor_gib": 280, "enforcing": True},
@@ -336,25 +412,22 @@ def test_disk_groups_roots_by_device_reads_each_floor_once_in_gib_and_escalates_
         == "df parsed 1 device(s) for 2 root(s); floors read in GiB base-1024, the unit floors are "
         "written in"
     )
-    assert [c[:2] for c in sh.calls[:2]] == [["/bin/df", "-k"], ["/bin/df", "-k"]]
-    sh.set("df -k", df.replace(str(free_kib), str(297 * 2**20)))  # 281 projected: only the steady floor
+    assert [c[:3] for c in sh.calls[:2]] == [["/bin/df", "-P", "-k"], ["/bin/df", "-P", "-k"]]
+    sh.set("df -P -k", df.replace(str(free_kib), str(297 * 2**20)))  # 281 projected: only the steady floor
     out = asyncio.run(inst.run({}))
     assert out.control and not out.escalate  # a steady-floor crossing reports; the owner decides
     assert out.findings[0] == f"steady: under the floor on /dev/disk0s1 ({tmp_path}, {tmp_path}/x)"
-    sh.set("df -k", "garbage")
+    sh.set("df -P -k", "garbage")
     out = asyncio.run(inst.run({}))
     assert not out.control and out.findings[0].endswith("df gave no free-space number: garbage")
     assert out.positive == "" and out.count == 0
 
 
 def test_disk_fails_its_control_when_find_or_du_fail_and_absent_floors_inherit_the_default_floor(tmp_path):
-    df = (
-        "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on\n"
-        f"/dev/disk0s1 1 1 {400 * 2**20} 1% 1 2 0% /\n"
-    )
+    df = f"Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk0s1 1 1 {400 * 2**20} 1% /\n"
     sh = FakeSh(
         **{
-            "df -k": df,
+            "df -P -k": df,
             "find ": (1, f"{tmp_path}/x/target\0", "find: permission denied"),
             "du -sk": "26000000\t/x\n",
         }
@@ -373,16 +446,102 @@ def test_disk_fails_its_control_when_find_or_du_fail_and_absent_floors_inherit_t
 
 
 def test_disk_sizes_a_target_whose_path_holds_a_space_as_one_path(tmp_path):
-    df = (
-        "Filesystem 1024-blocks Used Available Capacity iused ifree %iused Mounted on\n"
-        f"/dev/disk0s1 1 1 {400 * 2**20} 1% 1 2 0% /\n"
-    )
+    df = f"Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/disk0s1 1 1 {400 * 2**20} 1% /\n"
     spaced, plain = f"{tmp_path}/my app/target", f"{tmp_path}/x/node_modules"
-    sh = FakeSh(**{"df -k": df, "find ": f"{spaced}\0{plain}\0", "du -sk": "1024\t-\n"})
+    sh = FakeSh(**{"df -P -k": df, "find ": f"{spaced}\0{plain}\0", "du -sk": "1024\t-\n"})
     out = asyncio.run(Disk([str(tmp_path)], every=None, run=sh).run({}))
     assert out.control and out.findings == ()
     assert "-print0" in next(c for c in sh.calls if c[0] == "/usr/bin/find")
     assert sorted(c[2] for c in sh.calls if c[0] == "/usr/bin/du") == [spaced, plain]
+
+
+@pytest.mark.parametrize(
+    ("table", "refusal"),
+    [
+        ("target_cap_gib = nan", "target_cap_gib is a finite number of GiB, zero or more: nan"),
+        ("target_cap_gib = -1", "target_cap_gib is a finite number of GiB, zero or more: -1"),
+        ("target_cap_gib = true", "target_cap_gib is a finite number of GiB, zero or more: True"),
+        ("target_cap_gib = 1" + "0" * 400, "target_cap_gib is a finite number of GiB, zero or more: 1000"),
+        (
+            "target_cap_gib = 0x" + "F" * 5000,
+            "target_cap_gib is a finite number of GiB, zero or more: an integer of 20000 bits",
+        ),
+        (
+            '[[chores.disk.floors]]\nname = "steady"\nfloor_gib = nan',
+            "floor_gib of floor 'steady' is a finite",
+        ),
+        (
+            '[[chores.disk.floors]]\nname = "steady"\nfloor_gib = inf',
+            "floor_gib of floor 'steady' is a finite",
+        ),
+        (
+            '[[chores.disk.floors]]\nname = "steady"\nfloor_gib = "300"',
+            "floor_gib of floor 'steady' is a finite",
+        ),
+        (
+            '[[chores.disk.floors]]\nname = "steady"\nfloor_gib = true',
+            "floor_gib of floor 'steady' is a finite number of GiB, zero or more: True",
+        ),
+        (
+            '[[chores.disk.floors]]\nname = "admit"\nfloor_gib = 280\nbudget_gib = nan',
+            "budget_gib of floor 'admit' is a finite number of GiB, zero or more: nan",
+        ),
+        (
+            '[[chores.disk.floors]]\nname = "admit"\nfloor_gib = 280\nbudget_gib = -16',
+            "budget_gib of floor 'admit' is a finite number of GiB, zero or more: -16",
+        ),
+    ],
+    ids=[
+        "cap-nan",
+        "cap-negative",
+        "cap-bool",
+        "cap-too-large-for-a-float",
+        "cap-too-large-for-its-decimal-form",
+        "floor-nan",
+        "floor-inf",
+        "floor-string",
+        "floor-bool",
+        "budget-nan",
+        "budget-negative",
+    ],
+)
+def test_disk_refuses_a_floor_budget_or_cap_that_is_not_a_finite_number_of_gib_at_build(table, refusal):
+    cfg = tomllib.loads(f'[chores.disk]\nroots = ["/"]\n{table}\n')
+    with pytest.raises(ValueError, match=re.escape(refusal)):
+        instr.instruments(cfg, FakeKhive(), MemoryNoteStore())
+    fine = '[[chores.disk.floors]]\nname = "zero"\nfloor_gib = 0\nbudget_gib = 0.5\n'
+    disk = instr.instruments(
+        tomllib.loads(f'[chores.disk]\nroots = ["/"]\ntarget_cap_gib = 0\n{fine}'),
+        FakeKhive(),
+        MemoryNoteStore(),
+    )
+    assert (
+        disk["disk"].floors == [{"name": "zero", "floor_gib": 0, "budget_gib": 0.5}] and disk["disk"].cap == 0
+    )
+
+
+def test_disk_reads_df_in_the_posix_layout_because_gnu_wraps_a_long_device_name_without_it(tmp_path):
+    device, free_kib = "/dev/mapper/vg0-lv_root_on_a_long_name", 400 * 2**20
+    wrapped = (  # GNU df -k: the source is past its column, so the numbers move to the next line
+        "Filesystem           1K-blocks      Used Available Use% Mounted on\n"
+        f"{device}\n                             1         1 {free_kib}   1% /\n"
+    )
+    posix = f"Filesystem 1024-blocks Used Available Capacity Mounted on\n{device} 1 1 {free_kib} 1% /\n"
+    sh = FakeSh(**{"df -k": wrapped, "df -P -k": posix, "find ": ""})
+    inst = Disk([str(tmp_path)], every=None, run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.count == 1 and out.findings == ()
+    assert f"{device} ({tmp_path}): free 400.0 GiB base-1024" in out.evidence
+    sh.set("df -P -k", wrapped)  # the wrapped row gives the parse no free-space column
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == (
+        f"{tmp_path}: df gave no free-space number: {wrapped.strip()[:120]}",
+    )
+    sh.set("df -P -k", (1, "", "df: No such file or directory"))
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == (
+        f"{tmp_path}: df gave no free-space number: df: No such file or directory",
+    )
 
 
 class Child:
@@ -510,8 +669,8 @@ def test_inbox_sla_probes_each_actor_and_a_dead_read_fails_the_control():
 
 def test_worktrees_first_sight_then_a_parked_dirty_tree_without_a_pr(tmp_path):
     porcelain = (
-        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
-        f"worktree {tmp_path}/wt\nHEAD def\nbranch refs/heads/feat\n"
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD def\0branch refs/heads/feat\0\0"
     )
     sh = FakeSh(
         **{
@@ -559,8 +718,8 @@ def test_worktrees_first_sight_then_a_parked_dirty_tree_without_a_pr(tmp_path):
 )
 def test_worktrees_an_origin_keeps_every_dot_of_its_repository(tmp_path, origin):
     porcelain = (
-        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
-        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD d\0branch refs/heads/feat\0\0"
     )
     sh = FakeSh(
         **{
@@ -579,8 +738,8 @@ def test_worktrees_an_origin_keeps_every_dot_of_its_repository(tmp_path, origin)
 @pytest.mark.parametrize("failing", ["status", "log", "pr"])
 def test_worktrees_a_failed_read_of_a_tree_fails_the_control_and_keeps_its_last_reading(tmp_path, failing):
     porcelain = (
-        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
-        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD d\0branch refs/heads/feat\0\0"
     )
     good = {
         "worktree list --porcelain": porcelain,
@@ -625,8 +784,8 @@ def test_worktrees_a_failed_read_of_a_tree_fails_the_control_and_keeps_its_last_
 )
 def test_worktrees_an_unread_origin_leaves_every_branch_pr_unread(tmp_path, origin, why):
     porcelain = (
-        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
-        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD d\0branch refs/heads/feat\0\0"
     )
     good = {
         "worktree list --porcelain": porcelain,
@@ -651,12 +810,24 @@ def test_worktrees_an_unread_origin_leaves_every_branch_pr_unread(tmp_path, orig
 
 
 @pytest.mark.parametrize(
-    "answer", ["null", "{}", "[1]", '[{"id": 1}]', '[{"number": null}]', '[{"number": true}]', "not json"]
+    "answer",
+    [
+        "null",
+        "{}",
+        "[1]",
+        '[{"id": 1}]',
+        '[{"number": null}]',
+        '[{"number": true}]',
+        '[{"number": 0}]',
+        '[{"number": -3}]',
+        '[{"number": 7}, {"number": 0}]',
+        "not json",
+    ],
 )
 def test_worktrees_a_pr_answer_that_is_not_a_pr_list_is_unread(tmp_path, answer):
     porcelain = (
-        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
-        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD d\0branch refs/heads/feat\0\0"
     )
     sh = FakeSh(
         **{
@@ -674,8 +845,8 @@ def test_worktrees_a_pr_answer_that_is_not_a_pr_list_is_unread(tmp_path, answer)
 
 def test_worktrees_a_head_committed_ahead_of_the_clock_is_a_read(tmp_path):
     porcelain = (
-        f"worktree {tmp_path}/main\nHEAD abc\nbranch refs/heads/main\n\n"
-        f"worktree {tmp_path}/wt\nHEAD d\nbranch refs/heads/feat\n"
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD d\0branch refs/heads/feat\0\0"
     )
     sh = FakeSh(
         **{
@@ -688,6 +859,79 @@ def test_worktrees_a_head_committed_ahead_of_the_clock_is_a_read(tmp_path):
     )
     out = asyncio.run(Worktrees([str(tmp_path / "main")], MemoryNoteStore(), every=None, run=sh).run({}))
     assert out.control and out.findings == (f"{tmp_path}/main: first snapshot, 1 worktree(s)",)
+
+
+def test_worktrees_strips_only_the_leading_refs_heads_from_a_branch(tmp_path):
+    porcelain = (
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/nested\0HEAD d\0branch refs/heads/topic/refs/heads/fix\0\0"
+        f"worktree {tmp_path}/plain\0HEAD e\0branch refs/heads/feat\0\0"
+    )
+    sh = FakeSh(
+        **{
+            "worktree list --porcelain -z": porcelain,
+            "remote get-url origin": "https://github.com/o/r.git\n",
+            "status --porcelain": "",
+            "log -1": f"{int(time.time())}\n",
+            "pr list -R o/r --head topic/refs/heads/fix": json.dumps([{"number": 4}]),
+            "pr list -R o/r --head feat": "[]",
+        }
+    )
+    store = MemoryNoteStore()
+    out = asyncio.run(Worktrees([str(tmp_path / "main")], store, every=None, run=sh).run({}))
+    assert out.control
+    snap = store.get(f"worktrees:{tmp_path}/main").value
+    assert snap[f"{tmp_path}/nested"]["branch"] == "topic/refs/heads/fix"
+    assert snap[f"{tmp_path}/nested"]["pr"] == "#4" and snap[f"{tmp_path}/plain"]["branch"] == "feat"
+    heads = [c[c.index("--head") + 1] for c in sh.calls if "--head" in c]
+    assert heads == ["topic/refs/heads/fix", "feat"]
+
+
+def test_worktrees_a_path_holding_a_line_break_is_read_whole(tmp_path):
+    paths = [f"{tmp_path}/new\nline", f"{tmp_path}/sep ar", f"{tmp_path}/plain", f"{tmp_path}/with space"]
+    porcelain = f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0" + "".join(
+        f"worktree {p}\0HEAD d\0branch refs/heads/feat\0\0" for p in paths
+    )
+    sh = FakeSh(
+        **{
+            "worktree list --porcelain -z": porcelain,
+            "remote get-url origin": "https://github.com/o/r.git\n",
+            "status --porcelain": "",
+            "log -1": f"{int(time.time())}\n",
+            "pr list -R o/r --head feat": "[]",
+        }
+    )
+    store = MemoryNoteStore()
+    out = asyncio.run(Worktrees([str(tmp_path / "main")], store, every=None, run=sh).run({}))
+    assert out.control and out.count == 4
+    assert sorted(store.get(f"worktrees:{tmp_path}/main").value) == sorted(paths)
+    assert sorted(c[2] for c in sh.calls if "status" in c) == sorted(paths)
+    assert sh.calls[0][1:] == ["-C", f"{tmp_path}/main", "worktree", "list", "--porcelain", "-z"]
+
+
+def test_worktrees_a_pr_number_past_the_integer_conversion_limit_is_unread(tmp_path):
+    porcelain = (
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/wt\0HEAD d\0branch refs/heads/feat\0\0"
+    )
+    sh = FakeSh(
+        **{
+            "worktree list --porcelain": porcelain,
+            "remote get-url origin": "https://github.com/o/r.git\n",
+            "status --porcelain": "",
+            "log -1": f"{int(time.time())}\n",
+            "pr list -R o/r --head feat": "[]",
+        }
+    )
+    store = MemoryNoteStore()
+    inst = Worktrees([str(tmp_path / "main")], store, every=None, run=sh)
+    assert asyncio.run(inst.run({})).control
+    kept = store.get(f"worktrees:{tmp_path}/main").value
+    sh.set("pr list -R o/r --head feat", '[{"number": ' + "1" * 4301 + "}]")
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == (f"{tmp_path}/wt: the PR read failed; the tree is unread",)
+    assert f"{tmp_path}/wt | feat | dirty 0 | HEAD 0.0d | PR not a PR list" in out.evidence
+    assert store.get(f"worktrees:{tmp_path}/main").value == kept
 
 
 def test_bench_jobs_reports_an_unreported_job_whose_process_is_gone(tmp_path):
@@ -708,6 +952,265 @@ def test_bench_jobs_reports_an_unreported_job_whose_process_is_gone(tmp_path):
     assert out.evidence.startswith(f"control: {d}/notes/agent.json read, 2 job(s) noted\n")
     out = asyncio.run(BenchJobs(str(tmp_path / "nope"), str(tmp_path), every=None).run({}))
     assert not out.control
+
+
+def test_lock_holder_resolves_each_holders_pid_to_its_full_command_line_beside_its_own_held_lock(tmp_path):
+    own, lock, free = tmp_path / "agent.pid", tmp_path / "build.lock", tmp_path / "free.lock"
+    me = os.getpid()
+    listed = f"p{me}\nf3\nn{os.path.realpath(own)}\np4242\nf5\nn{os.path.realpath(lock)}\n"
+    sh = FakeSh(
+        **{
+            "-F pn": (1, listed, ""),  # rc 1: a named file nobody holds open
+            "-o pid=,command= -p": (
+                f"{me} /usr/bin/python3 -m lion agent --dir /a\n 4242 cargo build --release\n"
+            ),
+        }
+    )
+    inst = LockHolder([str(lock), str(free)], str(own), every="every:15m", run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (f"{lock}: held by pid 4242: cargo build --release",)
+    assert out.positive == f"own lock {own} held by own pid {me}: /usr/bin/python3 -m lion agent --dir /a"
+    assert out.evidence.startswith(f"control: {out.positive}\n") and f"{free}: no holder" in out.evidence
+    assert (out.count, out.predicate) == (2, "open by a process (1 match)")
+    # read by the lock's file and the pid, never by matching command text and never by taking the lock
+    assert sh.calls == [
+        [instr.LSOF, "-w", "-F", "pn", "--", str(own), str(lock), str(free)],
+        ["/bin/ps", "-ww", "-o", "pid=,command=", "-p", ",".join(map(str, sorted({me, 4242})))],
+    ]
+    sh.set("-o pid=,command= -p", f"{me} /usr/bin/python3 -m lion agent --dir /a\n")
+    out = asyncio.run(inst.run({}))  # the holder exited between the two reads
+    assert out.control and out.findings == (
+        f"{lock}: held by pid 4242: (no command line: the pid exited between the reads)",
+    )
+
+
+@pytest.mark.parametrize("broken", ["lsof", "ps"])
+def test_lock_holder_fails_its_control_when_its_own_held_lock_does_not_read_as_its_own(tmp_path, broken):
+    own, lock = tmp_path / "agent.pid", tmp_path / "build.lock"
+    me = os.getpid()
+    sh = FakeSh(
+        **{
+            "-F pn": f"p{me}\nf3\nn{os.path.realpath(own)}\n",
+            "-o pid=,command= -p": f"{me} /usr/bin/python3 -m lion agent\n",
+        }
+    )
+    # a dead lsof answers the way a lock nobody holds does: empty, rc 1
+    sh.set("-F pn" if broken == "lsof" else "-o pid=,command= -p", (1, "", "no such program"))
+    out = asyncio.run(LockHolder([str(lock)], str(own), every=None, run=sh).run({}))
+    assert not out.control and out.findings == () and out.positive == ""
+    assert "read broken" in out.evidence.splitlines()[0]
+
+
+def test_lock_holder_reports_a_lock_lsof_could_not_read_as_unreadable_not_unheld(tmp_path):
+    own, lock, gone = tmp_path / "agent.pid", tmp_path / "shut" / "build.lock", tmp_path / "free.lock"
+    me = os.getpid()
+    # lsof names each file it could not stat on stderr, by its resolved path, and still lists the rest
+    err = (
+        f"lsof: status error on {os.path.realpath(lock)}: Permission denied\n"
+        f"lsof: status error on {os.path.realpath(gone)}: No such file or directory\n"
+    )
+    sh = FakeSh(
+        **{
+            "-F pn": (1, f"p{me}\nf3\nn{os.path.realpath(own)}\n", err),
+            "-o pid=,command= -p": f"{me} /usr/bin/python3 -m lion agent\n",
+        }
+    )
+    out = asyncio.run(LockHolder([str(lock), str(gone)], str(own), every=None, run=sh).run({}))
+    assert out.control and out.findings == (f"{lock}: unreadable by lsof: Permission denied",)
+    assert f"{lock}: unreadable: Permission denied" in out.evidence
+    assert f"{gone}: no holder (no such file)" in out.evidence  # a lock with no file is held by nobody
+
+
+@pytest.mark.parametrize("stream", ["held", "unreadable"])
+@pytest.mark.parametrize("name", ["build\nline.lock", "build\ttab.lock", "build\\back.lock"])
+def test_lock_holder_a_name_lsof_escaped_fails_the_control_and_is_named_as_unmapped(tmp_path, stream, name):
+    own, lock = tmp_path / "agent.pid", tmp_path / name
+    me = os.getpid()
+    # lsof prints a name it escapes as the escape (`\n`, `\t`, `\\`), on stdout and on stderr alike
+    shown = os.path.realpath(lock).replace("\\", "\\\\").replace("\n", "\\n").replace("\t", "\\t")
+    listed = f"p{me}\nf3\nn{os.path.realpath(own)}\n"
+    answer = (
+        (0, listed + f"p4242\nf5\nn{shown}\n", "")
+        if stream == "held"
+        else (1, listed, f"lsof: status error on {shown}: Permission denied\n")
+    )
+    sh = FakeSh(**{"-F pn": answer, "-o pid=,command= -p": f"{me} python -m lion agent\n 4242 cargo build\n"})
+    out = asyncio.run(LockHolder([str(lock)], str(own), every=None, run=sh).run({}))
+    assert not out.control and out.positive == ""
+    assert "read broken" in out.evidence.splitlines()[0] and f"unmapped: {shown}" in out.evidence
+
+
+@pytest.mark.skipif(instr.LSOF == "lsof", reason="no lsof on this machine")
+def test_lock_holder_reads_a_lock_a_live_process_holds_through_the_real_lsof_and_ps(tmp_path):
+    import fcntl
+    import subprocess
+    import sys
+
+    own, lock, free = tmp_path / "agent.pid", tmp_path / "held.lock", tmp_path / "free.lock"
+    tabbed = tmp_path / "held\ttab.lock"
+    fd = os.open(own, os.O_RDWR | os.O_CREAT)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    hold = (
+        "import fcntl, os, sys; fds = [os.open(p, os.O_RDWR | os.O_CREAT) for p in sys.argv[1:]]; "
+        "fcntl.flock(fds[0], fcntl.LOCK_EX); print('locked', flush=True); sys.stdin.read()"
+    )
+    holder = subprocess.Popen(
+        [sys.executable, "-c", hold, str(lock), str(tabbed)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "locked"
+        out = asyncio.run(LockHolder([str(lock), str(free)], str(own), every=None).run({}))
+        # lsof prints the tab as `\t`: a held lock under a name it escaped voids the read, never unheld
+        escaped = asyncio.run(LockHolder([str(tabbed)], str(own), every=None).run({}))
+    finally:
+        holder.stdin.close()
+        holder.wait(timeout=5)
+        holder.stdout.close()
+        os.close(fd)
+    assert out.control, out.evidence
+    assert len(out.findings) == 1 and out.findings[0].startswith(f"{lock}: held by pid {holder.pid}: ")
+    # the evidence carries the full command line, its argument included; the finding caps it
+    assert any(
+        ln.startswith(f"{lock}: pid {holder.pid}: ") and f" {lock} " in ln for ln in out.evidence.splitlines()
+    )
+    assert f"{free}: no holder" in out.evidence
+    assert not escaped.control and escaped.positive == "", escaped.evidence
+    assert f"unmapped: {os.path.realpath(tabbed)}".replace("\t", "\\t") in escaped.evidence
+
+
+def test_scheduled_job_reads_the_artifact_first_then_the_supervisors_last_exit(tmp_path):
+    d = tmp_path / "out"
+    d.mkdir()
+    (d / "fresh.json").write_text("{}")
+    (d / "stale.json").write_text("{}")
+    old = time.time() - 30 * 3600
+    os.utime(d / "stale.json", (old, old))
+    sh = FakeSh(
+        **{
+            "/com.example.fresh": "\tstate = not running\n\tlast exit code = 0\n",
+            "/com.example.stale": "\tstate = not running\n\tlast exit code = 0\n",
+            "/com.example.failed": "\tstate = not running\n\tlast exit code = 1: Operation not permitted\n",
+            "/com.example.new": "\tstate = waiting\n\tlast exit code = (never exited)\n",
+            "/com.example.gone": (113, "", 'Could not find service "com.example.gone" in domain'),
+        }
+    )
+    jobs = [
+        {"artifact": str(d / "fresh.json"), "max_age_h": 24, "label": "com.example.fresh"},
+        {"artifact": str(d / "stale.json"), "max_age_h": 24, "label": "com.example.stale"},
+        {"artifact": str(d / "none.json"), "max_age_h": 24, "label": "com.example.failed"},
+        {"artifact": str(d / "fresh.json"), "max_age_h": 1, "label": "com.example.new"},
+        {"artifact": str(d / "fresh.json"), "max_age_h": 24, "label": "com.example.gone"},
+        {"artifact": str(d / "fresh.json"), "max_age_h": 24},
+    ]
+    inst = ScheduledJob(jobs, every="every:1h", run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"{d}/stale.json: older than its 24h bound",  # a clean exit beside a stale artifact is a finding
+        f"{d}/none.json: absent, bound 24h",
+        f"{d}/none.json: its supervisor com.example.failed last exited 1",
+        f"{d}/fresh.json: its supervisor com.example.gone is not loaded",
+    )
+    lines = out.evidence.splitlines()
+    assert lines[1].startswith(f"{d}/stale.json: written 30.0h ago, bound 24h | launchd com.example.stale")
+    assert lines[3].endswith("| launchd com.example.new: last exit (never exited)")
+    assert (out.count, out.predicate.endswith("(3 match)")) == (6, True)
+    assert out.positive.startswith(f"{d} present; launchd com.example.fresh row read; {d} present")
+    assert [c[:2] for c in sh.calls] == [[instr.LAUNCHCTL, "print"]] * 5
+    assert asyncio.run(inst.run({})).findings == out.findings  # the age stays in the evidence: told once
+
+
+@pytest.mark.parametrize("broken", ["directory", "row"])
+def test_scheduled_job_fails_its_control_on_an_absent_directory_or_a_row_without_its_exit(tmp_path, broken):
+    (tmp_path / "out").mkdir()
+    (tmp_path / "out" / "a.json").write_text("{}")
+    artifact = tmp_path / ("gone" if broken == "directory" else "out") / "a.json"
+    row = "\tstate = running\n" if broken == "row" else "\tlast exit code = 0\n"
+    inst = ScheduledJob(
+        [{"artifact": str(artifact), "max_age_h": 24, "label": "com.example.job"}],
+        every=None,
+        run=FakeSh(**{"/com.example.job": row}),
+    )
+    out = asyncio.run(inst.run({}))
+    assert not out.control and out.findings == () and out.positive == ""
+    reason = "its directory is absent" if broken == "directory" else "no last exit code in its row (unread)"
+    assert reason in out.evidence
+
+
+@pytest.mark.parametrize("kind", ["dir", "symlink-to-dir", "file", "symlink-to-file"])
+def test_scheduled_job_an_artifact_that_is_not_a_regular_file_is_a_finding_never_fresh(tmp_path, kind):
+    (tmp_path / "out").mkdir()
+    artifact, real = tmp_path / "out" / "result.json", tmp_path / "real"
+    made = artifact if kind in ("dir", "file") else real
+    if kind.endswith("dir"):
+        made.mkdir()
+    else:
+        made.write_text("{}")
+    if made is real:
+        artifact.symlink_to(real)
+    inst = ScheduledJob([{"artifact": str(artifact), "max_age_h": 24}], every=None, run=FakeSh())
+    out = asyncio.run(inst.run({}))
+    assert out.control
+    if kind.endswith("dir"):
+        assert out.findings == (f"{artifact}: not a regular file, bound 24h",)
+        assert out.evidence == f"{artifact}: not a regular file"
+    else:
+        assert out.findings == () and out.evidence == f"{artifact}: written 0.0h ago, bound 24h"
+
+
+@pytest.mark.parametrize("stale", [False, True], ids=["fresh", "stale"])
+def test_scheduled_job_a_supervisor_read_that_did_not_finish_is_unread_not_unloaded(tmp_path, stale):
+    (tmp_path / "out").mkdir()
+    artifact = tmp_path / "out" / "a.json"
+    artifact.write_text("{}")
+    if stale:
+        old = time.time() - 30 * 3600
+        os.utime(artifact, (old, old))
+    sh = FakeSh(**{"/com.example.job": (124, "", "/bin/launchctl did not finish within 60s")})
+    job = {"artifact": str(artifact), "max_age_h": 24, "label": "com.example.job"}
+    out = asyncio.run(ScheduledJob([job], every=None, run=sh).run({}))
+    assert not out.control and out.positive == ""
+    assert out.findings == ((f"{artifact}: older than its 24h bound",) if stale else ())
+    assert "launchd com.example.job: unread, rc 124: /bin/launchctl did not finish within 60s" in out.evidence
+    assert "not loaded" not in out.evidence
+    sh.set("/com.example.job", (113, "", 'Could not find service "com.example.job" in domain'))
+    out = asyncio.run(ScheduledJob([job], every=None, run=sh).run({}))
+    assert out.control and out.findings[-1] == f"{artifact}: its supervisor com.example.job is not loaded"
+
+
+@pytest.mark.parametrize("bound", ["nan", '"soon"', "true", "inf", "-1.0", "0"])
+def test_scheduled_job_a_max_age_h_that_is_not_a_positive_number_is_refused_at_build(tmp_path, bound):
+    import tomllib
+    from types import SimpleNamespace
+
+    job = f'{{artifact = "/x/out.json", max_age_h = {bound}}}'
+    cfg = tomllib.loads(f'owner = "lambda:x"\n[chores.scheduled-job]\njobs = [{job}]\n')
+    with pytest.raises(ValueError, match="max_age_h is a positive number of hours"):
+        instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), MemoryNoteStore())
+
+
+def test_instruments_builds_the_lock_holder_on_the_agents_own_pid_file_and_the_scheduled_jobs(tmp_path):
+    from types import SimpleNamespace
+
+    cfg = {
+        "owner": "lambda:x",
+        "chores": {
+            "lock-holder": {"every": "every:15m", "locks": ["/tmp/a.lock"]},
+            "scheduled-job": {"every": "every:1h", "jobs": [{"artifact": "/x/out.json", "max_age_h": 26}]},
+        },
+    }
+    built = instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), MemoryNoteStore())
+    assert sorted(built) == ["lock-holder", "scheduled-job"]
+    lock_holder = built["lock-holder"]
+    assert (lock_holder.locks, lock_holder.held) == (["/tmp/a.lock"], str(tmp_path / "agent.pid"))
+    assert built["scheduled-job"].jobs == [{"artifact": "/x/out.json", "max_age_h": 26}]
+    assert {i.every for i in built.values()} == {"every:15m", "every:1h"}
+    assert not any(i.empty_expected for i in built.values())
+    cfg["chores"]["scheduled-job"]["jobs"] = [{"artifact": "/x/out.json"}]
+    with pytest.raises(ValueError, match="a scheduled job names its artifact and its max_age_h"):
+        instr.instruments(cfg, SimpleNamespace(cwd=tmp_path), MemoryNoteStore())
 
 
 def test_build_reads_the_actors_config_bounds_the_client_and_gates_the_mail(tmp_path, kkernel_stub):
@@ -1685,6 +2188,37 @@ def ci_sh(runs: str = RED_RUNS, sha: str = SHA, prs=((7, SHA),), **over) -> Fake
 
 def ci_red(sh: FakeSh, channel: str = "actions", state=None) -> CiRed:
     return CiRed([{"name": "o/r", "channel": channel}], state or MemoryNoteStore(), every=None, run=sh)
+
+
+@pytest.mark.parametrize("answer", ["", "{}", "null", '[{"number": ' + "9" * 4301 + "}]"])
+@pytest.mark.parametrize("which", ["required-contexts", "verdict-freshness", "ci-red"])
+def test_a_pr_list_that_is_not_a_json_list_is_unread_by_every_instrument_reading_through_it(
+    tmp_path, which, answer
+):
+    verdict(tmp_path, 7, SHA, head8=SHA[:8], mtime=1000)
+    store = MemoryNoteStore()  # one store across the reads: the unread read must keep the last rows
+    sh = {"required-contexts": required_sh, "verdict-freshness": freshness_sh, "ci-red": ci_sh}[which]()
+    inst = {
+        "required-contexts": lambda: required(sh, state=store),
+        "verdict-freshness": lambda: VerdictFreshness(
+            store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh
+        ),
+        "ci-red": lambda: ci_red(sh, state=store),
+    }[which]()
+    key = {
+        "required-contexts": "required-contexts:o/r",
+        "verdict-freshness": "verdict-freshness",
+        "ci-red": "ci-red:o/r",
+    }
+    assert asyncio.run(inst.run({})).control  # the control: a real list reads
+    kept = store.get(key[which]).value
+    assert kept
+    sh.set("pr list -R o/r", answer)
+    out = asyncio.run(inst.run({}))
+    assert not out.control and f"o/r: gh pr list gave no JSON list: {answer[:120]!r}" in out.findings
+    assert store.get(key[which]).value == kept  # the last rows stay
+    sh.set("pr list -R o/r", "[]")  # a decoded empty list is a value: no pull request to judge
+    assert asyncio.run(inst.run({})).control
 
 
 def test_ci_red_actions_extracts_each_failed_run_strips_ansi_and_stamps_and_counts_the_dedupe():

@@ -6,7 +6,10 @@ import pytest
 
 from hub.backend import OpenRouter, OpenRouterError
 from hub.backend import openrouter as mod
-from lionagi import Message
+from hub.chat import entry_row
+from lionagi import Actor, Kind, Message, Profile, RunRequest
+from lionagi.checkpoint import entry_of
+from lionagi.lndl import parse
 
 
 def _answers(*replies):
@@ -80,6 +83,66 @@ def test_a_native_tool_call_answer_is_the_models_turn_as_text_and_is_not_retried
     assert text == "<" + tag  # the model's `<` is where the provider cut; the loop reads it as a program
     call = backend.calls[-1]
     assert call["attempts"] == 1 and call["finish_reason"] == "tool_calls" and call["tool_calls"] == calls
+
+
+def test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_told(monkeypatch):
+    # the call was dropped and the text ran: a turn read by halves
+    monkeypatch.setattr(mod, "asyncio", _NoSleep)
+    calls = [{"id": "c1", "type": "function", "function": {"name": "run", "arguments": '{"cmd": "ls"}'}}]
+    mixed = {
+        "choices": [
+            {
+                "message": {"content": "<lvar v1>kept</lvar>", "tool_calls": calls},
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {},
+    }
+    monkeypatch.setattr(mod, "_post", _answers(mixed, _ok("fine"), _ok("plain")))
+    backend = OpenRouter(model="m", retries=3)
+    actor = Actor("mixed-channels")
+    run = asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), backend))
+    first, _ = backend.calls
+    assert first["attempts"] == 1 and first["tool_calls"] == calls  # the model's turn: not sampled again
+    turn = run.record.of_kind(Kind.TEXT)[0]
+    assert turn.content == "<lvar v1>kept</lvar>" and "two channels" in turn.meta["refused"]
+    assert "v1" not in run.values
+    notice = next(e.content for e in run.record.of_kind(Kind.SYSTEM) if e.round == 2)
+    assert (
+        "your last turn could not be read: the turn came back in two channels, as text and as a native "
+        "tool call, and nothing in it was executed" in notice
+    )
+    # resumed from the record or from the chat log, the refused turn still declares nothing
+    for history in (run.record.entries, tuple(entry_of(entry_row(e)) for e in run.record.entries)):
+        resumed = asyncio.run(
+            actor.run(Profile("p"), RunRequest(history=history, max_rounds=1), lambda messages: "ok")
+        )
+        assert "v1" not in resumed.values
+    # a plain answer is not refused
+    assert asyncio.run(backend([Message("user", "hi")])).refused is None
+
+
+def test_the_backend_rewrites_native_markup_and_a_swallowed_closer_before_the_parser(monkeypatch):
+    # the parser knows no provider: the markup is read here, in the text and in a rebuilt native call
+    monkeypatch.setattr(mod, "asyncio", _NoSleep)
+    wrapped = (
+        "<｜DSML｜ calls>\n"
+        '<｜DSML｜ invoke name="lact a9>read_file(path="t/m.py")</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n'
+        "</｜DSML｜ calls>"
+    )
+    swallowed = [{"function": {"name": wrapped.split('name="', 1)[1], "arguments": "{}"}}]
+    native = {
+        "choices": [{"message": {"content": "", "tool_calls": swallowed}, "finish_reason": "tool_calls"}]
+    }
+    monkeypatch.setattr(mod, "_post", _answers(_ok(wrapped), native))
+    backend = OpenRouter(model="m")
+    for _ in range(2):
+        text = asyncio.run(backend([Message("user", "hi")]))
+        program = parse(text)
+        assert "｜DSML｜" not in text and not program.problems
+        assert [(la.alias, la.name, la.args) for la in program.lacts] == [
+            ("a9", "read_file", {"path": "t/m.py"})
+        ]
 
 
 def test_a_blank_answer_keeps_the_whole_message_for_the_record(monkeypatch):
