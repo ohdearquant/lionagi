@@ -67,8 +67,8 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   CLI inside each round.
 - **link**: a terminal hyperlink (OSC 8) the console draws: a URL to itself, a path naming an
   existing file to `vscode://file/<abs>[:line[:col]]`, which opens it in the editor.
-- **response**: a reply's prose as the console showed it, constructs cut, numbered from 1 across a
-  continued chat: what `/copy N` and Alt-C take.
+- **response**: a reply's prose as the console showed it, constructs cut; `/copy N` counts back from
+  the last one (1 = the last), a continued chat's replayed ones included.
 - **diagram page**: `.lion/chats/<id>-<seq>-<n>.html`, a reply's `n`th mermaid block drawn by the
   browser, linked under the reply.
 - **voice**: Alt-V at the editor: a recording from the microphone, transcribed on this machine
@@ -248,10 +248,11 @@ itself.
 - **Violated when**: `/copy` reaches the model as a message, the text copied differs from the prose
   shown, a number outside the chat's responses copies anything, or a copy blocks the prompt.
 
-`/copy` at the prompt puts the last response on the clipboard, `/copy N` the Nth, and Alt-C the last
-without leaving the line being typed; the console says what it copied, or why nothing. The route is
-the platform's tool (pbcopy, wl-copy, xclip), and OSC 52 through the terminal where there is none,
-as over ssh. A console command never reaches the model.
+`/copy` at the prompt puts the last response on the clipboard, `/copy N` the Nth back from it (2 =
+the one before the last), and Alt-C the last without leaving the line being typed; the console says
+what it copied, or why nothing. The route is the platform's tool (pbcopy, wl-copy, xclip), and OSC
+52 through the terminal where there is none, as over ssh. A console command never reaches the model.
+
 ### C13: A mermaid block in a reply is drawn _(enforced: mechanical)_ ^c13
 
 - **Subject**: `Console._turn` on a reply holding a ```` ```mermaid ```` fence.
@@ -382,9 +383,10 @@ prose, a replayed one too, to `responses`. `Console.command` runs `/copy [N]` an
 loop asks again after one. `to_clipboard` tries each tool present on stdin, uncaptured (xclip and
 wl-copy fork a child that serves the selection), then writes the OSC 52 escape.
 
-- **Landing evidence**: `apps/cli/tests/test_copy.py`: the last and the Nth response, a number out
-  of range, the prose without its constructs, the route order and the OSC 52 fallback, the command
-  never sent, Alt-C.
+- **Landing evidence**: `apps/cli/tests/test_copy.py`: the last and the Nth-back response, a number
+  out of range, the prose without its constructs, the route order and the OSC 52 fallback, the
+  command never sent, Alt-C.
+
 ### D10: `mermaid_blocks`, `diagram_page` and `_fences` ^d10
 
 Serves C13. `_fences` walks the reply line by line, split on newlines only (`splitlines` also breaks
