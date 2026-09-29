@@ -65,6 +65,8 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   under the indicator until the next result lands.
 - **own tools**: with a `claude_code` model, the Claude Code CLI's tools `--tools` names, run by the
   CLI inside each round.
+- **link**: a terminal hyperlink (OSC 8) the console draws: a URL to itself, a path naming an
+  existing file to `vscode://file/<abs>[:line[:col]]`, which opens it in the editor.
 - **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
   defaults for the flags.
 
@@ -220,6 +222,17 @@ scrollback and parks its detail under the indicator until the next lands; a call
 tools prints as one line, `✓ Bash command=…`, clipped. The status line leads with the model and the
 actor. A pipe gets none of this. A command named like an own tool is refused with where that tool
 lives.
+### C11: What the console shows, the person can open _(enforced: mechanical)_ ^c11
+
+- **Subject**: `linked`, `Console._args` and `Console.notice`.
+- **Violated when**: a relative path resolves against the process's cwd, a path that does not exist
+  links, a link is drawn inside fenced code, or a URL carries the sentence's punctuation.
+
+In prose a URL is a link to itself and a path naming an existing file, resolved against the chat's
+directory and never the cwd, is a link that opens it in VS Code at the line a `:line` names. Fenced
+code is left as written, a bare word never links, and a path the model wrote in a code span links
+whole. A call's `path` argument links to the file or directory it names; a URL in a notice links to
+itself.
 
 ## Decisions
 
@@ -308,6 +321,17 @@ a name to the sentence appended to the unknown-command error; the chat fills it 
   `test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detail_under_it`,
   `test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked`,
   `test_an_own_tool_call_folds_to_one_line_and_an_unknown_name_is_told_where_it_lives`.
+### D8: `linked`, `_target` and the links in calls and notices ^d8
+
+Serves C11. `linked(text, directory)` walks the prose outside fences token by token (an escape, a
+link the model wrote, an autolink, a code span, a URL, a path) and rewrites URLs as autolinks and
+existing paths as links to `vscode://file/…`, since rich's markdown drops `file:` links. `_target`
+resolves a path with `os.path` and answers None for one that does not exist. `Console._args` links a
+call's `path`, `Console.notice` a URL, both as rich markup.
+
+- **Landing evidence**: `apps/cli/tests/test_links.py`: a URL without its sentence, the common
+  spellings of a path, the resolution against the chat's directory and never the cwd, a fence, a
+  code span, a call's directory argument, a notice's hyperlink.
 
 ## Alternatives
 
@@ -323,6 +347,7 @@ a name to the sentence appended to the unknown-command error; the chat fills it 
 | A first Ctrl-C that waits for the round to settle | a long tool turn made the interrupt look ignored; the call is the person's to cut |
 | Environment variables for the chat's defaults | a file the person can read back with `lion config` says where each value came from |
 | A progress bar, or a line per second, while a call runs | nothing is known of a call's length; a spinner with the elapsed time says only that it is alive, and leaves the scrollback clean |
+| `file:` links for paths | rich's markdown drops them, and a browser shows a file where an editor at the line is what the person opens it for |
 
 ## Consequences
 
