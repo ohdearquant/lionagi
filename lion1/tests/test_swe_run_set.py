@@ -175,6 +175,32 @@ def test_the_launch_record_names_the_selected_set(tmp_path, monkeypatch, capsys)
     assert record["selected"] == ["a"]  # after the repo and limit filters, not the set's size
 
 
+def test_the_dataset_bytes_are_not_held_through_the_batch(tmp_path, monkeypatch):
+    rows = [{"instance_id": "a", "repo": "x", "image": "img", "pad": "p" * 5000}]
+    _main(monkeypatch, tmp_path, rows)
+    _git(monkeypatch)
+    size = (tmp_path / "set.json").stat().st_size
+    one = run_set.one
+    held: list[str] = []
+
+    async def probe(row, args, out_dir, ledger, lock):
+        # the launch's own coroutines, main awaiting _run, as they stand while an instance runs
+        for task in asyncio.all_tasks():
+            coro = task.get_coro()
+            while getattr(coro, "cr_frame", None) is not None:
+                held.extend(
+                    f"{coro.cr_frame.f_code.co_name}.{k}"
+                    for k, v in coro.cr_frame.f_locals.items()
+                    if isinstance(v, bytes) and len(v) >= size
+                )
+                coro = getattr(coro, "cr_await", None)
+        await one(row, args, out_dir, ledger, lock)
+
+    monkeypatch.setattr(run_set, "one", probe)
+    asyncio.run(run_set.main(_args()))
+    assert held == []  # the rows are what the batch holds; the file's bytes were let go once read
+
+
 HEAD = "a" * 40
 
 

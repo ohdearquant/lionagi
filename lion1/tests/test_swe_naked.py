@@ -391,6 +391,30 @@ def test_the_snapshot_the_harness_reads_is_whole_or_absent(tmp_path, monkeypatch
     )
 
 
+def test_an_earlier_report_is_known_by_its_digest_and_not_held_through_the_evaluation(tmp_path, monkeypatch):
+    preds = tmp_path / "predictions.jsonl"
+    preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 2\n"}) + "\n")
+    report = tmp_path / "claude-code-naked-m.r1.json"
+    earlier = json.dumps({"resolved_ids": ["x__x-1"], "pad": "p" * 4000})
+    report.write_text(earlier)
+    held: list[str] = []
+
+    def run(argv, *, capture_output, text, cwd, timeout):
+        frame = sys._getframe(1)
+        assert frame.f_code.co_name == "oracle"
+        held.extend(k for k, v in frame.f_locals.items() if isinstance(v, bytes) and len(v) >= len(earlier))
+        held.extend(f"before.{k}" for k, v in frame.f_locals["before"].items() if bytes in map(type, v))
+        # rewritten within the same nanosecond as the earlier report: a different report all the same
+        stat = report.stat()
+        report.write_text(json.dumps({"resolved_ids": [], "pad": "q" * 4000}))
+        os.utime(report, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(run_naked.subprocess, "run", run)
+    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1) == {"resolved_ids": [], "pad": "q" * 4000}
+    assert held == []
+
+
 @pytest.mark.parametrize("streams", [(b"so far\n", b"slow\n"), ("so far\n", "slow\n"), (None, None)])
 def test_an_evaluation_that_times_out_leaves_its_log_and_the_timeout_stands(tmp_path, monkeypatch, streams):
     preds = tmp_path / "predictions.jsonl"

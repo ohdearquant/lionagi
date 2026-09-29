@@ -281,7 +281,7 @@ def provenance() -> dict:
     return {"head": head, "dirty": git("status", "--porcelain").rstrip("\n")}
 
 
-def manifest(args: argparse.Namespace, out_dir: Path, selected: list[str], data: bytes, src: dict) -> Path:
+def manifest(args: argparse.Namespace, out_dir: Path, selected: list[str], digest: str, src: dict) -> Path:
     """What this launch was, written before the first box: the arguments, the source (HEAD and what
     was dirty), the digest of the bytes the rows were read from, the codex config when that arm runs,
     and the run it belongs to. A later launch under the same id adds its own file, created
@@ -291,7 +291,7 @@ def manifest(args: argparse.Namespace, out_dir: Path, selected: list[str], data:
         "args": vars(args),
         "head": src["head"],
         "dirty": src["dirty"],
-        "dataset": {"path": str(SETS[args.set]), "sha256": hashlib.sha256(data).hexdigest()},
+        "dataset": {"path": str(SETS[args.set]), "sha256": digest},
         "selected": selected,  # the instances this launch asked for, after every filter
         "run": "run.json",
     }
@@ -322,7 +322,9 @@ async def main(args: argparse.Namespace) -> None:
     if args.cost_budget is None and not unmetered:
         args.cost_budget = 1.0
     data = SETS[args.set].read_bytes()  # one read: the manifest digests the bytes these rows came from
+    digest = hashlib.sha256(data).hexdigest()
     rows = json.loads(data)
+    del data  # the rows are what the run holds; the bytes are not kept through the batch
     if args.repo:
         rows = [r for r in rows if r["repo"] == args.repo]
     if args.instances:
@@ -389,15 +391,17 @@ async def main(args: argparse.Namespace) -> None:
         lock_file.close()
         raise SystemExit(f"{out_dir / 'run.lock'} is held: another launch of this run is running") from None
     try:
-        await _run(args, out_dir, ledger, rows, data, src)
+        await _run(args, out_dir, ledger, rows, digest, src)
     finally:
         lock_file.close()
 
 
 async def _run(
-    args: argparse.Namespace, out_dir: Path, ledger: Path, rows: list[dict], data: bytes, src: dict
+    args: argparse.Namespace, out_dir: Path, ledger: Path, rows: list[dict], digest: str, src: dict
 ) -> None:
-    print(f"launch record {manifest(args, out_dir, [r['instance_id'] for r in rows], data, src)}", flush=True)
+    print(
+        f"launch record {manifest(args, out_dir, [r['instance_id'] for r in rows], digest, src)}", flush=True
+    )
     done = ledger_ids(ledger)
     todo = [r for r in rows if r["instance_id"] not in done]
     print(
