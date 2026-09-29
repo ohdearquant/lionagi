@@ -970,7 +970,7 @@ class Agent:
             excess = 0  # the figure the fold decides on (`_notify`): the view plus history it never saw
             if run.anchor is not None and run.floor is not None:
                 excess = max(0, run.anchor[0] - run.anchor[1] - run.floor)
-            used, window = run.view_est + excess, run.request.context_budget
+            used, window = run.view_est + excess, run.bounds["context_budget"]
             source = {
                 "record": str(log),
                 "run": run.id,

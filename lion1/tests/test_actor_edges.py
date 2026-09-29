@@ -249,7 +249,7 @@ def test_an_awaitable_accept_gate_and_an_awaitable_after_hook_are_awaited():
     )
     assert results(run)["a1"] == Result("echo", True, value="HI")
     assert judged == ["first", "second"] and run.output["done"].summary == "second"
-    assert "OUT{} not accepted: not yet" in notices(run)[1]
+    assert "OUT{} refused: not yet" in notices(run)[1]
 
 
 def test_an_alias_the_runtime_would_generate_may_recur_in_a_later_round():
