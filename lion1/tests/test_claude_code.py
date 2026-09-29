@@ -626,6 +626,76 @@ def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_retur
         assert [ex for _, _, ex in landed] == ["started" if hooks else "not executed"][: len(landed)], k
 
 
+def test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once(monkeypatch):
+    """Both pass the repeat check before either lands (both are at the before hook); the first to land
+    is admitted, the second lands as a repeat under the suffixed id and its hook is refused, whether
+    the hooks let it through or the call's end cancelled it at the gate."""
+    import shlex
+    import socket
+
+    async def twins(cancelled: bool):
+        actor = Actor("gated")
+        waiting, release = 0, asyncio.Event()
+
+        @actor.before
+        async def hold(run, la, request):
+            nonlocal waiting
+            waiting += 1
+            await release.wait()
+
+        clients: list[socket.socket] = []
+
+        async def fake_exec(cli, args, prompt, **kw):
+            settings = json.loads(args[args.index("--settings") + 1])
+            sock = shlex.split(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"])[-1]
+            for n in range(2):
+                client = socket.socket(socket.AF_UNIX)
+                client.connect(sock)
+                call = {"tool_name": "Read", "tool_use_id": "toolu_d", "tool_input": {"file_path": f"n{n}"}}
+                client.sendall(json.dumps(call).encode())
+                client.shutdown(socket.SHUT_WR)
+                clients.append(client)
+            while waiting < 2:
+                await asyncio.sleep(0)
+            if (
+                cancelled
+            ):  # the call ends while both are held: the first cancelled lands, the second is its repeat
+                for _ in range(2):
+                    await asyncio.sleep(0)
+            else:
+                release.set()
+                for _ in range(4):
+                    await asyncio.sleep(0)
+            asyncio.get_running_loop().call_later(0.2, release.set)
+            return "ok", {"total_cost_usd": 0.0}
+
+        monkeypatch.setattr(claude_code, "_exec", fake_exec)
+        backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
+        run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend)
+        await asyncio.sleep(0.3)
+        answers = []
+        for client in clients:
+            client.settimeout(0.5)
+            answers.append(client.recv(4096))
+            client.close()
+        landed = [
+            (e.alias, e.content.ok, e.content.reason, e.meta["execution"])
+            for e in run.record.of_kind(Kind.RESULT)
+        ]
+        return landed, answers
+
+    landed, answers = asyncio.run(twins(False))
+    assert landed[0] == ("toolu_d", True, None, "started") and answers[0] == b'{"allow": {"file_path": "n0"}}'
+    assert landed[1] == (f"toolu_d_{landed[1][0][8:]}", False, "refused", "not executed") and len(landed) == 2
+    assert answers[1] == b'{"refuse": "refused: tool-use id \'toolu_d\' is already on the record"}'
+    landed, answers = asyncio.run(twins(True))
+    assert [(a[:7], ok, reason, ex) for a, ok, reason, ex in landed] == [
+        ("toolu_d", False, "cancelled", "not executed"),
+        ("toolu_d", False, "cancelled", "not executed"),
+    ]
+    assert landed[0][0] == "toolu_d" and landed[1][0].startswith("toolu_d_") and answers == [b"", b""]
+
+
 def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_before_it_returns(tmp_path):
     """The CLI fails, runs past the call's deadline, or the call is cancelled, while a before hook waits on an
     approval: the call's deadline ends it, the tool call lands not executed before it returns, nothing of the

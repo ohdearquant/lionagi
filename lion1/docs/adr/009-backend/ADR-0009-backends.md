@@ -258,7 +258,8 @@ anchor.
   `test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record`,
   `test_the_gate_admits_nothing_when_it_cannot_decide`,
   `test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_before_it_returns`,
-  `test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_returned` and
+  `test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_returned`,
+  `test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once` and
   `test_a_request_the_hooks_left_that_cannot_be_sent_is_a_refusal_that_lands`; the wiring in `lion
   agent` by `tests/test_agent.py` `test_the_session_clis_own_tool_calls_ask_the_agents_actor`. The
   record keeps the call and its verdict, never what the tool returned. Both hook contracts were
