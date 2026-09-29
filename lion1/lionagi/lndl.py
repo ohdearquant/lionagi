@@ -855,8 +855,9 @@ def guidance(outputs: tuple[str, ...] = (), commands: Iterable[str] | None = Non
         "you hide it or the view outgrows its budget, when the runtime folds the oldest results to "
         f"placeholders once.{curating}\n"
         "A turn without OUT{} runs every <lact> and continues; their results arrive in the next system "
-        "notification under their aliases. A turn with OUT{} runs every <lact> too, waits for them and for "
-        "anything still running that OUT{} points at, then ends.\n"
+        "notification under their aliases. A turn with OUT{} runs every <lact> too, but OUT{} waits only "
+        "for what it names or points at: once it is accepted the run ends and any <lact> not finished is "
+        "cancelled.\n"
         "Aliases are unique within a turn. Tags are siblings; a complete tag quoted inside a value stays "
         "text."
     )

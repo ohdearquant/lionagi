@@ -1,7 +1,7 @@
 ---
 adr: ADR-0002
 status: draft
-liveness: operating (the code still says round; the reference-only wait and the reap at the end are owed, S4)
+liveness: operating (the code still says round, S3; the opt-in wait for the whole turn is not built, S4)
 date: "2026-09-23"
 area: run
 kind: new
@@ -49,7 +49,7 @@ Source: `Actor.run` in `lionagi/actor.py`.
 
 ## Claims
 
-### C1: The turn rules are a closed table _(enforced: mechanical; owed, S4)_ ^c1
+### C1: The turn rules are a closed table _(enforced: mechanical)_ ^c1
 
 - **Subject**: every turn of every run.
 - **Violated when**: a turn executes or ends in a way that is not a row below.
@@ -112,11 +112,11 @@ context land with their bounds, [[ADR-0003-the-bounds#^c2|ADR-0003/C2]]), `Refus
 `Stopped(round)`. `Continue`, a state and not an outcome, is what a settled turn without `OUT{}`
 leaves; a retry shows as `retry_error` and the `round.retry` event, never as an outcome.
 
-Open asks are cancelled when the run ends, whichever value it ends in; no command is pending by
-then, since every turn settles its own (S4). An exception the loop does not catch, a backend that
-raises, a store that cannot be written or a command task's own defect (S5), propagates from `run` to
-the caller with `run.outcome` unset; the record holds what was appended. That is an abort, not an
-outcome.
+Open asks are cancelled when the run ends, whichever value it ends in, or an abort; a command still
+pending then is cancelled and reaped, its RESULT on the record before `run` returns or raises (S4).
+An exception the loop does not catch, a backend that raises, a store that cannot be written or a
+command task's own defect (S5), propagates from `run` to the caller with `run.outcome` unset; the
+record holds what was appended. That is an abort, not an outcome.
 
 ## Decisions
 
@@ -127,9 +127,10 @@ appended, `stop` is asked, the backend is called once, the message is read, ever
 dispatched, and the turn settles. The caller reads `run.outcome` after the loop returns.
 
 - **Landing evidence**: `tests/test_actor.py`; tests compare `Exhausted`, `Refused` and `Stopped` by
-  value and `Success` by type. Owed: a cancelled command's RESULT is on the record when `run`
-  returns; the closure entry (ADR-0006/C1). One cancelled before it entered is recorded by
-  `_never_started`.
+  value and `Success` by type; the reap by
+  `test_out_waits_for_what_it_names_and_the_reap_lands_the_rest_cancelled_before_run_returns`; the
+  closure by `test_a_run_that_ends_by_an_outcome_closes_its_record_with_the_outcome`. One cancelled
+  before it entered is recorded by `_never_started`.
 
 ## Alternatives
 
@@ -149,11 +150,19 @@ dispatched, and the turn settles. The caller reads `run.outcome` after the loop 
   `<system round=`, "rounds running", the `round.*` events, `Stopped(round)`. The rename is owed
   with the first change that touches them; the `Retry` class the code defines and never constructs
   goes with it.
-- **S4**: The loop today gathers every command of the turn before `OUT{}` assembles; the design
-  waits for the references only, and the gather goes with the first change that touches it. A wait
-  for the whole turn is at most an opt-in, later. Until then nothing is pending when the run ends,
-  so there is nothing there to cancel or reap; the reap is owed with the same change.
+- **S4**: The gather of every command of the turn before `OUT{}` assembled is gone: `OUT{}` waits
+  for what it references, and an assembly that fails or an output refused settles the rest of the
+  turn. What is pending when the run ends, by an outcome or an abort, is cancelled and reaped before
+  `run` returns;
+  `test_a_run_cancelled_while_out_waits_reaps_every_pending_command_and_appends_no_closure` pins the
+  abort. A wait for the whole turn is at most an opt-in, later, and not built.
 - **S5**: A command task that ends in neither its RESULT
   ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]) nor a cancel is the runtime's own defect: the
-  turn's settle raises it and never drops it, and the run aborts (C4), as
-  `test_a_command_task_ending_in_neither_a_result_nor_a_cancel_aborts_the_run` pins.
+  turn's settle raises it and the run aborts (C4):
+  `test_a_command_task_ending_in_neither_a_result_nor_a_cancel_aborts_the_run`. A task no settle
+  waited for (one `OUT{}` did not name) is seen through by the reap before `run` returns:
+  `test_a_defect_in_a_command_out_did_not_name_is_raised_before_the_run_returns`. The abort's reap
+  holds through a cancel aimed at the run (the cancelled RESULT lands, the run unregisters); a
+  cancel during a defect's reap ends the run cancelled with the defect as its cause:
+  `test_a_second_cancel_while_the_abort_reaps_still_lands_the_cancelled_result_and_unregisters`,
+  `test_a_cancel_during_a_defects_reap_ends_the_run_cancelled_with_the_defect_as_its_cause`.

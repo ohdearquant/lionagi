@@ -1,7 +1,7 @@
 ---
 adr: ADR-0019
 status: draft
-liveness: operating (the take and its refusals, the transcript scan, the restore, the files, both transports and the status's staleness to the take's fraction of a second are pinned by tests; lanes from pull requests and threads are owed; nothing in the code starts a Claude Code session's checkpoint)
+liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests, the restore, the files, both transports, the status's staleness to the take's fraction of a second and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests)
 date: "2026-09-25"
 area: checkpoint
 kind: new
@@ -173,9 +173,9 @@ input tokens, the window and the percentage. Absent, unreadable or not an object
 and the restore says "not known". A resident's is the measure its fold decides on, the view estimate
 plus the excess above the floor ([[ADR-0009-backends#^c3|ADR-0009/C3]]), over `context_budget`.
 
-An absent topic, loop file or hook ring gives no value; a khive that cannot answer leaves its reason
-in `source.lanes`. Of the places read, a missing transcript, a `.khive/config.toml` naming no actor
-and a `pending.jsonl` line that is not a declared value refuse the take.
+An absent topic, loop file or hook ring gives no value; a khive or a gh that cannot answer leaves
+its reason in `source.lanes`. Of the places read, a missing transcript, a `.khive/config.toml`
+naming no actor and a `pending.jsonl` line that is not a declared value refuse the take.
 
 ## Decisions
 
@@ -193,33 +193,38 @@ aside.
   `test_concurrent_saves_each_land_and_latest_names_one_of_them`,
   `test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands`,
   `test_a_record_whose_rows_were_rewritten_is_refused_though_it_folds_to_the_same_view`,
-  `test_save_refuses_an_id_that_is_not_a_name_and_writes_nothing`, the long-value test;
-  `tests/test_chat.py`: `test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed`.
+  `test_save_refuses_an_id_that_is_not_a_name_and_writes_nothing`,
+  `test_save_load_and_the_restore_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value`, the
+  long-value test; `tests/test_chat.py`:
+  `test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed`.
 
 ### D2: `hub/context.py`: one function per place a Claude Code session keeps state ^d2
 
 Serves C2, C3, C5 and C7. The transcript is the newest under Claude Code's project directory for the
 session's directory, never a pre-compaction copy, scanned once per size and time for every function.
 Beside it: the hook ring, the typing log, `active_topic` in the project's sessions registry, the
-actor's active tasks in khive, and the statusline's per-session file. The newest loop file under
-`.khive/loop/` gives its header as a `fact` and its `## Posture` as a `posture`; the last text, its
-LNDL taken out, is a `posture` too.
+actor's lanes (S4), and the statusline's per-session file. The newest loop file under `.khive/loop/`
+gives its header as a `fact` and its `## Posture` as a `posture`; the last text, its LNDL taken out,
+is a `posture` too.
 
 - **Landing evidence**: `tests/test_checkpoint.py`:
   `test_the_reader_keeps_each_prompt_with_its_final_text_and_no_dropped_kind_survives`,
   `test_each_source_harvests_its_kind_and_an_absent_source_is_a_value`,
   `test_watches_are_the_monitors_still_running_verbatim_and_the_inbox_line_is_added_once`,
   `test_a_prompt_the_harness_requeued_is_one_turn`,
-  `test_the_ceiling_eight_directives_half_the_budget_and_the_watch_list`, the spawn test.
+  `test_the_ceiling_eight_directives_half_the_budget_and_the_watch_list`, the spawn test;
+  `tests/test_context.py`:
+  `test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_open_pull_requests`,
+  `test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one`.
 
 ### D3: `lion context` and `/api/context/*`: one implementation, two transports ^d3
 
 Serves C1, C4, C6 and C7. `apps/cli/lion_cli/context.py` holds `set`, `checkpoint`, `restore`,
 `status` and `show`, run from the session's directory; a refusal prints its reason on standard error
-and exits 1. The areas server's `context_api` routes all but `show` to the same functions for a
-directory its registry names, 404 for any other and 409 on a refusal, behind the server's Host and
-Origin gates. `status` says stale when no checkpoint exists or the file it points at changed after
-it.
+and exits 1. `checkpoint --hook` is the PreCompact hook's entry (S1). The areas server's
+`context_api` routes all but `show` to the same functions for a directory its registry names, 404
+for any other and 409 on a refusal, behind the server's Host and Origin gates. `status` says stale
+when no checkpoint exists or the file it points at changed after it.
 
 - **Landing evidence**: `tests/test_checkpoint.py`:
   `test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli`,
@@ -227,7 +232,8 @@ it.
   `test_the_served_context_routes_sit_behind_the_same_gates`,
   `test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status`; `tests/test_context.py`:
   `test_the_status_is_stale_when_the_file_changed_after_the_take_within_its_second_too`,
-  `test_a_prompt_landing_while_the_take_reads_the_transcript_is_after_the_take`.
+  `test_a_prompt_landing_while_the_take_reads_the_transcript_is_after_the_take`,
+  `test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_hands_it`.
 
 ### D4: The resident's arm in `hub/agent/agent.py` ^d4
 
@@ -255,21 +261,33 @@ take that fails is kept among the agent's errors and the run goes on.
 
 ## Consequences
 
-- **S1**: Nothing in the code takes a Claude Code session's checkpoint by itself or starts the fresh
-  session: a person, a hook or another program runs `lion context checkpoint`, starts a session and
-  gives it the restore's prompt. The reasons `threshold`, `rotate` and `precompact` name such
-  callers.
+- **S1**: Claude Code's PreCompact hook, when an install sets it to `lion context checkpoint
+  --hook`, takes the session's checkpoint with the reason `precompact`. The session, transcript and
+  directory come from the hook's input alone; an event of another kind, or one missing a string
+  session, transcript or directory, is refused with nothing taken. Nothing else takes one or starts
+  the fresh session: a person or another program runs `lion context checkpoint`, starts a session
+  and gives it the restore's prompt; `threshold` and `rotate` name such callers.
 - **S2**: The statusline's per-session file and the hook ring are written outside the code, by the
   statusline command and the prompt hook a Claude Code install configures; without them the figure
   reads "not known" and the person's words come from the transcript.
-- **S3**: `save` and `load` check no kind and no reason: a file edited to hold another kind loads,
-  and the restore leaves out a value of a kind outside the list. No test pins it.
-- **S4**: Reading open pull requests and threads awaiting a reply as lanes is owed. Today the lanes
-  are the actor's active khive tasks, and `source.lanes` says the rest were not read.
-- **S5**: One `latest.json` serves both arms. A Claude Code checkpoint taken in a resident's
-  directory, the only kind of directory the `/api/context/` routes reach, becomes the latest; the
-  resident's next process refuses it and starts fresh ([[ADR-0013-the-agent|ADR-0013]] S8). No test
-  pins it.
+- **S3**: `save`, `load` and the restore refuse a reason or a kind outside the lists and name the
+  value: a file edited to hold another kind does not load, and a restore leaves no value out unsaid.
+  The kind checked is a named value's; `source.kind` is on no list: the restore renders a resident's
+  by it, and `to_history` refuses any other. Pinned by
+  `test_save_load_and_the_restore_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value`.
+- **S4**: The lanes are the actor's active khive tasks, the threads its unread mail awaits a reply
+  on, each named by its newest unread message, and the open pull requests the gh account authored in
+  the directory's repository. `source.lanes` names each read, or why it could not be done, and a
+  full page says it is one. A thread already read and left unanswered is not a lane. Pinned by
+  `test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_open_pull_requests` and
+  `test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one`.
+- **S5**: One `latest.json` serves both arms, so the latest checkpoint that `lion context restore`
+  and `status` show is the directory's newest, whichever arm took it. A Claude Code checkpoint taken
+  in a resident's directory, the only kind of directory the `/api/context/` routes reach, becomes
+  the latest. The resident's next process refuses it and starts fresh
+  ([[ADR-0013-the-agent|ADR-0013]] S8), its own checkpoint left on disk: the cost is a fresh start,
+  never a view the resident did not take. Pinned by
+  `test_a_claude_code_checkpoint_in_a_residents_directory_is_refused_by_its_next_process`.
 - **S6**: `hub/context.py` reads fixed places under the home directory: Claude Code's project
   directory, the hook ring, the typing log and the statusline's files; where no tool writes one, it
   reads as absent. The script the added inbox Monitor runs, and the actors it names after the
