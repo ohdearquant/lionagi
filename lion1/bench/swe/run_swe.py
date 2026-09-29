@@ -409,8 +409,11 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
     try:
         part.write_bytes(data)
         os.replace(part, snapshot)
-    except BaseException:  # the snapshot is absent, and so is the scratch file
-        part.unlink(missing_ok=True)
+    except BaseException as e:  # the snapshot is absent, and so is the scratch file
+        try:
+            part.unlink(missing_ok=True)
+        except OSError as e2:  # a second fault: the first is what ends the call, this one rides along
+            e.add_note(f"the scratch file {part.name} could not be removed: {type(e2).__name__}: {e2}")
         raise
     del data  # the harness reads the snapshot; the bytes are not held through its run
     cmd = [

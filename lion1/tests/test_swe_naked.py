@@ -389,6 +389,22 @@ def test_the_snapshot_the_harness_reads_is_whole_or_absent(tmp_path, monkeypatch
     assert (
         snapshot.read_bytes() == b"earlier, whole\n" and list(tmp_path.glob("*.part")) == [] and calls == []
     )
+    # the scratch file cannot be removed either: the first fault is what the caller sees, noted
+    unlink = Path.unlink
+
+    def denied(self, missing_ok=False):
+        if self.name.endswith(".part"):
+            raise PermissionError("cleanup denied")
+        unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", denied)
+    with pytest.raises(OSError, match="replace failed") as caught:
+        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
+    assert caught.value.__notes__ == [
+        f"the scratch file {snapshot.name}.{os.getpid()}.part could not be removed: "
+        "PermissionError: cleanup denied"
+    ]
+    assert calls == [] and snapshot.read_bytes() == b"earlier, whole\n"
 
 
 def test_an_earlier_report_is_known_by_its_digest_and_not_held_through_the_evaluation(tmp_path, monkeypatch):
