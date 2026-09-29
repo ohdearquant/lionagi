@@ -9,6 +9,7 @@ Serving is the pid file's lock, the same lock `serve` holds."""
 from __future__ import annotations
 
 import asyncio
+import errno
 import fcntl
 import html
 import json
@@ -135,17 +136,22 @@ def load_areas(path: Path | str = DEFAULT_REGISTRY) -> list[Area]:
 
 
 def _held(pid_file: Path) -> tuple[bool, int | None]:
-    """(locked by a live process, the pid it wrote): the lock is the claim, the pid is for people."""
-    if not pid_file.exists():
+    """(locked by a live process, the pid it wrote): the lock is the claim, the pid is for people.
+    Only a refused shared lock is a holder; a pid file that cannot be opened, read or locked at all
+    raises its OSError, for the caller to say, rather than reading as serving or as stopped."""
+    try:
+        fd = os.open(pid_file, os.O_RDONLY)
+    except FileNotFoundError:
         return False, None
-    fd = os.open(pid_file, os.O_RDONLY)
     try:
         text = os.read(fd, 64).decode(errors="replace").strip()
         pid = int(text) if text.isdigit() else None
         try:
             fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)  # a holder has it exclusive: this fails
-        except OSError:
-            return True, pid
+        except OSError as e:
+            if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                return True, pid
+            raise
         fcntl.flock(fd, fcntl.LOCK_UN)
         return False, pid
     finally:
@@ -167,7 +173,11 @@ def resident(area: Area, directory: str, today: str | None = None) -> Resident:
         role = "desk" if "desk" in cfg else "chores"
     except (OSError, tomllib.TOMLDecodeError) as e:
         problem.append(f"chores.toml: {e}")
-    serving, pid = _held(d / "agent.pid")
+    try:
+        serving, pid = _held(d / "agent.pid")
+    except OSError as e:  # one resident's unreadable lock is its own problem, not the whole table's
+        serving, pid = False, None
+        problem.append(f"agent.pid: {e}")
     cursor: dict[str, Any] = {}
     spend: dict[str, Any] = {}
     notes = d / "notes" / "agent.json"
@@ -313,7 +323,11 @@ def controls_info(directory: str) -> dict:
         launchd_label = label if isinstance(label, str) and label else None
     idle = True
     pid_file = d / "agent.pid"
-    if _held(pid_file)[0]:  # a wake on an in-process backend has no child to find
+    try:
+        running = _held(pid_file)[0]
+    except OSError:  # an unreadable lock says nothing, so it reads as busy, as an unread pgrep does
+        running, idle = False, False
+    if running:  # a wake on an in-process backend has no child to find
         # idle only on a cursor that names a finished wake: a first wake starts before any cursor
         # exists, and an unreadable one says nothing, so both read as busy, as an unread pgrep does
         try:

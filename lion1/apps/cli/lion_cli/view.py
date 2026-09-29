@@ -43,9 +43,11 @@ class Console:
         verbose: bool = False,  # results' first lines and the loop's notices
         width: int | None = None,
         calls: list[dict] | None = None,  # the backend's call envelopes: usage and cost go to the log too
+        head: dict | None = None,  # the log's first row, written with its first entry: where the chat ran
     ):
         self.model = model.split("/")[-1]
         self.calls = calls
+        self.head = head
         self.billed = 0  # calls already written to the log
         self.log = log
         self.raw = raw
@@ -103,6 +105,8 @@ class Console:
     def __call__(self, e: Entry) -> None:
         if self.log is not None:
             with self.log.open("a") as fh:
+                if self.head is not None and not self.written:
+                    fh.write(json.dumps(self.head) + "\n")
                 fh.write(json.dumps(entry_row(e), default=str) + "\n")
                 self._bill(fh, e.round)
             self.written += 1

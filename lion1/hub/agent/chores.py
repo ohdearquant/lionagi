@@ -653,19 +653,25 @@ class Chores:
         if self._caught_up == run.id:
             return []
         self._caught_up = run.id
-        try:
-            (rows,) = await self.agent.khive.exec('list(kind="scheduled_event", limit=200)')
+        me = self.agent.khive.actor
+        try:  # the store filters by creator and status before the page, so the page holds only these
+            pages = await self.agent.khive.exec(
+                "["
+                + ", ".join(
+                    f'list(kind="scheduled_event", created_by_actor={lit(me)}, status={lit(s)}, limit=200)'
+                    for s in ("missed", "failed")
+                )
+                + "]"
+            )
         except Exception as e:
             return [f"missed-tick read failed: {type(e).__name__}: {e}"]
-        items = rows.get("items", []) if isinstance(rows, dict) else (rows or [])
-        me, seen, done = self.agent.khive.actor, list(_val(self.agent.state, "missed_seen", [])), []
+        items = [
+            it for rows in pages for it in (rows.get("items", []) if isinstance(rows, dict) else (rows or []))
+        ]
+        seen, done = list(_val(self.agent.state, "missed_seen", [])), []
         for it in items:
-            p = it.get("properties") or {}
-            if (
-                p.get("created_by_actor") != me
-                or p.get("status") not in ("missed", "failed")
-                or it["id"] in seen
-            ):
+            p, status = it.get("properties") or {}, it.get("status")  # status sits beside properties
+            if p.get("created_by_actor") != me or status not in ("missed", "failed") or it["id"] in seen:
                 continue
             seen.append(it["id"])
             content = str(it.get("content") or "")
@@ -673,16 +679,16 @@ class Chores:
             chore = m.group(1) if m else None
             if chore == "digest":
                 await self.digest(None, run)
-                done.append(f"{content}: {p['status']}, digest sent now")
+                done.append(f"{content}: {status}, digest sent now")
             elif chore == "aged":
-                done.append(f"{content}: {p['status']}, " + await self.aged(None, run))
+                done.append(f"{content}: {status}, " + await self.aged(None, run))
             elif chore in self.instruments and chore != skip:
                 done.append(
-                    f"{content}: {p['status']}, ran now: "
+                    f"{content}: {status}, ran now: "
                     + await self.check(Check(chore=chore, args={"missed_tick": it["id"]}), run)
                 )
             else:
-                done.append(f"{content}: {p['status']}, noted")
+                done.append(f"{content}: {status}, noted")
         if done:
             self.agent.state.put("missed_seen", seen[-500:], run=run.id, seq=run.record.seq)
         return done

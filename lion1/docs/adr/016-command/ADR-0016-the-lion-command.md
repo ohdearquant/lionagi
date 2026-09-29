@@ -1,7 +1,7 @@
 ---
 adr: ADR-0016
 status: draft
-liveness: operating (the command tree, the shared lock, the spend row with its count of calls of unknown cost, the readers' mark of a partial sum and the text `--stats` prints are under tests; the phone page renders the mark untested; a failed session CLI call lands no envelope, so the row misses it)
+liveness: operating (the command tree, the shared lock, the spend row with its count of calls of unknown cost, the readers' mark of a partial sum and the text `--stats` prints are under tests; the phone page renders the mark untested)
 date: "2026-09-25"
 area: command
 kind: new
@@ -142,7 +142,7 @@ chat quietly on an interrupt. `context` takes its verbs as a second level of sub
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the chat flags read through
   `parser()`; `tests/test_areas.py`: the command printing the table from a given registry;
-  `tests/test_checkpoint.py`: `lion context` set, checkpoint, show, restore and status through the
+  `tests/test_context.py`: `lion context` set, checkpoint, show, restore and status through the
   command.
 
 ### D2: `agent_main`, `land` and `arm` in `apps/cli/lion_cli/agent.py` ^d2
@@ -181,7 +181,7 @@ session restarts when present.
 
 - **Landing evidence**: `tests/test_agent.py`: the cost cap from the backend's own figures, each
   burst of a continuous chair booked once, one serve line per wake, the last turn's context on the
-  line,
+  line, `test_a_failed_session_cli_call_is_counted_in_the_days_spend_row_and_still_ends_the_run`,
   `test_a_call_of_unknown_or_incomplete_cost_adds_nothing_to_the_cost_and_the_readers_mark_the_sum`;
   `tests/test_chores.py`: the digest's tokens line,
   `test_the_digests_tokens_line_marks_a_days_cost_that_misses_calls_of_unknown_cost`.
@@ -227,7 +227,7 @@ cost as it came, null included.
   `unknown` is not zero, `--stats`, `lion areas`, the digest, the wake line, the chat's closing line
   and the cap's hold print `(partial: N call(s) of unknown cost)` beside the figure, as
   [[ADR-0009-backends|ADR-0009]] S1 asks. The phone page renders it too, untested. A failed session
-  CLI call lands no envelope today, so the row misses it whole.
+  CLI call lands its envelope and the row counts it.
 - **S3**: For `claude_code` the row's dollars are the figure the CLI prints, taken per call as a
   delta ([[ADR-0009-backends#^c4|ADR-0009/C4]]); whether that figure is a bill under a subscription
   login is not shown here.
