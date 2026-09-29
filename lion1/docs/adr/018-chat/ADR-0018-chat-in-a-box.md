@@ -73,6 +73,8 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   browser, linked under the reply.
 - **voice**: Alt-V at the editor: a recording from the microphone, transcribed on this machine
   (`mlx-whisper`, behind the `voice` extra) into the line at the cursor.
+- **khive config**: the file whose `[actor].id` the chat's khive calls sign as: `--khive-config` or
+  `[chat] khive_config`, else `<dir>/.khive/config.toml`; an explicit one is never a fallback.
 - **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
   defaults for the flags.
 
@@ -195,7 +197,8 @@ coding guidance, `hub/guidance/code.md`, names the run it was tried on.
 
 - **Subject**: `Console.ask`, `Editor` and `status_line` on a terminal.
 - **Violated when**: a pasted line arrives as its own message, a line over 1024 bytes is lost, a
-  prompt leaves the loop without its SIGINT handler, or the status line shows a cached value.
+  prompt leaves the loop without its SIGINT handler, or the status line shows a cached value. Also
+  when an explicit khive config that cannot be read is answered by the directory's own.
 
 On a terminal a paste of many lines is one message, Enter sends, Alt-Enter breaks a line, Up recalls
 earlier messages from `.lion/history`, and Ctrl-C clears the line or, on an empty one, ends the
@@ -327,10 +330,11 @@ given, else `vm` and `python:3.12`; `git apply --check -R` tests the continued s
 ### D5: `Editor`, `status_line` and `lion_cli/config.py` ^d5
 
 Serves C8. `Editor` wraps a `PromptSession` with its own key bindings and `handle_sigint` off;
-`Console.ask` uses it when stdin and stdout are terminals, `stdin_ask` otherwise. `status_line`
-reads the actor's inbox, the run's context figure and last reported prompt, the profile's notes and
-`spent(calls)`. `chat_config` reads the two files and `main` parses twice, the second with the
-files' values as defaults; `lion config` prints the effective values with their sources.
+`Console.ask` uses it on a terminal, `stdin_ask` otherwise. `status_line` reads the actor's inbox,
+the run's context figure and last reported prompt, the profile's notes and `spent(calls)`.
+`chat_config` reads the two files and `main` parses twice, the second with their values as defaults;
+`lion config` prints each value with its source. An explicit khive config rides every `kkernel exec`
+as `--config`, over the cwd's (measured); missing, or naming no actor, it refuses the start by name.
 
 - **Landing evidence**: `tests/test_chat.py`: the editor's paste, Alt-Enter, Ctrl-C and Up, the
   SIGINT handler left in place, the status line's live values and where it prints;
@@ -416,6 +420,7 @@ mlx_whisper, imported on the thread since the import takes seconds; both are inj
 | Reading the person's line through `input()` with bracketed paste | the tty's line discipline still splits a paste into lines on some terminals and macOS drops any line over 1024 bytes without a word |
 | A first Ctrl-C that waits for the round to settle | a long tool turn made the interrupt look ignored; the call is the person's to cut |
 | Environment variables for the chat's defaults | a file the person can read back with `lion config` says where each value came from |
+| Falling back to the directory's khive config when the explicit one is missing | the chat would sign as someone the person did not name; a refusal by file name is what they can act on |
 | A progress bar, or a line per second, while a call runs | nothing is known of a call's length; a spinner with the elapsed time says only that it is alive, and leaves the scrollback clean |
 | `file:` links for paths | rich's markdown drops them, and a browser shows a file where an editor at the line is what the person opens it for |
 | Ctrl-Y, or a mouse button, for the copy | Ctrl-Y is the editor's yank, and a terminal has no buttons; a key the line survives and a command the person can number |

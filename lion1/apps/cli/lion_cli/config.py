@@ -22,6 +22,7 @@ CHAT: dict[str, type | tuple[str, ...]] = {
     "code": bool,
     "tools": list,
     "max_turns": int,
+    "khive_config": str,
     "raw": bool,
     "verbose": bool,
 }
@@ -47,6 +48,8 @@ def _value(path: Path, key: str, v: object) -> object:
         if v in want:
             return v
     elif type(v) is want:  # exact: a TOML true is not the integer 1
+        if key == "khive_config" and not Path(v).expanduser().is_absolute():
+            return str(path.parent.parent / v)  # relative to the directory the file's .lion sits in
         return v
     says = f"one of {', '.join(want)}" if isinstance(want, tuple) else _SAYS[want]
     raise SystemExit(f"{path}: [chat] {key} = {v!r} is not {says}")

@@ -146,3 +146,39 @@ def test_a_timeout_after_kkernel_exited_still_stops_what_it_left_holding_the_pip
         time.sleep(0.01)
     else:
         raise AssertionError(f"kkernel's child {child} outlived the timed-out call")
+
+
+def test_an_explicit_config_rides_every_call_and_a_missing_one_is_refused_never_the_cwds(tmp_path):
+    """`config=` names the khive config the calls sign with: kkernel gets it as `--config` before
+    `--`, and the cwd needs no `.khive/config.toml` of its own; a config that is not a file refuses
+    at construction, while without `config=` the same cwd is refused for holding no config."""
+    log = tmp_path / "argv.jsonl"
+    stub = tmp_path / "kkernel"
+    stub.write_text(
+        f"#!{sys.executable}\nimport json, sys\n"
+        f"open({str(log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "print(json.dumps({'results': [{'ok': True, 'result': None}]}))\n"
+    )
+    stub.chmod(0o755)
+    elsewhere = tmp_path / "elsewhere" / "config.toml"
+    elsewhere.parent.mkdir()
+    elsewhere.write_text('[actor]\nid = "lambda:y"\n')
+    cwd = tmp_path / "work"
+    cwd.mkdir()  # no .khive here
+    k = Khive(cwd, "lambda:y", kkernel=str(stub), config=elsewhere)
+    assert asyncio.run(k.exec("comm.inbox(limit=1)")) == [None]
+    (argv,) = [json.loads(line) for line in log.read_text().splitlines()]
+    assert argv == [
+        "exec",
+        "--strict",
+        "--expect-actor",
+        "lambda:y",
+        "--config",
+        str(elsewhere),
+        "--",
+        "comm.inbox(limit=1)",
+    ]
+    with pytest.raises(KhiveError, match="no such khive config file"):
+        Khive(cwd, "lambda:y", kkernel=str(stub), config=tmp_path / "missing.toml")
+    with pytest.raises(KhiveError, match="holds no .khive/config.toml"):  # the control: no config= at all
+        Khive(cwd, "lambda:y", kkernel=str(stub))

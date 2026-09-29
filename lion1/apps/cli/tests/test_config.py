@@ -137,6 +137,16 @@ def test_lion_config_prints_each_value_with_the_file_it_came_from(dirs, capsys):
     assert rows["image"] == "# image: unset  # built-in"
 
 
+def test_khive_config_in_a_file_resolves_a_relative_path_beside_that_files_lion_and_the_flag_wins(dirs, run):
+    home, here = dirs
+    write(home, '[chat]\nkhive_config = "seats/a/config.toml"\n')
+    a = run("chat", "--dir", str(here))
+    assert a.khive_config == str(home / "seats" / "a" / "config.toml")  # relative to home, not the cwd
+    write(here, '[chat]\nkhive_config = "/abs/khive.toml"\n')
+    assert run("chat", "--dir", str(here)).khive_config == "/abs/khive.toml"
+    assert run("chat", "--dir", str(here), "--khive-config", "x.toml").khive_config == "x.toml"
+
+
 def test_the_chat_keys_are_the_chat_flags_less_the_ones_that_name_one_run():
     flags = set(vars(parser().parse_args(["chat"]))) - {"command"}
     assert set(CHAT) == flags - {"dir", "say", "log", "resume"}
