@@ -637,6 +637,10 @@ class InboxSla:
         )
 
 
+# one `df -P` row: device, blocks, used, available, capacity, mount point
+_DF_ROW = re.compile(r"^(?P<device>\S.*?)\s+\d+\s+\d+\s+(?P<free>\d+)\s+\d+%\s+(?P<mount>\S.*)$")
+
+
 class Disk:
     """Free space per volume under the roots, against every floor the config names, and the build
     targets beneath the roots. Free space is a property of the volume, so roots on one device are
@@ -691,14 +695,15 @@ class Disk:
         for root in self.roots:  # -P: one line per volume; GNU wraps a long device name without it
             rc, out, err = await self.sh(["/bin/df", "-P", "-k", root])
             rows = out.strip().splitlines()
-            cols = rows[1].split() if len(rows) >= 2 else []
-            if rc != 0 or len(cols) < 6 or not cols[3].isdigit():
+            # the POSIX row: the device and the mount point may both hold spaces (macOS lists `map
+            # auto_home`), the four figures between them cannot, so the row is read from the figures
+            row = _DF_ROW.match(rows[1]) if len(rows) >= 2 else None
+            if rc != 0 or row is None:
                 control = False
                 findings.append(f"{root}: df gave no free-space number: {(err or out).strip()[:120]}")
                 continue
-            # the POSIX row: the mount point is everything past the fifth column, spaces and all
-            mount = rows[1].split(None, 5)[5]
-            dev = devices.setdefault(cols[0], {"free_kib": int(cols[3]), "mount": mount, "roots": []})
+            device, free_kib, mount = row["device"], int(row["free"]), row["mount"]
+            dev = devices.setdefault(device, {"free_kib": free_kib, "mount": mount, "roots": []})
             dev["roots"].append(root)
         positive = (
             f"df parsed {len(devices)} device(s) for {len(self.roots)} root(s); floors read in GiB "

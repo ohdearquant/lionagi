@@ -334,16 +334,17 @@ def test_served_reads_the_cursor_first_then_the_pid_then_launchd_with_its_own_pi
     assert not out.control and "NOT alive: read broken" in out.evidence
 
 
+@pytest.mark.parametrize("device", ["/dev/disk4s1", "map auto_home", "a  b 7"])
 @pytest.mark.parametrize("mount", ["/Volumes/My Disk", "/Volumes/two  spaces", "/"])
-def test_disk_names_the_mount_point_whole_when_it_holds_a_space(tmp_path, mount):
+def test_disk_names_the_device_and_the_mount_point_whole_when_either_holds_a_space(tmp_path, device, mount):
     df = (
-        "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
-        f"/dev/disk4s1 1 1 {400 * 2**20} 1% {mount}\n"
+        "Filesystem    1024-blocks Used Available Capacity  Mounted on\n"
+        f"{device}     1 1    {400 * 2**20}   1%    {mount}\n"
     )
     sh = FakeSh(**{"/bin/df": df, "find ": ""})
     out = asyncio.run(Disk([str(tmp_path)], every=None, floors=[], run=sh).run({}))
     assert out.control and out.evidence.splitlines()[1] == (
-        f"/dev/disk4s1 ({tmp_path}): free 400.0 GiB base-1024 / 429.5 GB base-1000, mounted on {mount}"
+        f"{device} ({tmp_path}): free 400.0 GiB base-1024 / 429.5 GB base-1000, mounted on {mount}"
     )
 
 

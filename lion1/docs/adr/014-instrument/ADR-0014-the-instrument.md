@@ -250,7 +250,7 @@ above.
   declined floors),
   `test_disk_refuses_a_floor_budget_or_cap_that_is_not_a_finite_number_of_gib_at_build`,
   `test_disk_reads_df_in_the_posix_layout_because_gnu_wraps_a_long_device_name_without_it` and
-  `test_disk_names_the_mount_point_whole_when_it_holds_a_space`.
+  `test_disk_names_the_device_and_the_mount_point_whole_when_either_holds_a_space`.
 
 ### D6: `lion agent --check <name>` runs one instrument outside the handlers ^d6
 
