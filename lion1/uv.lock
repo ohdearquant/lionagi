@@ -924,7 +924,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "lionagi", editable = "." },
-    { name = "prompt-toolkit", specifier = ">=3.0" },
+    { name = "prompt-toolkit", specifier = ">=3.0.36" },
     { name = "rich", specifier = ">=13" },
 ]
 

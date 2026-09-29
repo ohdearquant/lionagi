@@ -397,7 +397,7 @@ class Editor:
             history=FileHistory(str(history)) if history is not None else InMemoryHistory(),
             enable_open_in_editor=False,
             bottom_toolbar=status,
-            style=Style.from_dict({"bottom-toolbar": "noreverse dim"}),  # a quiet line, not a bar
+            style=Style.from_dict({"bottom-toolbar": "noreverse ansibrightblack"}),  # a quiet line, not a bar
             **terminal,
         )
 
