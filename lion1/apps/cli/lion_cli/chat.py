@@ -36,6 +36,7 @@ __all__ = (
     "prepare_box",
     "take_patch",
     "spent",
+    "signer",
     "status_line",
     "resolve_chat",
     "fresh_log",
@@ -93,7 +94,7 @@ def console(
         about_sandbox += "\n\n" + guidance("code", root=directory, branch=_branch(directory), rules=rules)
     config = directory / ".khive" / "config.toml"
     if config.exists():
-        actor_id = tomllib.loads(config.read_text()).get("actor", {}).get("id")
+        actor_id = signer(directory)
         if actor_id is None:
             if notify is not None:
                 notify(f"{config}: no [actor].id; khive tool unavailable")
@@ -219,12 +220,24 @@ def spent(calls: list[dict]) -> tuple[float, int]:
     return cost, unknown
 
 
-def status_line(actor: Actor, profile: Profile, runs: list[Run], backend: Any) -> str:
-    """`inbox N · ctx ~F/B (last call P) · notes N (S chars) · $C`, read off the live objects each
-    time: inbound not yet taken into a round, the context figure the round notice told against its
-    budget (and the prompt the backend last reported), the profile's notes, what was billed. Before
-    a run starts there is no context to tell."""
+def signer(directory: Path) -> str | None:
+    """The khive actor the directory's `.khive/config.toml` names, None without one."""
+    config = directory / ".khive" / "config.toml"
+    if not config.exists():
+        return None
+    return tomllib.loads(config.read_text()).get("actor", {}).get("id")
+
+
+def status_line(
+    actor: Actor, profile: Profile, runs: list[Run], backend: Any, model: str = "", who: str | None = None
+) -> str:
+    """`model · actor · inbox N · ctx ~F/B (last call P) · notes N (S chars) · $C`, read off the live
+    objects each time: inbound not yet taken into a round, the context figure the round notice told
+    against its budget (and the prompt the backend last reported), the profile's notes, what was
+    billed. Before a run starts there is no context to tell."""
     parts = [f"inbox {len(actor.inbox) + sum(len(r.inbox) for r in runs)}"]
+    if model:  # the model and whose name the khive reads and sends carry, first: who is talking
+        parts = [model.split("/")[-1], who or "no actor"] + parts
     if runs:
         run = runs[0]
         ctx = f"ctx ~{_k(run.context_figure)}/{_k(run.bounds['context_budget'])}"
@@ -426,6 +439,9 @@ async def _chat_main(
         backend = backend_for(a.model)
     if isinstance(backend, ClaudeCodeSession):  # the CLI's own tool calls ask this actor's gate (ADR-0009/C6)
         backend.actor = actor
+        actor.elsewhere = {
+            t: f"{t} is one of your own tools; call it as you always do, not inside <lact>" for t in own_tools
+        }
     runs: list[Run] = []
     say = Console(
         a.model,
@@ -436,7 +452,7 @@ async def _chat_main(
         calls=getattr(backend, "calls", None),
         head={"kind": "BOX", "box": box} | ({"image": image} if boxed else {}),
         history=directory / ".lion" / "history",
-        status=lambda: status_line(actor, profile, runs, backend),
+        status=lambda: status_line(actor, profile, runs, backend, a.model, signer(directory)),
         directory=directory,
     )
     say.quiet_until = len(history) - 1
@@ -460,6 +476,7 @@ async def _chat_main(
         say.notice(f"sandbox {sandbox.name}: a VM over {directory}" + (", no network" if a.offline else ""))
         await sandbox.start()
     off = actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+    off_round = actor.bus.subscribe("round.started", lambda ev: say.working("thinking"))
     interrupt = Interrupt(runs, asyncio.current_task(), say)
     asyncio.get_running_loop().add_signal_handler(signal.SIGINT, interrupt)
 
@@ -485,6 +502,7 @@ async def _chat_main(
         ended, interrupted = "interrupted", True
     finally:
         off()
+        off_round()
         if sandbox is not None:
             try:
                 if boxed and sandbox.dead is not None:
