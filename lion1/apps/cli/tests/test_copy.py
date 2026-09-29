@@ -50,15 +50,17 @@ def test_copy_takes_the_last_response_or_the_numbered_one_and_a_missing_number_c
     )
     capsys.readouterr()
     assert say.command("/copy") and copied == ["Second **answer**."]  # the prose as written, unwrapped
-    assert say.command("  /copy 1 ") and copied[1:] == ["First answer."]
-    assert say.command("/copy 9") and len(copied) == 2
-    assert say.command("/copy two") and len(copied) == 2
+    assert say.command("  /copy 2 ") and copied[1:] == ["First answer."]  # 2 = the one before the last
+    assert say.command("/copy 1") and copied[2:] == ["Second **answer**."]  # 1 = the last, as bare /copy
+    assert say.command("/copy 9") and len(copied) == 3
+    assert say.command("/copy two") and len(copied) == 3
     out = capsys.readouterr().out
-    assert "copied response 2 (18 chars)" in out and "copied response 1 (13 chars)" in out
-    assert "no response 9: this chat has 2; nothing copied" in out
-    assert "/copy takes a response number, from 1: not 'two'" in out
+    assert out.count("copied the last response (18 chars)") == 2
+    assert "copied the response 2 back from the last (13 chars)" in out
+    assert "no response 9 back from the last: this chat has 2; nothing copied" in out
+    assert "/copy takes a count back from the last response, from 1: not 'two'" in out
     # the person's own words, never the console's
-    assert not say.command("/copyright") and not say.command("copy that") and len(copied) == 2
+    assert not say.command("/copyright") and not say.command("copy that") and len(copied) == 3
 
 
 def test_a_copied_response_is_its_prose_without_the_lndl_and_a_command_only_turn_is_not_one(
@@ -74,7 +76,7 @@ def test_a_copied_response_is_its_prose_without_the_lndl_and_a_command_only_turn
     )
     asyncio.run(chat(actor, profile, backend, asks("go", None), say=say))
     assert say.responses == ["Let me look.\n\nThen I answer.", "It says alpha."]
-    assert say.command("/copy 1") and copied == ["Let me look.\n\nThen I answer."]
+    assert say.command("/copy 2") and copied == ["Let me look.\n\nThen I answer."]
     assert "<lact" not in copied[0] and "read(" not in copied[0]
     assert say.command("/copy 3") and len(copied) == 1
 
@@ -98,7 +100,7 @@ def test_a_continued_chat_counts_its_replayed_responses_first(tmp_path, capsys, 
         )
     )
     assert "Old reply." not in capsys.readouterr().out  # replayed, not printed, and still counted
-    assert say.command("/copy 1") and say.command("/copy") and copied == ["Old reply.", "New reply."]
+    assert say.command("/copy 2") and say.command("/copy") and copied == ["Old reply.", "New reply."]
 
 
 def test_nothing_to_copy_before_the_first_response(capsys, copied):
@@ -112,7 +114,7 @@ def test_a_copy_typed_at_the_chat_prompt_is_the_consoles_and_never_reaches_the_r
 ):
     import lion_cli.chat as cli
 
-    lines = iter(["one", "two", "/copy", "/copy 1", "/copy 9", None])
+    lines = iter(["one", "two", "/copy", "/copy 2", "/copy 9", None])
 
     async def typed(prompt: str = "", out=None) -> str | None:
         return next(lines)
@@ -127,9 +129,10 @@ def test_a_copy_typed_at_the_chat_prompt_is_the_consoles_and_never_reaches_the_r
     assert [r["content"] for r in rows if r.get("kind") == "TEXT"] == ["First.", "Second."]
     assert copied == ["Second.", "First."]
     out = capsys.readouterr().out
-    assert "copied response 2 (7 chars)" in out and "copied response 1 (6 chars)" in out
-    assert "no response 9: this chat has 2; nothing copied" in out
-    assert "/copy [N] copies a response" in out
+    assert "copied the last response (7 chars)" in out
+    assert "copied the response 2 back from the last (6 chars)" in out
+    assert "no response 9 back from the last: this chat has 2; nothing copied" in out
+    assert "/copy [N] copies the last (Nth-last) response" in out
 
 
 def test_alt_c_in_the_editor_copies_and_shows_the_notice_above_the_prompt_leaving_the_line_as_typed():
