@@ -57,10 +57,18 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
 - **unsettled command**: a command a logged turn asked for whose alias has no RESULT in the log.
 - **editor**: the line the person types on a terminal, an editor over the whole message
   (prompt_toolkit) rather than a read through the tty's line discipline.
-- **status line**: `inbox N · ctx ~F/B (last call P) · notes N (S chars) · $C`, read off the live
-  run each time it is drawn.
+- **status line**: `model · actor · inbox N · ctx ~F/B (last call P) · notes N (S chars) · $C`, read
+  off the live run each time it is drawn; `actor` is the id `.khive/config.toml` under the directory
+  signs as, or `no actor`.
+- **working indicator**: `⠋ thinking · 12s` under the scrollback while a round's call is in flight,
+  `running` once the turn's commands run; a finished result folds to its head, its detail parked
+  under the indicator until the next result lands.
 - **own tools**: with a `claude_code` model, the Claude Code CLI's tools `--tools` names, run by the
   CLI inside each round.
+- **link**: a terminal hyperlink (OSC 8) the console draws: a URL to itself, a path naming an
+  existing file to `vscode://file/<abs>[:line[:col]]`, which opens it in the editor.
+- **response**: a reply's prose as the console showed it, constructs cut, numbered from 1 across a
+  continued chat: what `/copy N` and Alt-C take.
 - **diagram page**: `.lion/chats/<id>-<seq>-<n>.html`, a reply's `n`th mermaid block drawn by the
   browser, linked under the reply.
 - **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
@@ -205,7 +213,41 @@ settles first. Only a result that changed the view carries its `spec`, so a fail
 the session as it was. `--tools`, for a `claude_code` model only, names the CLI's own tools; each
 call passes the console's gate and lands on the record as a result the model can hide.
 
-### C10: A mermaid block in a reply is drawn _(enforced: mechanical)_ ^c10
+### C10: The console shows the model working, and folds what finished _(enforced: mechanical)_ ^c10
+
+- **Subject**: `Console.working`, `Console.idle`, `_Working` and the status line's head on a
+  terminal.
+- **Violated when**: a call in flight shows nothing moving, a finished result stays open above the
+  next, the status line names no model, or an own-tool call prints its arguments whole.
+
+On a terminal the working indicator runs under the scrollback from a round's start until its turn
+lands, `running` while the turn's commands run. With `--verbose` a result prints its head to the
+scrollback and parks its detail under the indicator until the next lands; a call of the model's own
+tools prints as one line, `✓ Bash command=…`, clipped. The status line leads with the model and the
+actor. A pipe gets none of this. A command named like an own tool is refused with where that tool
+lives.
+### C11: What the console shows, the person can open _(enforced: mechanical)_ ^c11
+
+- **Subject**: `linked`, `Console._args` and `Console.notice`.
+- **Violated when**: a relative path resolves against the process's cwd, a path that does not exist
+  links, a link is drawn inside fenced code, or a URL carries the sentence's punctuation.
+
+In prose a URL is a link to itself and a path naming an existing file, resolved against the chat's
+directory and never the cwd, is a link that opens it in VS Code at the line a `:line` names. Fenced
+code is left as written, a bare word never links, and a path the model wrote in a code span links
+whole. A call's `path` argument links to the file or directory it names; a URL in a notice links to
+itself.
+### C12: A response can be taken whole to the clipboard _(enforced: mechanical)_ ^c12
+
+- **Subject**: `Console.command`, `Console.copy` and the editor's Alt-C.
+- **Violated when**: `/copy` reaches the model as a message, the text copied differs from the prose
+  shown, a number outside the chat's responses copies anything, or a copy blocks the prompt.
+
+`/copy` at the prompt puts the last response on the clipboard, `/copy N` the Nth, and Alt-C the last
+without leaving the line being typed; the console says what it copied, or why nothing. The route is
+the platform's tool (pbcopy, wl-copy, xclip), and OSC 52 through the terminal where there is none,
+as over ssh. A console command never reaches the model.
+### C13: A mermaid block in a reply is drawn _(enforced: mechanical)_ ^c13
 
 - **Subject**: `Console._turn` on a reply holding a ```` ```mermaid ```` fence.
 - **Violated when**: a mermaid block prints as its source only, a page is written outside the chat
@@ -292,9 +334,43 @@ takes the tool names and `chat_main` hands the session the console's actor as it
   `apps/cli/tests/test_chat_command.py`: the Ctrl-C presses; `tests/test_claude_code.py`:
   `test_a_failed_context_directive_does_not_restart_the_session`.
 
-### D7: `mermaid_blocks`, `diagram_page` and `_fences` ^d7
+### D7: `Console.working`, `Console.idle`, `signer` and `Actor.elsewhere` ^d7
 
-Serves C10. `_fences` walks the reply line by line, split on newlines only (`splitlines` also breaks
+Serves C10. `Console.working(what)` starts a transient rich `Live` at eight frames a second holding
+a `_Working` (frame, what, elapsed) and any parked detail; `idle()` stops it. `chat_main` subscribes
+`round.started` to `working("thinking")`, and `Console.__call__` turns it to `running` when a turn
+carries commands. `signer(directory)` reads the actor id for the status line. `Actor.elsewhere` maps
+a name to the sentence appended to the unknown-command error; the chat fills it with the own tools.
+
+- **Landing evidence**: `tests/test_chat.py`:
+  `test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detail_under_it`,
+  `test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked`,
+  `test_an_own_tool_call_folds_to_one_line_and_an_unknown_name_is_told_where_it_lives`.
+### D8: `linked`, `_target` and the links in calls and notices ^d8
+
+Serves C11. `linked(text, directory)` walks the prose outside fences token by token (an escape, a
+link the model wrote, an autolink, a code span, a URL, a path) and rewrites URLs as autolinks and
+existing paths as links to `vscode://file/…`, since rich's markdown drops `file:` links. `_target`
+resolves a path with `os.path` and answers None for one that does not exist. `Console._args` links a
+call's `path`, `Console.notice` a URL, both as rich markup.
+
+- **Landing evidence**: `apps/cli/tests/test_links.py`: a URL without its sentence, the common
+  spellings of a path, the resolution against the chat's directory and never the cwd, a fence, a
+  code span, a call's directory argument, a notice's hyperlink.
+### D9: `to_clipboard`, `Console.command`, `Console.copy` and `_prose` ^d9
+
+Serves C12. `_prose` cuts a turn's constructs by the parser's own spans, the one function the view
+and the copy share, so what is copied is what was shown; `Console.__call__` appends each reply's
+prose, a replayed one too, to `responses`. `Console.command` runs `/copy [N]` and the chat's `ask`
+loop asks again after one. `to_clipboard` tries each tool present on stdin, uncaptured (xclip and
+wl-copy fork a child that serves the selection), then writes the OSC 52 escape.
+
+- **Landing evidence**: `apps/cli/tests/test_copy.py`: the last and the Nth response, a number out
+  of range, the prose without its constructs, the route order and the OSC 52 fallback, the command
+  never sent, Alt-C.
+### D10: `mermaid_blocks`, `diagram_page` and `_fences` ^d10
+
+Serves C13. `_fences` walks the reply line by line, split on newlines only (`splitlines` also breaks
 on characters a code line may hold). A fence closes on a bare run of its own character at least as
 long, so a fence inside a longer one is text. `Console._turn` splits the prose at each block's end,
 writes `diagram_page(source)` (the source HTML-escaped inside `<pre class="mermaid">`) and prints
@@ -316,6 +392,9 @@ the page's `file:` URI as a link.
 | Reading the person's line through `input()` with bracketed paste | the tty's line discipline still splits a paste into lines on some terminals and macOS drops any line over 1024 bytes without a word |
 | A first Ctrl-C that waits for the round to settle | a long tool turn made the interrupt look ignored; the call is the person's to cut |
 | Environment variables for the chat's defaults | a file the person can read back with `lion config` says where each value came from |
+| A progress bar, or a line per second, while a call runs | nothing is known of a call's length; a spinner with the elapsed time says only that it is alive, and leaves the scrollback clean |
+| `file:` links for paths | rich's markdown drops them, and a browser shows a file where an editor at the line is what the person opens it for |
+| Ctrl-Y, or a mouse button, for the copy | Ctrl-Y is the editor's yank, and a terminal has no buttons; a key the line survives and a command the person can number |
 | Drawing the diagram in the terminal | no terminal draws mermaid; a page in the browser does, at full size, and the log keeps the source |
 
 ## Consequences
@@ -359,6 +438,8 @@ the page's `file:` URI as a link.
 - **S12**: The config file cannot switch a `true` off for one run: the flags are switches, so a
   nearer file's `false` is the only override. `lion chat --help` shows the built-in defaults, not
   the files'.
+- **S13**: The indicator and the parked detail are screen state: when the next result lands the
+  parked detail leaves the screen, and the log holds it whole. A pipe sees the heads only.
 - **S10**: Nothing in the chat installs `uv` in a box: the default `python:3.12` is used as
   published, while the VM's own image copies `uv` into `python:3.12-slim`. The box guidance tells
   the model to install what the image lacks.
