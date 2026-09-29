@@ -782,6 +782,50 @@ def test_load_says_what_is_missing_or_malformed_and_takes_only_a_name(plain):
         load(plain, "ckpt-absent")
 
 
+def test_save_load_and_the_restore_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value(plain):
+    # `save` and `load` checked no kind and no why: a file edited to hold another kind loaded, and the
+    # restore left a value of that kind out of the prompt without a word
+    c = take(
+        {}, [var("a", "fact", "one"), var("t", "topic", "two")], actor=ACTOR, why="manual", budget=100, now=AT
+    )
+    whys, kinds = ", ".join(WHYS), ", ".join(KINDS)
+    blob = var("v", "blob", {"id": "a1"})
+    ctx = plain / ".khive" / "context"
+    for bad, said in (
+        (dataclasses.replace(c, why="later"), f"{ID}: why 'later' is not one of {whys}; nothing was written"),
+        (
+            dataclasses.replace(c, vars=(*c.vars, blob)),
+            f"{ID}: var 'v' has kind 'blob', not one of {kinds}; nothing was written",
+        ),
+    ):
+        with pytest.raises(CheckpointError, match=re.escape(said)):
+            save(bad, plain)
+    assert not ctx.exists()
+    path = save(c, plain)
+    assert load(plain) == c  # the control: the file as written loads
+    doc = json.loads(path.read_text())
+    for edit, said in (
+        ({"why": "later"}, f"{ID}: why 'later' is not one of {whys}; nothing was loaded"),
+        (
+            {"vars": [doc["vars"][0], {**doc["vars"][1], "kind": "blob"}]},
+            f"{ID}: var 't' has kind 'blob', not one of {kinds}; nothing was loaded",
+        ),
+    ):
+        path.write_text(json.dumps({**doc, **edit}))
+        with pytest.raises(CheckpointError, match=re.escape(said)):
+            load(plain)
+    # a checkpoint handed to the restore without `load`: the value is named, never left out
+    with pytest.raises(
+        CheckpointError, match=re.escape(f"var 'v' has kind 'blob', not one of {kinds}; nothing was restored")
+    ):
+        render_prompt(dataclasses.replace(c, vars=(*c.vars, blob)))
+    with pytest.raises(
+        CheckpointError, match=re.escape(f"why 'later' is not one of {whys}; nothing was restored")
+    ):
+        render_prompt(dataclasses.replace(c, why="later"))
+    assert "- a: one" in render_prompt(c) and "Topic: two" in render_prompt(c)
+
+
 def test_concurrent_saves_each_land_and_latest_names_one_of_them(plain):
     c = take({}, [], actor=ACTOR, why="manual", budget=100, now=AT)
     written: list[Path] = []
