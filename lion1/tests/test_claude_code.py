@@ -699,7 +699,8 @@ def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_
     """The CLI fails, runs past the call's deadline, or the call is cancelled, while a before hook waits on an
     approval: the call's deadline ends it, the tool call lands not executed before it returns, nothing of the
     gate is left running, and the approval that comes later lands nothing. A hook that swallows the
-    cancellation and admits anyway admits nothing: the call is over."""
+    cancellation and admits anyway admits nothing: the call is over. A call cancelled again while it
+    settles still leaves nothing of the gate running."""
     import time
 
     cli = _scripted(tmp_path, _tool("Read", "toolu_x", file_path="notes.txt"), script=STRANDED)
@@ -727,11 +728,14 @@ def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_
         request = RunRequest(inputs=("go",), max_rounds=1)
         task = asyncio.create_task(actor.run(Profile("worker"), request, backend))
         await asyncio.wait_for(entered.wait(), 5)
-        if mode == "cancel":
+        if mode.startswith("cancel"):
+            task.cancel()
+        if mode == "cancel-twice":  # cancelled again while it settles: the gate is still joined
+            await asyncio.sleep(0.05)
             task.cancel()
         done, _ = await asyncio.wait({task}, timeout=2.5)
         assert done and time.monotonic() - t0 < 2.0, mode
-        if mode == "cancel":
+        if mode.startswith("cancel"):
             assert task.cancelled()
         else:
             error = task.exception()
@@ -749,5 +753,5 @@ def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_
         await asyncio.sleep(0.3)
         assert len(run.record) == landed and errors == [], mode
 
-    for mode in ("fail", "deadline", "cancel", "insist"):
+    for mode in ("fail", "deadline", "cancel", "cancel-twice", "insist"):
         asyncio.run(arm(mode))

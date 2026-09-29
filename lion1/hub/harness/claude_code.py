@@ -234,15 +234,19 @@ class ClaudeCodeSession:
                     loop.remove_reader(listener.fileno())
                     accept()  # a hook queued on the listener as the call ended is taken too
                     listener.close()
-                    if asks:
-                        # a request already sent is read and lands not executed (C6); one at the
-                        # gate, or still being sent, is cancelled below and lands as it can
-                        await asyncio.wait(list(asks), timeout=0.2)
-                    while asks:
-                        pending = list(asks)
-                        for task in pending:
-                            task.cancel()
-                        await asyncio.gather(*pending, return_exceptions=True)
+                    try:
+                        if asks:
+                            # a request already sent is read and lands not executed (C6); one at the
+                            # gate, or still being sent, is cancelled below and lands as it can
+                            await asyncio.wait(list(asks), timeout=0.2)
+                    finally:
+                        # a caller cancelling the call again while it settles still leaves no ask
+                        # running: each is cancelled, and joined as far as the caller lets it
+                        while asks:
+                            pending = list(asks)
+                            for task in pending:
+                                task.cancel()
+                            await asyncio.shield(asyncio.gather(*pending, return_exceptions=True))
 
                 stack.push_async_callback(settle)
                 hook = {"type": "command", "command": shlex.join([sys.executable, "-I", "-c", _HOOK, sock])}
