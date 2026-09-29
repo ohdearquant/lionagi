@@ -239,9 +239,12 @@ def test_with_reply_on_commands_a_turn_whose_commands_all_landed_is_the_reply_an
     )
     assert asked == [2, 4, 5]
     assert run.outcome == Stopped(5) and run.round == 4
-    # the false wait ends the run before a notification: the reply stays the record's last entry
-    assert run.record.entries[-1].kind is Kind.TEXT and run.record.latest(Kind.TEXT).content == "bye"
-    assert [e.kind for e in run.record.entries].count(Kind.SYSTEM) == 4
+    # the false wait ends the run before a notification: the reply is the record's last entry before
+    # the closure the outcome writes (ADR-0006/C1)
+    *body, closure = run.record.entries
+    assert closure.kind is Kind.SYSTEM and closure.content.startswith("<system closure")
+    assert body[-1].kind is Kind.TEXT and run.record.latest(Kind.TEXT).content == "bye"
+    assert [e.kind for e in body].count(Kind.SYSTEM) == 4
 
 
 def test_an_awaitable_accept_gate_and_an_awaitable_after_hook_are_awaited():
