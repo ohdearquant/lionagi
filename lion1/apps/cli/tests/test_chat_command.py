@@ -327,9 +327,40 @@ def test_two_consoles_in_one_second_get_two_logs_and_an_existing_log_is_refused(
     )  # by id, so the suffix sorts before the next second
     (chats / "20260921-175600.jsonl").unlink()
     assert resolve_chat(chats, "last").stem == "20260921-175559-02"
-    Console("m", a[1], color=False).close("x", 0, 0.0, a[1])  # a console never truncates a log it is handed
+    Console("m", a[1], color=False).close(
+        "x", 0, 0.0, 0, a[1]
+    )  # a console never truncates a log it is handed
     a[1].write_text("kept\n")
     Console("m", a[1], color=False)
     assert a[1].read_text() == "kept\n"
     with pytest.raises(SystemExit, match="exists"):
         asyncio.run(chat_main(parser().parse_args(["chat", "--dir", str(tmp_path), "--log", str(a[1])])))
+
+
+def test_an_explicit_log_is_owned_before_the_session_starts_and_a_failed_start_leaves_none(
+    tmp_path, monkeypatch
+):
+    import lion_cli.chat as cli
+
+    log = tmp_path / "logs" / "mine.jsonl"
+    seen = []
+
+    async def stub(a, directory, chats, prior, chat_id, log):
+        seen.append((chat_id, log.exists()))  # the log is this session's before anything else runs
+        if directory.name == "fail":
+            raise RuntimeError("no image")
+        log.write_text("row\n")
+
+    monkeypatch.setattr(cli, "_chat_main", stub)
+    args = ["chat", "--dir", str(tmp_path), "--log", str(log)]
+    asyncio.run(chat_main(parser().parse_args(args)))
+    assert seen == [("mine", True)] and log.read_text() == "row\n"
+    with pytest.raises(SystemExit, match="exists"):  # a second start naming the same log is refused
+        asyncio.run(chat_main(parser().parse_args(args)))
+    assert seen == [("mine", True)] and log.read_text() == "row\n"
+    fail = tmp_path / "fail"
+    fail.mkdir()
+    other = tmp_path / "logs" / "other.jsonl"
+    with pytest.raises(RuntimeError, match="no image"):
+        asyncio.run(chat_main(parser().parse_args(["chat", "--dir", str(fail), "--log", str(other)])))
+    assert not other.exists() and log.read_text() == "row\n"  # its own empty log removed, no other

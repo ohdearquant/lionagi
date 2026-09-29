@@ -466,7 +466,8 @@ def test_a_result_the_output_names_is_never_consumed():
     turn = fenced('a = echo(text="kept")', "b = echo(text=*a)", "OUT{x: *a}")
     run = _run(actor, turn, fenced('OUT{x: "again"}'), accept=lambda r, o: "no" if o["x"] == "kept" else None)
     # `b` read `a` and settled ok, but OUT{} points at `a`: the refused candidate's next turn sees it whole
-    assert [e.meta.get("consumed") for e in run.record if e.kind is Kind.SYSTEM] == [None, None]
+    notices = [e for e in run.record if e.kind is Kind.SYSTEM and not e.content.startswith("<system closure")]
+    assert [e.meta.get("consumed") for e in notices] == [None, None]
     assert run.round == 2 and run.output == {"x": "again"}
 
 

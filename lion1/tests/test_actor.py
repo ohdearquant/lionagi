@@ -617,7 +617,7 @@ def test_an_out_dict_literal_may_point_at_values():
     assert "'nothing' was never declared" in run.record.by_seq(3).content
 
 
-def test_an_unreadable_out_runs_the_commands_and_so_does_a_finishing_turn():
+def test_an_unreadable_out_runs_the_commands_and_an_accepted_one_reaps_what_it_does_not_name():
     actor = _echo_actor("t16")
     run = asyncio.run(
         actor.run(
@@ -633,8 +633,11 @@ def test_an_unreadable_out_runs_the_commands_and_so_does_a_finishing_turn():
     assert run.resolve("a1") == "ran anyway"  # the command ran although the finish was unreadable
     sys_entries = [e.content for e in run.record if e.name.startswith("_sys")]
     assert "ran without it" in sys_entries[1] and "key: value" in sys_entries[1]
-    assert run.resolve("a2") == "beside the finish"  # a command beside OUT{} runs before the finish
-    assert run.refused == []
+    # OUT{} names nothing that runs, so the accepted output ends the run and the command beside it is
+    # cancelled before it started, on the record and in the closure
+    a2 = run.record.get("a2")
+    assert a2.content.reason == "cancelled" and a2.meta["execution"] == "not executed"
+    assert run.record.entries[-1].content.splitlines()[1:3] == ["outcome: Success", "cancelled: a2"]
 
 
 def test_a_stop_is_asked_after_the_notification_so_what_a_section_saw_can_end_the_run():
@@ -661,7 +664,7 @@ def test_a_stop_is_asked_after_the_notification_so_what_a_section_saw_can_end_th
     assert run.outcome == Stopped(2) and run.round == 1
     assert run.resolve("a1") == "one"
     notices = [e.content for e in run.record if e.name.startswith("_sys")]
-    assert len(notices) == 2 and "the world says: done" in notices[-1]  # the notice that ended it is kept
+    assert len(notices) == 3 and "the world says: done" in notices[1]  # the notice that ended it is kept
 
 
 def test_a_turn_carrying_the_loops_own_frame_is_not_executed():
@@ -1192,7 +1195,7 @@ def test_the_fold_decides_on_the_reported_context_and_may_fold_old_inputs():
     run = asyncio.run(Actor("folder").run(Profile("p", system="s"), request, backend))
     notices = [e for e in run.record if e.kind is Kind.SYSTEM]
     # the count reported after round 2 decides round 3's notification; the first count is the floor
-    assert len(notices) == 3 and all("directive" not in n.meta for n in notices[:2])
+    assert len(notices) == 4 and all("directive" not in n.meta for n in notices[:2])  # the fourth closes
     assert "of session history beyond it" in notices[2].content
     directive = notices[2].meta["directive"]
     assert directive.op == "hide" and directive.refs == ("_in0", "_m2", "_in3")  # the third mail stays
@@ -1213,3 +1216,241 @@ def test_the_fold_decides_on_the_reported_context_and_may_fold_old_inputs():
     run = asyncio.run(Actor("folder").run(Profile("p", system="s"), bare, backend))
     third = [e for e in run.record if e.kind is Kind.SYSTEM][2]
     assert "nothing older to fold" in third.content and third.meta["directive"].refs == ()
+
+
+class Hang(BaseModel):
+    pass
+
+
+def _hanging_actor(name: str, started: list[asyncio.Task]) -> Actor:
+    actor = _echo_actor(name)
+
+    @actor.handler(Hang)
+    async def hang(req: Hang, ctx) -> str:
+        started.append(asyncio.current_task())
+        await asyncio.Event().wait()
+        return "never"
+
+    return actor
+
+
+def test_out_waits_for_what_it_names_and_the_reap_lands_the_rest_cancelled_before_run_returns():
+    from lionagi.actor import Result
+
+    started: list[asyncio.Task] = []
+    actor = _hanging_actor("t-reap", started)
+    turn = '<lact h1>hang()</lact><lact a1>echo(text="named")</lact> OUT{answer: [a1]}'
+
+    async def go():
+        # a wait for the whole turn would hold OUT{} on h1 forever
+        run = await asyncio.wait_for(actor.run(Profile("p"), RunRequest(inputs=("go",)), scripted(turn)), 5)
+        # asked before asyncio.run's own shutdown cancels what is left, so the reap is what is measured
+        assert run.pending == {} and len(started) == 1 and started[0].done()
+        return run
+
+    run = asyncio.run(go())
+    assert isinstance(run.outcome, Success) and run.output == {"answer": "named"}
+    h1 = run.record.get("h1")
+    assert h1.content == Result("hang", False, error="cancelled before it finished", reason="cancelled")
+    assert h1.meta["execution"] == "completion unknown"  # its handler had started
+    closure = run.record.entries[-1]
+    assert closure.kind is Kind.SYSTEM and closure.seq > h1.seq and "cancelled: h1" in closure.content
+
+
+def test_a_run_cancelled_while_out_waits_reaps_every_pending_command_and_appends_no_closure():
+    started: list[asyncio.Task] = []
+    actor = _hanging_actor("t-abort", started)
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+    turn = "<lact h1>hang()</lact><lact h2>hang()</lact> OUT{answer: [h1]}"
+
+    async def go():
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(actor.run(Profile("p"), RunRequest(inputs=("go",)), scripted(turn)), 0.2)
+        (run,) = runs
+        assert run.pending == {} and len(started) == 2 and all(t.done() for t in started)
+        return run
+
+    run = asyncio.run(go())
+    assert run.outcome is None and actor.runs == {}
+    assert [run.record.get(a).content.reason for a in ("h1", "h2")] == ["cancelled", "cancelled"]
+    assert run.record.entries[-1].kind is Kind.RESULT  # an abort appends no closure
+
+
+class Halter(BaseModel):
+    pass
+
+
+class Halt(BaseException):
+    pass
+
+
+def test_a_defect_in_a_command_out_did_not_name_is_raised_before_the_run_returns():
+    # ADR-0002/S5: a task out by a door the loop does not watch is seen through by the reap, never dropped
+    actor = _echo_actor("t-defect-unnamed")
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+
+    @actor.handler(Halter)
+    async def halter(req: Halter, ctx):
+        raise Halt("out by a door the loop does not watch")
+
+    turn = '<lact bad>halter()</lact><lact good>echo(text="ok")</lact> OUT{answer: [good]}'
+    with pytest.raises(Halt, match="door the loop does not watch"):
+        asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), scripted(turn)))
+    (run,) = runs
+    assert run.outcome is None and actor.runs == {} and run.record.get("good").content.value == "ok"
+    assert run.record.entries[-1].kind is Kind.RESULT  # no closure: the run did not end by an outcome
+
+
+def test_a_deadline_on_the_last_turn_ends_the_run_by_time_not_by_rounds():
+    from lionagi import Exhausted
+
+    started: list[asyncio.Task] = []
+    actor = _hanging_actor("t-last-turn-deadline", started)
+    request = RunRequest(inputs=("go",), max_rounds=1, time_budget=0.2)
+
+    async def go():
+        run = await asyncio.wait_for(actor.run(Profile("p"), request, scripted("<lact h1>hang()</lact>")), 5)
+        assert run.pending == {} and started[0].done()
+        return run
+
+    run = asyncio.run(go())
+    assert run.outcome == Exhausted(1, "time") and run.record.get("h1").content.reason == "cancelled"
+    assert "outcome: Exhausted(rounds=1, reason='time')" in run.record.entries[-1].content
+
+
+def test_a_second_cancel_while_the_abort_reaps_still_lands_the_cancelled_result_and_unregisters():
+    actor = _echo_actor("t-cancel-twice")
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @actor.handler(Hang)
+    async def hang(req: Hang, ctx) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:  # cooperative cleanup that takes a while: the cancel is not suppressed
+            cleaning.set()
+            await release.wait()
+        return "never"
+
+    async def go():
+        turn = "<lact h1>hang()</lact> OUT{answer: [h1]}"
+        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",)), scripted(turn)))
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        await asyncio.wait_for(cleaning.wait(), 2)
+        task.cancel()  # a second cancel, aimed at the run while it reaps
+        done, _ = await asyncio.wait({task}, timeout=0.05)
+        assert not done  # the reap is held: the run does not return with its command still cleaning up
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(go())
+    (run,) = runs
+    assert run.pending == {} and actor.runs == {} and run.outcome is None
+    assert run.record.get("h1").content.reason == "cancelled"
+    assert run.record.entries[-1].kind is Kind.RESULT
+
+
+def test_a_cancel_during_a_defects_reap_ends_the_run_cancelled_with_the_defect_as_its_cause():
+    actor = _echo_actor("t-cancel-in-abort")
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    @actor.handler(Halter)
+    async def halter(req: Halter, ctx):
+        await entered.wait()  # after the hang is under way
+        raise Halt("a defect while another command hangs")
+
+    @actor.handler(Hang)
+    async def hang(req: Hang, ctx) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await release.wait()
+        return "never"
+
+    async def go():
+        # OUT{} names only the defective command: the hang is what the abort's reap sees through
+        turn = "<lact bad>halter()</lact><lact h1>hang()</lact> OUT{answer: [bad]}"
+        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",)), scripted(turn)))
+        await asyncio.wait_for(cleaning.wait(), 2)
+        task.cancel()  # aimed at the run while the defect's reap holds
+        done, _ = await asyncio.wait({task}, timeout=0.05)
+        assert not done
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await asyncio.wait_for(task, 2)
+        assert isinstance(caught.value.__cause__, Halt)  # the cancel ends it, the defect is its cause
+
+    asyncio.run(go())
+    (run,) = runs
+    assert run.pending == {} and actor.runs == {} and run.outcome is None
+    assert run.record.get("h1").content.reason == "cancelled"
+
+
+def test_a_command_that_never_returns_is_cancelled_at_the_deadline_and_the_run_ends_by_time():
+    from lionagi import Exhausted
+
+    started: list[asyncio.Task] = []
+    actor = _hanging_actor("t-deadline", started)
+    request = RunRequest(inputs=("go",), max_rounds=5, time_budget=0.2)
+
+    async def go():
+        # without the deadline the turn's settle waits on h1 forever
+        run = await asyncio.wait_for(actor.run(Profile("p"), request, scripted("<lact h1>hang()</lact>")), 5)
+        assert run.pending == {} and started[0].done()
+        return run
+
+    run = asyncio.run(go())
+    assert run.outcome == Exhausted(1, "time") and 0.2 <= run.elapsed < 2
+    h1 = run.record.get("h1")
+    assert h1.content.reason == "cancelled" and h1.meta["execution"] == "completion unknown"
+    assert run.record.entries[-1].content.splitlines()[1:3] == [
+        "outcome: Exhausted(rounds=1, reason='time')",
+        "cancelled: h1",
+    ]
+
+
+@pytest.mark.parametrize(
+    "turn, extra, stop, outcome",
+    [
+        ('OUT{answer: "done"}', {}, None, "Success"),
+        ("hello", {"max_rounds": 1}, None, "Exhausted(rounds=1, reason='rounds')"),
+        (
+            'OUT{answer: "done"}',
+            {"accept": lambda r, o: "no", "max_refusals": 1},
+            None,
+            "Refused(why='no', times=1)",
+        ),
+        ("never sent", {}, lambda: True, "Stopped(round=1)"),
+    ],
+)
+def test_a_run_that_ends_by_an_outcome_closes_its_record_with_the_outcome(turn, extra, stop, outcome):
+    actor = _echo_actor("t-closure")
+    request = RunRequest(inputs=("go",), **extra)
+    run = asyncio.run(actor.run(Profile("p"), request, scripted(turn), stop=stop))
+    closure = run.record.entries[-1]
+    assert closure.kind is Kind.SYSTEM and closure.round == run.round and "directive" not in closure.meta
+    assert closure.content == f"<system closure seq={closure.seq}>\noutcome: {outcome}\n</system>"
+
+
+def test_a_run_that_aborts_appends_no_closure():
+    async def raises(messages):
+        raise RuntimeError("down")
+
+    actor = _echo_actor("t-no-closure")
+    runs = []
+    actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+    with pytest.raises(RuntimeError, match="down"):
+        asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",)), raises))
+    (run,) = runs
+    assert [e.kind for e in run.record] == [Kind.INPUT, Kind.SYSTEM]
+    assert run.record.entries[-1].content.startswith("<system round=1/")

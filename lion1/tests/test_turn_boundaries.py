@@ -111,7 +111,7 @@ def test_console_still_surfaces_failure_when_result_cannot_land():
     run, notice = _exec_run(actor, '<lact s1>mark(path="a")</lact>')
     result = run.record.get("s1")
     assert result.kind is Kind.INPUT
-    system = [e for e in run.record if e.kind is Kind.SYSTEM][-1]
+    system = [e for e in run.record if e.kind is Kind.SYSTEM][1]
     rendered = Console("model", color=False).render(system)
     assert rendered and any("s1" in str(piece) for piece in rendered), (notice, rendered)
 

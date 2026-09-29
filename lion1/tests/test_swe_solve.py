@@ -280,21 +280,23 @@ class DiffBox(FilesBox):
         return DIFF if self.files["a.py"] != "one\ntwo\n" else ""
 
 
-def test_an_edit_beside_the_finish_runs_before_the_finish_is_judged(tmp_path: Path):
+def test_a_finish_beside_an_edit_is_judged_before_the_edit_and_its_refusal_lets_the_edit_land(tmp_path: Path):
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
     box = DiffBox()
     out = 'OUT{done: {summary: "fixed", files: ["a.py"]}}'
     turns = [
         (f'<lact e1>edit(path="a.py", old="one", new="ONE")</lact>\n{out}', {"finish_reason": "stop"}),
-        # the finish beside the edit is refused (unverified); a check in the next round, then it lands
+        # OUT{} names neither command, so each finish is judged on the tree before its sibling lands;
+        # the refusal settles the turn, so the edit, then the check, land before the next finish
         (f'<lact b1>bash(command="python -m pytest -q")</lact>\n{out}', {"finish_reason": "stop"}),
         (out, {"finish_reason": "stop"}),
     ]
     rec = asyncio.run(solve(row, "m", 3, tmp_path, "codex", box=box, backend=Turns(*turns)))
-    assert box.files["a.py"] == "ONE\ntwo\n"  # the edit ran before the finish was judged
+    assert box.files["a.py"] == "ONE\ntwo\n"
     record = (tmp_path / "pkg__pkg-1.record.txt").read_text()
-    assert "the source changed in this round; nothing has run against that change" in record
-    assert rec["outcome"] == "Success" and rec["rounds"] == 2 and rec["model_patch"] == DIFF
+    assert "the repository has no changes" in record
+    assert "no command has run since the source changed in round 1" in record
+    assert rec["outcome"] == "Success" and rec["rounds"] == 3 and rec["model_patch"] == DIFF
 
 
 class BaseBox(ToolBox):

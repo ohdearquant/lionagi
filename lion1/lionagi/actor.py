@@ -86,13 +86,16 @@ class Message:
 
 class Reply(str):
     """A backend's text with the provider's prompt count for the call (fresh input, cache read and cache
-    write), None when the provider did not say; the actor anchors its `context:` figure on it."""
+    write), None when the provider did not say; the actor anchors its `context:` figure on it. With
+    `refused`, the backend would not hand the text on as a turn: none of it runs and the model is told why."""
 
     prompt_tokens: int | None
+    refused: str | None
 
-    def __new__(cls, text: str, prompt_tokens: int | None = None) -> Reply:
+    def __new__(cls, text: str, prompt_tokens: int | None = None, refused: str | None = None) -> Reply:
         reply = super().__new__(cls, text)
         reply.prompt_tokens = prompt_tokens
+        reply.refused = refused
         return reply
 
 
@@ -275,6 +278,7 @@ class Run:
         self.values: dict[str, tuple[int, Any]] = {}  # alias -> (seq of the TEXT that declared it, value)
         self.fields: dict[str, str] = {}  # alias -> the output field it was declared for, for the whole run
         self.pending: dict[str, asyncio.Task] = {}
+        self.tasks: set[asyncio.Task] = set()  # every command task not yet seen through by a settle
         self.entered: set[str] = set()  # pending aliases whose handler has been called
         self.pointing: dict[str, set[str]] = {}  # command alias -> the names its arguments point at
         self.settled: list[str] = []  # aliases settled since the last notification
@@ -643,7 +647,7 @@ class Actor:
             if e.kind is Kind.TEXT and profile.language == "core":  # the values that turn declared, admitted
                 # against the record so far; a program's prose is scratch and its turn is folded, not rerun
                 try:
-                    program = _read(str(e.content))
+                    program = _read(str(e.content), refused=e.meta.get("refused"))
                 except lndl.LNDLError:
                     continue
                 _admit(run, program, replayed.seq)
@@ -662,7 +666,7 @@ class Actor:
 
         try:
             for round_no in range(1, request.max_rounds + 1):
-                if request.time_budget is not None and run.elapsed >= request.time_budget:
+                if _spent(run):
                     run.outcome = Exhausted(run.round, "time")
                     break
                 run.round = round_no
@@ -707,6 +711,7 @@ class Actor:
                 if inspect.isawaitable(text):
                     text = await text
                 reported = getattr(text, "prompt_tokens", None)
+                refused = getattr(text, "refused", None)
                 if isinstance(text, str):
                     text = str(text)  # a Reply's count is read; the record keeps a plain str
                 if isinstance(reported, int) and not isinstance(reported, bool) and reported > 0:
@@ -719,12 +724,14 @@ class Actor:
                     beyond = reported - run.view_est
                     run.floor = beyond if run.floor is None else min(run.floor, beyond)
                 previous = run.record.latest(Kind.TEXT)
-                m = run.record.append(Kind.TEXT, text, round=round_no)
+                m = run.record.append(
+                    Kind.TEXT, text, round=round_no, **({"refused": refused} if refused else {})
+                )
                 run.same_turns = (
                     run.same_turns + 1 if previous is not None and previous.content == text else 0
                 )
                 try:
-                    program = _read(text, run.profile.language)
+                    program = _read(text, run.profile.language, refused)
                     run.repairs.update(program.repairs)  # applied by the reading, whatever the check says
                     if isinstance(program, Script):  # whole, before anything runs (ADR-0008/C1)
                         check_script(program, subset.names(), run.known)
@@ -786,7 +793,7 @@ class Actor:
                     referenced = _referenced(program)
                     tasks = self._dispatch(run, program, subset)
                 if program.out is None:
-                    await _settle(tasks)
+                    await _settle(run, tasks, _left(run))
                     if (
                         request.reply_on_commands
                         and request.wait is not None
@@ -803,11 +810,13 @@ class Actor:
                     run.retry_error, run.same_errors = None, 0  # a turn that read whole ends the error
                     run.outcome = Continue()
                     continue
-                # OUT{} waits for this turn's commands and for anything it points at still running
-                await _settle(list({*tasks, *(run.pending[a] for a in referenced if a in run.pending)}))
+                # OUT{} waits for what it points at still running, and for nothing else: an accepted
+                # output ends the run and the reap takes the rest; one not accepted settles the turn
+                await _settle(run, [run.pending[a] for a in referenced if a in run.pending], _left(run))
                 try:
                     run.output = self._assemble(run, program)
                 except lndl.LNDLError as e:
+                    await _settle(run, tasks, _left(run))
                     # the error clears only once the whole turn, assembly included, read: a finish
                     # that fails the same way every round is counted as the same error (ADR-0002/C3)
                     self._retry(run, str(e))
@@ -822,6 +831,7 @@ class Actor:
                     except Exception as e:  # a gate that cannot judge admits nothing, and the run goes on
                         why = f"the gate could not judge it ({type(e).__name__}: {e}); fix that or try again"
                     if why:
+                        await _settle(run, tasks, _left(run))
                         run.output = None
                         run.refusals += 1
                         if run.refusals >= request.max_refusals:
@@ -832,15 +842,22 @@ class Actor:
                         continue
                 run.outcome = Success(run.output)
                 break
-            else:
-                run.outcome = Exhausted(request.max_rounds)
+            else:  # the round cap and the deadline can fall on the same turn; time is the reason then
+                run.outcome = Exhausted(run.round, "time") if _spent(run) else Exhausted(request.max_rounds)
+            await _reap(run)
+            run.record.append(Kind.SYSTEM, _closure(run), round=run.round)
         except BaseException as e:
             # a backend that raised ends this run; whoever queued work here and is waiting on the
             # answer hears that, with the error, or its own command waits forever. The run has no
             # outcome (ADR-0002/C4): the Continue a settled turn left is not its end
             run.outcome = None
-            self.runs.pop(run.id, None)
-            self._deliver(run, error=e)
+            try:
+                cancelled = await _reaped(run)
+            finally:
+                self.runs.pop(run.id, None)
+                self._deliver(run, error=e)
+            if cancelled and not isinstance(e, asyncio.CancelledError):
+                raise asyncio.CancelledError from e
             raise
         finally:
             for _alias, answer in run.asked.values():
@@ -930,6 +947,7 @@ class Actor:
                 task = asyncio.create_task(self._perform(run, la, subset, admitted))
                 task.add_done_callback(functools.partial(self._never_started, run, la))
                 run.pending[la.alias] = task
+                run.tasks.add(task)
                 tasks.append(task)
         finally:
             admitted.set_result(None)
@@ -1416,8 +1434,10 @@ _OWN = "alias {alias!r} starts with _, which the record keeps for its own names 
 _TAKEN = "alias {alias!r} already names {where}; aliases are unique for the whole run"
 
 
-def _read(text: str, language: str = "core") -> Program | Script:
+def _read(text: str, language: str = "core", refused: str | None = None) -> Program | Script:
     """A turn as the loop reads it, live or resumed; LNDLError is what the model is told."""
+    if refused:  # the backend refused the turn (a mixed response, ADR-0004/C4); the record keeps why
+        raise lndl.LNDLError(refused)
     if _SYSTEM_FRAME.search(text):
         # the model wrote the loop's own frame and went on as if the results in it were real (9 of
         # 50 thinking-off runs, half their output tokens); none of it runs
@@ -1491,7 +1511,7 @@ class _Walk:
                 task.cancel()
             raise
         finally:
-            await _settle(self.tasks)
+            await _settle(self.run, self.tasks, _left(self.run))  # the time budget bounds it as any turn's
             for alias, reads in self.reads.items():
                 entry = self.run.record.get(alias)
                 if entry.content.ok:
@@ -1820,13 +1840,73 @@ def _output_guidance(emits: tuple[Spec, ...]) -> str:
     return "\n".join(lines)
 
 
-async def _settle(tasks: list[asyncio.Task]) -> None:
-    """Wait for the turn's commands. A cancelled command has settled itself as a RESULT; any other
-    way out of a command task is the runtime's own defect and is raised, never dropped."""
+async def _settle(run: Run, tasks: list[asyncio.Task], timeout: float | None = None) -> None:
+    """Wait for the turn's commands, for `timeout` seconds when it is given: one still running then is
+    cancelled. A cancelled command has settled itself as a RESULT; any other way out of a command task
+    is the runtime's own defect and is raised, never dropped. Each task is seen through once: what a
+    settle did not wait for (a command `OUT{}` did not name) is seen through by the reap."""
     if tasks:
-        for r in await asyncio.gather(*tasks, return_exceptions=True):
+        _, late = await asyncio.wait(tasks, timeout=timeout)
+        for task in late:
+            task.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        run.tasks.difference_update(tasks)
+        for r in results:
             if isinstance(r, BaseException) and not isinstance(r, asyncio.CancelledError):
                 raise r
+
+
+def _spent(run: Run) -> bool:
+    return run.request.time_budget is not None and run.elapsed >= run.request.time_budget
+
+
+def _left(run: Run) -> float | None:
+    """What the time budget leaves: the deadline beside a settle (ADR-0003/S3); None without one."""
+    if run.request.time_budget is None:
+        return None
+    return max(0.0, run.request.time_budget - run.elapsed)
+
+
+async def _reap(run: Run) -> None:
+    """At the run's end, whatever is still pending is cancelled and waited for, so its cancelled
+    RESULT is on the record when `run` returns and no command task outlives it (ADR-0002/C1); every
+    task no settle saw through is seen through here, so a defect in one `OUT{}` did not name is raised
+    before the run returns (ADR-0002/S5)."""
+    for task in run.pending.values():
+        task.cancel()
+    await _settle(run, list(run.tasks))
+
+
+async def _reaped(run: Run) -> bool:
+    """The abort's reap, seen through whatever else cancels the run meanwhile: a second cancel is held
+    until the reap is done, so no command task outlives the run and its cancelled RESULT is on the
+    record. True when one arrived."""
+    reap, cancelled = asyncio.ensure_future(_reap(run)), False
+    while not reap.done():
+        try:
+            await asyncio.shield(reap)
+        except asyncio.CancelledError:
+            cancelled = True
+    reap.result()
+    return cancelled
+
+
+def _closure(run: Run) -> str:
+    """The SYSTEM entry a run that ends by an outcome appends after the reap (ADR-0006/C1): the outcome
+    and the commands cancelled since the last notification, which no notification told."""
+    last = run.record.latest(Kind.SYSTEM)
+    since = last.seq if last is not None else -1
+    cancelled = [
+        e.alias
+        for e in run.record
+        if e.kind is Kind.RESULT and e.seq > since and getattr(e.content, "reason", None) == "cancelled"
+    ]
+    outcome = "Success" if isinstance(run.outcome, Success) else repr(run.outcome)
+    lines = [f"<system closure seq={run.record.seq}>", f"outcome: {outcome}"]
+    if cancelled:
+        lines.append("cancelled: " + ", ".join(cancelled))
+    lines.append("</system>")
+    return "\n".join(lines)
 
 
 def _hook_name(fn: Any) -> str:

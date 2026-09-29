@@ -1,7 +1,7 @@
 ---
 adr: ADR-0006
 status: draft
-liveness: operating (the closure entry is owed)
+liveness: operating (the closure carries no directive until the consumed mark lands, ADR-0008/D3)
 
 date: "2026-09-23"
 area: notification
@@ -53,7 +53,7 @@ reports are [[ADR-0003-the-bounds|ADR-0003]]; the hook failures it lists come fr
 
 ## Claims
 
-### C1: One SYSTEM entry per turn, numbered by its sequence _(enforced: mechanical; owed, S6)_ ^c1
+### C1: One SYSTEM entry per turn, numbered by its sequence _(enforced: mechanical)_ ^c1
 
 - **Subject**: every turn.
 - **Violated when**: a turn starts without a fresh notification, two are appended in one turn, or a
@@ -162,6 +162,10 @@ diagnostics on the record (ADR-0002/C4).
   cancelled before it entered included ([[ADR-0002-the-run#^c1|ADR-0002/C1]]).
   `test_a_reused_alias_is_refused_and_never_reads_as_still_running` pins the absence. Only a path
   carrying a command into the next turn, which no record decides, would need the line back.
-- **S6**: Owed with D1: the closure entry of C1, appended after the reap
-  ([[ADR-0002-the-run|ADR-0002]] S4); until it lands, a run that ends by an outcome has no closure
-  entry.
+- **S6**: The closure entry of C1 is appended by `Actor.run` after the reap
+  ([[ADR-0002-the-run|ADR-0002]] S4): `<system closure seq=k>`, the outcome, and the aliases whose
+  RESULT landed `cancelled` since the last notification, the deadline's and the reap's alike. It
+  carries no directive: the only mark of a last turn, the consumed mark, is unbuilt.
+  `test_a_run_that_ends_by_an_outcome_closes_its_record_with_the_outcome`, one per outcome, and
+  `test_a_run_that_aborts_appends_no_closure` pin it;
+  `test_the_closure_rides_the_log_and_a_resumed_chat_folds_it_into_its_first_view` pins the resume.

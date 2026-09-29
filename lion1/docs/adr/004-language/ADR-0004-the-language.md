@@ -1,7 +1,7 @@
 ---
 adr: ADR-0004
 status: draft
-liveness: operating (the refusal of a mixed response and the move of DeepSeek markup into the backend are owed)
+liveness: operating (the refusal of a mixed response and the DeepSeek markup read in the backend are pinned by tests)
 date: "2026-09-23"
 area: language
 kind: new
@@ -130,10 +130,9 @@ run.
 
 No backend forwards a tool schema. A native call in a response with empty content is read, not
 retried; beside non-empty content the message is refused as a retry naming both channels, so nothing
-runs on a message read by halves (today the call is dropped). A call named `lact...` or `lvar...` is
-the tag the model wrote, rebuilt with its arguments; any other becomes `<lact
-auto_hash>name(...)</lact>`, dispatched like a typed one (ADR-0005). DeepSeek's markup around a tag
-reads as the tag; a swallowed closer is closed.
+runs on a message read by halves. A call named `lact...` or `lvar...` is the tag the model wrote,
+rebuilt with its arguments; any other becomes `<lact auto_hash>name(...)</lact>`, dispatched like a
+typed one (ADR-0005). DeepSeek's markup around a tag reads as the tag; a swallowed closer is closed.
 
 A message containing `<system round=` is refused whole, even inside a string: the check reads the
 raw text first. Only the loop writes that frame; its results were never observed (9 of 50
@@ -165,10 +164,15 @@ line break escaped in a string is counted and carries no note.
 Serves C4. The backend adapts a provider's output before `parse` reads it, so `lionagi/lndl.py`
 reads LNDL and knows no provider. `tool_calls_text` is applied by the OpenRouter backend when the
 message content is empty ([[ADR-0009-backends#^d1|ADR-0009/D1]]). `normalize`, which reads DeepSeek
-markup and closes a swallowed closer, moves from the parser into the same backend and is owed there,
-as is the refusal of a mixed response.
+markup and closes a swallowed closer, lives in `hub/harness/markup.py` and runs in that backend. A
+mixed response returns a `Reply` carrying `refused`: a retry, its reason kept on the turn's entry so
+a resumed run declares nothing from it.
 
-- **Landing evidence**: `tests/test_openrouter.py`; the markup tests move with `normalize`.
+- **Landing evidence**: `tests/test_openrouter.py`:
+  `test_a_native_tool_call_answer_is_the_models_turn_as_text_and_is_not_retried`,
+  `test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_told`,
+  `test_the_backend_rewrites_native_markup_and_a_swallowed_closer_before_the_parser`; the markup
+  cases in `tests/test_harness_markup.py`.
 
 ### D3: The guidance text names the heredoc first ^d3
 
