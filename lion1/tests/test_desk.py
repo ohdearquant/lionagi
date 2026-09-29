@@ -1677,6 +1677,50 @@ def test_mail_to_the_desk_that_answers_no_open_clarify_of_its_sender_is_dropped_
     assert pending(agent) == {} and len(khive.sent) == 1
 
 
+LISTED = "an answer mailed to you is listed there under the message it clarifies, by the answer's own id"
+
+
+@pytest.mark.parametrize("admit_replies", [True, False], ids=["the-setting-on", "the-setting-off"])
+def test_the_guidance_names_the_listing_of_an_answer_only_when_the_setting_admits_one(
+    tmp_path, admit_replies
+):
+    desk, khive, reader, agent = clarified(tmp_path, [DONE], admit_replies=admit_replies)
+    text = desk.chores.extra_system
+    assert (LISTED in text) is admit_replies
+    assert (
+        "$replies" not in text and "in a later sweep" + ("; an answer" if admit_replies else ". Once") in text
+    )
+
+
+def test_the_gate_reads_the_ledger_once_per_message(tmp_path):
+    desk, khive, reader, agent = clarified(tmp_path, [DONE])
+    reads: list[str] = []
+    rows = desk.rows
+    desk.rows = lambda: reads.append("read") or rows()
+    answer = mail(ASKER, "the disk under the roots", mid=ANSWER, thread="t-c1")
+    assert desk.admit(answer) is True and reads == ["read"]  # an answer: the open clarifies, then its own row
+    reads.clear()
+    assert desk.admit(mail("lambda:b", "not an answer", mid="b2c3d4e5", thread="t-c1")) is False
+    assert reads == ["read"]
+
+
+def test_a_ledger_the_gate_cannot_read_leaves_the_mail_to_the_agents_gate_and_the_error_on_the_wake(tmp_path):
+    desk, khive, reader, agent = clarified(tmp_path, [DONE])
+    text = desk.ledger.read_text()
+    desk.ledger.write_text(text + "{not json\n" + text)  # an undecodable line in the middle, not a torn tail
+    with pytest.raises(json.JSONDecodeError):  # the read itself fails
+        desk.rows()
+    khive.mail.append(mail(OWNER, "status please", mid="a1b2c3d4", thread="t-own"))
+    khive.mail.append(mail(ASKER, "the disk under the roots", mid=ANSWER, thread="t-c1"))
+    run = asyncio.run(agent.wake())
+    assert run is not None and stored(agent, "taking") == {}  # the owner's mail ran
+    assert stored(agent, "cursor")["dropped"] == [{"id": ANSWER, "from": ASKER}]  # the answer met C3's gate
+    assert [e for e in agent.errors if e.startswith("desk gate failed: JSONDecodeError")] != []
+    assert (
+        len([e for e in agent.errors if e.startswith("desk gate failed")]) == 1
+    )  # once, whatever the passes
+
+
 def test_a_row_the_chair_has_not_handled_wakes_the_desk_and_a_handled_one_moves_the_cursor_only(tmp_path):
     """No tick: the desk long-polls the chair's box beside its own. The first wake here has no own
     mail; the watch finds Q1, the wake sweeps and answers it; the next poll reads from the saved cursor,
