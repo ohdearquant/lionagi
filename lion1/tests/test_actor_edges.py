@@ -401,7 +401,7 @@ def test_a_result_that_already_is_the_output_fills_it_as_it_is():
         return made[-1]
 
     run = once(actor, Profile("p"), "<lact a>make_tally()</lact>", "OUT{tally: [a]}", emits=(Tally,))
-    assert run.output["tally"] is made[0]
+    assert run.output["tally"] is run.resolve("a") == made[0]  # the RESULT holds a capture (ADR-0007/C1)
 
 
 @pytest.mark.parametrize(
@@ -421,7 +421,10 @@ def test_a_command_pointing_into_a_circle_it_is_not_part_of_waits_and_is_not_bla
     run = asyncio.run(asyncio.wait_for(actor.run(Profile("p"), RunRequest(max_rounds=1), scripted(turn)), 5))
     r = results(run)
     assert list(r) == ["x", "y", "z"]  # z waited for x, although it was dispatched first
-    assert r["x"].error == "*y points back at x: a circle of pointers never settles"
+    assert r["x"].error == (
+        "*y waits on x: a circle of pointers never settles, and a command that writes or reads waits for "
+        "earlier commands of its turn"
+    )
     assert r["z"].reason == "invalid" and "circle" not in r["z"].error
 
 
@@ -588,7 +591,7 @@ def test_a_late_answer_to_an_ask_whose_command_was_cancelled_leaves_the_peers_ru
         queued.append(ctx.alias)
         return handle
 
-    @asker.handler(Cut)
+    @asker.handler(Cut, effect="pure")  # beside the command it stops: a write would wait for it
     async def cut(req: Cut, ctx) -> str:
         while req.target not in queued:
             await asyncio.sleep(0)
@@ -657,7 +660,7 @@ def test_every_command_of_a_turn_is_admitted_before_any_of_them_runs(eager, forw
         pytest.skip("eager tasks arrive in Python 3.12")
     actor = Actor("edge-admitted")
 
-    @actor.handler(Said)
+    @actor.handler(Said, effect="pure")
     async def said(req: Said, ctx) -> str:
         return req.text
 

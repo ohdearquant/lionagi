@@ -5,6 +5,7 @@ names every rung's reading; anything undecided is an error, never a guess. The d
 notice in discovery and files, leaves or escalates it by code, never listing it to the model."""
 
 import asyncio
+import dataclasses
 import importlib
 import importlib.util
 import json
@@ -711,6 +712,8 @@ def test_two_discoveries_at_once_settle_a_code_filed_task_once_and_spend_one_slo
             return await original_exec(ops)
 
         desk._discover, inner.exec = discover, exec
+        # one turn orders two writes (ADR-0005/C6); declared read, two sweeps overlap as two runs' would
+        agent.actor.handlers["sweep"] = dataclasses.replace(agent.actor.handlers["sweep"], effect="read")
         profile, _ = desk.chores.profiles()
         req = RunRequest(inputs=("tick: sweep",), emits=(Posture,), max_rounds=3, accept=desk._accept)
         running = asyncio.create_task(agent.actor.run(profile, req, Scripted(TWO_SWEEPS, DONE)))
@@ -758,6 +761,8 @@ def test_two_triages_already_waiting_find_the_reservation_and_file_once(tmp_path
         return await original_exec(ops)
 
     desk.verdicts.triage, inner.exec = triage, exec
+    # one turn orders two writes (ADR-0005/C6); declared read, two sweeps overlap as two runs' would
+    agent.actor.handlers["sweep"] = dataclasses.replace(agent.actor.handlers["sweep"], effect="read")
     run_turns(desk, agent, TWO_SWEEPS, DONE)
     assert arrived == 2 and len(assigns(inner)) == 1 and len(inner.tasks) == 1
     assert len(desk.rows()) == 1 and pending(agent) == {}

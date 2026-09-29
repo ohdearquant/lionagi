@@ -3,7 +3,7 @@ import re
 from typing import Literal
 
 import pytest
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, computed_field, field_validator
 
 from lionagi import (
     Actor,
@@ -106,7 +106,7 @@ class Echo(BaseModel):
 def _echo_actor(name: str) -> Actor:
     actor = Actor(name)
 
-    @actor.handler(Echo)
+    @actor.handler(Echo, effect="pure")
     async def echo(req: Echo, ctx) -> str:
         return req.text
 
@@ -1166,6 +1166,41 @@ def test_a_command_that_stops_without_returning_still_settles_as_a_result():
     assert not any("still running" in n for n in notices)
 
 
+class Reciprocal(BaseModel):
+    n: int
+
+    @computed_field
+    @property
+    def inverse(self) -> float:
+        return 1 / self.n
+
+
+def test_a_request_that_cannot_be_captured_settles_as_a_result_and_the_run_continues():
+    actor = Actor("t-capture")
+    called: list[int] = []
+
+    @actor.handler(Reciprocal)
+    def reciprocal(req: Reciprocal, ctx) -> float:
+        called.append(req.n)
+        return req.inverse
+
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(max_rounds=2, emits=(Done,)),
+            scripted(
+                "<lact z>reciprocal(n=0)</lact><lact h>reciprocal(n=2)</lact>",
+                'OUT{done: {summary: "s", files: []}}',
+            ),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.pending == {}
+    z, h = run.record.get("z"), run.record.get("h")
+    assert z.content.reason == "invalid" and z.meta["execution"] == "not executed"
+    assert "ZeroDivisionError: division by zero" in z.content.error
+    assert h.content.ok and h.content.value == 0.5 and called == [2]
+
+
 class GetCount(BaseModel):
     pass
 
@@ -1656,7 +1691,7 @@ class Hang(BaseModel):
 def _hanging_actor(name: str, started: list[asyncio.Task]) -> Actor:
     actor = _echo_actor(name)
 
-    @actor.handler(Hang)
+    @actor.handler(Hang, effect="pure")  # the hangs run side by side: what the reap sees through
     async def hang(req: Hang, ctx) -> str:
         started.append(asyncio.current_task())
         await asyncio.Event().wait()
@@ -1793,12 +1828,12 @@ def test_a_cancel_during_a_defects_reap_ends_the_run_cancelled_with_the_defect_a
     actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
     entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
-    @actor.handler(Halter)
+    @actor.handler(Halter, effect="pure")  # side by side: the defect lands while the hang is under way
     async def halter(req: Halter, ctx):
         await entered.wait()  # after the hang is under way
         raise Halt("a defect while another command hangs")
 
-    @actor.handler(Hang)
+    @actor.handler(Hang, effect="pure")
     async def hang(req: Hang, ctx) -> str:
         entered.set()
         try:
