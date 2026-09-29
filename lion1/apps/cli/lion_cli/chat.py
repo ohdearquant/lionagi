@@ -316,17 +316,20 @@ async def _chat_main(
                 "They did not run again; ask again for any you still need."
             )
         patch = chats / f"{prior.stem}.patch"
-        if (
-            patch.exists()
-            and subprocess.run(
-                _git_apply(directory, "--check", "-R", str(patch)), capture_output=True
-            ).returncode
-        ):  # the saved patch does not come off the directory as it stands
-            notes.append(
-                f"the previous session's changes, saved as {patch}, are not applied to {directory} as "
-                "it stands, so edits the record shows may be missing from the files you work now; "
-                "read a file before relying on an edit to it."
-            )
+        if patch.exists():
+            try:  # does the saved patch come off the directory as it stands?
+                off = subprocess.run(
+                    _git_apply(directory, "--check", "-R", str(patch)), capture_output=True
+                ).returncode
+                standing = "are not applied to" if off else None
+            except FileNotFoundError:  # no git here: unchecked, and the model is told that much
+                standing = "could not be checked against"
+            if standing is not None:
+                notes.append(
+                    f"the previous session's changes, saved as {patch}, {standing} {directory} as "
+                    "it stands, so edits the record shows may be missing from the files you work now; "
+                    "read a file before relying on an edit to it."
+                )
         notice = " ".join(notes) or None
     box = getattr(a, "box", None) or ran.get("box", "vm")
     image = getattr(a, "image", None) or ran.get("image", "python:3.12")

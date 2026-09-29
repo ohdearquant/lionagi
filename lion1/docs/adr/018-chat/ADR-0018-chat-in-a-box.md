@@ -261,9 +261,9 @@ given, else `vm` and `python:3.12`; `git apply --check -R` tests the continued s
   input.
 - **S9**: The chat log's first row, `BOX`, names where the chat ran, and a resume runs there unless
   its flags say otherwise; a log older than the row resumes under `vm`. An unapplied chat patch is
-  told, not built on: the new copy is still a fresh push (S2), and when the continued session's
-  saved patch does not come off the directory, the resume notice names it to the model and the
-  person. Only that session's patch is checked.
+  told, not built on: the new copy is a fresh push (S2). When the continued session's saved patch
+  does not come off the directory, or cannot be checked without git, the resume notice says so to
+  the model and the person; only that session's patch is checked.
   `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch` resumes a
   boxed chat.
 - **S10**: Nothing in the chat installs `uv` in a box: the default `python:3.12` is used as

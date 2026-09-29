@@ -528,6 +528,12 @@ def test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_
     rows = [json.loads(r) for r in resolve_chat(chats, "last").read_text().splitlines()]
     assert rows[0] == {"kind": "BOX", "box": "vm"}
     assert not [r for r in rows if r["kind"] == "INPUT" and r["meta"].get("origin") == "console"]
+    # no git on the machine: the check cannot run, the resume goes on, and the model is told that much
+    monkeypatch.setenv("PATH", str(tmp_path / "no-git-here"))
+    assert box_chat(monkeypatch, ChatBox, tmp_path, "done", resume=first.stem, box="vm", image=None) is None
+    rows = [json.loads(r) for r in resolve_chat(chats, "last").read_text().splitlines()]
+    told = [r["content"] for r in rows if r["kind"] == "INPUT" and r["meta"].get("origin") == "console"]
+    assert len(told) == 1 and f"saved as {saved}, could not be checked against {tmp_path}" in told[0]
 
 
 def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_path):
