@@ -5,6 +5,7 @@ admitted, once per key; two answers in one turn never both take the hour's last 
 discoveries at once settle one send with one row."""
 
 import asyncio
+import dataclasses
 import json
 import re
 import types
@@ -616,6 +617,8 @@ def one_turn_at_cap_one(tmp_path, fates: dict[str, list[str]]) -> dict:
     desk, agent, wire, _ = keyed_desk(tmp_path, server, reader)
     desk.answers_per_hour = 1
     probe = desk.chores.instruments["disk"] = OneYieldProbe(desk)
+    # one turn orders two writes (ADR-0005/C6); declared read, two answers overlap as two runs' would
+    agent.actor.handlers["answer"] = dataclasses.replace(agent.actor.handlers["answer"], effect="read")
     profile, _ = desk.chores.profiles()
     request = RunRequest(inputs=("tick: sweep",), emits=(Posture,), max_rounds=3, accept=desk._accept)
 
@@ -760,6 +763,8 @@ def two_sweeps_held(desk, agent, inner: FakeKhive):
     never until two sends have: a desk that settles once makes one. The run, and the key of each request
     the transport received (a keyed replay lands no second message, so only this counts it)."""
     requests: list[str] = []
+    # one turn orders two writes (ADR-0005/C6); declared read, two sweeps overlap as two runs' would
+    agent.actor.handlers["sweep"] = dataclasses.replace(agent.actor.handlers["sweep"], effect="read")
 
     async def race():
         release, entered, discoveries = asyncio.Event(), asyncio.Event(), 0

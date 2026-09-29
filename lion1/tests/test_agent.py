@@ -852,6 +852,101 @@ def test_once_refuses_served_identity(tmp_path, kkernel_stub, monkeypatch):
     )
 
 
+class Measured:
+    """An instrument whose one outcome the test chooses."""
+
+    direction, answers, every, about, mechanism, empty_expected = (
+        "under-report",
+        "what the test pointed it at",
+        None,
+        "a scripted instrument",
+        "the test says so",
+        False,
+    )
+
+    def __init__(self, out):
+        self.out, self.args = out, []
+
+    async def run(self, args):
+        self.args.append(args)
+        return self.out
+
+
+def test_render_prints_the_measurement_unvetted_and_says_so():
+    from lion_cli.agent import render
+
+    from hub.agent.chores import Outcome
+
+    blank = Outcome(findings=("a finding",), evidence="the instrument's own line")
+    assert render("probe", Measured(blank), blank).splitlines() == [
+        "probe: control ok, 1 finding(s), escalate=False, count=None, direction under-report",
+        "unvetted: run outside the chore path, so no refusal ran over it (a blank population, predicate, "
+        "count or known-positive passes), nothing was sent and no ledger row was written",
+        "answers: what the test pointed it at",
+        "known-positive: (none)",
+        "population: ",
+        "predicate: ",
+        "- a finding",
+        "the instrument's own line",
+    ]
+    failed = Outcome(control=False, escalate=True, population="rows", predicate="p", count=0, positive="x")
+    text = render("probe", Measured(failed), failed)
+    assert text.startswith("probe: control FAILED, 0 finding(s), escalate=True, count=0,")
+    assert "known-positive: x\npopulation: rows\npredicate: p" in text
+
+
+def test_land_writes_the_days_file_of_that_name_and_the_latest_run_wins(tmp_path):
+    from lion_cli.agent import land
+
+    path = land(tmp_path, "check-probe", "first")
+    assert path.parent == tmp_path / "landing" and re.fullmatch(r"\d{8}-check-probe\.txt", path.name)
+    assert land(tmp_path, "check-probe", "second") == path and path.read_text() == "second"
+    assert sorted(p.name for p in (tmp_path / "landing").iterdir()) == [path.name]
+
+
+def test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing(
+    tmp_path, kkernel_stub, monkeypatch, capsys
+):
+    """`--check <name>`: the instrument runs once with no args under the identity's lock, its unvetted
+    measurement is printed and landed, and no mail, ledger row or store call follows."""
+    from hub.agent.chores import Outcome
+
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (d / "chores.toml").write_text('actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n')
+    ops: list[str] = []
+
+    async def fake_exec(self, op):
+        ops.append(op)
+        return [{}]
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    held: list[bool] = []
+    probe = Measured(Outcome(population="rows", predicate="probed", count=0, evidence="read 0 rows"))
+    orig = probe.run
+
+    async def run(args):  # the identity is held while the instrument runs
+        held.append((d / "agent.pid").read_text().strip() == str(os.getpid()))
+        return await orig(args)
+
+    probe.run = run
+    monkeypatch.setattr("lion_cli.agent.instruments", lambda cfg, khive, state: {"probe": probe})
+    base = dict(dir=str(d), stats=False, model=None, ticks=False, arm=False, once=False, rerun=None, wait=0)
+    asyncio.run(agent_main(argparse.Namespace(**base, check="probe")))
+    printed = capsys.readouterr().out
+    landed = Path(printed.splitlines()[-1].removeprefix("landed: "))
+    assert landed.parent == d / "landing" and re.fullmatch(r"\d{8}-check-probe\.txt", landed.name)
+    assert printed == landed.read_text() + f"\nlanded: {landed}\n"
+    assert printed.startswith(
+        "probe: control ok, 0 finding(s), escalate=False, count=0, direction under-report\n"
+    )
+    # unvetted: an empty population nobody declared expected and a blank known-positive pass unrefused
+    assert "unvetted: run outside the chore path" in printed and "known-positive: (none)" in printed
+    assert probe.args == [{}] and held == [True] and ops == []
+    assert not (d / "ledger.jsonl").exists() and not (d / "agent.pid").exists()
+
+
 def test_check_with_the_identity_free_prints_and_lands_the_measurement_and_sends_nothing(
     tmp_path, kkernel_stub, monkeypatch, capsys
 ):

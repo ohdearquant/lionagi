@@ -83,8 +83,8 @@ The gate is code review of any second console script beside `lion`.
 
 `agent_main` builds the agent, claims, runs its one branch and releases in a `finally`. The claim is
 an exclusive, non-blocking `flock` on `agent.pid` in the directory whose `.khive/config.toml` names
-the actor; the pid inside is for people. The operating system drops the lock with the process, so a
-stale file never holds.
+the actor; the pid inside is for people, read as ASCII digits or as no pid. The operating system
+drops the lock with the process, so a stale file never holds.
 
 A refused claim raises before any act, naming the holder's pid. `serve` keeps a lock its process
 already holds, so serving and every one-shot form contend for one lock. Release removes the file

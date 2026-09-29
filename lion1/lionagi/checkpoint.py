@@ -61,7 +61,7 @@ _FRAMES = (
 )
 _REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-_KEEP = ("inbound", "origin", "reply", "execution", "refused")
+_KEEP = ("inbound", "origin", "reply", "execution", "request", "returned", "unread", "refused")
 
 
 class CheckpointError(Exception):
@@ -99,9 +99,10 @@ class Checkpoint:
 
 def entry_of(row: dict) -> Entry | None:
     """A log row (the chat log's `entry_row`, ADR-0018/D1) back as a record entry: a result as Result,
-    the inbound marks, each result's execution fact, a refused turn's reason and the context directive
-    kept, the seq as it was; None for a row of another kind (a USAGE row, or another app's: the log,
-    not the record)."""
+    the inbound marks, each result's execution fact and its two captures (the request the handler
+    entered, its return before the after hooks), a refused turn's reason, the context directives and a
+    program's computed values kept, the seq as it was; None for a row of another kind (a USAGE row, or
+    another app's: the log, not the record)."""
     if row["kind"] not in Kind.__members__:
         return None
     kind = Kind[row["kind"]]
@@ -109,14 +110,31 @@ def entry_of(row: dict) -> Entry | None:
     if kind is Kind.RESULT and isinstance(content, dict) and "spec" in content:
         content = Result(**content)
     # `execution`: whether a result's handler was called; an older log has none, which says nothing
-    meta = {k: v for k, v in (row.get("meta") or {}).items() if k in _KEEP}
-    if isinstance(d := (row.get("meta") or {}).get("directive"), dict):
-        meta["directive"] = Directive(
+    kept = row.get("meta") or {}
+    meta = {k: v for k, v in kept.items() if k in _KEEP}
+
+    def directive(d: dict) -> Directive:
+        return Directive(
             op=d["op"],
             refs=tuple(d["refs"]),
             text=d.get("text", ""),
             at=int(d.get("at", 0)),
             seqs=tuple(d["seqs"]) if d.get("seqs") is not None else None,
+        )
+
+    if isinstance(d := kept.get("directive"), dict):
+        meta["directive"] = directive(d)
+    if isinstance(ds := kept.get("consumed"), list):  # a program's consumed results ride a notification too
+        meta["consumed"] = tuple(directive(d) for d in ds)
+    if isinstance(bs := kept.get("bound"), list):  # the values a program bound and nothing read yet
+        meta["bound"] = tuple((str(b[0]), int(b[1]), int(b[2]), str(b[3])) for b in bs)
+    if isinstance(vs := kept.get("values"), list):  # and the values it computed: alias, seq, value,
+        # or alias, seq, None, error for one that failed to compute, bound to its failure
+        meta["values"] = tuple(
+            (str(v[0]), int(v[1]), Result("value", False, error=str(v[3]), reason="invalid"))
+            if len(v) == 4
+            else (str(v[0]), int(v[1]), v[2])
+            for v in vs
         )
     return Entry(
         seq=row["seq"],
@@ -235,7 +253,7 @@ def take(
     return Checkpoint(
         id=f"ckpt-{now:%Y%m%d-%H%M%S}-{re.sub(r'[^A-Za-z0-9]+', '-', actor).strip('-')}",
         actor=actor,
-        taken_at=now.isoformat(timespec="seconds"),
+        taken_at=now.isoformat(),
         why=why,
         source=source,
         vars=tuple(named.values()),

@@ -51,7 +51,7 @@ def _exec_actor(name: str, entered: list[str], parked: list[str]) -> Actor:
         parked.append(ctx.alias)
         await asyncio.Event().wait()
 
-    @actor.handler(Cut)
+    @actor.handler(Cut, effect="pure")  # beside the command it stops: a write would wait for it
     async def cut(req: Cut, ctx):
         while req.target not in parked:
             await asyncio.sleep(0)

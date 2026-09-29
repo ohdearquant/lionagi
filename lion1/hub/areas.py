@@ -145,7 +145,8 @@ def _held(pid_file: Path) -> tuple[bool, int | None]:
         return False, None
     try:
         text = os.read(fd, 64).decode(errors="replace").strip()
-        pid = int(text) if text.isdigit() else None
+        # ASCII digits only: isdigit alone admits superscripts int refuses and other scripts' digits
+        pid = int(text) if text.isascii() and text.isdigit() else None
         try:
             fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)  # a holder has it exclusive: this fails
         except OSError as e:
@@ -341,7 +342,7 @@ def controls_info(directory: str) -> dict:
             text = pid_file.read_text(errors="replace").strip()
         except OSError:
             text = ""
-        if text.isdigit():
+        if text.isascii() and text.isdigit():
             # absolute: under launchd PATH is /usr/bin:/bin:/usr/sbin:/sbin. pgrep exits 0 when a child
             # matched and 1 when none did; any other answer, or none, reads as busy, so a restart then
             # takes `force` rather than cutting a wake short on a guess

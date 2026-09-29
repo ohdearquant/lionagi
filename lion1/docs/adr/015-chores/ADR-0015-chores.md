@@ -79,7 +79,7 @@ No findings is quiet: a row, and no mail beyond the answer a question is owed. F
 to the owner. An escalation, marked so, goes to the owner and the steward; the agent never performs
 the remedy. A chore runs as one command inside a wake ([[ADR-0013-the-agent|ADR-0013]]).
 
-### C2: The chores are the ones `chores.toml` names, from a fixed set of eleven _(enforced: mechanical)_ ^c2
+### C2: The chores are the ones `chores.toml` names, from a fixed set of thirteen _(enforced: mechanical)_ ^c2
 
 - **Subject**: every agent built from its directory.
 - **Violated when**: a chore runs that the file does not name, or one is built without its error
@@ -97,6 +97,8 @@ and what it keeps between runs in the agent's notes:
 | `verdict-freshness` | the newest review verdict file per open pull request against its head; the pull requests from `gh` or a configured enumerator | one snapshot                                      | over-report  |
 | `ci-red`            | the failing lines at each red head, from `gh run view --log-failed` or a local CI transcript                    | a snapshot per repository                         | under-report |
 | `served`            | each served agent's last-wake note, pid file and launchd row                                                     | nothing                                           | under-report |
+| `lock-holder`       | the pids holding each named lock file open (`lsof`), each with its full command line (`ps`)                      | nothing                                           | under-report |
+| `scheduled-job`     | each job's artifact age against its bound, then its launchd row's last exit                                      | nothing                                           | under-report |
 | `gtd-inbox`         | the assignee's inbox tasks older than the triage age, through the store                                         | nothing                                           | under-report |
 | `inbox-sla`         | unread mail older than the age per watched actor, by `comm.probe`, no bodies                                     | nothing                                           | under-report |
 | `disk`              | free space per volume against each named floor (`df`), and build targets over a size cap (`find`, `du`)          | nothing                                           | over-report  |
@@ -152,10 +154,10 @@ answers ([[ADR-0017-the-desk#^c12|ADR-0017/C12]]).
 ### C6: A chore changes no tree, so its result lands by print and save _(enforced: process)_ ^c6
 
 The instruments' commands read: `gh` lists, views and GETs, `git` worktree lists, status, log and
-remote lookups, `ps`, `launchctl print`, `df`, `find` and `du`. The chores profile offers `check`,
-`digest`, `aged` and the handlers a front desk adds; none is a file tool or a note command, so a
-blank `note.find` ([[ADR-0007-the-record#^c5|ADR-0007/C5]]) never reaches a chore. The handler reads
-and writes the agent's notes by key. A chore has no diff to land.
+remote lookups, `ps`, `lsof`, `launchctl print`, `df`, `find` and `du`. The chores profile offers
+`check`, `digest`, `aged` and the handlers a front desk adds; none is a file tool or a note command,
+so a blank `note.find` ([[ADR-0007-the-record#^c5|ADR-0007/C5]]) never reaches a chore. The handler
+reads and writes the agent's notes by key. A chore has no diff to land.
 
 Its hand-run form is print and save: `lion agent --check <chore>` runs the instrument alone, prints
 it and saves the same text in the agent directory's `landing` folder, one file per chore and day; it
@@ -239,8 +241,9 @@ bypasses the handler: no refusals, no row, no send.
 
 - **Landing evidence**: `test_once_refuses_served_identity` in `tests/test_agent.py` pins its
   refusal while a live process holds the identity;
-  `test_check_with_the_identity_free_prints_and_lands_the_measurement_and_sends_nothing` drives a
-  positive run: the printed text is the landed text, and no send, row or tick follows.
+  `test_check_with_the_identity_free_prints_and_lands_the_measurement_and_sends_nothing` and
+  `test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing` drive a positive run: the
+  printed text is the landed text, and no send, row or tick follows.
 
 ## Alternatives
 
@@ -272,9 +275,10 @@ bypasses the handler: no refusals, no row, no send.
 - **S4**: A standing state is told once until it changes, a standing failure included: a chore that
   recovers quietly and fails again the same way is not resent. The digest carries the counts, and an
   owner who wants a state again asks.
-- **S5**: The hand-run check skips the handler's refusals, so it shows the raw measurement; a test
-  drives it past the identity claim. The `verdict-freshness` enumerator runs as the config gives it,
-  outside anything that checks it only reads.
+- **S5**: The hand-run check skips the handler's refusals, so it shows the raw measurement;
+  `test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing` drives it past the identity
+  claim. The `verdict-freshness` enumerator runs as the config gives it, outside anything that
+  checks it only reads.
 - **S6**: The chore ledger is read whole on every check and never rotated, so a check's cost grows
   with the agent's age. Its `at` stamps are local time without a zone; a row also carries `ts`, the
   instant in epoch seconds, which the aged pass reads, and a row without one is read by its `at`.
