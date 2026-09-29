@@ -131,6 +131,9 @@ def checkpoint(
     if why not in WHYS:
         raise CheckpointError(f"why {why!r}: one of {', '.join(WHYS)}")
     assert_ignored(d)
+    # the stamp is read before the transcript is: a prompt landing between the read and the stamp is
+    # after the take, and status calls it so
+    now = now or datetime.now().astimezone()
     actor = actor_id(d)
     path = Path(transcript).expanduser() if transcript else newest_transcript(d)
     if not path.is_file():
@@ -165,7 +168,7 @@ def checkpoint(
         "lanes": f"{lane_note}; {pr_note}",
     }
     view = transcript_turns(path, budget)
-    ckpt = take(source, [*harvested, *declared], actor=actor, why=why, budget=budget, view=view)
+    ckpt = take(source, [*harvested, *declared], actor=actor, why=why, budget=budget, view=view, now=now)
     written = save(ckpt, d)
     _drain(d, taken)
     return {
@@ -191,7 +194,7 @@ def restore(directory: str | Path, id: str | None = None) -> dict:
 
 def status(directory: str | Path, *, session: str | None = None) -> dict:
     """`{latest, taken_at, context_now, stale, pending_vars}`. Stale: no checkpoint, or the transcript or
-    record it points at changed after the take."""
+    record it points at changed after the take. A `taken_at` with no fraction is its second's start."""
     d = Path(directory).resolve()
     try:
         c = load(d)

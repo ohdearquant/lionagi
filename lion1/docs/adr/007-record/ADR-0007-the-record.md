@@ -1,7 +1,7 @@
 ---
 adr: ADR-0007
 status: draft
-liveness: operating (the captures on the entry and the consumed directive are owed)
+liveness: operating (the captures on the entry and the consumed directive on the closure are owed)
 date: "2026-09-23"
 area: record
 kind: new
@@ -109,8 +109,8 @@ hidden unseen.
 
 The handler calls `Context.direct`; the directive rides the command's RESULT, dated at its sequence.
 The runtime's ride the notification or the closure, dated at their event. The fold applies
-directives by date, so a `context.show` after a consumption stands over its hide, and a directive
-reaches only entries earlier than its date.
+directives by date, record order among equals, so a `context.show` after a consumption stands over
+its hide, and a directive reaches only entries earlier than its date.
 
 A directive pins its targets' sequences when made; the fold reads those, never the names. A summary
 stands where the span began and keeps the names it replaced. Hiding changes the rendering only;
@@ -186,6 +186,7 @@ out-of-view diff and the fold event (ADR-0006).
 
 - **Landing evidence**: `tests/test_actor.py` (the fold event, the placeholder, the summary, the
   context figure across a fold), `tests/test_chat.py` (resume by replaying the chat log),
+  `test_a_show_later_in_the_same_program_stands_over_the_hide_of_what_it_consumed`,
   `test_directives_apply_by_date_not_by_where_they_ride_on_the_record` and
   `test_a_directive_dated_before_its_carrier_reaches_only_entries_earlier_than_its_date` (the fold
   by date).
@@ -198,7 +199,9 @@ date and a resumed chat replays them by folding. `_perform` pins the targets' se
 a command's directive, and stores none when a ref names nothing on the record.
 
 - **Landing evidence**: `test_a_hidden_result_is_a_placeholder_and_a_summarized_one_is_not`,
-  `test_a_directive_naming_nothing_on_the_record_is_refused_not_stored_empty`.
+  `test_a_directive_naming_nothing_on_the_record_is_refused_not_stored_empty`; the consumed marks on
+  the notification, `meta["consumed"]`: `test_the_consumed_hide_survives_the_log_as_a_directive` and
+  `test_a_consumed_result_never_reaches_the_backend_yet_its_pointer_and_context_show_do`.
 
 ### D3: `notes.py` with a memory store and a file store ^d3
 

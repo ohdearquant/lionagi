@@ -1,7 +1,7 @@
 ---
 adr: ADR-0002
 status: draft
-liveness: operating (the code still says round, S3; the opt-in wait for the whole turn is not built, S4)
+liveness: operating (two OUT{} refusing the message whole, a repeated accept refusal told with its count and a generated alias freed past a value are pinned by tests; the code still says round, S3; the opt-in wait for the whole turn is not built, S4)
 date: "2026-09-23"
 area: run
 kind: new
@@ -57,12 +57,15 @@ Source: `Actor.run` in `lionagi/actor.py`.
 | when, first row that fits                                 | what executes                                       | outcome                                                          |
 | --------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------- |
 | a bound is spent at the turn's start                      | nothing                                             | `Exhausted(reason)`, unless `run.more` was granted in an earlier turn (ADR-0003) |
+| under `wait`, after a reply or a pause with no command pending, `wait` answers false at the turn's start | nothing, not even the notification | `Stopped(n)`                                     |
 | `stop()` is true after the notification                   | nothing                                             | `Stopped(n)`                                                     |
 | the message carries the loop's own `<system round=` frame, two `OUT{}` or a backend's refusal | nothing                             | a retry; the error rides the next notification                   |
-| the message has no LNDL                                   | nothing                                             | the run continues, with an idle note                             |
+| under `wait`, the message has no command and no `OUT{}`   | no command; a value or note it declares is taken   | the run continues as a reply; `wait` is asked at the next turn's start |
+| the message has no LNDL, in a run without `wait`          | nothing                                             | the run continues, with an idle note                             |
 | the message has `OUT{}` and its fields do not assemble | every command; `OUT{}` waits, then fails to assemble; the turn settles | a retry; the error rides the next notification, a repeat counted (C3) |
 | the message has `OUT{}` and `accept` refuses it | every command; `OUT{}` refused; the turn settles | a retry with the reason; `Refused` after `max_refusals` in a row |
 | the message has `OUT{}` | every command; `OUT{}` waits for what it references, then assembles | `Success` when the fields assemble and `accept` has nothing to say; the rest cancelled and reaped |
+| under `wait` with `reply_on_commands`, the message has commands and no `OUT{}`, every one lands ok and nothing is refused | every command | the run continues once they settle, as a reply; `wait` is asked at the next turn's start |
 | the message has no `OUT{}`                                | every command                                       | the run continues once they settle                               |
 
 Every command in a turn is dispatched, `OUT{}` or not: a model that writes "edit, then done" in one
@@ -87,7 +90,8 @@ turn.
 Within a turn the first use of an alias wins and the second is named. Across the run a re-declared
 value replaces the earlier one and drops its output binding; a command alias colliding with anything
 is refused and named. A generated `auto_` alias from a native tool call is re-suffixed instead,
-because the model never chose it.
+because the model never chose it: past every live binding, values included, to a name none of them
+holds. `test_a_generated_alias_a_value_holds_runs_under_a_free_suffix` pins it.
 
 ### C3: Repeats are counted, and stop is asked after the notification _(enforced: mechanical)_ ^c3
 
@@ -96,10 +100,13 @@ because the model never chose it.
   turn is not named, or `stop()` is consulted before the turn's sections have run.
 
 The notification says "the same error N turns running" and "your last turn was identical to the one
-before it (N times now)", so the next turn has a reason to differ. The sections have just looked at
-the world, and what they saw is what a stop decides on; asked before, the model got one more turn
-after every notice that the run was over. The run ends `Stopped(n)` with n the turn that did not
-run: the stopped iteration called no backend and is not a turn.
+before it (N times now)", so the next turn has a reason to differ. An `accept` refusal is counted
+like a parse error (`test_the_same_refusal_on_consecutive_turns_is_told_with_its_count`).
+
+The sections have just looked at the world, and what they saw is what a stop decides on; asked
+before, the model got one more turn after every notice that the run was over. The run ends
+`Stopped(n)` with n the turn that did not run: the stopped iteration called no backend and is not a
+turn.
 
 ### C4: A run ends in one of four values, and nothing else is an outcome _(enforced: mechanical)_ ^c4
 
@@ -122,12 +129,16 @@ record holds what was appended. That is an abort, not an outcome.
 
 ### D1: The loop is `Actor.run` as written ^d1
 
-Serves C1 to C4. Bounds are checked at the turn's start, the inbox is taken, the notification is
-appended, `stop` is asked, the backend is called once, the message is read, every command is
-dispatched, and the turn settles. The caller reads `run.outcome` after the loop returns.
+Serves C1 to C4. Bounds are checked at the turn's start; under `wait`, after a reply or pause,
+`wait` is asked, and false ends the run, appending nothing. Then the inbox is taken, the
+notification is appended, `stop` is asked, the backend is called once, the message is read, commands
+are dispatched, and the turn settles. Under `wait` a message with no command nor `OUT{}` replies,
+and with `reply_on_commands` so does one whose commands all landed;
+`test_with_reply_on_commands_a_turn_whose_commands_all_landed_is_the_reply_and_a_failed_one_is_not`
+pins the three `wait` rows. The caller reads `run.outcome` after the loop returns.
 
-- **Landing evidence**: `tests/test_actor.py`; tests compare `Exhausted`, `Refused` and `Stopped` by
-  value and `Success` by type; the reap by
+- **Landing evidence**: `tests/test_actor.py`, `tests/test_actor_edges.py`; tests compare
+  `Exhausted`, `Refused` and `Stopped` by value and `Success` by type; the reap by
   `test_out_waits_for_what_it_names_and_the_reap_lands_the_rest_cancelled_before_run_returns`; the
   closure by `test_a_run_that_ends_by_an_outcome_closes_its_record_with_the_outcome`. One cancelled
   before it entered is recorded by `_never_started`.
@@ -143,8 +154,11 @@ dispatched, and the turn settles. The caller reads `run.outcome` after the loop 
 
 ## Consequences
 
-- **S1**: A retry costs a turn and appears in the record as an event; a caller counting outcomes
-  never sees it.
+- **S1**: A retry costs a turn, and its message stays on the record as TEXT; the retry itself is the
+  `round.retry` event on the actor's bus and `run.retry_error`. Its reason enters the record only in
+  the next turn's notification, so a retry on the run's last turn leaves none there; a caller
+  counting outcomes never sees it. The notification is pinned by
+  `test_an_out_that_does_not_assemble_is_a_retry_that_names_what_is_wrong`; no test pins the event.
 - **S2**: The idle row keeps a talking model alive; `max_idle` (ADR-0003) is what ends it.
 - **S3**: The code still says round where this corpus says turn: `max_rounds`, `Exhausted(rounds)`,
   `<system round=`, "rounds running", the `round.*` events, `Stopped(round)`. The rename is owed

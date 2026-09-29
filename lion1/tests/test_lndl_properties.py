@@ -281,7 +281,8 @@ def slipped_calls(draw):
 def test_every_repair_the_reader_makes_is_named(slipped):
     # ADR-0004/C3: a repaired call runs, and the turn is told what was supplied
     text, name, args, note = slipped
-    got_name, got_args, got_note = parse_call_noting(text)
-    assert got_name == name and _same(got_args, args) and got_note == note
+    got_name, got_args, got_repairs = parse_call_noting(text)
+    assert got_name == name and _same(got_args, args)
+    assert got_repairs == ({COMMA: "comma", CLOSERS: "closers"}[note],)
     p = parse(f"<lact a>{text}</lact>")
     assert p.problems == [f"<lact a>: {note}; if that is not the call you meant, write it again"]

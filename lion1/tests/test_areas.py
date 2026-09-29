@@ -874,6 +874,26 @@ def test_cap_keeps_a_crlf_files_line_endings_and_refuses_one_that_is_not_utf8(tm
     assert code == 409 and doc["detail"].startswith("chores.toml is not UTF-8, nothing was written")
 
 
+@pytest.mark.parametrize("text", ["\u00b2", "\u0662", "12a", ""])
+def test_a_pid_file_holding_anything_but_ascii_digits_names_no_pid_and_never_raises(tmp_path, text):
+    # str.isdigit admits a superscript int refuses and another script's digits int reads as a number
+    d = agent_dir(tmp_path, "desk", role="desk", cursor={"wake": 3, "outcome": "Quiet"}, spend=None)
+    area = Area("x", "lambda:x", [str(d)])
+    (d / "agent.pid").write_text(text)
+    r = resident(area, str(d), TODAY)
+    assert (r.serving, r.pid, r.problem) == (False, None, "")
+    fd = os.open(d / "agent.pid", os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        r = resident(area, str(d), TODAY)
+        assert (r.serving, r.pid) == (True, None)  # the lock is the claim; the text names no pid
+        assert controls_info(str(d))["idle"] is True  # a quiet cursor, and no pid to ask pgrep about
+    finally:
+        os.close(fd)
+    (d / "agent.pid").write_text("424242")  # the control: ASCII digits are a pid
+    assert resident(area, str(d), TODAY).pid == 424242
+
+
 def test_a_running_wake_under_a_held_lock_is_not_idle_without_a_model_child(tmp_path):
     """An in-process backend has no `claude -p` child: the cursor under a held lock says it is waking."""
     d = agent_dir(tmp_path, "desk", role="desk", cursor={"wake": 3, "outcome": "running"}, spend=None)
