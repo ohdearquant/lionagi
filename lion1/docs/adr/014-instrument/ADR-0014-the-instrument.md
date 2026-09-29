@@ -59,7 +59,7 @@ bench has its own record ([[ADR-0012-the-bench|ADR-0012]], the bench). Source:
 | #  | statement | source | if false |
 | -- | --------- | ------ | -------- |
 | A1 | Several channels an instrument reads answer a missing subject the way they answer an empty one. | commit statuses answer `[]` for a missing subject; an unshared task namespace answers empty; `comm.probe` answers 0 and an empty page alike; `ps -p` prints nothing for a missing pid (the instrument notes in `hub/agent/instruments.py`) | a return-code check would do, and the known-positive is ceremony |
-| A2 | `df` prints one row per volume, so roots on one device share one free-space figure. | `Disk.run` groups roots by the first column of `df -k`; the disk test reads two roots on one device | a floor is read per root and one device counts twice |
+| A2 | `df -P` prints one row per volume, so roots on one device share one free-space figure. | `Disk.run` groups roots by the first column of `df -P -k`; the disk test reads two roots on one device | a floor is read per root and one device counts twice |
 | A3 | A capped list says nothing about the rows beyond its cap. | `gh pr list --limit` with `PR_PAGE` 100; the workflow-runs read with `_RUNS_PAGE` 50 beside its `total_count` | a full page is a complete list and the verify read is wasted |
 
 ## Claims
@@ -134,14 +134,14 @@ before `pr-state` calls it closed, and a failed view fails the control; `require
 ### C6: A floor is read by name, once per device, with its own budget, in GiB base-1024 _(enforced: mechanical)_ ^c6
 
 - **Subject**: the `disk` instrument.
-- **Violated when**: a floor is read per root or without its budget, the value sits in the finding
-  text, a crossing of a floor not marked `enforcing` escalates, or a `find` or `du` failure passes
-  the control.
+- **Violated when**: a floor is read per root, without its budget or with a negative or non-finite
+  figure, the value sits in the finding text, a crossing of a floor not marked `enforcing`
+  escalates, or a `find` or `du` failure passes the control.
 
-Roots are grouped by the device `df -k` names, and each floor is read once per device with its roots
-listed. Free space minus the floor's `budget_gib` is compared with `floor_gib` in GiB base-1024, the
-base-1000 figure printed beside it. An `enforcing` floor's crossing escalates, since its remedy is a
-deletion; any other crossing reports.
+Roots are grouped by the device `df -P -k` names, and each floor is read once per device with its
+roots listed. Free space minus the floor's `budget_gib` is compared with `floor_gib` in GiB
+base-1024, the base-1000 figure printed beside it. An `enforcing` floor's crossing escalates, since
+its remedy is a deletion; any other crossing reports.
 
 The finding names the floor and the device and the value stays in the evidence, so a value hovering
 under a floor is the same finding each run, told once by the chore's repeat rule. No `floors` means
@@ -225,13 +225,18 @@ every named row and leaves the `required-contexts` and `ci-red` snapshots untouc
 
 ### D5: The `disk` instrument ^d5
 
-Serves C6. `Disk.run` reads `/bin/df -k` per root, groups by device and reads every floor per
+Serves C6. `Disk.run` reads `/bin/df -P -k` per root, groups by device and reads every floor per
 device, then finds `target` and `node_modules` directories to depth four with `/usr/bin/find` and
-sizes each once with `/usr/bin/du`, reporting those over `target_cap_gib`, 20 by default.
+sizes each once with `/usr/bin/du`, reporting those over `target_cap_gib`, 20 by default. GNU `df`
+without `-P` wraps a long device name onto two lines. `Disk.__init__` refuses a `floor_gib`,
+`budget_gib` or `target_cap_gib` that is `nan`, infinite, negative or not a number, naming the
+field, since a `nan` floor compares false and reads as above.
 
-- **Landing evidence**: the two disk tests in `tests/test_instruments.py`: one device for two roots,
-  the enforcing crossing alone escalating, both units printed, `find` and `du` failures failing the
-  control, the default and the declined floors.
+- **Landing evidence**: in `tests/test_instruments.py`, the disk tests (one device for two roots,
+  the enforcing crossing alone escalating, both units, failed `find`, `du` and `df`, the default and
+  declined floors),
+  `test_disk_refuses_a_floor_budget_or_cap_that_is_not_a_finite_number_of_gib_at_build` and
+  `test_disk_reads_df_in_the_posix_layout_because_gnu_wraps_a_long_device_name_without_it`.
 
 ### D6: `lion agent --check <name>` runs one instrument outside the handlers ^d6
 
