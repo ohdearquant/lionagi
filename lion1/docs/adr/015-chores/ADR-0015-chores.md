@@ -1,7 +1,7 @@
 ---
 adr: ADR-0015
 status: draft
-liveness: operating (the handler, the gate, the store boundary, the ticks and the catch-up are pinned by tests with scripted backends and a fake store; no test drives a positive hand-run check; the catch-up's store-side filters are owed)
+liveness: operating (the handler, the gate, the store boundary, the ticks and the catch-up are pinned by tests with scripted backends and a fake store; the hand-run check is driven both ways; the catch-up passes its creator and status filters to the store)
 date: "2026-09-25"
 area: chores
 kind: new
@@ -79,7 +79,7 @@ No findings is quiet: a row, and no mail beyond the answer a question is owed. F
 to the owner. An escalation, marked so, goes to the owner and the steward; the agent never performs
 the remedy. A chore runs as one command inside a wake ([[ADR-0013-the-agent|ADR-0013]]).
 
-### C2: The chores are the ones `chores.toml` names, from a fixed set of eleven _(enforced: mechanical)_ ^c2
+### C2: The chores are the ones `chores.toml` names, from a fixed set of thirteen _(enforced: mechanical)_ ^c2
 
 - **Subject**: every agent built from its directory.
 - **Violated when**: a chore runs that the file does not name, or one is built without its error
@@ -97,6 +97,8 @@ and what it keeps between runs in the agent's notes:
 | `verdict-freshness` | the newest review verdict file per open pull request against its head; the pull requests from `gh` or a configured enumerator | one snapshot                                      | over-report  |
 | `ci-red`            | the failing lines at each red head, from `gh run view --log-failed` or a local CI transcript                    | a snapshot per repository                         | under-report |
 | `served`            | each served agent's last-wake note, pid file and launchd row                                                     | nothing                                           | under-report |
+| `lock-holder`       | the pids holding each named lock file open (`lsof`), each with its full command line (`ps`)                      | nothing                                           | under-report |
+| `scheduled-job`     | each job's artifact age against its bound, then its launchd row's last exit                                      | nothing                                           | under-report |
 | `gtd-inbox`         | the assignee's inbox tasks older than the triage age, through the store                                         | nothing                                           | under-report |
 | `inbox-sla`         | unread mail older than the age per watched actor, by `comm.probe`, no bodies                                     | nothing                                           | under-report |
 | `disk`              | free space per volume against each named floor (`df`), and build targets over a size cap (`find`, `du`)          | nothing                                           | over-report  |
@@ -152,10 +154,10 @@ answers ([[ADR-0017-the-desk#^c12|ADR-0017/C12]]).
 ### C6: A chore changes no tree, so its result lands by print and save _(enforced: process)_ ^c6
 
 The instruments' commands read: `gh` lists, views and GETs, `git` worktree lists, status, log and
-remote lookups, `ps`, `launchctl print`, `df`, `find` and `du`. The chores profile offers `check`,
-`digest`, `aged` and the handlers a front desk adds; none is a file tool or a note command, so a
-blank `note.find` ([[ADR-0007-the-record#^c5|ADR-0007/C5]]) never reaches a chore. The handler reads
-and writes the agent's notes by key. A chore has no diff to land.
+remote lookups, `ps`, `lsof`, `launchctl print`, `df`, `find` and `du`. The chores profile offers
+`check`, `digest`, `aged` and the handlers a front desk adds; none is a file tool or a note command,
+so a blank `note.find` ([[ADR-0007-the-record#^c5|ADR-0007/C5]]) never reaches a chore. The handler
+reads and writes the agent's notes by key. A chore has no diff to land.
 
 Its hand-run form is print and save: `lion agent --check <chore>` runs the instrument alone, prints
 it and saves the same text in the agent directory's `landing` folder, one file per chore and day; it
@@ -220,12 +222,14 @@ with the expected actor asserted (C4).
 ### D4: Ticks are the store's reminders, and missed ones are caught up once ^d4
 
 Serves C3. `ensure_ticks` reads the actor's own pending reminders from `schedule.agenda` and creates
-each missing one with `schedule.remind`, first firing a minute out. `_catch_up` lists up to 200
-scheduled rows, keeps the actor's own marked missed or failed, and runs each once, remembered under
+each missing one with `schedule.remind`, first firing a minute out. `_catch_up` asks the store for
+the actor's own scheduled rows marked missed and those marked failed, filtered by creator and status
+before a page of 200 each. It checks both again in code and runs each row once, remembered under
 `missed_seen`. The CLI creates ticks at serve start and on `--ticks`, never for a chair.
 
 - **Landing evidence**: `test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those`,
-  `test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once`;
+  `test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once`,
+  `test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page`;
   `test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread` asserts
   `--ticks` creates nothing for a chair.
 
@@ -236,7 +240,10 @@ Serves C6. `agent_main` claims the identity, runs the named instrument with no a
 bypasses the handler: no refusals, no row, no send.
 
 - **Landing evidence**: `test_once_refuses_served_identity` in `tests/test_agent.py` pins its
-  refusal while a live process holds the identity; no test drives a positive run.
+  refusal while a live process holds the identity;
+  `test_check_with_the_identity_free_prints_and_lands_the_measurement_and_sends_nothing` and
+  `test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing` drive a positive run: the
+  printed text is the landed text, and no send, row or tick follows.
 
 ## Alternatives
 
@@ -260,15 +267,18 @@ bypasses the handler: no refusals, no row, no send.
   directory is not bounded, and no store-side refusal is relied on. A refusal in the store of any
   write by the agent's own actor is the kernel's to give, with the identity's grants
   ([[ADR-0013-the-agent|ADR-0013]] S9).
-- **S3**: The missed-tick read takes one page of 200 scheduled rows and filters to the actor in
-  code; a busy namespace can push a missed row past the page. The store's `list` filters scheduled
-  rows by creator and by status before the page, and the code passes neither; passing them is owed.
+- **S3**: The missed-tick read passes the store's `list` the actor as creator and each of missed and
+  failed as status, so another actor's rows and fired ones never fill the page. The creator is
+  display metadata, not attribution, so the code checks both again. It reads a row's status at the
+  item's top level, beside `properties`, as the store returns it. More than 200 of the actor's own
+  missed rows still leave the rest past a page no later run advances.
 - **S4**: A standing state is told once until it changes, a standing failure included: a chore that
   recovers quietly and fails again the same way is not resent. The digest carries the counts, and an
   owner who wants a state again asks.
-- **S5**: The hand-run check skips the handler's refusals, so it shows the raw measurement, and no
-  test drives it past the identity claim. The `verdict-freshness` enumerator runs as the config
-  gives it, outside anything that checks it only reads.
+- **S5**: The hand-run check skips the handler's refusals, so it shows the raw measurement;
+  `test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing` drives it past the identity
+  claim. The `verdict-freshness` enumerator runs as the config gives it, outside anything that
+  checks it only reads.
 - **S6**: The chore ledger is read whole on every check and never rotated, so a check's cost grows
   with the agent's age. Its `at` stamps are local time without a zone; a row also carries `ts`, the
   instant in epoch seconds, which the aged pass reads, and a row without one is read by its `at`.

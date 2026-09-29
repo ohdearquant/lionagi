@@ -46,6 +46,21 @@ class DiesOnRoundTwo:
         return "Reading the code first.\n"  # a turn that runs nothing and declares nothing
 
 
+class RepairedThenDies(DiesOnRoundTwo):
+    async def __call__(self, messages) -> str:
+        await super().__call__(messages)
+        return '<lact a1>bsh(command="ls")</lact>\n<lact a2>bash(command="ls"</lact>'
+
+
+def test_a_backend_failure_keeps_what_the_readings_before_it_counted(tmp_path: Path):
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+    rec = asyncio.run(solve(row, "m", 5, tmp_path, "codex", box=ToolBox(), backend=RepairedThenDies()))
+    assert rec["error"].startswith("CodexError: codex exited 1") and rec["rounds"] == 1
+    assert rec["repairs"] == {"closers": 1} and rec["unknown_names"] == [["bsh", "bash", 1]]
+    rec = asyncio.run(solve(row, "m", 5, tmp_path, "codex", box=ToolBox(), backend=DiesOnRoundTwo()))
+    assert rec["repairs"] == {} and rec["unknown_names"] == []  # a turn that read clean, then the failure
+
+
 def test_the_tdd_flag_swaps_the_no_tests_sentence_and_the_other_flags_append():
     from run_swe import CRITERIA, DELIBERATE, FIXER, NO_TESTS, TDD, guidance
 
@@ -137,6 +152,16 @@ def test_a_turn_cut_at_the_cap_or_blank_is_named_in_the_next_notice(tmp_path: Pa
     assert rec["calls"][0]["finish"] == "length" and "message" not in rec["calls"][0]
     assert rec["calls"][1]["message"] == {"content": "   "}
     assert rec["outcome"] == "Exhausted:rounds" and rec["rounds"] == 3
+
+
+def test_the_row_counts_the_repairs_by_name_and_measures_each_unknown_name(tmp_path: Path):
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+    turn = '<lact a1>bsh(command="ls")</lact>\n<lact a2>bash(command="ls"</lact>'
+    rec = asyncio.run(
+        solve(row, "m", 1, tmp_path, "codex", box=ToolBox(), backend=Turns((turn, {"finish_reason": "stop"})))
+    )
+    assert rec["repairs"] == {"closers": 1}
+    assert rec["unknown_names"] == [["bsh", "bash", 1]]
 
 
 class DyingBox(ToolBox):
@@ -255,21 +280,23 @@ class DiffBox(FilesBox):
         return DIFF if self.files["a.py"] != "one\ntwo\n" else ""
 
 
-def test_an_edit_beside_the_finish_runs_before_the_finish_is_judged(tmp_path: Path):
+def test_a_finish_beside_an_edit_is_judged_before_the_edit_and_its_refusal_lets_the_edit_land(tmp_path: Path):
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
     box = DiffBox()
     out = 'OUT{done: {summary: "fixed", files: ["a.py"]}}'
     turns = [
         (f'<lact e1>edit(path="a.py", old="one", new="ONE")</lact>\n{out}', {"finish_reason": "stop"}),
-        # the finish beside the edit is refused (unverified); a check in the next round, then it lands
+        # OUT{} names neither command, so each finish is judged on the tree before its sibling lands;
+        # the refusal settles the turn, so the edit, then the check, land before the next finish
         (f'<lact b1>bash(command="python -m pytest -q")</lact>\n{out}', {"finish_reason": "stop"}),
         (out, {"finish_reason": "stop"}),
     ]
     rec = asyncio.run(solve(row, "m", 3, tmp_path, "codex", box=box, backend=Turns(*turns)))
-    assert box.files["a.py"] == "ONE\ntwo\n"  # the edit ran before the finish was judged
+    assert box.files["a.py"] == "ONE\ntwo\n"
     record = (tmp_path / "pkg__pkg-1.record.txt").read_text()
-    assert "the source changed in this round; nothing has run against that change" in record
-    assert rec["outcome"] == "Success" and rec["rounds"] == 2 and rec["model_patch"] == DIFF
+    assert "the repository has no changes" in record
+    assert "no command has run since the source changed in round 1" in record
+    assert rec["outcome"] == "Success" and rec["rounds"] == 3 and rec["model_patch"] == DIFF
 
 
 class BaseBox(ToolBox):

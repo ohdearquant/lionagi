@@ -1,7 +1,7 @@
 ---
 adr: ADR-0001
 status: draft
-liveness: operating (the profile's `defaults` and the `run.more` handler are owed with ADR-0003)
+liveness: operating (the profile's `defaults` and the `run.more` handler landed with ADR-0003)
 
 date: "2026-09-23"
 area: actor
@@ -73,8 +73,8 @@ the model reads next turn.
 
 `register` adds the Spec and the handler in one step; a second class under a taken name is refused.
 The default handlers arrive with the actor: the context commands, the note commands
-([[ADR-0007-the-record|ADR-0007]]); `run.more` joins them when it lands
-([[ADR-0003-the-bounds|ADR-0003]]). What is not in the Operable does not exist in the model's world.
+([[ADR-0007-the-record|ADR-0007]]), and `run.more` ([[ADR-0003-the-bounds|ADR-0003]]). What is not
+in the Operable does not exist in the model's world.
 
 ### C3: A profile never exceeds its actor, and is checked before the first turn _(enforced: mechanical)_ ^c3
 

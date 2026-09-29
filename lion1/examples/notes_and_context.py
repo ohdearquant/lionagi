@@ -13,6 +13,8 @@ details behind pointers. Scripted backend; runs offline.
 from __future__ import annotations
 
 import asyncio
+import atexit
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from pydantic import BaseModel
 from lionagi import Actor, Context, Kind, Profile, RunRequest, fold
 
 root = Path(tempfile.mkdtemp())
+atexit.register(shutil.rmtree, root, ignore_errors=True)  # the scratch goes with the process
 (root / "spec.md").write_text("# spec\n\nthe port is 8080 and the workers are 4\n" * 20)
 
 
