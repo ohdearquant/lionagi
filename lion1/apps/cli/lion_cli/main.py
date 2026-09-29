@@ -91,6 +91,13 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
         help="with --tools: the CLI's tool turns per round; 0 = no cap",
     )
     ch.add_argument(
+        "--khive-config",
+        default=None,
+        metavar="FILE",
+        help="the khive config the chat signs with (its [actor].id, passed to kkernel as --config), over "
+        "the directory's own .khive/config.toml; a missing file refuses to start rather than falling back",
+    )
+    ch.add_argument(
         "--log", default=None, help="the record, one JSON line per entry; default .lion/chats/<time>.jsonl"
     )
     ch.add_argument(

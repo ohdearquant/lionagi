@@ -59,9 +59,11 @@ def console(
     tree: Tree | None = None,
     about_box: str | None = None,
     own_tools: tuple[str, ...] = (),
+    khive_config: Path | None = None,
 ) -> tuple[Actor, Profile]:
     """The actor a person talks to: the file and directory readers, khive when the directory is an
-    actor's own (its `.khive/config.toml` names the actor the reads sign as), a shell when a sandbox
+    actor's own (its `.khive/config.toml` names the actor the reads sign as) or `khive_config` names
+    the file to sign with instead (explicit: the directory's own is not read), a shell when a sandbox
     is given, and with `coding` the tools a fix is found and written with (read_lines, search, edit)
     plus the tree's own rules (AGENTS.md, CLAUDE.md at the root) in the guidance. `tree` is where the
     file and code tools read and write: the directory itself by default, the copy of it in a box
@@ -92,15 +94,18 @@ def console(
             if (directory / name).exists()
         )
         about_sandbox += "\n\n" + guidance("code", root=directory, branch=_branch(directory), rules=rules)
-    config = directory / ".khive" / "config.toml"
-    if config.exists():
-        actor_id = signer(directory)
+    config = khive_config if khive_config is not None else directory / ".khive" / "config.toml"
+    if khive_config is not None and not config.is_file():  # explicit: said, never the directory's instead
+        if notify is not None:
+            notify(f"{config}: no such khive config file; khive tool unavailable")
+    elif config.exists():
+        actor_id = signer(directory, khive_config)
         if actor_id is None:
             if notify is not None:
                 notify(f"{config}: no [actor].id; khive tool unavailable")
         else:
             try:
-                khive = Bounded(Khive(directory, actor_id), recipients=frozenset())
+                khive = Bounded(Khive(directory, actor_id, config=khive_config), recipients=frozenset())
             except KhiveError as e:
                 if notify is not None:
                     notify(f"khive unavailable: {e}")
@@ -220,10 +225,11 @@ def spent(calls: list[dict]) -> tuple[float, int]:
     return cost, unknown
 
 
-def signer(directory: Path) -> str | None:
-    """The khive actor the directory's `.khive/config.toml` names, None without one."""
-    config = directory / ".khive" / "config.toml"
-    if not config.exists():
+def signer(directory: Path, config: Path | None = None) -> str | None:
+    """The khive actor the directory's `.khive/config.toml` names, or the one `config` names when it
+    is given (then the directory's own is not read); None when the file is absent or names none."""
+    config = config if config is not None else directory / ".khive" / "config.toml"
+    if not config.is_file():
         return None
     return tomllib.loads(config.read_text()).get("actor", {}).get("id")
 
@@ -418,6 +424,13 @@ async def _chat_main(
     elif a.shell or a.code:
         sandbox = Sandbox(directory, f"lion-{chat_id}", offline=a.offline)
     degraded: list[str] = []
+    khive_config = None
+    if getattr(a, "khive_config", None):  # explicit: refused outright rather than falling back
+        khive_config = Path(a.khive_config).expanduser().resolve()
+        if not khive_config.is_file():
+            raise SystemExit(f"--khive-config {khive_config}: no such file")
+        if signer(directory, khive_config) is None:
+            raise SystemExit(f"--khive-config {khive_config}: no [actor].id in it")
     own_tools = tuple(t.strip() for t in (getattr(a, "tools", None) or "").split(",") if t.strip())
     if own_tools and not (a.model == "claude_code" or a.model.startswith("claude_code/")):
         raise SystemExit("--tools is for a claude_code model: the CLI runs them, no other backend can")
@@ -431,6 +444,7 @@ async def _chat_main(
         tree=tree,
         about_box=about_box,
         own_tools=own_tools,
+        khive_config=khive_config,
     )
     if own_tools:  # the CLI's own tools run in this directory (khive signs as its actor when configured)
         options = {"tools": list(own_tools), "max_turns": getattr(a, "max_turns", 0)}
@@ -452,7 +466,7 @@ async def _chat_main(
         calls=getattr(backend, "calls", None),
         head={"kind": "BOX", "box": box} | ({"image": image} if boxed else {}),
         history=directory / ".lion" / "history",
-        status=lambda: status_line(actor, profile, runs, backend, a.model, signer(directory)),
+        status=lambda: status_line(actor, profile, runs, backend, a.model, signer(directory, khive_config)),
         directory=directory,
     )
     say.quiet_until = len(history) - 1

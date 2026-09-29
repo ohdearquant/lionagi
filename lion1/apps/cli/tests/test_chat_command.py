@@ -7,7 +7,7 @@ import json
 import subprocess
 
 import pytest
-from lion_cli.chat import Interrupt, _branch, chat_main, console, unsettled
+from lion_cli.chat import Interrupt, _branch, chat_main, console, signer, unsettled
 from lion_cli.main import parser
 from lion_cli.view import RESULT_LINES, Console
 
@@ -66,6 +66,27 @@ def test_a_non_utf8_agents_md_does_not_crash_the_console_and_decodes_best_effort
     actor, profile = console(tmp_path, coding=True)
     assert "AGENTS.md at the root says" in profile.system  # started; did not raise UnicodeDecodeError
     assert "rules:" in profile.system and "latin-1 byte" in profile.system
+
+
+def test_an_explicit_khive_config_signs_over_the_directorys_own_and_a_missing_one_is_said(
+    tmp_path, kkernel_stub
+):
+    """`khive_config=` names the file the chat signs with: its actor, not the directory's, and the
+    directory's own `.khive/config.toml` is not read (it may name a different actor, or none). A
+    path that is not a file is noticed as such; the directory's config is never the fallback."""
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    elsewhere = tmp_path / "elsewhere" / "khive.toml"
+    elsewhere.parent.mkdir()
+    elsewhere.write_text('[actor]\nid = "lambda:y"\n')
+    assert signer(tmp_path) == "lambda:x" and signer(tmp_path, elsewhere) == "lambda:y"
+    actor, profile = console(tmp_path, khive_config=elsewhere)
+    assert "khive_ops" in profile.specs and "signing as lambda:y" in profile.system
+    assert "lambda:x" not in profile.system
+    notices: list[str] = []
+    actor, profile = console(tmp_path, khive_config=tmp_path / "gone.toml", notify=notices.append)
+    assert "khive_ops" not in profile.specs  # not the directory's lambda:x instead
+    assert notices == [f"{tmp_path / 'gone.toml'}: no such khive config file; khive tool unavailable"]
 
 
 def test_khive_config_missing_actor_table_or_id_skips_the_tool_and_notices_the_file(tmp_path):
@@ -166,6 +187,25 @@ def test_a_resumed_chat_logs_the_whole_record_again_and_prints_only_the_new_part
     assert "you ▸ again?" in out and "Still alpha." in out and "It says alpha." not in out
     rows = log2.read_text().splitlines()
     assert len(rows) == len(run.record) and json.loads(rows[0])["content"] == "read a.txt"  # log 2 is whole
+
+
+def test_a_khive_config_that_is_not_a_file_or_names_no_actor_refuses_to_start_and_leaves_no_log(tmp_path):
+    """The chat refuses before any model work, naming the file; the directory's own config, which
+    would sign as someone else, is not the fallback. The log opened for the chat is removed."""
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    gone = tmp_path / "gone.toml"
+    with pytest.raises(SystemExit, match=f"--khive-config {gone}: no such file"):
+        asyncio.run(
+            chat_main(parser().parse_args(["chat", "--dir", str(tmp_path), "--khive-config", str(gone)]))
+        )
+    empty = tmp_path / "empty.toml"
+    empty.write_text("[actor]\n")
+    with pytest.raises(SystemExit, match=f"--khive-config {empty}: no \\[actor\\].id in it"):
+        asyncio.run(
+            chat_main(parser().parse_args(["chat", "--dir", str(tmp_path), "--khive-config", str(empty)]))
+        )
+    assert not list((tmp_path / ".lion" / "chats").glob("*.jsonl"))
 
 
 def test_resume_last_with_no_log_says_where_logs_live_instead_of_an_index_error(tmp_path):

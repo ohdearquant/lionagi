@@ -1,9 +1,11 @@
 """khive from a run: the actor's address, mailbox and store, one `kkernel exec` per call.
 
-The actor has the address (ADR-0001); khive resolves it from the cwd's `.khive/config.toml`, so a
-Khive is bound to a directory and asserts on every call that the directory resolves to the actor it
-was built for (`--expect-actor`). Ops are the verb DSL the MCP `request` tool takes; string
-arguments are JSON literals, so they go through `json.dumps`.
+The actor has the address (ADR-0001); khive resolves it from the cwd's `.khive/config.toml`, or from
+the file `--config` names, which wins over the cwd's (measured: from a directory whose own config
+names another actor, the file's actor resolves and `--expect-actor <the cwd's>` is refused). So a
+Khive is bound to a directory, or to a config file, and asserts on every call that it resolves to
+the actor it was built for (`--expect-actor`). Ops are the verb DSL the MCP `request` tool takes;
+string arguments are JSON literals, so they go through `json.dumps`.
 """
 
 from __future__ import annotations
@@ -40,24 +42,32 @@ def lit(value: Any) -> str:
 
 @dataclass
 class Khive:
-    cwd: Path  # the directory whose .khive/config.toml names the actor
-    actor: str  # what that directory must resolve to; every call asserts it
+    cwd: Path  # the directory whose .khive/config.toml names the actor, and where kkernel runs
+    actor: str  # what that directory (or `config`) must resolve to; every call asserts it
     kkernel: str | None = None
     timeout: float = 60.0
     calls: list[dict] = field(default_factory=list)
+    config: Path | None = None  # an explicit khive config: passed as --config, over the cwd's own
 
     def __post_init__(self) -> None:
         self.cwd = Path(self.cwd)
         self.kkernel = self.kkernel or shutil.which("kkernel") or str(Path.home() / ".cargo/bin/kkernel")
         if not Path(self.kkernel).exists():
             raise KhiveError("kkernel not found on PATH or under ~/.cargo/bin")
-        if not (self.cwd / ".khive" / "config.toml").exists():
+        if self.config is not None:
+            self.config = Path(self.config)
+            if not self.config.is_file():  # explicit means explicit: never the cwd's instead
+                raise KhiveError(f"{self.config}: no such khive config file")
+        elif not (self.cwd / ".khive" / "config.toml").exists():
             raise KhiveError(f"{self.cwd} holds no .khive/config.toml; khive would resolve it as 'local'")
 
     async def exec(self, ops: str) -> list[Any]:
         """Run one DSL expression; each op's `result`, in order. An op that is not ok raises."""
         # after `--`: an ops string that begins with `-` is the DSL, never an option
-        argv = [self.kkernel, "exec", "--strict", "--expect-actor", self.actor, "--", ops]
+        argv = [self.kkernel, "exec", "--strict", "--expect-actor", self.actor]
+        if self.config is not None:
+            argv += ["--config", str(self.config)]
+        argv += ["--", ops]
         proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(self.cwd),
