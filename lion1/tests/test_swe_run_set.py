@@ -284,7 +284,10 @@ def test_the_manifest_names_a_clean_tree_and_a_dirty_one_as_git_reads_them(tmp_p
     dirty = _record(capsys)
     assert clean["head"] == dirty["head"] == HEAD and clean["dirty"] == ""
     assert "bench/swe/run_set.py" in dirty["dirty"] and "?? notes.txt" in dirty["dirty"]
-    assert [i for i, _ in ran] == ["a", "a"]
+    _git(monkeypatch, head=(0, "b" * 64 + "\n", ""))  # a sha256 repository's head is a commit id too
+    asyncio.run(run_set.main(_args(run_id="sha256")))
+    assert _record(capsys)["head"] == "b" * 64
+    assert [i for i, _ in ran] == ["a", "a", "a"]
 
 
 class TransportFailBox(FakeBox):
@@ -468,3 +471,37 @@ def test_a_second_launch_of_a_running_run_is_refused(tmp_path, monkeypatch, caps
     held.close()  # that launch ended: the lock is free
     asyncio.run(run_set.main(_args()))
     assert [i for i, _ in ran] == ["a"]
+
+
+def test_the_manifest_keeps_the_status_columns_of_an_unstaged_change(tmp_path, monkeypatch):
+    import os
+    import re
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.com",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.com",
+        "PATH": os.environ["PATH"],
+    }
+    git = lambda *a: subprocess.run(["git", *a], cwd=repo, env=env, check=True)  # noqa: E731
+    git("init", "-q")
+    for name in ("a.py", "b.py"):
+        (repo / name).write_text("x = 1\n")
+    git("add", "a.py", "b.py")
+    git("commit", "-q", "-m", "base")
+    (repo / "a.py").write_text("x = 2\n")  # modified, unstaged
+    (repo / "b.py").write_text("x = 2\n")
+    git("add", "b.py")  # modified, staged
+    data = tmp_path / "set.json"
+    data.write_text("[]")
+    monkeypatch.setattr(run_set, "SETS", {"t": data})
+    monkeypatch.setattr(run_set, "HERE", repo)
+    doc = json.loads(
+        run_set.manifest(_args(), tmp_path, [], data.read_bytes(), run_set.provenance()).read_text()
+    )
+    assert doc["dirty"] == " M a.py\nM  b.py"
+    assert re.fullmatch(r"[0-9a-f]{40}", doc["head"])

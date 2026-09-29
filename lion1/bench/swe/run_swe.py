@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import glob
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -395,9 +397,34 @@ def _dump(run) -> str:
 
 
 def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> dict:
-    """The harness's report on `preds`. A report an earlier evaluation left under the same run id is
-    not this one's: only a report this call wrote, new or changed since it started, is read, and a
-    nonzero exit or no such report raises; the log keeps both streams either way."""
+    """The harness's report on `preds`. The harness skips an instance whose per-instance report
+    exists under its run id and still writes a fresh top-level report from the cached ones, so the
+    id it is handed carries the predictions' digest: new predictions under a reused run id are
+    graded, never read from an earlier evaluation. The harness is handed a snapshot of the bytes
+    the digest names, so an overlapping run rewriting `preds` changes nothing here. Only a report
+    this call wrote, new or changed since it started, is read; a nonzero exit, no such report, or a
+    report that does not name exactly the predictions handed in raises; the log keeps both streams
+    either way."""
+    data = preds.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()[:16]
+    harness_id = f"{run_id}.{digest}"
+    submitted = sorted(
+        {json.loads(line)["instance_id"] for line in data.decode().splitlines() if line.strip()}
+    )
+    snapshot = preds.with_name(f"{preds.stem}.{digest}{preds.suffix}")
+    # whole or absent: two evaluations of the same bytes share the name, and a reader must never see
+    # a half-written one, so the bytes land beside it and move in atomically
+    part = snapshot.with_name(f"{snapshot.name}.{os.getpid()}.part")
+    try:
+        part.write_bytes(data)
+        os.replace(part, snapshot)
+    except BaseException as e:  # the snapshot is absent, and so is the scratch file
+        try:
+            part.unlink(missing_ok=True)
+        except OSError as e2:  # a second fault: the first is what ends the call, this one rides along
+            e.add_note(f"the scratch file {part.name} could not be removed: {type(e2).__name__}: {e2}")
+        raise
+    del data  # the harness reads the snapshot; the bytes are not held through its run
     cmd = [
         "uv",
         "run",
@@ -410,15 +437,16 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
         "--dataset_name",
         "SWE-bench/SWE-bench_Verified",
         "--predictions_path",
-        str(preds),
+        str(snapshot),
         "--run_id",
-        run_id,
+        harness_id,
         "--max_workers",
         str(workers),
         "--instance_ids",
         *instance_ids,
     ]
-    pattern = f"*{run_id}.json"
+    # the report is named literally, glob syntax in the run id or not
+    pattern = f"*{glob.escape(harness_id)}.json"
     # what a report was when this call started, by time and digest: an earlier report's bytes are
     # not held through the evaluation
     before = {p: _seen(p) for p in preds.parent.glob(pattern)}
@@ -435,7 +463,14 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
     reports = sorted((p for p, seen in after.items() if before.get(p) != seen), key=lambda p: after[p][0])
     if not reports:
         raise RuntimeError(f"no harness report from this evaluation; see oracle_{run_id}.log")
-    return json.loads(reports[-1].read_text())
+    report = json.loads(reports[-1].read_text())
+    graded = sorted(report.get("submitted_ids", []))
+    if graded != submitted:
+        raise RuntimeError(
+            f"{reports[-1].name} reports {graded}, not the predictions handed in {submitted}; "
+            f"see oracle_{run_id}.log"
+        )
+    return report
 
 
 def _seen(report: Path) -> tuple[int, str]:

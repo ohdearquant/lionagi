@@ -272,12 +272,13 @@ def provenance() -> dict:
                 f"git {' '.join(a)} exited {r.returncode}: {r.stderr.strip()[:200]}; the launch's source "
                 "is unknown, so nothing was launched"
             )
-        return r.stdout.strip()
+        return r.stdout
 
-    head = git("rev-parse", "HEAD")
-    if not re.fullmatch(r"[0-9a-f]{40}", head):
+    head = git("rev-parse", "HEAD").strip()
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", head):  # a sha1 or a sha256 repository
         raise SystemExit(f"git rev-parse HEAD gave {head[:80]!r}, not a commit id; nothing was launched")
-    return {"head": head, "dirty": git("status", "--porcelain", "--untracked-files=normal")}
+    # a porcelain line's first two columns are its state: the leading space of an unstaged change stays
+    return {"head": head, "dirty": git("status", "--porcelain", "--untracked-files=normal").rstrip("\n")}
 
 
 def manifest(args: argparse.Namespace, out_dir: Path, selected: list[str], digest: str, src: dict) -> Path:
