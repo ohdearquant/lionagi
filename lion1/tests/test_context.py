@@ -620,6 +620,27 @@ def test_the_status_is_stale_when_the_file_changed_after_the_take_within_its_sec
         assert got == (stale, stale_whole), written
 
 
+def test_a_prompt_landing_while_the_take_reads_the_transcript_is_after_the_take(tmp_path, monkeypatch):
+    import time
+
+    import lion_cli.context as cli
+
+    d = actor_dir(tmp_path)
+    transcript = tmp_path / "live.jsonl"
+    transcript.write_bytes(FIXTURE.read_bytes())
+    read = cli.transcript_turns
+
+    def read_then_written(path, budget):
+        view = read(path, budget)
+        ns = time.time_ns() + 1_000  # a prompt lands just after the read, before the take is saved
+        os.utime(transcript, ns=(ns, ns))
+        return view
+
+    monkeypatch.setattr(cli, "transcript_turns", read_then_written)
+    checkpoint(d, "manual", transcript=transcript, khive=TaskKhive([TASK]))
+    assert status(d, session="no-such-session")["stale"] is True
+
+
 def test_a_long_var_is_its_name_size_and_loader_while_a_persons_words_and_watches_stay_whole(tmp_path):
     words = "placeholder words, said once " * 40
     command = "bash /tmp/long-watch.sh " + "a" * 500

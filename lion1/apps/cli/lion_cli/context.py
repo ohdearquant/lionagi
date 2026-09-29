@@ -129,6 +129,9 @@ def checkpoint(
     if why not in WHYS:
         raise CheckpointError(f"why {why!r}: one of {', '.join(WHYS)}")
     assert_ignored(d)
+    # the stamp is read before the transcript is: a prompt landing between the read and the stamp is
+    # after the take, and status calls it so
+    now = now or datetime.now().astimezone()
     actor = actor_id(d)
     path = Path(transcript).expanduser() if transcript else newest_transcript(d)
     if not path.is_file():
@@ -161,7 +164,7 @@ def checkpoint(
         "lanes": lane_note,
     }
     view = transcript_turns(path, budget)
-    ckpt = take(source, [*harvested, *declared], actor=actor, why=why, budget=budget, view=view)
+    ckpt = take(source, [*harvested, *declared], actor=actor, why=why, budget=budget, view=view, now=now)
     written = save(ckpt, d)
     _drain(d, taken)
     return {

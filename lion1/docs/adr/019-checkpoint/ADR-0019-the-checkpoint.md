@@ -226,7 +226,8 @@ it.
   `test_the_context_routes_answer_for_a_registered_desk_only`,
   `test_the_served_context_routes_sit_behind_the_same_gates`,
   `test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status`; `tests/test_context.py`:
-  `test_the_status_is_stale_when_the_file_changed_after_the_take_within_its_second_too`.
+  `test_the_status_is_stale_when_the_file_changed_after_the_take_within_its_second_too`,
+  `test_a_prompt_landing_while_the_take_reads_the_transcript_is_after_the_take`.
 
 ### D4: The resident's arm in `hub/agent/agent.py` ^d4
 
@@ -281,5 +282,6 @@ take that fails is kept among the agent's errors and the run goes on.
   kept, and where it lives once the directory is gone. Here a checkpoint is files in a directory git
   ignores, and a restore is a prompt or a history.
 - **S9**: `taken_at` keeps the take's fraction of a second, so `status` calls a file written in the
-  take's second stale only when written after it. A `taken_at` with no fraction reads as its
-  second's start: a file written anywhere in that second reads stale.
+  take's second stale only when written after it, to the microsecond. A `taken_at` with no fraction
+  reads as its second's start. The stamp is read before the transcript is, so a prompt that lands
+  while the take reads is after it.
