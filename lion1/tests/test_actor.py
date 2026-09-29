@@ -1390,11 +1390,14 @@ def test_a_handler_running_at_the_deadline_is_cancelled_with_the_one_waiting_on_
         await asyncio.sleep(req.seconds)
         return "rested"
 
+    # the budget is 0.5 s, not 0.05: the nap must START before the deadline, and a hosted runner has
+    # stalled a run's start past 0.05 s (measured: the nap refused as spent); locally the start is
+    # under 2 ms over 50 runs, so 0.5 s is ten times the stall seen and the test still ends at 0.5 s
     run = asyncio.run(
         actor.run(
             Profile("p"),
-            RunRequest(inputs=("go",), max_rounds=3, time_budget=0.05),
-            scripted("<lact a1>nap(seconds=0.1)</lact><lact a2>echo(text=*a1)</lact>"),
+            RunRequest(inputs=("go",), max_rounds=3, time_budget=0.5),
+            scripted("<lact a1>nap(seconds=2)</lact><lact a2>echo(text=*a1)</lact>"),
         )
     )
     # the nap outlives the budget: cancelled at the deadline beside the turn's wait (ADR-0003/S3), and
@@ -1774,7 +1777,7 @@ def test_a_deadline_on_the_last_turn_ends_the_run_by_time_not_by_rounds():
 
     started: list[asyncio.Task] = []
     actor = _hanging_actor("t-last-turn-deadline", started)
-    request = RunRequest(inputs=("go",), max_rounds=1, time_budget=0.2)
+    request = RunRequest(inputs=("go",), max_rounds=1, time_budget=0.5)  # the hang must start first
 
     async def go():
         run = await asyncio.wait_for(actor.run(Profile("p"), request, scripted("<lact h1>hang()</lact>")), 5)
@@ -1867,7 +1870,7 @@ def test_a_command_that_never_returns_is_cancelled_at_the_deadline_and_the_run_e
 
     started: list[asyncio.Task] = []
     actor = _hanging_actor("t-deadline", started)
-    request = RunRequest(inputs=("go",), max_rounds=5, time_budget=0.2)
+    request = RunRequest(inputs=("go",), max_rounds=5, time_budget=0.5)  # the hang must start first
 
     async def go():
         # without the deadline the turn's settle waits on h1 forever
@@ -1876,7 +1879,7 @@ def test_a_command_that_never_returns_is_cancelled_at_the_deadline_and_the_run_e
         return run
 
     run = asyncio.run(go())
-    assert run.outcome == Exhausted(1, "time") and 0.2 <= run.elapsed < 2
+    assert run.outcome == Exhausted(1, "time") and 0.5 <= run.elapsed < 2
     h1 = run.record.get("h1")
     assert h1.content.reason == "cancelled" and h1.meta["execution"] == "completion unknown"
     assert run.record.entries[-1].content.splitlines()[1:3] == [
