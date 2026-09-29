@@ -5,8 +5,19 @@ from typing import Literal
 import pytest
 from pydantic import BaseModel, field_validator
 
-from lionagi import Actor, Kind, Message, Profile, Refused, Retry, RunRequest, Success
-from lionagi.actor import ProfileError
+from lionagi import (
+    Actor,
+    Exhausted,
+    Kind,
+    Message,
+    Profile,
+    Refused,
+    Result,
+    Retry,
+    RunRequest,
+    Success,
+)
+from lionagi.actor import JobError, Output, ProfileError
 from lionagi.spec import spec_name
 
 
@@ -58,7 +69,7 @@ def test_accept_gate_refuses_then_lets_a_later_turn_through():
     assert seen == ["first", "second"]
     assert isinstance(run.outcome, Success) and run.output["done"].summary == "second"
     sys_entries = [e.content for e in run.record if e.name.startswith("_sys")]
-    assert any("OUT{} not accepted: not yet" in c for c in sys_entries)
+    assert any("OUT{} refused: not yet" in c for c in sys_entries)
 
 
 def test_unreadable_turn_is_a_retry_not_an_end():
@@ -202,10 +213,7 @@ def test_a_gate_that_raises_refuses_the_finish_instead_of_ending_the_run():
     )
     assert isinstance(run.outcome, Success) and run.output["done"].summary == "second"
     sys_entries = [e.content for e in run.record if e.name.startswith("_sys")]
-    assert any(
-        "not accepted: the gate could not judge it (RuntimeError: git diff exited 128)" in c
-        for c in sys_entries
-    )
+    assert any("OUT{} refused: accept failed, RuntimeError: git diff exited 128" in c for c in sys_entries)
 
 
 def test_a_section_that_raises_is_a_line_in_the_notice_not_the_end_of_the_run():
@@ -576,7 +584,10 @@ def test_a_time_budget_ends_the_run_as_exhausted_by_time_and_the_header_shows_th
     run = asyncio.run(actor.run(Profile("p"), req, slow))
     assert run.outcome == Exhausted(1, "time")  # round 1 ran; round 2 found the clock spent
     assert run.round == 1
-    assert run.resolve("a1") == "one"
+    # the call spent the clock, so the command it asked for never started
+    assert run.resolve("a1") == Result(
+        "echo", False, error="refused: the time_budget of 0.03 is spent", reason="refused"
+    )
     header = next(e.content for e in run.record if e.name.startswith("_sys")).splitlines()[0]
     assert " time=0s/0s " in header
 
@@ -1242,6 +1253,363 @@ def test_the_fold_decides_on_the_reported_context_and_may_fold_old_inputs():
     run = asyncio.run(Actor("folder").run(Profile("p", system="s"), bare, backend))
     third = [e for e in run.record if e.kind is Kind.SYSTEM][2]
     assert "nothing older to fold" in third.content and third.meta["directive"].refs == ()
+
+
+def forever(text: str):
+    async def backend(messages: list[Message]) -> str:
+        return text
+
+    return backend
+
+
+def test_every_bound_resolves_once_at_run_start_the_job_over_the_profile_over_the_runtime():
+    actor = _echo_actor("b-resolve")
+    profile = Profile("p", defaults={"max_rounds": 5, "time_budget": 60})
+
+    @actor.section
+    def reread(run):  # a profile changed mid-run is never read again
+        profile.defaults["time_budget"] = 0
+        return None
+
+    request = RunRequest(inputs=("go",), max_rounds=2, max_idle=4)
+    run = asyncio.run(actor.run(profile, request, forever("<lvar v>x</lvar>")))
+    assert run.bounds == {
+        "max_rounds": 2,
+        "max_idle": 4,
+        "time_budget": 60,
+        "cost_budget": None,
+        "context_budget": 200_000,
+        "max_refusals": 3,
+    }
+    assert run.outcome == Exhausted(2)
+    header = next(e.content for e in run.record if e.kind is Kind.SYSTEM).splitlines()[0]
+    assert " time=0s/1m00s " in header and "round=1/2 " in header
+
+
+def test_a_profile_default_naming_no_bound_is_refused():
+    with pytest.raises(ProfileError, match=r"^profile 'p' defaults name no bound: \['max_turns'\]$"):
+        Profile("p", defaults={"max_turns": 5})
+
+
+def test_max_rounds_defaults_to_a_hundred():
+    run = asyncio.run(
+        _echo_actor("b-hundred").run(Profile("p"), RunRequest(inputs=("go",)), forever("<lvar v>x</lvar>"))
+    )
+    assert run.outcome == Exhausted(100) and run.round == 100
+
+
+def test_idle_turns_in_a_row_end_the_run_and_any_other_turn_starts_the_count_over():
+    turns = ("hm", "hm", "<lvar v>x</lvar>", "hm", "hm", "<system round=9/9>", "hm", "hm", "hm")
+    run = asyncio.run(
+        _echo_actor("b-idle").run(Profile("p"), RunRequest(inputs=("go",), max_rounds=20), scripted(*turns))
+    )
+    assert run.outcome == Exhausted(9, "idle")
+
+
+class Nap(BaseModel):
+    seconds: float
+
+
+def test_a_handler_running_at_the_deadline_is_cancelled_with_the_one_waiting_on_it():
+    actor = _echo_actor("b-between")
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> str:
+        await asyncio.sleep(req.seconds)
+        return "rested"
+
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), max_rounds=3, time_budget=0.05),
+            scripted("<lact a1>nap(seconds=0.1)</lact><lact a2>echo(text=*a1)</lact>"),
+        )
+    )
+    # the nap outlives the budget: cancelled at the deadline beside the turn's wait (ADR-0003/S3), and
+    # the echo waiting on it with it; the cost check before a start is what refuses (the cost test below)
+    assert run.resolve("a1") == Result("nap", False, error="cancelled before it finished", reason="cancelled")
+    assert run.resolve("a2").reason == "cancelled"
+    assert run.outcome == Exhausted(1, "time")
+
+
+def test_reported_cost_ends_the_run_and_a_command_asked_once_it_is_spent_never_starts():
+    from lionagi.actor import Reply as Said
+
+    turns = iter(range(1, 10))
+
+    async def backend(messages: list[Message]) -> str:
+        return Said(f'<lact a{next(turns)}>echo(text="x")</lact>', cost=0.6)
+
+    run = asyncio.run(
+        _echo_actor("b-cost").run(
+            Profile("p"), RunRequest(inputs=("go",), max_rounds=5, cost_budget=1.0), backend
+        )
+    )
+    assert run.cost == 1.2 and run.outcome == Exhausted(2, "cost")
+    assert run.resolve("a1") == "x"  # 0.6 spent when it started
+    why = "refused: the cost_budget of 1 is spent"
+    assert run.resolve("a2") == Result("echo", False, error=why, reason="refused")
+
+
+def test_the_context_figure_the_last_notification_told_ends_the_run_over_its_budget():
+    run = asyncio.run(
+        _echo_actor("b-context").run(
+            Profile("p"),
+            RunRequest(inputs=("go",), max_rounds=5, context_budget=100),
+            scripted("x" * 800, "y", "z"),
+        )
+    )
+    assert run.outcome == Exhausted(2, "context")
+    second = [e.content for e in run.record if e.kind is Kind.SYSTEM][1]
+    assert re.search(r"^context: ~2\d\d / 100 tokens$", second, re.M)
+
+
+def test_a_job_over_its_context_budget_before_any_call_is_refused_as_a_job_error():
+    actor = _echo_actor("b-job")
+    called: list[int] = []
+
+    def backend(messages) -> str:
+        called.append(1)
+        return "never"
+
+    with pytest.raises(JobError, match=r"over its context_budget of 10$"):
+        asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("x" * 400,), context_budget=10), backend))
+    assert called == [] and actor.runs == {}
+
+
+MORE = '<lact m1>run.more(bound="max_rounds", amount=2, reason="two files left")</lact>'
+
+
+def test_a_granted_ask_for_more_rounds_continues_past_max_rounds():
+    run = asyncio.run(
+        _echo_actor("b-more").run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=2),
+            scripted(MORE, "working", 'OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.round == 3
+    assert run.bounds["max_rounds"] == 4 and run.resolve("m1") == "max_rounds raised from 2 to 4"
+    notices = [e for e in run.record if e.kind is Kind.SYSTEM and not e.content.startswith("<system closure")]
+    assert [e.content.split()[1] for e in notices] == ["round=1/2", "round=2/4", "round=3/4"]
+
+
+def test_a_refused_ask_leaves_the_bound_and_the_run_ends_at_the_cap_not_at_the_refusal():
+    asks: list[tuple[str, float, str]] = []
+
+    def extend(run, bound, amount, reason) -> bool:
+        asks.append((bound, amount, reason))
+        return False
+
+    run = asyncio.run(
+        _echo_actor("b-refused").run(
+            Profile("p"),
+            RunRequest(inputs=("go",), max_rounds=2, extend=extend),
+            scripted(MORE, "still working"),
+        )
+    )
+    assert asks == [("max_rounds", 2, "two files left")]
+    assert run.outcome == Exhausted(2) and run.bounds["max_rounds"] == 2
+    second = [e.content for e in run.record if e.kind is Kind.SYSTEM][1]
+    assert "m1: PermissionError: max_rounds stays at 2: the job did not grant 2 more" in second
+
+
+def test_two_asks_in_one_turn_are_answered_in_order_against_one_total():
+    seen: list[tuple[str, float]] = []
+
+    async def extend(run, bound, amount, reason) -> bool:
+        seen.append((reason, run.bounds[bound]))
+        await asyncio.sleep(0)  # the second ask arrives meanwhile; it is judged after this one
+        return run.bounds[bound] + amount <= 6
+
+    turn = (
+        '<lact m1>run.more(bound="max_rounds", amount=2, reason="first")</lact>'
+        '<lact m2>run.more(bound="max_rounds", amount=2, reason="second")</lact>'
+    )
+    run = asyncio.run(
+        _echo_actor("b-two").run(
+            Profile("p"),
+            RunRequest(inputs=("go",), max_rounds=3, max_idle=10, extend=extend),
+            scripted(turn, "a", "b", "c", "d"),
+        )
+    )
+    assert seen == [("first", 3), ("second", 5)]
+    assert run.resolve("m1") == "max_rounds raised from 3 to 5" and not run.resolve("m2").ok
+    assert run.outcome == Exhausted(5)
+
+
+def test_an_ask_on_an_unbounded_bound_raises_nothing_and_only_a_count_is_rounded_up():
+    turn = (
+        '<lact m1>run.more(bound="cost_budget", amount=1, reason="r")</lact>'
+        '<lact m2>run.more(bound="time_budget", amount=0.5, reason="r")</lact>'
+        '<lact m3>run.more(bound="max_refusals", amount=0.5, reason="r")</lact>'
+    )
+    run = asyncio.run(
+        _echo_actor("b-kinds").run(
+            Profile("p"), RunRequest(inputs=("go",), max_rounds=1, time_budget=100), scripted(turn)
+        )
+    )
+    m1 = run.resolve("m1")
+    assert m1.error == "ValueError: cost_budget is not bounded in this run; there is nothing to raise"
+    assert run.bounds["cost_budget"] is None
+    assert run.bounds["time_budget"] == 100.5 and run.bounds["max_refusals"] == 4
+
+
+def test_a_before_hook_sees_out_and_its_rewrite_is_what_accept_judges():
+    actor = Actor("b-out-before")
+    order: list[tuple[str, ...]] = []
+
+    @actor.before
+    def rewrite(run, la, req):
+        order.append(("hook", la.alias, la.name))
+        return Output(fields={"done": Done(summary="rewritten", files=[])})
+
+    def accept(run, output):
+        order.append(("accept", output["done"].summary))
+
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=1, accept=accept),
+            scripted('OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert order == [("hook", "OUT", "out"), ("accept", "rewritten")]
+    assert isinstance(run.outcome, Success) and run.output["done"].summary == "rewritten"
+
+
+@pytest.mark.parametrize(
+    ("fields", "told"),
+    [
+        ({"done": "not a Done"}, "validation error"),  # held to the output's spec as the model's is
+        ({"done": {"summary": "as a dict", "files": []}}, None),  # a dict is validated into it
+        ({"other": Done(summary="s", files=[])}, "the outputs are ['done']"),
+        ({}, "must fill: ['done']"),  # a required output dropped, as the model could not
+    ],
+)
+def test_a_before_hooks_rewrite_of_out_is_held_to_the_runs_outputs(fields, told):
+    actor = Actor("b-out-rewrite-shape")
+    actor.before(lambda run, la, req: Output(fields=fields))
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=2, max_refusals=5),
+            scripted('OUT{done: {summary: "s", files: []}}', 'OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    if told is None:
+        assert isinstance(run.outcome, Success) and run.output["done"] == Done(summary="as a dict", files=[])
+    else:
+        assert isinstance(run.outcome, Exhausted) and run.output is None
+        assert told in "\n".join(str(e.content) for e in run.record if e.kind is Kind.SYSTEM)
+
+
+def test_a_before_hooks_rewrite_may_drop_an_output_whose_fields_all_default():
+    class Note(BaseModel):
+        text: str = ""
+
+    actor = Actor("b-out-rewrite-default")
+    actor.before(lambda run, la, req: Output(fields={"done": req.fields["done"]}))
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done, Note), max_rounds=1),
+            scripted('OUT{done: {summary: "s", files: []}, note: {text: "n"}}'),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.output == {"done": Done(summary="s", files=[])}
+
+
+def test_accept_judges_the_rewrite_validated_and_the_caller_receives_what_it_approved():
+    actor = Actor("b-out-accept-validated")
+    actor.before(lambda run, la, req: Output(fields={"done": {"summary": "rewritten", "files": []}}))
+    judged: list[dict] = []
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(
+                inputs=("go",), emits=(Done,), max_rounds=1, accept=lambda run, out: judged.append(out)
+            ),
+            scripted('OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.output["done"] == Done(summary="rewritten", files=[])
+    assert judged == [run.output] and judged[0]["done"] is run.output["done"]
+
+
+def test_accept_is_not_asked_about_a_rewrite_the_outputs_refuse():
+    actor = Actor("b-out-accept-unasked")
+    actor.before(lambda run, la, req: Output(fields={"done": "not a Done"}))
+    judged: list[dict] = []
+    run = asyncio.run(
+        actor.run(
+            Profile("p", defaults={"max_refusals": 1}),
+            RunRequest(
+                inputs=("go",), emits=(Done,), max_rounds=1, accept=lambda run, out: judged.append(out)
+            ),
+            scripted('OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert judged == [] and run.output is None
+    assert isinstance(run.outcome, Refused) and "validation error" in run.outcome.why
+
+
+def test_a_reported_cost_that_is_not_a_number_reads_as_spent():
+    from lionagi.actor import Reply as Said
+
+    turns = iter(['<lact a1>echo(text="x")</lact>', '<lact a2>echo(text="y")</lact>'])
+
+    async def backend(messages: list[Message]) -> str:
+        return Said(next(turns), cost=float("nan"))  # a cost with no number in it is not room
+
+    run = asyncio.run(
+        _echo_actor("b-cost-nan").run(
+            Profile("p"), RunRequest(inputs=("go",), max_rounds=5, cost_budget=1.0), backend
+        )
+    )
+    assert run.outcome == Exhausted(1, "cost")
+    assert run.resolve("a1") == Result(
+        "echo", False, error="refused: the cost_budget of 1 is spent", reason="refused"
+    )
+
+
+def test_a_run_request_takes_its_fields_by_name_only():
+    with pytest.raises(TypeError):
+        RunRequest(("go",), (Done,), 10)
+
+
+def test_a_before_hook_refusing_out_is_a_refusal_the_profile_default_counts():
+    actor = Actor("b-out-gate")
+    actor.before(lambda run, la, req: "closed for the night")
+    judged: list[object] = []
+    run = asyncio.run(
+        actor.run(
+            Profile("p", defaults={"max_refusals": 1}),
+            RunRequest(
+                inputs=("go",), emits=(Done,), max_rounds=3, accept=lambda run, out: judged.append(out)
+            ),
+            scripted('OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert run.outcome == Refused("closed for the night", 1) and judged == [] and run.output is None
+
+
+def test_an_after_hooks_replacement_of_out_is_refused_and_listed():
+    actor = Actor("b-out-after")
+
+    @actor.after
+    def swap(run, la, req, result):
+        return Result(result.spec, True, value={"done": "swapped"})
+
+    run = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=1),
+            scripted('OUT{done: {summary: "s", files: []}}'),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.output["done"] == Done(summary="s", files=[])
+    assert run.hook_errors == [("OUT", "swap: a replacement of out is refused")]
 
 
 class Hang(BaseModel):

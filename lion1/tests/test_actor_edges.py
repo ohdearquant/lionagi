@@ -249,14 +249,14 @@ def test_an_awaitable_accept_gate_and_an_awaitable_after_hook_are_awaited():
     )
     assert results(run)["a1"] == Result("echo", True, value="HI")
     assert judged == ["first", "second"] and run.output["done"].summary == "second"
-    assert "OUT{} not accepted: not yet" in notices(run)[1]
+    assert "OUT{} refused: not yet" in notices(run)[1]
 
 
 @pytest.mark.parametrize(
     "reasons, told",
     [
-        (["not yet", "not yet"], "(the same error 2 rounds running): OUT{} not accepted: not yet"),
-        (["not yet", "still not"], "could not be read: OUT{} not accepted: still not"),
+        (["not yet", "not yet"], "(the same error 2 rounds running): OUT{} refused: not yet"),
+        (["not yet", "still not"], "could not be read: OUT{} refused: still not"),
     ],
 )
 def test_the_same_refusal_on_consecutive_turns_is_told_with_its_count(reasons, told):
@@ -271,7 +271,7 @@ def test_the_same_refusal_on_consecutive_turns_is_told_with_its_count(reasons, t
         emits=(Done,),
         accept=lambda run, output: next(judged),
     )
-    assert "rounds running" not in notices(run)[1] and "OUT{} not accepted: not yet" in notices(run)[1]
+    assert "rounds running" not in notices(run)[1] and "OUT{} refused: not yet" in notices(run)[1]
     assert told in notices(run)[2]
     assert isinstance(run.outcome, Success) and run.retry_error is None and run.same_errors == 0
 
