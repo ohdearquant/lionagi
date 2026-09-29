@@ -308,6 +308,18 @@ file reached twice counts once, and one that cannot be read stops the start by n
 opening lines and `lion config` name the files composed, with their size. `--code` adds no copy of
 the root files of its own.
 
+### C17: The guidance tells a turn that issues commands to state no result _(enforced: mechanical)_ ^c17
+
+- **Subject**: the console guidance, `hub/guidance/console.md`.
+- **Violated when**: the guidance leaves out that a turn issuing commands says what it is doing and
+  never what their results are, or that results are read only in the notice the loop writes.
+
+A turn's commands answer only after the turn ends, in the notice the loop writes. A model that
+wanted a result within its turn wrote that notice itself, results invented, and built a reply on
+them. The guidance says a turn that issues commands says what it is doing, never what their results
+are: results are read only in the notice the loop writes. A turn that writes the notice is refused
+([[ADR-0004-the-language#^c4|ADR-0004/C4]]).
+
 ## Decisions
 
 ### D1: `hub/chat.py`: `chat`, `entry_row`, `load_log` ^d1
@@ -465,6 +477,16 @@ the banner; `config_main` prints one comment line each, or where it looked.
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the order, the names, a caller's
   system left whole, the opening line; `apps/cli/tests/test_config.py`: `lion config`'s lines, an
   empty file skipped. Control: without the append the composition test fails.
+
+### D14: The sentence in `hub/guidance/console.md` ^d14
+
+Serves C17. The sentence follows the one that sends a question needing a fact to a command first, in
+the first paragraph of `console.md`, which `console()` composes into every chat that names no system
+of its own.
+
+- **Landing evidence**: `tests/test_guidance.py`:
+  `test_each_guidance_file_is_read_by_name_and_its_fields_filled` holds the sentence. Control:
+  without it the test fails.
 
 ## Alternatives
 

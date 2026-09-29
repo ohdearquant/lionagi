@@ -19,6 +19,7 @@ import json
 import math
 import re
 import time
+import unicodedata
 import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
@@ -254,7 +255,9 @@ class Stopped:
 Outcome = Success | Continue | Retry | Exhausted | Refused | Stopped
 
 _CALL_SHAPED = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*\(.*\)\s*$", re.DOTALL)  # `name(...)` as a whole value
-_SYSTEM_FRAME = re.compile(r"<system round=")  # the notification's own opening tag
+# the notification's own opening tag, in any case or spacing after `system`, its `<` as itself or `&lt;`
+_SYSTEM_FRAME = re.compile(r"(?:<|&lt;)system\s+round\s*=", re.IGNORECASE)
+_BREAK = re.compile(r"\r\n|\r|\n")
 
 
 # the runtime's value for each bound a job and its profile leave unset (ADR-0003/C1); None: unbounded
@@ -1782,13 +1785,19 @@ def _read(text: str, language: str = "core", refused: str | None = None) -> Prog
     """A turn as the loop reads it, live or resumed; LNDLError is what the model is told."""
     if refused:  # the backend refused the turn (a mixed response, ADR-0004/C4); the record keeps why
         raise lndl.LNDLError(refused)
-    if _SYSTEM_FRAME.search(text):
+    seen = "".join(c for c in text if unicodedata.category(c) != "Cf")  # zero-width characters hide nothing
+    if frame := _SYSTEM_FRAME.search(seen):
         # the model wrote the loop's own frame and went on as if the results in it were real (9 of
-        # 50 thinking-off runs, half their output tokens); none of it runs
+        # 50 thinking-off runs, half their output tokens); none of it runs. A mention is refused too:
+        # every rule that spared the tag in backticks also spared a frame made to look like one
+        line = len(_BREAK.findall(seen, 0, frame.start())) + 1
+        shown = _BREAK.split(seen[frame.start() :], 1)[0].strip()
+        shown = shown if len(shown) <= 80 else shown[:77] + "..."
         raise lndl.LNDLError(
-            "the turn carries a <system round=...> frame; only the loop writes those and the results "
-            "inside it were never observed, so nothing in the turn was executed: write one program, "
-            "end the turn, and read the real results in the next notification"
+            f"the turn carries a <system round=...> frame, at line {line}: {shown}; only the loop "
+            "writes those and the results inside it were never observed, so nothing in the turn was "
+            "executed: write one program, end the turn, and read the real results in the next "
+            "notification. To speak of it, call it the notice; never write its tag"
         )
     return lndl.parse(text) if language == "core" else read_script(text)
 

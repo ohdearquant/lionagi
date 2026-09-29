@@ -50,7 +50,8 @@ lines (context.summarize), and bring an entry back when you need it again (conte
 A turn without OUT{} runs every <lact> and continues; their results arrive in the next system \
 notification under their aliases. A turn with OUT{} runs every <lact> too, but OUT{} waits only for what \
 it names or points at: once it is accepted the run ends and any <lact> not finished is cancelled.
-Aliases are unique within a turn. Tags are siblings; a complete tag quoted inside a value stays text."""
+A command's alias is unique for the whole run; a value declared again under its alias rebinds it. \
+Tags are siblings; a complete tag quoted inside a value stays text."""
 
 NONE = """\
 You act by writing LNDL in your reply. Three constructs, where `a1` stands for an alias you pick (a bare \
@@ -79,7 +80,8 @@ or the view outgrows its budget, when the runtime folds the oldest results to pl
 A turn without OUT{} runs every <lact> and continues; their results arrive in the next system \
 notification under their aliases. A turn with OUT{} runs every <lact> too, but OUT{} waits only for what \
 it names or points at: once it is accepted the run ends and any <lact> not finished is cancelled.
-Aliases are unique within a turn. Tags are siblings; a complete tag quoted inside a value stays text."""
+A command's alias is unique for the whole run; a value declared again under its alias rebinds it. \
+Tags are siblings; a complete tag quoted inside a value stays text."""
 
 DEFAULTS = (
     "read_file",
