@@ -437,6 +437,7 @@ async def _chat_main(
         head={"kind": "BOX", "box": box} | ({"image": image} if boxed else {}),
         history=directory / ".lion" / "history",
         status=lambda: status_line(actor, profile, runs, backend),
+        directory=directory,
     )
     say.quiet_until = len(history) - 1
     say.open(a.model, directory, chat_id, sorted(profile.specs), resumed)
