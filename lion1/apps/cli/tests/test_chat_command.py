@@ -327,7 +327,9 @@ def test_two_consoles_in_one_second_get_two_logs_and_an_existing_log_is_refused(
     )  # by id, so the suffix sorts before the next second
     (chats / "20260921-175600.jsonl").unlink()
     assert resolve_chat(chats, "last").stem == "20260921-175559-02"
-    Console("m", a[1], color=False).close("x", 0, 0.0, a[1])  # a console never truncates a log it is handed
+    Console("m", a[1], color=False).close(
+        "x", 0, 0.0, 0, a[1]
+    )  # a console never truncates a log it is handed
     a[1].write_text("kept\n")
     Console("m", a[1], color=False)
     assert a[1].read_text() == "kept\n"

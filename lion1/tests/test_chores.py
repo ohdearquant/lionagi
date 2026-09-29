@@ -658,6 +658,20 @@ def test_the_digest_is_one_line_per_chore_to_the_owner_with_missing_as_the_findi
     assert "0 idle poll(s) at 0 tokens" in text
 
 
+def test_the_digests_tokens_line_marks_a_days_cost_that_misses_calls_of_unknown_cost(tmp_path):
+    khive = FakeKhive(mail(SELF, "tick: digest"))
+    chores, agent = build(tmp_path, khive, ["<lact d1>digest()</lact>", DONE], disk=Probe("disk", full()))
+    day = time.strftime("%Y-%m-%d")
+    spend = {"day": day, "calls": 3, "in": 900, "out": 40, "cost": 0.3, "unknown": 2, "runs": 1, "mail": 1}
+    agent.state.put("spend", spend, run="-", seq=0)
+    asyncio.run(agent.wake())
+    text = khive.sent[-1]["content"]
+    assert (
+        f"tokens {day}: 3 model call(s), 900 in, 40 out, $0.3000 (partial: 2 call(s) of unknown cost), "
+        "over 2 wake(s) with 1 mail; 0 idle poll(s) at 0 tokens" in text
+    )
+
+
 def test_aged_tells_the_steward_once_what_the_owner_left_unanswered_and_nothing_acknowledged(tmp_path):
     khive = FakeKhive(
         mail(SELF, "tick: disk"),
