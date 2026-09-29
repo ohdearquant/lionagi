@@ -104,7 +104,7 @@ class Console:
             else None
         )
         self.resulted: set[str] = set()  # aliases whose result printed since the last notice
-        self.responses: list[str] = []  # each response's prose, as printed: what `/copy N` numbers from 1
+        self.responses: list[str] = []  # each response's prose as printed; `/copy N` counts back from the end
         self.written = 0
         self.out = RichConsole(
             force_terminal=color,
@@ -124,8 +124,8 @@ class Console:
         if resumed is not None:
             self.out.print(f"[dim]continuing {escape(resumed[0])}, {resumed[1]} entries[/dim]")
         self.out.print(
-            f"[dim]{escape(str(directory))} · {escape(', '.join(tools))} · /copy [N] copies a response · "
-            "/quit ends[/dim]"
+            f"[dim]{escape(str(directory))} · {escape(', '.join(tools))} · "
+            "/copy [N] copies the last (Nth-last) response · /quit ends[/dim]"
         )
 
     def working(self, what: str) -> None:
@@ -207,22 +207,23 @@ class Console:
             return False
         which = (m.group(1) or "").strip()
         if which and not which.isdigit():
-            self.notice(f"/copy takes a response number, from 1: not {which!r}")
+            self.notice(f"/copy takes a count back from the last response, from 1: not {which!r}")
         else:
             self.notice(self.copy(int(which) if which else None))
         return True
 
     def copy(self, n: int | None = None) -> str:
-        """Put response `n` (from 1, a continued chat's earlier ones counted) or the last one on the
-        clipboard; returns what to tell the person."""
+        """Put the last response, or the `n`th counting back from it (1 = the last, 2 = the one before;
+        a continued chat's replayed ones count too), on the clipboard; returns what to tell the person."""
         if not self.responses:
             return "nothing to copy: no response yet"
-        n = len(self.responses) if n is None else n
+        n = 1 if n is None else n
         if not 1 <= n <= len(self.responses):
-            return f"no response {n}: this chat has {len(self.responses)}; nothing copied"
-        text = self.responses[n - 1]
+            return f"no response {n} back from the last: this chat has {len(self.responses)}; nothing copied"
+        text = self.responses[-n]
         to_clipboard(text)
-        return f"copied response {n} ({len(text)} chars)"
+        which = "the last response" if n == 1 else f"the response {n} back from the last"
+        return f"copied {which} ({len(text)} chars)"
 
     def __call__(self, e: Entry) -> None:
         if self.log is not None:
