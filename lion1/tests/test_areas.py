@@ -10,7 +10,6 @@ import json
 import os
 import plistlib
 import signal
-import socket
 import subprocess
 import sys
 import threading
@@ -22,7 +21,7 @@ from pathlib import Path
 
 import lion_cli.areas as areas_cli
 import pytest
-from lion_cli.areas import _peer_allowed, _rewrite_budget, _tail, serve
+from lion_cli.areas import _peer_allowed, _rewrite_budget, _tail, make_server
 
 from hub.agent.agent import _line
 from hub.areas import (
@@ -175,23 +174,8 @@ def test_the_served_page_and_json_reread_the_registry_on_every_request(tmp_path)
     )
     reg = tmp_path / "areas.toml"
     reg.write_text(f'[area.x]\nchair = "lambda:x"\ndesks = ["{d}"]\n')
-    # a free port: bind 0 through the server itself is hidden by serve(); take one and release it
-    import socket
-
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    t = threading.Thread(target=serve, args=(reg, "127.0.0.1", port, 2), daemon=True)
-    t.start()
-    for _ in range(50):
-        try:
-            body = fetch(f"http://127.0.0.1:{port}/api/areas", timeout=1)
-            break
-        except OSError:
-            time.sleep(0.1)
-    else:
-        raise AssertionError("the server never answered")
-    rows = json.loads(body)
+    port = serve_on(reg)
+    rows = json.loads(fetch(f"http://127.0.0.1:{port}/api/areas", timeout=1))
     assert [r["actor"] for r in rows] == ["lambda:x:desk"] and rows[0]["serving"] is False
     html = fetch(f"http://127.0.0.1:{port}/").decode()
     assert "lambda:x:desk" in html and 'content="2"' in html
@@ -346,17 +330,7 @@ def test_the_served_resident_page_reads_and_mails_only_a_registered_resident_as_
     reg.write_text(f'[area.x]\nchair = "lambda:x"\ndesks = ["{d}"]\n')
 
     def start(ident) -> int:
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            port = s.getsockname()[1]
-        threading.Thread(target=serve, args=(reg, "127.0.0.1", port, 2, ident), daemon=True).start()
-        for _ in range(50):
-            try:
-                fetch(f"http://127.0.0.1:{port}/api/areas", timeout=1)
-                return port
-            except OSError:
-                time.sleep(0.1)
-        raise AssertionError("the server never answered")
+        return serve_on(reg, ident)
 
     def post(port: int, form: dict) -> http.client.HTTPResponse:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)  # never follows the 303
@@ -483,18 +457,23 @@ def registry(root: Path, *desks: Path) -> Path:
     return reg
 
 
+_servers: list = []  # every server a test started, ended by `servers_end` so no thread outlives its test
+
+
+@pytest.fixture(autouse=True)
+def servers_end():
+    yield
+    while _servers:
+        server = _servers.pop()
+        server.shutdown()
+        server.server_close()
+
+
 def serve_on(reg: Path, ident=None, allow: list[str] | None = None) -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    threading.Thread(target=serve, args=(reg, "127.0.0.1", port, 2, ident, allow), daemon=True).start()
-    for _ in range(50):
-        try:
-            fetch(f"http://127.0.0.1:{port}/api/areas", timeout=1)
-            return port
-        except OSError:
-            time.sleep(0.1)
-    raise AssertionError("the server never answered")
+    server = make_server(reg, "127.0.0.1", 0, 2, ident, allow)  # port 0: the kernel's free one
+    _servers.append(server)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server.server_address[1]
 
 
 def call(port: int, method: str, path: str, body: str | None = None, headers: dict | None = None):
