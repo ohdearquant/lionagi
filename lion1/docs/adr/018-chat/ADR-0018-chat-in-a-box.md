@@ -55,6 +55,14 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
 - **chat patch**: the copy's diff against the baseline, saved as `.lion/chats/<id>.patch` under the
   chat log's id.
 - **unsettled command**: a command a logged turn asked for whose alias has no RESULT in the log.
+- **editor**: the line the person types on a terminal, an editor over the whole message
+  (prompt_toolkit) rather than a read through the tty's line discipline.
+- **status line**: `inbox N · ctx ~F/B (last call P) · notes N (S chars) · $C`, read off the live
+  run each time it is drawn.
+- **own tools**: with a `claude_code` model, the Claude Code CLI's tools `--tools` names, run by the
+  CLI inside each round.
+- **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
+  defaults for the flags.
 
 ## Assumptions
 
@@ -171,6 +179,30 @@ belong to the sandboxed executor ([[ADR-0011-the-box|ADR-0011]], the box). The g
 of anything that gives the chat its own scheduling, or its own path into a box. A change to the
 coding guidance, `hub/guidance/code.md`, names the run it was tried on.
 
+### C8: The person types into an editor, and the console tells the state _(enforced: mechanical)_ ^c8
+
+- **Subject**: `Console.ask`, `Editor` and `status_line` on a terminal.
+- **Violated when**: a pasted line arrives as its own message, a line over 1024 bytes is lost, a
+  prompt leaves the loop without its SIGINT handler, or the status line shows a cached value.
+
+On a terminal a paste of many lines is one message, Enter sends, Alt-Enter breaks a line, Up recalls
+earlier messages from `.lion/history`, and Ctrl-C clears the line or, on an empty one, ends the
+chat. A pipe keeps the plain line reader. The status line sits under the prompt and prints at each
+round notice under `--verbose`. The flags' defaults come from the config file: the nearer file wins
+per key, a flag on the line over both.
+
+### C9: A first Ctrl-C cuts the call; a fold, not a failed directive, restarts a session _(enforced: mechanical)_ ^c9
+
+- **Subject**: `Interrupt`, `Run.interrupt` and the `claude_code` session under `--tools`.
+- **Violated when**: a Ctrl-C mid-call waits for the round, a cut ends the run, a failed directive
+  restarts the session, or an own-tool call misses the record.
+
+Mid-round a first Ctrl-C cuts the backend call in flight: the round ends with a notice and no turn,
+the run goes on, and a `claude_code` session resumes where it was; with no call in flight the round
+settles first. Only a result that changed the view carries its `spec`, so a failed directive leaves
+the session as it was. `--tools`, for a `claude_code` model only, names the CLI's own tools; each
+call passes the console's gate and lands on the record as a result the model can hide.
+
 ## Decisions
 
 ### D1: `hub/chat.py`: `chat`, `entry_row`, `load_log` ^d1
@@ -223,6 +255,29 @@ given, else `vm` and `python:3.12`; `git apply --check -R` tests the continued s
   `apps/cli/tests/test_chat_command.py` (the whole record logged again, the unsettled commands, the
   missing log).
 
+### D5: `Editor`, `status_line` and `lion_cli/config.py` ^d5
+
+Serves C8. `Editor` wraps a `PromptSession` with its own key bindings and `handle_sigint` off;
+`Console.ask` uses it when stdin and stdout are terminals, `stdin_ask` otherwise. `status_line`
+reads the actor's inbox, the run's context figure and last reported prompt, the profile's notes and
+`spent(calls)`. `chat_config` reads the two files and `main` parses twice, the second with the
+files' values as defaults; `lion config` prints the effective values with their sources.
+
+- **Landing evidence**: `tests/test_chat.py`: the editor's paste, Alt-Enter, Ctrl-C and Up, the
+  SIGINT handler left in place, the status line's live values and where it prints;
+  `apps/cli/tests/test_config.py`: precedence and refusals.
+
+### D6: `Run.interrupt`, `run.cut`, and a result's `spec` ^d6
+
+Serves C9. `Run.interrupt` sets `pause` and cancels the call the loop holds in `run.call`; the loop
+reads `run.cut` to tell that cancellation from the run's own and continues. `_message` renders a
+failed result with `spec=None`, which `ClaudeCodeSession` reads before restarting. `backend_for`
+takes the tool names and `chat_main` hands the session the console's actor as its gate.
+
+- **Landing evidence**: `tests/test_chat.py`: the cut with its two controls;
+  `apps/cli/tests/test_chat_command.py`: the Ctrl-C presses; `tests/test_claude_code.py`:
+  `test_a_failed_context_directive_does_not_restart_the_session`.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -233,6 +288,9 @@ given, else `vm` and `python:3.12`; `git apply --check -R` tests the continued s
 | Keeping every box after its chat for `-c` | the saved patch holds the work; a box is kept only when its patch could not be taken (C5) |
 | A summary of the session as what resumes | the record is the memory; a summary is the model's opinion of it and folds nothing |
 | Rerunning unsettled commands on resume | one may have had its effect before the session ended; the model is told and asks again |
+| Reading the person's line through `input()` with bracketed paste | the tty's line discipline still splits a paste into lines on some terminals and macOS drops any line over 1024 bytes without a word |
+| A first Ctrl-C that waits for the round to settle | a long tool turn made the interrupt look ignored; the call is the person's to cut |
+| Environment variables for the chat's defaults | a file the person can read back with `lion config` says where each value came from |
 
 ## Consequences
 
@@ -268,6 +326,13 @@ given, else `vm` and `python:3.12`; `git apply --check -R` tests the continued s
   the model and the person; only that session's patch is checked.
   `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch` resumes a
   boxed chat.
+- **S11**: A cut round leaves no turn on the record, only a notice; a `claude_code` session killed
+  mid-call resumes on the next call from the CLI's own persisted session. A hide of what the CLI's
+  own tools did folds the record; the CLI's session keeps its own transcript until a directive or a
+  fold restarts it from the folded view.
+- **S12**: The config file cannot switch a `true` off for one run: the flags are switches, so a
+  nearer file's `false` is the only override. `lion chat --help` shows the built-in defaults, not
+  the files'.
 - **S10**: Nothing in the chat installs `uv` in a box: the default `python:3.12` is used as
   published, while the VM's own image copies `uv` into `python:3.12-slim`. The box guidance tells
   the model to install what the image lacks.
