@@ -569,10 +569,15 @@ def test_out_strings_keep_escaped_quotes_braces_and_backslashes():
     assert out.fields == {"answer": 'say "}" now', "path": "C:\\", "n": 1}
 
 
-def test_two_outs_are_named_exactly():
-    p = parse("OUT{a: 1} OUT{b: 2}")
-    assert p.out is None
-    assert p.problems == ["OUT{...} could not be read, so this turn ran without it: one OUT{...} per turn"]
+def test_two_outs_refuse_the_turn_whole_and_are_named_exactly():
+    with pytest.raises(LNDLError) as e:
+        parse('<lact w1>write(path="a", text="x")</lact> OUT{a: 1} OUT{b: 2}')
+    assert str(e.value) == (
+        "one OUT{...} per turn and this turn carries 2, so nothing in it was executed: "
+        "write it again with one OUT{...}"
+    )
+    single = parse('<lact w1>write(text="OUT{b: 2}")</lact> OUT{a: "OUT{c: 3}"}')
+    assert single.out.fields == {"a": "OUT{c: 3}"} and [la.alias for la in single.lacts] == ["w1"]
 
 
 # stray command tags
