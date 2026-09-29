@@ -50,7 +50,7 @@ symbolic LNDL design are not part of this runtime; the program form is
   that starts with `TAG`; the second form of a string argument.
 - **reading**: one attempt to parse a call's body.
 - **repair**: what a reading past the first supplied; escaping a line break inside a string literal
-  changes nothing the model would rewrite, so it is not one.
+  changes nothing the model would rewrite, so the model is not told of it; it is only counted.
 - **native tool call**: a provider's structured call in the response, emitted although no tool
   schema was sent.
 - **program**: the same requests written as a script; a profile option
@@ -151,11 +151,13 @@ named as such.
 
 ### D1: The heredoc form and the reading order in `lndl.py` ^d1
 
-Serves C2 and C3. `_lift_heredocs` runs first; `_readings` yields the four readings with their
-notes; `parse_call_noting` returns the name, the arguments and the note; `parse` appends the note to
-the program's problems.
+Serves C2 and C3. `_lift_heredocs` runs first; `_readings` yields the four readings with the repairs
+each applied, by name; `parse_call_noting` returns the name, the arguments and those names; `parse`
+counts every name for the run and appends one note naming each repair to the program's problems. The
+line break escaped in a string is counted and carries no note.
 
-- **Landing evidence**: `tests/test_lndl.py`; the replay of the recorded unreadable messages.
+- **Landing evidence**: `tests/test_lndl.py`; the replay of the recorded unreadable messages;
+  `test_a_call_needing_a_comma_and_its_closers_names_both_repairs`.
 
 ### D2: Native tool calls are rebuilt at the backend boundary ^d2
 

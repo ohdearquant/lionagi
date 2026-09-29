@@ -29,15 +29,15 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0004 | The language: LNDL, commands, values, pointers, lenient reading | operating; mixed-response refusal and the markup move owed | the request program |
 | ADR-0005 | Command handling: order, the bus, hooks, effect classes | operating | the tool protocol: declared effects, denial as data, receipts |
 | ADR-0006 | The notification, and the closure | operating; closure owed | context assembly: the runtime's typed section |
-| ADR-0007 | The record, the view, the fold, context commands, notes | operating; frozen captures, dated directives, consumed mark, cross-profile note read owed | the durable record, visibility directives, the store families |
-| ADR-0008 | The program: compile then run, control results, curated view | unimplemented | the request program |
+| ADR-0007 | The record, the view, the fold, context commands, notes | operating; frozen captures, dated directives, the consumed mark on the closure, cross-profile note read owed | the durable record, visibility directives, the store families |
+| ADR-0008 | The program: compile then run, control results, curated view | operating; the closure's consumed marks, the normalised program on the TEXT entry, the tag form on the same nodes, the name repairs owed | the request program |
 | ADR-0009 | Backends and the context figure: three shapes, the `Reply` count, the floor, the session restart | draft (2026-09-25); the subscription CLI's count and the mixed-response refusal owed | the inference driver: a binding row, the served model read from the response; here the envelope keeps the response's model and compares nothing |
 | ADR-0010 | Delegation between actors: `queue`, the handle, the answer as a settled command, the reply, no graph object | draft (2026-09-25); no bench exercises the path | principals and mail; in-process peers are one layer, the long-running agent another |
 | ADR-0011 | The box: one shape for three boxes, the coding tools over a tree, the watch and its gate, the patch | draft (2026-09-25); the real-box tests opt-in; resolving a boxed path in the box owed | the sandboxed executor: content-addressed trees, declared write paths, receipts |
 | ADR-0013 | The long-running agent: the wake, the send gate and the hop count, the caps, the cursor and posture, the lock, the continuous run and its checkpoint | draft (2026-09-25) | the process: one identity per process, lease by turn activity, one supervisor |
 | ADR-0012 | The bench as the instrument: the grade in the box, the row, the run id, unaided by default, what compares with what, the cited figures | draft (2026-09-25); one carried figure not reproduced | the instrument contract |
-| ADR-0014 | The instrument contract: the measurement and its proof, the refusals, the dead instrument, first sight then transitions, the floors | draft (2026-09-25); the command-line check unvetted and untested; a lock-holder and a scheduled-job instrument, a dead mark on delivery owed | none |
-| ADR-0015 | Chores: three endings chosen by code, eleven chores from one file, ticks as store reminders, the bounded client, print and save | draft (2026-09-25) | the scheduled run of a process |
+| ADR-0014 | The instrument contract: the measurement and its proof, the refusals, the dead instrument, first sight then transitions, the floors | draft (2026-09-25); the command-line check unvetted and saying so; a dead mark on delivery owed | none |
+| ADR-0015 | Chores: three endings chosen by code, thirteen chores from one file, ticks as store reminders, the bounded client, print and save | draft (2026-09-25) | the scheduled run of a process |
 | ADR-0016 | The lion command and the spend row: one entry, the shared lock, the row from the envelopes, the readers | draft (2026-09-25); the unknown-cost mark owed | none |
 | ADR-0017 | The desk: the read-only reader, the cursor that never marks, the gate, code escalations, every model-facing command with its gate, pending until its row, keyed replay, record answers, the brief, areas and chairs | draft (2026-09-25); no bench exercises the desk | mail settlement by keyed replay |
 | ADR-0018 | Chat in a box: one run that waits for the person, the flags, the person's tree or a copy, the patch home, the resume | draft (2026-09-25); no test interrupts a boxed chat | none |
@@ -166,7 +166,7 @@ hard-set pair as code-host-closed, not unaided (0012 C8).
   says what the instance cost and an unmeasured spend is unknown, never zero; a run id is one bench run
   and a disagreeing launch is refused; the bench runs unaided unless a launch says otherwise, and
   unaided is the number; cited figures belong to named bench runs (0012 C1 to C5, C9).
-- A chore ends quiet, reported or escalated and code picks the ending; the chores are the eleven the
+- A chore ends quiet, reported or escalated and code picks the ending; the chores are the thirteen the
   file names; a chore runs on its tick, a trusted question or a missed tick, inside a wake, as the
   agent's actor behind the gate, reaching the store only through the bounded client; a report names
   its prior and the steward hears only what the owner left (0015 C1 to C5, C7).

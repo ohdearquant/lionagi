@@ -207,13 +207,13 @@ actor's lanes (S4), and the statusline's per-session file. The newest loop file 
 gives its header as a `fact` and its `## Posture` as a `posture`; the last text, its LNDL taken out,
 is a `posture` too.
 
-- **Landing evidence**: `tests/test_checkpoint.py`:
+- **Landing evidence**: `tests/test_context.py`:
   `test_the_reader_keeps_each_prompt_with_its_final_text_and_no_dropped_kind_survives`,
   `test_each_source_harvests_its_kind_and_an_absent_source_is_a_value`,
   `test_watches_are_the_monitors_still_running_verbatim_and_the_inbox_line_is_added_once`,
   `test_a_prompt_the_harness_requeued_is_one_turn`,
-  `test_the_ceiling_eight_directives_half_the_budget_and_the_watch_list`, the spawn test;
-  `tests/test_context.py`:
+  `test_the_ceiling_eight_directives_half_the_budget_and_the_watch_list`,
+  `test_legs_are_agents_the_transcript_shows_running`; `tests/test_context.py`:
   `test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_open_pull_requests`,
   `test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one`.
 
@@ -226,7 +226,7 @@ and exits 1. `checkpoint --hook` is the PreCompact hook's entry (S1). The areas 
 for any other and 409 on a refusal, behind the server's Host and Origin gates. `status` says stale
 when no checkpoint exists or the file it points at changed after it.
 
-- **Landing evidence**: `tests/test_checkpoint.py`:
+- **Landing evidence**: `tests/test_context.py`:
   `test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli`,
   `test_the_context_routes_answer_for_a_registered_desk_only`,
   `test_the_served_context_routes_sit_behind_the_same_gates`,

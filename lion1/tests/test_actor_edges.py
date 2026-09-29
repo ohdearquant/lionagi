@@ -98,6 +98,20 @@ def test_a_note_is_read_back_by_pointer_in_a_later_run_of_the_same_profile_and_n
     )
 
 
+def test_a_reply_under_wait_with_no_command_still_writes_the_note_it_declares():
+    actor = Actor("edge-wait-declares")
+    store = MemoryNoteStore()
+    seen: list = []
+
+    async def wait(run) -> bool:
+        seen.append(store.get("plan"))  # the note is on the store before the wait is asked
+        return False
+
+    run = once(actor, Profile("own", notes=store), "<lvar note.plan>ship</lvar>", wait=wait, max_rounds=3)
+    assert run.outcome == Stopped(2) and run.notes_written == ["note.plan"]
+    assert seen[0] is not None and seen[0].value == "ship" and store.get("plan").value == "ship"
+
+
 def test_a_profile_that_brings_its_own_note_store_writes_its_notes_there():
     actor = Actor("edge-notes-own")
     store = MemoryNoteStore()
@@ -225,6 +239,12 @@ def test_with_reply_on_commands_a_turn_whose_commands_all_landed_is_the_reply_an
     )
     assert asked == [2, 4, 5]
     assert run.outcome == Stopped(5) and run.round == 4
+    # the false wait ends the run before a notification: the reply is the record's last entry before
+    # the closure the outcome writes (ADR-0006/C1)
+    *body, closure = run.record.entries
+    assert closure.kind is Kind.SYSTEM and closure.content.startswith("<system closure")
+    assert body[-1].kind is Kind.TEXT and run.record.latest(Kind.TEXT).content == "bye"
+    assert [e.kind for e in body].count(Kind.SYSTEM) == 4
 
 
 def test_an_awaitable_accept_gate_and_an_awaitable_after_hook_are_awaited():

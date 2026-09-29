@@ -46,6 +46,21 @@ class DiesOnRoundTwo:
         return "Reading the code first.\n"  # a turn that runs nothing and declares nothing
 
 
+class RepairedThenDies(DiesOnRoundTwo):
+    async def __call__(self, messages) -> str:
+        await super().__call__(messages)
+        return '<lact a1>bsh(command="ls")</lact>\n<lact a2>bash(command="ls"</lact>'
+
+
+def test_a_backend_failure_keeps_what_the_readings_before_it_counted(tmp_path: Path):
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+    rec = asyncio.run(solve(row, "m", 5, tmp_path, "codex", box=ToolBox(), backend=RepairedThenDies()))
+    assert rec["error"].startswith("CodexError: codex exited 1") and rec["rounds"] == 1
+    assert rec["repairs"] == {"closers": 1} and rec["unknown_names"] == [["bsh", "bash", 1]]
+    rec = asyncio.run(solve(row, "m", 5, tmp_path, "codex", box=ToolBox(), backend=DiesOnRoundTwo()))
+    assert rec["repairs"] == {} and rec["unknown_names"] == []  # a turn that read clean, then the failure
+
+
 def test_the_tdd_flag_swaps_the_no_tests_sentence_and_the_other_flags_append():
     from run_swe import CRITERIA, DELIBERATE, FIXER, NO_TESTS, TDD, guidance
 
@@ -137,6 +152,16 @@ def test_a_turn_cut_at_the_cap_or_blank_is_named_in_the_next_notice(tmp_path: Pa
     assert rec["calls"][0]["finish"] == "length" and "message" not in rec["calls"][0]
     assert rec["calls"][1]["message"] == {"content": "   "}
     assert rec["outcome"] == "Exhausted:rounds" and rec["rounds"] == 3
+
+
+def test_the_row_counts_the_repairs_by_name_and_measures_each_unknown_name(tmp_path: Path):
+    row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
+    turn = '<lact a1>bsh(command="ls")</lact>\n<lact a2>bash(command="ls"</lact>'
+    rec = asyncio.run(
+        solve(row, "m", 1, tmp_path, "codex", box=ToolBox(), backend=Turns((turn, {"finish_reason": "stop"})))
+    )
+    assert rec["repairs"] == {"closers": 1}
+    assert rec["unknown_names"] == [["bsh", "bash", 1]]
 
 
 class DyingBox(ToolBox):
