@@ -1,7 +1,7 @@
 ---
 adr: ADR-0019
 status: draft
-liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests)
+liveness: operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests)
 date: "2026-09-25"
 area: checkpoint
 kind: new
@@ -207,13 +207,13 @@ actor's lanes (S4), and the statusline's per-session file. The newest loop file 
 gives its header as a `fact` and its `## Posture` as a `posture`; the last text, its LNDL taken out,
 is a `posture` too.
 
-- **Landing evidence**: `tests/test_checkpoint.py`:
+- **Landing evidence**: `tests/test_context.py`:
   `test_the_reader_keeps_each_prompt_with_its_final_text_and_no_dropped_kind_survives`,
   `test_each_source_harvests_its_kind_and_an_absent_source_is_a_value`,
   `test_watches_are_the_monitors_still_running_verbatim_and_the_inbox_line_is_added_once`,
   `test_a_prompt_the_harness_requeued_is_one_turn`,
-  `test_the_ceiling_eight_directives_half_the_budget_and_the_watch_list`, the spawn test;
-  `tests/test_context.py`:
+  `test_the_ceiling_eight_directives_half_the_budget_and_the_watch_list`,
+  `test_legs_are_agents_the_transcript_shows_running`; `tests/test_context.py`:
   `test_the_lanes_are_the_active_tasks_the_threads_awaiting_a_reply_and_the_open_pull_requests`,
   `test_a_lane_source_that_cannot_answer_says_why_and_a_full_page_says_it_is_one`,
   `test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take`.
@@ -227,11 +227,13 @@ and exits 1. `checkpoint --hook` is the PreCompact hook's entry (S1). The areas 
 for any other and 409 on a refusal, behind the server's Host and Origin gates. `status` says stale
 when no checkpoint exists or the file it points at changed after it.
 
-- **Landing evidence**: `tests/test_checkpoint.py`:
+- **Landing evidence**: `tests/test_context.py`:
   `test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli`,
   `test_the_context_routes_answer_for_a_registered_desk_only`,
   `test_the_served_context_routes_sit_behind_the_same_gates`,
   `test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status`; `tests/test_context.py`:
+  `test_the_status_is_stale_when_the_file_changed_after_the_take_within_its_second_too`,
+  `test_a_prompt_landing_while_the_take_reads_the_transcript_is_after_the_take`,
   `test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_hands_it`.
 
 ### D4: The resident's arm in `hub/agent/agent.py` ^d4
@@ -298,7 +300,11 @@ take that fails is kept among the agent's errors and the run goes on.
   kernel's: which checkpoint a new process starts from, who starts it, how long a checkpoint is
   kept, and where it lives once the directory is gone. Here a checkpoint is files in a directory git
   ignores, and a restore is a prompt or a history.
-- **S9**: A lane row is an object whose lane id is a non-empty string and whose `properties`, when
+- **S9**: `taken_at` keeps the take's fraction of a second, so `status` calls a file written in the
+  take's second stale only when written after it, to the microsecond. A `taken_at` with no fraction
+  reads as its second's start. The stamp is read before the transcript is, so a prompt that lands
+  while the take reads is after it.
+- **S10**: A lane row is an object whose lane id is a non-empty string and whose `properties`, when
   given, is an object; a pull request's number is a positive int, never a bool. A row of another
   shape is counted in `source.lanes` as invalid, the first one named, and never aborts the take; a
   box that is not a list is a read that could not be done, and the khive client refuses such a page

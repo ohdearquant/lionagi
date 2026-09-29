@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -631,6 +632,20 @@ class InboxSla:
         )
 
 
+def _finite(v: int | float) -> bool:
+    try:
+        return math.isfinite(v)
+    except OverflowError:
+        return False
+
+
+def _shown(v: Any) -> str:
+    try:
+        return repr(v)
+    except ValueError:  # an int past the interpreter's digit limit for its decimal form
+        return f"an integer of {v.bit_length()} bits"
+
+
 class Disk:
     """Free space per volume under the roots, against every floor the config names, and the build
     targets beneath the roots. Free space is a property of the volume, so roots on one device are
@@ -668,12 +683,24 @@ class Disk:
         for fl in self.floors:
             if "floor_gib" not in fl or "name" not in fl:
                 raise ValueError(f"a floor has a name and a floor_gib (base-1024): {fl}")
+        # every comparison with nan is false, so a nan floor reads as above on every pass
+        gib = [("target_cap_gib", target_cap_gib)] + [
+            (f"{k} of floor {fl['name']!r}", fl[k])
+            for fl in self.floors
+            for k in ("floor_gib", "budget_gib")
+            if k in fl
+        ]
+        for field, v in gib:
+            # an int too large for a float is not finite either: isfinite raises OverflowError on it
+            fine = isinstance(v, int | float) and not isinstance(v, bool) and _finite(v) and v >= 0
+            if not fine:
+                raise ValueError(f"{field} is a finite number of GiB, zero or more: {_shown(v)}")
 
     async def run(self, args: dict[str, Any]) -> Outcome:
         findings, lines, control, escalate, matched = [], [], True, False, 0
         devices: dict[str, dict] = {}
-        for root in self.roots:
-            rc, out, err = await self.sh(["/bin/df", "-k", root])
+        for root in self.roots:  # -P: one line per volume; GNU wraps a long device name without it
+            rc, out, err = await self.sh(["/bin/df", "-P", "-k", root])
             rows = out.strip().splitlines()
             cols = rows[1].split() if len(rows) >= 2 else []
             if rc != 0 or len(cols) < 6 or not cols[3].isdigit():
@@ -763,7 +790,9 @@ _GITHUB_ORIGIN = re.compile(
 
 
 def _pr_number(p: Any) -> bool:
-    return isinstance(p, dict) and isinstance(p.get("number"), int) and not isinstance(p["number"], bool)
+    # a pull request's number is a positive integer; a bool is an int to Python and is not one
+    n = p.get("number") if isinstance(p, dict) else None
+    return isinstance(n, int) and not isinstance(n, bool) and n > 0
 
 
 class Worktrees:

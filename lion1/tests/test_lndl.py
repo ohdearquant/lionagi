@@ -411,7 +411,6 @@ def test_guidance_names_the_runs_outputs_in_the_out_example():
 @pytest.mark.parametrize(
     "text, fragment",
     [
-        ('<lact w1>write(path="a", text="x")</lact> OUT{report: [w1]} OUT{x: 1}', "one OUT"),
         ('<lact w1>write(path="a", text="x")</lact> OUT{no colon}', "key: value"),
         ('<lact w1>write(path="a", text="x")</lact> OUT{report: {port: 9090, changed: [*a, 1}}', "neither"),
     ],

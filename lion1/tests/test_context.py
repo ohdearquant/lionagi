@@ -5,9 +5,10 @@ harvests its kind, and an absent source is a value."""
 import asyncio
 import io
 import json
+import os
 import shlex
 import subprocess
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -778,6 +779,60 @@ def test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status(tmp_path
     assert "watch.tmon1" in done["vars"] and "lane.1ane0001" in done["vars"]
 
 
+@pytest.mark.parametrize("kind", ["transcript", "record"])
+def test_the_status_is_stale_when_the_file_changed_after_the_take_within_its_second_too(tmp_path, kind):
+    pointed = tmp_path / f"{kind}.jsonl"
+    pointed.write_text("placeholder\n")
+    rec = Record("r0") if kind == "record" else None
+    ckpt = take(
+        {kind: str(pointed)},
+        [],
+        actor=ACTOR,
+        why="manual",
+        budget=100,
+        record=rec,
+        now=AT_TAKE + timedelta(milliseconds=900),
+    )
+    # a whole-second taken_at reads as its second's start
+    whole = replace(ckpt, taken_at=AT_TAKE.isoformat())
+    assert ckpt.taken_at == (AT_TAKE + timedelta(milliseconds=900)).isoformat()
+    d, d_whole = actor_dir(tmp_path / "fraction"), actor_dir(tmp_path / "whole")
+    save(ckpt, d)
+    save(whole, d_whole)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    for written, stale, stale_whole in (
+        (AT_TAKE - timedelta(milliseconds=500), False, False),  # before the take's second
+        (AT_TAKE + timedelta(milliseconds=100), False, True),  # the same second, before the take
+        (AT_TAKE + timedelta(milliseconds=950), True, True),  # the same second, after the take
+        (AT_TAKE + timedelta(milliseconds=1_100), True, True),  # the next second
+    ):
+        ns = (written - epoch) // timedelta(microseconds=1) * 1_000
+        os.utime(pointed, ns=(ns, ns))
+        got = tuple(status(at, session="no-such-session")["stale"] for at in (d, d_whole))
+        assert got == (stale, stale_whole), written
+
+
+def test_a_prompt_landing_while_the_take_reads_the_transcript_is_after_the_take(tmp_path, monkeypatch):
+    import time
+
+    import lion_cli.context as cli
+
+    d = actor_dir(tmp_path)
+    transcript = tmp_path / "live.jsonl"
+    transcript.write_bytes(FIXTURE.read_bytes())
+    read = cli.transcript_turns
+
+    def read_then_written(path, budget):
+        view = read(path, budget)
+        ns = time.time_ns() + 1_000  # a prompt lands just after the read, before the take is saved
+        os.utime(transcript, ns=(ns, ns))
+        return view
+
+    monkeypatch.setattr(cli, "transcript_turns", read_then_written)
+    checkpoint(d, "manual", transcript=transcript, khive=TaskKhive([TASK]))
+    assert status(d, session="no-such-session")["stale"] is True
+
+
 def test_a_long_var_is_its_name_size_and_loader_while_a_persons_words_and_watches_stay_whole(tmp_path):
     words = "placeholder words, said once " * 40
     command = "bash /tmp/long-watch.sh " + "a" * 500
@@ -859,20 +914,19 @@ def serve_one(agent: Agent) -> list[str]:
 
 
 def test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_same_view(tmp_path):
-    backend = Growing((FAILS.format("g1"), 1_000), (FAILS.format("g2"), 500_000), (LONG_POSTURE, 500_000))
+    backend = Growing((FAILS.format("g1"), 1_000), (FAILS.format("g2"), 150_000), (LONG_POSTURE, 150_000))
     khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
     agent = resident(khive, backend)
     lines = serve_one(agent)
     (run,) = agent.runs
     folds = [e for e in run.record if e.kind is Kind.SYSTEM and "directive" in e.meta]
     assert len(folds) == 1 and folds[0].meta["directive"].refs and agent.errors == []
+    held_seq = run.record.seq - 1  # the closure lands when the run returns, after the checkpoint
     assert [line for line in lines if line.startswith("checkpoint ")] == [
-        f"checkpoint {load(tmp_path).id} (threshold) at seq {run.record.seq}"
+        f"checkpoint {load(tmp_path).id} (threshold) at seq {held_seq}"
     ]
     ckpt = load(tmp_path)
-    assert (
-        ckpt.why == "threshold" and ckpt.source["kind"] == "resident" and ckpt.source["seq"] == run.record.seq
-    )
+    assert ckpt.why == "threshold" and ckpt.source["kind"] == "resident" and ckpt.source["seq"] == held_seq
     assert ckpt.actor == khive.actor and ckpt.source["context"]["used"] > 60_000  # the figure the fold used
     # the posture note is over LAZY: carried by its key and size, the note keeps the body
     held = {v.name: v for v in ckpt.vars}
@@ -883,7 +937,9 @@ def test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_s
     text = next((tmp_path / ".khive" / "context").glob("ckpt-*.json")).read_text()
     assert "no note 'absent'" not in text and "no note 'absent'" in Path(ckpt.source["record"]).read_text()
     history = to_history(ckpt)
-    assert [(e.seq, e.kind, e.content) for e in history] == [(e.seq, e.kind, e.content) for e in run.record]
+    assert [(e.seq, e.kind, e.content) for e in history] == [
+        (e.seq, e.kind, e.content) for e in list(run.record)[:held_seq]
+    ]
     # the next process: its first run starts from the checkpoint, the view folded where it folded
     khive2 = FakeKhive(mail("lambda:a", "one more", mid="c3d4e5f6"), cwd=tmp_path)
     backend2 = Growing(("still here", 2_000))
@@ -891,7 +947,7 @@ def test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_s
     serve_one(agent2)
     (run2,) = agent2.runs
     n = len(history)
-    assert [e.content for e in list(run2.record)[:n]] == [e.content for e in run.record]
+    assert [e.content for e in list(run2.record)[:n]] == [e.content for e in list(run.record)[:n]]
 
     def shape(record, upto):
         return [
@@ -917,7 +973,8 @@ def test_the_resident_checkpoints_when_stop_ends_its_run(tmp_path):
     serve_one(agent)
     (run,) = agent.runs
     ckpt = load(tmp_path)
-    assert ckpt.why == "end" and ckpt.source["seq"] == run.record.seq and agent.errors == []
+    # taken by the stop, so it holds everything but the closure the run appends when it returns
+    assert ckpt.why == "end" and ckpt.source["seq"] == run.record.seq - 1 and agent.errors == []
     assert len(backend.calls) == 1  # the second round's notification ended the run before the model
 
 
@@ -974,6 +1031,7 @@ def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp
     )
     after = status(d)
     assert after["latest"] == done["id"] and after["pending_vars"] == 0  # the checkpoint drained them
+    assert after["stale"] is False  # the transcript was last written before the take
     main(["context", "restore", "--dir", str(d)])
     prompt = capsys.readouterr().out
     assert prompt.startswith(f"Checkpoint {done['id']} of {ACTOR}")

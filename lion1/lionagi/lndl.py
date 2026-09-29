@@ -781,13 +781,20 @@ def parse(text: str) -> Program:
                 problems.append(f"<lact {alias}>: {note}; if that is not the call you meant, write it again")
             lacts.append(Lact(alias=alias, name=name, args=args, spec=spec, field=fld))
 
+    if len(outs) > 1:  # a second finish refuses the message whole, as the loop's own frame does (ADR-0002/C1)
+        err = LNDLError(
+            f"one OUT{{...}} per turn and this turn carries {len(outs)}, so nothing in it was executed: "
+            "write it again with one OUT{...}"
+        )
+        # a log written before this rule ran the turn's values and calls: a replay of that log admits
+        # them from here (ADR-0018/C6); a live turn is refused whole
+        err.program = Program(lvars, lacts, None, problems)
+        raise err
     out = None
     if outs:
         # an unreadable finish does not lose the turn's commands: they run, and the model is told
         # why it has not finished, with its results in view for the next attempt
         try:
-            if len(outs) > 1:
-                raise LNDLError("one OUT{...} per turn")
             out = parse_out(outs[0])
         except LNDLError as e:
             problems.append(f"OUT{{...}} could not be read, so this turn ran without it: {e}")
@@ -855,8 +862,9 @@ def guidance(outputs: tuple[str, ...] = (), commands: Iterable[str] | None = Non
         "you hide it or the view outgrows its budget, when the runtime folds the oldest results to "
         f"placeholders once.{curating}\n"
         "A turn without OUT{} runs every <lact> and continues; their results arrive in the next system "
-        "notification under their aliases. A turn with OUT{} runs every <lact> too, waits for them and for "
-        "anything still running that OUT{} points at, then ends.\n"
+        "notification under their aliases. A turn with OUT{} runs every <lact> too, but OUT{} waits only "
+        "for what it names or points at: once it is accepted the run ends and any <lact> not finished is "
+        "cancelled.\n"
         "Aliases are unique within a turn. Tags are siblings; a complete tag quoted inside a value stays "
         "text."
     )
