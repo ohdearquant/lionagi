@@ -61,6 +61,8 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   run each time it is drawn.
 - **own tools**: with a `claude_code` model, the Claude Code CLI's tools `--tools` names, run by the
   CLI inside each round.
+- **diagram page**: `.lion/chats/<id>-<seq>-<n>.html`, a reply's `n`th mermaid block drawn by the
+  browser, linked under the reply.
 - **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
   defaults for the flags.
 
@@ -203,6 +205,18 @@ settles first. Only a result that changed the view carries its `spec`, so a fail
 the session as it was. `--tools`, for a `claude_code` model only, names the CLI's own tools; each
 call passes the console's gate and lands on the record as a result the model can hide.
 
+### C10: A mermaid block in a reply is drawn _(enforced: mechanical)_ ^c10
+
+- **Subject**: `Console._turn` on a reply holding a ```` ```mermaid ```` fence.
+- **Violated when**: a mermaid block prints as its source only, a page is written outside the chat
+  log's directory, a fence inside a longer fence is taken as a block, or a chat without a log fails
+  on a diagram.
+
+Each closed mermaid block of a reply lands as a diagram page beside the chat log, named for the
+chat, the entry and the block's place in it, and the console prints a link to the page under the
+block's source. The page loads mermaid from a CDN and draws the block's text unchanged. A chat with
+no log says a diagram was not saved and goes on.
+
 ## Decisions
 
 ### D1: `hub/chat.py`: `chat`, `entry_row`, `load_log` ^d1
@@ -278,6 +292,17 @@ takes the tool names and `chat_main` hands the session the console's actor as it
   `apps/cli/tests/test_chat_command.py`: the Ctrl-C presses; `tests/test_claude_code.py`:
   `test_a_failed_context_directive_does_not_restart_the_session`.
 
+### D7: `mermaid_blocks`, `diagram_page` and `_fences` ^d7
+
+Serves C10. `_fences` walks the reply line by line, split on newlines only (`splitlines` also breaks
+on characters a code line may hold). A fence closes on a bare run of its own character at least as
+long, so a fence inside a longer one is text. `Console._turn` splits the prose at each block's end,
+writes `diagram_page(source)` (the source HTML-escaped inside `<pre class="mermaid">`) and prints
+the page's `file:` URI as a link.
+
+- **Landing evidence**: `tests/test_mermaid.py`: the blocks found and the nested fence, the page's
+  escaping, the page written and linked, the chat without a log.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -291,6 +316,7 @@ takes the tool names and `chat_main` hands the session the console's actor as it
 | Reading the person's line through `input()` with bracketed paste | the tty's line discipline still splits a paste into lines on some terminals and macOS drops any line over 1024 bytes without a word |
 | A first Ctrl-C that waits for the round to settle | a long tool turn made the interrupt look ignored; the call is the person's to cut |
 | Environment variables for the chat's defaults | a file the person can read back with `lion config` says where each value came from |
+| Drawing the diagram in the terminal | no terminal draws mermaid; a page in the browser does, at full size, and the log keeps the source |
 
 ## Consequences
 
