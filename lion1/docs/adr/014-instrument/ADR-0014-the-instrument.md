@@ -121,15 +121,17 @@ received does not count here.
 - **Subject**: the snapshot instruments: `pr-state`, `required-contexts`, `verdict-freshness`,
   `ci-red`, `worktrees`.
 - **Violated when**: a subject born in a bad state is never reported, a standing state is reported
-  every run, or `pr-state` calls a pull request absent from a full page closed without reading it.
+  every run, or `pr-state` calls a pull request absent from a full page closed on any view but
+  `CLOSED` or `MERGED`.
 
 A subject first seen is reported whole, whatever state it was born in; after that only what changed:
 a head, its CI verdict, a review decision, mergeability, a branch, an open pull request. A crossing,
 stale or parked, is told once and again only after it cleared.
 
 A list is one page. A pull request absent from a full page is read on its own with `gh pr view`
-before `pr-state` calls it closed, and a failed view fails the control; `required-contexts` and
-`ci-red` keep its last row unread. A short page needs no verify.
+before `pr-state` calls it closed, and only `CLOSED` or `MERGED` closes it; a failed view or another
+state fails the control and keeps its row. `required-contexts` and `ci-red` keep its last row
+unread. A short page needs no verify.
 
 ### C6: A floor is read by name, once per device, with its own budget, in GiB base-1024 _(enforced: mechanical)_ ^c6
 
@@ -219,26 +221,38 @@ Serves C5. `pr-state:<repo>`, `required-contexts:<repo>`, `ci-red:<repo>`, `work
 `verdict-freshness` are put once per run. An ask narrowed to named pull requests (`prs`) answers
 every named row and leaves the `required-contexts` and `ci-red` snapshots untouched.
 
+A `pr-state` list or a worktree's pull request answer that is not a JSON list, or holds an integer
+past the conversion limit, is unread: the control fails and the last rows stay. `worktrees` reads
+`git worktree list --porcelain -z`, so a path holding a line break stays whole, and strips only a
+leading `refs/heads/`.
+
 - **Landing evidence**: in `tests/test_instruments.py`,
   `test_pr_state_first_sight_is_the_full_row_then_transitions_and_the_stale_crossing_once`,
   `test_pr_state_verifies_a_pr_absent_from_a_full_page_before_calling_it_closed`,
+  `test_pr_state_a_pr_list_that_is_not_a_json_list_is_unread_and_keeps_the_last_rows`,
+  `test_pr_state_a_pr_beyond_a_full_page_is_retired_only_on_an_explicit_closure`,
   `test_worktrees_first_sight_then_a_parked_dirty_tree_without_a_pr`,
+  `test_worktrees_a_path_holding_a_line_break_is_read_whole`,
+  `test_worktrees_strips_only_the_leading_refs_heads_from_a_branch`,
+  `test_worktrees_a_pr_number_past_the_integer_conversion_limit_is_unread`,
   `test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed`.
 
 ### D5: The `disk` instrument ^d5
 
-Serves C6. `Disk.run` reads `/bin/df -P -k` per root, groups by device and reads every floor per
-device, then finds `target` and `node_modules` directories to depth four with `/usr/bin/find` and
-sizes each once with `/usr/bin/du`, reporting those over `target_cap_gib`, 20 by default. GNU `df`
-without `-P` wraps a long device name onto two lines. `Disk.__init__` refuses a `floor_gib`,
-`budget_gib` or `target_cap_gib` that is `nan`, infinite, negative or not a number, naming the
-field, since a `nan` floor compares false and reads as above.
+Serves C6. `Disk.run` reads `/bin/df -P -k` per root, since GNU `df` wraps a long device name
+without `-P`, groups by device and reads every floor per device. It then finds `target` and
+`node_modules` directories to depth four with `/usr/bin/find`, sizes each once with `/usr/bin/du`,
+and reports those over `target_cap_gib`, 20 by default. The evidence names each device's mount point
+whole. `Disk.__init__` refuses a `floor_gib`, `budget_gib` or `target_cap_gib` that is `nan`,
+infinite, negative or not a number, naming the field: a `nan` floor compares false and reads as
+above.
 
 - **Landing evidence**: in `tests/test_instruments.py`, the disk tests (one device for two roots,
   the enforcing crossing alone escalating, both units, failed `find`, `du` and `df`, the default and
   declined floors),
-  `test_disk_refuses_a_floor_budget_or_cap_that_is_not_a_finite_number_of_gib_at_build` and
-  `test_disk_reads_df_in_the_posix_layout_because_gnu_wraps_a_long_device_name_without_it`.
+  `test_disk_refuses_a_floor_budget_or_cap_that_is_not_a_finite_number_of_gib_at_build`,
+  `test_disk_reads_df_in_the_posix_layout_because_gnu_wraps_a_long_device_name_without_it` and
+  `test_disk_names_the_device_and_the_mount_point_whole_when_either_holds_a_space`.
 
 ### D6: `lion agent --check <name>` runs one instrument outside the handlers ^d6
 

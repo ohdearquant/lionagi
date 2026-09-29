@@ -356,10 +356,12 @@ class PrState:
                 findings.append(f"{repo}: gh pr list failed: {err.strip()[:200]}")
                 continue
             try:
-                prs = json.loads(out or "[]")
-            except json.JSONDecodeError:  # rc 0 with unreadable output is a broken read, not an empty set
+                prs = json.loads(out)
+            except ValueError:  # a JSONDecodeError, or an integer past the conversion limit
+                prs = None
+            if not isinstance(prs, list):  # rc 0 without a decoded list is a broken read, not an empty set
                 control = False
-                findings.append(f"{repo}: gh pr list gave no JSON: {out[:120]!r}")
+                findings.append(f"{repo}: gh pr list gave no JSON list: {out[:120]!r}")
                 continue
             full = len(prs) >= PR_PAGE
             positives.append(
@@ -409,15 +411,18 @@ class PrState:
                             rc, st, err = await self.sh(
                                 [GH, "pr", "view", n, "-R", repo, "--json", "state", "--jq", ".state"]
                             )
-                            if rc != 0:
+                            st = st.strip()
+                            if rc != 0 or st not in ("OPEN", "CLOSED", "MERGED"):  # only a closure retires
                                 control = False
-                                findings.append(
-                                    f"{repo}#{n}: absent from a full page and gh pr view failed: "
-                                    f"{err.strip()[:120]}"
+                                why = (
+                                    f"failed: {err.strip()[:120]}"
+                                    if rc != 0
+                                    else f"gave no state: {st[:60]!r}"
                                 )
+                                findings.append(f"{repo}#{n}: absent from a full page and gh pr view {why}")
                                 snap[n] = a
                                 continue
-                            if st.strip() == "OPEN":
+                            if st == "OPEN":
                                 snap[n] = a
                                 table.append(f"{repo}#{n}: open beyond the page; its last row is kept")
                                 continue
@@ -838,6 +843,10 @@ class InboxSla:
         )
 
 
+# one `df -P` row: device, blocks, used, available, capacity, mount point
+_DF_ROW = re.compile(r"^(?P<device>\S.*?)\s+\d+\s+\d+\s+(?P<free>\d+)\s+\d+%\s+(?P<mount>\S.*)$")
+
+
 def _finite(v: int | float) -> bool:
     try:
         return math.isfinite(v)
@@ -908,12 +917,15 @@ class Disk:
         for root in self.roots:  # -P: one line per volume; GNU wraps a long device name without it
             rc, out, err = await self.sh(["/bin/df", "-P", "-k", root])
             rows = out.strip().splitlines()
-            cols = rows[1].split() if len(rows) >= 2 else []
-            if rc != 0 or len(cols) < 6 or not cols[3].isdigit():
+            # the POSIX row: the device and the mount point may both hold spaces (macOS lists `map
+            # auto_home`), the four figures between them cannot, so the row is read from the figures
+            row = _DF_ROW.match(rows[1]) if len(rows) >= 2 else None
+            if rc != 0 or row is None:
                 control = False
                 findings.append(f"{root}: df gave no free-space number: {(err or out).strip()[:120]}")
                 continue
-            dev = devices.setdefault(cols[0], {"free_kib": int(cols[3]), "mount": cols[-1], "roots": []})
+            device, free_kib, mount = row["device"], int(row["free"]), row["mount"]
+            dev = devices.setdefault(device, {"free_kib": free_kib, "mount": mount, "roots": []})
             dev["roots"].append(root)
         positive = (
             f"df parsed {len(devices)} device(s) for {len(self.roots)} root(s); floors read in GiB "
@@ -925,7 +937,10 @@ class Disk:
         for device, d in devices.items():
             gib, gb = d["free_kib"] / 2**20, d["free_kib"] * 1024 / 1e9
             roots = ", ".join(d["roots"])
-            lines.append(f"{device} ({roots}): free {gib:.1f} GiB base-1024 / {gb:.1f} GB base-1000")
+            lines.append(
+                f"{device} ({roots}): free {gib:.1f} GiB base-1024 / {gb:.1f} GB base-1000, "
+                f"mounted on {d['mount']}"
+            )
             for fl in self.floors:
                 budget = float(fl.get("budget_gib", 0))
                 projected = gib - budget
@@ -1037,7 +1052,7 @@ class Worktrees:
     async def run(self, args: dict[str, Any]) -> Outcome:
         findings, lines, positives, control, total, parked_n = [], [], [], True, 0, 0
         for repo in self.repos:
-            rc, out, err = await self.sh([GIT, "-C", repo, "worktree", "list", "--porcelain"])
+            rc, out, err = await self.sh([GIT, "-C", repo, "worktree", "list", "--porcelain", "-z"])
             if rc != 0:
                 control = False
                 findings.append(f"{repo}: git worktree list failed: {err.strip()[:120]}")
@@ -1053,10 +1068,12 @@ class Worktrees:
                     else f"names no GitHub repo: {slug_out.strip()[:120]}"
                 )
                 findings.append(f"{repo}: origin {why}")
+            # -z: each attribute ends in NUL and each record in one more, so a path holding a line
+            # break stays whole
             trees = [
-                dict(ln.split(" ", 1) for ln in block.splitlines() if " " in ln)
-                for block in out.strip().split("\n\n")
-                if block.strip()
+                dict(f.split(" ", 1) for f in block.split("\0") if " " in f)
+                for block in out.split("\0\0")
+                if block
             ]
             if not trees:  # the main checkout always lists itself: an empty list is a broken read
                 control = False
@@ -1069,7 +1086,7 @@ class Worktrees:
             for t in trees[1:]:  # the first entry is the main checkout
                 path, branch = (
                     t.get("worktree", "?"),
-                    (t.get("branch") or "detached").replace("refs/heads/", ""),
+                    (t.get("branch") or "detached").removeprefix("refs/heads/"),
                 )
                 failed = []
                 rc, st, _ = await self.sh([GIT, "-C", path, "status", "--porcelain"])
@@ -1102,7 +1119,7 @@ class Worktrees:
                     )
                     try:
                         listed = json.loads(prs) if rc == 0 else None
-                    except json.JSONDecodeError:
+                    except ValueError:  # a JSONDecodeError, or an integer past the conversion limit
                         listed = None
                     if isinstance(listed, list) and all(_pr_number(p) for p in listed):
                         pr = ",".join(f"#{p['number']}" for p in listed) or "none"
