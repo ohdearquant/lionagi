@@ -61,6 +61,8 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   run each time it is drawn.
 - **own tools**: with a `claude_code` model, the Claude Code CLI's tools `--tools` names, run by the
   CLI inside each round.
+- **response**: a reply's prose as the console showed it, constructs cut, numbered from 1 across a
+  continued chat: what `/copy N` and Alt-C take.
 - **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
   defaults for the flags.
 
@@ -203,6 +205,17 @@ settles first. Only a result that changed the view carries its `spec`, so a fail
 the session as it was. `--tools`, for a `claude_code` model only, names the CLI's own tools; each
 call passes the console's gate and lands on the record as a result the model can hide.
 
+### C10: A response can be taken whole to the clipboard _(enforced: mechanical)_ ^c10
+
+- **Subject**: `Console.command`, `Console.copy` and the editor's Alt-C.
+- **Violated when**: `/copy` reaches the model as a message, the text copied differs from the prose
+  shown, a number outside the chat's responses copies anything, or a copy blocks the prompt.
+
+`/copy` at the prompt puts the last response on the clipboard, `/copy N` the Nth, and Alt-C the last
+without leaving the line being typed; the console says what it copied, or why nothing. The route is
+the platform's tool (pbcopy, wl-copy, xclip), and OSC 52 through the terminal where there is none,
+as over ssh. A console command never reaches the model.
+
 ## Decisions
 
 ### D1: `hub/chat.py`: `chat`, `entry_row`, `load_log` ^d1
@@ -278,6 +291,18 @@ takes the tool names and `chat_main` hands the session the console's actor as it
   `apps/cli/tests/test_chat_command.py`: the Ctrl-C presses; `tests/test_claude_code.py`:
   `test_a_failed_context_directive_does_not_restart_the_session`.
 
+### D7: `to_clipboard`, `Console.command`, `Console.copy` and `_prose` ^d7
+
+Serves C10. `_prose` cuts a turn's constructs by the parser's own spans, the one function the view
+and the copy share, so what is copied is what was shown; `Console.__call__` appends each reply's
+prose, a replayed one too, to `responses`. `Console.command` runs `/copy [N]` and the chat's `ask`
+loop asks again after one. `to_clipboard` tries each tool present on stdin, uncaptured (xclip and
+wl-copy fork a child that serves the selection), then writes the OSC 52 escape.
+
+- **Landing evidence**: `apps/cli/tests/test_copy.py`: the last and the Nth response, a number out
+  of range, the prose without its constructs, the route order and the OSC 52 fallback, the command
+  never sent, Alt-C.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -291,6 +316,7 @@ takes the tool names and `chat_main` hands the session the console's actor as it
 | Reading the person's line through `input()` with bracketed paste | the tty's line discipline still splits a paste into lines on some terminals and macOS drops any line over 1024 bytes without a word |
 | A first Ctrl-C that waits for the round to settle | a long tool turn made the interrupt look ignored; the call is the person's to cut |
 | Environment variables for the chat's defaults | a file the person can read back with `lion config` says where each value came from |
+| Ctrl-Y, or a mouse button, for the copy | Ctrl-Y is the editor's yank, and a terminal has no buttons; a key the line survives and a command the person can number |
 
 ## Consequences
 
