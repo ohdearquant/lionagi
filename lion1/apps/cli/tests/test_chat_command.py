@@ -413,3 +413,42 @@ def test_an_explicit_log_is_owned_before_the_session_starts_and_a_failed_start_l
     with pytest.raises(RuntimeError, match="no image"):
         asyncio.run(chat_main(parser().parse_args(["chat", "--dir", str(fail), "--log", str(other)])))
     assert not other.exists() and log.read_text() == "row\n"  # its own empty log removed, no other
+
+
+def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_exit_1(
+    tmp_path, monkeypatch, capsys
+):
+    """A backend's own error (a model the claude CLI does not know, a timeout) is one red line and
+    the closing line, exit 1: no traceback. The record keeps the message sent, so `-r` continues."""
+    import lion_cli.chat as cli
+
+    from hub.backend import ClaudeCodeError
+    from tests.test_actor import scripted
+
+    async def refusing(messages):
+        raise ClaudeCodeError("claude exited 1: unrecognized model opus-5-5")
+
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: refusing)
+    log = tmp_path / "chat.jsonl"
+    args = ["chat", "--dir", str(tmp_path), "--log", str(log), "--say", "hi"]
+    with pytest.raises(SystemExit) as died:
+        asyncio.run(chat_main(parser().parse_args(args)))
+    assert died.value.code == 1
+    out = capsys.readouterr().out
+    assert "✗ the model's call failed: claude exited 1: unrecognized model opus-5-5" in out
+    assert "Traceback" not in out and "failed · 0 call(s)" in out and "continue it: lion chat -c" in out
+    rows = [json.loads(ln) for ln in log.read_text().splitlines()]
+    assert [r["content"] for r in rows if r.get("kind") == "INPUT"] == ["hi"]
+
+    async def typed(prompt: str = "", out=None) -> str | None:
+        return None  # the person ends it after the reply
+
+    monkeypatch.setattr("lion_cli.view.stdin_ask", typed)
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted("Hello."))
+    asyncio.run(
+        chat_main(parser().parse_args(["chat", "--dir", str(tmp_path), "-r", str(log), "--say", "and?"]))
+    )
+    resumed = max((tmp_path / ".lion" / "chats").glob("*.jsonl"))  # a continuation writes its own log
+    rows = [json.loads(ln) for ln in resumed.read_text().splitlines()]
+    assert [r["content"] for r in rows if r.get("kind") == "INPUT"] == ["hi", "and?"]
+    assert [r["content"] for r in rows if r.get("kind") == "TEXT"] == ["Hello."]

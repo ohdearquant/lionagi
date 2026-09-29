@@ -19,7 +19,7 @@ from typing import Any
 from hub import Box, BoxTree, DaytonaSandbox, LocalTree, Sandbox, code, files, guidance, khive_ops, shell
 from hub.agent.chores import Bounded
 from hub.areas import partial
-from hub.backend import ClaudeCodeSession
+from hub.backend import ClaudeCodeError, ClaudeCodeSession, CodexError, OpenRouterError
 from hub.chat import chat, load_log
 from hub.hooks import install, load
 from hub.khive import Khive, KhiveError
@@ -501,7 +501,7 @@ async def _chat_main(
             if text is None or not say.command(text):  # a console command is run here, then ask again
                 return text
 
-    interrupted = False
+    interrupted = failed = False
     try:
         run = await chat(
             actor,
@@ -517,6 +517,11 @@ async def _chat_main(
         ended = f"ended {type(run.outcome).__name__} after {run.round} round(s)"
     except (KeyboardInterrupt, asyncio.CancelledError):
         ended, interrupted = "interrupted", True
+    except (ClaudeCodeError, CodexError, OpenRouterError) as e:
+        # the backend's own refusal (a model the CLI does not know, a timeout, a rate limit): one
+        # line with its message, then the closing line; the record keeps the message that was sent
+        say.failed(f"the model's call failed: {e}")
+        ended, failed = "failed", True
     finally:
         off()
         off_round()
@@ -556,6 +561,8 @@ async def _chat_main(
                 ended, interrupted = "interrupted", True
     calls = getattr(backend, "calls", [])
     say.close(ended, len(calls), *spent(calls), log)
+    if failed:
+        raise SystemExit(1)
     if interrupted:
         # a backend call may still be on its thread; the loop's shutdown would wait for it
         # (measured: a Ctrl-C that seemed to do nothing). The log is written; leave now.

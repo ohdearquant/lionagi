@@ -276,6 +276,17 @@ Enter sends them. The transcription runs off the loop; the prompt stays live. En
 Ctrl-D drops a recording still running. Without the extra, a microphone or a model, the toolbar says
 why and the prompt goes on.
 
+### C15: A backend's failure ends the chat on one line, and the record keeps the message _(enforced: mechanical)_ ^c15
+
+- **Subject**: the backends' own errors reaching `_chat_main`.
+- **Violated when**: a backend failure prints a traceback, the closing line is skipped, the exit
+  code is 0, or the message that was sent is lost to `-c`.
+
+A backend's own failure (a model the CLI does not know, a timeout, a rate limit) ends the run. The
+working indicator leaves, one red line carries the backend's message, the closing line still names
+the calls, the cost and the log, and the exit code is 1. The record already holds the message that
+was sent, so `lion chat -c` continues the chat from it.
+
 ## Decisions
 
 ### D1: `hub/chat.py`: `chat`, `entry_row`, `load_log` ^d1
@@ -409,6 +420,17 @@ mlx_whisper, imported on the thread since the import takes seconds; both are inj
 - **Landing evidence**: `tests/test_voice.py`: the toggle, the text at the cursor, the space after a
   word, the failures said on the toolbar, one transcription at a time, the reset, the extra missing.
 
+### D12: `Console.failed` and the backend errors caught in `_chat_main` ^d12
+
+Serves C15. `_chat_main` catches `ClaudeCodeError`, `CodexError` and `OpenRouterError` around the
+run, beside the interrupt: `Console.failed` stops the indicator and prints the message in red, the
+run is closed as `failed`, and `SystemExit(1)` is raised after the closing line. `chat` had already
+flushed the record, so the log holds the message; `chat_main` removes only an empty log.
+
+- **Landing evidence**: `apps/cli/tests/test_chat_command.py`:
+  `test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_exit_1`, with the `-r`
+  continuation; the control with the clause removed fails on the raw error.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -428,6 +450,7 @@ mlx_whisper, imported on the thread since the import takes seconds; both are inj
 | Ctrl-Y, or a mouse button, for the copy | Ctrl-Y is the editor's yank, and a terminal has no buttons; a key the line survives and a command the person can number |
 | Drawing the diagram in the terminal | no terminal draws mermaid; a page in the browser does, at full size, and the log keeps the source |
 | Whisper through a remote API | the recording leaves the machine; the local model answers in seconds on Apple silicon and needs no key |
+| Letting a backend's error propagate as the report | a traceback over the indicator says less than the backend's own line and skips the closing line that names the log |
 
 ## Consequences
 

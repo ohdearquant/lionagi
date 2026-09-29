@@ -156,6 +156,11 @@ class Console:
             self.live.stop()
             self.live = None
 
+    def failed(self, text: str) -> None:
+        """The run ended on a failure: the indicator leaves first, then one red line with it."""
+        self.idle()
+        self.out.print(f"[red]✗ {escape(text)}[/red]")
+
     def _below(self) -> Group:
         pieces: list[Any] = []
         if self.detail is not None:
