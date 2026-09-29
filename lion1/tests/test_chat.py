@@ -935,3 +935,97 @@ def test_the_editor_leaves_the_loops_sigint_handler_in_place_after_a_prompt(tmp_
 
     asyncio.run(main())
     assert fired == [1]
+
+
+def test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked(tmp_path):
+    from lion_cli.chat import signer, status_line
+
+    actor, profile = reader(tmp_path)
+    assert signer(tmp_path) is None
+    assert status_line(actor, profile, [], None, "claude_code/claude-sonnet-5-5", None).startswith(
+        "claude-sonnet-5-5 · no actor · inbox 0"
+    )
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    assert signer(tmp_path) == "lambda:x"
+    line = status_line(actor, profile, [], None, "m", signer(tmp_path))
+    assert line.startswith("m · lambda:x · inbox 0")
+    (tmp_path / ".khive" / "config.toml").write_text("[actor]\n")
+    assert signer(tmp_path) is None
+
+
+def test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detail_under_it():
+    from lion_cli.view import Console
+
+    from lionagi.record import Entry
+
+    """On a terminal the round in flight shows a spinner at the bottom; a verbose result prints its
+    head to the scrollback and parks its detail under the spinner until the next one lands; the
+    model's turn switches the label to `running`; asking or closing clears it. Off a terminal nothing
+    is drawn live and the result prints whole, as before."""
+    import io
+
+    from rich.console import Console as RichConsole
+
+    from lionagi.actor import Result
+
+    def result(seq: int, alias: str, value, spec="read") -> Entry:
+        return Entry(seq=seq, kind=Kind.RESULT, round=1, alias=alias, content=Result(spec, True, value))
+
+    say = Console("m", None, color=False, verbose=True, width=80)
+    say.working("thinking")
+    assert say.live is None and say.doing is not None and say.doing.what == "thinking"
+    say(result(3, "a1", "alpha\nbeta"))
+    assert say.detail is None  # off a terminal the detail printed with the head
+    say.idle()
+    assert say.doing is None
+
+    buf = io.StringIO()
+    say = Console("m", None, color=False, verbose=True, width=80)
+    say.out = RichConsole(file=buf, force_terminal=True, width=80, no_color=True)
+    say.working("thinking")
+    assert say.live is not None and "thinking" in str(say.doing.__rich__())
+    say(result(3, "a1", "alpha\nbeta"))
+    assert say.detail is not None and "alpha" in say.detail  # parked under the spinner
+    say(result(4, "a2", "gamma"))
+    assert "gamma" in say.detail and "alpha" not in say.detail  # the next one replaces it
+    say(Entry(seq=5, kind=Kind.TEXT, round=1, content="Done."))
+    assert say.doing.what == "thinking"  # a plain reply asks for nothing: the person is next
+    say(Entry(seq=6, kind=Kind.TEXT, round=1, content='<lact b1>read(path="a")</lact>'))
+    assert say.doing.what == "running"
+    say.idle()
+    assert say.live is None and say.detail is None
+    out = buf.getvalue()
+    assert "✓ a1 read" in out and "✓ a2 read" in out
+    say.working("thinking")
+    say.close("ended", 0, 0.0, 0, None)  # closing clears the live region too
+    assert say.live is None
+
+
+def test_a_call_of_the_models_own_tools_prints_its_first_argument_and_an_unknown_name_says_where_it_lives(
+    tmp_path,
+):
+    from lion_cli.view import Console
+
+    from lionagi.actor import Result
+    from lionagi.record import Entry
+
+    say = Console("m", None, color=False, width=120)
+    e = Entry(
+        seq=3,
+        kind=Kind.RESULT,
+        round=1,
+        alias="toolu_01AB",
+        content=Result("Bash", True, {"command": "sleep 60 && echo SLEPT", "description": "wait"}),
+    )
+    [head] = say.render(e)
+    assert head == "[green]✓ Bash[/green] [dim]command=sleep 60 && echo SLEPT[/dim]"
+    say.verbose = True
+    assert say.render(e) == [head]  # its arguments are the whole of it: no detail to fold
+    actor, profile = reader(tmp_path)
+    actor.elsewhere = {"Bash": "Bash is one of your own tools; call it as you always do, not inside <lact>"}
+    run = asyncio.run(
+        chat(actor, profile, scripted('<lact g1>Bash(command="ls")</lact>', "ok"), asks("go", None))
+    )
+    [r] = [e.content for e in run.record if e.kind is Kind.RESULT]
+    assert r.error == "unknown command 'Bash': " + actor.elsewhere["Bash"]

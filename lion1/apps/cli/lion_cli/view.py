@@ -7,14 +7,18 @@ import json
 import re
 import sys
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from rich.console import Console as RichConsole
+from rich.console import Group
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.rule import Rule
+from rich.text import Text
 
 from hub.areas import partial
 from hub.chat import entry_row, line
@@ -58,6 +62,12 @@ class Console:
         self.verbose = verbose
         self.quiet_until = -1  # entries up to this seq are logged, not printed: a resumed history
         self.asking = False  # at the `you ▸` prompt: an interrupt there is a quit
+        # the round in flight: a spinner with the elapsed time at the bottom of the screen, and under
+        # it the last result's detail until the next lands, so the scrollback keeps one line per action
+        self.live: Live | None = None
+        self.doing: _Working | None = None
+        self.detail: str | None = None
+        self.commands = False  # the last turn printed asked for commands: the round runs them next
         self.status = status
         self.editor = Editor(history, status=status) if sys.stdin.isatty() and sys.stdout.isatty() else None
         self.resulted: set[str] = set()  # aliases whose result printed since the last notice
@@ -81,7 +91,43 @@ class Console:
             self.out.print(f"[dim]continuing {escape(resumed[0])}, {resumed[1]} entries[/dim]")
         self.out.print(f"[dim]{escape(str(directory))} · {escape(', '.join(tools))} · /quit ends[/dim]")
 
+    def working(self, what: str) -> None:
+        """The round is in flight: `what` the loop is waiting on (the model, its commands), with the
+        seconds since the round started; on a terminal only, where the line can be redrawn."""
+        if self.doing is None:
+            self.doing = _Working(what)
+        else:
+            self.doing.what = what
+        if self.live is None and self.out.is_terminal:
+            self.live = Live(
+                self._below(),
+                console=self.out,
+                transient=True,
+                refresh_per_second=8,
+                redirect_stdout=False,  # the CLI session and its hook keep their own streams
+                redirect_stderr=False,
+            )
+            self.live.start()
+        elif self.live is not None:
+            self.live.update(self._below())
+
+    def idle(self) -> None:
+        """Nothing in flight: the spinner and the last detail leave the screen."""
+        self.doing = self.detail = None
+        if self.live is not None:
+            self.live.stop()
+            self.live = None
+
+    def _below(self) -> Group:
+        pieces: list[Any] = []
+        if self.detail is not None:
+            pieces.append(Text.from_markup(self.detail))
+        if self.doing is not None:
+            pieces.append(self.doing)
+        return Group(*pieces)
+
     def close(self, ended: str, calls: int, cost: float, unknown: int, log: Path | None) -> None:
+        self.idle()
         if self.log is not None and self.calls:  # a call cut short still cost: its row lands too
             with self.log.open("a") as fh:
                 self._bill(fh, 0)
@@ -98,6 +144,7 @@ class Console:
     async def ask(self) -> str | None:
         """One line from the person, prompted on this console."""
         self.asking = True
+        self.idle()
         try:
             if self.editor is not None:
                 return await self.editor.ask("you ▸ ")
@@ -122,8 +169,16 @@ class Console:
         if self.raw:
             self.out.print(line(e), markup=False)
             return
+        if self.live is not None and e.kind is Kind.RESULT and self.verbose:
+            # the detail shows under the spinner while it is fresh; the scrollback keeps the head
+            head, self.detail = self._result(e)
+            self.out.print(head)
+            self.live.update(self._below())
+            return
         for piece in self.render(e):
             self.out.print(piece, markup=isinstance(piece, str))
+        if e.kind is Kind.TEXT and self.doing is not None and self.commands:
+            self.working("running")
 
     def _bill(self, fh, round_no: int) -> None:
         for c in (self.calls or [])[self.billed :]:
@@ -159,18 +214,32 @@ class Console:
             return pieces
         if e.kind is Kind.TEXT:
             return self._turn(str(e.content))
-        r = e.content  # RESULT
+        head, detail = self._result(e)
+        return [head if detail is None else head + "\n" + detail]
+
+    def _result(self, e: Entry) -> tuple[str, str | None]:
+        """A result's line, and with `verbose` its first lines (already escaped markup)."""
+        r = e.content
         alias = e.alias or "?"
         self.resulted.add(alias)
         if not getattr(r, "ok", False):
             first = str(getattr(r, "error", r)).splitlines()[0] if str(getattr(r, "error", r)) else ""
-            return [f"[red]✗ {escape(alias)} {escape(str(getattr(r, 'spec', '?')))}[/red] {escape(first)}"]
+            return (
+                f"[red]✗ {escape(alias)} {escape(str(getattr(r, 'spec', '?')))}[/red] {escape(first)}",
+                None,
+            )
         if isinstance(r.value, dict) and isinstance(r.value.get("rc"), int):  # a shell result: its own rc
             head = _shell_head(alias, r.spec, r.value)
+        elif alias.startswith("toolu_") and isinstance(r.value, dict) and r.value:
+            # a call of the model's own tools: the record holds its arguments; the first says what it did
+            k, v = next(iter(r.value.items()))
+            arg = v if isinstance(v, str) else json.dumps(v, default=str)
+            head = f"[green]✓ {escape(r.spec)}[/green] [dim]{escape(k)}={escape(_clip(arg, 80))}[/dim]"
+            return head, None  # its arguments are the whole of it; the log has them
         else:
             head = f"[green]✓ {escape(alias)} {escape(r.spec)}[/green] [dim]{escape(_shape(r.value))}[/dim]"
         if not self.verbose:
-            return [head]
+            return head, None
         text = (
             r.value
             if isinstance(r.value, str)
@@ -183,7 +252,7 @@ class Console:
             if len(lines) > RESULT_LINES
             else ""
         )
-        return [head + "\n" + escape(shown) + more]
+        return head, escape(shown) + more
 
     def _turn(self, text: str) -> list[Any]:
         calls: list[str] = []
@@ -195,6 +264,7 @@ class Console:
         else:
             for v in program.lvars:  # a value's shape only, like a result; its text is in the log
                 calls.append(f"[cyan]= {escape(v.alias)}[/cyan] [dim]· {len(v.value)} chars[/dim]")
+            self.commands = bool(program.lacts)
             for la in program.lacts:
                 args = ", ".join(f"{k}={json.dumps(v, default=str)}" for k, v in la.args.items())
                 calls.append(f"[cyan]→ {escape(la.alias)} {escape(la.name)}({escape(args)})[/cyan]")
@@ -261,6 +331,25 @@ def _shape(value: Any) -> str:
     if isinstance(value, dict):
         return f"· dict of {len(value)}: {', '.join(list(value)[:6])}" + (", …" if len(value) > 6 else "")
     return f"· {type(value).__name__}"
+
+
+class _Working:
+    """`⠋ thinking · 12s`: what the round waits on and for how long, redrawn by the live region."""
+
+    def __init__(self, what: str):
+        self.what, self.since = what, time.monotonic()
+
+    def __rich__(self) -> Text:
+        gone = time.monotonic() - self.since
+        return Text(f"{_FRAMES[int(gone * 8) % len(_FRAMES)]} {self.what} · {int(gone)}s", style="dim")
+
+
+_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def _clip(text: str, width: int) -> str:
+    text = text.replace("\n", " ")
+    return text if len(text) <= width else text[: width - 1] + "…"
 
 
 class Editor:
