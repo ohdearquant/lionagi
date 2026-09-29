@@ -969,7 +969,9 @@ _GITHUB_ORIGIN = re.compile(
 
 
 def _pr_number(p: Any) -> bool:
-    return isinstance(p, dict) and isinstance(p.get("number"), int) and not isinstance(p["number"], bool)
+    # a pull request's number is a positive integer; a bool is an int to Python and is not one
+    n = p.get("number") if isinstance(p, dict) else None
+    return isinstance(n, int) and not isinstance(n, bool) and n > 0
 
 
 class Worktrees:

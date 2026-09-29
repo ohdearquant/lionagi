@@ -9,6 +9,7 @@ finding about the instrument."""
 import asyncio
 import itertools
 import json
+import re
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -64,7 +65,8 @@ class FakeKhive:
         self.sent: list[dict] = []
         self.ops: list[str] = []
         self.agenda = list(agenda)
-        self.events = list(events)  # scheduled_event rows `list` returns
+        self.events = list(events)  # scheduled_event rows `list` returns, status beside properties as live
+        self.filtered = False  # True: `list` applies creator and status before the page, as the store does
         self.threads: dict[str, list[dict]] = {}  # thread id -> messages `comm.thread` returns
         self.refuse: set[str] = set()  # recipients the transport refuses, as the hop cap would
         self.keyed: dict[str, tuple] = {}  # idempotency key -> (the request, what its send returned)
@@ -113,8 +115,18 @@ class FakeKhive:
                 for c in self.agenda
             ]
             return [{"events": events}]
-        if ops.startswith('list(kind="scheduled_event"'):
-            return [{"items": list(self.events)}]
+        if ops.startswith('[list(kind="scheduled_event"'):  # one page per call, filtered before it
+            pages = []
+            for call in re.findall(r"list\(([^)]*)\)", ops):
+                args = {k: json.loads(v) for k, v in re.findall(r'(\w+)=("[^"]*"|\d+)', call)}
+                want = {k: args[k] for k in ("created_by_actor", "status") if k in args and self.filtered}
+                rows = [
+                    e
+                    for e in self.events
+                    if all({**e["properties"], "status": e["status"]}.get(k) == v for k, v in want.items())
+                ]
+                pages.append({"items": rows[: args["limit"]]})
+            return pages
         if ops.startswith("comm.thread"):
             tid = ops.split('id="')[1].split('"')[0]
             msgs = self.threads.get(tid, [])
@@ -679,6 +691,20 @@ def test_the_digest_is_one_line_per_chore_to_the_owner_with_missing_as_the_findi
     assert "0 idle poll(s) at 0 tokens" in text
 
 
+def test_the_digests_tokens_line_marks_a_days_cost_that_misses_calls_of_unknown_cost(tmp_path):
+    khive = FakeKhive(mail(SELF, "tick: digest"))
+    chores, agent = build(tmp_path, khive, ["<lact d1>digest()</lact>", DONE], disk=Probe("disk", full()))
+    day = time.strftime("%Y-%m-%d")
+    spend = {"day": day, "calls": 3, "in": 900, "out": 40, "cost": 0.3, "unknown": 2, "runs": 1, "mail": 1}
+    agent.state.put("spend", spend, run="-", seq=0)
+    asyncio.run(agent.wake())
+    text = khive.sent[-1]["content"]
+    assert (
+        f"tokens {day}: 3 model call(s), 900 in, 40 out, $0.3000 (partial: 2 call(s) of unknown cost), "
+        "over 2 wake(s) with 1 mail; 0 idle poll(s) at 0 tokens" in text
+    )
+
+
 def test_aged_tells_the_steward_once_what_the_owner_left_unanswered_and_nothing_acknowledged(tmp_path):
     khive = FakeKhive(
         mail(SELF, "tick: disk"),
@@ -778,15 +804,18 @@ def test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once(
         {
             "id": "ev1",
             "content": "tick: pr (fired at 2026-09-21T03:04:09Z)",
-            "properties": {"created_by_actor": SELF, "status": "missed"},
+            "status": "missed",
+            "properties": {"created_by_actor": SELF},
         },
         {
             "id": "ev2",
             "content": "tick: disk",
-            "properties": {"created_by_actor": "lambda:other", "status": "missed"},
+            "status": "missed",
+            "properties": {"created_by_actor": "lambda:other"},
         },
-        {"id": "ev3", "content": "tick: disk", "properties": {"created_by_actor": SELF, "status": "fired"}},
+        {"id": "ev3", "content": "tick: disk", "status": "fired", "properties": {"created_by_actor": SELF}},
     ]
+    # a store that ignores the filters: the code's own check still keeps the actor's missed and failed rows
     khive = FakeKhive(mail(SELF, "tick: disk"), mail(SELF, "tick: disk", mid="b2c3d4e5"), events=events)
     chores, agent = build(
         tmp_path,
@@ -807,6 +836,32 @@ def test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once(
     asyncio.run(agent.wake())
     assert [r["chore"] for r in chores.rows()] == ["pr", "disk", "disk"]  # ev1 seen, not run again
     assert agent.state.get("missed_seen").value == ["ev1"]
+
+
+def test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page(tmp_path):
+    noise = [
+        {"id": f"n{i}", "content": "tick: disk", "status": status, "properties": {"created_by_actor": actor}}
+        for i, (actor, status) in enumerate([("lambda:other", "missed"), (SELF, "fired")] * 100)
+    ]
+    late = [
+        {"id": "ev9", "content": "tick: pr", "status": "missed", "properties": {"created_by_actor": SELF}},
+        {"id": "ev8", "content": "tick: pr", "status": "failed", "properties": {"created_by_actor": SELF}},
+    ]
+    khive = FakeKhive(mail(SELF, "tick: disk"), events=noise + late)  # both past an unfiltered page of 200
+    khive.filtered = True
+    chores, agent = build(tmp_path, khive, [CHECK, DONE], disk=Probe("disk", full()), pr=Probe("pr", full()))
+    asyncio.run(agent.wake())
+    assert [op for op in khive.ops if "scheduled_event" in op] == [
+        f'[list(kind="scheduled_event", created_by_actor="{SELF}", status="missed", limit=200), '
+        f'list(kind="scheduled_event", created_by_actor="{SELF}", status="failed", limit=200)]'
+    ]
+    rows = chores.rows()
+    assert [(r["chore"], r["args"]) for r in rows] == [
+        ("pr", {"missed_tick": "ev9"}),
+        ("pr", {"missed_tick": "ev8"}),
+        ("disk", {}),
+    ]
+    assert agent.state.get("missed_seen").value == ["ev9", "ev8"]
 
 
 def test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those(tmp_path):

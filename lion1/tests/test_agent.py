@@ -4,6 +4,7 @@ long-running actor from answering forever or spending without bound."""
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import subprocess
@@ -11,11 +12,13 @@ import sys
 from pathlib import Path
 
 import pytest
-from lion_cli.agent import agent_main
+from lion_cli.agent import agent_main, stats
 
 from hub.agent import Agent, AgentError, Budget, Wake, WakeRule
+from hub.harness import claude_code
+from hub.harness.claude_code import ClaudeCodeSession
 from hub.khive import Khive
-from lionagi import Actor, Kind, MemoryNoteStore, Message, Profile, Success
+from lionagi import Actor, FileNoteStore, Kind, MemoryNoteStore, Message, Profile, Success
 
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
 HOLD = (  # a process that takes the pid file's lock and keeps it until its stdin closes
@@ -383,6 +386,122 @@ def test_the_cost_cap_holds_the_agent_for_the_day_from_the_backends_own_cost_fig
     now[0] += 86_400  # the next day; the mail is still waiting
     assert asyncio.run(agent.wake(wait_ms=0)) is not None
     assert agent.state.get("spend").value["cost"] == pytest.approx(0.6)
+
+
+def test_a_call_of_unknown_or_incomplete_cost_adds_nothing_to_the_cost_and_the_readers_mark_the_sum(tmp_path):
+    from hub.agent.agent import _line
+
+    now = [1_000_000.0]
+    khive = FakeKhive()
+    envelopes = [
+        {"total_cost_usd": 0.3},
+        {"total_cost_usd": None},  # no figure: a subscription, or a CLI call that died before its result
+        {"total_cost_usd": 0.4, "cost_complete": False},  # the router's known subtotal of its attempts
+    ]
+
+    class Billed(Scripted):
+        async def __call__(self, messages):
+            text = await super().__call__(messages)
+            self.calls[-1] = envelopes.pop(0)
+            return text
+
+    state = FileNoteStore(tmp_path / "notes" / "agent.json")
+    backend = Billed(DONE, DONE, DONE, khive=khive)
+    actor = Actor("echo", privileges={"comm.send"})
+    cap = Budget(cost_per_day=0.65)
+    agent = Agent(actor, khive, backend, profile_for, state=state, budget=cap, clock=lambda: now[0])
+    rows, lines = [], []
+    for n in range(3):
+        khive.mail.append(mail("lambda:a", "go", mid=f"m{n}"))
+        assert asyncio.run(agent.wake(wait_ms=0)) is not None
+        rows.append({k: agent.state.get("spend").value[k] for k in ("calls", "cost", "unknown")})
+        lines.append(_line(agent.state.get("cursor").value))
+    assert rows == [
+        {"calls": 1, "cost": 0.3, "unknown": 0},
+        {"calls": 2, "cost": 0.3, "unknown": 1},  # the call counts; the cost is as it was
+        {"calls": 3, "cost": pytest.approx(0.7), "unknown": 2},
+    ]
+    assert "$0.3000; 0 idle poll(s)" in lines[0] and "partial" not in lines[0]
+    assert "$0.0000 (partial: 1 call(s) of unknown cost); 0 idle poll(s)" in lines[1]
+    assert "$0.4000 (partial: 1 call(s) of unknown cost); 0 idle poll(s)" in lines[2]
+    khive.mail.append(mail("lambda:a", "go", mid="m3"))
+    assert asyncio.run(agent.wake(wait_ms=0)) is None
+    assert agent.held == "$0.7000 spent today (partial: 2 call(s) of unknown cost) (cap $0.65); next day"
+    day, _, last = stats(tmp_path).splitlines()
+    assert "0 out, $0.7000 (partial: 2 call(s) of unknown cost); 3 wake(s) with 3 mail;" in day
+    assert "0 out, $0.4000 (partial: 1 call(s) of unknown cost); 0 idle poll(s) before it" in last
+
+
+def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(tmp_path):
+    notes_file = tmp_path / "notes" / "agent.json"
+    assert stats(tmp_path) == f"no notes at {notes_file}: the agent has not run from this directory"
+    spend = {
+        "day": "2026-09-22",
+        "cost": 0.0123,
+        "unknown": 0,
+        "calls": 5,
+        "in": 12000,
+        "out": 800,
+        "mail": 4,
+        "runs": 3,
+        "idle": 17,
+        "idle_last": 2,
+        "wakes": [],
+    }
+    cursor = {
+        "wake": 3,
+        "at": "2026-09-22 11:09:15",
+        "outcome": "Success",
+        "rounds": 2,
+        "mail": ["a1b2c3d4", "b2c3d4e5"],
+        "sent": 1,
+        "tokens": {"calls": 2, "in": 5000, "out": 300, "cost": 0.004, "unknown": 0, "context": 2400},
+        "idle_polls": 2,
+    }
+    values = {"spend": spend, "cursor": cursor}
+    notes = {"version": 2, "notes": {k: {"key": k, "value": v} for k, v in values.items()}}
+    notes_file.parent.mkdir()
+    notes_file.write_text(json.dumps(notes))
+    (tmp_path / "ledger.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in ({"answered": True}, {"control": True}, {"control": False})) + "\n"
+    )
+    desk = [
+        {"at": "2026-09-22 09:00:00", "class": "answered"},
+        {"at": "2026-09-22 10:00:00", "class": "routed"},
+        {"at": "2026-09-21 23:00:00", "class": "answered"},  # another day's row is not today's
+    ]
+    (tmp_path / "desk.jsonl").write_text("\n".join(json.dumps(r) for r in desk) + "\n")
+    assert stats(tmp_path) == (
+        "day 2026-09-22: 5 model call(s), 12000 in, 800 out, $0.0123; 3 wake(s) with 4 mail; "
+        "17 idle poll(s) at 0 tokens\n"
+        "per handled message: 3200 tokens\n"
+        "last wake 3 at 2026-09-22 11:09:15: Success after 2 round(s), 2 mail, 1 sent; 2 call(s), 5000 in, "
+        "300 out, $0.0040; 2 idle poll(s) before it\n"
+        "ledger: 3 check(s), 2 answered, 1 not\n"
+        "desk: 2 of the owner's message(s) read today, 1 answered, 1 left"
+    )
+    notes["notes"]["spend"]["value"] = {**spend, "mail": 0}
+    notes_file.write_text(json.dumps(notes))
+    assert stats(tmp_path).splitlines()[1] == "per handled message: no mail handled today"
+
+
+def test_a_failed_session_cli_call_is_counted_in_the_days_spend_row_and_still_ends_the_run(monkeypatch):
+    printed = {"total_cost_usd": 0.5, "usage": {"input_tokens": 9000, "output_tokens": 700}}
+
+    async def capped(cli, args, prompt, *, model, timeout, cwd=None, persist=False):
+        raise claude_code.ClaudeCodeError("claude reported error_max_turns: cap", printed)
+
+    monkeypatch.setattr(claude_code, "_exec", capped)
+    khive = FakeKhive(mail("lambda:a", "go"))
+    agent = Agent(
+        Actor("echo", privileges={"comm.send"}), khive, ClaudeCodeSession(cli="/bin/claude"), profile_for
+    )
+    with pytest.raises(claude_code.ClaudeCodeError, match="error_max_turns"):
+        asyncio.run(agent.wake(wait_ms=0))
+    spend = agent.state.get("spend").value
+    assert spend["calls"] == 1 and spend["cost"] == pytest.approx(0.5)
+    assert spend["in"] == 9000 and spend["out"] == 700
+    assert agent.state.get("cursor").value["outcome"].startswith("error ClaudeCodeError: ")
 
 
 def test_a_wake_killed_after_its_mark_read_is_reported_to_the_owner_and_rerun_takes_it_back():
@@ -826,6 +945,53 @@ def test_check_runs_one_instrument_prints_and_lands_it_and_sends_nothing(
     assert "unvetted: run outside the chore path" in printed and "known-positive: (none)" in printed
     assert probe.args == [{}] and held == [True] and ops == []
     assert not (d / "ledger.jsonl").exists() and not (d / "agent.pid").exists()
+
+
+def test_check_with_the_identity_free_prints_and_lands_the_measurement_and_sends_nothing(
+    tmp_path, kkernel_stub, monkeypatch, capsys
+):
+    """With no live holder, --check claims the identity, runs the named instrument alone, prints it and
+    lands the same text, then lets the identity go: no send, no ledger row, no tick."""
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:agent"\n')
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n\n[chores.gtd-inbox]\n'
+        'every = "every:1h"\n'
+    )
+    ops: list[str] = []
+
+    async def fake_exec(self, op):
+        ops.append(op)
+        old = {"id": "t1", "title": "triage me", "created_at": "2026-01-01T00:00:00Z"}
+        return [[old], [old]]
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    a = argparse.Namespace(
+        dir=str(d),
+        stats=False,
+        model=None,
+        check="gtd-inbox",
+        ticks=False,
+        arm=False,
+        once=False,
+        rerun=None,
+        wait=0,
+    )
+    asyncio.run(agent_main(a))
+    text, landed = capsys.readouterr().out.rsplit("\nlanded: ", 1)
+    path = Path(landed.strip())
+    assert text.startswith(
+        "gtd-inbox: control ok, 1 finding(s), escalate=False, count=1, direction under-report"
+    )
+    assert "- 1 gtd inbox row(s) older than 24h of 1 in inbox" in text
+    assert path.parent == d / "landing" and re.fullmatch(r"\d{8}-check-gtd-inbox\.txt", path.name)
+    assert path.read_text() == text
+    assert ops == [
+        '[gtd.tasks(status="inbox", assignee="lambda:x", limit=100), gtd.tasks(assignee="lambda:x", limit=1)]'
+    ]
+    files = sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.is_file())
+    assert files == [".khive/config.toml", "chores.toml", f"landing/{path.name}"]  # the identity let go
 
 
 def test_serve_keeps_the_lock_its_process_already_claimed(tmp_path):

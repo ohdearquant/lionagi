@@ -653,7 +653,19 @@ def test_worktrees_an_unread_origin_leaves_every_branch_pr_unread(tmp_path, orig
 
 
 @pytest.mark.parametrize(
-    "answer", ["null", "{}", "[1]", '[{"id": 1}]', '[{"number": null}]', '[{"number": true}]', "not json"]
+    "answer",
+    [
+        "null",
+        "{}",
+        "[1]",
+        '[{"id": 1}]',
+        '[{"number": null}]',
+        '[{"number": true}]',
+        '[{"number": 0}]',
+        '[{"number": -3}]',
+        '[{"number": 7}, {"number": 0}]',
+        "not json",
+    ],
 )
 def test_worktrees_a_pr_answer_that_is_not_a_pr_list_is_unread(tmp_path, answer):
     porcelain = (
