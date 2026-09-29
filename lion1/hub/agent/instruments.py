@@ -470,7 +470,8 @@ class Served:
             pid_file, line, bad = d / "agent.pid", f"{d}:", False
             if pid_file.exists():
                 pid = pid_file.read_text().strip()
-                ok, stat = await self._alive(int(pid)) if pid.isdigit() else (False, "unreadable pid file")
+                readable = pid.isascii() and pid.isdigit()  # what int reads, and only that (ADR-0016/C2)
+                ok, stat = await self._alive(int(pid)) if readable else (False, "unreadable pid file")
                 line += f" pid {pid} {'alive' if ok else 'DEAD'} ({stat})"
                 if not ok:
                     bad = True

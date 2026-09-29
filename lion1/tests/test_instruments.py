@@ -296,6 +296,26 @@ def test_served_reads_the_cursor_first_then_the_pid_then_launchd_with_its_own_pi
     assert not out.control and "NOT alive: read broken" in out.evidence
 
 
+@pytest.mark.parametrize("text", ["\u00b2", "\u0662", "12a", ""])
+def test_served_reads_a_pid_file_as_ascii_digits_or_as_unreadable_and_probes_no_process_for_it(
+    tmp_path, text
+):
+    d = tmp_path / "bench"
+    (d / "notes").mkdir(parents=True)
+    (d / "agent.pid").write_text(text)
+    me = os.getpid()
+    sh = FakeSh(**{f"-p {me} -o": "S+ 01:02\n"})
+    inst = Served([{"dir": str(d), "stale_min": 60, "label": "com.example.x"}], every="every:15m", run=sh)
+    out = asyncio.run(inst.run({}))
+    assert (
+        out.control
+        and out.findings[0] == f"bench: pid file names {text} and it is not running (unreadable pid file)"
+    )
+    assert [
+        c for c in sh.calls if "-p" in c and str(me) not in c
+    ] == []  # no ps for the pid it could not read
+
+
 def test_disk_groups_roots_by_device_reads_each_floor_once_in_gib_and_escalates_only_an_enforcing_crossing(
     tmp_path,
 ):
