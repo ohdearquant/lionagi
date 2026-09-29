@@ -118,16 +118,16 @@ fourth step of C1.
 - **Violated when**: a handler runs after a hook refused, raised or timed out, a refusal reaches the
   model without its reason, or a shell hook's exit 0 without a JSON object refuses the command.
 
-Hooks run in registration order, each seeing the request as those before it left it: a guard after a
-rewriting hook judges the rewrite.
+Hooks run in registration order, each seeing the request as earlier ones left it.
 
 None lets the command run; a string refuses it (`refused: <reason>`). A Pydantic model of any class
 replaces the arguments as returned; any other value, a dict too, changes nothing; a change in place
-reaches the handler (S8 owes the rebuild and the copy). Raising, a non-zero exit or a timeout
-refuses the command.
+reaches the handler (S8 owes rebuild and copy). Raising, a non-zero exit or a timeout refuses the
+command.
 
-A hook runs in its own process group; a timeout, a cancel or an exception kills, drains and reaps
-it, one that filled its pipe included. No hook sees `OUT{}` yet; it becomes the `out` command with
+A hook runs in its own process group; a timeout, a cancel or an exception kills the group, then
+tries five seconds each to drain and reap it, filled pipe included; a descendant that left is
+abandoned. No hook sees `OUT{}` yet; it becomes the `out` command with
 [[ADR-0003-the-bounds#^d3|ADR-0003/D3]].
 
 ### C5: An after hook sees what ran, ok or not, and cannot undo it _(enforced: mechanical; owed, S8)_ ^c5

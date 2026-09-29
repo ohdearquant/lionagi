@@ -366,6 +366,39 @@ def test_a_hook_that_fails_after_its_launch_is_killed_and_reaped_before_it_retur
     assert spawned == [broken, fine]
 
 
+def test_a_descendant_that_left_the_hooks_group_is_abandoned_at_the_grace_and_the_timeout_is_told(tmp_path):
+    import os
+    import signal
+    import time
+
+    from hub.hooks.shell import Hook
+
+    # the hook starts a child in a session of its own, holding the hook's pipes, and sleeps past its
+    # timeout: the group kill misses the child, the drain waits its grace, and the caller is told
+    pid_file = tmp_path / "escapee.pid"
+    script = tmp_path / "escape.py"
+    script.write_text(
+        "import os, pathlib, subprocess, sys, time\n"
+        "escapee = 'import os, pathlib, sys, time; "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(60)'\n"
+        f"subprocess.Popen([sys.executable, '-c', escapee, {str(pid_file)!r}], start_new_session=True)\n"
+        "time.sleep(30)\n"
+    )
+    hook = Hook("before", f"{sys.executable} {script}", "escape", "*", 0.3)
+
+    async def main():
+        started = time.monotonic()
+        result = await run_hook(hook, {"event": "before"}, tmp_path)
+        elapsed = time.monotonic() - started
+        # the test's own cleanup: the escapee goes, and the loop sees its pipes close before it ends
+        os.kill(int(pid_file.read_text()), signal.SIGKILL)
+        await asyncio.sleep(0.5)
+        return result, elapsed
+
+    result, elapsed = asyncio.run(main())
+    assert result == (None, "", "") and 5 <= elapsed < 8, elapsed
+
+
 TREE_HOOK = "hub.hooks.scripts.tree_changed"
 
 
