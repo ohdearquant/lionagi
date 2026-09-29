@@ -61,7 +61,7 @@ _FRAMES = (
 )
 _REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-_KEEP = ("inbound", "origin", "reply", "execution", "refused")
+_KEEP = ("inbound", "origin", "reply", "execution", "unread", "refused")
 
 
 class CheckpointError(Exception):
@@ -252,7 +252,7 @@ def take(
     return Checkpoint(
         id=f"ckpt-{now:%Y%m%d-%H%M%S}-{re.sub(r'[^A-Za-z0-9]+', '-', actor).strip('-')}",
         actor=actor,
-        taken_at=now.isoformat(timespec="seconds"),
+        taken_at=now.isoformat(),
         why=why,
         source=source,
         vars=tuple(named.values()),

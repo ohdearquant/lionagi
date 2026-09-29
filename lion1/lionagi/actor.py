@@ -767,10 +767,16 @@ class Actor:
             replayed = run.record.append(e.kind, e.content, alias=e.alias, round=e.round, **e.meta)
             if e.kind is Kind.TEXT and profile.language == "core":  # the values that turn declared, admitted
                 # against the record so far; a program's prose is scratch and its turn is folded, not rerun
+                if replayed.meta.get("unread"):  # the live loop refused it: nothing of it was admitted
+                    continue
                 try:
                     program = _read(str(e.content), refused=e.meta.get("refused"))
-                except lndl.LNDLError:
-                    continue
+                except lndl.LNDLError as err:
+                    # refused by today's reader and not by the one that ran it: what that reader
+                    # admitted rides the error, or nothing does and the turn was refused then too
+                    program = getattr(err, "program", None)
+                    if program is None:
+                        continue
                 _admit(run, program, replayed.seq)
             if profile.language == "program":  # the values a program computed, bound again as they were
                 for alias, seq, line, source in e.meta.get("bound", ()):  # bound, and read by nothing yet
@@ -867,6 +873,7 @@ class Actor:
                     if isinstance(program, Script):  # whole, before anything runs (ADR-0008/C1)
                         check_script(program, subset.names(), run.known)
                 except lndl.LNDLError as e:
+                    m.meta["unread"] = True  # a resumed log reads the refusal, not the turn again
                     run.idle_rounds = 0  # a turn refused whole held something: it was not idle
                     run.repairs.update(getattr(e, "repairs", ()))  # the readings before the one that failed
                     run.misnamed += [_nearest(name, subset.names()) for name in getattr(e, "names", ())]
@@ -954,7 +961,6 @@ class Actor:
                     self._retry(run, str(e))
                     self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
                     continue
-                run.retry_error, run.same_errors = None, 0
                 # OUT{} is the `out` command: the actor's before hooks see the assembled output, and
                 # the job's `accept` is the last of them, so it judges what they left (ADR-0003/C4)
                 befores = list(self.befores)
@@ -986,10 +992,11 @@ class Actor:
                     if run.refusals >= run.bounds["max_refusals"]:
                         run.outcome = Refused(why, run.refusals)
                         break
-                    run.retry_error = f"OUT{{}} {result.error}"
+                    self._retry(run, f"OUT{{}} {result.error}")
                     self.bus.emit("round.retry", run=run.id, round=round_no, error=why)
                     continue
                 run.output = result.value
+                run.retry_error, run.same_errors = None, 0
                 run.outcome = Success(run.output)
                 break
             await _reap(run)
@@ -1071,12 +1078,13 @@ class Actor:
         tasks = []
         try:
             for la in program.lacts:
-                if la.alias.startswith("auto_") and (
-                    run.record.has_alias(la.alias) or la.alias in run.pending
-                ):
+                if la.alias.startswith("auto_"):
                     # a generated alias (native tool-call syntax, no name given) may recur verbatim in a
                     # later round; the model never chose it, so it is not held to uniqueness
-                    la = dataclasses.replace(la, alias=f"{la.alias}_{run.record.seq}")
+                    alias, n = la.alias, run.record.seq
+                    while run.record.has_alias(alias) or alias in run.pending or alias in run.values:
+                        alias, n = f"{la.alias}_{n}", n + 1
+                    la = dataclasses.replace(la, alias=alias)
                 if la.alias.startswith("_"):
                     run.refused.append((la.alias, _OWN.format(alias=la.alias)))
                     continue

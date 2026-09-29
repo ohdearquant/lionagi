@@ -3,7 +3,7 @@
 | record | topic | status | liveness | depends on |
 |---|---|---|---|---|
 | [ADR-0001](001-actor/ADR-0001-the-actor.md) | 001-actor | draft | operating (the profile's `defaults` and the `run.more` handler landed with ADR-0003) | none |
-| [ADR-0002](002-run/ADR-0002-the-run.md) | 002-run | draft | operating (the code still says round, S3; the opt-in wait for the whole turn is not built, S4) | ADR-0001 |
+| [ADR-0002](002-run/ADR-0002-the-run.md) | 002-run | draft | operating (two OUT{} refusing the message whole, a repeated accept refusal told with its count and a generated alias freed past a value are pinned by tests; the code still says round, S3; the opt-in wait for the whole turn is not built, S4) | ADR-0001 |
 | [ADR-0003](003-bounds/ADR-0003-the-bounds.md) | 003-bounds | draft | operating (every bound resolves once at run start and is checked at the turn's start, time and cost again before each handler; the context check and its job error, run.more, extend, the profile's defaults, out as a command and accept as its last hook are under tests; the notification does not name idle turns, cost or refusals, and no backend hands back a cost yet, S4) | ADR-0001, ADR-0002 |
 | [ADR-0004](004-language/ADR-0004-the-language.md) | 004-language | draft | operating (the refusal of a mixed response and the DeepSeek markup read in the backend are pinned by tests) | ADR-0001, ADR-0002 |
 | [ADR-0005](005-handler/ADR-0005-command-handling.md) | 005-handler | draft | operating (the replacement rebuilt from its fields, the three captures and the effect wait are owed) | ADR-0003, ADR-0001, ADR-0002, ADR-0004 |
@@ -20,7 +20,7 @@
 | [ADR-0016](016-command/ADR-0016-the-lion-command.md) | 016-command | draft | operating (the command tree, the shared lock, the spend row with its count of calls of unknown cost, the readers' mark of a partial sum and the text `--stats` prints are under tests; the phone page renders the mark untested) | ADR-0007, ADR-0009, ADR-0010 |
 | [ADR-0017](017-desk/ADR-0017-the-desk.md) | 017-desk | draft | operating (every claim is pinned by tests with scripted backends and a stubbed store; no bench exercises the desk; the gate for a clarify's answer mailed to the desk holds under `[desk] admit_replies`, S8) | ADR-0001, ADR-0002, ADR-0003, ADR-0010 |
 | [ADR-0018](018-chat/ADR-0018-chat-in-a-box.md) | 018-chat | draft | operating (the chat, its resume and the boxed chat, a resumed boxed chat included, are pinned by tests against scripted backends and a stubbed box; the one real-box test runs only when enabled; no test interrupts a boxed chat) | ADR-0002, ADR-0003, ADR-0005, ADR-0007 |
-| [ADR-0019](019-checkpoint/ADR-0019-the-checkpoint.md) | 019-checkpoint | draft | operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests, the restore, the files, both transports and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests) | ADR-0006, ADR-0007, ADR-0009, ADR-0013, ADR-0016, ADR-0017 |
+| [ADR-0019](019-checkpoint/ADR-0019-the-checkpoint.md) | 019-checkpoint | draft | operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests, the restore, the files, both transports, the status's staleness to the take's fraction of a second and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests) | ADR-0006, ADR-0007, ADR-0009, ADR-0013, ADR-0016, ADR-0017 |
 
 ## By topic
 
