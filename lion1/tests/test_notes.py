@@ -9,8 +9,11 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
+from hub.chat import entry_row
 from lionagi import Actor, Kind, Profile, RunRequest
+from lionagi.checkpoint import entry_of
 from lionagi.lndl import guidance
 from lionagi.notes import FileNoteStore, MemoryNoteStore
 from tests.test_actor import scripted
@@ -91,6 +94,79 @@ def test_the_default_commands_get_delete_and_find_with_size_and_version(tmp_path
     listed = [r for r in results(run) if r.spec == "note.list"]
     assert listed[0].value == []  # deleted: gone from the list as well as the file
     assert FileNoteStore(tmp_path / "p.json").list() == []
+
+
+class Busy(MemoryNoteStore):
+    """A store another writer puts to right after every read."""
+
+    def get(self, key):
+        note = super().get(key)
+        self.put(key, f"moved {self.version}", run="other", seq=0)
+        return note
+
+
+class Pair(BaseModel):
+    a: str
+    b: str
+
+
+def test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_names_the_version():
+    store = Busy()
+    store.put("plan", "first", run="earlier", seq=0)
+    actor = Actor("n-once")
+
+    @actor.handler(Pair)
+    async def pair(req, ctx):
+        return [req.a, req.b, ctx.get("note.plan")]
+
+    backend = scripted(
+        "<lact p1>pair(a=*note.plan, b=*note.plan)</lact>",
+        '<lact g1>note.get(key="plan")</lact>',
+    )
+    run = asyncio.run(actor.run(Profile("p", notes=store), RunRequest(max_rounds=2), backend))
+    seen = run.record.get("p1")
+    assert seen.content.value == ["first", "first", "first"] and seen.meta["notes"] == {"plan": 1}
+    assert entry_of(entry_row(seen)).meta["notes"] == {"plan": 1}  # the log keeps the versions read
+    now = run.record.get("g1").content.value
+    assert now["value"] != "first" and now["version"] > 1  # note.get always reads the store
+    assert "notes" not in run.record.get("g1").meta  # a command that points at no note names none
+
+
+def test_note_read_reads_another_profiles_note_only_under_its_privilege(monkeypatch):
+    actor = Actor("n-other", privileges={"note.read"})
+    keeper = asyncio.run(
+        actor.run(Profile("keeper"), RunRequest(max_rounds=1), scripted("<lvar note.plan>kept</lvar>"))
+    )
+    brought = MemoryNoteStore()
+    courier = Profile("courier", notes=brought)
+    asyncio.run(actor.run(courier, RunRequest(max_rounds=1), scripted("<lvar note.plan>carried</lvar>")))
+    store = actor.notes_for(Profile("keeper"))
+    reads = []
+    monkeypatch.setattr(store, "get", lambda key: reads.append(key) or MemoryNoteStore.get(store, key))
+    turn = (
+        '<lact r1>note.read(profile="keeper", key="plan")</lact>'
+        '<lact r2>note.read(profile="keeper", key="absent")</lact>'
+        '<lact r3>note.read(profile="../keeper", key="plan")</lact>'
+        '<lact r4>note.read(profile="courier", key="plan")</lact>'
+    )
+    lacking = asyncio.run(actor.run(Profile("stranger"), RunRequest(max_rounds=1), scripted(turn)))
+    refused = lacking.record.get("r1")
+    assert refused.content.reason == "privilege" and "note.read" in refused.content.error
+    assert refused.meta["execution"] == "not executed" and reads == []
+    reader = Profile("reader", privileges=frozenset({"note.read"}))
+    allowed = asyncio.run(actor.run(reader, RunRequest(max_rounds=1), scripted(turn)))
+    assert allowed.record.get("r1").content.value == {
+        "profile": "keeper",
+        "key": "plan",
+        "value": "kept",
+        "run": keeper.id,
+        "version": 1,
+    }
+    assert "no note 'absent' in the notes of keeper" in allowed.record.get("r2").content.error
+    assert "letters, digits" in allowed.record.get("r3").content.error
+    # the actor's own store under that name, never the one a profile brought
+    assert brought.get("plan").value == "carried" and not allowed.record.get("r4").content.ok
+    assert reads == ["plan", "absent"]
 
 
 def test_a_dotted_alias_without_the_note_prefix_is_named_as_a_missed_note_in_the_next_notice(tmp_path):
