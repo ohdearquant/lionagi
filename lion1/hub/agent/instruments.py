@@ -1,6 +1,7 @@
 """The instruments: the read-only measurements an actor's long-running agent runs as chores
-(hub.agent.chores). gh for PR state, ps and launchctl for served things, khive for a gtd inbox and
-mail, df and du for disk, git for worktrees, the bench actor's notes for its jobs.
+(hub.agent.chores). gh for PR state, ps and launchctl for served things and scheduled jobs, lsof and
+ps for lock holders, khive for a gtd inbox and mail, df and du for disk, git for worktrees, the bench
+actor's notes for its jobs.
 Every instrument runs its known-positive in the invocation that produces its answer and hands what
 it read to the handler, which refuses an outcome without one, so an empty answer from a broken
 instrument escalates instead of reading clean. `instruments(cfg, ...)` builds the ones a
@@ -21,6 +22,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from stat import S_ISREG
 from typing import Any
 from urllib.parse import quote
 
@@ -38,9 +40,12 @@ __all__ = (
     "GH",
     "GIT",
     "LAUNCHCTL",
+    "LSOF",
     "sh",
     "PrState",
     "Served",
+    "LockHolder",
+    "ScheduledJob",
     "GtdInbox",
     "InboxSla",
     "Disk",
@@ -79,6 +84,7 @@ def _bin(name: str, *fallbacks: str) -> str:
 GH = _bin("gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh")
 GIT = _bin("git", "/usr/bin/git")
 LAUNCHCTL = "/bin/launchctl"
+LSOF = _bin("lsof", "/usr/sbin/lsof", "/usr/bin/lsof")
 
 
 async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) -> tuple[int, str, str]:
@@ -511,6 +517,205 @@ class Served:
             predicate=f"cursor past its bound, pid dead, or launchd loaded and not running ({matched} match)",
             count=len(self.agents),
             positive=positive if control else "",
+        )
+
+
+class LockHolder:
+    """Who holds each named lock: the processes lsof finds with the lock's file open, each pid resolved
+    to its full command line by `ps`; never by matching command text and never by taking the lock. The
+    control is a lock known to be held, the agent's own pid file, read in the same lsof call: this
+    process must come back as its holder, and its own pid through the same `ps` read."""
+
+    name = "lock-holder"
+    about = "each named lock file: the pids holding it open, with their full command lines; reports holders"
+    answers = "which processes hold each named lock file open right now, by pid and full command line"
+    direction = "under-report"
+    mechanism = (
+        "lsof lists only the processes this user may inspect; a holder beyond them reads as no holder. A "
+        "lock file lsof cannot stat is reported unreadable, not unheld"
+    )
+
+    def __init__(
+        self,
+        locks: list[str],
+        held: str,
+        *,
+        every: str | None,
+        run: Runner = sh,
+        empty_expected: bool = False,
+    ):
+        self.locks, self.held, self.every, self.sh = list(locks), held, every, run
+        self.empty_expected = empty_expected
+
+    async def run(self, args: dict[str, Any]) -> Outcome:
+        paths = [self.held, *self.locks]
+        _, out, err = await self.sh([LSOF, "-w", "-F", "pn", "--", *paths])  # rc 1: some file open by none
+        opened: dict[str, list[int]] = {}
+        pid = None
+        for line in out.splitlines():
+            if line[:1] == "p" and line[1:].isdigit():
+                pid = int(line[1:])
+            elif line[:1] == "n" and pid is not None and pid not in opened.setdefault(line[1:], []):
+                opened[line[1:]].append(pid)
+        # lsof names a file by its resolved path (/tmp reads /private/tmp on macOS); a path it could not
+        # stat is named the same way on stderr, one `status error` line each
+        holders = {p: opened.get(os.path.realpath(p), []) for p in paths}
+        unread = {}
+        for line in err.splitlines():
+            head, _, why = line.rpartition(": ")
+            if head.startswith("lsof: status error on "):
+                unread[head.removeprefix("lsof: status error on ")] = why.strip()
+        # lsof escapes some names (a tab reads `\t`, a newline `\n`, a byte outside the locale `\xNN`); a
+        # name no configured path resolves to cannot be mapped back, so the read is void, never unheld
+        unmapped = sorted({*opened, *unread} - {os.path.realpath(p) for p in paths})
+        me = os.getpid()
+        pids = sorted({me, *(p for ps in holders.values() for p in ps)})
+        _, out, _ = await self.sh(["/bin/ps", "-ww", "-o", "pid=,command=", "-p", ",".join(map(str, pids))])
+        commands = {}
+        for line in out.splitlines():
+            head, _, command = line.strip().partition(" ")
+            if head.isdigit():
+                commands[int(head)] = command.strip()
+        own = commands.get(me, "")
+        held = me in holders[self.held] and bool(own)
+        control = held and not unmapped
+        positive = f"own lock {self.held} held by own pid {me}: {own[:120]}" if control else ""
+        lines = [
+            "control: "
+            + (
+                positive
+                or (
+                    f"lsof named {len(unmapped)} file(s) no configured path resolves to, so a lock "
+                    "among them cannot be read (read broken)"
+                    if held
+                    else f"own lock {self.held} open by {holders[self.held] or 'no pid'}, own pid {me}, "
+                    f"its command line {'read' if own else 'unread'} (NOT held by this process: read broken)"
+                )
+            )
+        ]
+        lines += [f"unmapped: {name}" for name in unmapped]
+        findings, matched = [], 0
+        for lock in self.locks:
+            why = unread.get(os.path.realpath(lock))
+            if why and not why.startswith("No such file"):  # a lock lsof could not read is not unheld
+                lines.append(f"{lock}: unreadable: {why}")
+                findings.append(f"{lock}: unreadable by lsof: {why}")
+                continue
+            if not holders[lock]:
+                lines.append(f"{lock}: no holder" + (" (no such file)" if why else ""))
+                continue
+            matched += 1
+            for p in holders[lock]:
+                command = commands.get(p) or "(no command line: the pid exited between the reads)"
+                lines.append(f"{lock}: pid {p}: {command}")
+                findings.append(f"{lock}: held by pid {p}: {command[:200]}")
+        if err.strip():
+            lines.append(f"lsof: {err.strip()[:300]}")
+        return Outcome(
+            findings=tuple(findings),
+            evidence="\n".join(lines),
+            control=control,
+            population=f"lock files named: {self.locks}",
+            predicate=f"open by a process ({matched} match)",
+            count=len(self.locks),
+            positive=positive,
+        )
+
+
+class ScheduledJob:
+    """Scheduled jobs, artifact first: the file each job writes is younger than its bound, then its
+    supervisor's last exit, read from its launchd row when it names one, in that order of weight (a
+    clean exit beside a stale artifact is a finding), as `served` reads a served agent. The finding
+    names the bound and the age stays in the evidence, so a stale artifact is told once. The control is
+    the directory each artifact is written into: an artifact absent from an absent directory is a
+    wrong path or an unmounted volume, which the artifact read alone cannot tell from a job that never
+    ran; a loaded row without its last exit is an unread supervisor."""
+
+    name = "scheduled-job"
+    about = "scheduled jobs: artifact age first, the supervisor's last exit second; reports stale and failed"
+    answers = (
+        "has each scheduled job written its artifact within its bound, and did its supervisor's last "
+        "run exit 0, read in that order of weight"
+    )
+    direction = "under-report"
+    mechanism = "an artifact another writer touched reads fresh whether or not the job ran"
+
+    def __init__(
+        self, jobs: list[dict], *, every: str | None, run: Runner = sh, empty_expected: bool = False
+    ):
+        self.jobs, self.every, self.sh = [dict(j) for j in jobs], every, run
+        self.empty_expected = empty_expected
+        for j in self.jobs:
+            if "artifact" not in j or "max_age_h" not in j:
+                raise ValueError(f"a scheduled job names its artifact and its max_age_h: {j}")
+            b = j["max_age_h"]
+            # a NaN bound compares false against every age and an infinite one above every age, so
+            # either would read every artifact fresh; a bound of zero or less reads every one stale
+            if isinstance(b, bool) or not isinstance(b, int | float) or not math.isfinite(b) or b <= 0:
+                raise ValueError(f"a scheduled job's max_age_h is a positive number of hours: {j}")
+            j["max_age_h"] = float(b)
+
+    async def run(self, args: dict[str, Any]) -> Outcome:
+        findings, lines, positives, control, matched = [], [], [], True, 0
+        for j in self.jobs:
+            art, bound = Path(j["artifact"]), float(j["max_age_h"])
+            line, bad = f"{art}:", False
+            try:  # one stat for the type and the age, so the two cannot disagree
+                st = art.stat()
+            except (FileNotFoundError, NotADirectoryError):
+                st = None
+            if not art.parent.is_dir():
+                control = False
+                line += " its directory is absent (a wrong path reads like a job that never ran)"
+            elif st is None:
+                positives.append(f"{art.parent} present")
+                bad = True
+                line += " absent"
+                findings.append(f"{art}: absent, bound {bound:g}h")
+            elif not S_ISREG(st.st_mode):  # a directory where the job writes its file is not fresh
+                positives.append(f"{art.parent} present")
+                bad = True
+                line += " not a regular file"
+                findings.append(f"{art}: not a regular file, bound {bound:g}h")
+            else:
+                positives.append(f"{art.parent} present")
+                age_h = (time.time() - st.st_mtime) / 3600
+                line += f" written {age_h:.1f}h ago, bound {bound:g}h"
+                if age_h > bound:
+                    bad = True
+                    findings.append(f"{art}: older than its {bound:g}h bound")
+            if j.get("label"):
+                rc, out, err = await self.sh([LAUNCHCTL, "print", f"gui/{os.getuid()}/{j['label']}"])
+                m = re.search(r"^\s*last exit code = (\(never exited\)|-?\d+)", out, re.M)
+                if rc != 0 and "Could not find service" in out + err:
+                    bad = True
+                    line += f" | launchd {j['label']}: not loaded"
+                    findings.append(f"{art}: its supervisor {j['label']} is not loaded")
+                elif rc != 0:  # a read that failed or did not finish says nothing about the row
+                    control = False
+                    line += f" | launchd {j['label']}: unread, rc {rc}: {err.strip()[:200]}"
+                elif m is None:
+                    control = False
+                    line += f" | launchd {j['label']}: loaded, no last exit code in its row (unread)"
+                else:
+                    positives.append(f"launchd {j['label']} row read")
+                    line += f" | launchd {j['label']}: last exit {m.group(1)}"
+                    if m.group(1) not in ("0", "(never exited)"):
+                        bad = True
+                        findings.append(f"{art}: its supervisor {j['label']} last exited {m.group(1)}")
+            matched += bad
+            lines.append(line)
+        return Outcome(
+            findings=tuple(findings),
+            evidence="\n".join(lines),
+            control=control,
+            population=f"scheduled jobs configured: {[j['artifact'] for j in self.jobs]}",
+            predicate=(
+                "artifact absent or past its bound, or supervisor not loaded or its last exit nonzero "
+                f"({matched} match)"
+            ),
+            count=len(self.jobs),
+            positive="; ".join(positives) if control else "",
         )
 
 
@@ -1927,6 +2132,17 @@ def instruments(cfg: dict, khive: Khive, state: NoteStore) -> dict:
     if "served" in c:
         a = c["served"]
         out["served"] = Served(a["agents"], every=a.get("every"), empty_expected=empty(a, False))
+    if "lock-holder" in c:  # the lock known to be held: this agent's own pid file, which its process holds
+        a = c["lock-holder"]
+        out["lock-holder"] = LockHolder(
+            a["locks"],
+            str(Path(khive.cwd) / "agent.pid"),
+            every=a.get("every"),
+            empty_expected=empty(a, False),
+        )
+    if "scheduled-job" in c:
+        a = c["scheduled-job"]
+        out["scheduled-job"] = ScheduledJob(a["jobs"], every=a.get("every"), empty_expected=empty(a, False))
     if "gtd-inbox" in c:
         a = c["gtd-inbox"]
         out["gtd-inbox"] = GtdInbox(
