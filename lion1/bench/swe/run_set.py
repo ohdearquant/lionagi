@@ -261,9 +261,9 @@ def summary(ledger: Path) -> str:
 
 
 def provenance() -> dict:
-    """The source a launch runs from: HEAD, a full commit id, and what was dirty. A git read that
-    fails refuses the launch: an empty head attests nothing, and an empty status reads as a clean
-    tree."""
+    """The source a launch runs from: HEAD, a full commit id, and what was dirty, untracked files
+    included whatever the local git configuration says. A git read that fails refuses the launch: an
+    empty head attests nothing, and an empty status reads as a clean tree."""
 
     def git(*a: str) -> str:
         r = subprocess.run(["git", *a], capture_output=True, text=True, cwd=HERE)
@@ -277,7 +277,7 @@ def provenance() -> dict:
     head = git("rev-parse", "HEAD")
     if not re.fullmatch(r"[0-9a-f]{40}", head):
         raise SystemExit(f"git rev-parse HEAD gave {head[:80]!r}, not a commit id; nothing was launched")
-    return {"head": head, "dirty": git("status", "--porcelain")}
+    return {"head": head, "dirty": git("status", "--porcelain", "--untracked-files=normal")}
 
 
 def manifest(args: argparse.Namespace, out_dir: Path, selected: list[str], digest: str, src: dict) -> Path:

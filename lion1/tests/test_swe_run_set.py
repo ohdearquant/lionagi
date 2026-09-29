@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -209,7 +210,7 @@ def _git(monkeypatch, head=(0, HEAD + "\n", ""), status=(0, "", "")) -> None:
 
     def run(argv, *, capture_output, text, cwd):
         rc, out, err = head if argv[1:] == ["rev-parse", "HEAD"] else status
-        assert argv[1:] in (["rev-parse", "HEAD"], ["status", "--porcelain"])
+        assert argv[1:] in (["rev-parse", "HEAD"], ["status", "--porcelain", "--untracked-files=normal"])
         return subprocess.CompletedProcess(argv, rc, out, err)
 
     monkeypatch.setattr(run_set.subprocess, "run", run)
@@ -243,7 +244,10 @@ def test_the_manifest_digests_the_bytes_the_rows_were_read_from(tmp_path, monkey
 def test_a_git_read_that_fails_refuses_the_launch_before_anything_is_written(tmp_path, monkeypatch):
     ran = _main(monkeypatch, tmp_path, [{"instance_id": "a", "repo": "x", "image": "img"}])
     for git, refusal in (
-        (dict(status=(128, "", "fatal: not a git repository\n")), "git status --porcelain exited 128: fatal"),
+        (
+            dict(status=(128, "", "fatal: not a git repository\n")),
+            "git status --porcelain .* exited 128: fatal",
+        ),
         (dict(head=(128, "HEAD\n", "fatal: ambiguous argument 'HEAD'\n")), "git rev-parse HEAD exited 128"),
         (dict(head=(0, "abc1234\n", "")), "gave 'abc1234', not a commit id"),
     ):
@@ -251,6 +255,23 @@ def test_a_git_read_that_fails_refuses_the_launch_before_anything_is_written(tmp
         with pytest.raises(SystemExit, match=refusal):
             asyncio.run(run_set.main(_args()))
     assert ran == [] and not (tmp_path / "results").exists()  # no run directory, no manifest, no box
+
+
+def test_an_untracked_file_is_dirty_whatever_the_local_git_configuration_says(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "none"))  # this repository's config alone
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]
+    for argv in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "one"]):
+        subprocess.run([*git, *argv], cwd=repo, check=True)
+    subprocess.run([*git, "config", "status.showUntrackedFiles", "no"], cwd=repo, check=True)
+    (repo / "notes.txt").write_text("untracked\n")
+    monkeypatch.setattr(run_set, "HERE", repo)
+    bare = subprocess.run([*git, "status", "--porcelain"], cwd=repo, capture_output=True, text=True)
+    assert bare.stdout == ""  # the configuration hides it from a bare status
+    src = run_set.provenance()
+    assert re.fullmatch(r"[0-9a-f]{40}", src["head"]) and src["dirty"] == "?? notes.txt"
 
 
 def test_the_manifest_names_a_clean_tree_and_a_dirty_one_as_git_reads_them(tmp_path, monkeypatch, capsys):
