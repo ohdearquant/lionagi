@@ -195,20 +195,21 @@ def context_api(registry: Path, method: str, path: str, params: dict) -> tuple[i
         return 409, {"ok": False, "detail": str(e)}
 
 
-def serve(
+def make_server(
     registry: Path,
     host: str,
     port: int,
     refresh: int,
     identity: tuple[str, Khive] | None = None,
     allow: list[str] | None = None,
-) -> None:
+) -> ThreadingHTTPServer:
     """`/` is the page, `/api/areas` the rows as JSON; every request re-reads the registry and the
     residents' own files, so the page is never staler than its refresh. `/r?dir=` is one
     resident's page (`/api/resident?dir=` its JSON) and `POST /send` mails that resident as
     `identity`. `/events` streams the rows and the logs live, `POST /control` is the write path back
     onto a resident. A dir the registry does not name is 404 everywhere, so nothing is read,
-    written or mailed outside it."""
+    written or mailed outside it. Bound, not yet serving: `serve_forever` runs it, `shutdown` then
+    `server_close` end it; `hosts` on it are the names it answers to."""
     me, khive = identity or (None, None)
     hosts: set[str] = set()  # the names this server answers to, known once the port is
     origins: set[str] = set()  # the Origins a browser POST may carry: http(s) + an allowed host
@@ -629,11 +630,27 @@ def serve(
     for a in allow or []:
         hosts.add(f"{a}:{bound}")
     origins.update(f"{scheme}://{h}" for scheme in ("http", "https") for h in hosts)
+    server.hosts = frozenset(hosts)  # type: ignore[attr-defined]
+    return server
+
+
+def serve(
+    registry: Path,
+    host: str,
+    port: int,
+    refresh: int,
+    identity: tuple[str, Khive] | None = None,
+    allow: list[str] | None = None,
+) -> None:
+    """`make_server`, run until Ctrl-C."""
+    server = make_server(registry, host, port, refresh, identity, allow)
+    bound = server.server_address[1]
+    me = identity[0] if identity else None
     who = f"you are {me}" if me else "no identity"
     # flushed: under nohup or launchd stdout is a file, and the line would wait for the buffer
     print(
         f"lion areas on http://{host}:{bound}/ (registry {registry}); {who}; "
-        f"answers to {', '.join(sorted(hosts))}; Ctrl-C ends",
+        f"answers to {', '.join(sorted(server.hosts))}; Ctrl-C ends",  # type: ignore[attr-defined]
         flush=True,
     )
     try:
