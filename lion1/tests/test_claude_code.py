@@ -1,13 +1,16 @@
 """The resumed-session Claude Code backend: what each round sends, and when it starts a new session."""
 
 import asyncio
+import json
+import subprocess
+import sys
 from dataclasses import replace
 
 import pytest
 
 from hub.harness import claude_code
 from hub.harness.claude_code import ClaudeCodeSession
-from lionagi import Message
+from lionagi import Actor, Kind, Message, Profile, RunRequest
 
 
 def _fake_exec(calls: list[dict]):
@@ -396,6 +399,7 @@ def test_the_provider_shape_hands_the_cli_its_own_tools_the_directories_and_the_
     a = calls[2]["args"]
     assert _after(a, "--tools") == "" and _after(a, "--max-turns") == "1" and "--allowedTools" not in a
     assert "--add-dir" not in a and "--mcp-config" not in a and calls[2]["cwd"] is None
+    assert all("--settings" not in c["args"] for c in calls)  # no actor given: no pre-tool hook
     free = ClaudeCodeSession(
         cli="/bin/claude", tools=("Bash",), max_turns=0, effort="medium"
     )  # 0: no turn cap
@@ -477,3 +481,482 @@ def test_a_timeout_after_the_cli_exited_still_stops_what_it_left_holding_the_pip
         time.sleep(0.01)
     else:
         raise AssertionError(f"the CLI's child {child} outlived the timed-out call")
+
+
+# the gate over an acting session (ADR-0009/C6): a scripted CLI that runs its pre-tool hook, as the real
+# one does, once per tool call it was scripted to make, and writes down what each hook answered
+SCRIPTED = """import json, subprocess, sys
+from pathlib import Path
+
+here = Path(sys.argv[0]).parent
+sys.stdin.read()
+argv = sys.argv[1:]
+hook = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"][0]["hooks"][0]
+seen = []
+for call in json.loads((here / "calls.json").read_text()):
+    done = subprocess.run(hook["command"], shell=True, input=json.dumps(call), capture_output=True, text=True)
+    seen.append({"rc": done.returncode, "out": done.stdout, "err": done.stderr})
+(here / "seen.json").write_text(json.dumps({"hook": hook, "seen": seen}))
+print(json.dumps({"result": "done", "usage": {"input_tokens": 10}}))
+"""
+
+
+def _scripted(tmp_path, *calls: dict, script: str = SCRIPTED) -> str:
+    cli = tmp_path / "claude"
+    cli.write_text(f"#!{sys.executable}\n{script}")
+    cli.chmod(0o755)
+    (tmp_path / "calls.json").write_text(json.dumps(calls))
+    return str(cli)
+
+
+def _tool(name: str, use_id: str, **args) -> dict:
+    return {"hook_event_name": "PreToolUse", "tool_name": name, "tool_use_id": use_id, "tool_input": args}
+
+
+def test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record(tmp_path):
+    cli = _scripted(
+        tmp_path,
+        _tool("Bash", "toolu_a", command="git status"),  # needs `shell`, which the profile holds
+        _tool("Read", "toolu_b", file_path="notes.txt"),  # a before hook rewrites it
+        _tool("Bash", "toolu_c", command="rm -rf build"),  # a before hook refuses it
+        _tool("Edit", "toolu_d", file_path="a.py"),  # needs `edit`, which the profile does not hold
+    )
+    actor = Actor("gated", privileges={"shell", "edit"})
+
+    @actor.before
+    def guard(run, la, request):
+        if "rm " in str(getattr(request, "command", "")):
+            return "no rm here"
+        if la.name == "Read":
+            return type(request).model_validate({"file_path": "notes/today.txt"})
+        return None
+
+    backend = ClaudeCodeSession(
+        cli=cli, tools=("Bash", "Read", "Edit"), actor=actor, requires={"Bash": ("shell",), "Edit": ("edit",)}
+    )
+    profile = Profile("worker", privileges=frozenset({"shell"}))
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=1), backend))
+    a, b, c, d = json.loads((tmp_path / "seen.json").read_text())["seen"]
+    assert a["rc"] == 0 and json.loads(a["out"])["hookSpecificOutput"] == {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "allow",
+        "updatedInput": {"command": "git status"},
+    }
+    assert b["rc"] == 0 and json.loads(b["out"])["hookSpecificOutput"]["updatedInput"] == {
+        "file_path": "notes/today.txt"
+    }
+    assert (c["rc"], c["err"]) == (2, "refused: no rm here")
+    assert (d["rc"], d["err"]) == (2, "Edit requires ['edit']")
+    acts = {e.alias: e for e in run.record if e.kind is Kind.RESULT}
+    assert set(acts) == {"toolu_a", "toolu_b", "toolu_c", "toolu_d"}
+    assert all(e.round == 1 for e in acts.values())
+    ran = acts["toolu_a"]
+    assert (ran.content.spec, ran.content.ok, ran.content.value) == ("Bash", True, {"command": "git status"})
+    assert ran.meta["execution"] == "started"
+    assert acts["toolu_b"].content.value == {"file_path": "notes/today.txt"}  # what the CLI was told to run
+    for alias, reason in (("toolu_c", "refused"), ("toolu_d", "privilege")):
+        e = acts[alias]
+        assert (e.content.ok, e.content.reason, e.meta["execution"]) == (False, reason, "not executed")
+    assert acts["toolu_d"].content.error == "Edit requires ['edit']"
+    # the next turn's view carries the acts, so the model reads them after a restart drops the session
+    rendered = "\n".join(m.content for m in actor._render(run, actor.subset(profile)))
+    assert f"[{ran.name} toolu_a Bash]" in rendered and "error: refused: no rm here" in rendered
+
+
+def test_the_gate_admits_nothing_when_it_cannot_decide(tmp_path):
+    """No live run, an id already on the record, and a hook that cannot reach the runtime: each stops the
+    tool; the CLI runs a tool whose hook failed any other way than exit 2."""
+    cli = _scripted(tmp_path, _tool("Bash", "toolu_a", command="ls"), _tool("Read", "toolu_b", file_path="x"))
+    actor = Actor("gated")
+    backend = ClaudeCodeSession(cli=cli, tools=("Bash", "Read"), actor=actor)
+    asyncio.run(backend([Message("system", "p", run="gone"), Message("user", "go", name="_in0", run="gone")]))
+    seen = json.loads((tmp_path / "seen.json").read_text())
+    assert [s["rc"] for s in seen["seen"]] == [2, 2]
+    assert "the runtime's gate failed: LookupError: gated has no live run 'gone'" == seen["seen"][0]["err"]
+    # the same id twice: the second call is refused, and its refusal lands under the id suffixed
+    (tmp_path / "calls.json").write_text(
+        json.dumps([_tool("Bash", "toolu_a", command="ls"), _tool("Bash", "toolu_a", command="ls")])
+    )
+    run = asyncio.run(actor.run(Profile("worker"), RunRequest(inputs=("go",), max_rounds=1), backend))
+    first, again = json.loads((tmp_path / "seen.json").read_text())["seen"]
+    assert first["rc"] == 0 and again["rc"] == 2
+    assert again["err"] == "refused: tool-use id 'toolu_a' is already on the record"
+    acts = [e for e in run.record if e.kind is Kind.RESULT]
+    assert [e.alias for e in acts] == ["toolu_a", f"toolu_a_{acts[1].seq}"]
+    assert (acts[1].content.ok, acts[1].content.reason, acts[1].meta["execution"]) == (
+        False,
+        "refused",
+        "not executed",
+    )
+    # the call is over and its socket gone: the same hook, asked now, stops the tool
+    command = json.loads((tmp_path / "seen.json").read_text())["hook"]["command"]
+    late = subprocess.run(
+        command,
+        shell=True,
+        input=json.dumps(_tool("Bash", "t", command="ls")),
+        capture_output=True,
+        text=True,
+    )
+    assert late.returncode == 2 and "the runtime's gate could not be asked" in late.stderr
+
+
+def test_a_request_the_hooks_left_that_cannot_be_sent_is_a_refusal_that_lands(tmp_path):
+    cli = _scripted(
+        tmp_path, _tool("Read", "toolu_a", file_path="a.txt"), _tool("Read", "toolu_b", file_path="b.txt")
+    )
+    actor = Actor("gated")
+
+    @actor.before
+    def tag(run, la, request):
+        # a value a hook can hold and JSON cannot carry: an object, and bytes that are not UTF-8
+        extra = object() if request.file_path == "a.txt" else b"\xff\xfe"
+        return type(request).model_validate({"file_path": request.file_path, "metadata": extra})
+
+    backend = ClaudeCodeSession(cli=cli, tools=("Read",), actor=actor)
+    run = asyncio.run(actor.run(Profile("worker"), RunRequest(inputs=("go",), max_rounds=1), backend))
+    a, b = json.loads((tmp_path / "seen.json").read_text())["seen"]
+    assert (a["rc"], b["rc"]) == (2, 2)
+    assert a["err"].startswith("refused: ") and "PydanticSerializationError" in a["err"]
+    assert b["err"].startswith("refused: ") and "UnicodeDecodeError" in b["err"]
+    acts = [
+        (e.alias, e.content.ok, e.content.reason, e.meta["execution"])
+        for e in run.record.of_kind(Kind.RESULT)
+    ]
+    assert acts == [(alias, False, "refused", "not executed") for alias in ("toolu_a", "toolu_b")]
+
+
+# a CLI that starts its pre-tool hook and does not wait for the answer: it fails, or runs past the call's
+# deadline, while the gate still waits on a before hook
+STRANDED = """import json, subprocess, sys, time
+from pathlib import Path
+
+here = Path(sys.argv[0]).parent
+sys.stdin.read()
+argv = sys.argv[1:]
+hook = json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"][0]["hooks"][0]
+call = json.loads((here / "calls.json").read_text())[0]
+asked = subprocess.Popen(
+    hook["command"], shell=True, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+)
+asked.stdin.write(json.dumps(call).encode())
+asked.stdin.close()
+if (here / "mode").read_text() == "fail":
+    time.sleep(0.5)
+    sys.exit(1)
+time.sleep(30)
+"""
+
+
+def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_returned(monkeypatch):
+    """The CLI's hook connects, then the CLI exits a few event-loop turns later, before the gate's task
+    for that connection has run: the gate does not run after the call returned, the hook is refused,
+    and the call lands once in the call's own round, whatever the window (0 to 7 turns): started when the
+    hooks ran inside the call, not executed when the call ended first, its hook accepted at the end."""
+    import shlex
+    import socket
+
+    async def window(k: int):
+        actor = Actor("gated")
+        hooks: list[tuple[str, int]] = []
+        state = {"returned": 0, "calls": 0, "client": None}
+
+        @actor.before
+        def h(run, la, request):
+            hooks.append((la.alias, state["returned"]))  # how many calls had returned when the hook ran
+
+        async def fake_exec(cli, args, prompt, **kw):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                settings = json.loads(args[args.index("--settings") + 1])
+                sock = shlex.split(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"])[-1]
+                client = socket.socket(socket.AF_UNIX)
+                client.connect(sock)
+                call = {"tool_name": "Read", "tool_use_id": f"toolu_{k}", "tool_input": {"file_path": "n"}}
+                client.sendall(json.dumps(call).encode())
+                client.shutdown(socket.SHUT_WR)
+                state["client"] = client
+                for _ in range(k):  # the CLI exits this many turns after its hook connected
+                    await asyncio.sleep(0)
+            else:
+                await asyncio.sleep(0.05)  # the run is still live during its next round
+            return "ok", {"total_cost_usd": 0.0}
+
+        monkeypatch.setattr(claude_code, "_exec", fake_exec)
+        backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
+
+        async def wrapped(messages):
+            try:
+                return await backend(messages)
+            finally:
+                state["returned"] += 1
+
+        run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), wrapped)
+        state["client"].close()
+        landed = [(e.alias, e.round, e.meta.get("execution")) for e in run.record.of_kind(Kind.RESULT)]
+        return hooks, landed
+
+    for k in range(8):
+        hooks, landed = asyncio.run(window(k))
+        assert all(returned == 0 for _, returned in hooks), (k, hooks)  # no hook after the call returned
+        # the call lands once, in the call's own round: started when its hooks ran, else not executed
+        assert landed == [(f"toolu_{k}", 1, "started" if hooks else "not executed")], (k, landed)
+
+
+def test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_it_arrives(monkeypatch):
+    """The hook connected and sent half its request when the CLI exited: the call waits for the rest
+    (within the read's own bound), lands the tool call not executed, and the hook is refused; a hook
+    that never finishes sending asked nothing, and the call returns at the bound with nothing landed."""
+    import shlex
+    import socket
+    import time
+
+    async def late(finish: bool):
+        actor = Actor("gated")
+        hooks: list[str] = []
+        state = {"calls": 0, "client": None}
+
+        @actor.before
+        def h(run, la, request):
+            hooks.append(la.alias)
+
+        async def fake_exec(cli, args, prompt, **kw):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                settings = json.loads(args[args.index("--settings") + 1])
+                sock = shlex.split(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"])[-1]
+                client = socket.socket(socket.AF_UNIX)
+                client.connect(sock)
+                call = json.dumps(
+                    {"tool_name": "Read", "tool_use_id": "toolu_slow", "tool_input": {"file_path": "n"}}
+                )
+                client.sendall(call[:20].encode())  # the rest is still on its way when the CLI exits
+                state["client"], state["rest"] = client, call[20:].encode()
+                await asyncio.sleep(0)
+            else:
+                await asyncio.sleep(0.05)
+            return "ok", {"total_cost_usd": 0.0}
+
+        async def sender():
+            await asyncio.sleep(0.3)
+            if finish:
+                try:
+                    state["client"].sendall(state["rest"])
+                    state["client"].shutdown(socket.SHUT_WR)
+                except OSError:  # the call hung up on the half-sent request: nothing lands, asserted below
+                    pass
+
+        monkeypatch.setattr(claude_code, "_exec", fake_exec)
+        monkeypatch.setattr(claude_code, "_READ_S", 1.0, raising=False)
+        backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
+        took: list[float] = []
+
+        async def wrapped(messages):
+            t0 = time.monotonic()
+            try:
+                return await backend(messages)
+            finally:
+                took.append(time.monotonic() - t0)
+
+        send = asyncio.create_task(sender())
+        run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), wrapped)
+        await send
+        client = state["client"]
+        client.settimeout(1.0)
+        try:
+            answer = client.recv(4096)
+        except OSError as e:
+            answer = type(e).__name__
+        client.close()
+        landed = [
+            (e.alias, e.round, e.content.reason, e.meta.get("execution"))
+            for e in run.record.of_kind(Kind.RESULT)
+        ]
+        return hooks, landed, answer, took[0]
+
+    hooks, landed, answer, took = asyncio.run(late(True))
+    assert hooks == [] and landed == [("toolu_slow", 1, "cancelled", "not executed")], landed
+    assert json.loads(answer) == {"refuse": "cancelled before it started"}, answer
+    assert 0.3 <= took < 1.0, took  # the call waited for the request, not for the bound
+    hooks, landed, answer, took = asyncio.run(late(False))
+    assert hooks == [] and landed == [] and answer == b"", (landed, answer)  # nothing arrived: nothing lands
+    assert 1.0 <= took < 2.0, took  # the read's bound ended the wait
+
+
+def test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns(monkeypatch):
+    """The hook connects as the CLI exits, so its task is created by the call's own settle, and the run
+    is cancelled before that task takes its first step: the task never ran, the call still returns
+    cancelled with no task left (one that never started cannot take itself off the call's books)."""
+    import shlex
+    import socket
+    import time
+
+    async def go():
+        actor = Actor("gated")
+        state = {"calls": 0, "client": None}
+
+        async def fake_exec(cli, args, prompt, **kw):
+            state["calls"] += 1
+            settings = json.loads(args[args.index("--settings") + 1])
+            sock = shlex.split(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"])[-1]
+            client = socket.socket(socket.AF_UNIX)
+            client.connect(sock)
+            client.sendall(b"{")  # the rest never comes
+            state["client"] = client
+            asyncio.get_running_loop().call_soon(task.cancel)  # lands as the call's settle begins
+            return "ok", {"total_cost_usd": 0.0}
+
+        monkeypatch.setattr(claude_code, "_exec", fake_exec)
+        monkeypatch.setattr(claude_code, "_READ_S", 1.0, raising=False)
+        backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
+        task = asyncio.create_task(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), backend))
+        t0 = time.monotonic()
+        done, _ = await asyncio.wait({task}, timeout=3)
+        state["client"].close()
+        assert done and task.cancelled(), "the call did not return under the cancel"
+        assert [t for t in asyncio.all_tasks() if t is not asyncio.current_task()] == []
+        return time.monotonic() - t0
+
+    assert asyncio.run(go()) < 2.0
+
+
+def test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once(monkeypatch):
+    """Both pass the repeat check before either lands (both are at the before hook); the first to land
+    is admitted, the second lands as a repeat under the suffixed id and its hook is refused, whether
+    the hooks let it through or the call's end cancelled it at the gate."""
+    import shlex
+    import socket
+
+    async def twins(cancelled: bool):
+        actor = Actor("gated")
+        waiting, release = 0, asyncio.Event()
+
+        @actor.before
+        async def hold(run, la, request):
+            nonlocal waiting
+            waiting += 1
+            await release.wait()
+
+        clients: list[socket.socket] = []
+
+        async def fake_exec(cli, args, prompt, **kw):
+            settings = json.loads(args[args.index("--settings") + 1])
+            sock = shlex.split(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"])[-1]
+            for n in range(2):
+                client = socket.socket(socket.AF_UNIX)
+                client.connect(sock)
+                call = {"tool_name": "Read", "tool_use_id": "toolu_d", "tool_input": {"file_path": f"n{n}"}}
+                client.sendall(json.dumps(call).encode())
+                client.shutdown(socket.SHUT_WR)
+                clients.append(client)
+            while waiting < 2:
+                await asyncio.sleep(0)
+            if (
+                cancelled
+            ):  # the call ends while both are held: the first cancelled lands, the second is its repeat
+                for _ in range(2):
+                    await asyncio.sleep(0)
+            else:
+                release.set()
+                for _ in range(4):
+                    await asyncio.sleep(0)
+            return "ok", {"total_cost_usd": 0.0}
+
+        monkeypatch.setattr(claude_code, "_exec", fake_exec)
+        backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
+        run = await actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend)
+        release.set()  # after the call: the hooks it held were cancelled at its end
+        await asyncio.sleep(0.05)
+        answers = []
+        for client in clients:
+            client.settimeout(0.5)
+            answers.append(client.recv(4096))
+            client.close()
+        landed = [
+            (e.alias, e.content.ok, e.content.reason, e.meta["execution"])
+            for e in run.record.of_kind(Kind.RESULT)
+        ]
+        return landed, answers
+
+    landed, answers = asyncio.run(twins(False))
+    assert landed[0] == ("toolu_d", True, None, "started") and answers[0] == b'{"allow": {"file_path": "n0"}}'
+    assert landed[1] == (f"toolu_d_{landed[1][0][8:]}", False, "refused", "not executed") and len(landed) == 2
+    assert answers[1] == b'{"refuse": "refused: tool-use id \'toolu_d\' is already on the record"}'
+    landed, answers = asyncio.run(twins(True))
+    assert [(a[:7], ok, reason, ex) for a, ok, reason, ex in landed] == [
+        ("toolu_d", False, "cancelled", "not executed"),
+        ("toolu_d", False, "cancelled", "not executed"),
+    ]
+    assert landed[0][0] == "toolu_d" and landed[1][0].startswith("toolu_d_") and answers == [b"", b""]
+
+
+def test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_before_it_returns(tmp_path):
+    """The CLI fails, runs past the call's deadline, or the call is cancelled, while a before hook waits on an
+    approval: the call's deadline ends it, the tool call lands not executed before it returns, nothing of the
+    gate is left running, and the approval that comes later lands nothing. A hook that swallows the
+    cancellation and admits anyway admits nothing: the call is over. A call cancelled again while it
+    settles still leaves nothing of the gate running."""
+    import time
+
+    cli = _scripted(tmp_path, _tool("Read", "toolu_x", file_path="notes.txt"), script=STRANDED)
+
+    async def arm(mode: str) -> None:
+        (tmp_path / "mode").write_text(mode)
+        errors: list[str] = []
+        asyncio.get_running_loop().set_exception_handler(lambda loop, ctx: errors.append(ctx["message"]))
+        actor = Actor("gated")
+        entered, approved = asyncio.Event(), asyncio.Event()
+        runs = []
+
+        cleaned = asyncio.Event()
+
+        @actor.before
+        async def approval(run, la, request):
+            runs.append(run)
+            entered.set()
+            try:
+                await approved.wait()
+            except asyncio.CancelledError:
+                if mode != "insist":
+                    raise
+            finally:
+                if mode == "cancel-in-join":  # a hook whose cleanup takes a while after its cancel
+                    await cleaned.wait()
+
+        backend = ClaudeCodeSession(cli=cli, tools=("Read",), actor=actor, timeout=1.0)
+        t0 = time.monotonic()
+        request = RunRequest(inputs=("go",), max_rounds=1)
+        task = asyncio.create_task(actor.run(Profile("worker"), request, backend))
+        await asyncio.wait_for(entered.wait(), 5)
+        if mode.startswith("cancel"):
+            task.cancel()
+        if mode == "cancel-twice":  # cancelled again while it settles: the gate is still joined
+            await asyncio.sleep(0.05)
+            task.cancel()
+        if mode == "cancel-in-join":  # cancelled again while the hook cleans up: joined before the return
+            await asyncio.sleep(0.4)
+            task.cancel()
+            await asyncio.sleep(0.1)
+            assert not task.done() and len(runs[0].record.of_kind(Kind.RESULT)) == 0
+            cleaned.set()
+        done, _ = await asyncio.wait({task}, timeout=2.5)
+        assert done and time.monotonic() - t0 < 2.0, mode
+        if mode.startswith("cancel"):
+            assert task.cancelled()
+        else:
+            error = task.exception()
+            match = "exited 1" if mode == "fail" else "did not answer"
+            assert isinstance(error, claude_code.ClaudeCodeError) and match in str(error), mode
+        assert [t for t in asyncio.all_tasks() if t is not asyncio.current_task()] == [], mode
+        (run,) = runs
+        acts = [
+            (e.alias, e.content.ok, e.content.reason, e.meta["execution"])
+            for e in run.record.of_kind(Kind.RESULT)
+        ]
+        assert acts == [("toolu_x", False, "cancelled", "not executed")], mode
+        landed = len(run.record)
+        approved.set()
+        await asyncio.sleep(0.3)
+        assert len(run.record) == landed and errors == [], mode
+
+    for mode in ("fail", "deadline", "cancel", "cancel-twice", "cancel-in-join", "insist"):
+        asyncio.run(arm(mode))

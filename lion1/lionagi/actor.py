@@ -1296,29 +1296,10 @@ class Actor:
     ) -> tuple[Result, Directive | None]:
         """A validated request, from the privilege check on: every command's path, `out`'s too.
         `provenance` takes the request the handler entered and its return, once reached."""
-        if not handler.requires <= run.profile.privileges:
-            missing = sorted(handler.requires - run.profile.privileges)
-            return Result(la.name, False, error=f"{la.name} requires {missing}", reason="privilege"), None
-        for hook in befores:
-            try:
-                verdict = hook(run, la, _captured(request))
-                if inspect.isawaitable(verdict):
-                    verdict = await verdict
-                # a class is no receipt: a replacement is rebuilt from its fields by the Spec itself
-                if isinstance(verdict, dict | handler.spec):
-                    fields = verdict if isinstance(verdict, dict) else _fields(verdict)
-                    request = handler.spec.model_validate(fields)
-            except Exception as e:
-                why = f"refused: {_hook_name(hook)} failed, {type(e).__name__}: {e}"
-                return Result(la.name, False, error=why, reason="refused"), None
-            if isinstance(verdict, str):
-                return Result(la.name, False, error=f"refused: {verdict}", reason="refused"), None
-            if isinstance(verdict, BaseModel) and not isinstance(verdict, handler.spec):
-                why = (
-                    f"refused: {_hook_name(hook)} returned {type(verdict).__name__}, "
-                    f"neither a dict nor {handler.spec.__name__}"
-                )
-                return Result(la.name, False, error=why, reason="refused"), None
+        admitted = await self.gate(run, la, request, handler.requires, befores)
+        if isinstance(admitted, Result):
+            return admitted, None
+        request = admitted
         try:
             entered = _captured(request)  # the request as the handler entered, whatever it does to its own
             provenance["request"] = entered.model_dump()
@@ -1374,6 +1355,43 @@ class Actor:
             elif isinstance(seen, Result):
                 result = seen
         return result, (ctx.directive if result.ok else None)
+
+    async def gate(
+        self,
+        run: Run,
+        la: Lact,
+        request: BaseModel,
+        requires: frozenset[str],
+        befores: list[BeforeFn] | None = None,
+    ) -> Result | BaseModel:
+        """The privilege check, then the before hooks in registration order (the actor's, or the list
+        handed in: `out` adds the job's `accept` last, ADR-0003/C4): the refusal as the command's
+        Result, else the request the hooks left. A session CLI's own tool call asks it too (ADR-0009/C6)."""
+        if not requires <= run.profile.privileges:
+            missing = sorted(requires - run.profile.privileges)
+            return Result(la.name, False, error=f"{la.name} requires {missing}", reason="privilege")
+        spec = type(request)
+        for hook in self.befores if befores is None else befores:
+            try:
+                verdict = hook(run, la, _captured(request))
+                if inspect.isawaitable(verdict):
+                    verdict = await verdict
+                # a class is no receipt: a replacement is rebuilt from its fields by the Spec itself
+                if isinstance(verdict, dict | spec):
+                    fields = verdict if isinstance(verdict, dict) else _fields(verdict)
+                    request = spec.model_validate(fields)
+            except Exception as e:
+                why = f"refused: {_hook_name(hook)} failed, {type(e).__name__}: {e}"
+                return Result(la.name, False, error=why, reason="refused")
+            if isinstance(verdict, str):
+                return Result(la.name, False, error=f"refused: {verdict}", reason="refused")
+            if isinstance(verdict, BaseModel) and not isinstance(verdict, spec):
+                why = (
+                    f"refused: {_hook_name(hook)} returned {type(verdict).__name__}, "
+                    f"neither a dict nor {spec.__name__}"
+                )
+                return Result(la.name, False, error=why, reason="refused")
+        return request
 
     async def _deref(self, run: Run, la: Lact) -> dict[str, Any]:
         """Wait for any pointer still pending, then substitute values for pointers."""

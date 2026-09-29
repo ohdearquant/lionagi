@@ -1101,9 +1101,11 @@ def test_backend_for_claude_code_is_the_cli_chat_shape_on_the_named_model(monkey
             "add_dirs": ["/r"],
             "mcp_config": "/m",
             "cli": "/opt/bin/claude-named",
+            "requires": {"Bash": ["comm.send"]},
         },
         cwd=Path("/a"),
     )
+    assert p.requires == {"Bash": ("comm.send",)} and backend_for("claude_code").requires == {}
     assert (p.tools, p.allowed, p.max_turns, p.cwd, p.add_dirs, p.mcp_config) == (
         ("Bash", "Read"),
         ("mcp__khive",),
@@ -1219,6 +1221,20 @@ def test_a_chair_that_is_not_a_table_is_refused_by_name(tmp_path, kkernel_stub):
     (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\nchair = true\n')
     with pytest.raises(ValueError, match=r"\[chair\] is a table"):
         build(d, Scripted())
+
+
+def test_the_session_clis_own_tool_calls_ask_the_agents_actor(tmp_path, kkernel_stub):
+    from lion_cli.agent import build
+
+    from hub.harness import ClaudeCodeSession
+
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:v1"\n')
+    (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n')
+    backend = ClaudeCodeSession(cli="/bin/claude", tools=("Bash",))
+    _, agent = build(d, backend)
+    assert backend.actor is agent.actor
 
 
 def test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_key(

@@ -50,6 +50,8 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
         raise ValueError("[desk.routes] needs the front desk: front = false names no routes")
     khive = Bounded(Khive(directory, actor_id), recipients=trusted | frozenset(routes.values()))
     actor = Actor("chores", privileges={"comm.send"}, notes_dir=directory / "notes")
+    if isinstance(backend, ClaudeCodeSession):  # the CLI's own tool calls ask this actor's gate (ADR-0009/C6)
+        backend.actor = actor
     if (hooks := directory / "hooks.toml").exists():
         install(actor, load(hooks), directory)
     profiles: dict[str, Profile] = {}
@@ -295,7 +297,7 @@ def backend_for(
     `cwd` (the agent directory: khive signs as its actor) with `add_dirs` reachable, `allowed` for
     permission rules beyond the tools, `mcp_config` for the one MCP it loads, `max_turns` per round,
     `timeout` seconds a round may take (a round of real work can run past the default, 300),
-    `effort` the CLI's effort level."""
+    `effort` the CLI's effort level, `requires` the privileges each of its tools needs by tool name."""
     if model == "claude_code" or model.startswith("claude_code/"):
         o = options or {}
         return ClaudeCodeSession(
@@ -308,6 +310,7 @@ def backend_for(
             cwd=cwd,
             add_dirs=tuple(str(d) for d in o.get("add_dirs", ())),
             mcp_config=o.get("mcp_config"),
+            requires={tool: tuple(names) for tool, names in o.get("requires", {}).items()},
             cli=o.get("cli"),  # under launchd the PATH holds no claude: the config names the binary
         )
     deepseek = model.startswith("deepseek")

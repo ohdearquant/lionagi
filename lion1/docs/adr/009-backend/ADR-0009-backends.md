@@ -1,7 +1,7 @@
 ---
 adr: ADR-0009
 status: draft
-liveness: partial (the router, both shapes of the session CLI and the subscription CLI operate and report the count; the mixed-response refusal and the session CLI's failed-call envelope are pinned by tests; the gate over an acting session is owed)
+liveness: partial (the router, both shapes of the session CLI and the subscription CLI operate and report the count; the mixed-response refusal and the session CLI's failed-call envelope are pinned by tests; the gate over an acting session is pinned by tests with a scripted CLI, its two hook contracts measured once against the installed CLI)
 date: "2026-09-25"
 area: backend
 kind: new
@@ -145,16 +145,22 @@ The subscription CLI retries a transport failure or an empty answer, keeps every
 and writes its cost as unknown, never zero. A refused CLI turn rides its cost on the error.
 Cancelling a call kills and reaps the CLI child before the cancellation goes on.
 
-### C6: A session CLI given tools of its own acts, outside every gate of the runtime _(enforced: process)_ ^c6
+### C6: A session CLI's own tool calls pass the runtime's privilege check and before hooks _(enforced: mechanical)_ ^c6
 
-A served run's `[claude_code] tools` hands the session CLI its own tools: inside each turn it runs
-shell commands, reads and edits files and calls its one MCP in the agent's directory, up to
-`max_turns` of them, before it answers. Those acts pass no subset, privilege, hook or bus, and land
-nowhere on the record; they live in the CLI's session, which a fold cuts.
+- **Subject**: every tool call of a session CLI built with an actor.
+- **Violated when**: a tool runs after a refusal or after a hook that could not ask, or a call lands
+  nowhere on the record.
 
-Nothing in the runtime bounds them but the table that names the tools: an acting session is trusted
-like a handler, by review of its configuration, and its gate is owed (S11). The bench's host-side
-baseline runs the same CLI with its own tools, one whole task per call, and is no backend of `run`
+`[claude_code] tools` hands the session CLI its tools, `max_turns` per turn. With an actor, the
+pre-tool hook hands each call to the actor's privilege check
+([[ADR-0001-the-actor#^c4|ADR-0001/C4]]), `requires` naming a tool's privileges, then its before
+hooks ([[ADR-0005-command-handling#^c4|ADR-0005/C4]]). A refusal, or a hook that cannot ask, stops
+the tool; a replacement is its input.
+
+Each call lands on the run's record as a RESULT under the CLI's tool-use id, started or not
+executed; a repeated id is refused, landing suffixed by its entry's seq. What the tool did stays in
+the CLI's session, past subset, after hooks and bus (S11). `lion agent` hands over its actor;
+without one the session is trusted as configured. The bench's host-side baseline is no backend
 ([[ADR-0012-the-bench|ADR-0012]] S6).
 
 ## Decisions
@@ -175,17 +181,18 @@ native call when the content is empty; `calls` keeps the envelopes.
 
 ### D2: The two CLI shapes in `hub/harness/claude_code.py` ^d2
 
-Serves C1, C2, C4, C5 and C6. `ClaudeCode` runs the CLI once per turn: tools off, one turn, no
-settings loaded, strict MCP config. `ClaudeCodeSession` resumes one CLI session per run and restarts
-it on a directive or the fold mark; for a served run it may hand the CLI its own tools, a working
-directory and one MCP. Both hand back the last turn's count from the CLI's per-turn usage when
-printed. A failed call lands its envelope before the error goes on. Cancellation kills and reaps the
-child.
+Serves C1, C2, C4, C5 and C6. `ClaudeCode` runs the CLI once per turn: tools off, no settings,
+strict MCP config. `ClaudeCodeSession` resumes one session per run, restarting on a directive or the
+fold; a served run may get the CLI's tools, a working directory, one MCP. Both hand back the last
+turn's count. A failed call lands its envelope before its error. Cancellation kills and reaps the
+child. A tool call at the gate when the call ends lands not executed, none runs after, an unsendable
+one is refused.
 
 - **Landing evidence**: `tests/test_claude_code.py`: both shapes hand back this call's count, the
-  last turn's when several ran, the session resumed with only the new entries, restarted by a
-  directive and by the fold, one session per run, cancellation stopping the child,
-  `test_a_failed_session_call_lands_its_envelope_and_the_next_call_bills_only_its_own_share`.
+  last turn's when several ran, resumed with only the new entries, restarted by a directive and the
+  fold, one session per run, cancellation stopping the child,
+  `test_a_failed_session_call_lands_its_envelope_and_the_next_call_bills_only_its_own_share`, the
+  gate settled (S11).
 
 ### D3: The subscription CLI backend in `hub/harness/codex.py` ^d3
 
@@ -260,7 +267,17 @@ anchor.
   negative. It is not retried, and a spend row counts it ([[ADR-0016-the-lion-command|ADR-0016]]
   S2). Before, it landed none. That a failed call's cost is in the running total is read from
   success envelopes, not measured on a failure.
-- **S11**: The gate over an acting session is owed: the CLI's pre-tool hook asks the runtime's
-  privilege check ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]) and before hooks
-  ([[ADR-0005-command-handling#^c4|ADR-0005/C4]]) for each tool call, and each act lands on the
-  record. Until then C6 is the whole of it.
+- **S11**: The gate over an acting session holds (C6), pinned with a scripted CLI that runs the
+  pre-tool hook: in `tests/test_claude_code.py`,
+  `test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record`,
+  `test_the_gate_admits_nothing_when_it_cannot_decide`,
+  `test_a_call_that_ends_while_the_gate_waits_lands_the_tool_call_not_executed_before_it_returns`,
+  `test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_returned`,
+  `test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_it_arrives`,
+  `test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns`,
+  `test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once` and
+  `test_a_request_the_hooks_left_that_cannot_be_sent_is_a_refusal_that_lands`; the wiring in `lion
+  agent` by `tests/test_agent.py` `test_the_session_clis_own_tool_calls_ask_the_agents_actor`. The
+  record keeps the call and its verdict, never what the tool returned. Both hook contracts were
+  measured once on the installed CLI: exit 2 stops the tool and the model reads the reason; an allow
+  with `updatedInput` runs the rewritten call. No test runs the live CLI.
