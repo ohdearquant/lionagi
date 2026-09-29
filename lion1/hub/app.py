@@ -71,7 +71,7 @@ _JS = """
 (function () {
 'use strict';
 var state = {
-  areas: [], mode: 'list', dir: null, detail: null, detailDir: null, gen: 0, logs: {}, pending: {},
+  areas: [], mode: 'list', dir: null, detail: null, detailDir: null, gen: 0, view: 0, logs: {}, pending: {},
 };
 
 function esc(s) {
@@ -137,6 +137,7 @@ function connect() {
 
 // ---- routing ----
 function route() {
+  state.view++;  // each navigation is a new page, a return to the same resident included
   var m = /^#r=(.+)$/.exec(location.hash);
   if (m) { state.mode = 'detail'; state.dir = decodeURIComponent(m[1]); loadDetail(); }
   else { state.mode = 'list'; state.dir = null; renderList(); }
@@ -285,19 +286,28 @@ function toggleInline(id, show, force) {
   if (force) box.dataset.force = force;
 }
 
+// an unanswered request keeps its token, keyed by what it asks, so asking the same again replays it and
+// an answer, or a different ask, never takes another's token
+function token(key) {
+  return state.pending[key] || (state.pending[key] = uid());
+}
+
 function sendControl(action, extra) {
-  var dir = state.detailDir;
+  var dir = state.detailDir, view = state.view;
   if (!dir) return;
-  var body = Object.assign({ dir: dir, action: action, once: uid() }, extra);
+  var key = JSON.stringify(['control', dir, action, extra || null]);
+  var body = Object.assign({ dir: dir, action: action, once: token(key) }, extra);
   fetch('/control', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(function (r) { return r.json(); }).then(function (j) {
+    delete state.pending[key];  // answered, whatever the answer: the server keeps it for this token
     toast(j.detail || (j.ok ? 'ok' : 'failed'));
+    if (state.view !== view) return;  // the page that asked is gone
     toggleInline('hold-inline', false);
     toggleInline('restart-inline', false);
-    if (state.mode === 'detail' && state.dir === dir) loadDetail();  // the page may have moved on
+    loadDetail();
   }).catch(function (e) { toast(String(e)); });
 }
 
@@ -307,23 +317,20 @@ function sendTalk() {
   var content = document.getElementById('talk-content').value;
   if (!content.trim() || !state.detailDir) return;
   btn.disabled = true;
-  // an unanswered send keeps its token per resident, so the same words again replay it, never mail twice
-  var dir = state.detailDir, p = state.pending[dir];
-  if (!p || p.subject !== subject || p.content !== content) {
-    p = state.pending[dir] = { subject: subject, content: content, once: uid() };
-  }
-  var form = new URLSearchParams({ dir: dir, subject: subject, content: content, once: p.once });
+  // an unsent message keeps its token: the same words to the same resident replay it, never mail twice
+  var dir = state.detailDir, view = state.view, key = JSON.stringify(['send', dir, subject, content]);
+  var form = new URLSearchParams({ dir: dir, subject: subject, content: content, once: token(key) });
   fetch('/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
     body: form.toString(),
   }).then(function (r) { return r.json(); }).then(function (j) {
     if (!j.ok) throw new Error('send failed');
-    if (state.pending[dir] === p) delete state.pending[dir];
-    if (state.mode === 'detail' && state.dir === dir) {
-      document.getElementById('talk-content').value = '';
-      loadDetail();
-    }
+    delete state.pending[key];
+    toast('sent');
+    if (state.view !== view) return;  // the page that asked is gone
+    document.getElementById('talk-content').value = '';
+    loadDetail();
   }).catch(function (e) { toast(String(e)); }).then(function () { btn.disabled = false; });
 }
 

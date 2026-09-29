@@ -278,8 +278,14 @@ async def chat_main(a: argparse.Namespace) -> None:
     prior = resolve_chat(chats, a.resume) if a.resume else None  # before this session's own log exists
     if a.log:
         log = Path(a.log)
-        if log.exists():
-            raise SystemExit(f"{log} exists; `lion chat -r {log}` continues it, another --log starts fresh")
+        log.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with log.open("x"):  # created here, exclusively, as `fresh_log` does: one session owns a log
+                pass
+        except FileExistsError:
+            raise SystemExit(
+                f"{log} exists; `lion chat -r {log}` continues it, another --log starts fresh"
+            ) from None
         chat_id = log.stem
     else:
         chat_id, log = fresh_log(chats, time.strftime("%Y%m%d-%H%M%S"))
@@ -288,7 +294,7 @@ async def chat_main(a: argparse.Namespace) -> None:
     except BaseException:
         # a start that failed before anything was logged (a bad hooks.toml, no image) must not leave
         # an empty log as `-c`'s next target: the previous history would be lost to the next session
-        if log.exists() and log.stat().st_size == 0:  # --log included: an existing path was refused above
+        if log.exists() and log.stat().st_size == 0:  # both paths created the log above, so it is ours
             log.unlink()
         raise
 
