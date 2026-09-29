@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 import subprocess
@@ -409,7 +410,9 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
         *instance_ids,
     ]
     pattern = f"*{run_id}.json"
-    before = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in preds.parent.glob(pattern)}
+    # what a report was when this call started, by time and digest: an earlier report's bytes are
+    # not held through the evaluation
+    before = {p: _seen(p) for p in preds.parent.glob(pattern)}
     log = preds.parent / f"oracle_{run_id}.log"
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(preds.parent), timeout=7200)
@@ -419,11 +422,15 @@ def oracle(preds: Path, run_id: str, instance_ids: list[str], workers: int) -> d
     log.write_text(proc.stdout + "\n--- stderr ---\n" + proc.stderr)
     if proc.returncode != 0:
         raise RuntimeError(f"the harness exited {proc.returncode}; see oracle_{run_id}.log")
-    after = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in preds.parent.glob(pattern)}
+    after = {p: _seen(p) for p in preds.parent.glob(pattern)}
     reports = sorted((p for p, seen in after.items() if before.get(p) != seen), key=lambda p: after[p][0])
     if not reports:
         raise RuntimeError(f"no harness report from this evaluation; see oracle_{run_id}.log")
     return json.loads(reports[-1].read_text())
+
+
+def _seen(report: Path) -> tuple[int, str]:
+    return report.stat().st_mtime_ns, hashlib.sha256(report.read_bytes()).hexdigest()
 
 
 def _text(stream: str | bytes | None) -> str:
