@@ -65,7 +65,7 @@ def parser() -> argparse.ArgumentParser:
     ch.add_argument(
         "--apply",
         action="store_true",
-        help="apply the box's patch to this directory at the end (git apply --3way); default: print + save",
+        help="apply the box's patch to this directory at the end (git apply); default: print + save",
     )
     ch.add_argument(
         "--code",
@@ -97,7 +97,7 @@ def parser() -> argparse.ArgumentParser:
         "areas", help="the residents by area: serving, in a wake, wakes, today's runs and cost"
     )
     ar.add_argument(
-        "--file", default="~/.lionagi/areas.toml", help="the registry: [area.<name>] chair, home, agents"
+        "--file", default="~/.lionagi/areas.toml", help="the registry: [area.<name>] chair, desks"
     )
     ar.add_argument(
         "--serve", type=int, default=None, metavar="PORT", help="serve the page and /api/areas on PORT"

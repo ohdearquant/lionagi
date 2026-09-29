@@ -1,7 +1,7 @@
 ---
 adr: ADR-0017
 status: draft
-liveness: operating (every claim is pinned by tests with scripted backends and a stubbed store; no bench exercises the desk; the gate for a clarify's answer mailed to the desk is owed, S8)
+liveness: operating (every claim is pinned by tests with scripted backends and a stubbed store; no bench exercises the desk; the gate for a clarify's answer mailed to the desk holds under `[desk] admit_replies`, S8)
 date: "2026-09-25"
 area: desk
 kind: new
@@ -105,8 +105,8 @@ never back.
 ### C3: `Agent.admit` drops untrusted senders before any model call _(enforced: mechanical)_ ^c3
 
 - **Subject**: the agent's own mail, on every wake, rerun and continuous wait.
-- **Violated when**: mail from outside the trusted set reaches a run, or a dropped message is not
-  recorded on the cursor.
+- **Violated when**: mail from outside the trusted set, S8 aside, reaches a run, or a dropped
+  message goes unrecorded on the cursor.
 
 `lion agent` sets the gate to `Chores.admit`: the sender is the owner, the steward, the agent itself
 or in the config's `trusted` list. A wake marks its batch read, then drops what the gate refuses,
@@ -346,7 +346,8 @@ replay is neither capped nor charged again. `_file` keys its task write the same
 
 Serves C3. `Agent.admit` is a field, `None` admitting all; `build` sets it to the trusted-set test
 unless `[chair] admit = "all"`. The trusted set is fixed at build: the owner, the steward, the
-agent's actor and `trusted`.
+agent's actor and `trusted`. With `[desk] admit_replies`, `Desk` asks `Desk.admit` before that test
+(S8).
 
 - **Landing evidence**:
   `test_mail_from_outside_the_trusted_set_is_dropped_at_the_gate_and_never_runs` in
@@ -452,8 +453,9 @@ least two and at most all of them.
   the owner marks read before discovery reads it is never pending, since discovery lists unread
   rows.
 - **S3**: A clarify asks the sender to answer the owner on the thread. A reply mailed to the desk's
-  own actor meets C3's gate and is dropped unless its sender is trusted. The next message handled on
-  the thread resolves the clarify; otherwise `clarify_hours` leaves it as unanswered.
+  own actor meets C3's gate and is dropped unless its sender is trusted or S8's gate lets it
+  through. The next message handled on the thread resolves the clarify; otherwise `clarify_hours`
+  leaves it as unanswered.
 - **S4**: Nothing checks a desk's owner against its area's chair, and the registry's `desks` lists
   every resident's directory whatever its role; only a directory whose `chores.toml` has `[desk]`
   runs a desk.
@@ -467,10 +469,15 @@ least two and at most all of them.
   store: 267 tests across `tests/test_desk.py`, `tests/test_desk_residuals.py`,
   `tests/test_areas.py`, `tests/test_lookups.py`, `tests/test_verdicts.py`, `tests/test_chores.py`
   and `tests/test_agent.py` pass on the code of 2026-09-24.
-- **S8**: Owed: a gate, `Desk.admit` under `[desk] admit_replies`, that lets through a clarify's
-  answer mailed to the desk's own actor, from the actor the clarify addressed, on a thread whose
-  clarify is still open. The next sweep would list the clarified message again with the answer under
-  it. Until it lands, S3 holds.
+- **S8**: Owed until 2026-09-28, now held: with `[desk] admit_replies` true (default false),
+  `Desk.admit` lets through a clarify's answer mailed to the desk's own actor, from the actor the
+  clarify addressed, on a thread whose clarify is still open; anything else meets C3's gate. The
+  answer joins `desk_pending` under its own id, the clarified message with the answer under it, and
+  the next sweep lists it. Pinned in `tests/test_desk.py` by
+  `test_a_clarifys_answer_mailed_to_the_desk_is_admitted_and_listed_under_the_clarified_message` and
+  the arms of
+  `test_mail_to_the_desk_that_answers_no_open_clarify_of_its_sender_is_dropped_at_the_gate`: another
+  actor, another thread, a closed clarify, the setting off.
 - **S9**: `Record` reads no memory: a decision kept only in khive memory, in no note of the kinds
   `Decisions` searches, is missed.
 - **S10**: A resident whose directory the registry does not list is not counted; adding it is one

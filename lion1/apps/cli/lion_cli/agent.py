@@ -109,6 +109,7 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
             escalations_per_day=int(d.get("escalations_per_day", 40)),
             routes=routes,
             tasks_per_day=int(d.get("tasks_per_day", 20)),
+            admit_replies=d.get("admit_replies") is True,  # on for the boolean only: a string reads as off
             verdicts=None
             if v is None
             else Verdicts(
