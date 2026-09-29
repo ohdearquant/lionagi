@@ -12,6 +12,12 @@ dependencies = [
 [project.scripts]
 lion = "lion_cli.main:main"
 
+[project.optional-dependencies]
+voice = [
+    "mlx-whisper>=0.4",
+    "sounddevice>=0.5",
+]
+
 [tool.uv.sources]
 lionagi = { workspace = true }
 

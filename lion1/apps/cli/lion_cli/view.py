@@ -21,6 +21,8 @@ from hub.chat import entry_row, line
 from lionagi import lndl
 from lionagi.record import Entry, Kind
 
+from .voice import Voice
+
 __all__ = ("RESULT_LINES", "Console", "Editor", "stdin_ask")
 
 _SYSTEM_TAGS = re.compile(r"</?system[^>]*>")
@@ -59,7 +61,11 @@ class Console:
         self.quiet_until = -1  # entries up to this seq are logged, not printed: a resumed history
         self.asking = False  # at the `you ▸` prompt: an interrupt there is a quit
         self.status = status
-        self.editor = Editor(history, status=status) if sys.stdin.isatty() and sys.stdout.isatty() else None
+        self.editor = (
+            Editor(history, status=status, voice=Voice())
+            if sys.stdin.isatty() and sys.stdout.isatty()
+            else None
+        )
         self.resulted: set[str] = set()  # aliases whose result printed since the last notice
         self.written = 0
         self.out = RichConsole(
@@ -267,6 +273,7 @@ class Editor:
     """The line a person types on a terminal: an editor over the whole message (prompt_toolkit), so a
     paste of many lines is one message, Enter sends, Alt-Enter (or Ctrl-J) breaks a line, Up recalls
     earlier messages from `history`, and Ctrl-C clears the line or, on an empty one, ends the chat.
+    With `voice`, Alt-V records and Alt-V again puts what was said at the cursor (`Voice`).
     Reading through the tty's line discipline lost all of that: a paste arrived one line per message
     and macOS drops any line over 1024 bytes without a word (measured)."""
 
@@ -275,6 +282,7 @@ class Editor:
         history: Path | None = None,
         *,
         status: Callable[[], str] | None = None,  # the bottom toolbar, called on every redraw
+        voice: Voice | None = None,
         **terminal: Any,  # `input`/`output`: a test's pipe
     ):
         from prompt_toolkit import PromptSession
@@ -300,6 +308,16 @@ class Editor:
             else:
                 event.app.exit(exception=KeyboardInterrupt(), style="class:aborting")
 
+        if voice is not None:
+
+            @keys.add("escape", "v")
+            def _speak(event) -> None:
+                voice.press(event.app, event.current_buffer)
+
+        def toolbar() -> str:  # the voice's own line first while it has one
+            return " · ".join(p for p in (voice.note if voice else "", status() if status else "") if p)
+
+        self.voice = voice
         if history is not None:
             history.parent.mkdir(parents=True, exist_ok=True)
         self.session: PromptSession[str] = PromptSession(
@@ -307,7 +325,7 @@ class Editor:
             key_bindings=keys,
             history=FileHistory(str(history)) if history is not None else InMemoryHistory(),
             enable_open_in_editor=False,
-            bottom_toolbar=status,
+            bottom_toolbar=toolbar if status is not None or voice is not None else None,
             style=Style.from_dict({"bottom-toolbar": "noreverse dim"}),  # a quiet line, not a bar
             **terminal,
         )
@@ -320,6 +338,9 @@ class Editor:
             return await self.session.prompt_async([("bold", prompt)], handle_sigint=False)
         except (EOFError, KeyboardInterrupt):
             return None
+        finally:
+            if self.voice is not None:
+                self.voice.reset()
 
 
 async def stdin_ask(prompt: str = "you ▸ ", out: RichConsole | None = None) -> str | None:
