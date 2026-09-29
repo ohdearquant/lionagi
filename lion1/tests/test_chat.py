@@ -640,3 +640,36 @@ def test_a_write_cut_inside_a_character_is_a_torn_last_row(tmp_path):
     log.write_bytes(b'{"seq": 0, "kind": "TEXT", "content": "\xff"}\n' + whole)
     with pytest.raises(ValueError, match="line 1, with 1 after it"):
         load_log(log, torn=[])  # an unreadable row with rows after it is never a cut write
+
+
+def test_the_closure_rides_the_log_and_a_resumed_chat_folds_it_into_its_first_view(tmp_path):
+    actor, profile = reader(tmp_path)
+    log = tmp_path / "one.jsonl"
+    with log.open("w") as fh:
+        run1 = asyncio.run(
+            chat(
+                actor,
+                profile,
+                scripted("Hello."),
+                asks("hi", None),
+                say=lambda e: fh.write(json.dumps(entry_row(e)) + "\n"),
+            )
+        )
+    closure = run1.record.entries[-1]
+    assert closure.kind is Kind.SYSTEM and "outcome: Stopped(round=2)" in closure.content
+    history = load_log(log)
+    last = history[-1]
+    assert (last.seq, last.kind, last.content) == (closure.seq, Kind.SYSTEM, closure.content)
+    seen: list[list[Message]] = []
+    inner = scripted("Again.")
+
+    async def backend(messages):
+        seen.append(messages)
+        return await inner(messages)
+
+    actor2, profile2 = reader(tmp_path)
+    asyncio.run(chat(actor2, profile2, backend, asks("more", None), history=history))
+    # the first view carries the old run's closure where it landed, ahead of the new message
+    first = [(m.role, m.name, m.content) for m in seen[0]]
+    at = first.index(("system", closure.name, closure.content))
+    assert first[at + 1][1:] == (f"_in{closure.seq + 1}", f"[_in{closure.seq + 1}] more")
