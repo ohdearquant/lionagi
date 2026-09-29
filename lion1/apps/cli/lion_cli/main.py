@@ -52,15 +52,20 @@ def parser() -> argparse.ArgumentParser:
     ch.add_argument(
         "--box",
         choices=("vm", "daytona"),
-        default="vm",
+        default=None,
         help="where bash, python and the file tools work: the local VM over this directory (vm), or a "
-        "Daytona box the directory is pushed into at the same path; its diff comes back as a patch",
+        "Daytona box the directory is pushed into at the same path; its diff comes back as a patch. "
+        "Default: where a continued chat ran, else vm",
     )
-    ch.add_argument("--image", default="python:3.12", help="the Daytona box's image (with --box daytona)")
+    ch.add_argument(
+        "--image",
+        default=None,
+        help="the Daytona box's image (with --box daytona); default: a continued chat's, else python:3.12",
+    )
     ch.add_argument(
         "--apply",
         action="store_true",
-        help="apply the box's patch to this directory at the end (git apply --3way); default: print + save",
+        help="apply the box's patch to this directory at the end (git apply); default: print + save",
     )
     ch.add_argument(
         "--code",
@@ -92,7 +97,7 @@ def parser() -> argparse.ArgumentParser:
         "areas", help="the residents by area: serving, in a wake, wakes, today's runs and cost"
     )
     ar.add_argument(
-        "--file", default="~/.lionagi/areas.toml", help="the registry: [area.<name>] chair, home, agents"
+        "--file", default="~/.lionagi/areas.toml", help="the registry: [area.<name>] chair, desks"
     )
     ar.add_argument(
         "--serve", type=int, default=None, metavar="PORT", help="serve the page and /api/areas on PORT"
