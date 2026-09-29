@@ -782,10 +782,14 @@ def parse(text: str) -> Program:
             lacts.append(Lact(alias=alias, name=name, args=args, spec=spec, field=fld))
 
     if len(outs) > 1:  # a second finish refuses the message whole, as the loop's own frame does (ADR-0002/C1)
-        raise LNDLError(
+        err = LNDLError(
             f"one OUT{{...}} per turn and this turn carries {len(outs)}, so nothing in it was executed: "
             "write it again with one OUT{...}"
         )
+        # a log written before this rule ran the turn's values and calls: a replay of that log admits
+        # them from here (ADR-0018/C6); a live turn is refused whole
+        err.program = Program(lvars, lacts, None, problems)
+        raise err
     out = None
     if outs:
         # an unreadable finish does not lose the turn's commands: they run, and the model is told

@@ -621,10 +621,16 @@ class Actor:
         for e in request.history:
             replayed = run.record.append(e.kind, e.content, alias=e.alias, round=e.round, **e.meta)
             if e.kind is Kind.TEXT:  # the values that turn declared, admitted against the record so far
+                if replayed.meta.get("unread"):  # the live loop refused it: nothing of it was admitted
+                    continue
                 try:
                     program = _read(str(e.content))
-                except lndl.LNDLError:
-                    continue
+                except lndl.LNDLError as err:
+                    # refused by today's reader and not by the one that ran it: what that reader
+                    # admitted rides the error, or nothing does and the turn was refused then too
+                    program = getattr(err, "program", None)
+                    if program is None:
+                        continue
                 _admit(run, program, replayed.seq)
         for text in request.inputs:
             run.record.append(Kind.INPUT, text)
@@ -683,6 +689,7 @@ class Actor:
                 try:
                     program = _read(text)
                 except lndl.LNDLError as e:
+                    m.meta["unread"] = True  # a resumed log reads the refusal, not the turn again
                     self._retry(run, str(e))
                     self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
                     continue

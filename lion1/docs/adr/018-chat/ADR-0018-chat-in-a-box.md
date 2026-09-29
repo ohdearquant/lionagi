@@ -148,14 +148,15 @@ the box before the model works; a saved patch, an empty one and a refused apply 
 - **Violated when**: a resumed chat reruns a logged command, an old alias or value fails to resolve,
   the old log is written to, or an unsettled command goes unnamed.
 
-`-c` continues the last log by id; `-r` takes an id, a unique prefix or a path. The log's rows come
-back as entries with their sequences, results, inbound marks and directives; usage rows are skipped.
-The loop admits each logged turn's values in order, and the fold lands where it did
-([[ADR-0007-the-record#^c4|ADR-0007/C4]]).
+`-c` continues the last log; `-r` takes an id, a unique prefix or a path. The rows come back as
+entries with their seqs, results, marks and directives; usage rows are skipped. The loop admits each
+turn's values in order, and the fold lands where it did ([[ADR-0007-the-record#^c4|ADR-0007/C4]]). A
+refused turn is marked on its row and admits nothing; one an older reader ran and today's refuses
+admits what that reader did.
 
 A last line cut mid-write is dropped and named; a bad line with lines after it refuses the resume.
-The unsettled commands are named to the model in one notice from the console, as not run again. The
-new session writes a new chat log, the whole record again.
+The unsettled commands are named to the model in one notice as not run again. The new session writes
+a new log, the whole record again.
 
 ### C7: The chat is a console over the loop _(enforced: process)_ ^c7
 
@@ -181,7 +182,8 @@ directive as data; `load_log` reads rows back through `entry_of`, the reader the
 
 - **Landing evidence**: `tests/test_chat.py`: a plain turn and the next line on one record, each
   entry said as it lands, `OUT{}` refused, the pause, the log read back as history, the directives
-  folding the same, the cut last line.
+  folding the same, the cut last line; `tests/test_actor_resume.py`:
+  `test_a_two_out_turn_an_older_reader_ran_keeps_its_values_on_resume_and_a_refused_one_does_not`.
 
 ### D2: `console()` and the flags on `lion chat` ^d2
 
