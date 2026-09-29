@@ -31,7 +31,7 @@ from pydantic import AliasChoices, BaseModel, Field, TypeAdapter, ValidationErro
 from . import lndl
 from .bus import Bus
 from .lndl import Lact, Lvar, Pointer, Program
-from .notes import FileNoteStore, MemoryNoteStore, NoteStore, key_of
+from .notes import FileNoteStore, MemoryNoteStore, Note, NoteStore, key_of
 from .program import Branch, Command, EvalError, Script, Value, evaluate, pointers
 from .program import (
     Output as ProgramOutput,  # OUT{} inside a fenced program; `Output` below is the out command's request
@@ -73,6 +73,7 @@ __all__ = (
     "NoteFind",
     "NoteGet",
     "NoteDelete",
+    "NoteRead",
     "RunMore",
     "DEFAULT_HANDLERS",
     "Output",
@@ -349,6 +350,8 @@ class Run:
         self.pending: dict[str, asyncio.Task] = {}
         self.tasks: set[asyncio.Task] = set()  # every command task not yet seen through by a settle
         self.entered: set[str] = set()  # pending aliases whose handler has been called
+        # pending alias -> the notes its command read from the store, each read once (None: absent)
+        self.reads: dict[str, dict[str, Note | None]] = {}
         self.pointing: dict[str, set[str]] = {}  # command alias -> the names its arguments point at
         self.waits: dict[str, set[str]] = {}  # command alias -> the earlier commands its effect waits for
         self.settled: list[str] = []  # aliases settled since the last notification
@@ -403,8 +406,9 @@ class Run:
     def notes(self) -> NoteStore:
         return self.actor.notes_for(self.profile)
 
-    def resolve(self, name: str) -> Any:
-        """Dereference a pointer: an alias, a runtime name, or a note. KeyError when nothing has that name."""
+    def resolve(self, name: str, reads: dict[str, Note | None] | None = None) -> Any:
+        """Dereference a pointer: an alias, a runtime name, or a note. KeyError when nothing has that name.
+        With `reads`, a command's own, a note comes from the store once and every later read is that one."""
         if name in self.values:
             return self.values[name][1]
         entry = self.record.get(name)
@@ -414,7 +418,9 @@ class Run:
             return entry.content
         key = key_of(name)
         if key is not None:
-            note = self.notes.get(key)
+            note = reads[key] if reads is not None and key in reads else self.notes.get(key)
+            if reads is not None:
+                reads[key] = note
             if note is not None:
                 return note.value
         raise KeyError(name)
@@ -443,7 +449,7 @@ class Context:
         return self.run.notes
 
     def get(self, name: str) -> Any:
-        return self.run.resolve(name)
+        return self.run.resolve(name, self.run.reads.get(self.alias))
 
     def emit(self, kind: str, **payload: Any) -> None:
         self.actor.bus.emit(kind, run=self.run.id, alias=self.alias, **payload)
@@ -512,6 +518,15 @@ class NoteDelete(BaseModel):
     key: str
 
 
+class NoteRead(BaseModel):
+    """Read one note of another profile whole: its value, version and the run that wrote it. Only a
+    profile holding the note.read privilege may."""
+
+    __spec_name__ = "note.read"
+    profile: str
+    key: str
+
+
 class RunMore(BaseModel):
     """Ask for more of a bound before it is spent; the job decides. A grant raises the bound from the
     next check on; a refusal leaves it as it was, and the run ends when it is spent."""
@@ -571,6 +586,13 @@ async def _note_delete(req: NoteDelete, ctx: Context) -> str:
     return f"deleted note {n.key!r} (version {n.version}, written by run {n.run})"
 
 
+async def _note_read(req: NoteRead, ctx: Context) -> dict:
+    n = ctx.actor.notes_for(Profile(req.profile)).get(req.key)
+    if n is None:
+        raise KeyError(f"no note {req.key!r} in the notes of {req.profile}")
+    return {"profile": req.profile, "key": n.key, "value": n.value, "run": n.run, "version": n.version}
+
+
 async def _more(req: RunMore, ctx: Context) -> str:
     run = ctx.run
     async with run.extending:  # the next ask is judged against the total this one leaves
@@ -596,6 +618,7 @@ DEFAULT_HANDLERS: tuple[Handler, ...] = (
     Handler(NoteFind, _note_find),
     Handler(NoteGet, _note_get),
     Handler(NoteDelete, _note_delete),
+    Handler(NoteRead, _note_read, frozenset({"note.read"})),
     Handler(RunMore, _more),
 )
 
@@ -1207,6 +1230,9 @@ class Actor:
             except ValueError as e:  # the alias was taken meanwhile; the call ran, its result has no name
                 told.append((la.alias, str(e)))
                 return
+            read = {k: n.version for k, n in run.reads.get(la.alias, {}).items() if n is not None}
+            if read:  # the version each note was read at: a later write is told apart
+                entry.meta["notes"] = read
             if directive is not None:
                 seqs = tuple(run.record.get(ref).seq for ref in directive.refs)
                 entry.meta["directive"] = Directive(
@@ -1229,6 +1255,7 @@ class Actor:
             run.pending.pop(la.alias, None)
             run.waits.pop(la.alias, None)  # its row is read by nobody once it has settled
             run.entered.discard(la.alias)
+            run.reads.pop(la.alias, None)
         if cancelled:
             raise asyncio.CancelledError
 
@@ -1239,6 +1266,7 @@ class Actor:
             run.misnamed.append(_nearest(la.name, subset.names()))
             return Result(la.name, False, error=f"unknown command {la.name!r}", reason="unknown"), None
         handler = self.handlers[la.name]
+        run.reads[la.alias] = {}
         prior = [run.pending[a] for a in run.waits.get(la.alias, ()) if a in run.pending]
         if prior:  # the effect wait (C6); a command it waits for settles itself, however it ends
             await asyncio.wait(prior)
@@ -1364,7 +1392,7 @@ class Actor:
 
         def sub(v: Any) -> Any:
             if isinstance(v, Pointer):
-                return run.resolve(v.name)
+                return run.resolve(v.name, run.reads[la.alias])
             if isinstance(v, dict):
                 return {k: sub(x) for k, x in v.items()}
             if isinstance(v, list):

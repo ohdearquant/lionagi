@@ -286,6 +286,25 @@ def test_a_pinned_directive_reaches_only_entries_before_itself():
     assert shape(fold(r)) == ["_r0 hidden", "_r1", "_r2"]
 
 
+def test_directives_apply_by_date_not_by_where_they_ride_on_the_record():
+    # a hide dated at 1 rides the notice after a show dated at 2, as a consumption's hide rides the
+    # notice after a context.show: the show stands; dated the other way round, the hide stands
+    r = make(Kind.RESULT, Kind.TEXT)
+    r.append(Kind.RESULT, "shown", directive=Directive("show", ("_r0",), at=2, seqs=(0,)))
+    r.append(Kind.SYSTEM, "notice", directive=Directive("hide", ("_r0",), at=1, seqs=(0,)))
+    assert shape(fold(r)) == ["_r0", "_m1", "_r2", "_sys3"]
+    r = make(Kind.RESULT, Kind.TEXT)
+    r.append(Kind.RESULT, "hidden", directive=Directive("hide", ("_r0",), at=2, seqs=(0,)))
+    r.append(Kind.SYSTEM, "notice", directive=Directive("show", ("_r0",), at=1, seqs=(0,)))
+    assert shape(fold(r)) == ["_r0 hidden", "_m1", "_r2", "_sys3"]
+
+
+def test_a_directive_dated_before_its_carrier_reaches_only_entries_earlier_than_its_date():
+    r = make(Kind.RESULT, Kind.RESULT)
+    r.append(Kind.SYSTEM, "notice", directive=Directive("hide", ("_r0", "_r1"), at=1, seqs=(0, 1)))
+    assert shape(fold(r)) == ["_r0 hidden", "_r1", "_sys2"]
+
+
 def test_input_is_never_hidden_or_summarized_while_protected():
     r = make(Kind.INPUT, Kind.TEXT)
     direct(r, "hide", "_in0", "_m1")

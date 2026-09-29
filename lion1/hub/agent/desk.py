@@ -192,11 +192,16 @@ class Desk:
         self.chores.extra_digest_sent = self._briefed
         self.agent.accept = self._accept
         self.agent.watch = self.watch
+        replies = ""
         if self.admit_replies:  # the desk's gate first: an answer is listed whoever its sender is
             gate = self.agent.admit
-            self.agent.admit = lambda m: self.admit(m) or gate is None or gate(m)
+            self.agent.admit = lambda m: self._admits(m) or gate is None or gate(m)
+            replies = (
+                "; an answer mailed to you is listed there under the message it clarifies, "
+                "by the answer's own id"
+            )
         routes = ", ".join(f"{n} ({a})" for n, a in sorted(self.routes.items())) or "none, so route nothing"
-        self.chores.extra_system = "\n" + guidance("desk", owner=owner, routes=routes)
+        self.chores.extra_system = "\n" + guidance("desk", owner=owner, routes=routes, replies=replies)
 
     # the handlers
 
@@ -246,11 +251,14 @@ class Desk:
         or leaving it resolves the clarify. Anything else is refused here and left to the agent's gate."""
         p = m.get("properties") or {}
         sender, thread = sender_of(m), p.get("thread_id") or m.get("thread_id")
-        asked = [r for r in self._open_clarifies().values() if r["thread"] == thread and r["from"] == sender]
+        rows = self.rows()  # one read of the ledger per message, whatever the gate finds
+        asked = [
+            r for r in self._open_clarifies(rows).values() if r["thread"] == thread and r["from"] == sender
+        ]
         if not asked:
             return False
         mid, held = str(m.get("full_id") or m.get("id")), _val(self.agent.state, "desk_pending", {})
-        if mid not in held and mid not in {r["msg"] for r in self.rows()}:
+        if mid not in held and mid not in {r["msg"] for r in rows}:
             r = asked[0]
             said = f"[the answer to the desk's clarify, {r['a']!r} or {r['b']!r}]"
             entry = {
@@ -263,6 +271,18 @@ class Desk:
             }
             self.agent.state.put("desk_pending", {**held, mid: entry}, run="-", seq=0)
         return True
+
+    def _admits(self, m: dict) -> bool:
+        """`admit` as the agent's gate calls it: a ledger the desk cannot read admits nothing here, the
+        failure is among the agent's errors, and the message meets the agent's own gate as it would
+        with the setting off."""
+        try:
+            return self.admit(m)
+        except Exception as e:
+            line = f"desk gate failed: {type(e).__name__}: {e}"
+            if line not in self.agent.errors:
+                self.agent.errors.append(line)
+            return False
 
     async def _discover(self, wait_ms: int = 0) -> dict[str, dict]:
         """Every page of the chair's unread box since the discovery cursor (`desk_watch`, an instant; the
@@ -814,10 +834,10 @@ class Desk:
             + (f", {len(asked)} asked" if asked else "")
         )
 
-    def _open_clarifies(self) -> dict[str, dict]:
+    def _open_clarifies(self, rows: list[dict] | None = None) -> dict[str, dict]:
         """Messages this desk asked about that no later row settled: msg id -> the clarified row."""
         open_: dict[str, dict] = {}
-        for r in self.rows():
+        for r in self.rows() if rows is None else rows:
             if r["class"] == "clarified":
                 open_[r["msg"]] = r
             elif r["msg"] in open_:  # resolved by a later message on the thread, or left at the cap
