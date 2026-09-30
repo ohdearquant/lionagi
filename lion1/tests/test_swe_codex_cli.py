@@ -106,10 +106,10 @@ def test_a_transport_error_harvests_the_stream_and_takes_no_patch_whatever_stop_
 
 
 class StreamBox(CodexBox):
-    """codex ran and left `events` as its stream."""
+    """codex ran, left `events` as its stream, and exited `rc`."""
 
-    def __init__(self, *events: dict):
-        super().__init__()
+    def __init__(self, *events: dict, rc: int = 0):
+        super().__init__(rc)
         self.events = events
 
     async def run(self, cmd, *, timeout=120.0, env=None):
@@ -122,13 +122,14 @@ class StreamBox(CodexBox):
 STARTED, LOST = {"type": "turn.started"}, {"type": "turn.failed", "error": {"message": "lost"}}
 
 
-def test_paid_work_short_of_a_usage_record_is_unknown_or_a_partial_subtotal(tmp_path, monkeypatch):
+@pytest.mark.parametrize("rc", [0, 1])  # a process that failed says no more about its spend
+def test_paid_work_short_of_a_usage_record_is_unknown_or_a_partial_subtotal(tmp_path, monkeypatch, rc):
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     usage = {"input_tokens": 1000, "cached_input_tokens": 400, "output_tokens": 200}
 
     def solved(*events: dict) -> dict:
         return asyncio.run(
-            codex_cli.solve(ROW, "deepseek/deepseek-v4.1-flash", tmp_path, box=StreamBox(*events))
+            codex_cli.solve(ROW, "deepseek/deepseek-v4.1-flash", tmp_path, box=StreamBox(*events, rc=rc))
         )
 
     rec = solved(STARTED, LOST)  # nothing metered: the tokens are unknown too, not zeros

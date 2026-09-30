@@ -169,6 +169,13 @@ def test_the_source_container_is_removed_when_the_baseline_read_refuses(tmp_path
     assert "run" not in [c[0] for c in calls]  # nothing was started for a model
 
 
+def test_a_trace_git_writes_beside_the_baseline_read_is_no_part_of_the_commit(tmp_path, monkeypatch):
+    # git writes a trace or a warning on stderr beside a read that succeeded, into the same output
+    head = repo(tmp_path / "r", {"a.py": "x = 1\n"})
+    monkeypatch.setenv("GIT_TRACE", "1")
+    assert asyncio.run(run_naked.baseline(run_naked.HostBox(tmp_path / "r"))) == head
+
+
 def test_a_tree_whose_patch_could_not_be_read_is_kept_and_named(tmp_path, monkeypatch):
     calls = _fake_docker(monkeypatch)
     monkeypatch.setattr(run_naked, "ClaudeCodeAgentic", Harness)

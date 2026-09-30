@@ -141,12 +141,14 @@ UNAIDED = (  # the same sentence in both arms: the published fix is out of bound
 async def baseline(box: Any) -> str:
     """The commit the model is handed, read before it runs: the prediction is the diff against it
     and the grade resets to it, so a commit the model makes neither vanishes from the patch nor
-    survives the reset. `HEAD` at diff time would move with that commit."""
+    survives the reset. `HEAD` at diff time would move with that commit. The commit is the one line
+    that is one: what git writes on stderr (a trace, a warning) comes back in the same output, and on
+    Daytona in the same stream."""
     rc, out = await box.run("git rev-parse HEAD")
-    sha = out.strip()
-    if rc != 0 or not re.fullmatch(r"[0-9a-f]{40}", sha):
+    shas = [s for s in (ln.strip() for ln in out.split("\n")) if re.fullmatch(r"[0-9a-f]{40}", s)]
+    if rc != 0 or len(shas) != 1:
         raise RuntimeError(f"no baseline commit: rev-parse exited {rc}: {out.strip()[:200]}")
-    return sha
+    return shas[0]
 
 
 def _harvest(rec: dict, backend: Any) -> None:
