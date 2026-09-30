@@ -2,7 +2,7 @@ import typing
 from typing import Generic, Literal, TypeVar
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field, create_model
 
 from lionagi.spec import Operable, render_guidance, spec_name
 
@@ -51,6 +51,20 @@ class BothAliases(BaseModel):
 class GeneratedAlias(BaseModel):
     model_config = ConfigDict(alias_generator=lambda name: f"file_{name}")
     path: str
+
+
+class PathOrName(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    summary: str = Field(validation_alias=AliasPath("report", "summary"))
+
+
+class PathOrNameByValidate(BaseModel):
+    model_config = ConfigDict(validate_by_name=True)
+    summary: str = Field(validation_alias=AliasPath("report", "summary"))
+
+
+class PathThenKey(BaseModel):
+    summary: str = Field(validation_alias=AliasChoices(AliasPath("report", "summary"), "alt_summary"))
 
 
 T = TypeVar("T")
@@ -181,6 +195,27 @@ def test_guidance_names_each_field_by_the_key_validation_accepts(spec):
     assert spec.model_validate({"file_path": "a.md"}).path == "a.md"
     key = render_guidance(spec).splitlines()[1].split(":")[0].strip()
     assert spec.model_validate({key: "a.md"}).path == "a.md"
+
+
+@pytest.mark.parametrize(
+    "spec, key", [(PathOrName, "summary"), (PathOrNameByValidate, "summary"), (PathThenKey, "alt_summary")]
+)
+def test_a_field_behind_an_alias_path_is_named_by_one_key_validation_accepts_when_there_is_one(spec, key):
+    assert render_guidance(spec).splitlines()[1] == f"  {key}: str"
+    assert spec.model_validate({key: "done"}).summary == "done"
+
+
+@pytest.mark.parametrize(
+    "path, said, data",
+    [
+        (("report", "summary"), 'report["summary"]', {"report": {"summary": "done"}}),
+        (("wire", "texts", 0), 'wire["texts"][0]', {"wire": {"texts": ["done"]}}),
+    ],
+)
+def test_a_field_read_only_through_an_alias_path_is_said_as_the_nesting_it_reads(path, said, data):
+    spec = create_model("PathOnly", summary=(str, Field(validation_alias=AliasPath(*path))))
+    assert render_guidance(spec).splitlines()[1] == f"  {said}: str"
+    assert spec.model_validate(data).summary == "done"
 
 
 # the Operable

@@ -2325,8 +2325,8 @@ def _captured(value: Any, memo: dict[int, Any] | None = None) -> Any:
 
 def _fields(spec: BaseModel) -> dict[Any, Any]:
     # the declared fields only: a computed field is no input, and a spec that forbids extras refuses it.
-    # Each sits where validation reads it, under its alias unless the spec reads names only, and the
-    # extras a spec keeps come along; an alias path reads an int key from a dict as from a list
+    # Each sits where validation reads it, at the key `field_key` names, and the extras a spec keeps
+    # come along; an alias path reads an int key from a dict as from a list
     cls = type(spec)
     out: dict[Any, Any] = dict(spec.model_extra or {})
     for name in cls.model_fields:

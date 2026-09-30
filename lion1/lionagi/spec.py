@@ -6,6 +6,7 @@ reads and the validator the system runs; there is no second schema.
 
 from __future__ import annotations
 
+import json
 import re
 import types
 import typing
@@ -35,16 +36,22 @@ def spec_name(spec: Spec) -> str:
 
 
 def field_key(spec: Spec, name: str) -> list[str | int]:
-    """Where validation reads field `name`, key by key: its alias unless the spec reads names only,
-    the first of alternatives, and an alias path whole."""
+    """Where validation reads field `name`, key by key, one key when one will do: its alias unless the
+    spec reads names only, the first alternative that is one key, the name when the alias is a path
+    and the spec reads names too; else the alias path whole, which only a nested value fills."""
     alias = spec.model_fields[name].validation_alias
-    if not spec.model_config.get("validate_by_alias", True):
-        alias = None
+    config = spec.model_config
+    if not config.get("validate_by_alias", True):
+        return [name]
     if isinstance(alias, AliasChoices):  # validation reads any one of them
-        alias = alias.choices[0]
+        alias = next((c for c in alias.choices if isinstance(c, str)), alias.choices[0])
     if alias is None:
         return [name]
-    return [alias] if isinstance(alias, str) else list(alias.path)
+    if isinstance(alias, str):
+        return [alias]
+    if config.get("validate_by_name") or config.get("populate_by_name"):
+        return [name]
+    return list(alias.path)
 
 
 def _render_type(annotation: object) -> str:
@@ -71,7 +78,9 @@ def render_guidance(spec: Spec) -> str:
         head += f": {doc[0].strip()}"
     lines = [head]
     for name, field in spec.model_fields.items():
-        key = ".".join(str(k) for k in field_key(spec, name))
+        # a path is said as the nesting it reads, `report["summary"]`: a dotted key would read as one key
+        first, *rest = field_key(spec, name)
+        key = str(first) + "".join(f"[{json.dumps(k)}]" for k in rest)
         line = f"  {key}: {_render_type(field.annotation)}"
         if not field.is_required():
             try:
