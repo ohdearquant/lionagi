@@ -63,6 +63,13 @@ class PathOrNameByValidate(BaseModel):
     summary: str = Field(validation_alias=AliasPath("report", "summary"))
 
 
+# `validate_by_name` arrived in pydantic 2.11; earlier releases ignore the key and read the alias
+by_name_setting = pytest.mark.skipif(
+    "validate_by_name" not in ConfigDict.__annotations__,
+    reason="pydantic before 2.11 has no validate_by_name",
+)
+
+
 class PathThenKey(BaseModel):
     summary: str = Field(validation_alias=AliasChoices(AliasPath("report", "summary"), "alt_summary"))
 
@@ -198,7 +205,12 @@ def test_guidance_names_each_field_by_the_key_validation_accepts(spec):
 
 
 @pytest.mark.parametrize(
-    "spec, key", [(PathOrName, "summary"), (PathOrNameByValidate, "summary"), (PathThenKey, "alt_summary")]
+    "spec, key",
+    [
+        (PathOrName, "summary"),
+        pytest.param(PathOrNameByValidate, "summary", marks=by_name_setting),
+        (PathThenKey, "alt_summary"),
+    ],
 )
 def test_a_field_behind_an_alias_path_is_named_by_one_key_validation_accepts_when_there_is_one(spec, key):
     assert render_guidance(spec).splitlines()[1] == f"  {key}: str"
@@ -216,6 +228,17 @@ def test_a_field_read_only_through_an_alias_path_is_said_as_the_nesting_it_reads
     spec = create_model("PathOnly", summary=(str, Field(validation_alias=AliasPath(*path))))
     assert render_guidance(spec).splitlines()[1] == f"  {said}: str"
     assert spec.model_validate(data).summary == "done"
+
+
+def test_a_spec_that_turns_reading_by_name_off_names_a_path_field_by_its_path():
+    # validate_by_name=False wins over populate_by_name=True, as validation reads them
+    spec = create_model(
+        "NamesOff",
+        __config__=ConfigDict(populate_by_name=True, validate_by_name=False),
+        summary=(str, Field(validation_alias=AliasPath("report", "summary"))),
+    )
+    assert render_guidance(spec).splitlines()[1] == '  report["summary"]: str'
+    assert spec.model_validate({"report": {"summary": "done"}}).summary == "done"
 
 
 # the Operable

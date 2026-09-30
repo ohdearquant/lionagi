@@ -49,7 +49,10 @@ def field_key(spec: Spec, name: str) -> list[str | int]:
         return [name]
     if isinstance(alias, str):
         return [alias]
-    if config.get("validate_by_name") or config.get("populate_by_name"):
+    by_name = config.get("validate_by_name")  # pydantic 2.11 on: populate_by_name sets it when it is unset
+    if by_name is None:  # before 2.11 only populate_by_name
+        by_name = config.get("populate_by_name")
+    if by_name:
         return [name]
     return list(alias.path)
 
