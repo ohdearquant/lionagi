@@ -297,7 +297,7 @@ def test_unconfirmed_quiescence_blocks_grading(tmp_path, monkeypatch):
         box = GatewayTimeoutBox(stop_rc)
         monkeypatch.setattr(run_set, "testbed", lambda *a, box=box, **k: box)
         row = _one(_args(harness="codex-cli"), tmp_path, f"u{stop_rc}")
-        assert graded == [] and box.diffs == 0 and box.cmds.count(codex_cli.STOP) == 1
+        assert graded == [] and box.diffs == 0 and [c for c in box.cmds if "/proc/" in c] == [codex_cli.STOP]
         assert row["grade"]["status"] == "EXECUTION_UNCERTAIN" and row["resolved"] is False
         assert json.loads((tmp_path / f"u{stop_rc}.json").read_text())["model_patch"] == ""
         assert row["execution_quiesced"] is False and row["stop_rc"] == stop_rc
@@ -323,7 +323,8 @@ def test_unconfirmed_quiescence_blocks_grading(tmp_path, monkeypatch):
     monkeypatch.setattr(run_set, "testbed", lambda *a, **k: box)
     row = _one(_args(harness="codex-cli"), tmp_path, "s")
     assert graded == ["s"] and row["grade"]["status"] == "GRADED" and row["resolved"] is True
-    assert codex_cli.STOP not in box.cmds and "execution_quiesced" not in row and row["outcome"] == "Success"
+    assert not [c for c in box.cmds if "/proc/" in c]  # no stop probe ran, in any spelling
+    assert "execution_quiesced" not in row and row["outcome"] == "Success"
 
 
 ROWS = [{"instance_id": i, "repo": "x", "image": "img"} for i in ("a", "b", "c")]
