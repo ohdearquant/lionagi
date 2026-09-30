@@ -124,7 +124,7 @@ class Reply(str):
 @dataclass(frozen=True)
 class SessionPlan:
     """What a backend keeping a session will do with the view it is about to get: its `plan(view,
-    forced=...)` answers before the notification is written, so the notification says it
+    forced=..., run=...)` answers before the notification is written, so the notification says it
     (ADR-0009/C4). `restart`: the session starts over from the view, or from a point it passed
     before the view changed. `frees`: estimated tokens the session holds that the view does not show,
     which a restart drops. `tokens`: the prompt count the call is expected to stand in, from the
@@ -1687,7 +1687,9 @@ class Actor:
             if folded is not None:
                 post = self._fold(run, _consumed(run) + (dataclasses.replace(folded, at=r.seq),))
             plan = run.plan(
-                [dataclasses.replace(m, run=run.id) for m in _messages(post)], forced=folded is not None
+                [dataclasses.replace(m, run=run.id) for m in _messages(post)],
+                forced=folded is not None,
+                run=run.id,  # an inputless run's first view holds no message to carry it
             )
             if plan.tokens is not None:
                 shown = plan.tokens
