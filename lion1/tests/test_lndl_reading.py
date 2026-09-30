@@ -660,6 +660,24 @@ def test_a_pointer_where_a_key_or_a_set_member_stands_is_refused(literal):
     assert p.problems == [f"OUT{{...}} could not be read, so this turn ran without it: {why}"]
 
 
+@pytest.mark.parametrize(
+    "body, name",
+    [
+        ("read(path=__x)", "__x"),
+        ("f(x=__doc_0)", "__doc_0"),
+        ("f(x=[__ptr_0])", "__ptr_0"),
+        # the name the reader gives `*x` is `__ptr_0` too: written beside it, it stands twice
+        ("f(a=*x, b=__ptr_0)", "__ptr_0"),
+    ],
+)
+def test_a_name_written_in_the_readers_own_spelling_is_refused(body, name):
+    why = f"{name}: a name starting with __ is the reader's own, never a value"
+    with pytest.raises(LNDLError, match=re.escape(why)):
+        parse_call(body)
+    with pytest.raises(LNDLError, match=re.escape(why)):
+        parse(f"<lact a>{body}</lact>")
+
+
 @pytest.mark.parametrize("key", ["*a", "\x00ptr:a"])
 def test_a_quoted_key_spelled_like_a_pointer_or_its_placeholder_is_a_string(key):
     name, args = parse_call(f"f(x={{{key!r}: 1}})")
@@ -704,6 +722,11 @@ def test_deeply_nested_input_is_an_lndl_error_or_a_program(text):
     except LNDLError as e:
         result = e
     assert isinstance(result, (Program, LNDLError))
+
+
+def test_a_call_every_supported_python_parses_but_the_reading_cannot_walk_is_refused():
+    with pytest.raises(LNDLError, match="it is nested too deeply to read"):
+        parse("<lact a>f(x=" + "-" * 1500 + "1)</lact>")
 
 
 @pytest.mark.parametrize(

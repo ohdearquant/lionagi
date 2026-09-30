@@ -874,9 +874,11 @@ def test_a_fence_inside_a_string_argument_is_the_strings_text():
         assert {k: ast.literal_eval(v) for k, v in command.args} == args and script.problems == ()
 
 
-@pytest.mark.parametrize("depth", [3000, 100_000])
+@pytest.mark.parametrize("depth", [1500, 3000, 100_000])
 def test_a_program_nested_too_deeply_is_refused_at_reading(depth):
-    # past the checker's recursion, or the parser's own stack: an LNDLError the loop retries
+    # past the checker's recursion, or the parser's own stack: an LNDLError the loop retries. 1500
+    # parses on every supported Python and overflows the checker; 3000 overflows 3.11's parser
+
     with pytest.raises(LNDLError, match="the program is nested too deeply to read; the program was not run"):
         read(fenced("x = " + "-" * depth + "1"))
 
