@@ -290,7 +290,9 @@ class Console:
     def _bill(self, fh, round_no: int) -> None:
         for c in (self.calls or [])[self.billed :]:
             row = {"kind": "USAGE", "round": round_no, "model": c.get("model")}
-            row.update({k: c[k] for k in ("usage", "total_cost_usd", "attempt_usage") if k in c})
+            row.update(
+                {k: c[k] for k in ("usage", "total_cost_usd", "attempt_usage", "prompt_chars") if k in c}
+            )
             fh.write(json.dumps(row, default=str) + "\n")
             self.billed += 1
 

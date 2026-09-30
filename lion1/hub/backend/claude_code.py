@@ -31,14 +31,16 @@ import signal
 import socket
 import sys
 import tempfile
+import time
 import uuid
 import warnings
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from lionagi.actor import Actor, Message, Reply, Result, Run
+from lionagi.actor import Actor, Message, Reply, Result, Run, SessionPlan
 from lionagi.lndl import Lact
 from lionagi.record import Kind
 
@@ -84,15 +86,52 @@ class ClaudeCode:
 
 
 @dataclass
+class _Point:
+    """A point a session can be resumed from: what one call left. Each call forks the session it
+    resumes, so every earlier point stays on disk as it was and resumable."""
+
+    id: str
+    # (entry name, hash, characters) of each message it holds, in order; a reply is (_REPLY, hash, chars)
+    content: tuple[tuple[str | None, int, int], ...]
+    chars: int  # the characters it holds: every prompt sent and every reply
+    prompt: int  # the characters its call's prompt stood in
+    count: int | None  # that prompt's count, as the CLI reported it
+    envelope: dict  # the call's envelope: the CLI's running totals follow the fork chain
+    read: float  # when its prefix was last written or read, for the provider's cache
+
+
+@dataclass
+class _Step:
+    """What a call does: open the session, go on from the current point, go on from an earlier point
+    (`fork`), or start over from the whole view (`full`); with what it sends and what it expects."""
+
+    kind: str
+    base: _Point | None
+    sends: list[Message]
+    prompt: str
+    frees: int  # characters starting over takes off every later prompt (negative: it adds them)
+    tokens: int | None
+
+
+@dataclass
 class ClaudeCodeSession:
     """The chat-completion shape on one resumed CLI session: each round sends only what the view
     gained since the last round, and the CLI keeps the conversation, so the provider's prompt cache
-    can hit on the unchanged prefix. The model's view is then the CLI's history, tool turns included,
-    and that history is what a fold cuts: when a round brings a context.hide, context.show or
-    context.summarize result, or the runtime's own fold event (the measured context past the view
-    budget), the session is restarted with the folded view as one transcript, one cache miss, and
-    the CLI's tool-turn history is gone with the old session (the fold is what bounds a chair's
-    context; before it, one call read 14.8M tokens over its tool turns)."""
+    can hit on the unchanged prefix. The model's view is then the CLI's history, tool turns included.
+
+    Without tools, each call forks the session it resumes (`--fork-session`), so every call leaves a
+    point the session can go on from. When the view changes under what the session holds (a
+    context.hide, context.show or context.summarize, or the runtime's own fold event), the session
+    either keeps what it holds, or starts over from a point the change left intact (one past the
+    cache's hour priced as written again), sending the changed rest as one transcript, or from the
+    whole view. It starts over only when that pays: what it frees, read on each of the next
+    `payback` turns, must cost at least what it writes again (a cache write costs 40 reads here).
+    The fold event always starts it over, and with it the CLI's tool-turn history goes (the fold is
+    what bounds a chair's context; before it, one call read 14.8M tokens over its tool turns). A
+    session given tools goes on in place, keeping no earlier point, and starts over from the whole
+    view on a context directive's result or the fold event, unpriced: this backend does not estimate
+    the tool turns its CLI holds. A reopened entry the session lacks is sent as new, or read back
+    from a point that still holds it when that is cheaper."""
 
     model: str | None = None
     cli: str | None = None
@@ -117,11 +156,18 @@ class ClaudeCodeSession:
     actor: Actor | None = None
     requires: dict[str, tuple[str, ...]] = field(default_factory=dict)
     calls: list[dict] = field(default_factory=list)
+    # the turns a restart the view asks for must repay itself in: the characters it frees, read on each
+    # of them, against the characters it writes again at a cache write's price (_WRITE_OVER_READ reads)
+    payback: int = 10
+    # a prompt count and the characters it stood in, from a session before this backend's (a resumed
+    # chat's last call): the first start's figure stands on it; each start after sets its own
+    base: tuple[int, int] | None = None
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     sent: dict[str, int] = field(default_factory=dict)  # entry name -> hash of what the session got
-    restarts: int = 0  # sessions started over because the model changed its view
+    restarts: int = 0  # sessions started over because the view changed under them
     _last: dict | None = field(default=None, repr=False)
     _system: str | None = field(default=None, repr=False)
+    _points: list[_Point] = field(default_factory=list, repr=False)  # the current session's last
     _run: str | None = field(default=None, repr=False)  # the record the current session serves
     _runs: dict[str, dict] = field(default_factory=dict, repr=False)  # the other records' sessions
 
@@ -154,15 +200,19 @@ class ClaudeCodeSession:
             # a caller that names no run: entry names start over at _in0 in every run, so a first
             # entry already delivered with other content, or another system prompt, is a different
             # run on this backend. It gets its own session; nothing is treated as sent.
-            self.session_id, self.sent, self._last = str(uuid.uuid4()), {}, None
+            self.session_id, self.sent, self._last, self._points = str(uuid.uuid4()), {}, None, []
+            self.base = None
         self._system = system
-        new = [m for m in body if m.role != "assistant" and (m.name is None or m.name not in self.sent)]
-        if self.sent and any(m.spec in _DIRECTIVES for m in new):
-            # the model changed its own view, or the runtime folded it: start over from the folded view
-            self.session_id, self.sent, self._last = str(uuid.uuid4()), {}, None
+        # decided on the view without its last entry when that entry is new (the notification the
+        # actor wrote after asking `plan`), so the call does what the notification told
+        held = {(n, h) for n, h, _ in self._points[-1].content} if self._points else set()
+        tail: list[Message] = []
+        if body and (body[-1].name, hash(body[-1].content)) not in held:
+            body, tail = body[:-1], body[-1:]
+        forced = any(m.spec == "fold" and (m.name, hash(m.content)) not in held for m in body + tail)
+        step = self._step(body, tail, forced)
+        if step.kind in ("fork", "full"):
             self.restarts += 1
-        if not new:  # a view that only shrank: nothing new to say, resend the notification
-            new = body[-1:]
         args = ["--tools", ",".join(self.tools)]
         if self.max_turns > 0:
             args += ["--max-turns", str(self.max_turns)]
@@ -174,17 +224,21 @@ class ClaudeCodeSession:
             args += ["--add-dir", str(d)]
         if self.mcp_config:
             args += ["--mcp-config", str(self.mcp_config)]
-        if not self.sent:
-            args += ["--session-id", self.session_id]
+        sid = self.session_id if step.kind == "start" else str(uuid.uuid4())
+        if step.base is None:
+            args += ["--session-id", sid]
             if system:
                 args += ["--system-prompt", system]
-            prompt = _transcript(body) if any(m.role == "assistant" for m in body) else _plain(body)
-        else:
-            args += ["--resume", self.session_id]
-            prompt = _plain(new)
+        elif self.tools:  # an acting session goes on in place: its points past the latest are not kept
+            sid = step.base.id
+            args += ["--resume", sid]
+        else:  # a fork: the point resumed stays as it was, and the call's session is a new one
+            args += ["--resume", step.base.id, "--fork-session", "--session-id", sid]
+        prompt = step.prompt
         # this run's own state, bound before the await: another run's call can switch the backend
         # to its session while this one is out, and what comes back belongs to this run
-        sent, prev = self.sent, self._last
+        points = self._points
+        prev = step.base.envelope if step.base is not None else None
         failed: ClaudeCodeError | None = None
         async with contextlib.AsyncExitStack() as stack:
             if self.actor is not None:
@@ -301,40 +355,128 @@ class ClaudeCodeSession:
                 )
             except ClaudeCodeError as e:
                 # a failed call lands its envelope before the error goes on (ADR-0009/C5); what the CLI
-                # printed accumulates over the session like an answer's, so it is taken the same way
+                # printed accumulates over the fork chain like an answer's, so it is taken the same way
                 if e.envelope is None:
                     self.calls.append({"total_cost_usd": None, "error": str(e)})
                     raise
                 failed, envelope = e, e.envelope
-        # over a resumed session the CLI's cost and api time accumulate, its usage does not
-        call = _delta(envelope, prev)
+        # over a resumed session the CLI's cost and api time accumulate along the forks, its usage does
+        # not: the share is read against the point resumed. A failed call's fork is never gone on from
+        call = {**_delta(envelope, prev), "prompt_chars": (step.base.chars if step.base else 0) + len(prompt)}
         self.calls.append(call if failed is None else {**call, "error": str(failed)})
-        if run is None or run == self._run:
-            self._last = envelope
-        else:
-            self._runs[run]["_last"] = envelope  # parked by the other run's switch
         if failed is not None:
+            # billed for reading the point's prefix, it starts that entry's hour again all the same
+            read = (envelope.get("usage") or {}).get("cache_read_input_tokens")
+            if step.base is not None and int(read or 0):
+                step.base.read = _clock()
             raise failed
-        sent.update({m.name: hash(m.content) for m in body if m.name is not None})
-        return Reply(text, prompt_tokens=_prompt_tokens(envelope))
+        count = _prompt_tokens(envelope)
+        now = _clock()
+        if step.base is not None:
+            # its prefix was read again: the provider keeps that entry longer. A request refreshes the
+            # entry it hits, never the shorter prefixes inside it, so an earlier point's hour runs on
+            step.base.read = now
+        base = step.base
+        content = (base.content if base else ()) + tuple(
+            (m.name, hash(m.content), len(m.content)) for m in step.sends
+        )
+        content += ((_REPLY, hash(text), len(text)),)
+        chars = (base.chars if base else 0) + len(prompt)
+        point = _Point(
+            str(envelope.get("session_id") or sid), content, chars + len(text), chars, count, envelope, now
+        )
+        # past the cache's life a point costs its whole prefix again, as starting over does: it goes
+        points[:] = [p for p in points if now - p.read < _CACHE_TTL_S and not self.tools] + [point]
+        state = {"session_id": point.id, "sent": _named(content), "_last": envelope}
+        if step.kind in ("start", "full") and count is not None:
+            state["base"] = (count, chars)
+        for key, value in state.items():
+            if run is None or run == self._run:
+                setattr(self, key, value)
+            else:
+                self._runs[run][key] = value  # parked by the other run's switch
+        return Reply(text, prompt_tokens=count)
+
+    def plan(self, view: list[Message], *, forced: bool = False) -> SessionPlan:
+        """What the next call on this view does, asked before the notification is written: whether
+        the session starts over, what it holds beyond the view, and the count it will stand in
+        (ADR-0009/C4). The call decides the same on the same view, unless a point's cache hour ends
+        between the two (S13)."""
+        run = view[0].run if view else None
+        if run is not None:
+            self._switch(run)
+        step = self._step(list(view), [], forced)
+        # an acting session also holds its CLI's tool turns, which this backend does not estimate: no
+        # figure beats a low one
+        beyond = _beyond(view, self._points[-1].content) if self._points and not self.tools else 0
+        return SessionPlan(step.kind in ("fork", "full"), max(0, beyond) // 4, step.tokens)
+
+    def _step(self, view: list[Message], tail: list[Message], forced: bool) -> _Step:
+        """The call's step. `view` decides; `tail`, new either way, rides whatever is sent."""
+        if not self._points:
+            prompt = _prompt(view + tail)
+            tokens = None
+            if self.base is not None:
+                tokens = self.base[0] + (len(_prompt(view)) - self.base[1]) // 4
+            return _Step("start", None, view + tail, prompt, 0, tokens)
+        cur = self._points[-1]
+        new = _new(view, cur.content)
+        sends = new + [m for m in _new(tail, cur.content) if m not in new] or (view + tail)[-1:]
+        cont = _Step("continue", cur, sends, _plain(sends), 0, None)
+        kept = cur.chars + len(_plain(new))  # what the session holds going on, the tail aside
+        if cur.count is not None:
+            cont.tokens = cur.count + (kept - cur.prompt) // 4
+        if self.tools:
+            # an acting session's CLI holds its own tool turns, which starting over is there to drop and
+            # this backend does not estimate, so no price can be set: as before, a context directive's
+            # result or the fold starts it over whole, and it goes on through any other change
+            if not forced and not any(m.spec in _CONTEXT for m in new + tail):
+                return cont
+        elif not forced and _prefix(cur.content, view) is not None:
+            return cont
+        whole = len(_prompt(view))
+        tokens = None if self.base is None else self.base[0] + (whole - self.base[1]) // 4
+        full = _Step("full", None, view + tail, _prompt(view + tail), kept - whole, tokens)
+        if self.tools:
+            return full
+        # the view changed under the session: each way of starting over, priced against going on. The
+        # characters written beyond going on's: a point past the cache's life is written again whole,
+        # system prompt and all, and so is the current one, which going on would then write too
+        options: list[tuple[int, _Step]] = []
+        now = _clock()
+        system = len(self._system or "")  # a new session writes it again; a warm point holds it
+        stale = system + cur.chars if now - cur.read >= _CACHE_TTL_S else 0
+        for p in reversed(self._points):
+            k = _prefix(p.content, view)
+            if k is None:
+                continue
+            rest = _prompt(view[k:])
+            size = p.chars + len(rest)
+            cold = system + p.chars if now - p.read >= _CACHE_TTL_S else 0
+            writes = len(rest) - len(_plain(new)) - stale + cold
+            tokens = None if p.count is None else p.count + (size - p.prompt) // 4
+            step = _Step("fork", p, view[k:] + tail, _prompt(view[k:] + tail), kept - size, tokens)
+            options.append((writes, step))
+        options.append((system + whole - len(_plain(new)) - stale, full))
+        writes, best = min(options, key=lambda o: _WRITE_OVER_READ * o[0] - self.payback * o[1].frees)
+        if forced or (best.frees > 0 and self.payback * best.frees >= _WRITE_OVER_READ * writes):
+            return best
+        return cont
 
     def _switch(self, run: str) -> None:
         """Make `run`'s session the current one, parking the session of the run served before."""
         if run == self._run:
             return
+        keys = ("session_id", "sent", "_last", "_system", "_points", "base")
         if self._run is not None:
-            self._runs[self._run] = {
-                "session_id": self.session_id,
-                "sent": self.sent,
-                "_last": self._last,
-                "_system": self._system,
-            }
+            self._runs[self._run] = {k: getattr(self, k) for k in keys}
         saved = self._runs.pop(run, None)
         if saved is not None:
-            self.session_id, self.sent = saved["session_id"], saved["sent"]
-            self._last, self._system = saved["_last"], saved["_system"]
+            for k in keys:
+                setattr(self, k, saved[k])
         elif self._run is not None or self.sent:
             self.session_id, self.sent, self._last, self._system = str(uuid.uuid4()), {}, None, None
+            self._points, self.base = [], None
         self._run = run
 
 
@@ -480,7 +622,65 @@ async def _exec(
     return text, data
 
 
-_DIRECTIVES = frozenset({"context.hide", "context.show", "context.summarize", "fold"})
+# a restart's price: the costs the CLI reports fit a character written to the hour-long cache at 40
+# times one read from it
+_WRITE_OVER_READ = 40
+_CONTEXT = frozenset({"context.hide", "context.show", "context.summarize"})
+_CACHE_TTL_S = 3600.0  # the provider's cache life the CLI writes for (`ephemeral_1h`), from its last read
+_clock = time.monotonic
+_REPLY = "\x00reply"  # a point's entry for the model's reply: no record entry is named so
+
+
+_Held = tuple[tuple[str | None, int, int], ...]
+
+
+def _new(messages: list[Message], held: _Held) -> list[Message]:
+    """What the session lacks: the model's replies it has, and a stand-in (a placeholder, a summary)
+    stands for what it holds or a restart already sent."""
+    have = {(n, h) for n, h, _ in held}
+    return [
+        m
+        for m in messages
+        if m.role != "assistant" and not m.folded and (m.name, hash(m.content)) not in have
+    ]
+
+
+def _prefix(held: _Held, view: list[Message]) -> int | None:
+    """How many of the view's messages a point holds as they are, in order, or None when the view
+    changed inside what it holds. A reply matches the model's turn that recorded it."""
+    if len(held) > len(view):
+        return None
+    for (name, h, _), m in zip(held, view, strict=False):
+        reply = m.role == "assistant" and name == _REPLY and h == hash(m.content)
+        if (name, h) != (m.name, hash(m.content)) and not reply:
+            return None
+    return len(held)
+
+
+def _beyond(view: list[Message], held: _Held) -> int:
+    """The characters a session holds beyond the view: what it holds that the view no longer shows,
+    less the stand-ins the view shows in their place."""
+    shown = Counter((m.name, hash(m.content)) for m in view)
+    replies = Counter(hash(m.content) for m in view if m.role == "assistant")  # two alike are two
+    have = {(n, h) for n, h, _ in held}
+    gone = 0
+    for n, h, c in held:
+        pool, key = (replies, h) if n == _REPLY else (shown, (n, h))
+        if pool[key] > 0:
+            pool[key] -= 1
+        else:
+            gone += c
+    return gone - sum(len(m.content) for m in view if m.folded and (m.name, hash(m.content)) not in have)
+
+
+def _named(held: _Held) -> dict[str, int]:
+    return {name: h for name, h, _ in held if name is not None and name != _REPLY}
+
+
+def _prompt(messages: list[Message]) -> str:
+    """A start's prompt: the conversation as a transcript when it has the model's turns, else plain."""
+    return _transcript(messages) if any(m.role == "assistant" for m in messages) else _plain(messages)
+
 
 # the CLI's pre-tool hook, run by this interpreter isolated: the tool call on stdin goes to the gate's
 # socket and the verdict comes back. Exit 2 stops the tool with the reason; the CLI runs a tool whose
