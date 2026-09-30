@@ -422,6 +422,15 @@ def test_an_explicit_log_is_owned_before_the_session_starts_and_a_failed_start_l
     assert not other.exists() and log.read_text() == "row\n"  # its own empty log removed, no other
 
 
+def test_a_failure_whose_message_spans_lines_is_said_on_one_line(capsys):
+    """A CLI's stderr can run to several lines; the failure is one red line all the same."""
+    say = Console("m", None, color=False, width=200)
+    say.failed("the model's call failed: claude exited 2: provider unavailable\n  retry after 30 seconds\n")
+    assert capsys.readouterr().out.splitlines() == [
+        "✗ the model's call failed: claude exited 2: provider unavailable retry after 30 seconds"
+    ]
+
+
 def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_exit_1(
     tmp_path, monkeypatch, capsys
 ):

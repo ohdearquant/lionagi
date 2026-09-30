@@ -369,6 +369,17 @@ class ClaudeCodeSession:
             read = (envelope.get("usage") or {}).get("cache_read_input_tokens")
             if step.base is not None and int(read or 0):
                 step.base.read = _clock()
+            if self.tools and step.base is not None:
+                # an acting session went on in place, so its running totals now hold this call's
+                # spend: the next call's share is read against the totals printed here. A total not
+                # printed stays the point's (that spend lands in the next share, once), and one the
+                # session did not keep reads lower next time, so that share is unknown, never twice
+                printed = {
+                    k: envelope[k]
+                    for k in ("total_cost_usd", "duration_api_ms")
+                    if envelope.get(k) is not None
+                }
+                step.base.envelope = {**step.base.envelope, **printed}
             raise failed
         count = _prompt_tokens(envelope)
         now = _clock()
@@ -397,12 +408,13 @@ class ClaudeCodeSession:
                 self._runs[run][key] = value  # parked by the other run's switch
         return Reply(text, prompt_tokens=count)
 
-    def plan(self, view: list[Message], *, forced: bool = False) -> SessionPlan:
+    def plan(self, view: list[Message], *, forced: bool = False, run: str | None = None) -> SessionPlan:
         """What the next call on this view does, asked before the notification is written: whether
         the session starts over, what it holds beyond the view, and the count it will stand in
         (ADR-0009/C4). The call decides the same on the same view, unless a point's cache hour ends
-        between the two (S13)."""
-        run = view[0].run if view else None
+        between the two (S13). `run` names the record even when its view is still empty (a run with
+        no inputs, before its first call), so another run's session is never the one planned."""
+        run = run if run is not None else view[0].run if view else None
         if run is not None:
             self._switch(run)
         step = self._step(list(view), [], forced)
