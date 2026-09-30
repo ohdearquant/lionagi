@@ -28,7 +28,10 @@ def kkernel_stub(tmp_path, monkeypatch):
 def no_collection():
     """For a test that takes the interpreter to its recursion limit on purpose. A garbage collection
     that happened to run there would run some other object's finalizer with no stack left, and the
-    RecursionError it raises, unraisable, would fail the test by chance."""
+    RecursionError it raises, unraisable, would fail the test by chance. Collection comes back as it
+    was, whether the test passed or failed."""
+    was = gc.isenabled()
     gc.disable()
     yield
-    gc.enable()
+    if was:
+        gc.enable()
