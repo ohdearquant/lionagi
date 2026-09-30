@@ -1,9 +1,11 @@
+import asyncio
 import typing
 from typing import Generic, Literal, TypeVar
 
 import pytest
 from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field, create_model
 
+from lionagi import Actor, Profile, RunRequest, Success
 from lionagi.spec import Operable, field_key, render_guidance, spec_name
 
 
@@ -266,9 +268,9 @@ def test_a_field_is_named_by_a_key_the_installed_pydantic_reads_whatever_the_con
     "alias, said, data",
     [
         (AliasPath("report", "leaf"), 'report["leaf"]', {"report": {"leaf": "done"}}),
-        (AliasPath("wire-texts", "leaf"), 'wire-texts["leaf"]', {"wire-texts": {"leaf": "done"}}),
+        (AliasPath("wire-texts", "leaf"), '"wire-texts"["leaf"]', {"wire-texts": {"leaf": "done"}}),
         (AliasPath("résumé", "leaf"), 'résumé["leaf"]', {"résumé": {"leaf": "done"}}),
-        (AliasPath("标题", "leaf"), '标题["leaf"]', {"标题": {"leaf": "done"}}),
+        (AliasPath("标题", "leaf"), '"标题"["leaf"]', {"标题": {"leaf": "done"}}),
         (AliasPath("first\nsecond", "leaf"), '"first\\nsecond"["leaf"]', {"first\nsecond": {"leaf": "done"}}),
         (AliasPath('a"b', "leaf"), '"a\\"b"["leaf"]', {'a"b': {"leaf": "done"}}),
         (AliasPath("a[0]", "leaf"), '"a[0]"["leaf"]', {"a[0]": {"leaf": "done"}}),
@@ -290,6 +292,65 @@ def test_a_key_is_said_bare_only_when_it_reads_as_itself(alias, said, data):
     spec = create_model("Keyed", summary=(str, Field(validation_alias=alias)))
     assert render_guidance(spec).split("\n")[1] == f"  {said}: str"
     assert spec.model_validate(data).summary == "done"
+
+
+def _said_path(first: str | int, rest: str | int) -> str:
+    spec = create_model("PathSpec", value=(str, Field(validation_alias=AliasPath(first, rest))))
+    return render_guidance(spec).split("\n")[1].removeprefix("  ").rsplit(": ", 1)[0]
+
+
+@pytest.mark.parametrize("form", ["tag", "program"])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "report",
+        "résumé",
+        "wire-texts",
+        "标题",
+        "123",
+        "class",
+        "None",
+        "__x",
+        "e\u0301",
+        "\ufb01eld",
+        "🦁",
+        "a#b",
+        "a:b",
+        "a'b",
+        "{}",
+        "a b",
+        "a\u00a0b",
+        "a\tb",
+        "a\u0085b",
+        "a\ufeffb",
+        "first\nsecond",
+        'a"b',
+        "a\\b",
+        "a[0]",
+        "zero\u200bwidth",
+        "line\u2028break",
+        "tag\U000e0001",
+        "",
+    ],
+)
+def test_the_actor_fills_a_path_field_through_the_keys_its_guidance_says(key, form):
+    """What the guidance says a path is, written back as the dict it names, fills the field: in an OUT{}
+    tag and in a program, whichever of the key's positions it stands in."""
+    first = _said_path(key, "leaf").removesuffix('["leaf"]')
+    rest = _said_path("leaf", key).removeprefix("leaf[").removesuffix("]")
+    spec = create_model("PathSpec", value=(str, Field(validation_alias=AliasPath(key, key))))
+    out = f'OUT{{path_spec: {{{first}: {{{rest}: "done"}}}}}}'
+    turn = out if form == "tag" else f"Working on it.\n```\n{out}\n```\n"
+    profile = Profile("p") if form == "tag" else Profile("p", language="program")
+
+    async def backend(messages):
+        return turn
+
+    run = asyncio.run(
+        Actor("t").run(profile, RunRequest(inputs=("go",), emits=(spec,), max_rounds=1), backend)
+    )
+    assert isinstance(run.outcome, Success), run.refused
+    assert run.output["path_spec"].value == "done"
 
 
 # the Operable

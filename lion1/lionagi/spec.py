@@ -7,6 +7,7 @@ reads and the validator the system runs; there is no second schema.
 from __future__ import annotations
 
 import json
+import keyword
 import re
 import types
 import typing
@@ -29,8 +30,9 @@ _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 # pydantic 2.11 reads validate_by_alias and validate_by_name; before it a config may carry them, and
 # validation reads by alias, and by name too under populate_by_name, whatever they say
 _BY_SETTINGS = "validate_by_name" in ConfigDict.__annotations__
-# what a key said bare would lose: a line or paragraph break, a control or format character, a space
-_UNSAID = frozenset({"Cc", "Cf", "Zl", "Zp", "Zs"})
+# a key the actor's two readers both take bare: an OUT{} tag quotes a bare `[A-Za-z_]\w*` key (lndl's
+# `_BARE_KEY`), and a program reads a Python name, NFKC-normalized, never a keyword or a `__` name
+_BARE = re.compile(r"[A-Za-z_]\w*")
 
 
 def spec_name(spec: Spec) -> str:
@@ -65,11 +67,34 @@ def field_key(spec: Spec, name: str) -> list[str | int]:
 
 
 def _said(key: str) -> str:
-    """A key as the guidance says it: bare when it reads as itself, else quoted as the keys after it
-    are, when a character in it would end the line, hide, or read as the quotes and brackets of a path."""
-    if key and not any(c in '"\\[]' or unicodedata.category(c) in _UNSAID for c in key):
-        return key
-    return json.dumps(key)
+    """A path's first key as the guidance says it: bare when an OUT{} tag and a program both read it back
+    as itself, else quoted as the keys after it are."""
+    bare = (
+        _BARE.fullmatch(key) is not None
+        and key.isidentifier()
+        and not keyword.iskeyword(key)
+        and not key.startswith("__")
+        and unicodedata.normalize("NFKC", key) == key
+    )
+    return key if bare else _quoted(key)
+
+
+def _quoted(key: str | int) -> str:
+    """A path key as a literal both readers take: a list index as its number; a string in double quotes,
+    its printable characters as they are and the rest escaped as Python reads an escape."""
+    if not isinstance(key, str):
+        return json.dumps(key)
+    out = []
+    for c in key:
+        if c in '"\\':
+            out.append("\\" + c)
+        elif c.isprintable():
+            out.append(c)
+        elif ord(c) > 0xFFFF:  # JSON would write a surrogate pair, which Python reads as two characters
+            out.append(f"\\U{ord(c):08x}")
+        else:
+            out.append(json.dumps(c)[1:-1])
+    return '"' + "".join(out) + '"'
 
 
 def _render_type(annotation: object) -> str:
@@ -98,7 +123,7 @@ def render_guidance(spec: Spec) -> str:
     for name, field in spec.model_fields.items():
         # a path is said as the nesting it reads, `report["summary"]`: a dotted key would read as one key
         first, *rest = field_key(spec, name)
-        key = _said(str(first)) + "".join(f"[{json.dumps(k)}]" for k in rest)
+        key = _said(str(first)) + "".join(f"[{_quoted(k)}]" for k in rest)
         line = f"  {key}: {_render_type(field.annotation)}"
         if not field.is_required():
             try:
