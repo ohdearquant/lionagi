@@ -336,8 +336,9 @@ def _said_path(first: str | int, rest: str | int) -> str:
 def test_the_actor_fills_a_path_field_through_the_keys_its_guidance_says(key, form):
     """What the guidance says a path is, written back as the dict it names, fills the field: in an OUT{}
     tag and in a program, whichever of the key's positions it stands in."""
+    leaf = _said_path("leaf", "leaf").removesuffix('["leaf"]')  # however the guidance says `leaf` first
     first = _said_path(key, "leaf").removesuffix('["leaf"]')
-    rest = _said_path("leaf", key).removeprefix("leaf[").removesuffix("]")
+    rest = _said_path("leaf", key).removeprefix(leaf + "[").removesuffix("]")
     spec = create_model("PathSpec", value=(str, Field(validation_alias=AliasPath(key, key))))
     out = f'OUT{{path_spec: {{{first}: {{{rest}: "done"}}}}}}'
     turn = out if form == "tag" else f"Working on it.\n```\n{out}\n```\n"
