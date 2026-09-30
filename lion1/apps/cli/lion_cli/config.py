@@ -49,8 +49,8 @@ def _value(path: Path, key: str, v: object) -> object:
             return v
     elif type(v) is want:  # exact: a TOML true is not the integer 1
         if key == "khive_config" and not Path(v).expanduser().is_absolute():
-            # beside the directory the file's .lion is in, as written: `seat/..` read lexically is not
-            # the directory the filesystem reaches when `seat` is a link, so only the open resolves it
+            # beside the directory the file's .lion is in, as written: `linked/..` read lexically is not
+            # the directory the filesystem reaches when `linked` is a link, so only the open resolves it
             return str(path.parent.parent / v)
         return v
     says = f"one of {', '.join(want)}" if isinstance(want, tuple) else _SAYS[want]
