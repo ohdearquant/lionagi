@@ -146,8 +146,9 @@ class Script:
     repairs: tuple[str, ...] = ()  # the same repairs by catalogue name, for the run's count
 
 
-# a fence stands at the start of its line, so a ``` inside a string argument is the string's text
-_FENCE = re.compile(r"^```[^\n`]*\n(.*?)^```", re.DOTALL | re.MULTILINE)
+# a fence stands at the start of its line, blanks before it allowed (a block in a list item is
+# indented), so a ``` inside a string argument is the string's text
+_FENCE = re.compile(r"^[ \t]*```[^\n`]*\n(.*?)^[ \t]*```", re.DOTALL | re.MULTILINE)
 _PTR = "__ptr_"
 _DO = "__do_"
 _TOO_DEEP = "the program is nested too deeply to read; the program was not run"

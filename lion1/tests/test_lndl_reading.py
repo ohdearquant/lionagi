@@ -356,6 +356,14 @@ def test_two_heredocs_with_the_same_tag_in_one_call_are_two_values():
     assert p.lacts[0].args == {"old": "one", "new": "two"} and p.problems == []
 
 
+@pytest.mark.parametrize("gap", [" ", "\t", "  "])
+def test_a_closing_line_that_goes_on_to_the_next_argument_reads_both_and_names_the_comma(gap):
+    call = f"f(x=<<EOF\nhello\nEOF{gap}y=1)"
+    assert parse_call_noting(call) == ("f", {"x": "hello", "y": 1}, ("comma",))
+    p = parse(f"<lact a>{call}</lact>")
+    assert p.lacts[0].args == {"x": "hello", "y": 1} and p.problems == [_repaired("a", COMMA)]
+
+
 def test_an_escaped_quote_before_a_heredoc_does_not_end_its_string():
     p = parse('<lact e>edit(old="a \\" b", new=<<EOF\nhi\nEOF)</lact>')
     assert p.lacts[0].args == {"old": 'a " b', "new": "hi"}

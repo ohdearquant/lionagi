@@ -874,6 +874,20 @@ def test_a_fence_inside_a_string_argument_is_the_strings_text():
         assert {k: ast.literal_eval(v) for k, v in command.args} == args and script.problems == ()
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        'Here:\n\n  ```python\nx = echo(text="hi")\n```\n',
+        '```python\nx = echo(text="hi")\n  ```\n',
+        '\t```\nx = echo(text="hi")\n\t```',
+    ],
+)
+def test_a_fence_with_blanks_before_it_still_opens_and_closes_the_block(text):
+    script = read(text)
+    (command,) = script.body
+    assert command.name == "echo" and script.problems == ()
+
+
 @pytest.mark.parametrize("depth", [1500, 3000, 100_000])
 def test_a_program_nested_too_deeply_is_refused_at_reading(depth):
     # past the checker's recursion, or the parser's own stack: an LNDLError the loop retries. 1500

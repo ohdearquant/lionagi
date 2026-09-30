@@ -187,8 +187,9 @@ def _marks(nodes: Iterable[ast.expr], pointers: list[str], docs: list[str] = ())
 
 _HEREDOC_AT = re.compile(r"=\s*<<\s*['\"]?([A-Za-z_]\w*)['\"]?[ \t]*\r?\n")
 # the closing line: the tag alone, followed by `,` or `)`, by the next argument, or by nothing (`end`:
-# the end of a call's text, or its closing tag in a whole turn); `PYTHONPATH=` is not the tag `PY`
-_HEREDOC_END = r"^[ \t]*{tag}(?!\w)[ \t]*(?=\s*(?:[,)]|[A-Za-z_]\w*\s*=|{end}))"
+# the end of a call's text, or its closing tag in a whole turn); `PYTHONPATH=` is not the tag `PY`. The
+# blanks after the tag stay in the call, so a next argument on the closing line stays its own name
+_HEREDOC_END = r"^[ \t]*{tag}(?!\w)(?=\s*(?:[,)]|[A-Za-z_]\w*\s*=|{end}))"
 
 
 def _lift_heredocs(source: str) -> tuple[str, list[str]]:
