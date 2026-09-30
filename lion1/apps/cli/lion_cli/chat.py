@@ -14,15 +14,18 @@ import time
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from hub import Box, BoxTree, DaytonaSandbox, LocalTree, Sandbox, code, files, guidance, khive_ops, shell
 from hub.agent.chores import Bounded
+from hub.areas import partial
+from hub.backend import ClaudeCodeSession
 from hub.chat import chat, load_log
 from hub.hooks import install, load
 from hub.khive import Khive, KhiveError
 from hub.tools.code import Tree
 from lionagi import Actor, Kind, Profile, lndl
-from lionagi.actor import DEFAULT_HANDLERS, Run
+from lionagi.actor import DEFAULT_HANDLERS, Run, _text
 from lionagi.record import Entry
 
 from .agent import backend_for
@@ -33,6 +36,8 @@ __all__ = (
     "prepare_box",
     "take_patch",
     "spent",
+    "signer",
+    "status_line",
     "resolve_chat",
     "fresh_log",
     "unsettled",
@@ -53,13 +58,17 @@ def console(
     notify: Callable[[str], None] | None = None,
     tree: Tree | None = None,
     about_box: str | None = None,
+    own_tools: tuple[str, ...] = (),
+    khive_config: Path | None = None,
 ) -> tuple[Actor, Profile]:
     """The actor a person talks to: the file and directory readers, khive when the directory is an
-    actor's own (its `.khive/config.toml` names the actor the reads sign as), a shell when a sandbox
+    actor's own (its `.khive/config.toml` names the actor the reads sign as) or `khive_config` names
+    the file to sign with instead (explicit: the directory's own is not read), a shell when a sandbox
     is given, and with `coding` the tools a fix is found and written with (read_lines, search, edit)
     plus the tree's own rules (AGENTS.md, CLAUDE.md at the root) in the guidance. `tree` is where the
     file and code tools read and write: the directory itself by default, the copy of it in a box
-    with `about_box` saying so (the VM's own guidance otherwise)."""
+    with `about_box` saying so (the VM's own guidance otherwise). `own_tools` are the Claude Code
+    CLI's own tools a claude_code session runs inside each round, named in the guidance."""
     directory = Path(directory).resolve()
     tree = tree if tree is not None else LocalTree(directory)
     actor = Actor(name, notes_dir=directory / ".lion" / "notes")
@@ -85,15 +94,18 @@ def console(
             if (directory / name).exists()
         )
         about_sandbox += "\n\n" + guidance("code", root=directory, branch=_branch(directory), rules=rules)
-    config = directory / ".khive" / "config.toml"
-    if config.exists():
-        actor_id = tomllib.loads(config.read_text()).get("actor", {}).get("id")
+    config = khive_config if khive_config is not None else directory / ".khive" / "config.toml"
+    if khive_config is not None and not config.is_file():  # explicit: said, never the directory's instead
+        if notify is not None:
+            notify(f"{config}: no such khive config file; khive tool unavailable")
+    elif config.exists():
+        actor_id = signer(directory, khive_config)
         if actor_id is None:
             if notify is not None:
                 notify(f"{config}: no [actor].id; khive tool unavailable")
         else:
             try:
-                khive = Bounded(Khive(directory, actor_id), recipients=frozenset())
+                khive = Bounded(Khive(directory, actor_id, config=khive_config), recipients=frozenset())
             except KhiveError as e:
                 if notify is not None:
                     notify(f"khive unavailable: {e}")
@@ -103,6 +115,14 @@ def console(
                     f", khive_ops(ops) signing as {actor_id} ({len(khive.allowed)} verbs: reads, comm.read, "
                     "schedule.remind, memory.remember at spawn salience)"
                 )
+    if own_tools:
+        tools += (
+            f"; and your own Claude Code tools ({', '.join(own_tools)}) run inside each round in "
+            f"{directory}, called the way you always call them, never inside <lact> (that is for the "
+            "commands above only). Each call lands on the record as a result under its tool-use id, so "
+            "you can context.hide it once it has served; what the call taught you goes into a note first. "
+            "A context.hide or context.summarize restarts your session from the folded view"
+        )
     profile = Profile(
         name=name,
         specs=frozenset(specs) | {h.name for h in DEFAULT_HANDLERS},
@@ -160,16 +180,7 @@ async def take_patch(
     path.write_text(patch)
     say(f"box: the copy's diff, {patch.count(chr(10))} line(s), saved as {path}")
     print(patch, end="" if patch.endswith("\n") else "\n")
-    top = subprocess.run(
-        ["git", "-C", str(directory), "rev-parse", "--show-toplevel", "--show-prefix"],
-        capture_output=True,
-        text=True,
-    )
-    if top.returncode == 0:  # from a subdirectory `git apply` skips every path and exits 0
-        root, prefix = top.stdout.split("\n")[:2]
-        argv = ["git", "-C", root, "apply", *([f"--directory={prefix}"] if prefix else []), str(path)]
-    else:  # not a repository: git apply works the directory as plain files
-        argv = ["git", "-C", str(directory), "apply", str(path)]
+    argv = _git_apply(directory, str(path))
     if apply:
         done = subprocess.run(argv, capture_output=True, text=True)
         if done.returncode == 0:
@@ -181,10 +192,78 @@ async def take_patch(
     return path
 
 
-def spent(calls: list[dict]) -> float:
+def _git_apply(directory: Path, *args: str) -> list[str]:
+    """`git apply <args>` for a chat patch over `directory`: from the top of the repository it sits in,
+    with its prefix, or over plain files when it sits in none."""
+    top = subprocess.run(
+        ["git", "-C", str(directory), "rev-parse", "--show-toplevel", "--show-prefix"],
+        capture_output=True,
+        text=True,
+    )
+    if top.returncode == 0:  # from a subdirectory `git apply` skips every path and exits 0
+        root, prefix = top.stdout.split("\n")[:2]
+        return ["git", "-C", root, "apply", *([f"--directory={prefix}"] if prefix else []), *args]
+    # not a repository: git apply works the directory as plain files
+    return ["git", "-C", str(directory), "apply", *args]
+
+
+def spent(calls: list[dict]) -> tuple[float, int]:
     """What the session was billed: each call's `total_cost_usd` (every attempt, the failed ones
-    too), falling back to the last attempt's `usage.cost` for a backend that reports only that."""
-    return sum(float(c.get("total_cost_usd") or (c.get("usage") or {}).get("cost") or 0) for c in calls)
+    too), falling back to the last attempt's `usage.cost` for a backend that reports only that, a
+    total of 0 being a bill of 0 so only an absent total falls back; and how many calls that sum
+    misses, with no figure at all or the router's `cost_complete` false."""
+    cost = 0.0
+    for c in calls:
+        billed = c.get("total_cost_usd")
+        cost += float(billed if billed is not None else (c.get("usage") or {}).get("cost") or 0)
+    unknown = sum(
+        1
+        for c in calls
+        if (c.get("total_cost_usd") is None and (c.get("usage") or {}).get("cost") is None)
+        or c.get("cost_complete") is False
+    )
+    return cost, unknown
+
+
+def signer(directory: Path, config: Path | None = None) -> str | None:
+    """The khive actor the directory's `.khive/config.toml` names, or the one `config` names when it
+    is given (then the directory's own is not read); None when the file is absent or names none."""
+    config = config if config is not None else directory / ".khive" / "config.toml"
+    if not config.is_file():
+        return None
+    return tomllib.loads(config.read_text()).get("actor", {}).get("id")
+
+
+def status_line(
+    actor: Actor, profile: Profile, runs: list[Run], backend: Any, model: str = "", who: str | None = None
+) -> str:
+    """`model · actor · inbox N · ctx ~F/B (last call P) · notes N (S chars) · $C`, read off the live
+    objects each time: inbound not yet taken into a round, the context figure the round notice told
+    against its budget (and the prompt the backend last reported), the profile's notes, what was
+    billed. Before a run starts there is no context to tell."""
+    parts = [f"inbox {len(actor.inbox) + sum(len(r.inbox) for r in runs)}"]
+    if model:  # the model and whose name the khive reads and sends carry, first: who is talking
+        parts = [model.split("/")[-1], who or "no actor"] + parts
+    if runs:
+        run = runs[0]
+        ctx = f"ctx ~{_k(run.context_figure)}/{_k(run.bounds['context_budget'])}"
+        if run.anchor is not None:
+            ctx += f" (last call {_k(run.anchor[0])})"
+        parts.append(ctx)
+    notes = actor.notes_for(profile).list()
+    size = sum(len(_text(n.value)) for n in notes)  # the size note.list tells the model
+    parts.append(f"notes {len(notes)} ({_k(size)} chars)")
+    cost, unknown = spent(getattr(backend, "calls", None) or [])
+    parts.append(f"${cost:.4f}" + partial(unknown))
+    return " · ".join(parts)
+
+
+def _k(n: float) -> str:
+    """12345 -> 12.3k, 200000 -> 200k: a count at a glance."""
+    for scale, unit in ((1_000_000, "M"), (1_000, "k")):
+        if n >= scale:
+            return f"{n / scale:.1f}".removesuffix(".0") + unit
+    return f"{n:g}"
 
 
 def _branch(directory: Path) -> str:
@@ -255,9 +334,9 @@ def unsettled(history: tuple[Entry, ...]) -> list[str]:
 
 
 class Interrupt:
-    """Ctrl-C. Mid-run, the first one hands the turn back at the next round boundary (the round in
-    flight finishes, its results land, then `you ▸`); the second one, or one at the prompt, ends the
-    conversation now. The counter resets each time the person is asked."""
+    """Ctrl-C. Mid-run, the first one cuts the model's call short and hands the turn back now (or,
+    with no call in flight, at the round's end once its results land); the second one, or one at the
+    prompt, ends the conversation now. The counter resets each time the person is asked."""
 
     def __init__(self, runs: list[Run], task: asyncio.Task, say: Console):
         self.runs, self.task, self.say = runs, task, say
@@ -266,8 +345,10 @@ class Interrupt:
     def __call__(self) -> None:
         self.presses += 1
         if self.presses == 1 and self.runs and not self.say.asking:
-            self.runs[0].pause = True
-            self.say.notice("stopping after this round; Ctrl-C again to quit now")
+            if self.runs[0].interrupt():
+                self.say.notice("cut: the model's call was abandoned; Ctrl-C again to quit")
+            else:
+                self.say.notice("stopping after this round; Ctrl-C again to quit now")
             return
         self.task.cancel()
 
@@ -278,8 +359,14 @@ async def chat_main(a: argparse.Namespace) -> None:
     prior = resolve_chat(chats, a.resume) if a.resume else None  # before this session's own log exists
     if a.log:
         log = Path(a.log)
-        if log.exists():
-            raise SystemExit(f"{log} exists; `lion chat -r {log}` continues it, another --log starts fresh")
+        log.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with log.open("x"):  # created here, exclusively, as `fresh_log` does: one session owns a log
+                pass
+        except FileExistsError:
+            raise SystemExit(
+                f"{log} exists; `lion chat -r {log}` continues it, another --log starts fresh"
+            ) from None
         chat_id = log.stem
     else:
         chat_id, log = fresh_log(chats, time.strftime("%Y%m%d-%H%M%S"))
@@ -288,7 +375,7 @@ async def chat_main(a: argparse.Namespace) -> None:
     except BaseException:
         # a start that failed before anything was logged (a bad hooks.toml, no image) must not leave
         # an empty log as `-c`'s next target: the previous history would be lost to the next session
-        if log.exists() and log.stat().st_size == 0:  # --log included: an existing path was refused above
+        if log.exists() and log.stat().st_size == 0:  # both paths created the log above, so it is ours
             log.unlink()
         raise
 
@@ -296,16 +383,57 @@ async def chat_main(a: argparse.Namespace) -> None:
 async def _chat_main(
     a: argparse.Namespace, directory: Path, chats: Path, prior: Path | None, chat_id: str, log: Path
 ) -> None:
-    boxed = getattr(a, "box", "vm") == "daytona"
+    history: tuple = ()
+    resumed = notice = None
+    ran: dict = {}  # where the continued chat ran, from its log's BOX row; a flag given now wins
+    if prior is not None:
+        torn: list[str] = []
+        history = load_log(prior, torn, ran)
+        resumed = (prior.stem, len(history))
+        notes = [f"the previous session's log ended mid-write: {t}" for t in torn]
+        if left := unsettled(history):
+            notes.append(
+                f"the previous session ended before these commands settled: {', '.join(left)}. "
+                "They did not run again; ask again for any you still need."
+            )
+        patch = chats / f"{prior.stem}.patch"
+        if patch.exists():
+            try:  # does the saved patch come off the directory as it stands?
+                off = subprocess.run(
+                    _git_apply(directory, "--check", "-R", str(patch)), capture_output=True
+                ).returncode
+                standing = "are not applied to" if off else None
+            except FileNotFoundError:  # no git here: unchecked, and the model is told that much
+                standing = "could not be checked against"
+            if standing is not None:
+                notes.append(
+                    f"the previous session's changes, saved as {patch}, {standing} {directory} as "
+                    "it stands, so edits the record shows may be missing from the files you work now; "
+                    "read a file before relying on an edit to it."
+                )
+        notice = " ".join(notes) or None
+    box = getattr(a, "box", None) or ran.get("box", "vm")
+    image = getattr(a, "image", None) or ran.get("image", "python:3.12")
+    boxed = box == "daytona"
     sandbox: Box | None = None
     tree = about_box = None
     if boxed:
-        sandbox = DaytonaSandbox(a.image, workdir=str(directory))
+        sandbox = DaytonaSandbox(image, workdir=str(directory))
         tree = BoxTree(sandbox)
-        about_box = guidance("box", kind="Daytona", image=a.image, root=directory)
+        about_box = guidance("box", kind="Daytona", image=image, root=directory)
     elif a.shell or a.code:
         sandbox = Sandbox(directory, f"lion-{chat_id}", offline=a.offline)
     degraded: list[str] = []
+    khive_config = None
+    if getattr(a, "khive_config", None):  # explicit: refused outright rather than falling back
+        khive_config = Path(a.khive_config).expanduser().resolve()
+        if not khive_config.is_file():
+            raise SystemExit(f"--khive-config {khive_config}: no such file")
+        if signer(directory, khive_config) is None:
+            raise SystemExit(f"--khive-config {khive_config}: no [actor].id in it")
+    own_tools = tuple(t.strip() for t in (getattr(a, "tools", None) or "").split(",") if t.strip())
+    if own_tools and not (a.model == "claude_code" or a.model.startswith("claude_code/")):
+        raise SystemExit("--tools is for a claude_code model: the CLI runs them, no other backend can")
     actor, profile = console(
         directory,
         model=a.model,
@@ -315,21 +443,20 @@ async def _chat_main(
         notify=degraded.append,
         tree=tree,
         about_box=about_box,
+        own_tools=own_tools,
+        khive_config=khive_config,
     )
-    backend = backend_for(a.model)
-    history: tuple = ()
-    resumed = notice = None
-    if prior is not None:
-        torn: list[str] = []
-        history = load_log(prior, torn)
-        resumed = (prior.stem, len(history))
-        notes = [f"the previous session's log ended mid-write: {t}" for t in torn]
-        if left := unsettled(history):
-            notes.append(
-                f"the previous session ended before these commands settled: {', '.join(left)}. "
-                "They did not run again; ask again for any you still need."
-            )
-        notice = " ".join(notes) or None
+    if own_tools:  # the CLI's own tools run in this directory (khive signs as its actor when configured)
+        options = {"tools": list(own_tools), "max_turns": getattr(a, "max_turns", 0)}
+        backend = backend_for(a.model, options, cwd=directory)
+    else:
+        backend = backend_for(a.model)
+    if isinstance(backend, ClaudeCodeSession):  # the CLI's own tool calls ask this actor's gate (ADR-0009/C6)
+        backend.actor = actor
+        actor.elsewhere = {
+            t: f"{t} is one of your own tools; call it as you always do, not inside <lact>" for t in own_tools
+        }
+    runs: list[Run] = []
     say = Console(
         a.model,
         log,
@@ -337,6 +464,10 @@ async def _chat_main(
         echo=a.say is not None or not sys.stdin.isatty(),
         verbose=a.verbose,
         calls=getattr(backend, "calls", None),
+        head={"kind": "BOX", "box": box} | ({"image": image} if boxed else {}),
+        history=directory / ".lion" / "history",
+        status=lambda: status_line(actor, profile, runs, backend, a.model, signer(directory, khive_config)),
+        directory=directory,
     )
     say.quiet_until = len(history) - 1
     say.open(a.model, directory, chat_id, sorted(profile.specs), resumed)
@@ -358,14 +489,17 @@ async def _chat_main(
             raise SystemExit(f"the sandbox image {sandbox.image} did not build:\n{build}")
         say.notice(f"sandbox {sandbox.name}: a VM over {directory}" + (", no network" if a.offline else ""))
         await sandbox.start()
-    runs: list[Run] = []
     off = actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
+    off_round = actor.bus.subscribe("round.started", lambda ev: say.working("thinking"))
     interrupt = Interrupt(runs, asyncio.current_task(), say)
     asyncio.get_running_loop().add_signal_handler(signal.SIGINT, interrupt)
 
     async def ask() -> str | None:
-        interrupt.presses = 0
-        return await say.ask()
+        while True:
+            interrupt.presses = 0
+            text = await say.ask()
+            if text is None or not say.command(text):  # a console command is run here, then ask again
+                return text
 
     interrupted = False
     try:
@@ -385,6 +519,7 @@ async def _chat_main(
         ended, interrupted = "interrupted", True
     finally:
         off()
+        off_round()
         if sandbox is not None:
             try:
                 if boxed and sandbox.dead is not None:
@@ -420,7 +555,7 @@ async def _chat_main(
             except asyncio.CancelledError:  # a third Ctrl-C while the VM stops: still close, still leave
                 ended, interrupted = "interrupted", True
     calls = getattr(backend, "calls", [])
-    say.close(ended, len(calls), spent(calls), log)
+    say.close(ended, len(calls), *spent(calls), log)
     if interrupted:
         # a backend call may still be on its thread; the loop's shutdown would wait for it
         # (measured: a Ctrl-C that seemed to do nothing). The log is written; leave now.

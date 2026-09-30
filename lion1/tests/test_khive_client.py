@@ -17,19 +17,20 @@ from hub.khive import LOST, Khive, KhiveError
 class Dropping(Khive):
     """A client whose `exec` drops the first N answers, as a daemon under load can."""
 
-    def __init__(self, tmp_path: Path, drops: int, error: str = LOST):
+    def __init__(self, tmp_path: Path, drops: int, error: str = LOST, page: dict | None = None):
         (tmp_path / ".khive").mkdir(exist_ok=True)
         (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
         (tmp_path / "kkernel").write_text("")  # never run: exec is replaced below
         super().__init__(tmp_path, "lambda:x", kkernel=str(tmp_path / "kkernel"))
         self.drops, self.error, self.ops = drops, error, []
+        self.page = {"messages": [{"id": "m1"}]} if page is None else page
 
     async def exec(self, ops: str):
         self.ops.append(ops)
         if self.drops:
             self.drops -= 1
             raise KhiveError(f"kkernel exited 1: actor: x | Error: {self.error}; not retrying")
-        return [{"messages": [{"id": "m1"}]}]
+        return [self.page]
 
 
 def test_a_dropped_inbox_read_is_read_again_once_and_only_that_error(tmp_path):
@@ -45,6 +46,16 @@ def test_a_dropped_inbox_read_is_read_again_once_and_only_that_error(tmp_path):
         asyncio.run(
             Dropping(tmp_path, 1, error="permission denied").inbox(wait_ms=0)
         )  # another error: no retry
+
+
+@pytest.mark.parametrize("messages", ["", {}, 0, "x", 5, None])
+def test_a_page_whose_messages_are_not_a_list_is_refused_never_read_as_empty(tmp_path, messages):
+    with pytest.raises(KhiveError, match="not a list"):
+        asyncio.run(Dropping(tmp_path, 0, page={"messages": messages}).inbox(wait_ms=0))
+    assert (
+        asyncio.run(Dropping(tmp_path, 0, page={"count": 0}).inbox(wait_ms=0)) == []
+    )  # the store's empty page
+    assert asyncio.run(Dropping(tmp_path, 0, page={"messages": []}).inbox(wait_ms=0)) == []
 
 
 def test_ops_is_one_positional_argument(tmp_path):
@@ -135,3 +146,39 @@ def test_a_timeout_after_kkernel_exited_still_stops_what_it_left_holding_the_pip
         time.sleep(0.01)
     else:
         raise AssertionError(f"kkernel's child {child} outlived the timed-out call")
+
+
+def test_an_explicit_config_rides_every_call_and_a_missing_one_is_refused_never_the_cwds(tmp_path):
+    """`config=` names the khive config the calls sign with: kkernel gets it as `--config` before
+    `--`, and the cwd needs no `.khive/config.toml` of its own; a config that is not a file refuses
+    at construction, while without `config=` the same cwd is refused for holding no config."""
+    log = tmp_path / "argv.jsonl"
+    stub = tmp_path / "kkernel"
+    stub.write_text(
+        f"#!{sys.executable}\nimport json, sys\n"
+        f"open({str(log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "print(json.dumps({'results': [{'ok': True, 'result': None}]}))\n"
+    )
+    stub.chmod(0o755)
+    elsewhere = tmp_path / "elsewhere" / "config.toml"
+    elsewhere.parent.mkdir()
+    elsewhere.write_text('[actor]\nid = "lambda:y"\n')
+    cwd = tmp_path / "work"
+    cwd.mkdir()  # no .khive here
+    k = Khive(cwd, "lambda:y", kkernel=str(stub), config=elsewhere)
+    assert asyncio.run(k.exec("comm.inbox(limit=1)")) == [None]
+    (argv,) = [json.loads(line) for line in log.read_text().splitlines()]
+    assert argv == [
+        "exec",
+        "--strict",
+        "--expect-actor",
+        "lambda:y",
+        "--config",
+        str(elsewhere),
+        "--",
+        "comm.inbox(limit=1)",
+    ]
+    with pytest.raises(KhiveError, match="no such khive config file"):
+        Khive(cwd, "lambda:y", kkernel=str(stub), config=tmp_path / "missing.toml")
+    with pytest.raises(KhiveError, match="holds no .khive/config.toml"):  # the control: no config= at all
+        Khive(cwd, "lambda:y", kkernel=str(stub))

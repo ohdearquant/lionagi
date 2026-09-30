@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from lionagi.actor import Actor, Handle, Inbound, Profile, Run, RunRequest
+from lionagi.actor import Actor, Handle, Inbound, Profile, Result, Run, RunRequest
 from lionagi.checkpoint import entry_of
 from lionagi.record import Directive, Entry, Kind
 
@@ -132,8 +132,19 @@ def entry_row(e: Entry) -> dict:
             "reason": content.reason,
         }
     meta = dict(e.meta)
-    if isinstance(d := meta.get("directive"), Directive):  # what this entry did to the view, as data
-        meta["directive"] = {"op": d.op, "refs": list(d.refs), "text": d.text, "at": d.at, "seqs": d.seqs}
+
+    def row(d: Directive) -> dict:
+        return {"op": d.op, "refs": list(d.refs), "text": d.text, "at": d.at, "seqs": d.seqs}
+
+    # what this entry did to the view, as data: a directive, and the hides of what a program consumed
+    if isinstance(d := meta.get("directive"), Directive):
+        meta["directive"] = row(d)
+    if isinstance(ds := meta.get("consumed"), tuple):
+        meta["consumed"] = [row(d) for d in ds]
+    if isinstance(vs := meta.get("values"), tuple):  # a value that failed to compute: its error, fourth
+        meta["values"] = [
+            [a, seq, None, v.error] if isinstance(v, Result) else [a, seq, v] for a, seq, v in vs
+        ]
     return {
         "seq": e.seq,
         "kind": e.kind.name,
@@ -145,12 +156,12 @@ def entry_row(e: Entry) -> dict:
     }
 
 
-def load_log(path: Path, torn: list[str] | None = None) -> tuple[Entry, ...]:
+def load_log(path: Path, torn: list[str] | None = None, ran: dict | None = None) -> tuple[Entry, ...]:
     """The entries a log holds, as a run's history: results back as Result, the inbound marks, each
     result's execution fact and the context directives kept, the seqs as they were (a log is written
-    in order, from 0); rows of other kinds are skipped. A last line that is not JSON is a write that
-    was cut: with `torn` given it is dropped and described there, else it raises; a bad line with
-    lines after it always raises."""
+    in order, from 0); rows of other kinds are skipped, and with `ran` given the BOX row, where the
+    chat ran, is copied there. A last line that is not JSON is a write that was cut: with `torn` given
+    it is dropped and described there, else it raises; a bad line with lines after it always raises."""
     entries: list[Entry] = []
     # a row ends at a line feed: a row may carry U+2028 or NEL unescaped, where str.splitlines would
     # break it, and a write cut inside a multi-byte character is a torn last row, not an unreadable file
@@ -168,6 +179,8 @@ def load_log(path: Path, torn: list[str] | None = None) -> tuple[Entry, ...]:
             raise ValueError(
                 f"{path}: {where} is not JSON ({why}): {raw.decode(errors='replace')[:80]!r}"
             ) from None
+        if ran is not None and r.get("kind") == "BOX":
+            ran.update(r)
         entry = entry_of(r)  # the row back as its entry; the one reading a checkpoint's record uses too
         if entry is not None:
             entries.append(entry)

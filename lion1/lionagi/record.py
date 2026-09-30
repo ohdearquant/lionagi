@@ -132,24 +132,36 @@ class ViewEntry:
     hidden: bool = False  # a hidden entry: rendered as a placeholder that names it, never its value
 
 
-def directives(record: Record) -> list[Directive]:
-    """Directives in record order, off the RESULT of a context command or the SYSTEM entry of a fold."""
-    out = []
+def directives(record: Record, consumed: Iterable[Directive] = ()) -> list[Directive]:
+    """Directives in the order of their `at`, off the RESULT of a context command or a notification's
+    SYSTEM entry: the hides of what a program consumed, each dated at its consumption and so earlier
+    than the notification carrying it, then the fold event. A consumption dated `at` happened before
+    the entry at that seq landed (a reader settles before its RESULT, a branch or a note write reads
+    before the next entry), so among equals the consumed hides come first: a show carried by that
+    entry stands over them (ADR-0008/D3); record order settles the rest. `consumed`: hides not on the
+    record yet, the ones the notification being written will carry, folded as they will be."""
+    out: list[tuple[int, int, Directive]] = [(d.at, 0, d) for d in consumed]
     for e in record:
-        if e.kind in (Kind.RESULT, Kind.SYSTEM) and isinstance(e.meta.get("directive"), Directive):
-            out.append(e.meta["directive"])
-    return out
+        if e.kind in (Kind.RESULT, Kind.SYSTEM):
+            out += [(d.at, 0, d) for d in e.meta.get("consumed") or () if isinstance(d, Directive)]
+            d = e.meta.get("directive")
+            if isinstance(d, Directive):
+                out.append((d.at, 1, d))
+    return [d for _, _, d in sorted(out, key=lambda t: t[:2])]
 
 
-def fold(record: Record, *, protect_input: bool = True) -> list[ViewEntry]:
+def fold(
+    record: Record, *, protect_input: bool = True, consumed: Iterable[Directive] = ()
+) -> list[ViewEntry]:
     """The view: the record after the directives.
 
     Nothing leaves the view on its own: every entry stays where it landed, so one render differs from
     the last only by what was appended and the provider's prefix cache holds. Directives then apply
-    in record order: `hide` removes, `show` brings back, `summarize` removes and puts its text in
-    front of where the span began. A hidden entry keeps a placeholder (`hidden=True`) so the model
-    knows what it can reopen; one under a summary does not, the summary names it. A directive
-    reaches only entries earlier than itself; INPUT is never hidden unless `protect_input` is False;
+    by date (`at`, record order among equal dates), wherever they ride: `hide` removes, `show` brings
+    back, `summarize` removes and puts its text in front of where the span began. A hidden entry
+    keeps a placeholder (`hidden=True`) so the model knows what it can reopen; one under a summary
+    does not, the summary names it. A directive reaches only entries earlier than its date; INPUT is
+    never hidden unless `protect_input` is False;
     a name that resolves to nothing is ignored, a directive cannot crash the fold. The runtime's own
     fold event (the view past its budget, ADR-0007/C2) is a `hide` directive on the notification
     that announces it, so it happens once and replays like any other.
@@ -167,7 +179,7 @@ def fold(record: Record, *, protect_input: bool = True) -> list[ViewEntry]:
                 seqs.append(e.seq)
         return seqs
 
-    for d in directives(record):
+    for d in directives(record, consumed):
         targets = [s for s in (d.seqs if d.seqs is not None else resolve(d.refs)) if s < d.at]
         if protect_input:
             targets = [s for s in targets if entries[s].kind is not Kind.INPUT]

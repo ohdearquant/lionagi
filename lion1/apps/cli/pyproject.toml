@@ -5,11 +5,18 @@ description = "`lion`: the command line of lionagi v1, one entry with subcommand
 requires-python = ">=3.11"
 dependencies = [
     "lionagi",
+    "prompt-toolkit>=3.0.36",
     "rich>=13",
 ]
 
 [project.scripts]
 lion = "lion_cli.main:main"
+
+[project.optional-dependencies]
+voice = [
+    "mlx-whisper>=0.4",
+    "sounddevice>=0.5",
+]
 
 [tool.uv.sources]
 lionagi = { workspace = true }

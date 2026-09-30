@@ -7,7 +7,7 @@ import json
 import subprocess
 
 import pytest
-from lion_cli.chat import Interrupt, _branch, chat_main, console, unsettled
+from lion_cli.chat import Interrupt, _branch, chat_main, console, signer, unsettled
 from lion_cli.main import parser
 from lion_cli.view import RESULT_LINES, Console
 
@@ -66,6 +66,27 @@ def test_a_non_utf8_agents_md_does_not_crash_the_console_and_decodes_best_effort
     actor, profile = console(tmp_path, coding=True)
     assert "AGENTS.md at the root says" in profile.system  # started; did not raise UnicodeDecodeError
     assert "rules:" in profile.system and "latin-1 byte" in profile.system
+
+
+def test_an_explicit_khive_config_signs_over_the_directorys_own_and_a_missing_one_is_said(
+    tmp_path, kkernel_stub
+):
+    """`khive_config=` names the file the chat signs with: its actor, not the directory's, and the
+    directory's own `.khive/config.toml` is not read (it may name a different actor, or none). A
+    path that is not a file is noticed as such; the directory's config is never the fallback."""
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    elsewhere = tmp_path / "elsewhere" / "khive.toml"
+    elsewhere.parent.mkdir()
+    elsewhere.write_text('[actor]\nid = "lambda:y"\n')
+    assert signer(tmp_path) == "lambda:x" and signer(tmp_path, elsewhere) == "lambda:y"
+    actor, profile = console(tmp_path, khive_config=elsewhere)
+    assert "khive_ops" in profile.specs and "signing as lambda:y" in profile.system
+    assert "lambda:x" not in profile.system
+    notices: list[str] = []
+    actor, profile = console(tmp_path, khive_config=tmp_path / "gone.toml", notify=notices.append)
+    assert "khive_ops" not in profile.specs  # not the directory's lambda:x instead
+    assert notices == [f"{tmp_path / 'gone.toml'}: no such khive config file; khive tool unavailable"]
 
 
 def test_khive_config_missing_actor_table_or_id_skips_the_tool_and_notices_the_file(tmp_path):
@@ -168,6 +189,25 @@ def test_a_resumed_chat_logs_the_whole_record_again_and_prints_only_the_new_part
     assert len(rows) == len(run.record) and json.loads(rows[0])["content"] == "read a.txt"  # log 2 is whole
 
 
+def test_a_khive_config_that_is_not_a_file_or_names_no_actor_refuses_to_start_and_leaves_no_log(tmp_path):
+    """The chat refuses before any model work, naming the file; the directory's own config, which
+    would sign as someone else, is not the fallback. The log opened for the chat is removed."""
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    gone = tmp_path / "gone.toml"
+    with pytest.raises(SystemExit, match=f"--khive-config {gone}: no such file"):
+        asyncio.run(
+            chat_main(parser().parse_args(["chat", "--dir", str(tmp_path), "--khive-config", str(gone)]))
+        )
+    empty = tmp_path / "empty.toml"
+    empty.write_text("[actor]\n")
+    with pytest.raises(SystemExit, match=f"--khive-config {empty}: no \\[actor\\].id in it"):
+        asyncio.run(
+            chat_main(parser().parse_args(["chat", "--dir", str(tmp_path), "--khive-config", str(empty)]))
+        )
+    assert not list((tmp_path / ".lion" / "chats").glob("*.jsonl"))
+
+
 def test_resume_last_with_no_log_says_where_logs_live_instead_of_an_index_error(tmp_path):
     a = parser().parse_args(["chat", "--dir", str(tmp_path), "--resume", "last"])
     with pytest.raises(SystemExit, match=r"nothing to continue: no chat logged under .*\.lion/chats yet"):
@@ -239,9 +279,13 @@ def test_a_resumed_log_names_the_commands_that_never_settled(tmp_path):
     assert unsettled(load_log(log)) == ["r2"]
 
 
-def test_ctrl_c_pauses_once_then_quits_and_quits_at_the_prompt():
+def test_ctrl_c_cuts_the_call_once_then_quits_and_quits_at_the_prompt(capsys):
     class Run:
-        pause = False
+        cut = 0
+
+        def interrupt(self) -> bool:  # the real one cuts a call in flight (True) or pauses (False)
+            self.cut += 1
+            return self.cut == 1
 
     class Task:
         cancelled = 0
@@ -253,13 +297,18 @@ def test_ctrl_c_pauses_once_then_quits_and_quits_at_the_prompt():
     run, task = Run(), Task()
     press = Interrupt([run], task, say)
     press()
-    assert run.pause and task.cancelled == 0  # the round in flight finishes, then `you ▸`
+    assert run.cut == 1 and task.cancelled == 0  # the call is cut, then `you ▸`
+    assert "cut: the model's call was abandoned" in capsys.readouterr().out
     press()
     assert task.cancelled == 1  # the second press ends it now
     press.presses = 0  # the person was asked: the counter is fresh
     say.asking = True
     press()
     assert task.cancelled == 2  # at the prompt, one press is a quit
+    press.presses, say.asking = 0, False
+    press()  # nothing in flight to cut: the round finishes first
+    assert run.cut == 2 and task.cancelled == 2
+    assert "stopping after this round" in capsys.readouterr().out
 
 
 def test_the_console_installs_the_directorys_hooks(tmp_path):
@@ -327,9 +376,40 @@ def test_two_consoles_in_one_second_get_two_logs_and_an_existing_log_is_refused(
     )  # by id, so the suffix sorts before the next second
     (chats / "20260921-175600.jsonl").unlink()
     assert resolve_chat(chats, "last").stem == "20260921-175559-02"
-    Console("m", a[1], color=False).close("x", 0, 0.0, a[1])  # a console never truncates a log it is handed
+    Console("m", a[1], color=False).close(
+        "x", 0, 0.0, 0, a[1]
+    )  # a console never truncates a log it is handed
     a[1].write_text("kept\n")
     Console("m", a[1], color=False)
     assert a[1].read_text() == "kept\n"
     with pytest.raises(SystemExit, match="exists"):
         asyncio.run(chat_main(parser().parse_args(["chat", "--dir", str(tmp_path), "--log", str(a[1])])))
+
+
+def test_an_explicit_log_is_owned_before_the_session_starts_and_a_failed_start_leaves_none(
+    tmp_path, monkeypatch
+):
+    import lion_cli.chat as cli
+
+    log = tmp_path / "logs" / "mine.jsonl"
+    seen = []
+
+    async def stub(a, directory, chats, prior, chat_id, log):
+        seen.append((chat_id, log.exists()))  # the log is this session's before anything else runs
+        if directory.name == "fail":
+            raise RuntimeError("no image")
+        log.write_text("row\n")
+
+    monkeypatch.setattr(cli, "_chat_main", stub)
+    args = ["chat", "--dir", str(tmp_path), "--log", str(log)]
+    asyncio.run(chat_main(parser().parse_args(args)))
+    assert seen == [("mine", True)] and log.read_text() == "row\n"
+    with pytest.raises(SystemExit, match="exists"):  # a second start naming the same log is refused
+        asyncio.run(chat_main(parser().parse_args(args)))
+    assert seen == [("mine", True)] and log.read_text() == "row\n"
+    fail = tmp_path / "fail"
+    fail.mkdir()
+    other = tmp_path / "logs" / "other.jsonl"
+    with pytest.raises(RuntimeError, match="no image"):
+        asyncio.run(chat_main(parser().parse_args(["chat", "--dir", str(fail), "--log", str(other)])))
+    assert not other.exists() and log.read_text() == "row\n"  # its own empty log removed, no other

@@ -45,8 +45,9 @@ from lionagi.lndl import plain
 from lionagi.notes import FileNoteStore, MemoryNoteStore, NoteStore
 from lionagi.record import Directive, Entry, Kind
 
+from ..areas import partial
+from ..backend.claude_code import _prompt_tokens
 from ..chat import entry_row
-from ..harness.claude_code import _prompt_tokens
 from ..khive import Khive, lit
 
 __all__ = (
@@ -449,9 +450,15 @@ class Agent:
                 return f"wakes_per_hour is {self.budget.wakes_per_hour}: no wakes until it is raised"
             at = time.strftime("%H:%M:%S", time.localtime(min(recent) + 3600))
             return f"{len(recent)} wakes in the last hour (cap {self.budget.wakes_per_hour}); next at {at}"
-        cost = spend.get("cost", 0.0) if spend.get("day") == _day(now) else 0.0
+        today = spend.get("day") == _day(now)
+        # a same-day row with no count is from before the count: uncounted, never complete
+        cost, unknown = (spend.get("cost", 0.0), spend.get("unknown")) if today else (0.0, 0)
         if cost >= self.budget.cost_per_day:
-            return f"${cost:.4f} spent today (cap ${self.budget.cost_per_day}); next day"
+            return (
+                f"${cost:.4f} spent today"
+                + partial(unknown)
+                + f" (cap ${self.budget.cost_per_day}); next day"
+            )
         return None
 
     def _control(self, name: str) -> Path | None:
@@ -964,7 +971,7 @@ class Agent:
             excess = 0  # the figure the fold decides on (`_notify`): the view plus history it never saw
             if run.anchor is not None and run.floor is not None:
                 excess = max(0, run.anchor[0] - run.anchor[1] - run.floor)
-            used, window = run.view_est + excess, run.request.context_budget
+            used, window = run.view_est + excess, run.bounds["context_budget"]
             source = {
                 "record": str(log),
                 "run": run.id,
@@ -1210,8 +1217,9 @@ class Agent:
         self._lock_fd = None
 
     def _usage(self, before: int) -> dict:
-        """What the backend calls since `before` cost: their count, tokens in and out, dollars. Read
-        off the envelopes the backend keeps (`calls`); a backend without them spent 0 of everything."""
+        """What the backend calls since `before` cost: their count, tokens in and out, dollars, and
+        the calls the dollars miss (no figure, or the router's `cost_complete` false). Read off the
+        envelopes the backend keeps (`calls`); a backend without them spent 0 of everything."""
         calls = [c for c in (getattr(self.backend, "calls", None) or [])[before:] if isinstance(c, dict)]
         tokens_in = tokens_out = 0
         for c in calls:
@@ -1226,6 +1234,7 @@ class Agent:
             )
             tokens_out += int(u.get("completion_tokens") or u.get("output_tokens") or 0)
         cost = sum((c.get("total_cost_usd") or 0.0) for c in calls)
+        unknown = sum(1 for c in calls if c.get("total_cost_usd") is None or c.get("cost_complete") is False)
         # the context the last call's last turn stood in: what the next turn will pay for, and what
         # the fold decides on; the sum `in` above is the call's cost over all its turns
         context = _prompt_tokens(calls[-1]) if calls else None
@@ -1234,6 +1243,7 @@ class Agent:
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
             "cost": cost,
+            "unknown": unknown,
             "context": context,
         }
 
@@ -1242,16 +1252,18 @@ class Agent:
         *,
         wake: bool = False,
         cost: float = 0.0,
+        unknown: int = 0,
         calls: int = 0,
         tokens_in: int = 0,
         tokens_out: int = 0,
         mail: int = 0,
         context: int | None = None,  # the last call's, read for the wake line; the day's row keeps none
     ) -> None:
-        """The hour's wakes (the rate cap) and the day's spend: dollars, model calls, tokens in and
-        out, mail handled, wakes that ran, and polls that found nothing and cost no call. The day's
-        row is the measurement behind "does a long-running agent save tokens": tokens per handled
-        message beside idle polls at zero."""
+        """The hour's wakes (the rate cap) and the day's spend: dollars, the calls those dollars miss
+        (None when the day began before they were counted),
+        model calls, tokens in and out, mail handled, wakes that ran, and polls that found nothing and
+        cost no call. The day's row is the measurement behind "does a long-running agent save tokens":
+        tokens per handled message beside idle polls at zero."""
         spend = dict(_value(self.state, "spend", {}))
         now = self.clock()
         wakes = [t for t in spend.get("wakes", []) if now - t < 3600]
@@ -1260,9 +1272,13 @@ class Agent:
             self._last_wake = now
         day = _day(now)
         same_day = spend.get("day") == day
+        # a same-day row with no count is from before the count: its calls went uncounted, and no
+        # later wake can count them, so the day reads as partial to its end (None, never 0)
+        counted = spend.get("unknown") if same_day else 0
         row = {
             "day": day,
             "cost": (spend.get("cost", 0.0) if same_day else 0.0) + cost,
+            "unknown": None if counted is None else counted + unknown,
             "wakes": wakes,
             "calls": (spend.get("calls", 0) if same_day else 0) + calls,
             "in": (spend.get("in", 0) if same_day else 0) + tokens_in,
@@ -1307,6 +1323,7 @@ class Agent:
                 "in": u["tokens_in"],
                 "out": u["tokens_out"],
                 "cost": u["cost"],
+                "unknown": u["unknown"],
                 "context": u["context"],
             }
             facts["idle_polls"] = int(_value(self.state, "spend", {}).get("idle_last", 0))
@@ -1344,8 +1361,9 @@ def _line(c: dict) -> str:
     return (
         f"wake {c.get('wake')}: {c.get('outcome')} after {c.get('rounds')} rounds, "
         f"{len(c.get('mail', []))} mail, {c.get('sent')} sent; {t.get('calls', 0)} model "
-        f"call(s), {t.get('in', 0)} in, {t.get('out', 0)} out, ${t.get('cost', 0.0):.4f}; "
-        f"{c.get('idle_polls', 0)} idle poll(s) before it at 0 tokens"
+        f"call(s), {t.get('in', 0)} in, {t.get('out', 0)} out, ${t.get('cost', 0.0):.4f}"
+        + partial(t.get("unknown", 0))
+        + f"; {c.get('idle_polls', 0)} idle poll(s) before it at 0 tokens"
         + (f"; last turn stood in {t['context']} tokens" if t.get("context") is not None else "")
         + (f", {t['restarts']} session restart(s)" if t.get("restarts") else "")
         + (f"; {len(c['tasks'])} task(s) of the queue" if c.get("tasks") else "")

@@ -1,4 +1,4 @@
-"""Codex CLI as a chat-completion harness (ADR-0009): `codex exec`, one call per round.
+"""Codex CLI as a chat-completion backend (ADR-0009): `codex exec`, one call per round.
 
 The view goes in as one prompt with its roles marked, the model's final message comes out. The
 CLI is an agent, so every feature that lets the model act is switched off by flag (shell, exec,
@@ -6,8 +6,9 @@ web search, sub-agents, images, apps, browser, computer use, plugins, hooks); me
 what is left cannot run a command, search, or spawn. Every command the model wants goes through
 this runtime's handlers as LNDL. Without those flags a read-only sandbox still let the model read
 this machine and search the web for the upstream fix: 34 commands and 850k input tokens in one
-round. Usage comes from the `turn.completed` event; there is no cost on a subscription, so
-`total_cost_usd` stays None and the bench records the spend as unknown, never as zero.
+round. Usage comes from the `turn.completed` event, whose input count is handed back as the prompt
+count; there is no cost on a subscription, so `total_cost_usd` stays None and the bench records the
+spend as unknown, never as zero.
 
 The CLI's own base instructions describe an agent with a shell in a read-only workspace; with the
 tools off, a reasoning model reads that as a broken interface and, one turn in three at round one,
@@ -46,7 +47,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lionagi.actor import Message
+from lionagi.actor import Message, Reply
 
 from .claude_code import _transcript
 
@@ -204,7 +205,9 @@ class Codex:
             self.calls.append({**envelope, "error": error, **raw})
             raise CodexError(error)
         self.calls.append(envelope)
-        return text
+        # the answering attempt's input count, cache read included, is the prompt it sent (ADR-0009/C2);
+        # the envelope sums every attempt for the bill
+        return Reply(text, prompt_tokens=usage.get("input_tokens"))
 
     def _envelope(self, usage_total: Counter, notes: list[str], t0: float, attempts: int) -> dict:
         cached = usage_total.get("cached_input_tokens", 0)

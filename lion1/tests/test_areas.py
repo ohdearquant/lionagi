@@ -10,7 +10,6 @@ import json
 import os
 import plistlib
 import signal
-import socket
 import subprocess
 import sys
 import threading
@@ -22,7 +21,7 @@ from pathlib import Path
 
 import lion_cli.areas as areas_cli
 import pytest
-from lion_cli.areas import _peer_allowed, _rewrite_budget, _tail, serve
+from lion_cli.areas import _peer_allowed, _rewrite_budget, _tail, make_server
 
 from hub.agent.agent import _line
 from hub.areas import (
@@ -175,23 +174,8 @@ def test_the_served_page_and_json_reread_the_registry_on_every_request(tmp_path)
     )
     reg = tmp_path / "areas.toml"
     reg.write_text(f'[area.x]\nchair = "lambda:x"\ndesks = ["{d}"]\n')
-    # a free port: bind 0 through the server itself is hidden by serve(); take one and release it
-    import socket
-
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    t = threading.Thread(target=serve, args=(reg, "127.0.0.1", port, 2), daemon=True)
-    t.start()
-    for _ in range(50):
-        try:
-            body = fetch(f"http://127.0.0.1:{port}/api/areas", timeout=1)
-            break
-        except OSError:
-            time.sleep(0.1)
-    else:
-        raise AssertionError("the server never answered")
-    rows = json.loads(body)
+    port = serve_on(reg)
+    rows = json.loads(fetch(f"http://127.0.0.1:{port}/api/areas", timeout=1))
     assert [r["actor"] for r in rows] == ["lambda:x:desk"] and rows[0]["serving"] is False
     html = fetch(f"http://127.0.0.1:{port}/").decode()
     assert "lambda:x:desk" in html and 'content="2"' in html
@@ -346,17 +330,7 @@ def test_the_served_resident_page_reads_and_mails_only_a_registered_resident_as_
     reg.write_text(f'[area.x]\nchair = "lambda:x"\ndesks = ["{d}"]\n')
 
     def start(ident) -> int:
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            port = s.getsockname()[1]
-        threading.Thread(target=serve, args=(reg, "127.0.0.1", port, 2, ident), daemon=True).start()
-        for _ in range(50):
-            try:
-                fetch(f"http://127.0.0.1:{port}/api/areas", timeout=1)
-                return port
-            except OSError:
-                time.sleep(0.1)
-        raise AssertionError("the server never answered")
+        return serve_on(reg, ident)
 
     def post(port: int, form: dict) -> http.client.HTTPResponse:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)  # never follows the 303
@@ -456,6 +430,7 @@ ROW_KEYS = [
     "runs_today",
     "mail_today",
     "cost_today",
+    "unknown_today",
     "problem",
     "controls",
     "waiting",
@@ -482,18 +457,23 @@ def registry(root: Path, *desks: Path) -> Path:
     return reg
 
 
+_servers: list = []  # every server a test started, ended by `servers_end` so no thread outlives its test
+
+
+@pytest.fixture(autouse=True)
+def servers_end():
+    yield
+    while _servers:
+        server = _servers.pop()
+        server.shutdown()
+        server.server_close()
+
+
 def serve_on(reg: Path, ident=None, allow: list[str] | None = None) -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    threading.Thread(target=serve, args=(reg, "127.0.0.1", port, 2, ident, allow), daemon=True).start()
-    for _ in range(50):
-        try:
-            fetch(f"http://127.0.0.1:{port}/api/areas", timeout=1)
-            return port
-        except OSError:
-            time.sleep(0.1)
-    raise AssertionError("the server never answered")
+    server = make_server(reg, "127.0.0.1", 0, 2, ident, allow)  # port 0: the kernel's free one
+    _servers.append(server)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server.server_address[1]
 
 
 def call(port: int, method: str, path: str, body: str | None = None, headers: dict | None = None):
@@ -575,6 +555,61 @@ def test_the_wake_pattern_reads_a_line_with_and_without_the_context_suffixes_and
     }
     assert (rows[2]["context"], rows[2]["restarts"]) == (28324, 2)
     assert "context" not in rows[3] and rows[3]["restarts"] == 1
+
+
+def test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_every_view(tmp_path):
+    cursor = {"wake": 2, "at": f"{TODAY} 11:09:15", "outcome": "Success"}
+    partial = {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": 1}
+    d = agent_dir(tmp_path, "desk", role="desk", cursor=cursor, spend=partial)
+    whole_day = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3, "unknown": 0}  # counted: none missed
+    done = agent_dir(tmp_path, "whole", role="desk", cursor=cursor, spend=whole_day)
+    area = Area("x", "lambda:x", [str(d), str(done)])
+    r, whole = resident(area, str(d), TODAY), resident(area, str(done), TODAY)
+    assert (r.cost_today, r.unknown_today, whole.unknown_today) == (0.3, 1, 0)
+    mark = "$0.3000 (partial: 1 call(s) of unknown cost)"
+    text = table([area], [r, whole])
+    assert f"today 2 run(s), 2 mail, {mark}\n" in text and text.endswith("today 1 run(s), 1 mail, $0.3000")
+    html = page([area], [r, whole])
+    assert f"<td>2 run(s), 2 mail, {mark}</td>" in html and "<td>1 run(s), 1 mail, $0.3000</td>" in html
+    base = {"wake": 2, "outcome": "Success", "rounds": 1, "mail": ["a"], "sent": 1, "idle_polls": 4}
+    tokens = {"calls": 2, "in": 900, "out": 40, "cost": 0.3, "unknown": 1, "context": 800}
+    line = f"{TODAY} 11:09:15 {_line({**base, 'tokens': tokens})}"
+    m = _WAKE.match(line)
+    assert m and (m["cost"], m["unknown"], m["idle"], m["context"]) == ("0.3000", "1", "4", "800"), line
+    (d / "serve.log").write_text(f"{line}\n{WAKE_LINE}\n")
+    rows = wakes(str(d))[::-1]
+    assert (rows[0]["cost"], rows[0]["unknown"], rows[0]["context"]) == (0.3, 1, 800)
+    assert "unknown" not in rows[1]  # the older line prints no count
+    html = resident_page(r, wakes(str(d)), "", [], None, 7, str(d))
+    assert f"today 2 run(s), 2 mail, {mark}</p>" in html and f"<td>{mark}</td>" in html
+    assert "<td>$0.1234</td>" in html  # the complete wake beside it carries no mark
+
+
+@pytest.mark.parametrize(
+    "before",
+    [
+        {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3},
+        {"day": TODAY, "runs": 2, "mail": 2, "cost": 0.3, "unknown": None},
+    ],
+)
+def test_a_days_row_from_before_the_count_is_marked_partial_by_an_unknown_number_in_every_view(
+    tmp_path, before
+):
+    # the row as the version before the count left it (no key), and as the first wake after it writes it
+    cursor = {"wake": 2, "at": f"{TODAY} 11:09:15", "outcome": "Success"}
+    d = agent_dir(tmp_path, "desk", role="desk", cursor=cursor, spend=before)
+    counted = {"day": TODAY, "runs": 1, "mail": 1, "cost": 0.3, "unknown": 0}
+    done = agent_dir(tmp_path, "whole", role="desk", cursor=cursor, spend=counted)
+    area = Area("x", "lambda:x", [str(d), str(done)])
+    r, whole = resident(area, str(d), TODAY), resident(area, str(done), TODAY)
+    assert (r.cost_today, r.unknown_today, whole.unknown_today) == (0.3, None, 0)
+    mark = "$0.3000 (partial: calls of unknown cost before this count went uncounted)"
+    text = table([area], [r, whole])
+    assert f"today 2 run(s), 2 mail, {mark}\n" in text and text.endswith("today 1 run(s), 1 mail, $0.3000")
+    html = page([area], [r, whole])
+    assert f"<td>2 run(s), 2 mail, {mark}</td>" in html and "<td>1 run(s), 1 mail, $0.3000</td>" in html
+    html = resident_page(r, wakes(str(d)), "", [], None, 7, str(d))
+    assert f"today 2 run(s), 2 mail, {mark}</p>" in html
 
 
 def test_waiting_is_the_deferred_notes_mail_and_every_row_carries_its_count_and_the_controls(tmp_path):
@@ -845,6 +880,26 @@ def test_cap_keeps_a_crlf_files_line_endings_and_refuses_one_that_is_not_utf8(tm
     assert code == 409 and doc["detail"].startswith("chores.toml is not UTF-8, nothing was written")
 
 
+@pytest.mark.parametrize("text", ["\u00b2", "\u0662", "12a", ""])
+def test_a_pid_file_holding_anything_but_ascii_digits_names_no_pid_and_never_raises(tmp_path, text):
+    # str.isdigit admits a superscript int refuses and another script's digits int reads as a number
+    d = agent_dir(tmp_path, "desk", role="desk", cursor={"wake": 3, "outcome": "Quiet"}, spend=None)
+    area = Area("x", "lambda:x", [str(d)])
+    (d / "agent.pid").write_text(text)
+    r = resident(area, str(d), TODAY)
+    assert (r.serving, r.pid, r.problem) == (False, None, "")
+    fd = os.open(d / "agent.pid", os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        r = resident(area, str(d), TODAY)
+        assert (r.serving, r.pid) == (True, None)  # the lock is the claim; the text names no pid
+        assert controls_info(str(d))["idle"] is True  # a quiet cursor, and no pid to ask pgrep about
+    finally:
+        os.close(fd)
+    (d / "agent.pid").write_text("424242")  # the control: ASCII digits are a pid
+    assert resident(area, str(d), TODAY).pid == 424242
+
+
 def test_a_running_wake_under_a_held_lock_is_not_idle_without_a_model_child(tmp_path):
     """An in-process backend has no `claude -p` child: the cursor under a held lock says it is waking."""
     d = agent_dir(tmp_path, "desk", role="desk", cursor={"wake": 3, "outcome": "running"}, spend=None)
@@ -868,6 +923,45 @@ def test_a_running_wake_under_a_held_lock_is_not_idle_without_a_model_child(tmp_
         assert controls_info(str(d))["idle"] is False  # served, no cursor yet: a first wake may be starting
     finally:
         os.close(fd)
+
+
+def test_a_pid_file_that_cannot_be_read_or_locked_is_that_residents_problem_and_no_holder(
+    tmp_path, monkeypatch
+):
+    """Only a refused shared lock is a holder. A lock call that fails some other way, or a pid file
+    that cannot be opened, is said on that resident's row; the other residents still get theirs,
+    and the control surface reads the unknown as busy."""
+    import errno
+
+    from hub.areas import _held
+
+    d = agent_dir(tmp_path, "desk", role="desk", cursor={"wake": 3, "outcome": "Quiet"}, spend=None)
+    other = agent_dir(tmp_path, "chores", role="chores", cursor={"wake": 1, "outcome": "Quiet"}, spend=None)
+    (d / "agent.pid").write_text("424242")
+    area = Area("x", "lambda:x", [str(d), str(other)])
+    assert _held(tmp_path / "gone.pid") == (False, None)  # vanished between a listing and the read
+    real = fcntl.flock
+
+    def no_locks(fd, op):
+        if op & fcntl.LOCK_SH:
+            raise OSError(errno.ENOLCK, "No locks available")
+        return real(fd, op)
+
+    monkeypatch.setattr(fcntl, "flock", no_locks)
+    r = resident(area, str(d), TODAY)
+    assert r.serving is False and r.pid is None  # neither claim survives a lock call that failed
+    assert r.problem == f"agent.pid: [Errno {errno.ENOLCK}] No locks available"
+    assert controls_info(str(d))["idle"] is False  # unknown is not idle: a restart would take `force`
+    monkeypatch.setattr(fcntl, "flock", real)
+    assert resident(area, str(d), TODAY).problem == ""  # the control: the same file, locks working
+    os.chmod(d / "agent.pid", 0)
+    try:
+        rows = status([area], TODAY)
+        assert [r.problem.split(":")[0] for r in rows] == ["agent.pid", ""] and rows[0].serving is False
+        assert controls_info(str(d))["idle"] is False
+    finally:
+        os.chmod(d / "agent.pid", 0o644)
+    assert [r.problem for r in status([area], TODAY)] == ["", ""]
 
 
 def test_a_replayed_once_answers_the_first_result_and_acts_once(tmp_path, monkeypatch):

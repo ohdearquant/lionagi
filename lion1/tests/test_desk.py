@@ -113,6 +113,7 @@ def build(
     turns: list[str],
     cap: int = 10,
     routes: dict[str, str] | None = None,
+    admit_replies: bool = False,
     **probes: Probe,
 ):
     actor = Actor("chores", privileges={"comm.send"})
@@ -134,6 +135,7 @@ def build(
         answers_per_hour=cap,
         escalate_from=(STEWARD,),
         routes=routes or {},
+        admit_replies=admit_replies,
     )
     global profile
     profile, _ = chores.profiles()
@@ -1312,7 +1314,7 @@ def test_build_wires_the_desk_from_chores_toml_with_a_reader_that_only_reads(tmp
         'actor = "lambda:x:agent"\nowner = "lambda:x"\nsteward = "lambda:owner"\n'
         '[chores.disk]\nevery = "every:2h"\nroots = ["/"]\n'
         f'[desk]\nactor_dir = {json.dumps(str(chair))}\nevery = "every:5m"\n'
-        "answers_per_hour = 3\nclarify_hours = 12\n"
+        "answers_per_hour = 3\nclarify_hours = 12\nadmit_replies = true\n"
     )
     chores, agent = cli_build(tmp_path, backend=None)
     assert (
@@ -1325,12 +1327,16 @@ def test_build_wires_the_desk_from_chores_toml_with_a_reader_that_only_reads(tmp
     )
     assert "You are also the front desk of lambda:x" in agent.profile_for([]).system
     desk = agent.desk
-    assert desk.answers_per_hour == 3 and desk.clarify_hours == 12
+    assert desk.answers_per_hour == 3 and desk.clarify_hours == 12 and desk.admit_replies is True
     assert desk.reader.allowed == READ_VERBS and desk.reader.actor == "lambda:x" and desk.reader.cwd == chair
     assert not any(hasattr(desk.reader, n) for n in ("send", "grant", "mark_read", "inbox"))
     with pytest.raises(AgentError, match=r"\['comm.read'\] are not verbs"):
         asyncio.run(desk.reader.exec('comm.read(ids=["x"])'))
     assert Path(desk.ledger) == tmp_path / "desk.jsonl"
+    # the setting is on for the boolean alone: a quoted "true" or "false" is a typo, and reads as off
+    toml = tmp_path / "chores.toml"
+    toml.write_text(toml.read_text().replace("admit_replies = true", 'admit_replies = "true"'))
+    assert cli_build(tmp_path, backend=None)[1].desk.admit_replies is False
 
 
 def chair_agent(tmp_path, extra: str = "") -> Agent:
@@ -1420,17 +1426,18 @@ def test_agent_marks_only_own_mail(tmp_path):
 
 
 def test_out_waits_while_a_listed_message_is_neither_answered_nor_left(tmp_path):
-    """A model can write OUT{} in the sweep's own round, and the one listed message is then never
-    routed. The gate refuses that OUT with the ids; the next
-    round routes them, and the round after ends the wake."""
+    """A model can write OUT{} before it has routed what its sweep listed. The gate refuses that OUT
+    with the ids, judged on the record as it stands: a leave beside the OUT has not landed, so both ids
+    are named, and the refusal settles the leave; the next OUT names the one still listed."""
     khive = FakeKhive(mail(SELF, "tick: sweep"))
     desk, chores, agent = build(
         tmp_path,
         khive,
         FakeReader(Q1, NOTICE),
         [
-            SWEEP + " " + DONE,  # the slip: OUT{} beside sweep()
-            '<lact l1>leave(msg="m-n1", why="notice")</lact> ' + DONE,  # one taken, one still listed
+            SWEEP,
+            '<lact l1>leave(msg="m-n1", why="notice")</lact> ' + DONE,  # both still listed when judged
+            DONE,  # one taken, one still listed
             '<lact l2>leave(msg="m-q1", why="no-instrument")</lact>',
             DONE,
             SWEEP,
@@ -1438,7 +1445,7 @@ def test_out_waits_while_a_listed_message_is_neither_answered_nor_left(tmp_path)
         ],
     )
     run = asyncio.run(agent.wake())
-    assert type(run.outcome).__name__ == "Success" and len(run.record) == 12  # 4 rounds
+    assert type(run.outcome).__name__ == "Success" and len(run.record) == 15  # 5 rounds, the closure
     retries = [str(e.content) for e in run.record if e.kind is Kind.SYSTEM]
     assert any(
         "listed 2 message(s) you have not answered or left: ['m-n1', 'm-q1']; call answer(" in str(r)
@@ -1450,7 +1457,7 @@ def test_out_waits_while_a_listed_message_is_neither_answered_nor_left(tmp_path)
     # a wake whose sweep listed nothing, and a wake with no sweep at all, end on their first OUT
     khive.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))
     run = asyncio.run(agent.wake())
-    assert type(run.outcome).__name__ == "Success" and len(run.record) == 6  # 2 rounds, no retry
+    assert type(run.outcome).__name__ == "Success" and len(run.record) == 7  # 2 rounds, no retry
 
 
 CQ = inbox_row(ASKER, "disk or pr?", "is it the disk under the roots or PR 12 that is red?", "m-c1", "t-c1")
@@ -1601,6 +1608,117 @@ def test_an_unanswered_clarify_expires_into_a_leave_the_chair_hears_of(tmp_path)
         desk.summary(day)
         == f"desk {day}: 1 message(s) read, 0 answered, 1 left (clarify unanswered 1), 1 asked"
     )
+
+
+ANSWER = "d4e5f6a7"  # a clarify's answer as the desk's own box holds it
+ANSWER_ID = f"{ANSWER}-0000-0000-0000-000000000000"
+
+
+def clarified(tmp_path, turns: list[str], admit_replies: bool = True, **probes: Probe):
+    """A desk that clarified m-c1 on thread t-c1 in its first wake; `turns` are the model's after that."""
+    reader, khive = FakeReader(CQ), FakeKhive(mail(SELF, "tick: sweep"))
+    ask = '<lact c1>clarify(msg="m-c1", a="the disk under the roots", b="PR 12")</lact>'
+    desk, chores, agent = build(
+        tmp_path, khive, reader, [SWEEP, ask, DONE, *turns], admit_replies=admit_replies, **probes
+    )
+    asyncio.run(agent.wake())
+    assert [(r["msg"], r["class"]) for r in desk.rows()] == [("m-c1", "clarified")]
+    return desk, khive, reader, agent
+
+
+def test_a_clarifys_answer_mailed_to_the_desk_is_admitted_and_listed_under_the_clarified_message(tmp_path):
+    out = full(findings=(), evidence="df: 301 GiB free", population="volumes", predicate="under a floor")
+    answer = f'<lact a1>answer(msg="{ANSWER_ID}", chore="disk")</lact>'
+    desk, khive, reader, agent = clarified(tmp_path, [SWEEP, answer, DONE], disk=Probe("disk", out))
+    khive.mail.append(mail(ASKER, "the disk under the roots", mid=ANSWER, thread="t-c1"))
+    run = asyncio.run(agent.wake())
+    assert run is not None and "dropped" not in stored(agent, "cursor")
+    assert results(run)[0].endswith(
+        f"[msg {ANSWER_ID} from {ASKER} subject 'disk or pr?']\n"
+        "is it the disk under the roots or PR 12 that is red?\n"
+        "[the answer to the desk's clarify, 'the disk under the roots' or 'PR 12']\n"
+        "the disk under the roots"
+    )
+    sent = khive.sent[-1]
+    assert len(khive.sent) == 2 and "df: 301 GiB free" in sent["content"]
+    assert sent["to"] == ASKER and sent["thread_id"] == "t-c1" and sent["subject"] == "Re: disk or pr?"
+    rows = desk.rows()
+    assert [(r["msg"], r["class"]) for r in rows] == [
+        ("m-c1", "clarified"),
+        (ANSWER_ID, "answered"),
+        ("m-c1", "resolved"),
+    ]
+    assert rows[-1]["by"] == ANSWER_ID and desk._open_clarifies() == {} and pending(agent) == {}
+
+
+@pytest.mark.parametrize(
+    "sender, thread, close, admit_replies",
+    [
+        ("lambda:b", "t-c1", False, True),
+        (ASKER, "t-other", False, True),
+        (ASKER, "t-c1", True, True),
+        (ASKER, "t-c1", False, False),
+    ],
+    ids=["another-actor", "another-thread", "a-closed-clarify", "the-setting-off"],
+)
+def test_mail_to_the_desk_that_answers_no_open_clarify_of_its_sender_is_dropped_at_the_gate(
+    tmp_path, sender, thread, close, admit_replies
+):
+    leave = '<lact l1>leave(msg="m-c2", why="no-instrument")</lact>'
+    desk, khive, reader, agent = clarified(tmp_path, [SWEEP, leave, DONE], admit_replies=admit_replies)
+    if close:  # the answer to the chair, handled, resolves the clarify
+        reader.rows.append(inbox_row(ASKER, "Re: disk or pr?", "the disk", "m-c2", "t-c1"))
+        khive.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))
+        asyncio.run(agent.wake())
+        assert desk._open_clarifies() == {}
+    khive.mail.append(mail(sender, "the disk under the roots", mid=ANSWER, thread=thread))
+    assert asyncio.run(agent.wake()) is None
+    assert stored(agent, "cursor")["dropped"] == [{"id": ANSWER, "from": sender}]
+    assert pending(agent) == {} and len(khive.sent) == 1
+
+
+LISTED = "an answer mailed to you is listed there under the message it clarifies, by the answer's own id"
+
+
+@pytest.mark.parametrize("admit_replies", [True, False], ids=["the-setting-on", "the-setting-off"])
+def test_the_guidance_names_the_listing_of_an_answer_only_when_the_setting_admits_one(
+    tmp_path, admit_replies
+):
+    desk, khive, reader, agent = clarified(tmp_path, [DONE], admit_replies=admit_replies)
+    text = desk.chores.extra_system
+    assert (LISTED in text) is admit_replies
+    assert (
+        "$replies" not in text and "in a later sweep" + ("; an answer" if admit_replies else ". Once") in text
+    )
+
+
+def test_the_gate_reads_the_ledger_once_per_message(tmp_path):
+    desk, khive, reader, agent = clarified(tmp_path, [DONE])
+    reads: list[str] = []
+    rows = desk.rows
+    desk.rows = lambda: reads.append("read") or rows()
+    answer = mail(ASKER, "the disk under the roots", mid=ANSWER, thread="t-c1")
+    assert desk.admit(answer) is True and reads == ["read"]  # an answer: the open clarifies, then its own row
+    reads.clear()
+    assert desk.admit(mail("lambda:b", "not an answer", mid="b2c3d4e5", thread="t-c1")) is False
+    assert reads == ["read"]
+
+
+def test_a_ledger_the_gate_cannot_read_leaves_the_mail_to_the_agents_gate_and_the_error_on_the_wake(tmp_path):
+    desk, khive, reader, agent = clarified(tmp_path, [DONE])
+    text = desk.ledger.read_text()
+    desk.ledger.write_text(text + "{not json\n" + text)  # an undecodable line in the middle, not a torn tail
+    with pytest.raises(json.JSONDecodeError):  # the read itself fails
+        desk.rows()
+    khive.mail.append(mail(OWNER, "status please", mid="a1b2c3d4", thread="t-own"))
+    khive.mail.append(mail(ASKER, "the disk under the roots", mid=ANSWER, thread="t-c1"))
+    run = asyncio.run(agent.wake())
+    assert run is not None and stored(agent, "taking") == {}  # the owner's mail ran
+    assert stored(agent, "cursor")["dropped"] == [{"id": ANSWER, "from": ASKER}]  # the answer met C3's gate
+    assert [e for e in agent.errors if e.startswith("desk gate failed: JSONDecodeError")] != []
+    assert (
+        len([e for e in agent.errors if e.startswith("desk gate failed")]) == 1
+    )  # once, whatever the passes
 
 
 def test_a_row_the_chair_has_not_handled_wakes_the_desk_and_a_handled_one_moves_the_cursor_only(tmp_path):

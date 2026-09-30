@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from pathlib import Path
 
 from lionagi.checkpoint import KINDS, WHYS
 
 from .agent import agent_main
 from .areas import areas_main
 from .chat import chat_main
+from .config import chat_config, config_main
 from .context import BUDGET, context_main
 
 __all__ = ("parser", "main")
 
 
-def parser() -> argparse.ArgumentParser:
+def parser(chat: dict | None = None) -> argparse.ArgumentParser:
+    """The command tree; `chat` replaces `lion chat`'s built-in defaults (a flag on the line still wins)."""
     ap = argparse.ArgumentParser(prog="lion", description="lionagi v1")
     sub = ap.add_subparsers(dest="command", required=True)
     ag = sub.add_parser("agent", help="an actor's long-running agent, from its directory")
@@ -52,21 +55,47 @@ def parser() -> argparse.ArgumentParser:
     ch.add_argument(
         "--box",
         choices=("vm", "daytona"),
-        default="vm",
+        default=None,
         help="where bash, python and the file tools work: the local VM over this directory (vm), or a "
-        "Daytona box the directory is pushed into at the same path; its diff comes back as a patch",
+        "Daytona box the directory is pushed into at the same path; its diff comes back as a patch. "
+        "Default: where a continued chat ran, else vm",
     )
-    ch.add_argument("--image", default="python:3.12", help="the Daytona box's image (with --box daytona)")
+    ch.add_argument(
+        "--image",
+        default=None,
+        help="the Daytona box's image (with --box daytona); default: a continued chat's, else python:3.12",
+    )
     ch.add_argument(
         "--apply",
         action="store_true",
-        help="apply the box's patch to this directory at the end (git apply --3way); default: print + save",
+        help="apply the box's patch to this directory at the end (git apply); default: print + save",
     )
     ch.add_argument(
         "--code",
         action="store_true",
         help="the coding preset: read_lines, search and edit on this directory, the shell VM (implies "
         "--shell), and the root AGENTS.md/CLAUDE.md in the guidance",
+    )
+    ch.add_argument(
+        "--tools",
+        default=None,
+        metavar="NAMES",
+        help="with a claude_code model: the CLI's own tools inside each round, comma-separated (Bash, "
+        "Read, Edit, Write, Grep, Glob, WebSearch); every call passes this console's gate and lands on "
+        "the record as a result the model can hide; a fold restarts the session from the folded view",
+    )
+    ch.add_argument(
+        "--max-turns",
+        type=int,
+        default=0,
+        help="with --tools: the CLI's tool turns per round; 0 = no cap",
+    )
+    ch.add_argument(
+        "--khive-config",
+        default=None,
+        metavar="FILE",
+        help="the khive config the chat signs with (its [actor].id, passed to kkernel as --config), over "
+        "the directory's own .khive/config.toml; a missing file refuses to start rather than falling back",
     )
     ch.add_argument(
         "--log", default=None, help="the record, one JSON line per entry; default .lion/chats/<time>.jsonl"
@@ -88,11 +117,18 @@ def parser() -> argparse.ArgumentParser:
     ch.add_argument(
         "-v", "--verbose", action="store_true", help="show results' first lines and the loop's notices"
     )
+    ch.set_defaults(**(chat or {}))
+    cf = sub.add_parser(
+        "config", help="the [chat] values a bare `lion chat` runs with, and the file each came from"
+    )
+    cf.add_argument(
+        "--dir", default=".", help="the chat's directory: its .lion/config.toml wins over ~/.lion/config.toml"
+    )
     ar = sub.add_parser(
         "areas", help="the residents by area: serving, in a wake, wakes, today's runs and cost"
     )
     ar.add_argument(
-        "--file", default="~/.lionagi/areas.toml", help="the registry: [area.<name>] chair, home, agents"
+        "--file", default="~/.lionagi/areas.toml", help="the registry: [area.<name>] chair, desks"
     )
     ar.add_argument(
         "--serve", type=int, default=None, metavar="PORT", help="serve the page and /api/areas on PORT"
@@ -133,6 +169,12 @@ def parser() -> argparse.ArgumentParser:
         help="default: the newest *.jsonl under ~/.claude/projects/<cwd slug>/, never a _precompact_ copy",
     )
     cc.add_argument("--budget", type=int, default=BUDGET, help="tokens; the kept view is half of it")
+    cc.add_argument(
+        "--hook",
+        action="store_true",
+        help="run as Claude Code's PreCompact hook: the session, transcript and cwd come on stdin, the "
+        "reason is precompact",
+    )
     cr = verbs.add_parser("restore", parents=[here], help="print the first prompt of the fresh session")
     cr.add_argument("--id", default=None, help="a checkpoint id; default: the latest")
     cr.add_argument("--json", action="store_true", help="print {id, first_prompt, watches, spawns}")
@@ -146,12 +188,18 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     a = parser().parse_args(argv)
+    if a.command == "chat":
+        # the directory's file is found by --dir, so the first parse reads it; the second takes the
+        # files' values as defaults, which a flag given on the line beats even when it equals the default
+        a = parser({k: v for k, (v, _) in chat_config(Path(a.dir)).items()}).parse_args(argv)
     if a.command == "agent":
         asyncio.run(agent_main(a))
     elif a.command == "areas":
         areas_main(a)
     elif a.command == "context":
         context_main(a)
+    elif a.command == "config":
+        config_main(a, parser().parse_args(["chat"]))
     elif a.command == "chat":
         try:
             asyncio.run(chat_main(a))

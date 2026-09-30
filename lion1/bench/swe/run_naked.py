@@ -24,7 +24,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from hub.harness import ClaudeCodeAgentic
+from hub.backend import ClaudeCodeAgentic
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from run_swe import DATA, RESULTS, oracle  # noqa: E402

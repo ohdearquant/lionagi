@@ -1,7 +1,7 @@
 ---
 adr: ADR-0018
 status: draft
-liveness: operating (the chat, its resume and the boxed chat are pinned by tests against scripted backends and a stubbed box; the one real-box test runs only when enabled; no test interrupts a boxed chat)
+liveness: operating (the chat, its resume and the boxed chat, a resumed boxed chat included, are pinned by tests against scripted backends and a stubbed box; the one real-box test runs only when enabled; no test interrupts a boxed chat)
 date: "2026-09-25"
 area: chat
 kind: new
@@ -41,8 +41,9 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   one record, one chat log, and one box or none.
 - **console**: the actor and profile `lion chat` builds for a directory: the tools and the guidance
   its flags select.
-- **chat log**: `.lion/chats/<id>.jsonl` under the directory by default: every record entry as one
-  JSON line, written as it lands, with a usage row per backend call between them.
+- **chat log**: `.lion/chats/<id>.jsonl` under the directory by default: a `BOX` row naming where
+  the chat ran, then every record entry as one JSON line, written as it lands, with a usage row per
+  backend call between them.
 - **`wait`**: the job field that makes a run a conversation: called at a turn's start after a turn
   with no command, or after a pause, it puts the person's next line on the actor's inbox, or ends
   the run `Stopped`.
@@ -54,6 +55,28 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
 - **chat patch**: the copy's diff against the baseline, saved as `.lion/chats/<id>.patch` under the
   chat log's id.
 - **unsettled command**: a command a logged turn asked for whose alias has no RESULT in the log.
+- **editor**: the line the person types on a terminal, an editor over the whole message
+  (prompt_toolkit) rather than a read through the tty's line discipline.
+- **status line**: `model · actor · inbox N · ctx ~F/B (last call P) · notes N (S chars) · $C`, read
+  off the live run each time it is drawn; `actor` is the id `.khive/config.toml` under the directory
+  signs as, or `no actor`.
+- **working indicator**: `⠋ thinking · 12s` under the scrollback while a round's call is in flight,
+  `running` once the turn's commands run; a finished result folds to its head, its detail parked
+  under the indicator until the next result lands.
+- **own tools**: with a `claude_code` model, the Claude Code CLI's tools `--tools` names, run by the
+  CLI inside each round.
+- **link**: a terminal hyperlink (OSC 8) the console draws: a URL to itself, a path naming an
+  existing file to `vscode://file/<abs>[:line[:col]]`, which opens it in the editor.
+- **response**: a reply's prose as the console showed it, constructs cut; `/copy N` counts back from
+  the last one (1 = the last), a continued chat's replayed ones included.
+- **diagram page**: `.lion/chats/<id>-<seq>-<n>.html`, a reply's `n`th mermaid block drawn by the
+  browser, linked under the reply.
+- **voice**: Alt-V at the editor: a recording from the microphone, transcribed on this machine
+  (`mlx-whisper`, behind the `voice` extra) into the line at the cursor.
+- **khive config**: the file whose `[actor].id` the chat's khive calls sign as: `--khive-config` or
+  `[chat] khive_config`, else `<dir>/.khive/config.toml`; an explicit one is never a fallback.
+- **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
+  defaults for the flags.
 
 ## Assumptions
 
@@ -79,8 +102,8 @@ turn with commands runs them first.
 After the first line, `/quit`, `/exit`, `/q` or the end of input ends the run `Stopped`. The chat's
 `accept` refuses every `OUT{}`; three in a row end the run `Refused`
 ([[ADR-0003-the-bounds#^c4|ADR-0003/C4]]). Each entry reaches the log as it lands, and the record is
-flushed whole however the run ends. A first Ctrl-C lets the turn in flight settle, then hands back;
-a second, or one at the prompt, ends the chat.
+flushed whole however the run ends. A first Ctrl-C cuts the call in flight and hands back; a second,
+or one at an empty prompt, ends the chat.
 
 ### C2: The flags choose the tools and the guidance _(enforced: mechanical)_ ^c2
 
@@ -146,16 +169,17 @@ the box before the model works; a saved patch, an empty one and a refused apply 
 
 - **Subject**: `lion chat -c` and `lion chat -r <id, prefix or path>`.
 - **Violated when**: a resumed chat reruns a logged command, an old alias or value fails to resolve,
-  the old log is written to, or an unsettled command goes unnamed.
+  the old log is written to, or an unsettled command or an unapplied chat patch goes unnamed.
 
-`-c` continues the last log by id; `-r` takes an id, a unique prefix or a path. The log's rows come
-back as entries with their sequences, results, inbound marks and directives; usage rows are skipped.
-The loop admits each logged turn's values in order, and the fold lands where it did
-([[ADR-0007-the-record#^c4|ADR-0007/C4]]).
+`-c` continues the last log; `-r` takes an id, a unique prefix or a path. The rows come back as
+entries with sequences, results, inbound marks and directives; usage and `BOX` rows are skipped. The
+loop admits each turn's values in order, and the fold lands where it did
+([[ADR-0007-the-record#^c4|ADR-0007/C4]]). A refused turn admits nothing; one an older reader ran
+and today's refuses admits what that reader did.
 
 A last line cut mid-write is dropped and named; a bad line with lines after it refuses the resume.
-The unsettled commands are named to the model in one notice from the console, as not run again. The
-new session writes a new chat log, the whole record again.
+Unsettled commands are named to the model in one notice as not run again. The new session writes a
+new log, the whole record.
 
 ### C7: The chat is a console over the loop _(enforced: process)_ ^c7
 
@@ -169,6 +193,89 @@ belong to the sandboxed executor ([[ADR-0011-the-box|ADR-0011]], the box). The g
 of anything that gives the chat its own scheduling, or its own path into a box. A change to the
 coding guidance, `hub/guidance/code.md`, names the run it was tried on.
 
+### C8: The person types into an editor, and the console tells the state _(enforced: mechanical)_ ^c8
+
+- **Subject**: `Console.ask`, `Editor` and `status_line` on a terminal.
+- **Violated when**: a pasted line arrives as its own message, a line over 1024 bytes is lost, a
+  prompt leaves the loop without its SIGINT handler, or the status line shows a cached value. Also
+  when an explicit khive config that cannot be read is answered by the directory's own.
+
+On a terminal a paste of many lines is one message, Enter sends, Alt-Enter breaks a line, Up recalls
+earlier messages from `.lion/history`, and Ctrl-C clears the line or, on an empty one, ends the
+chat. A pipe keeps the plain line reader. The status line sits under the prompt and prints at each
+round notice under `--verbose`. The flags' defaults come from the config file: the nearer file wins
+per key, a flag on the line over both.
+
+### C9: A first Ctrl-C cuts the call; a fold, not a failed directive, restarts a session _(enforced: mechanical)_ ^c9
+
+- **Subject**: `Interrupt`, `Run.interrupt` and the `claude_code` session under `--tools`.
+- **Violated when**: a Ctrl-C mid-call waits for the round, a cut ends the run, a failed directive
+  restarts the session, or an own-tool call misses the record.
+
+Mid-round a first Ctrl-C cuts the backend call in flight: the round ends with a notice and no turn,
+the run goes on, and a `claude_code` session resumes where it was; with no call in flight the round
+settles first. Only a result that changed the view carries its `spec`, so a failed directive leaves
+the session as it was. `--tools`, for a `claude_code` model only, names the CLI's own tools; each
+call passes the console's gate and lands on the record as a result the model can hide.
+
+### C10: The console shows the model working, and folds what finished _(enforced: mechanical)_ ^c10
+
+- **Subject**: `Console.working`, `Console.idle`, `_Working` and the status line's head on a
+  terminal.
+- **Violated when**: a call in flight shows nothing moving, a finished result stays open above the
+  next, the status line names no model, or an own-tool call prints its arguments whole.
+
+On a terminal the working indicator runs under the scrollback from a round's start until its turn
+lands, `running` while the turn's commands run. With `--verbose` a result prints its head to the
+scrollback and parks its detail under the indicator until the next lands; a call of the model's own
+tools prints as one line, `✓ Bash command=…`, clipped. The status line leads with the model and the
+actor. A pipe gets none of this. A command named like an own tool is refused with where that tool
+lives.
+### C11: What the console shows, the person can open _(enforced: mechanical)_ ^c11
+
+- **Subject**: `linked`, `Console._args` and `Console.notice`.
+- **Violated when**: a relative path resolves against the process's cwd, a path that does not exist
+  links, a link is drawn inside fenced code, or a URL carries the sentence's punctuation.
+
+In prose a URL is a link to itself and a path naming an existing file, resolved against the chat's
+directory and never the cwd, is a link that opens it in VS Code at the line a `:line` names. Fenced
+code is left as written, a bare word never links, and a path the model wrote in a code span links
+whole. A call's `path` argument links to the file or directory it names; a URL in a notice links to
+itself.
+### C12: A response can be taken whole to the clipboard _(enforced: mechanical)_ ^c12
+
+- **Subject**: `Console.command`, `Console.copy` and the editor's Alt-C.
+- **Violated when**: `/copy` reaches the model as a message, the text copied differs from the prose
+  shown, a number outside the chat's responses copies anything, or a copy blocks the prompt.
+
+`/copy` at the prompt puts the last response on the clipboard, `/copy N` the Nth back from it (2 =
+the one before the last), and Alt-C the last without leaving the line being typed; the console says
+what it copied, or why nothing. The route is the platform's tool (pbcopy, wl-copy, xclip), and OSC
+52 through the terminal where there is none, as over ssh. A console command never reaches the model.
+
+### C13: A mermaid block in a reply is drawn _(enforced: mechanical)_ ^c13
+
+- **Subject**: `Console._turn` on a reply holding a ```` ```mermaid ```` fence.
+- **Violated when**: a mermaid block prints as its source only, a page is written outside the chat
+  log's directory, a fence inside a longer fence is taken as a block, or a chat without a log fails
+  on a diagram.
+
+Each closed mermaid block of a reply lands as a diagram page beside the chat log, named for the
+chat, the entry and the block's place in it, and the console prints a link to the page under the
+block's source. The page loads mermaid from a CDN and draws the block's text unchanged. A chat with
+no log says a diagram was not saved and goes on.
+### C14: A message can be spoken _(enforced: mechanical)_ ^c14
+
+- **Subject**: `Voice` and the editor's Alt-V on a terminal.
+- **Violated when**: a recording is sent without the person reading it, the transcription blocks the
+  prompt, a prompt that ends leaves a recording running, or a missing extra ends the chat.
+
+A first Alt-V records from the microphone and the toolbar says so; a second stops it and the words
+land at the cursor, after a space when the line already holds one, for the person to read before
+Enter sends them. The transcription runs off the loop; the prompt stays live. Enter, Ctrl-C or
+Ctrl-D drops a recording still running. Without the extra, a microphone or a model, the toolbar says
+why and the prompt goes on.
+
 ## Decisions
 
 ### D1: `hub/chat.py`: `chat`, `entry_row`, `load_log` ^d1
@@ -181,16 +288,17 @@ directive as data; `load_log` reads rows back through `entry_of`, the reader the
 
 - **Landing evidence**: `tests/test_chat.py`: a plain turn and the next line on one record, each
   entry said as it lands, `OUT{}` refused, the pause, the log read back as history, the directives
-  folding the same, the cut last line.
+  folding the same, the cut last line; `tests/test_actor_resume.py`:
+  `test_a_two_out_turn_an_older_reader_ran_keeps_its_values_on_resume_and_a_refused_one_does_not`.
 
 ### D2: `console()` and the flags on `lion chat` ^d2
 
 Serves C2 and C3. `console` takes the sandbox, the coding flag, a tree and `about_box`, and
 registers the tools over the `Tree`: `LocalTree` of the directory, or a `BoxTree` of the box.
-`--box` is `vm` by default, or `daytona`. Under `vm`, `chat_main` builds a `Sandbox` VM for
-`--shell` or `--code`; for a boxed chat, a `DaytonaSandbox` whose workdir is the directory's own
-path, `--image` defaulting to `python:3.12`, and as `about_box` the box guidance naming its kind and
-image. `--model` picks the backend ([[ADR-0009-backends|ADR-0009]]).
+`--box` is `vm` or `daytona`. Under `vm`, `chat_main` builds a `Sandbox` VM for `--shell` or
+`--code`; for a boxed chat, a `DaytonaSandbox` whose workdir is the directory's own path, `--image`
+defaulting to `python:3.12`, and as `about_box` the box guidance naming its kind and image.
+`--model` picks the backend ([[ADR-0009-backends|ADR-0009]]).
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py` (khive only in an actor's directory,
   the root rules, the hooks);
@@ -212,11 +320,94 @@ taking it keeps the box and names it. The default is print and save; `--apply` l
 Serves C6. `fresh_log` creates the chat log exclusively, with `-02`, `-03` when a session already
 took that second's id; a start that fails before logging removes its empty log so `-c` keeps the old
 one; `--log` refuses an existing path. `unsettled` parses each logged turn and names the aliases
-with no RESULT.
+with no RESULT. `load_log` hands back the `BOX` row, whose box and image stand in for a flag not
+given, else `vm` and `python:3.12`; `git apply --check -R` tests the continued session's patch.
 
-- **Landing evidence**: `tests/test_chat.py` (the exact id beside its sibling, the failed start);
+- **Landing evidence**: `tests/test_chat.py` (the exact id beside its sibling, the failed start,
+  `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch`);
   `apps/cli/tests/test_chat_command.py` (the whole record logged again, the unsettled commands, the
   missing log).
+
+### D5: `Editor`, `status_line` and `lion_cli/config.py` ^d5
+
+Serves C8. `Editor` wraps a `PromptSession` with its own key bindings and `handle_sigint` off;
+`Console.ask` uses it on a terminal, `stdin_ask` otherwise. `status_line` reads the actor's inbox,
+the run's context figure and last reported prompt, the profile's notes and `spent(calls)`.
+`chat_config` reads the two files and `main` parses twice, the second with their values as defaults;
+`lion config` prints each value with its source. An explicit khive config rides every `kkernel exec`
+as `--config`, over the cwd's (measured); missing, or naming no actor, it refuses the start by name.
+
+- **Landing evidence**: `tests/test_chat.py`: the editor's paste, Alt-Enter, Ctrl-C and Up, the
+  SIGINT handler left in place, the status line's live values and where it prints;
+  `apps/cli/tests/test_config.py`: precedence and refusals.
+
+### D6: `Run.interrupt`, `run.cut`, and a result's `spec` ^d6
+
+Serves C9. `Run.interrupt` sets `pause` and cancels the call the loop holds in `run.call`; the loop
+reads `run.cut` to tell that cancellation from the run's own and continues. `_message` renders a
+failed result with `spec=None`, which `ClaudeCodeSession` reads before restarting. `backend_for`
+takes the tool names and `chat_main` hands the session the console's actor as its gate.
+
+- **Landing evidence**: `tests/test_chat.py`: the cut with its two controls;
+  `apps/cli/tests/test_chat_command.py`: the Ctrl-C presses; `tests/test_claude_code.py`:
+  `test_a_failed_context_directive_does_not_restart_the_session`.
+
+### D7: `Console.working`, `Console.idle`, `signer` and `Actor.elsewhere` ^d7
+
+Serves C10. `Console.working(what)` starts a transient rich `Live` at eight frames a second holding
+a `_Working` (frame, what, elapsed) and any parked detail; `idle()` stops it. `chat_main` subscribes
+`round.started` to `working("thinking")`, and `Console.__call__` turns it to `running` when a turn
+carries commands. `signer(directory)` reads the actor id for the status line. `Actor.elsewhere` maps
+a name to the sentence appended to the unknown-command error; the chat fills it with the own tools.
+
+- **Landing evidence**: `tests/test_chat.py`:
+  `test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detail_under_it`,
+  `test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked`,
+  `test_an_own_tool_call_folds_to_one_line_and_an_unknown_name_is_told_where_it_lives`.
+### D8: `linked`, `_target` and the links in calls and notices ^d8
+
+Serves C11. `linked(text, directory)` walks the prose outside fences token by token (an escape, a
+link the model wrote, an autolink, a code span, a URL, a path) and rewrites URLs as autolinks and
+existing paths as links to `vscode://file/…`, since rich's markdown drops `file:` links. `_target`
+resolves a path with `os.path` and answers None for one that does not exist. `Console._args` links a
+call's `path`, `Console.notice` a URL, both as rich markup.
+
+- **Landing evidence**: `apps/cli/tests/test_links.py`: a URL without its sentence, the common
+  spellings of a path, the resolution against the chat's directory and never the cwd, a fence, a
+  code span, a call's directory argument, a notice's hyperlink.
+### D9: `to_clipboard`, `Console.command`, `Console.copy` and `_prose` ^d9
+
+Serves C12. `_prose` cuts a turn's constructs by the parser's own spans, the one function the view
+and the copy share, so what is copied is what was shown; `Console.__call__` appends each reply's
+prose, a replayed one too, to `responses`. `Console.command` runs `/copy [N]` and the chat's `ask`
+loop asks again after one. `to_clipboard` tries each tool present on stdin, uncaptured (xclip and
+wl-copy fork a child that serves the selection), then writes the OSC 52 escape.
+
+- **Landing evidence**: `apps/cli/tests/test_copy.py`: the last and the Nth-back response, a number
+  out of range, the prose without its constructs, the route order and the OSC 52 fallback, the
+  command never sent, Alt-C.
+
+### D10: `mermaid_blocks`, `diagram_page` and `_fences` ^d10
+
+Serves C13. `_fences` walks the reply line by line, split on newlines only (`splitlines` also breaks
+on characters a code line may hold). A fence closes on a bare run of its own character at least as
+long, so a fence inside a longer one is text. `Console._turn` splits the prose at each block's end,
+writes `diagram_page(source)` (the source HTML-escaped inside `<pre class="mermaid">`) and prints
+the page's `file:` URI as a link.
+
+- **Landing evidence**: `tests/test_mermaid.py`: the blocks found and the nested fence, the page's
+  escaping, the page written and linked, the chat without a log.
+### D11: `Voice`, `_off_loop` and `_real` ^d11
+
+Serves C14. `Voice.press` toggles: it starts `record()` or stops it and hands the audio to
+`transcribe` on a daemon thread, whose outcome `_off_loop` settles on the loop with
+`call_soon_threadsafe` (not the loop's executor: its shutdown would join a transcription still
+running). `_real` builds the microphone through sounddevice at 16 kHz mono and Whisper through
+mlx_whisper, imported on the thread since the import takes seconds; both are injectable for tests.
+`Editor.ask` calls `Voice.reset` when the prompt ends.
+
+- **Landing evidence**: `tests/test_voice.py`: the toggle, the text at the cursor, the space after a
+  word, the failures said on the toolbar, one transcription at a time, the reset, the extra missing.
 
 ## Alternatives
 
@@ -228,6 +419,15 @@ with no RESULT.
 | Keeping every box after its chat for `-c` | the saved patch holds the work; a box is kept only when its patch could not be taken (C5) |
 | A summary of the session as what resumes | the record is the memory; a summary is the model's opinion of it and folds nothing |
 | Rerunning unsettled commands on resume | one may have had its effect before the session ended; the model is told and asks again |
+| Reading the person's line through `input()` with bracketed paste | the tty's line discipline still splits a paste into lines on some terminals and macOS drops any line over 1024 bytes without a word |
+| A first Ctrl-C that waits for the round to settle | a long tool turn made the interrupt look ignored; the call is the person's to cut |
+| Environment variables for the chat's defaults | a file the person can read back with `lion config` says where each value came from |
+| Falling back to the directory's khive config when the explicit one is missing | the chat would sign as someone the person did not name; a refusal by file name is what they can act on |
+| A progress bar, or a line per second, while a call runs | nothing is known of a call's length; a spinner with the elapsed time says only that it is alive, and leaves the scrollback clean |
+| `file:` links for paths | rich's markdown drops them, and a browser shows a file where an editor at the line is what the person opens it for |
+| Ctrl-Y, or a mouse button, for the copy | Ctrl-Y is the editor's yank, and a terminal has no buttons; a key the line survives and a command the person can number |
+| Drawing the diagram in the terminal | no terminal draws mermaid; a page in the browser does, at full size, and the log keeps the source |
+| Whisper through a remote API | the recording leaves the machine; the local model answers in seconds on Apple silicon and needs no key |
 
 ## Consequences
 
@@ -256,11 +456,22 @@ with no RESULT.
 - **S8**: With `--code` the root's `AGENTS.md` and `CLAUDE.md` enter the guidance whole, and the
   guidance goes out with every turn's call, so a long rules file adds its length to every turn's
   input.
-- **S9**: A resumed chat takes its box from the new command's flags, since the chat log records
-  none: `-c` without `--box daytona` continues a boxed chat's record over the person's own tree.
-  With it, edits from an unapplied chat patch stand in the record and not in the copy, and nothing
-  tells the model so; no test resumes a boxed chat. Starting the new copy from the saved chat patch
-  is an open choice, not built.
+- **S9**: The chat log's first row, `BOX`, names where the chat ran, and a resume runs there unless
+  its flags say otherwise; a log older than the row resumes under `vm`. An unapplied chat patch is
+  told, not built on: the new copy is a fresh push (S2). When the continued session's saved patch
+  does not come off the directory, or cannot be checked without git, the resume notice says so to
+  the model and the person; only that session's patch is checked.
+  `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch` resumes a
+  boxed chat.
+- **S11**: A cut round leaves no turn on the record, only a notice; a `claude_code` session killed
+  mid-call resumes on the next call from the CLI's own persisted session. A hide of what the CLI's
+  own tools did folds the record; the CLI's session keeps its own transcript until a directive or a
+  fold restarts it from the folded view.
+- **S12**: The config file cannot switch a `true` off for one run: the flags are switches, so a
+  nearer file's `false` is the only override. `lion chat --help` shows the built-in defaults, not
+  the files'.
+- **S13**: The indicator and the parked detail are screen state: when the next result lands the
+  parked detail leaves the screen, and the log holds it whole. A pipe sees the heads only.
 - **S10**: Nothing in the chat installs `uv` in a box: the default `python:3.12` is used as
   published, while the VM's own image copies `uv` into `python:3.12-slim`. The box guidance tells
   the model to install what the image lacks.

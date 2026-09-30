@@ -71,7 +71,7 @@ _JS = """
 (function () {
 'use strict';
 var state = {
-  areas: [], mode: 'list', dir: null, detail: null, detailDir: null, gen: 0, logs: {}, pending: {},
+  areas: [], mode: 'list', dir: null, detail: null, detailDir: null, gen: 0, view: 0, logs: {}, pending: {},
 };
 
 function esc(s) {
@@ -79,7 +79,11 @@ function esc(s) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
-function money(n) { return '$' + (Number(n) || 0).toFixed(4); }
+function money(n, unknown) {  // the mark hub.areas.partial() writes, beside the dollars it qualifies
+  return '$' + (Number(n) || 0).toFixed(4) +
+    (unknown === null ? ' (partial: calls of unknown cost before this count went uncounted)' :
+     unknown > 0 ? ' (partial: ' + unknown + ' call(s) of unknown cost)' : '');
+}
 // 32 hex characters, the token the server keys a send on; getRandomValues also runs over plain http
 function uid() {
   return Array.prototype.map.call(crypto.getRandomValues(new Uint8Array(16)), function (x) {
@@ -137,6 +141,7 @@ function connect() {
 
 // ---- routing ----
 function route() {
+  state.view++;  // each navigation is a new page, a return to the same resident included
   var m = /^#r=(.+)$/.exec(location.hash);
   if (m) { state.mode = 'detail'; state.dir = decodeURIComponent(m[1]); loadDetail(); }
   else { state.mode = 'list'; state.dir = null; renderList(); }
@@ -164,7 +169,7 @@ function renderList() {
       '<div class="meta">' + esc(r.role) + ' \\u00b7 ' + r.wake + ' wake(s)' +
       (r.last_at ? ' \\u00b7 last ' + esc(r.last_at) + ' ' + esc(r.last_outcome) : '') + '</div>' +
       '<div class="meta">today ' + r.runs_today + ' run(s) \\u00b7 ' + r.mail_today + ' mail \\u00b7 ' +
-      money(r.cost_today) + '</div>' +
+      money(r.cost_today, r.unknown_today) + '</div>' +
       (r.problem ? '<div class="problem">' + esc(r.problem) + '</div>' : '') + '</a>';
   }).join('') || '<p class="meta">no residents</p>';
 }
@@ -192,16 +197,19 @@ function loadDetail() {
 }
 
 function parseWake(line) {
-  var m = /(\\d+) in, (\\d+) out, \\$([\\d.]+)/.exec(line);
+  var m = /(\\d+) in, (\\d+) out, \\$([\\d.]+)(?: \\(partial: (\\d+) call\\(s\\) of unknown cost\\))?/
+    .exec(line);
   if (!m) return null;
   var ctx = /last turn stood in (\\d+) tokens/.exec(line);
   var rst = /(\\d+) session restart\\(s\\)/.exec(line);
-  return { tin: m[1], tout: m[2], cost: m[3], ctx: ctx ? ctx[1] : null, rst: rst ? +rst[1] : 0 };
+  return { tin: m[1], tout: m[2], cost: m[3], unknown: m[4] ? +m[4] : 0,
+    ctx: ctx ? ctx[1] : null, rst: rst ? +rst[1] : 0 };
 }
 function logLineHtml(line) {
   var w = parseWake(line);
   if (!w) return '<div class="logline">' + esc(line) + '</div>';
-  return '<div class="logline wake">in ' + w.tin + ' \\u00b7 out ' + w.tout + ' \\u00b7 ' + money(w.cost) +
+  return '<div class="logline wake">in ' + w.tin + ' \\u00b7 out ' + w.tout + ' \\u00b7 ' +
+    money(w.cost, w.unknown) +
     (w.ctx ? ' \\u00b7 ctx ' + w.ctx : '') + (w.rst > 0 ? ' \\u00b7 ' + w.rst + ' restart(s)' : '') +
     '</div>';
 }
@@ -262,7 +270,8 @@ function renderDetail() {
         return 'wake' in x;
       }).map(function (x) {
         return '<tr><td>' + esc(x.at) + '</td><td>' + x.wake + '</td><td>' + esc(x.outcome) +
-          '</td><td>' + x.mail + '</td><td>' + x.tokens_in + '</td><td>' + money(x.cost) + '</td></tr>';
+          '</td><td>' + x.mail + '</td><td>' + x.tokens_in + '</td><td>' +
+          money(x.cost, x.unknown) + '</td></tr>';
       }).join('') + '</table>' +
 
     '<h3>talk</h3><div id="talk-box" class="talk">' + (Array.isArray(d.talk) ? d.talk.map(function (m) {
@@ -285,19 +294,30 @@ function toggleInline(id, show, force) {
   if (force) box.dataset.force = force;
 }
 
+// an unanswered request keeps its token, keyed by what it asks, so asking the same again replays it and
+// an answer, or a different ask, never takes another's token
+function token(key) {
+  return state.pending[key] || (state.pending[key] = uid());
+}
+
 function sendControl(action, extra) {
-  var dir = state.detailDir;
+  var dir = state.detailDir, view = state.view;
   if (!dir) return;
-  var body = Object.assign({ dir: dir, action: action, once: uid() }, extra);
+  var key = JSON.stringify(['control', dir, action, extra || null]), once = token(key);
+  var body = Object.assign({ dir: dir, action: action, once: once }, extra);
   fetch('/control', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }).then(function (r) { return r.json(); }).then(function (j) {
+    // answered, whatever the answer: the server keeps it for this token; a later ask under the same
+    // key holds a newer token, and an old answer never takes it
+    if (state.pending[key] === once) delete state.pending[key];
     toast(j.detail || (j.ok ? 'ok' : 'failed'));
+    if (state.view !== view) return;  // the page that asked is gone
     toggleInline('hold-inline', false);
     toggleInline('restart-inline', false);
-    if (state.mode === 'detail' && state.dir === dir) loadDetail();  // the page may have moved on
+    loadDetail();
   }).catch(function (e) { toast(String(e)); });
 }
 
@@ -307,23 +327,21 @@ function sendTalk() {
   var content = document.getElementById('talk-content').value;
   if (!content.trim() || !state.detailDir) return;
   btn.disabled = true;
-  // an unanswered send keeps its token per resident, so the same words again replay it, never mail twice
-  var dir = state.detailDir, p = state.pending[dir];
-  if (!p || p.subject !== subject || p.content !== content) {
-    p = state.pending[dir] = { subject: subject, content: content, once: uid() };
-  }
-  var form = new URLSearchParams({ dir: dir, subject: subject, content: content, once: p.once });
+  // an unsent message keeps its token: the same words to the same resident replay it, never mail twice
+  var dir = state.detailDir, view = state.view, key = JSON.stringify(['send', dir, subject, content]);
+  var once = token(key);
+  var form = new URLSearchParams({ dir: dir, subject: subject, content: content, once: once });
   fetch('/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
     body: form.toString(),
   }).then(function (r) { return r.json(); }).then(function (j) {
     if (!j.ok) throw new Error('send failed');
-    if (state.pending[dir] === p) delete state.pending[dir];
-    if (state.mode === 'detail' && state.dir === dir) {
-      document.getElementById('talk-content').value = '';
-      loadDetail();
-    }
+    if (state.pending[key] === once) delete state.pending[key];  // never a newer ask's token
+    toast('sent');
+    if (state.view !== view) return;  // the page that asked is gone
+    document.getElementById('talk-content').value = '';
+    loadDetail();
   }).catch(function (e) { toast(String(e)); }).then(function () { btn.disabled = false; });
 }
 

@@ -1,7 +1,7 @@
 ---
 adr: ADR-0011
 status: draft
-liveness: operating (three boxes under tests and live runs, the coding tools under tests and one live console run, the watch under tests and on the bench; the real-box tests are opt-in)
+liveness: operating (three boxes under tests and live runs, each box's answer to a missing deadline pinned, the coding tools under tests and one live console run, the box tree's bound resolved in the box, the watch under tests and on the bench; the real-box tests are opt-in)
 date: "2026-09-25"
 area: box
 kind: new
@@ -97,7 +97,7 @@ attaches an internal network with no DNS, no egress and no reach to the host.
 ### C3: Three tools over a tree, the tree may be anywhere, and an edit lands once _(enforced: mechanical)_ ^c3
 
 - **Subject**: every `read_lines`, `search` and `edit` call.
-- **Violated when**: a tool reads a path outside the tree, in a box one whose text leaves `workdir`
+- **Violated when**: a tool reads a path outside the tree, in a box one resolving outside `workdir`
   (S14), an edit lands more than once or where `old` was absent, or a later write carries an earlier
   read.
 
@@ -108,7 +108,7 @@ raises on a bad pattern; `rg` when the tree has it, else `grep -rE`; both read h
 count named, and keeps each line's own ending. Edits serialise on one lock.
 
 A tree on this machine refuses a path that resolves outside it: `..`, an absolute path elsewhere, a
-symlink out. In a box the check reads the text only. `read` and `list_dir` go over the same tree.
+symlink out. A box's tree resolves it in the box (S14). `read` and `list_dir` go over the same tree.
 
 ### C4: The watch reports the change as the tree shows it; the model's own checks end the run _(enforced: mechanical)_ ^c4
 
@@ -181,7 +181,8 @@ with mixed endings stays mixed.
 
 - **Landing evidence**: `tests/test_code_tools.py` (nine: exactness, the single-file filename, the
   empty file, CRLF and mixed endings, hidden files, paths that leave the tree, the listing);
-  `tests/test_daytona.py`, the box tree's listing.
+  `tests/test_daytona.py`, the box tree's listing; `tests/test_box.py`, symlinks out refused in both
+  trees.
 
 ### D3: `hub/tools/watch.py`: `Watch`, `Criteria`, `criteria`, `accept` ^d3
 
@@ -257,8 +258,19 @@ to; the person picks `--offline` when the directory holds what the network must 
   name.
 - **S13**: The VM box's `exec`, and the `run` derived from it, take a timeout in seconds only: a
   missing one fails while the in-VM `timeout` guard is formatted, before any command runs, where the
-  docker and remote boxes run with no deadline. No caller passes none today, and no test pins it.
-- **S14**: The box tree's bound reads the path's text only, so a symlink inside `workdir` that
-  points elsewhere in the box is read and written through, where the tree on this machine refuses
-  it. The box holds nothing of this machine (C2), so what it reaches is the box's own. Resolving the
-  path in the box before the check is owed; no test pins it.
+  docker and remote boxes run with no deadline. `tests/test_box.py` pins both:
+  `test_the_vm_box_refuses_a_missing_deadline_before_any_command_runs` and
+  `test_no_deadline_reaches_exec_bare_never_as_a_large_number`. One caller passes none, where this
+  row once said no caller did: the bench's codex arm at a time budget of 0
+  (`bench/swe/codex_cli.py`, `test_time_budget_zero_means_no_deadline` in
+  `tests/test_swe_codex_cli.py`).
+- **S14**: The box tree's bound read the path's text only, so a symlink inside `workdir` pointing
+  elsewhere in the box was read and written through. `BoxTree` now resolves the path in the box, as
+  written and as normalised, and refuses either outside `workdir`. The resolver keeps every byte of
+  a name, a newline it ends with included, so a link into a sibling named as the tree plus a newline
+  is refused; its answer is three NUL-ended paths and nothing else. Pinned against `LocalTree`:
+  `test_the_box_tree_resolves_a_symlink_in_the_box_before_its_bound`,
+  `test_a_resolver_answer_that_is_not_three_nul_ended_paths_is_refused`.
+- **S15**: A process the model runs in the box reads anywhere already (S6), so the tree's bound is
+  no boundary against one: a link it swaps between the resolve and the read reaches what that
+  process could read itself.

@@ -104,12 +104,12 @@ class FakeKhive:
 
     async def exec(self, ops: str):
         self.ops.append(ops)
-        if ops.startswith("schedule.agenda"):  # a str is this actor's reminder; (content, actor) another's
+        if ops.startswith("schedule.agenda"):  # a str is this actor's reminder; (content, actor[, status])
             events = [
                 {
                     "content": c if isinstance(c, str) else c[0],
-                    "properties": {
-                        "status": "pending",
+                    "properties": {  # the agenda keeps a row's status here, none beside properties
+                        "status": "pending" if isinstance(c, str) or len(c) < 3 else c[2],
                         "created_by_actor": self.actor if isinstance(c, str) else c[1],
                     },
                 }
@@ -477,6 +477,39 @@ def test_a_dead_instrument_notice_a_recipient_refused_is_sent_to_that_recipient_
     assert notices() == [OWNER, STEWARD]  # every copy landed: told once
 
 
+def test_a_dead_instrument_notice_that_reached_nobody_leaves_the_crossing_untold_until_a_send_lands(
+    tmp_path, monkeypatch
+):
+    ticks, start = itertools.count(), datetime(2026, 9, 22)
+    monkeypatch.setattr(
+        "hub.agent.chores._now",
+        lambda: (start + timedelta(seconds=next(ticks))).strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"m{i}000000") for i in range(6)))
+    khive.refuse = {OWNER, STEWARD}  # neither copy is delivered
+    dead = Outcome(findings=("NOT-MEASURED",), evidence="rc 1", control=False)
+    chores, agent = build(tmp_path, khive, [CHECK, DONE] * 6, disk=Probe("disk", dead))
+
+    def notices() -> list[str]:
+        return [s["to"] for s in khive.sent if s["subject"] == "ESCALATE disk: instrument dead"]
+
+    for _ in range(3):
+        run = asyncio.run(agent.wake())
+    assert notices() == [] and agent.state.get("dead_told").value == []  # the crossing, told to nobody
+    assert any(
+        f"told ['{OWNER} undelivered: hop limit" in r and f"'{STEWARD} undelivered: hop limit" in r
+        for r in results(run)
+    )
+    run = asyncio.run(agent.wake())  # still undelivered: still untold, so the notice is owed again
+    assert any("instrument dead after 4 unanswered run(s)" in r for r in results(run))
+    assert notices() == [] and agent.state.get("dead_told").value == []
+    khive.refuse = set()
+    asyncio.run(agent.wake())  # delivered: now the chore is marked told
+    assert notices() == [OWNER, STEWARD] and agent.state.get("dead_told").value == ["disk"]
+    asyncio.run(agent.wake())
+    assert notices() == [OWNER, STEWARD]  # told once
+
+
 def test_an_ask_is_answered_on_its_thread_whatever_the_outcome_and_the_owner_is_not_told_twice(tmp_path):
     khive = FakeKhive(
         mail(OWNER, "check disk please"), mail(STEWARD, "disk?", mid="b2c3d4e5", thread="t-steward")
@@ -669,6 +702,30 @@ def test_the_digest_is_one_line_per_chore_to_the_owner_with_missing_as_the_findi
         f"tokens {day}: 4 model call(s), 4000 in, 200 out, $0.0040, over 3 wake(s) with 2 mail" in text
     )  # the third wake counts its mail after its run
     assert "0 idle poll(s) at 0 tokens" in text
+
+
+def test_the_digests_tokens_line_marks_a_days_cost_that_misses_calls_of_unknown_cost(tmp_path):
+    khive = FakeKhive(mail(SELF, "tick: digest"))
+    turns = ["<lact d1>digest()</lact>", DONE] * 2
+    chores, agent = build(tmp_path, khive, turns, disk=Probe("disk", full()))
+    day = time.strftime("%Y-%m-%d")
+    spend = {"day": day, "calls": 3, "in": 900, "out": 40, "cost": 0.3, "unknown": 2, "runs": 1, "mail": 1}
+    agent.state.put("spend", spend, run="-", seq=0)
+    asyncio.run(agent.wake())
+    text = khive.sent[-1]["content"]
+    assert (
+        f"tokens {day}: 3 model call(s), 900 in, 40 out, $0.3000 (partial: 2 call(s) of unknown cost), "
+        "over 2 wake(s) with 1 mail; 0 idle poll(s) at 0 tokens" in text
+    )
+    khive.mail.append(mail(SELF, "tick: digest"))
+    agent.state.put(
+        "spend", {k: v for k, v in spend.items() if k != "unknown"}, run="-", seq=1
+    )  # before the count
+    asyncio.run(agent.wake())
+    assert (
+        "$0.3000 (partial: calls of unknown cost before this count went uncounted), over"
+        in khive.sent[-1]["content"]
+    )
 
 
 def test_aged_tells_the_steward_once_what_the_owner_left_unanswered_and_nothing_acknowledged(tmp_path):
@@ -1092,6 +1149,15 @@ def test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those(tmp_
     assert 'content="tick: digest"' in reminds[1] and 'repeat="daily"' in reminds[1]
     assert 'content="tick: aged"' in reminds[2] and 'repeat="every:1h"' in reminds[2]
     assert asyncio.run(chores.ensure_ticks()) == created  # the fake agenda does not grow; a real one would
+
+
+def test_the_tick_check_reads_a_reminders_status_inside_properties_where_the_agenda_keeps_it(tmp_path):
+    # a row the agenda holds under another status is not a pending tick: it is created again
+    khive = FakeKhive(agenda=["tick: disk", ("tick: pr", SELF, "cancelled")])
+    chores, _ = build(
+        tmp_path, khive, [], disk=Probe("disk", full()), pr=Probe("pr", full(), every="every:15m")
+    )
+    assert asyncio.run(chores.ensure_ticks()) == ["tick: pr", "tick: digest", "tick: aged"]
 
 
 def test_the_chores_profile_names_each_chore_with_its_direction_and_question_and_only_three_handlers(
