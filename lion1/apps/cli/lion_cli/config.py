@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import tomllib
 from pathlib import Path
 
@@ -42,7 +41,9 @@ def _value(path: Path, key: str, v: object) -> object:
             return v
     elif type(v) is want:  # exact: a TOML true is not the integer 1
         if key == "khive_config" and not Path(v).expanduser().is_absolute():
-            return os.path.normpath(path.parent.parent / v)  # beside the directory the file's .lion is in
+            # beside the directory the file's .lion is in, as written: `seat/..` read lexically is not
+            # the directory the filesystem reaches when `seat` is a link, so only the open resolves it
+            return str(path.parent.parent / v)
         return v
     says = f"one of {', '.join(want)}" if isinstance(want, tuple) else _SAYS[want]
     raise SystemExit(f"{path}: [chat] {key} = {v!r} is not {says}")
