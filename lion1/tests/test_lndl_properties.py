@@ -248,13 +248,14 @@ def slipped_calls(draw):
     """A call with one slip a model makes, the call it stands for, and the repair that reads it."""
     name = draw(NAME)
     keys = draw(st.lists(KEY, min_size=2, max_size=4, unique=True))
-    values = [draw(LITERALS) for _ in keys]
-    args = dict(zip(keys, values, strict=True))
-    parts = [f"{k}={v!r}" for k, v in args.items()]
+    drawn = [draw(arguments(STRINGS, "")) for _ in keys]
+    args = {k: value for k, (_, value) in zip(keys, drawn, strict=True)}
+    parts = [f"{k}={source}" for k, (source, _) in zip(keys, drawn, strict=True)]
     slip = draw(st.sampled_from(["comma", "closers", "string"]))
     if slip == "comma":
-        # the comma is supplied after any value: a string, a number, a closing bracket or a name
-        i = draw(st.integers(0, len(values) - 2))
+        # the comma is supplied after any value: a string, a number, a closing bracket, a name, a
+        # pointer, or a heredoc's closing line (ADR-0004/C2 lets the next argument follow the tag)
+        i = draw(st.integers(0, len(drawn) - 2))
         return f"{name}({', '.join(parts[: i + 1])} {', '.join(parts[i + 1 :])})", name, args, COMMA
     if slip == "closers":
         return f"{name}({', '.join(parts)}", name, args, CLOSERS
