@@ -165,6 +165,7 @@ def test_a_default_computed_from_the_other_fields_is_shown_as_computed():
         (dict[str, list[int]], "dict[str, list[int]]"),
         (tuple[()], "tuple"),
         (list[Literal["a"]] | None, "list['a'] | NoneType"),
+        (typing.NewType("UserId", int), "UserId"),
     ],
 )
 def test_a_field_type_is_rendered_the_way_it_is_written(annotation, text):

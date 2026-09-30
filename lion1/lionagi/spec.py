@@ -51,9 +51,8 @@ def _render_type(annotation: object) -> str:
     origin = typing.get_origin(annotation)
     args = typing.get_args(annotation)
     if origin is None:
-        if isinstance(annotation, type | typing.TypeVar):
-            return annotation.__name__
-        return str(annotation)
+        # a class, a type variable, a NewType: by its name, never its repr (`~T`, `module.UserId`)
+        return getattr(annotation, "__name__", None) or str(annotation)
     if origin is typing.Union or origin is types.UnionType:
         return " | ".join(_render_type(a) for a in args)
     if origin is typing.Literal:
