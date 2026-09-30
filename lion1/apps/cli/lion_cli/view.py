@@ -254,7 +254,7 @@ class Console:
             return ["", f"{'you' if who in (None, 'console') else who} ▸ {e.content}"]
         if e.kind is Kind.TEXT:
             text = str(e.content)
-            calls, _ = self._calls(text)
+            calls, _ = self._calls(text, e.meta.get("refused"))
             head = ["", f"{self.model} ▸", prose] if (prose := _prose(text)) else []
             return head + [Text.from_markup(c).plain for c in calls]
         if e.kind is Kind.RESULT:
@@ -324,7 +324,7 @@ class Console:
                 pieces.append(f"[dim]{escape(self.status())}[/dim]")
             return pieces
         if e.kind is Kind.TEXT:
-            return self._turn(str(e.content), e.seq)
+            return self._turn(str(e.content), e.seq, e.meta.get("refused"))
         head, detail = self._result(e)
         self.resulted.add(e.alias or "?")
         return [head if detail is None else head + "\n" + detail]
@@ -359,12 +359,13 @@ class Console:
         )
         return head, escape(shown) + more
 
-    def _calls(self, text: str) -> tuple[list[str], bool]:
+    def _calls(self, text: str, refused: str | None = None) -> tuple[list[str], bool]:
         """The lines under a turn's prose, as markup, and whether it asks for commands. The turn is
         read the way the loop reads it: one the loop refuses (a frame only the loop writes, a tag it
-        cannot parse) is one line saying nothing in it ran, never calls that look pending."""
+        cannot parse) or the backend refused (`refused` on its entry) is one line saying nothing in it
+        ran, never calls that look pending."""
         try:
-            program = _read(text)
+            program = _read(text, refused=refused)
         except lndl.LNDLError as err:
             return [f"[red]✗ nothing in this turn ran: {escape(str(err))}[/red]"], False
         calls: list[str] = []
@@ -378,8 +379,8 @@ class Console:
             calls.append(f"[yellow]? {escape(problem)}[/yellow]")
         return calls, bool(program.lacts)
 
-    def _turn(self, text: str, seq: int) -> list[Any]:
-        calls, self.commands = self._calls(text)
+    def _turn(self, text: str, seq: int, refused: str | None = None) -> list[Any]:
+        calls, self.commands = self._calls(text, refused)
         prose = _prose(text)
         pieces: list[Any] = []
         if prose:
