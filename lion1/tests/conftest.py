@@ -1,3 +1,4 @@
+import gc
 import os
 
 import pytest
@@ -21,3 +22,13 @@ def kkernel_stub(tmp_path, monkeypatch):
     (b / "kkernel").chmod(0o755)
     monkeypatch.setenv("PATH", f"{b}{os.pathsep}{os.environ.get('PATH', '')}")
     return b / "kkernel"
+
+
+@pytest.fixture
+def no_collection():
+    """For a test that takes the interpreter to its recursion limit on purpose. A garbage collection
+    that happened to run there would run some other object's finalizer with no stack left, and the
+    RecursionError it raises, unraisable, would fail the test by chance."""
+    gc.disable()
+    yield
+    gc.enable()

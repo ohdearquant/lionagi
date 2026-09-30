@@ -713,6 +713,7 @@ def test_a_missing_comma_after_any_argument_is_supplied(value):
     assert name == "run" and args["timeout"] == 1 and repairs == ("comma",)
 
 
+@pytest.mark.usefixtures("no_collection")
 @pytest.mark.parametrize(
     "text",
     [
@@ -732,6 +733,7 @@ def test_deeply_nested_input_is_an_lndl_error_or_a_program(text):
     assert isinstance(result, (Program, LNDLError))
 
 
+@pytest.mark.usefixtures("no_collection")
 def test_a_call_every_supported_python_parses_but_the_reading_cannot_walk_is_refused():
     with pytest.raises(LNDLError, match="it is nested too deeply to read"):
         parse("<lact a>f(x=" + "-" * 1500 + "1)</lact>")

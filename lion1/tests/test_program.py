@@ -897,6 +897,7 @@ def test_a_fence_that_nothing_after_it_closes_opens_no_block(text):
     assert read(text) == Script()
 
 
+@pytest.mark.usefixtures("no_collection")
 @pytest.mark.parametrize("depth", [1500, 3000, 100_000])
 def test_a_program_nested_too_deeply_is_refused_at_reading(depth):
     # past the checker's recursion, or the parser's own stack: an LNDLError the loop retries. 1500
@@ -906,6 +907,7 @@ def test_a_program_nested_too_deeply_is_refused_at_reading(depth):
         read(fenced("x = " + "-" * depth + "1"))
 
 
+@pytest.mark.usefixtures("no_collection")
 def test_a_long_dotted_command_name_is_read_or_refused_never_a_crash():
     # from 3.12 the parser builds this without recursing, and the name is read without recursing too
     try:

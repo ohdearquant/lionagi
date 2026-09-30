@@ -646,6 +646,7 @@ def test_an_out_literal_with_an_unhashable_key_is_a_retry_that_names_the_field()
     assert run.output["tally"] == Tally(value=3)
 
 
+@pytest.mark.usefixtures("no_collection")
 @pytest.mark.parametrize(
     "turn, emits",
     [
