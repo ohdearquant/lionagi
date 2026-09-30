@@ -146,9 +146,12 @@ class Script:
     repairs: tuple[str, ...] = ()  # the same repairs by catalogue name, for the run's count
 
 
-# a fence stands at the start of its line, blanks before it allowed (a block in a list item is
-# indented), so a ``` inside a string argument is the string's text
-_FENCE = re.compile(r"^[ \t]*```[^\n`]*\n(.*?)^[ \t]*```", re.DOTALL | re.MULTILINE)
+# a block opens at a fence wherever it stands (after a list bullet or a sentence too) and closes at
+# the first fence that starts a line, blanks before it allowed, so a ``` inside a string argument is
+# the string's text; with no such line, the first fence after the opener closes it
+_OPEN_FENCE = re.compile(r"```[^\n`]*\n")
+_CLOSE_FENCE = re.compile(r"^[ \t]*```", re.MULTILINE)
+_ANY_FENCE = re.compile(r"```")
 _PTR = "__ptr_"
 _DO = "__do_"
 _TOO_DEEP = "the program is nested too deeply to read; the program was not run"
@@ -178,7 +181,13 @@ _CMP = {
 def read(text: str) -> Script:
     """The turn's program: its one fenced block read and lowered to nodes, the catalogue tried in order
     when it does not read as written. LNDLError, naming the line, when no reading reads."""
-    blocks = _FENCE.findall(text)
+    blocks, i = [], 0
+    while (opener := _OPEN_FENCE.search(text, i)) is not None:
+        closer = _CLOSE_FENCE.search(text, opener.end()) or _ANY_FENCE.search(text, opener.end())
+        if closer is None:
+            break
+        blocks.append(text[opener.end() : closer.start()])
+        i = closer.end()
     if len(blocks) > 1:
         raise LNDLError(f"{len(blocks)} fenced blocks: a turn is one program in one block")
     if not blocks:

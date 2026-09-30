@@ -880,9 +880,13 @@ def test_a_fence_inside_a_string_argument_is_the_strings_text():
         'Here:\n\n  ```python\nx = echo(text="hi")\n```\n',
         '```python\nx = echo(text="hi")\n  ```\n',
         '\t```\nx = echo(text="hi")\n\t```',
+        '- ```python\nx = echo(text="hi")\n```',
+        '1. ```python\nx = echo(text="hi")\n```',
+        'Here is the code: ```python\nx = echo(text="hi")\n```',
+        '```python\nx = echo(text="hi")```',
     ],
 )
-def test_a_fence_with_blanks_before_it_still_opens_and_closes_the_block(text):
+def test_a_fence_opens_wherever_it_stands_and_closes_at_a_line_start_or_else_where_it_is(text):
     script = read(text)
     (command,) = script.body
     assert command.name == "echo" and script.problems == ()
