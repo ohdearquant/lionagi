@@ -15,6 +15,7 @@ parser. No second container, no image round trip.
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from pathlib import Path
 
@@ -134,7 +135,8 @@ async def _probe(box: Box, host: str) -> tuple[list[str], str, str]:
     _, out = await box.run(f"getent ahosts {host}; echo; {probe}")
     head, _, fetch = out.strip().rpartition("\n")
     addresses = [ln.split()[0] for ln in head.splitlines() if ln.strip()]
-    code, _, curl_rc = fetch.strip().partition(" curl=")
+    # no curl in the box prints ` curl=127` alone: the code is empty, never the rc read as one
+    code, _, curl_rc = fetch.rpartition("curl=")
     return addresses, code.strip(), curl_rc.strip()
 
 
@@ -156,6 +158,9 @@ async def close_code_hosts(box: Box) -> str:
         # the control: every address of the name, v4 and v6, must be ours now
         if not resolved or any(a not in LOOPBACK for a in resolved):
             raise RuntimeError(f"{host} still resolves elsewhere: {' '.join(resolved)[-200:] or '(nothing)'}")
+        if not (re.fullmatch(r"[0-9]{3}", code) and re.fullmatch(r"[0-9]+", curl_rc)):
+            # no fetch was tried (curl missing, the probe cut short): nothing proves the host closed
+            raise RuntimeError(f"{host} was not fetched from the box (HTTP {code!r}, curl rc {curl_rc!r})")
         if curl_rc == "0" or code[:1] in "123":
             raise RuntimeError(f"{host} is reachable from the box (HTTP {code}, curl rc {curl_rc}): aided")
         said.append(f"{host} HTTP {code or '?'} curl rc {curl_rc or '?'}")

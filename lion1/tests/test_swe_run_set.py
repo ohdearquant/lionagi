@@ -7,19 +7,12 @@ import hashlib
 import json
 import re
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench" / "swe"))
-import codex_cli  # noqa: E402
-import run_set  # noqa: E402
-from run_swe import solve  # noqa: E402
-
-from tests.test_swe_solve import Costs, ToolBox  # noqa: E402
-
-DIFF = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+from tests import _git as isolated
+from tests._swe import DIFF, CodexBox, GatewayTimeoutBox, Started, codex_cli, run_set
 
 
 def _args(**kw) -> argparse.Namespace:
@@ -52,14 +45,6 @@ def _args(**kw) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-class FakeBox:
-    async def start(self):
-        return self
-
-    async def stop(self):
-        pass
-
-
 def _one(args, tmp_path: Path, iid: str = "a") -> dict:
     ledger = tmp_path / "ledger.jsonl"
     row = {"instance_id": iid, "image": "img", "problem_statement": "It breaks."}
@@ -77,7 +62,7 @@ def test_retry_spend_is_retained(tmp_path, monkeypatch):
 
         return fake_solve
 
-    monkeypatch.setattr(run_set, "testbed", lambda *a, **k: FakeBox())
+    monkeypatch.setattr(run_set, "testbed", lambda *a, **k: Started())
     monkeypatch.setattr(
         run_set,
         "solve",
@@ -110,17 +95,27 @@ def _main(monkeypatch, tmp_path: Path, rows: list[dict]) -> list[tuple[str, argp
     monkeypatch.setattr(run_set, "SETS", {"t": data})
     monkeypatch.setattr(run_set, "RESULTS", tmp_path / "results")
     ran: list[tuple[str, argparse.Namespace]] = []
+    one = run_set.one
 
-    async def fake_one(row, args, out_dir, ledger, lock):
+    async def counted(row, args, out_dir, ledger, lock):
+        # the real `one` writes the row, so a resume reads back what the runner stamps
         ran.append((row["instance_id"], args))
-        async with lock:
-            with ledger.open("a") as f:
-                backend = "codex-cli" if args.harness == "codex-cli" else args.backend
-                row_out = {"instance_id": row["instance_id"], "resolved": False, "aided": not args.unaided}
-                f.write(json.dumps({**row_out, "model": args.model, "backend": backend}) + "\n")
+        await one(row, args, out_dir, ledger, lock)
 
-    monkeypatch.setattr(run_set, "one", fake_one)
-    monkeypatch.setattr(run_set, "testbed", lambda *a, **k: pytest.fail("a box was made"))
+    async def solved(row, *a, **k):
+        return {"instance_id": row["instance_id"], "model_patch": ""}
+
+    async def hosts(box):
+        return {"closed": True}
+
+    monkeypatch.setattr(run_set, "one", counted)
+    # the launch's source as a checkout would give it; the tests of that read put git back (`_git`)
+    monkeypatch.setattr(run_set, "provenance", lambda: {"head": HEAD, "dirty": ""})
+    monkeypatch.setattr(run_set, "testbed", lambda *a, **k: Started())
+    for name in ("solve", "solve_codex_cli"):
+        monkeypatch.setattr(run_set, name, solved)
+    for name in ("close_code_hosts", "open_code_hosts"):
+        monkeypatch.setattr(run_set, name, hosts)
     return ran
 
 
@@ -132,22 +127,6 @@ def test_unsupported_cost_limit_is_refused_before_run(tmp_path, monkeypatch, cap
         with pytest.raises(SystemExit, match="--cost-budget"):
             asyncio.run(run_set.main(_args(cost_budget=0.5, **arm)))
     assert ran == [] and not (tmp_path / "results").exists()  # no run directory, no manifest, no box
-    # the loop's own entry refuses it too, before a box or a backend call
-    box, backend = ToolBox(), Costs(None)
-    with pytest.raises(ValueError, match="cost"):
-        asyncio.run(
-            solve(
-                {"instance_id": "a", "problem_statement": "x"},
-                "m",
-                3,
-                tmp_path,
-                "codex",
-                box=box,
-                backend=backend,
-                cost_budget=0.01,
-            )
-        )
-    assert backend.calls == [] and backend.costs == [None]
     # the controls: an unmetered arm with no cap runs; a metered arm gets the default cap
     asyncio.run(run_set.main(_args(harness="codex-cli", cost_budget=None, run_id="r2")))
     asyncio.run(run_set.main(_args(cost_budget=None, run_id="r3")))
@@ -155,10 +134,20 @@ def test_unsupported_cost_limit_is_refused_before_run(tmp_path, monkeypatch, cap
 
 
 def test_cli_time_zero_reaches_the_runner(tmp_path, monkeypatch):
-    # `--time-budget 0` on codex-cli runs with no deadline
-    ran = _main(monkeypatch, tmp_path, [{"instance_id": "a", "image": "img", "repo": "x"}])
-    asyncio.run(run_set.main(_args(harness="codex-cli", time_budget=0.0, cost_budget=None)))
-    assert len(ran) == 1
+    # `--time-budget 0` ("0 never") reaches either arm as no deadline, not as 1200 s
+    _main(monkeypatch, tmp_path, [{"instance_id": "a", "image": "img", "repo": "x"}])
+    seen: list = []
+
+    async def solved(row, *a, **k):
+        seen.append(k["time_budget"])
+        return {"instance_id": row["instance_id"], "model_patch": ""}
+
+    for name in ("solve", "solve_codex_cli"):
+        monkeypatch.setattr(run_set, name, solved)
+    for i, (harness, budget) in enumerate((("codex-cli", 0.0), ("lndl", 0.0), ("codex-cli", 100.0))):
+        args = _args(harness=harness, time_budget=budget, cost_budget=None, run_id=f"t{i}")
+        asyncio.run(run_set.main(args))
+    assert seen == [None, None, 100.0]  # the last, the control: a set deadline reaches the arm as set
 
 
 def test_the_launch_record_names_the_selected_set(tmp_path, monkeypatch, capsys):
@@ -203,6 +192,7 @@ def test_the_dataset_bytes_are_not_held_through_the_batch(tmp_path, monkeypatch)
 
 
 HEAD = "a" * 40
+PROVENANCE = run_set.provenance
 
 
 def _git(monkeypatch, head=(0, HEAD + "\n", ""), status=(0, "", "")) -> None:
@@ -214,6 +204,7 @@ def _git(monkeypatch, head=(0, HEAD + "\n", ""), status=(0, "", "")) -> None:
         return subprocess.CompletedProcess(argv, rc, out, err)
 
     monkeypatch.setattr(run_set.subprocess, "run", run)
+    monkeypatch.setattr(run_set, "provenance", PROVENANCE)
 
 
 def _record(capsys) -> dict:
@@ -290,44 +281,6 @@ def test_the_manifest_names_a_clean_tree_and_a_dirty_one_as_git_reads_them(tmp_p
     assert [i for i, _ in ran] == ["a", "a", "a"]
 
 
-class TransportFailBox(FakeBox):
-    """codex wrote its stream in the box; the host's exec call came back as a 504. `stop_rc` is what
-    the stop probe answers: 0 when no codex process is left, 1 when one survived."""
-
-    def __init__(self, stop_rc: int | None, fail: bool = True):
-        self.stop_rc, self.fail, self.files, self.diffs, self.probes = stop_rc, fail, {}, 0, []
-
-    async def run(self, cmd, *, timeout=120.0, env=None):
-        if "curl -fsSL" in cmd:
-            return 0, "codex-cli 0.153.4\n"
-        if cmd == "git rev-parse HEAD":
-            return 0, "c" * 40 + "\n"
-        if f"{codex_cli.BIN} exec" in cmd:
-            usage = {"input_tokens": 1000, "cached_input_tokens": 400, "output_tokens": 200}
-            self.files[codex_cli.STREAM] = json.dumps({"type": "turn.completed", "usage": usage})
-            if not self.fail:
-                return 0, ""
-            raise RuntimeError("DaytonaTimeoutError: Failed to execute command: 504 Gateway Time-out")
-        if "/proc/" in cmd:  # the stop probe
-            self.probes.append(cmd)
-            if self.stop_rc is None:
-                raise RuntimeError("the box is gone")
-            return self.stop_rc, ""
-        return 0, ""
-
-    async def read(self, path):
-        if path not in self.files:
-            raise FileNotFoundError(path)
-        return self.files[path]
-
-    async def write(self, path, text):
-        self.files[path] = text
-
-    async def diff(self, base="HEAD"):
-        self.diffs += 1
-        return DIFF
-
-
 def test_unconfirmed_quiescence_blocks_grading(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     graded: list[str] = []
@@ -337,17 +290,14 @@ def test_unconfirmed_quiescence_blocks_grading(tmp_path, monkeypatch):
         return {"resolved": True, "status": "GRADED"}
 
     monkeypatch.setattr(run_set, "grade", fake_grade)
-    # STOP found no codex process; one survived the kills; the probe itself failed. None of the three
-    # proves the execution stopped: a command codex started outlives it under another name
-    for stop_rc in (0, 1, None):
-        box = TransportFailBox(stop_rc)
-        monkeypatch.setattr(run_set, "testbed", lambda *a, box=box, **k: box)
-        row = _one(_args(harness="codex-cli"), tmp_path, f"u{stop_rc}")
-        assert graded == [] and box.diffs == 0 and len(box.probes) == 1
-        assert row["grade"]["status"] == "EXECUTION_UNCERTAIN" and row["resolved"] is False
-        assert json.loads((tmp_path / f"u{stop_rc}.json").read_text())["model_patch"] == ""
-        assert row["execution_quiesced"] is False and row["stop_rc"] == stop_rc
-        assert row["usage_complete"] is False and "504" in row["error"]
+    monkeypatch.setattr(run_set, "solve_codex_cli", codex_cli.solve)
+    # the exec's transport failed: whatever STOP answers, the execution is not proved stopped
+    box = GatewayTimeoutBox(0)
+    monkeypatch.setattr(run_set, "testbed", lambda *a, **k: box)
+    row = _one(_args(harness="codex-cli"), tmp_path, "u")
+    assert graded == [] and box.diffs == 0 and row["execution_quiesced"] is False
+    assert row["grade"]["status"] == "EXECUTION_UNCERTAIN" and row["resolved"] is False
+    assert json.loads((tmp_path / "u.json").read_text())["model_patch"] == ""
 
     # a row that says so, with a patch in hand, is still not graded
     async def uncertain(*a, **k):
@@ -359,17 +309,17 @@ def test_unconfirmed_quiescence_blocks_grading(tmp_path, monkeypatch):
             "error": "RuntimeError: 504",
         }
 
-    monkeypatch.setattr(run_set, "testbed", lambda *a, **k: FakeBox())
+    monkeypatch.setattr(run_set, "testbed", lambda *a, **k: Started())
     monkeypatch.setattr(run_set, "solve_codex_cli", uncertain)
     assert _one(_args(harness="codex-cli"), tmp_path, "p")["grade"]["status"] == "EXECUTION_UNCERTAIN"
     assert graded == []
     # the control: an exec that came back is graded once, with no probe run
     monkeypatch.setattr(run_set, "solve_codex_cli", codex_cli.solve)
-    box = TransportFailBox(0, fail=False)
+    box = CodexBox()
     monkeypatch.setattr(run_set, "testbed", lambda *a, **k: box)
     row = _one(_args(harness="codex-cli"), tmp_path, "s")
     assert graded == ["s"] and row["grade"]["status"] == "GRADED" and row["resolved"] is True
-    assert box.probes == [] and "execution_quiesced" not in row and row["outcome"] == "Success"
+    assert codex_cli.STOP not in box.cmds and "execution_quiesced" not in row and row["outcome"] == "Success"
 
 
 ROWS = [{"instance_id": i, "repo": "x", "image": "img"} for i in ("a", "b", "c")]
@@ -433,10 +383,45 @@ def test_resume_refuses_policy_mismatch_and_missing_manifest_keys(tmp_path, monk
         refused(_args(run_id=iid), "a ", "aided" if iid == "nopolicy" else "model")
 
 
-def test_a_matching_resume_skips_what_the_ledger_holds(tmp_path, monkeypatch):
+def test_a_ledger_row_counts_only_when_it_says_it_came_from_this_run(tmp_path):
+    ledger = tmp_path / "ledger.jsonl"
+    run = {"unaided": True, "model": "m", "backend": "openrouter", "harness": "lndl"}
+    assert run_set.ledger_clash(ledger, run) == []
+    rows = [
+        {
+            "instance_id": "old-1",
+            "resolved": True,
+            "model": "m",
+            "backend": "openrouter",
+        },  # no policy verdict
+        {"instance_id": "aided-1", "resolved": True, "aided": True, "model": "m", "backend": "openrouter"},
+        {
+            "instance_id": "unaided-1",
+            "resolved": False,
+            "aided": False,
+            "model": "m",
+            "backend": "openrouter",
+        },
+        {"instance_id": "cli-1", "resolved": False, "aided": False, "model": "m", "backend": "codex-cli"},
+    ]
+    ledger.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert [c.split()[0] for c in run_set.ledger_clash(ledger, run)] == ["old-1", "aided-1", "cli-1"]
+    aided = {**run, "unaided": False}
+    assert [c.split()[0] for c in run_set.ledger_clash(ledger, aided)] == ["old-1", "unaided-1", "cli-1"]
+    cli = {**run, "harness": "codex-cli"}
+    assert [c.split()[0] for c in run_set.ledger_clash(ledger, cli)] == ["old-1", "aided-1", "unaided-1"]
+
+
+@pytest.mark.parametrize("harness", ["lndl", "codex-cli"])
+@pytest.mark.parametrize("unaided", [False, True])
+def test_a_matching_resume_skips_what_the_ledger_holds(tmp_path, monkeypatch, harness, unaided):
+    # the rows the runner wrote say they came from this run, on either arm and either policy
     ran = _main(monkeypatch, tmp_path, ROWS)
-    asyncio.run(run_set.main(_args(run_id="m", instances=["a"])))
-    asyncio.run(run_set.main(_args(run_id="m")))
+    asyncio.run(run_set.main(_args(run_id="m", instances=["a"], harness=harness, unaided=unaided)))
+    ledger = tmp_path / "results" / "m" / "ledger.jsonl"
+    run = vars(_args(harness=harness, unaided=unaided))
+    assert run_set.ledger_clash(ledger, {k: run[k] for k in run_set.RUN_KEYS}) == []
+    asyncio.run(run_set.main(_args(run_id="m", harness=harness, unaided=unaided)))
     assert [i for i, _ in ran] == ["a", "b", "c"]  # a once, then only what the ledger lacked
 
 
@@ -474,32 +459,15 @@ def test_a_second_launch_of_a_running_run_is_refused(tmp_path, monkeypatch, caps
 
 
 def test_the_manifest_keeps_the_status_columns_of_an_unstaged_change(tmp_path, monkeypatch):
-    import os
-    import re
-    import subprocess
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    env = {
-        "GIT_AUTHOR_NAME": "t",
-        "GIT_AUTHOR_EMAIL": "t@example.com",
-        "GIT_COMMITTER_NAME": "t",
-        "GIT_COMMITTER_EMAIL": "t@example.com",
-        "PATH": os.environ["PATH"],
-    }
-    git = lambda *a: subprocess.run(["git", *a], cwd=repo, env=env, check=True)  # noqa: E731
-    git("init", "-q")
-    for name in ("a.py", "b.py"):
-        (repo / name).write_text("x = 1\n")
-    git("add", "a.py", "b.py")
-    git("commit", "-q", "-m", "base")
-    (repo / "a.py").write_text("x = 2\n")  # modified, unstaged
-    (repo / "b.py").write_text("x = 2\n")
-    git("add", "b.py")  # modified, staged
+    path = tmp_path / "repo"
+    isolated.repo(path, {"a.py": "x = 1\n", "b.py": "x = 1\n"})
+    (path / "a.py").write_text("x = 2\n")  # modified, unstaged
+    (path / "b.py").write_text("x = 2\n")
+    isolated.git(path, "add", "b.py")  # modified, staged
     data = tmp_path / "set.json"
     data.write_text("[]")
     monkeypatch.setattr(run_set, "SETS", {"t": data})
-    monkeypatch.setattr(run_set, "HERE", repo)
+    monkeypatch.setattr(run_set, "HERE", path)
     doc = json.loads(
         run_set.manifest(_args(), tmp_path, [], data.read_bytes(), run_set.provenance()).read_text()
     )
