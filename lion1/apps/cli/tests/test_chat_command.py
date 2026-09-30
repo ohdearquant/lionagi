@@ -509,3 +509,25 @@ def test_a_turn_the_loop_refuses_prints_that_nothing_in_it_ran_never_its_calls_a
         p.startswith("[red]✗ nothing in this turn ran: the turn carries a <system round=") for p in shown
     )
     assert say._turn('Checking.\n<lact k1>read(path="a")</lact>', 2)[-1].startswith("[cyan]→ k1")
+
+
+def test_a_turn_the_backend_refused_prints_that_nothing_in_it_ran_live_and_in_the_copy(tmp_path, capsys):
+    """A turn the backend would not hand on (text beside a native tool call) lands with `refused` on
+    its entry and none of it runs: the console and the copied chat say so, with no call arrow."""
+    from lionagi import Kind
+    from lionagi.actor import Reply
+
+    (tmp_path / "a.txt").write_text("alpha\n")
+    actor, profile = console(tmp_path, model="m")
+    why = "the turn came back in two channels, and nothing in it was executed"
+    turns = iter([Reply('<lact r1>read(path="a.txt")</lact>', refused=why), Reply("Done.")])
+
+    async def backend(messages):
+        return next(turns)
+
+    say = Console("m", None, color=False, echo=True, width=400)
+    run = asyncio.run(chat(actor, profile, backend, asks("go", None), say=say))
+    assert not run.record.of_kind(Kind.RESULT)  # the loop ran none of it
+    copied = "\n".join(say.transcript)
+    for shown in (capsys.readouterr().out, copied):
+        assert "→ r1" not in shown and f"✗ nothing in this turn ran: {why}" in shown
