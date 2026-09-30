@@ -18,8 +18,10 @@ import io
 import re
 import tokenize
 import warnings
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from keyword import iskeyword
 from typing import Any
 
 __all__ = (
@@ -116,8 +118,12 @@ class Program:
 _OPEN_TAG = re.compile(r"<(lvar|lact)\s+([^>]+?)\s*>")
 _ANY_TAG = re.compile(r"<(/?)(lvar|lact)(?:\s+[^>]*?)?\s*>")  # an opener or a closer of either kind
 _IDENT = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*$")
-_PTR_MARK = "\x00ptr:"
-_DOC_MARK = "\x00doc:"
+# the reader's own names for a pointer and a heredoc while Python's parser reads the call; a name the
+# model wrote with the same `__` start is refused, so no string, and no name it writes, is taken for one
+_PTR = "__ptr_"
+_DOC = "__doc_"
+_WORDS = {"true": True, "false": False, "null": None}  # JSON's spellings, where Python's were expected
+_DEEP = "it is nested too deeply to read"
 _CALLISH = re.compile(r"^[A-Za-z_][\w.]*\s*\(")
 # `key=<<TAG` then the lines verbatim then TAG alone on a line: a string argument with no escaping.
 # Shell's heredoc, which is how models already write multi-line text; `<<'TAG'` is accepted too.
@@ -151,22 +157,32 @@ def _header(raw: str, tag: str) -> tuple[str, str | None, str | None]:
     return alias, spec, fld
 
 
-def _restore_pointers(value: Any, docs: list[str] = ()) -> Any:
-    """The placeholders `_mark_pointers` and `_lift_heredocs` left in the literal, turned back."""
-    if isinstance(value, str) and value.startswith(_PTR_MARK):
-        return Pointer(value[len(_PTR_MARK) :])
-    if isinstance(value, str) and value.startswith(_DOC_MARK):
-        try:
-            return docs[int(value[len(_DOC_MARK) :])]
-        except (IndexError, ValueError):  # not a marker of ours: a string that happens to look like one
-            return value
-    if isinstance(value, list):
-        return [_restore_pointers(v, docs) for v in value]
-    if isinstance(value, tuple):
-        return tuple(_restore_pointers(v, docs) for v in value)
-    if isinstance(value, dict):
-        return {k: _restore_pointers(v, docs) for k, v in value.items()}
-    return value
+class _Literal(ast.NodeTransformer):
+    """The names that stand for a value in a literal, `true` or a pointer's or a heredoc's, replaced
+    by the value, so `literal_eval` reads it as a constant."""
+
+    def __init__(self, values: dict[str, Any]):
+        self.values = values
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        if node.id in self.values:
+            return ast.copy_location(ast.Constant(self.values[node.id]), node)
+        return node
+
+
+def _marks(nodes: Iterable[ast.expr], pointers: list[str], docs: list[str] = ()) -> dict[str, Any]:
+    """What the reader's own names in `nodes` stand for: each `__ptr_N` a Pointer, each `__doc_N` a
+    heredoc's text. Each stands once; any other `__` name, or one standing twice, the model wrote,
+    and it is refused rather than read as one of them."""
+    values: dict[str, Any] = {f"{_PTR}{i}": Pointer(n) for i, n in enumerate(pointers)}
+    values |= {f"{_DOC}{i}": d for i, d in enumerate(docs)}
+    written = Counter(
+        n.id for node in nodes for n in ast.walk(node) if isinstance(n, ast.Name) and n.id.startswith("__")
+    )
+    extra = next(iter(written - Counter(values.keys())), None)
+    if extra is not None:
+        raise LNDLError(f"{extra}: a name starting with __ is the reader's own, never a value")
+    return values
 
 
 _HEREDOC_AT = re.compile(r"=\s*<<\s*['\"]?([A-Za-z_]\w*)['\"]?[ \t]*\r?\n")
@@ -176,7 +192,7 @@ _HEREDOC_END = r"^[ \t]*{tag}(?!\w)[ \t]*(?=\s*(?:[,)]|[A-Za-z_]\w*\s*=|{end}))"
 
 
 def _lift_heredocs(source: str) -> tuple[str, list[str]]:
-    """Each heredoc argument replaced by a placeholder string literal; the texts, verbatim, beside it.
+    """Each heredoc argument replaced by the reader's name for it, `__doc_N`; the texts, verbatim, beside.
     One walk over the call: a string literal is stepped over whole (a triple-quoted `x=<<EOF` is
     text, not an opening), a heredoc's body is taken to its closing line without being read, and
     one opened and never closed runs to the end of the call, its closers supplied downstream. A
@@ -211,7 +227,7 @@ def _lift_heredocs(source: str) -> tuple[str, list[str]]:
             continue
         end = re.compile(_HEREDOC_END.format(tag=m.group(1), end=r"\Z"), re.MULTILINE).search(source, m.end())
         if end is None:
-            docs.append(source[m.end() :].replace("\r\n", "\n"))  # the lines, here too (C2)
+            docs.append(source[m.end() :].replace("\r\n", "\n").rstrip())  # the lines, here too (C2)
             i = len(source)
         else:
             body = source[m.end() : end.start()]
@@ -220,7 +236,7 @@ def _lift_heredocs(source: str) -> tuple[str, list[str]]:
             body = body.replace("\r\n", "\n")
             docs.append(body[:-1] if body.endswith("\n") else body)
             i = end.end()
-        out.append("=" + repr(f"{_DOC_MARK}{len(docs) - 1}"))
+        out.append(f"={_DOC}{len(docs) - 1}")
     return "".join(out), docs
 
 
@@ -234,20 +250,22 @@ def _line_offsets(source: str) -> list[int]:
     return offsets
 
 
-def _mark_pointers(source: str) -> str:
-    """Rewrite each `*name` that stands as a value into a string literal the walker turns back into a
-    Pointer. Token level, so a `*` inside a string literal is left alone. A `*name` where a key or a
-    set member stands is refused: a pointer stands where a value stands, and the resolver walks values."""
+def _mark_pointers(source: str) -> tuple[str, list[str]]:
+    """Rewrite each `*name` that stands as a value into the reader's name for it, `__ptr_N`, the Nth
+    of the names beside the text. Token level, so a `*` inside a string literal is left alone. A
+    `*name` where a key or a set member stands is refused: a pointer stands where a value stands, and
+    the resolver walks values."""
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (tokenize.TokenError, SyntaxError, ValueError):  # ValueError: 3.12+'s tokenizer, a lone surrogate
-        return source
+        return source, []
     offsets = _line_offsets(source)
 
     def at(pos: tuple[int, int]) -> int:
         return offsets[pos[0] - 1] + pos[1]
 
     spans: list[tuple[int, int, str]] = []
+    names: list[str] = []
     opened: list[str] = []  # the brackets around the token: `,` inside `{` starts a key or a member
     for i, tok in enumerate(tokens):
         if tok.type == tokenize.OP and tok.string in ("(", "[", "{"):
@@ -258,7 +276,10 @@ def _mark_pointers(source: str) -> str:
             nxt = tokens[i + 1]
             if nxt.type != tokenize.NAME or at(nxt.start) != at(tok.end):
                 continue
-            prev = tokens[i - 1] if i else None
+            k = i - 1
+            while k >= 0 and tokens[k].type in (tokenize.NL, tokenize.COMMENT):  # a pointer starting a line
+                k -= 1
+            prev = tokens[k] if k >= 0 else None
             if prev is not None and not (prev.type == tokenize.OP and prev.string in "=,([{:"):
                 continue
             end = i + 1
@@ -273,10 +294,11 @@ def _mark_pointers(source: str) -> str:
                 raise LNDLError(
                     f"*{name}: a pointer stands where a value stands, not as a key or a set member"
                 )
-            spans.append((at(tok.start), at(tokens[end].end), repr(_PTR_MARK + name)))
+            spans.append((at(tok.start), at(tokens[end].end), f"{_PTR}{len(names)}"))
+            names.append(name)
     for start, end, repl in reversed(spans):
         source = source[:start] + repl + source[end:]
-    return source
+    return source, names
 
 
 def _escape_newlines_in_strings(source: str) -> str:
@@ -371,8 +393,14 @@ def _insert_commas(source: str) -> str | None:
         while k > 0 and tokens[k].type in skip:  # the previous argument may end on an earlier line
             k -= 1
         prev = tokens[k]
-        value_end = prev.type in (tokenize.STRING, tokenize.NUMBER) or (
-            prev.type == tokenize.OP and prev.string in ")]}"
+        value_end = (
+            prev.type in (tokenize.STRING, tokenize.NUMBER)
+            or (prev.type == tokenize.OP and prev.string in ")]}")
+            # a name ends a value too, `*a`, `true` or `None`, but `lambda`, `else` or `in` does not
+            or (
+                prev.type == tokenize.NAME
+                and (prev.string in ("True", "False", "None") or not iskeyword(prev.string))
+            )
         )
         keyword = tok.type == tokenize.NAME and nxt.type == tokenize.OP and nxt.string == "="
         if depth and keyword and value_end:
@@ -414,7 +442,9 @@ def _readings(source: str) -> list[tuple[str, tuple[str, ...]]]:
 
 def _parse_expr(text: str) -> ast.expr:
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", SyntaxWarning)  # a `\s` in a regex argument is the model's
+        # a `\s` in a regex argument is the model's: SyntaxWarning from 3.12, DeprecationWarning before
+        warnings.simplefilter("ignore", SyntaxWarning)
+        warnings.simplefilter("ignore", DeprecationWarning)
         return ast.parse(text, mode="eval").body
 
 
@@ -428,15 +458,20 @@ def parse_call(body: str) -> tuple[str, dict[str, Any]]:
 def parse_call_noting(body: str) -> tuple[str, dict[str, Any], tuple[str, ...]]:
     """`parse_call`, plus the repairs that read it, by name (`closers`, `newline`, `comma`); empty when
     it read as written."""
-    source, docs = _lift_heredocs(body.strip())
+    # stripped at the start only: a string left open at the closing tag keeps the space it ends
+    # with (`sep=", `); a heredoc left open is the one body that loses its trailing whitespace
+    source, docs = _lift_heredocs(body.lstrip())
     node = first = None
     repairs: tuple[str, ...] = ()
     for text, names in _readings(source):
         try:
-            node = _parse_expr(_mark_pointers(text))
+            marked, pointers = _mark_pointers(text)
+            node = _parse_expr(marked)
         except (SyntaxError, ValueError) as e:  # ValueError: a lone surrogate or a NUL byte
             first = first or e
             continue
+        except (RecursionError, MemoryError):  # the parser's own limits, the same for every reading
+            raise LNDLError(f"cannot read the call {body.strip()[:160]!r}: {_DEEP}") from None
         repairs = names
         break
     if node is None:
@@ -450,26 +485,29 @@ def parse_call_noting(body: str) -> tuple[str, dict[str, Any], tuple[str, ...]]:
             )
         raise LNDLError(f"cannot read the call {body.strip()[:160]!r}: {msg}{hint}") from first
     try:
-        return (*_call_of(node, body, docs), repairs)
+        return (*_call_of(node, body, docs, pointers), repairs)
     except LNDLError as e:  # read by a repair and refused after: the repair was applied, and is counted
         e.repairs = repairs
         raise
+    except (RecursionError, MemoryError):  # a literal nested past what the reading walks
+        raise LNDLError(f"cannot read the call {body.strip()[:160]!r}: {_DEEP}") from None
 
 
-def _call_of(node: ast.expr, body: str, docs: list[str]) -> tuple[str, dict[str, Any]]:
+def _call_of(node: ast.expr, body: str, docs: list[str], pointers: list[str]) -> tuple[str, dict[str, Any]]:
     if not isinstance(node, ast.Call):
         raise LNDLError(f"{body.strip()!r} is not a call: write name(field=value, ...)")
     name = _dotted(node.func)
-    if name is None:
+    if name is None or name.startswith((_PTR, _DOC)):  # `*f(x=1)`: a pointer is a value, not a callee
         raise LNDLError(f"{body.strip()!r}: the callee must be a name")
     if node.args:
         raise LNDLError(f"{name}(...): arguments are keyword only, write field=value")
+    values = _WORDS | _marks([kw.value for kw in node.keywords], pointers, docs)
     args: dict[str, Any] = {}
     for kw in node.keywords:
         if kw.arg is None:
             raise LNDLError(f"{name}(...): ** unpacking is not allowed")
         try:
-            args[kw.arg] = _restore_pointers(ast.literal_eval(_JsonWords().visit(kw.value)), docs)
+            args[kw.arg] = ast.literal_eval(_Literal(values).visit(kw.value))
         except (ValueError, TypeError, SyntaxError):  # `{[]: 1}` raises TypeError; the model retries
             raise LNDLError(
                 f"{name}(...): {kw.arg}= must be a literal (string, number, list, dict) or a *pointer"
@@ -477,24 +515,15 @@ def _call_of(node: ast.expr, body: str, docs: list[str]) -> tuple[str, dict[str,
     return name, args
 
 
-class _JsonWords(ast.NodeTransformer):
-    """`true`, `false`, `null` written where a Python literal was expected: models mix the two."""
-
-    WORDS = {"true": True, "false": False, "null": None}
-
-    def visit_Name(self, node: ast.Name) -> ast.AST:
-        if node.id in self.WORDS:
-            return ast.copy_location(ast.Constant(self.WORDS[node.id]), node)
-        return node
-
-
 def _dotted(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        base = _dotted(node.value)
-        return None if base is None else f"{base}.{node.attr}"
-    return None
+    """`a.b.c` as the name it spells; None for anything else. A loop, so a long chain costs no depth."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    return ".".join([node.id, *reversed(parts)])
 
 
 def _outside(text: str):
@@ -580,9 +609,13 @@ def parse_out(body: str) -> Out:
             fields[key] = Aliases([value])
             continue
         try:  # a literal, in which `*alias` stands for the value it names, as in a call's arguments
-            fields[key] = _restore_pointers(ast.literal_eval(_quote_bare_keys(_mark_pointers(value))))
+            marked, pointers = _mark_pointers(value)
+            node = _parse_expr(_quote_bare_keys(marked))
+            fields[key] = ast.literal_eval(_Literal(_marks([node], pointers)).visit(node))
         except LNDLError:
             raise  # a pointer where a key or a set member stands: the message names the position
+        except (RecursionError, MemoryError):
+            raise LNDLError(f"OUT{{{key}: ...}}: {_DEEP}") from None
         except (ValueError, TypeError, SyntaxError):
             raise LNDLError(
                 f"OUT{{{key}: ...}}: {value!r} is neither aliases like [a, b] nor a literal like 3, "
@@ -595,101 +628,101 @@ _OPEN = re.compile(r"<(lvar|lact)\s+[^>]+?\s*>|\bOUT\s*\{")
 
 
 _CODE_SPAN = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
+_STOPS = re.compile(r"[\"'=`<]")  # what `_closer` reads; a heredoc argument starts at its `=`
 
 
-def _code_spans(text: str, opaque: Iterable[tuple[int, int]] = ()) -> list[tuple[int, int]]:
-    """Markdown code, fenced or inline: where a model quotes a tag it is talking about. The
-    `opaque` spans (heredoc arguments) are blanked first, offsets and line breaks kept, so a fence
-    inside one never pairs with a fence outside it."""
-    for a, b in opaque:
-        text = text[:a] + re.sub(r"[^\n]", " ", text[a:b]) + text[b:]
-    return [m.span() for m in _CODE_SPAN.finditer(text)]
-
-
-def _in(spans: list[tuple[int, int]], pos: int) -> bool:
-    return any(a <= pos < b for a, b in spans)
-
-
-def _lact_closer(
-    text: str, pos: int, docs: list[tuple[int, int]]
+def _closer(
+    text: str, pos: int, kind: str, call: bool = False, skip: Iterable[tuple[int, int]] = ()
 ) -> tuple[re.Match | None, list[tuple[int, int]]]:
-    """The closer of the `<lact>` opener just before `pos`, and the call's heredoc arguments, opening
-    line to closing line, found in order. An opening counts only in the call's own arguments,
-    outside its string literals, and its body is verbatim, so a tag or a fence in it (a span copied
-    out of a file that shows one) is neither an opener nor a closer: the first legal closing line
-    ends it, whatever comes before. Only one with no closing line at all runs to the call's first
-    closing tag, which ends the call. A closing tag inside one of the call's string literals is text
-    too; when every closing tag after the call is, a string was left open at the first one, which
-    stands in for the call's closers (ADR-0004/C1, ADR-0004/C3)."""
-    found: list[tuple[int, int]] = []
-    quoted: list[tuple[int, int]] = []  # the string literals of the arguments read so far
-    at = pos
-    while True:
-        spans = docs + found
-        opaque = _code_spans(text, spans) + spans + quoted
-        strings, prev = [], -1  # the string literals from `at` on, a quote left open running to the end
-        for j, _ch in _outside(text[at:]):
-            if j != prev + 1:
-                strings.append((at + prev + 1, at + j))
-            prev = j
-        strings.append((at + prev + 1, len(text)))
-        closer = _closer(text, pos, "lact", opaque + strings) or _closer(text, pos, "lact", opaque)
-        stop = closer.start() if closer else len(text)
-        m = next(
-            (h for j, ch in _outside(text[at:stop]) if ch == "=" and (h := _HEREDOC_AT.match(text, at + j))),
-            None,
-        )
-        if m is None:
-            return closer, found
-        quoted += [s for s in strings if s[1] <= m.start()]
-        end = re.compile(_HEREDOC_END.format(tag=m.group(1), end=r"</lact\s*>"), re.MULTILINE).search(
-            text, m.end()
-        )
-        if end is None:
-            first = next(
-                (t for t in _ANY_TAG.finditer(text, m.end()) if t.group(1) and t.group(2) == "lact"), None
-            )
-            if first is not None:
-                found.append((m.start(), first.start()))
-            return first, found
-        found.append((m.start(), end.end()))
-        at = end.end()
+    """The closer of the `kind` opener just before `pos`, and the heredoc arguments met on the way,
+    opening line to closing line, from one walk left to right. Same-kind tags nest, so a value
+    holding a complete tag keeps it whole; when the tags do not balance (a bare opener quoted inside
+    the value) the first closer ends it, as it always did; the other kind is text. Markdown code
+    keeps the tags in it quoted (`<lvar q>` or `</lvar>` in backticks inside a note), except code
+    that runs from one construct into the next, a closer then an opener of the kind: its backticks
+    are two constructs' text, and its closer ends this one.
 
-
-def _closer(text: str, pos: int, kind: str, spans: list[tuple[int, int]]) -> re.Match | None:
-    """The closer of the `kind` opener just before `pos`. Same-kind tags nest, so a value holding a
-    complete tag keeps it whole; when the tags do not balance (a bare opener quoted inside the value)
-    the first closer ends it, as it always did; the other kind, and anything in a code span, is
-    text. None when there is no closer at all."""
-    depth, first = 1, None
-    for t in _ANY_TAG.finditer(text, pos):
-        if t.group(2) != kind or _in(spans, t.start()):
-            continue
-        if t.group(1):
-            first = first or t
-            depth -= 1
-            if depth == 0:
-                return t
+    A `call` is walked as one: a string literal is stepped over whole, so a tag in it is text, and a
+    heredoc argument's body is verbatim, so a tag, a quote or a fence in it (a span copied out of a
+    file that shows one) is text: the first legal closing line ends it, whatever comes before, and
+    one with no closing line at all runs to the call's first closing tag, which ends the call. When a
+    string runs to the end of the text, one was left open at a closing tag, which stands in for the
+    call's closers: the call ends at the first closing tag outside its heredocs, strings or not
+    (ADR-0004/C1, C2, C3). The `skip` spans are stepped over unread. None when there is no closer."""
+    skip = dict(skip)
+    depth, first, docs, i = 1, None, [], pos
+    strings: list[tuple[int, int]] = []  # the string literals read so far
+    held: list[tuple[int, int]] = []  # those before a heredoc: finding it outside them vouches for them
+    while (stop := _STOPS.search(text, i)) is not None:
+        i = stop.start()
+        ch = text[i]
+        if i in skip:
+            i = skip[i]
+        elif call and ch in "\"'":
+            quote = ch * 3 if text.startswith(ch * 3, i) else ch
+            j = i + len(quote)
+            while j < len(text) and not text.startswith(quote, j):
+                j += 2 if text[j] == "\\" else 1
+            if j >= len(text):  # never closed: it runs to the end, so nothing after it is read
+                break
+            strings.append((i, j + len(quote)))
+            i = j + len(quote)
+        elif call and ch == "=" and (m := _HEREDOC_AT.match(text, i)):
+            held += strings
+            strings = []
+            end = re.compile(_HEREDOC_END.format(tag=m.group(1), end=rf"</{kind}\s*>"), re.MULTILINE)
+            closing = end.search(text, m.end())
+            if closing is None:
+                t = next(
+                    (t for t in _ANY_TAG.finditer(text, m.end()) if t.group(1) and t.group(2) == kind), None
+                )
+                if t is not None:
+                    docs.append((m.start(), t.start()))
+                return t or first, docs
+            docs.append((m.start(), closing.end()))
+            i = closing.end()
+        elif (ch == "`" and (code := _CODE_SPAN.match(text, i))) and "<" not in "".join(
+            "/" if t.group(1) else "<" for t in _ANY_TAG.finditer(code.group()) if t.group(2) == kind
+        ).partition("/")[2]:
+            i = code.end()
+        elif ch == "<" and (t := _ANY_TAG.match(text, i)):
+            if t.group(2) != kind:  # the other kind is text, the whole tag
+                pass
+            elif t.group(1):
+                first = first or t
+                depth -= 1
+                if depth == 0:
+                    return t, docs
+            else:
+                depth += 1
+            i = t.end()
         else:
-            depth += 1
-    return first
+            i += 1
+    if call and first is None:  # every closing tag is in a string: one was left open at the first
+        first = _closer(text, pos, kind, skip=docs + held)[0]
+    return first, docs
 
 
 def _constructs(text: str):
-    """Every tag and every `OUT{...}` in the text, in order, from one pass: whichever opens first owns
+    """Every tag and every `OUT{...}` in the text, in order, from one walk: whichever opens first owns
     its span, so a tag's body is never read for OUT{} and an OUT literal's strings are never read
     for tags (`OUT{answer: "<lact a>x()</lact>"}` is a string, and so is `"OUT{x: 1}"` inside one).
     An OUT{} is taken with its braces balanced, so a dict literal inside is not the end of it. An
     opener that is not a tag (a bad alias, no closer) is yielded as a "problem" with its text, and
-    the scan goes on right after it, so tag-shaped prose costs a notice, never the turn; an opener
-    inside markdown code is quoted text and costs nothing. A heredoc is read only in a call's
-    arguments, as the call is read, and its body is opaque to everything after it."""
-    docs: list[tuple[int, int]] = []  # the heredoc arguments of the calls read so far
-    code = _code_spans(text)
-    i = 0
-    while (m := _OPEN.search(text, i)) is not None:
-        if _in(code + docs, m.start()):  # quoted: `<lvar x>` or `OUT{}` in a sentence about them
-            i = m.end()
+    the scan goes on right after it, so tag-shaped prose costs a notice, never the turn. Markdown
+    code opens only in the prose between constructs, and an opener inside it is quoted text that
+    costs nothing; backticks inside a construct are that construct's (`_closer`), so they never pair
+    with backticks in another. A heredoc is read only in a call's arguments, as the call is read."""
+    i, m = 0, None
+    while True:
+        if m is None or m.start() < i:
+            m = _OPEN.search(text, i)
+        if m is None:
+            return
+        tick = text.find("`", i, m.start())
+        if tick != -1:  # quoted: `<lvar x>` or `OUT{}` in a sentence about them
+            code = _CODE_SPAN.match(text, tick)
+            i = code.end() if code else tick + 1
             continue
         if m.group(1):
             opener = _OPEN_TAG.match(text, m.start())
@@ -700,29 +733,21 @@ def _constructs(text: str):
                 yield "problem", f"{e}; it was read as prose", (m.start(), m.end())
                 i = m.end()
                 continue
-            if kind == "lact":
-                closer, found = _lact_closer(text, opener.end(), docs)
-                if closer is not None:
-                    body = text[opener.end() : closer.start()]
-                    readable = bool(_CALLISH.match(body.strip()))
-                    if readable:
-                        try:
-                            parse_call_noting(body)
-                        except LNDLError as e:
-                            readable = not isinstance(e.__cause__, SyntaxError)
-                    if not readable:
-                        # strings are opaque to the closing tag only to keep one inside a call's string:
-                        # a body that is not a call, or a call that then cannot be read (a quote left open
-                        # at a closing tag, paired with a later one), is bounded again as before (ADR-0004/C3)
-                        opaque = docs + found
-                        blind = _closer(text, opener.end(), "lact", _code_spans(text, opaque) + opaque)
-                        closer = blind or closer
-                        found = [s for s in found if s[1] <= closer.start()]
-                if found:
-                    docs += found
-                    code = _code_spans(text, docs)
-            else:
-                closer = _closer(text, opener.end(), kind, code + docs)
+            closer, docs = _closer(text, opener.end(), kind, call=kind == "lact")
+            if kind == "lact" and closer is not None:
+                body = text[opener.end() : closer.start()]
+                readable = bool(_CALLISH.match(body.strip()))
+                if readable:
+                    try:
+                        parse_call_noting(body)
+                    except LNDLError as e:
+                        readable = not isinstance(e.__cause__, SyntaxError)
+                if not readable:
+                    # strings are opaque to the closing tag only to keep one inside a call's string:
+                    # a body that is not a call, or a call that then cannot be read (a quote left open
+                    # at a closing tag, paired with a later one), is bounded again as before, its
+                    # heredocs still verbatim (ADR-0004/C3)
+                    closer = _closer(text, opener.end(), kind, skip=docs)[0] or closer
             if closer is None:  # an opener without any closer: prose
                 yield (
                     "problem",
@@ -754,12 +779,15 @@ def spans(text: str) -> list[tuple[int, int]]:
     return [span for what, _, span in _constructs(text) if what != "problem"]
 
 
-_TAGS = re.compile(r"<(lact|lvar)\b[^>]*>.*?</\1>|OUT\{.*?\}", re.S)
-
-
 def plain(text: str) -> str:
-    """The reply without its LNDL: what the model said beside its commands, its lines kept."""
-    lines = (" ".join(ln.split()) for ln in _TAGS.sub(" ", text).splitlines())
+    """The reply without its LNDL: what the model said beside its commands, its lines kept. The
+    constructs are cut where `spans` finds them, so the prose is the prose the parser left."""
+    prose, at = [], 0
+    for start, end in spans(text):
+        prose.append(text[at:start])
+        at = end
+    prose.append(text[at:])
+    lines = (" ".join(ln.split()) for ln in " ".join(prose).splitlines())
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
@@ -863,7 +891,7 @@ def guidance(outputs: tuple[str, ...] = (), commands: Iterable[str] | None = Non
         "  <lvar a1>value</lvar>                       name a value so you can point at it later\n"
         "  <lact a1>name(field=value, ...)</lact>      ask for something to happen; `name` is one of the "
         "commands listed below; arguments are literals or pointers like *a1\n"
-        f"  OUT{{{o}: [a1, ...]}}" + " " * max(1, 27 - len(o)) + "finish: the aliases fill the named output "
+        f"  OUT{{{o}: [a1, ...]}}" + " " * max(1, 28 - len(o)) + "finish: the aliases fill the named output "
         f"(this run's outputs: {', '.join(outputs) if outputs else 'listed below'}); a single-field output "
         f"also takes a literal, OUT{{{o}: 3}}, and any output takes a dict literal of its fields, "
         f"OUT{{{o}: {{field: value, ...}}}}\n"

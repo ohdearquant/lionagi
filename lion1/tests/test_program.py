@@ -862,6 +862,35 @@ def test_two_fenced_blocks_are_refused():
     assert "2 fenced blocks: a turn is one program in one block" in _notices(run)
 
 
+def test_a_fence_inside_a_string_argument_is_the_strings_text():
+    # a fence stands at the start of its line: one in a string neither ends the block (the call
+    # then ran with its string cut and closed) nor, with a second, makes the turn two blocks
+    for line, args in (
+        ('a = echo(text="```")', {"text": "```"}),
+        ('a = edit(old="```", new="```")', {"old": "```", "new": "```"}),
+    ):
+        script = read(fenced(line))
+        (command,) = script.body
+        assert {k: ast.literal_eval(v) for k, v in command.args} == args and script.problems == ()
+
+
+@pytest.mark.parametrize("depth", [3000, 100_000])
+def test_a_program_nested_too_deeply_is_refused_at_reading(depth):
+    # past the checker's recursion, or the parser's own stack: an LNDLError the loop retries
+    with pytest.raises(LNDLError, match="the program is nested too deeply to read; the program was not run"):
+        read(fenced("x = " + "-" * depth + "1"))
+
+
+def test_a_long_dotted_command_name_is_read_or_refused_never_a_crash():
+    # from 3.12 the parser builds this without recursing, and the name is read without recursing too
+    try:
+        (command,) = read(fenced("x = " + ".".join(["a"] * 3000) + "(y=1)")).body
+    except LNDLError as e:
+        assert "nested too deeply" in str(e)
+    else:
+        assert command.name == ".".join(["a"] * 3000)
+
+
 def test_a_resumed_program_turn_admits_nothing_from_its_prose():
     history = (Entry(seq=0, kind=Kind.TEXT, content="<lvar scratch>kept?</lvar>\n" + fenced('OUT{x: "y"}')),)
     run = _run(_actor("resume", []), "idle", history=history)
