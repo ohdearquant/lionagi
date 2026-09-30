@@ -141,6 +141,45 @@ def test_a_resumed_call_records_its_own_usage_and_the_cost_it_added(monkeypatch)
     assert second["cumulative"] == {"total_cost_usd": pytest.approx(0.002), "duration_api_ms": 2000}
 
 
+@pytest.mark.parametrize("kept", [True, False])
+def test_an_acting_sessions_failed_call_is_billed_once_whether_or_not_the_session_kept_it(monkeypatch, kept):
+    """An acting session goes on in place, so a failure it kept is in the running totals the next
+    call prints: that call's share is read against the failure's totals, not the point's before it.
+    A session that did not keep the failure prints a lower total, and that share is unknown."""
+    after = (0.7, 700) if kept else (0.2, 200)
+    answers = iter(
+        [
+            ("ok", {"usage": {"input_tokens": 500}, "total_cost_usd": 0.1, "duration_api_ms": 100}),
+            claude_code.ClaudeCodeError(
+                "claude reported error_max_turns: cap",
+                {"usage": {"output_tokens": 5}, "total_cost_usd": 0.6, "duration_api_ms": 600},
+            ),
+            ("ok", {"usage": {"input_tokens": 700}, "total_cost_usd": after[0], "duration_api_ms": after[1]}),
+        ]
+    )
+    argvs: list[list[str]] = []
+
+    async def fake(cli, args, prompt, *, model, timeout, cwd=None, persist=False):
+        argvs.append(args)
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(claude_code, "_exec", fake)
+    s = ClaudeCodeSession(cli="/bin/claude", tools=("Read",))
+    asyncio.run(s([SYSTEM, IN0, SYS1]))
+    with pytest.raises(claude_code.ClaudeCodeError, match="error_max_turns"):
+        asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
+    asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
+    started, failed, after_it = argvs
+    assert _after(failed, "--resume") == _after(after_it, "--resume") == _after(started, "--session-id")
+    assert "--fork-session" not in failed + after_it  # in place, both times
+    shares = [(c["total_cost_usd"], c["duration_api_ms"]) for c in s.calls]
+    last = (pytest.approx(0.1), 100) if kept else (None, None)
+    assert shares == [(pytest.approx(0.1), 100), (pytest.approx(0.5), 500), last]
+
+
 def test_a_running_total_below_the_last_leaves_the_calls_share_unknown_and_never_negative(monkeypatch):
     """A failed call's envelope, or a resumed one's, can print a running total below the one before it
     (the CLI's total is read from what it printed, and a failure is not measured to accumulate). That
@@ -184,6 +223,32 @@ def test_another_run_on_the_same_backend_gets_its_own_session(monkeypatch):
     assert s.restarts == 0  # another record, not a changed view
     asyncio.run(s([other, Message("user", "[in0] a third question", name="in0"), SYS1]))
     assert "--session-id" in calls[2]["args"] and calls[2]["prompt"].startswith("[in0] a third question")
+
+
+def test_an_inputless_run_after_another_on_one_backend_is_planned_as_its_own_session(monkeypatch):
+    """A run with no inputs has an empty view before its first call, so no message names it; the actor
+    names the run to `plan` itself. The earlier run's session and its count are never the ones
+    planned: the second run starts its own session within its own, smaller budget."""
+    calls: list[tuple[list[str], str]] = []
+
+    async def fake(cli, args, prompt, *, model, timeout, cwd=None, persist=False):
+        calls.append((args, prompt))
+        system = _after(args, "--system-prompt") if "--system-prompt" in args else ""
+        return "ok", {
+            "usage": {"input_tokens": 4000 + (len(system) + len(prompt)) // 4},
+            "total_cost_usd": 0.01,
+        }
+
+    monkeypatch.setattr(claude_code, "_exec", fake)
+    actor, s = Actor("worker"), ClaudeCodeSession(cli="/bin/claude")
+    large = Profile("large", system="x" * 80_000)
+    first = asyncio.run(actor.run(large, RunRequest(max_rounds=1, context_budget=100_000), s))
+    second = asyncio.run(actor.run(Profile("small"), RunRequest(max_rounds=1, context_budget=10_000), s))
+    assert first.id != second.id and s._run == second.id and len(calls) == 2
+    (one, _), (two, prompt) = calls
+    assert "--resume" not in two and _after(two, "--session-id") != _after(one, "--session-id")
+    assert "context: ~0 / 10000 tokens" in prompt  # its own view's figure, not the other run's count
+    assert s.calls[0]["usage"]["input_tokens"] > 10_000 > s.calls[1]["usage"]["input_tokens"]
 
 
 def test_two_runs_with_the_same_first_input_get_their_own_sessions(monkeypatch):
