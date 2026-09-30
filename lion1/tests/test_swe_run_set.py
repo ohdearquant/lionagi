@@ -291,13 +291,17 @@ def test_unconfirmed_quiescence_blocks_grading(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_set, "grade", fake_grade)
     monkeypatch.setattr(run_set, "solve_codex_cli", codex_cli.solve)
-    # the exec's transport failed: whatever STOP answers, the execution is not proved stopped
-    box = GatewayTimeoutBox(0)
-    monkeypatch.setattr(run_set, "testbed", lambda *a, **k: box)
-    row = _one(_args(harness="codex-cli"), tmp_path, "u")
-    assert graded == [] and box.diffs == 0 and row["execution_quiesced"] is False
-    assert row["grade"]["status"] == "EXECUTION_UNCERTAIN" and row["resolved"] is False
-    assert json.loads((tmp_path / "u.json").read_text())["model_patch"] == ""
+    # STOP found no codex process; one survived the kills; the probe itself failed. None of the three
+    # proves the execution stopped: a command codex started outlives it under another name
+    for stop_rc in (0, 1, None):
+        box = GatewayTimeoutBox(stop_rc)
+        monkeypatch.setattr(run_set, "testbed", lambda *a, box=box, **k: box)
+        row = _one(_args(harness="codex-cli"), tmp_path, f"u{stop_rc}")
+        assert graded == [] and box.diffs == 0 and box.cmds.count(codex_cli.STOP) == 1
+        assert row["grade"]["status"] == "EXECUTION_UNCERTAIN" and row["resolved"] is False
+        assert json.loads((tmp_path / f"u{stop_rc}.json").read_text())["model_patch"] == ""
+        assert row["execution_quiesced"] is False and row["stop_rc"] == stop_rc
+        assert row["usage_complete"] is False and "504" in row["error"]
 
     # a row that says so, with a patch in hand, is still not graded
     async def uncertain(*a, **k):
