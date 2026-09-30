@@ -36,7 +36,7 @@ class Bus:
         self._subs: list[tuple[str, Handler]] = []
         self.log: list[Event] = []
         self.errors: list[tuple[Event, Handler, BaseException]] = []
-        self.tasks: set[asyncio.Task] = set()
+        self.tasks: set[asyncio.Future] = set()
         self.keep = keep
 
     @staticmethod
@@ -48,8 +48,11 @@ class Bus:
         self._subs.append(pair)
 
         def unsubscribe() -> None:
-            if pair in self._subs:
-                self._subs.remove(pair)
+            # by identity: an equal pair is another registration of the same handler, not this one
+            for i, p in enumerate(self._subs):
+                if p is pair:
+                    del self._subs[i]
+                    return
 
         return unsubscribe
 
@@ -79,19 +82,29 @@ class Bus:
         return event
 
     def _schedule(self, event: Event, handler: Handler, awaitable: Awaitable[None]) -> None:
-        async def run() -> None:
-            try:
-                await awaitable
-            except Exception as e:
+        # The awaitable itself is tracked, never a wrapper around it: cancelling a tracked task
+        # cancels what the handler returned, and a coroutine cancelled before its first step is
+        # closed, where a wrapper cancelled that early would never have awaited it.
+        try:
+            task = asyncio.ensure_future(awaitable, loop=asyncio.get_running_loop())
+        except ValueError as e:  # a future bound to another loop: recorded, as a handler that raised
+            self.errors.append((event, handler, e))
+            return
+
+        def done(task: asyncio.Future) -> None:
+            self.tasks.discard(task)
+            if not task.cancelled() and isinstance(e := task.exception(), Exception):
                 self.errors.append((event, handler, e))
 
-        task = asyncio.get_running_loop().create_task(run())
         self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
+        task.add_done_callback(done)
 
     async def drain(self) -> None:
         while self.tasks:
             await asyncio.gather(*list(self.tasks), return_exceptions=True)
+            # A task that finished before drain looked has its done callback queued, and gathering
+            # finished tasks may return without yielding; one step lets that callback run.
+            await asyncio.sleep(0)
 
     def events(self, pattern: str = "*") -> list[Event]:
         return [e for e in self.log if self.matches(pattern, e.kind)]
