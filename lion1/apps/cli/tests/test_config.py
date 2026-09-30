@@ -161,15 +161,15 @@ def test_khive_config_in_a_file_resolves_a_relative_path_beside_that_files_lion_
 
 
 def test_a_relative_khive_config_through_a_link_names_the_file_the_filesystem_reaches(dirs, run, tmp_path):
-    """`seat/../config.toml` with `seat` a link into another tree is that tree's file, never the
-    `config.toml` beside `seat`: dropping `seat/..` by text would sign as another actor."""
+    """`linked/../config.toml` with `linked` a link into another tree is that tree's file, never the
+    `config.toml` beside `linked`: dropping `linked/..` by text would sign as another actor."""
     _, here = dirs
     named = tmp_path / "named"
     (named / "sub").mkdir(parents=True)
-    (here / "seat").symlink_to(named / "sub", target_is_directory=True)
+    (here / "linked").symlink_to(named / "sub", target_is_directory=True)
     (named / "config.toml").write_text('[actor]\nid = "named"\n')
     (here / "config.toml").write_text('[actor]\nid = "beside"\n')
-    write(here, '[chat]\nkhive_config = "seat/../config.toml"\n')
+    write(here, '[chat]\nkhive_config = "linked/../config.toml"\n')
     chosen = Path(run("chat", "--dir", str(here)).khive_config)
     assert chosen.resolve() == (named / "config.toml").resolve()
     assert chosen.read_text() == '[actor]\nid = "named"\n'
