@@ -10,9 +10,10 @@ import json
 import re
 import types
 import typing
+import unicodedata
 from collections.abc import Iterable, Iterator
 
-from pydantic import AliasChoices, BaseModel
+from pydantic import AliasChoices, BaseModel, ConfigDict
 
 __all__ = (
     "Spec",
@@ -25,6 +26,11 @@ __all__ = (
 Spec = type[BaseModel]
 
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+# pydantic 2.11 reads validate_by_alias and validate_by_name; before it a config may carry them, and
+# validation reads by alias, and by name too under populate_by_name, whatever they say
+_BY_SETTINGS = "validate_by_name" in ConfigDict.__annotations__
+# what a key said bare would lose: a line or paragraph break, a control or format character, a space
+_UNSAID = frozenset({"Cc", "Cf", "Zl", "Zp", "Zs"})
 
 
 def spec_name(spec: Spec) -> str:
@@ -41,7 +47,7 @@ def field_key(spec: Spec, name: str) -> list[str | int]:
     and the spec reads names too; else the alias path whole, which only a nested value fills."""
     alias = spec.model_fields[name].validation_alias
     config = spec.model_config
-    if not config.get("validate_by_alias", True):
+    if _BY_SETTINGS and not config.get("validate_by_alias", True):
         return [name]
     if isinstance(alias, AliasChoices):  # validation reads any one of them
         alias = next((c for c in alias.choices if isinstance(c, str)), alias.choices[0])
@@ -49,12 +55,21 @@ def field_key(spec: Spec, name: str) -> list[str | int]:
         return [name]
     if isinstance(alias, str):
         return [alias]
-    by_name = config.get("validate_by_name")  # pydantic 2.11 on: populate_by_name sets it when it is unset
+    # pydantic 2.11 on: populate_by_name sets validate_by_name when it is unset
+    by_name = config.get("validate_by_name") if _BY_SETTINGS else None
     if by_name is None:  # before 2.11 only populate_by_name
         by_name = config.get("populate_by_name")
     if by_name:
         return [name]
     return list(alias.path)
+
+
+def _said(key: str) -> str:
+    """A key as the guidance says it: bare when it reads as itself, else quoted as the keys after it
+    are, when a character in it would end the line, hide, or read as the quotes and brackets of a path."""
+    if key and not any(c in '"\\[]' or unicodedata.category(c) in _UNSAID for c in key):
+        return key
+    return json.dumps(key)
 
 
 def _render_type(annotation: object) -> str:
@@ -83,7 +98,7 @@ def render_guidance(spec: Spec) -> str:
     for name, field in spec.model_fields.items():
         # a path is said as the nesting it reads, `report["summary"]`: a dotted key would read as one key
         first, *rest = field_key(spec, name)
-        key = str(first) + "".join(f"[{json.dumps(k)}]" for k in rest)
+        key = _said(str(first)) + "".join(f"[{json.dumps(k)}]" for k in rest)
         line = f"  {key}: {_render_type(field.annotation)}"
         if not field.is_required():
             try:

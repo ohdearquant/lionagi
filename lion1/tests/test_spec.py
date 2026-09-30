@@ -4,7 +4,7 @@ from typing import Generic, Literal, TypeVar
 import pytest
 from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field, create_model
 
-from lionagi.spec import Operable, render_guidance, spec_name
+from lionagi.spec import Operable, field_key, render_guidance, spec_name
 
 
 class ReadFile(BaseModel):
@@ -230,6 +230,7 @@ def test_a_field_read_only_through_an_alias_path_is_said_as_the_nesting_it_reads
     assert spec.model_validate(data).summary == "done"
 
 
+@by_name_setting
 def test_a_spec_that_turns_reading_by_name_off_names_a_path_field_by_its_path():
     # validate_by_name=False wins over populate_by_name=True, as validation reads them
     spec = create_model(
@@ -239,6 +240,56 @@ def test_a_spec_that_turns_reading_by_name_off_names_a_path_field_by_its_path():
     )
     assert render_guidance(spec).splitlines()[1] == '  report["summary"]: str'
     assert spec.model_validate({"report": {"summary": "done"}}).summary == "done"
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        ConfigDict(validate_by_name=True),
+        ConfigDict(populate_by_name=True, validate_by_name=False),
+        ConfigDict(validate_by_alias=False, validate_by_name=True),
+    ],
+)
+def test_a_field_is_named_by_a_key_the_installed_pydantic_reads_whatever_the_config_carries(config):
+    # before 2.11 a config may carry validate_by_name and validate_by_alias, and validation ignores them
+    spec = create_model(
+        "Settings", __config__=config, summary=(str, Field(validation_alias=AliasPath("report", "summary")))
+    )
+    *outer, last = field_key(spec, "summary")
+    data = {last: "done"}
+    for k in reversed(outer):
+        data = {k: data}
+    assert spec.model_validate(data).summary == "done"
+
+
+@pytest.mark.parametrize(
+    "alias, said, data",
+    [
+        (AliasPath("report", "leaf"), 'report["leaf"]', {"report": {"leaf": "done"}}),
+        (AliasPath("wire-texts", "leaf"), 'wire-texts["leaf"]', {"wire-texts": {"leaf": "done"}}),
+        (AliasPath("résumé", "leaf"), 'résumé["leaf"]', {"résumé": {"leaf": "done"}}),
+        (AliasPath("标题", "leaf"), '标题["leaf"]', {"标题": {"leaf": "done"}}),
+        (AliasPath("first\nsecond", "leaf"), '"first\\nsecond"["leaf"]', {"first\nsecond": {"leaf": "done"}}),
+        (AliasPath('a"b', "leaf"), '"a\\"b"["leaf"]', {'a"b': {"leaf": "done"}}),
+        (AliasPath("a[0]", "leaf"), '"a[0]"["leaf"]', {"a[0]": {"leaf": "done"}}),
+        (
+            AliasPath("zero\u200bwidth", "leaf"),
+            '"zero\\u200bwidth"["leaf"]',
+            {"zero\u200bwidth": {"leaf": "done"}},
+        ),
+        (
+            AliasPath("line\u2028break", "leaf"),
+            '"line\\u2028break"["leaf"]',
+            {"line\u2028break": {"leaf": "done"}},
+        ),
+        ("two words", '"two words"', {"two words": "done"}),
+        ("", '""', {"": "done"}),
+    ],
+)
+def test_a_key_is_said_bare_only_when_it_reads_as_itself(alias, said, data):
+    spec = create_model("Keyed", summary=(str, Field(validation_alias=alias)))
+    assert render_guidance(spec).split("\n")[1] == f"  {said}: str"
+    assert spec.model_validate(data).summary == "done"
 
 
 # the Operable
