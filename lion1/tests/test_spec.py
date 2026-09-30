@@ -2,7 +2,7 @@ import typing
 from typing import Generic, Literal, TypeVar
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from lionagi.spec import Operable, render_guidance, spec_name
 
@@ -171,20 +171,10 @@ def test_a_field_type_is_rendered_the_way_it_is_written(annotation, text):
     assert rendered_type(annotation) == text
 
 
-def test_an_unbound_type_variable_rendering_carries_its_name():
-    assert render_guidance(Box).splitlines()[1].endswith("T")
-
-
-@pytest.mark.xfail(strict=True, reason="known defect: a TypeVar renders with its repr's leading ~")
 def test_an_unbound_type_variable_is_rendered_by_its_name():
     assert render_guidance(Box) == "box\n  item: T"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ValidationError,
-    reason="known defect: guidance names a field by its attribute, not the key validation accepts",
-)
 @pytest.mark.parametrize("spec", [Aliased, ValidationAliased, BothAliases, GeneratedAlias])
 def test_guidance_names_each_field_by_the_key_validation_accepts(spec):
     assert spec.model_validate({"file_path": "a.md"}).path == "a.md"

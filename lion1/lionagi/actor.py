@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from . import lndl
 from .bus import Bus
@@ -40,7 +40,7 @@ from .program import check as check_script
 from .program import guidance as program_guidance
 from .program import read as read_script
 from .record import Directive, Entry, Kind, Record, ViewEntry, fold
-from .spec import Operable, Spec, render_guidance, spec_name
+from .spec import Operable, Spec, field_key, render_guidance, spec_name
 
 __all__ = (
     "Message",
@@ -2329,11 +2329,8 @@ def _fields(spec: BaseModel) -> dict[Any, Any]:
     # extras a spec keeps come along; an alias path reads an int key from a dict as from a list
     cls = type(spec)
     out: dict[Any, Any] = dict(spec.model_extra or {})
-    for name, info in cls.model_fields.items():
-        alias = info.validation_alias if cls.model_config.get("validate_by_alias", True) else None
-        if isinstance(alias, AliasChoices):  # validation reads any one of them
-            alias = alias.choices[0]
-        *walk, last = [name] if alias is None else [alias] if isinstance(alias, str) else alias.path
+    for name in cls.model_fields:
+        *walk, last = field_key(cls, name)
         node = out
         for key in walk:
             node = node.setdefault(key, {})

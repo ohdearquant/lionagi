@@ -11,11 +11,12 @@ import types
 import typing
 from collections.abc import Iterable, Iterator
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel
 
 __all__ = (
     "Spec",
     "spec_name",
+    "field_key",
     "render_guidance",
     "Operable",
 )
@@ -33,11 +34,24 @@ def spec_name(spec: Spec) -> str:
     return _CAMEL.sub("_", spec.__name__).lower()
 
 
+def field_key(spec: Spec, name: str) -> list[str | int]:
+    """Where validation reads field `name`, key by key: its alias unless the spec reads names only,
+    the first of alternatives, and an alias path whole."""
+    alias = spec.model_fields[name].validation_alias
+    if not spec.model_config.get("validate_by_alias", True):
+        alias = None
+    if isinstance(alias, AliasChoices):  # validation reads any one of them
+        alias = alias.choices[0]
+    if alias is None:
+        return [name]
+    return [alias] if isinstance(alias, str) else list(alias.path)
+
+
 def _render_type(annotation: object) -> str:
     origin = typing.get_origin(annotation)
     args = typing.get_args(annotation)
     if origin is None:
-        if isinstance(annotation, type):
+        if isinstance(annotation, type | typing.TypeVar):
             return annotation.__name__
         return str(annotation)
     if origin is typing.Union or origin is types.UnionType:
@@ -58,7 +72,8 @@ def render_guidance(spec: Spec) -> str:
         head += f": {doc[0].strip()}"
     lines = [head]
     for name, field in spec.model_fields.items():
-        line = f"  {name}: {_render_type(field.annotation)}"
+        key = ".".join(str(k) for k in field_key(spec, name))
+        line = f"  {key}: {_render_type(field.annotation)}"
         if not field.is_required():
             try:
                 default = field.get_default(call_default_factory=True)
