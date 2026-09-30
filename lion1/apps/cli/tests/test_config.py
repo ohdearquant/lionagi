@@ -4,6 +4,7 @@ value with where it came from."""
 
 import re
 import sys
+from pathlib import Path
 
 import pytest
 from lion_cli.config import CHAT
@@ -155,8 +156,23 @@ def test_khive_config_in_a_file_resolves_a_relative_path_beside_that_files_lion_
     write(here, '[chat]\nkhive_config = "/abs/khive.toml"\n')
     assert run("chat", "--dir", str(here)).khive_config == "/abs/khive.toml"
     assert run("chat", "--dir", str(here), "--khive-config", "x.toml").khive_config == "x.toml"
-    write(here, '[chat]\nkhive_config = "../.khive/config.toml"\n')  # `..` resolved away, no symlink read
-    assert run("chat", "--dir", str(here)).khive_config == str(here.parent / ".khive" / "config.toml")
+    write(here, '[chat]\nkhive_config = "../.khive/config.toml"\n')  # kept as written, opened as written
+    assert run("chat", "--dir", str(here)).khive_config == str(here / ".." / ".khive" / "config.toml")
+
+
+def test_a_relative_khive_config_through_a_link_names_the_file_the_filesystem_reaches(dirs, run, tmp_path):
+    """`seat/../config.toml` with `seat` a link into another tree is that tree's file, never the
+    `config.toml` beside `seat`: dropping `seat/..` by text would sign as another actor."""
+    _, here = dirs
+    named = tmp_path / "named"
+    (named / "sub").mkdir(parents=True)
+    (here / "seat").symlink_to(named / "sub", target_is_directory=True)
+    (named / "config.toml").write_text('[actor]\nid = "named"\n')
+    (here / "config.toml").write_text('[actor]\nid = "beside"\n')
+    write(here, '[chat]\nkhive_config = "seat/../config.toml"\n')
+    chosen = Path(run("chat", "--dir", str(here)).khive_config)
+    assert chosen.resolve() == (named / "config.toml").resolve()
+    assert chosen.read_text() == '[actor]\nid = "named"\n'
 
 
 def test_the_chat_keys_are_the_chat_flags_less_the_ones_that_name_one_run():

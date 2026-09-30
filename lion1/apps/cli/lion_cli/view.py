@@ -159,9 +159,11 @@ class Console:
             self.live = None
 
     def failed(self, text: str) -> None:
-        """The run ended on a failure: the indicator leaves first, then one red line with it."""
+        """The run ended on a failure: the indicator leaves first, then one red line with it, a
+        message of several lines (a CLI's stderr) joined onto it."""
         self.idle()
-        self.out.print(f"[red]✗ {escape(text)}[/red]")
+        line = " ".join(part.strip() for part in text.splitlines() if part.strip())
+        self.out.print(f"[red]✗ {escape(line)}[/red]")
 
     def _below(self) -> Group:
         pieces: list[Any] = []
