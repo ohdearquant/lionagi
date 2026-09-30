@@ -924,13 +924,19 @@ def test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_cal
             assert done, f"the call did not return within 25s (cancelling={cancelling}), tasks left: {left}"
             free["it"].set()  # the abandoned ask is let go: it answers allow now, to a dropped connection
             await asyncio.gather(*left, return_exceptions=True)
-            out, err = await asyncio.wait_for(state["hook"].communicate(), 3)
+            # the hook refuses once its connection drops; a cold interpreter on a slow runner takes seconds
+            out, err = await asyncio.wait_for(state["hook"].communicate(), 20)
             hook = (state["hook"].returncode, out.decode(), err.decode())
         finally:
             free["it"].set()  # let go on a failed assert too, so the loop can close
             await asyncio.gather(
                 *[t for t in asyncio.all_tasks() if t is not asyncio.current_task()], return_exceptions=True
             )
+            # a hook still running when this fails is ended here, so its pipes and process are not
+            # collected during some later test and reported there
+            if state["hook"] is not None and state["hook"].returncode is None:
+                state["hook"].kill()
+                await state["hook"].wait()
         said = [str(w.message) for w in caught if "abandoned" in str(w.message)]
         return task.cancelled(), took, said, len(left), hook
 
