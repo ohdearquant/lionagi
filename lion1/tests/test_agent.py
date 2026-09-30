@@ -130,9 +130,10 @@ def test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_poi
     khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
     later = mail("lambda:a", "one more", mid="c3d4e5f6")
     lines: list[str] = []
-    # aliases are unique for the whole run, bursts included; a reply of commands that land ends the burst
-    again = REPLY.replace("<lact s1>", "<lact s2>") + "\nanswered again"
-    backend = Scripted(REPLY, again, khive=khive)
+    # aliases are unique for the whole run, bursts included; a command's result comes back next round
+    # and a turn of plain text, the posture, ends the burst
+    again = REPLY.replace("<lact s1>", "<lact s2>")
+    backend = Scripted(REPLY, "answered hello", again, "answered again", khive=khive)
     agent = Agent(
         Actor("echo", privileges={"comm.send"}), khive, backend, profile_for, continuous=True, poll_ms=20
     )
@@ -145,8 +146,8 @@ def test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_poi
     asyncio.run(agent.serve(until=until, log=lines.append))
     (run,) = agent.runs  # one run, two wakes
     assert agent.wakes == 2 and khive.sent == [SENT, SENT]
-    assert lines[0].startswith("wake 1: Quiet after 1 rounds, 1 mail, 1 sent; 1 model call(s)")
-    assert lines[1].startswith("wake 2: Quiet after 1 rounds, 1 mail, 1 sent; 1 model call(s)")
+    assert lines[0].startswith("wake 1: Quiet after 2 rounds, 1 mail, 1 sent; 2 model call(s)")
+    assert lines[1].startswith("wake 2: Quiet after 2 rounds, 1 mail, 1 sent; 2 model call(s)")
     inputs = [e.content for e in run.record if e.kind is Kind.INPUT]
     assert len(inputs) == 2 and "one more" in inputs[1] and "same conversation" in inputs[1]
     assert "'outcome': 'Quiet'" in inputs[1]  # the second burst is told how the first ended
@@ -154,8 +155,8 @@ def test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_poi
     cursor = agent.state.get("cursor").value
     assert cursor["wake"] == 2 and cursor["mail"] == ["c3d4e5f6"] and cursor["run"] == run.id
     spend = agent.state.get("spend").value
-    assert spend["runs"] == 2 and spend["mail"] == 2 and spend["calls"] == 2  # each burst booked once
-    assert agent.actor.notes_for(ACTING).get("posture").value == "answered again"  # beside the command
+    assert spend["runs"] == 2 and spend["mail"] == 2 and spend["calls"] == 4  # each burst booked once
+    assert agent.actor.notes_for(ACTING).get("posture").value == "answered again"
     assert not (tmp_path / "agent.pid").exists()
     system = next(m.content for m in backend.seen[-1] if m.role == "system")
     assert "Finish by filling these with OUT{}" not in system  # no declared output, no OUTPUT section
@@ -193,8 +194,8 @@ def test_a_failed_take_inside_the_conversation_is_a_logged_failure_the_run_outli
     khive = Flaky(mail("lambda:a", "say hi back"), cwd=tmp_path)
     later = mail("lambda:a", "one more", mid="c3d4e5f6")
     lines: list[str] = []
-    again = REPLY.replace("<lact s1>", "<lact s2>") + "\ndone"
-    backend = Scripted(REPLY, again, khive=khive)
+    again = REPLY.replace("<lact s1>", "<lact s2>")
+    backend = Scripted(REPLY, "sent", again, "done", khive=khive)
     agent = build(khive, continuous=True, poll_ms=20, owner="lambda:owner")
     agent.backend = backend
 
@@ -206,9 +207,9 @@ def test_a_failed_take_inside_the_conversation_is_a_logged_failure_the_run_outli
     asyncio.run(agent.serve(until=until, log=lines.append))
     (run,) = agent.runs
     assert lines[1] == "wake 1 failed: RuntimeError: AdmissionDeadlineExpired"
-    assert lines[2].startswith("wake 2: Quiet after 1 rounds, 1 mail, 1 sent; 1 model call(s)")
+    assert lines[2].startswith("wake 2: Quiet after 2 rounds, 1 mail, 1 sent; 2 model call(s)")
     spend = agent.state.get("spend").value
-    assert spend["runs"] == 2 and spend["mail"] == 2 and spend["calls"] == 2  # nothing booked twice
+    assert spend["runs"] == 2 and spend["mail"] == 2 and spend["calls"] == 4  # nothing booked twice
     owed = [m for m in khive.sent if m["to"] == "lambda:owner"]
     assert len(owed) == 1 and "c3d4e5f6" in owed[0]["content"]  # the take that died is reported
 
@@ -217,7 +218,7 @@ def test_mail_for_another_profile_ends_the_conversation_and_runs_fresh(tmp_path)
     khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
     stranger = mail("lambda:stranger", "read this", mid="c3d4e5f6")
     lines: list[str] = []
-    agent = build(khive, REPLY, DONE, continuous=True, poll_ms=20)
+    agent = build(khive, REPLY, "answered hello", DONE, continuous=True, poll_ms=20)
 
     def until() -> bool:
         if len(lines) == 1 and stranger not in khive.taken:
@@ -240,7 +241,7 @@ def test_a_profile_changed_under_the_same_name_ends_the_conversation_and_runs_fr
     def profile_for(batch: list[dict]) -> Profile:
         return fewer if any(m["id"] == "c3d4e5f6" for m in batch) else ACTING
 
-    backend = Scripted(REPLY, DONE, khive=khive)
+    backend = Scripted(REPLY, "answered hello", DONE, khive=khive)
     agent = Agent(
         Actor("echo", privileges={"comm.send"}), khive, backend, profile_for, continuous=True, poll_ms=20
     )
@@ -274,7 +275,8 @@ def test_two_sends_of_a_turn_wait_on_one_lock_under_every_loop_that_drives_the_a
 
 
 def test_a_refused_command_does_not_end_the_batch(tmp_path):
-    """A reply of commands ends the batch only when they all landed; a refusal earns one more turn."""
+    """A turn of commands never ends the batch: their results, a refusal among them, come back next
+    round, and the turn of plain text after them ends it."""
     khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
     lines: list[str] = []
     slip = REPLY + "<lact x1>frobnicate()</lact>"  # the send lands, the second command is unknown
@@ -1093,32 +1095,78 @@ def test_backend_for_claude_code_is_the_cli_chat_shape_on_the_named_model(monkey
     assert backend_for("claude_code").model is None
     p = backend_for(
         "claude_code/claude-opus-5-5",
-        {
-            "tools": ["Bash", "Read"],
-            "allowed": ["mcp__khive"],
-            "max_turns": 30,
-            "timeout": 1800,
-            "effort": "medium",
-            "add_dirs": ["/r"],
-            "mcp_config": "/m",
-            "cli": "/opt/bin/claude-named",
-            "requires": {"Bash": ["comm.send"]},
-        },
+        {"timeout": 1800, "effort": "medium", "cli": "/opt/bin/claude-named"},
         cwd=Path("/a"),
     )
-    assert p.requires == {"Bash": ("comm.send",)} and backend_for("claude_code").requires == {}
-    assert (p.tools, p.allowed, p.max_turns, p.cwd, p.add_dirs, p.mcp_config) == (
-        ("Bash", "Read"),
-        ("mcp__khive",),
-        30,
-        Path("/a"),
-        ("/r",),
-        "/m",
+    # no tools of its own: one turn per call, no MCP, no gate to hand an actor
+    assert (p.tools, p.allowed, p.max_turns, p.add_dirs, p.mcp_config, p.requires, p.actor) == (
+        (),
+        (),
+        1,
+        (),
+        None,
+        {},
+        None,
     )
-    assert p.cli == "/opt/bin/claude-named"
+    assert p.cwd == Path("/a") and p.cli == "/opt/bin/claude-named"
     assert p.timeout == 1800.0 and backend_for("claude_code").timeout == 300.0
     assert p.effort == "medium" and backend_for("claude_code").effort is None
     assert type(backend_for("deepseek/deepseek-v4.1-flash")).__name__ == "OpenRouter"
+
+
+@pytest.mark.parametrize("model", ["claude_code/claude-opus-5-5", "deepseek/deepseek-v4.1-flash"])
+@pytest.mark.parametrize(
+    "key", ["tools", "allowed", "max_turns", "add_dirs", "mcp_config", "requires", "tool"]
+)
+def test_a_claude_code_key_that_is_not_timeout_effort_or_cli_is_refused_by_name_whatever_the_model(
+    monkeypatch, model, key
+):
+    """The model gets no tools of its own, in `lion agent` as in the chat: a key that would hand it one,
+    or a misspelling, refuses by name; a `--model` that is not claude_code does not make it ignored."""
+    from lion_cli.agent import backend_for
+
+    monkeypatch.setattr("hub.backend.claude_code.shutil.which", lambda name: "/opt/bin/claude")
+    says = (
+        rf"\[claude_code\] {key}: a claude_code model has no tools of its own \(ADR-0016/D3\); the keys are "
+    )
+    with pytest.raises(ValueError, match=says + "timeout, effort, cli$"):
+        backend_for(model, {"timeout": 600, key: ["Bash"]})
+    # `claude_code = "..."` is not the table: named, not a conversion error
+    with pytest.raises(
+        ValueError, match=r"\[claude_code\] is a table of timeout, effort and cli, not 'Bash'"
+    ):
+        backend_for(model, "Bash")
+
+
+@pytest.mark.parametrize(
+    "given", [{"tools": ("Bash",)}, {"allowed": ("mcp__khive",)}, {"mcp_config": "/m.json"}, {}]
+)
+def test_build_refuses_a_claude_code_session_handed_in_with_tools_of_its_own(tmp_path, kkernel_stub, given):
+    """`build` takes a backend from anywhere: one that could run tools of its own would act outside every
+    gate, so it is refused; the tool-less session `backend_for` makes builds, and keeps no actor."""
+    from lion_cli.agent import build
+
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:v1"\n')
+    (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n')
+    backend = ClaudeCodeSession(cli="/bin/claude", **given)
+    if given:
+        with pytest.raises(
+            ValueError, match=r"a claude_code session with tools of its own: the model gets none"
+        ):
+            build(d, backend)
+    else:
+        _, agent = build(d, backend)
+        assert agent.backend is backend and backend.actor is None
+        # the config's own `[claude_code] tools` refuses here too, whoever built the session
+        (d / "chores.toml").write_text(
+            'actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n\n[claude_code]\ntools = ["Bash"]\n'
+        )
+        with pytest.raises(
+            ValueError, match=r"\[claude_code\] tools: a claude_code model has no tools of its own"
+        ):
+            build(d, backend)
 
 
 def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread(
@@ -1180,6 +1228,12 @@ def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the
     )
     named = ", ".join(sorted(ALLOWED_VERBS))  # the verbs by name, not a count and a summary
     assert f"(these verbs and no other: {named}; memory.remember with an explicit salience" in system
+    # the runtime's tools are all it has: nothing offers Bash or a tool of its own, and git is an ask
+    assert "you have no tools of your own" in system and "what needs git, gh" in system
+    # the queue is read-only: the chair says a task's condition and the owner moves the row
+    assert "You cannot take a task to active, complete it or move its `at`" in system
+    assert "the owner moves the row" in system
+    assert "Bash" not in system and "Claude Code" not in system and "khive MCP" not in system
     results = [e.content.value for e in run.record if e.kind is Kind.RESULT]
     assert any("twin: hello from the directory" in str(r) for r in results)
     sends = [op for op in ops if op.startswith("comm.send(")]
@@ -1226,18 +1280,76 @@ def test_a_chair_that_is_not_a_table_is_refused_by_name(tmp_path, kkernel_stub):
         build(d, Scripted())
 
 
-def test_the_session_clis_own_tool_calls_ask_the_agents_actor(tmp_path, kkernel_stub):
-    from lion_cli.agent import build
+@pytest.mark.parametrize("gtd", ["", '\n[gtd]\nwork = "idle"\n'], ids=["claude_code-tools", "gtd-idle"])
+def test_a_chair_config_giving_the_model_tools_or_idle_work_fails_to_load_and_without_them_loads(
+    tmp_path, kkernel_stub, monkeypatch, gtd
+):
+    """Both refuse by name before the identity is claimed: `[claude_code] tools` (the model has no tools
+    of its own) and `[gtd] work = "idle"` (the queue is read-only, so an idle pass would take the same
+    task forever). The same directory without them loads and serves its `--ticks`."""
+    which = claude_code.shutil.which  # the stub kkernel is found as before; only claude is named here
+    monkeypatch.setattr(
+        claude_code.shutil,
+        "which",
+        lambda name, *a, **k: "/opt/bin/claude" if name == "claude" else which(name),
+    )
+    d = tmp_path / "agent"
+    (d / ".khive").mkdir(parents=True)
+    (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:v1"\n')
+    base = 'actor = "lambda:x:v1"\nowner = "lambda:x"\nmodel = "claude_code/claude-opus-5-5"\n\n[chair]\n'
+    args = argparse.Namespace(
+        dir=str(d), stats=False, model=None, check=None, ticks=True, arm=False, once=False, rerun=None, wait=0
+    )
+    if gtd:
+        (d / "chores.toml").write_text(base + gtd)
+        says = r'\[gtd\] work "idle": the queue is read-only to the agent'
+    else:
+        (d / "chores.toml").write_text(base + '\n[claude_code]\ntimeout = 600\ntools = ["Bash", "Read"]\n')
+        says = r"\[claude_code\] tools: a claude_code model has no tools of its own"
+    with pytest.raises(ValueError, match=says):
+        asyncio.run(agent_main(args))
+    assert not (d / "agent.pid").exists()  # refused before the claim
+    (d / "chores.toml").write_text(base + '\n[claude_code]\ntimeout = 600\n\n[gtd]\ndue = "now"\n')
+    asyncio.run(agent_main(args))
 
-    from hub.backend import ClaudeCodeSession
+
+def test_a_chair_with_a_due_task_names_it_in_the_posture_and_its_gtd_write_is_refused_on_the_record(
+    tmp_path, kkernel_stub, monkeypatch
+):
+    """The chair's queue is read-only: the due task reaches it as a notice, a gtd.transition through its
+    khive is refused at the boundary and lands on the record as a failed result, nothing moves in the
+    store, and the chair says the task's condition in its posture for the owner to move the row."""
+    from lion_cli.agent import build
 
     d = tmp_path / "agent"
     (d / ".khive").mkdir(parents=True)
     (d / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x:v1"\n')
-    (d / "chores.toml").write_text('actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n')
-    backend = ClaudeCodeSession(cli="/bin/claude", tools=("Bash",))
-    _, agent = build(d, backend)
-    assert backend.actor is agent.actor
+    (d / "chores.toml").write_text(
+        'actor = "lambda:x:v1"\nowner = "lambda:x"\n\n[chair]\n\n[gtd]\ndue = "now"\n'
+    )
+    ops: list[str] = []
+
+    async def fake_exec(self, op):
+        ops.append(op)
+        if op.startswith("gtd.next("):
+            return [[task("t1", "cost report", at=1.0, description="send the numbers")]]
+        return [{"messages": [], "events": [], "items": []}]
+
+    monkeypatch.setattr(Khive, "exec", fake_exec)
+    turns = [
+        '<lact g1>khive_ops(ops=\'gtd.transition(id="t1", status="active")\')</lact>',
+        'OUT{posture: {done: "t1 cost report is due and not started", awaiting: "the owner to move t1"}}',
+    ]
+    _, agent = build(d, Scripted(*turns))
+    run = asyncio.run(agent.wake(wait_ms=0))
+    first = next(e for e in run.record if e.kind is Kind.INPUT).content
+    assert "[task t1 p1 next at 1.0: due now] cost report" in first
+    refused = [e.content for e in run.record if e.kind is Kind.RESULT and not e.content.ok]
+    assert len(refused) == 1 and "agent boundary" in str(refused[0].error)
+    assert "gtd.transition" in str(refused[0].error)
+    assert not [op for op in ops if "gtd.transition" in op or "gtd.complete" in op]  # nothing moved
+    posture = agent.actor.notes_for(run.profile).get("posture").value
+    assert "t1 cost report is due" in posture and "the owner to move t1" in posture
 
 
 def test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_key(
@@ -1264,6 +1376,13 @@ def test_arm_prints_the_auth_env_the_claude_child_inherits_and_fails_on_an_api_k
     chores, agent = build(d, Scripted())
     rc, lines = asyncio.run(arm(chores, agent))
     assert rc == 0
+    # the queue is read-only: both task writes are refused by the agent's own boundary, before the store
+    for verb in ("gtd.complete", "gtd.transition"):
+        assert any(
+            line.startswith(f"boundary: refused {verb}(")
+            and f"['{verb}'] are not verbs the agent may call" in line
+            for line in lines
+        )
     absent = "{'ANTHROPIC_API_KEY': 'absent', 'CLAUDE_CODE_OAUTH_TOKEN': 'absent'}"
     assert (
         f"auth env the claude child would inherit: {absent}; account: unnamed (the CLI's own login)" in lines
@@ -1523,6 +1642,13 @@ def test_budget_and_wake_rules_follow_the_config_file_while_serving(tmp_path):
     agent._reload()
     assert agent.wake_rules.default == "batch" and agent.budget.cost_per_day == 9.0  # in force stays
     assert lines[-1].startswith("reload failed, the values in force stay: ValueError: [wake] default")
+    # a key that would give the model a tool is said at the reload, not reported as reloaded
+    cfg.write_text('[budget]\ncost_per_day = 3.0\n\n[claude_code]\ntools = ["Bash"]\n')
+    os.utime(cfg, (time.time() + 15, time.time() + 15))
+    agent._reload()
+    assert agent.budget.cost_per_day == 9.0
+    said = "reload failed, the values in force stay: ValueError: [claude_code] tools: a claude_code model has"
+    assert lines[-1].startswith(said + " no tools of its own")
 
 
 def test_build_reads_the_wake_rules_and_names_the_config_for_reload(tmp_path, kkernel_stub):
@@ -1571,14 +1697,18 @@ def test_gtd_config_and_the_task_time():
 
     from hub.agent.agent import Gtd, _at
 
-    g = Gtd.load({"poll": "2m", "due": "now", "work": "idle", "idle_after": "10m", "notice": 3})
-    assert (g.poll, g.due, g.work, g.idle_after, g.notice, g.limit) == (120.0, "now", "idle", 600.0, 3, 20)
-    assert g.describe() == "poll 120s, due now, work idle after 600s quiet"
+    g = Gtd.load({"poll": "2m", "due": "now", "idle_after": "10m", "notice": 3})
+    assert (g.poll, g.due, g.work, g.idle_after, g.notice, g.limit) == (120.0, "now", "off", 600.0, 3, 20)
+    assert g.describe() == "poll 120s, due now, work off"
+    assert Gtd(work="idle", idle_after=600).describe() == "poll 60s, due now, work idle after 600s quiet"
     assert Gtd.load(None) is None and Gtd.load({}) is None
     with pytest.raises(ValueError, match="due"):
         Gtd.load({"due": "later"})
-    with pytest.raises(ValueError, match="work"):
+    with pytest.raises(ValueError, match=r"work 'always': off"):
         Gtd.load({"work": "always"})
+    # the agent reads its queue and cannot move a task: an idle pass would take the same task forever
+    with pytest.raises(ValueError, match=r'work "idle": the queue is read-only to the agent'):
+        Gtd.load({"work": "idle", "idle_after": "10m"})
     assert (
         _at({}) is None and _at({"at": ""}) is None and _at({"at": "soon"}) is None and _at({"at": 5}) == 5.0
     )
@@ -1587,7 +1717,7 @@ def test_gtd_config_and_the_task_time():
 
 
 def test_a_due_task_wakes_the_chair_once_per_at_as_a_notice_not_mail(tmp_path):
-    # the chair keeps its gtd over the khive MCP; the runtime reads the queue and wakes on it
+    # the runtime reads the queue and wakes on it; the owner moves the rows
     from hub.agent.agent import Gtd, _line
 
     now = [1_000_000.0]
@@ -1611,7 +1741,7 @@ def test_a_due_task_wakes_the_chair_once_per_at_as_a_notice_not_mail(tmp_path):
     now[0] += 30  # within the poll: no read, and t1 woke already
     assert asyncio.run(agent.wake(wait_ms=0)) is None and len(khive.ops) == 1
     now[0] += 60
-    khive.queue[0] = {**due, "at": now[0] - 1}  # the model moved it: a new `at` is a new wake
+    khive.queue[0] = {**due, "at": now[0] - 1}  # the owner moved it: a new `at` is a new wake
     run = asyncio.run(agent.wake(wait_ms=0))
     assert run is not None and agent.state.get("cursor").value["tasks"] == ["t1"] and len(khive.ops) == 2
 
