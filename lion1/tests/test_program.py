@@ -14,7 +14,7 @@ from lionagi.actor import ProfileError, Result
 from lionagi.checkpoint import entry_of
 from lionagi.lndl import LNDLError
 from lionagi.notes import FileNoteStore, MemoryNoteStore
-from lionagi.program import LIMIT, Command, EvalError, Value, Write, evaluate, guidance, read
+from lionagi.program import LIMIT, Command, EvalError, Script, Value, Write, evaluate, guidance, read
 
 PROGRAM = Profile("p", language="program")
 
@@ -890,6 +890,11 @@ def test_a_fence_opens_wherever_it_stands_and_closes_at_a_line_start_or_else_whe
     script = read(text)
     (command,) = script.body
     assert command.name == "echo" and script.problems == ()
+
+
+@pytest.mark.parametrize("text", ['```python\nx = echo(text="hi")\n', 'Here: ```python\nx = echo(text="hi")'])
+def test_a_fence_that_nothing_after_it_closes_opens_no_block(text):
+    assert read(text) == Script()
 
 
 @pytest.mark.parametrize("depth", [1500, 3000, 100_000])
