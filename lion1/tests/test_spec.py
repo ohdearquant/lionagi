@@ -6,6 +6,7 @@ import pytest
 from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field, create_model
 
 from lionagi import Actor, Profile, RunRequest, Success
+from lionagi.actor import _fields
 from lionagi.spec import Operable, field_key, render_guidance, spec_name
 
 
@@ -74,6 +75,32 @@ by_name_setting = pytest.mark.skipif(
 
 class PathThenKey(BaseModel):
     summary: str = Field(validation_alias=AliasChoices(AliasPath("report", "summary"), "alt_summary"))
+
+
+class KeyTaken(BaseModel):
+    a: int = Field(validation_alias=AliasChoices(AliasPath("nested", "a"), "b"))
+    b: int
+
+
+class KeyTakenEarlier(BaseModel):
+    b: int
+    a: int = Field(validation_alias=AliasChoices(AliasPath("nested", "a"), "b"))
+
+
+class KeyShared(BaseModel):
+    a: int = Field(validation_alias=AliasChoices(AliasPath("x", "a"), "k"))
+    c: int = Field(validation_alias=AliasChoices(AliasPath("y", "c"), "k"))
+
+
+class NameTaken(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    a: int = Field(validation_alias=AliasPath("x", "y"))
+    c: int = Field(validation_alias="a")
+
+
+class FirstPathTaken(BaseModel):
+    b: tuple[str, ...]
+    a: int = Field(validation_alias=AliasChoices(AliasPath("b", 0), "safe"))
 
 
 T = TypeVar("T")
@@ -217,6 +244,40 @@ def test_guidance_names_each_field_by_the_key_validation_accepts(spec):
 def test_a_field_behind_an_alias_path_is_named_by_one_key_validation_accepts_when_there_is_one(spec, key):
     assert render_guidance(spec).splitlines()[1] == f"  {key}: str"
     assert spec.model_validate({key: "done"}).summary == "done"
+
+
+COLLIDING = [
+    (KeyTaken, {"a": ["nested", "a"], "b": ["b"]}, {"nested": {"a": 1}, "b": 2}),
+    (KeyTakenEarlier, {"b": ["b"], "a": ["nested", "a"]}, {"nested": {"a": 1}, "b": 2}),
+    (KeyShared, {"a": ["x", "a"], "c": ["y", "c"]}, {"x": {"a": 1}, "y": {"c": 2}}),
+    (NameTaken, {"a": ["x", "y"], "c": ["c"]}, {"x": {"y": 1}, "a": 2}),
+]
+COLLIDING_IDS = [
+    "key of a later field",
+    "key of an earlier field",
+    "key two fields offer",
+    "name another alias takes",
+]
+
+
+@pytest.mark.parametrize("spec, keys, data", COLLIDING, ids=COLLIDING_IDS)
+def test_a_key_another_field_is_read_from_gives_way_to_a_path_no_other_field_reads(spec, keys, data):
+    assert {name: field_key(spec, name) for name in spec.model_fields} == keys
+
+
+def test_a_first_path_inside_another_field_gives_way_to_a_later_path_no_field_reads():
+    # `a` is read from b[0] first, then from `safe`: writing it at b[0] would land inside b's value
+    assert field_key(FirstPathTaken, "a") == ["safe"]
+    original = FirstPathTaken.model_validate({"b": ["1", "2"]})
+    assert original.model_dump() == {"b": ("1", "2"), "a": 1}
+    assert FirstPathTaken.model_validate(_fields(original)) == original
+
+
+@pytest.mark.parametrize("spec, keys, data", COLLIDING, ids=COLLIDING_IDS)
+def test_a_spec_rebuilt_from_its_fields_keeps_every_value(spec, keys, data):
+    original = spec.model_validate(data)
+    assert original.model_dump() == {"a": 1, **({"b": 2} if "b" in spec.model_fields else {"c": 2})}
+    assert spec.model_validate(_fields(original)) == original
 
 
 @pytest.mark.parametrize(

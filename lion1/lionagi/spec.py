@@ -46,10 +46,23 @@ def spec_name(spec: Spec) -> str:
 def field_key(spec: Spec, name: str) -> list[str | int]:
     """Where validation reads field `name`, key by key, one key when one will do: its alias unless the
     spec reads names only, the first alternative that is one key, the name when the alias is a path
-    and the spec reads names too; else the alias path whole, which only a nested value fills."""
+    and the spec reads names too; else the alias path whole, which only a nested value fills.
+
+    That one key is kept only while no other field is read from it, or from anywhere validation tries
+    before it, nested inside it or around it; else the first of the field's paths, in the order
+    validation tries them, that no other field is read from (its first path when every one is), so
+    two fields' values never land in one place."""
+    paths = _paths(spec, name)
+    key = _one_key(spec, name)
+    others = [p for other in spec.model_fields if other != name for p in _paths(spec, other)]
+    if not any(_overlap(p, q) for p in paths[: paths.index(key) + 1] for q in others):
+        return key
+    return next((p for p in paths if not any(_overlap(p, q) for q in others)), paths[0])
+
+
+def _one_key(spec: Spec, name: str) -> list[str | int]:
     alias = spec.model_fields[name].validation_alias
-    config = spec.model_config
-    if _BY_SETTINGS and not config.get("validate_by_alias", True):
+    if _BY_SETTINGS and not spec.model_config.get("validate_by_alias", True):
         return [name]
     if isinstance(alias, AliasChoices):  # validation reads any one of them
         alias = next((c for c in alias.choices if isinstance(c, str)), alias.choices[0])
@@ -57,13 +70,33 @@ def field_key(spec: Spec, name: str) -> list[str | int]:
         return [name]
     if isinstance(alias, str):
         return [alias]
-    # pydantic 2.11 on: populate_by_name sets validate_by_name when it is unset
-    by_name = config.get("validate_by_name") if _BY_SETTINGS else None
-    if by_name is None:  # before 2.11 only populate_by_name
-        by_name = config.get("populate_by_name")
-    if by_name:
+    if _by_name(spec):
         return [name]
     return list(alias.path)
+
+
+def _paths(spec: Spec, name: str) -> list[list[str | int]]:
+    """Every path validation reads field `name` from, in the order it tries them: the alias, or each of
+    its alternatives, then the name when the spec reads names too."""
+    alias = spec.model_fields[name].validation_alias
+    if alias is None or (_BY_SETTINGS and not spec.model_config.get("validate_by_alias", True)):
+        return [[name]]
+    choices = alias.choices if isinstance(alias, AliasChoices) else [alias]
+    paths = [[c] if isinstance(c, str) else list(c.path) for c in choices]
+    return paths + [[name]] if _by_name(spec) else paths
+
+
+def _by_name(spec: Spec) -> bool:
+    # pydantic 2.11 on: populate_by_name sets validate_by_name when it is unset
+    by_name = spec.model_config.get("validate_by_name") if _BY_SETTINGS else None
+    if by_name is None:  # before 2.11 only populate_by_name
+        by_name = spec.model_config.get("populate_by_name")
+    return bool(by_name)
+
+
+def _overlap(a: list[str | int], b: list[str | int]) -> bool:
+    """Whether one path is the other or leads into it."""
+    return a[: len(b)] == b or b[: len(a)] == a
 
 
 def _said(key: str) -> str:
