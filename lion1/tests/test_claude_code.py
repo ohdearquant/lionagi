@@ -863,11 +863,13 @@ def test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_cal
     import time
     import warnings
 
-    free = {"it": None}
+    free = {"it": None, "came": None, "at": None}
 
     async def stuck(actor, run, requires, closed, came, reader, writer):
         await reader.read()  # the hook's request, then a defect: it swallows every cancel until let go
         came.set()
+        free["at"] = time.monotonic()
+        free["came"].set()
         while not free["it"].is_set():
             try:
                 await free["it"].wait()
@@ -878,7 +880,7 @@ def test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_cal
     async def go(cancelling: bool):
         actor = Actor("gated")
         state = {"hook": None}
-        free["it"] = asyncio.Event()
+        free["it"], free["came"], free["at"] = asyncio.Event(), asyncio.Event(), None
 
         async def fake_exec(cli, args, prompt, **kw):
             settings = json.loads(args[args.index("--settings") + 1])
@@ -892,7 +894,9 @@ def test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_cal
             hook.stdin.write(json.dumps(_tool("Read", "toolu_x", file_path="notes.txt")).encode())
             hook.stdin.close()
             state["hook"] = hook
-            await asyncio.sleep(0.2)  # the ask is accepted and has the request before the call ends
+            # the ask is accepted and has the request before the call ends: a hook slow to start (a
+            # loaded machine) is waited for, never raced by a fixed sleep
+            await asyncio.wait_for(free["came"].wait(), 20)
             return "ok", {"total_cost_usd": 0.0}
 
         monkeypatch.setattr(claude_code, "_exec", fake_exec)
@@ -903,7 +907,8 @@ def test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_cal
         if cancelling:  # a caller that cancels on every turn, as a SIGINT storm would
 
             async def storm():
-                await asyncio.sleep(0.1)
+                # the ask is there to join, however long its hook took; one that never comes fails the test
+                await asyncio.wait_for(free["came"].wait(), 20)
                 while not task.done():
                     task.cancel()
                     await asyncio.sleep(0)
@@ -913,10 +918,10 @@ def test_an_ask_that_will_not_end_is_abandoned_at_the_bound_and_a_cancelling_cal
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always", RuntimeWarning)
-                done, _ = await asyncio.wait({task}, timeout=3)
-            took = time.monotonic() - t0
+                done, _ = await asyncio.wait({task}, timeout=25)  # the hook's start is not what is timed
+            took = time.monotonic() - (free["at"] or t0)  # from the ask's arrival: the join, and its bound
             left = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-            assert done, f"the call did not return within 3s (cancelling={cancelling}), tasks left: {left}"
+            assert done, f"the call did not return within 25s (cancelling={cancelling}), tasks left: {left}"
             free["it"].set()  # the abandoned ask is let go: it answers allow now, to a dropped connection
             await asyncio.gather(*left, return_exceptions=True)
             out, err = await asyncio.wait_for(state["hook"].communicate(), 3)
