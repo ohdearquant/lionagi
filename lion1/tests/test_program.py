@@ -14,7 +14,7 @@ from lionagi.actor import ProfileError, Result
 from lionagi.checkpoint import entry_of
 from lionagi.lndl import LNDLError
 from lionagi.notes import FileNoteStore, MemoryNoteStore
-from lionagi.program import LIMIT, Command, EvalError, Value, Write, evaluate, guidance, read
+from lionagi.program import LIMIT, Command, EvalError, Script, Value, Write, evaluate, guidance, read
 
 PROGRAM = Profile("p", language="program")
 
@@ -860,6 +860,62 @@ def test_a_turn_without_a_block_is_idle_and_under_a_conversation_is_the_reply():
 def test_two_fenced_blocks_are_refused():
     run = _run(_actor("two-blocks", []), fenced("a = 1") + fenced("b = 2"), "idle")
     assert "2 fenced blocks: a turn is one program in one block" in _notices(run)
+
+
+def test_a_fence_inside_a_string_argument_is_the_strings_text():
+    # a fence stands at the start of its line: one in a string neither ends the block (the call
+    # then ran with its string cut and closed) nor, with a second, makes the turn two blocks
+    for line, args in (
+        ('a = echo(text="```")', {"text": "```"}),
+        ('a = edit(old="```", new="```")', {"old": "```", "new": "```"}),
+    ):
+        script = read(fenced(line))
+        (command,) = script.body
+        assert {k: ast.literal_eval(v) for k, v in command.args} == args and script.problems == ()
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'Here:\n\n  ```python\nx = echo(text="hi")\n```\n',
+        '```python\nx = echo(text="hi")\n  ```\n',
+        '\t```\nx = echo(text="hi")\n\t```',
+        '- ```python\nx = echo(text="hi")\n```',
+        '1. ```python\nx = echo(text="hi")\n```',
+        'Here is the code: ```python\nx = echo(text="hi")\n```',
+        '```python\nx = echo(text="hi")```',
+    ],
+)
+def test_a_fence_opens_wherever_it_stands_and_closes_at_a_line_start_or_else_where_it_is(text):
+    script = read(text)
+    (command,) = script.body
+    assert command.name == "echo" and script.problems == ()
+
+
+@pytest.mark.parametrize("text", ['```python\nx = echo(text="hi")\n', 'Here: ```python\nx = echo(text="hi")'])
+def test_a_fence_that_nothing_after_it_closes_opens_no_block(text):
+    assert read(text) == Script()
+
+
+@pytest.mark.usefixtures("no_collection")
+@pytest.mark.parametrize("depth", [1500, 3000, 100_000])
+def test_a_program_nested_too_deeply_is_refused_at_reading(depth):
+    # past the checker's recursion, or the parser's own stack: an LNDLError the loop retries. 1500
+    # parses on every supported Python and overflows the checker; 3000 overflows 3.11's parser
+
+    with pytest.raises(LNDLError, match="the program is nested too deeply to read; the program was not run"):
+        read(fenced("x = " + "-" * depth + "1"))
+
+
+@pytest.mark.usefixtures("no_collection")
+def test_a_long_dotted_command_name_is_read_or_refused_never_a_crash():
+    # from 3.12 the parser builds this without recursing, and the name is read without recursing too
+    try:
+        (command,) = read(fenced("x = " + ".".join(["a"] * 3000) + "(y=1)")).body
+    except LNDLError as e:
+        assert "nested too deeply" in str(e)
+    else:
+        assert command.name == ".".join(["a"] * 3000)
 
 
 def test_a_resumed_program_turn_admits_nothing_from_its_prose():
