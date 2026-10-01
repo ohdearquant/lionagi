@@ -1466,6 +1466,171 @@ def test_a_failed_call_that_read_the_cache_starts_its_points_hour_again(monkeypa
         assert _after(calls[2]["args"], "--resume") == _after(calls[1]["args"], "--session-id")
 
 
+@pytest.mark.parametrize("fails", [False, True], ids=["answered", "failed with a cache read"])
+@pytest.mark.parametrize(
+    ("timing", "read_after"),
+    [
+        ({"duration_ms": 50000, "time_to_request_ms": 20000, "duration_api_ms": 1}, 30.0),
+        ({"duration_ms": 90000, "time_to_request_ms": 0, "duration_api_ms": 1}, 0.0),
+        ({}, 60.0),
+        ({"duration_ms": 20000, "time_to_request_ms": 50000, "duration_api_ms": 1}, 60.0),
+    ],
+    ids=[
+        "one request",
+        "a turn longer than the call",
+        "no time printed",
+        "a first request after the turn ended",
+    ],
+)
+def test_a_points_hour_runs_from_the_providers_read_not_the_clis_startup(
+    monkeypatch, fails, timing, read_after
+):
+    """Every call takes 60 s: 10 s starting the CLI, which can wait on MCP servers, then a 50 s turn
+    whose request goes out 20 s in and is answered 30 s later. The provider read the point's prefix as
+    the request arrived, so its hour runs from 30 s after the call went out, the reply's time less the
+    rest of the turn: a second short of that hour the point is still warm though more than an hour has
+    passed since the call went out, and a second past it a small hide starts over. The CLI's running api
+    total, printed unchanged here, plays no part. A turn longer than the call never places the read
+    before the call went out, and with no usable time printed the hour runs from the reply, so the
+    point is never taken as expired while the provider may still hold it. A failed call that reports
+    a cache read starts the point's hour the same way."""
+    now = [0.0]
+    monkeypatch.setattr(claude_code, "_clock", lambda: now[0])
+    fake, calls = _forking(READ, HIDE, "noted")
+    sent: list[float] = []
+
+    async def slow(cli, args, prompt, **kw):
+        sent.append(now[0])
+        now[0] += 60.0
+        if fails and len(sent) == 3:
+            raise claude_code.ClaudeCodeError(
+                "claude reported error_max_turns: cap",
+                {"usage": {"cache_read_input_tokens": 5000}, "total_cost_usd": 0.05, **timing},
+            )
+        text, envelope = await fake(cli, args, prompt, **kw)
+        return text, {**envelope, **timing}
+
+    monkeypatch.setattr(claude_code, "_exec", slow)
+    s = ClaudeCodeSession(cli="/bin/claude")
+    one, two, three = _views(_chat(400))
+    asyncio.run(s(one))
+    now[0] = 1000.0
+    asyncio.run(s(two))
+    if fails:
+        now[0] = 2000.0
+        with pytest.raises(claude_code.ClaudeCodeError, match="error_max_turns"):
+            asyncio.run(s(three))
+    read = sent[-1] + read_after
+    now[0] = read + claude_code._CACHE_TTL_S - 1
+    assert not s.plan(three[1:-1]).restart
+    now[0] = read + claude_code._CACHE_TTL_S + 1
+    assert s.plan(three[1:-1]).restart
+
+
+@pytest.mark.parametrize(
+    ("served", "asked", "size", "restart"),
+    [
+        ("claude-haiku-4-5-20251001", None, 1000, True),
+        ("claude-opus-5-5", None, 1000, False),
+        ("claude-opus-5-5", None, 1600, True),
+        ("claude-fable-5-1", None, 1600, False),
+        (None, "opus", 1000, False),
+    ],
+)
+def test_a_restart_is_priced_at_the_cache_prices_of_the_model_the_cli_reports_serving(
+    monkeypatch, served, asked, size, restart
+):
+    """A write costs twice an input token on every model, and a read a tenth of one on most, a
+    twentieth on Opus 5.5 and a fortieth on Fable 5.1: the same hide pays for a restart on one model
+    and not on the next. With no served model printed, an alias prices as the model the CLI runs."""
+    monkeypatch.delenv("ANTHROPIC_DEFAULT_OPUS_MODEL", raising=False)
+    fake, _ = _forking(READ, HIDE, "noted")
+
+    async def serving(cli, args, prompt, **kw):
+        text, envelope = await fake(cli, args, prompt, **kw)
+        return text, ({**envelope, "modelUsage": {served: {"inputTokens": 4000}}} if served else envelope)
+
+    monkeypatch.setattr(claude_code, "_exec", serving)
+    s = ClaudeCodeSession(cli="/bin/claude", model=asked)
+    one, two, three = _views(_chat(size))
+    asyncio.run(s(one))
+    asyncio.run(s(two))
+    assert s.plan(three[1:-1]).restart is restart
+    asyncio.run(s(three))
+    assert s.restarts == int(restart)
+
+
+@pytest.mark.parametrize(
+    ("envelope", "asked", "ratio"),
+    [
+        ({"modelUsage": {"claude-opus-5-5-20261001": {}}}, None, 40),
+        ({"modelUsage": {"claude-opus-5-50-20261001": {}}}, None, 20),
+        ({"modelUsage": {"m": {"canonicalModel": "claude-fable-5-1"}}}, None, 80),
+        (
+            {
+                "modelUsage": {
+                    "claude-haiku-4-5": {"inputTokens": 10},
+                    "claude-mythos-5-1": {"cacheReadInputTokens": 9000},
+                }
+            },
+            None,
+            80,
+        ),
+        (
+            {
+                "modelUsage": {
+                    "claude-haiku-4-5": {"cacheReadInputTokens": 9000},
+                    "claude-mythos-5-1": {"inputTokens": 10},
+                }
+            },
+            None,
+            20,
+        ),
+        ({"modelUsage": {"claude-haiku-4-5": {}}}, "claude-opus-5-5", 20),
+        ({"modelUsage": {"claude-haiku-4-5": {}}}, "opus", 20),
+        ({"modelUsage": {"opus": {}}}, None, 40),
+        ({"modelUsage": {"m": {}}}, "claude-opus-5-5", 40),
+        ({}, "claude-opus-5-5", 40),
+        ({}, "claude-fable-5", 20),
+        ({}, "opus", 40),
+        ({}, "fable[1m]", 80),
+        ({}, "sonnet", 20),
+        ({}, "gpt-4o", 20),
+        ({}, None, 20),
+    ],
+    ids=[
+        "a dated id",
+        "an id that only begins like one the table names",
+        "the canonical name",
+        "several, the one that took the most input",
+        "several, the other way round",
+        "the served model over the one asked for",
+        "the served model over an alias asked for",
+        "an alias served",
+        "a served name that is no model id, the one asked for",
+        "none served, the one asked for",
+        "Fable 5 reads at a tenth",
+        "an alias, as the CLI resolves it",
+        "an alias with the long context",
+        "an alias of a model at a tenth",
+        "another provider's model",
+        "nothing named",
+    ],
+)
+def test_a_cache_writes_price_in_reads_is_the_served_models(monkeypatch, envelope, asked, ratio):
+    for family in ("OPUS", "FABLE", "SONNET", "HAIKU"):
+        monkeypatch.delenv(f"ANTHROPIC_DEFAULT_{family}_MODEL", raising=False)
+    assert claude_code._write_over_read(envelope, asked) == ratio
+
+
+def test_an_alias_prices_as_the_model_the_environment_points_it_at(monkeypatch):
+    """`ANTHROPIC_DEFAULT_OPUS_MODEL` moves what the CLI runs for `opus`, and the call inherits it."""
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-haiku-4-5")
+    assert claude_code._write_over_read({}, "opus") == 20
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-fable-5-1")
+    assert claude_code._write_over_read({}, "opus") == 80
+
+
 def test_a_continued_chats_first_figure_stands_on_the_last_session_calls_count(monkeypatch):
     """No point yet: the first call starts from the whole view, and the figure is the count the last
     call of the chat's previous session reported, moved by the characters since, never the bare
