@@ -464,6 +464,41 @@ def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_e
     assert [r["content"] for r in rows if r.get("kind") == "TEXT"] == ["Hello."]
 
 
+def test_a_claude_code_model_gets_no_tools_of_its_own_one_turn_per_call_and_no_gate_hook(
+    tmp_path, monkeypatch, capsys
+):
+    """Everything the model does is a command in its text that the console runs: the CLI it is called
+    through gets no tools, one turn a call and no pre-tool hook, since nothing is left to call natively."""
+    import shutil
+
+    from hub.backend import claude_code
+
+    calls, which = [], shutil.which
+
+    async def fake(cli, args, prompt, *, model, timeout, cwd=None, persist=False):
+        calls.append({"args": args, "model": model})
+        usage = {"input_tokens": 1, "output_tokens": 1}
+        return "Hi.", {"usage": usage, "total_cost_usd": 0.0, "duration_api_ms": 1}
+
+    def found(name, *a, **k):  # no claude binary is needed where the call is faked
+        return "/bin/claude" if name == "claude" else which(name, *a, **k)
+
+    monkeypatch.setattr(claude_code, "_exec", fake)
+    monkeypatch.setattr(shutil, "which", found)
+    log = str(tmp_path / "c.jsonl")
+    args = ["chat", "--dir", str(tmp_path), "--model", "claude_code/claude-x", "--log", log, "--say", "hi"]
+    asyncio.run(chat_main(parser().parse_args([*args, "--rounds", "1"])))
+    [call] = calls
+    a = call["args"]
+    assert call["model"] == "claude-x"
+    assert a[a.index("--tools") + 1] == "" and a[a.index("--max-turns") + 1] == "1"
+    assert not {"--allowedTools", "--settings", "--mcp-config", "--add-dir"} & set(a)
+    for flag in ("--tools", "--max-turns"):
+        with pytest.raises(SystemExit) as refused:
+            parser().parse_args(["chat", flag, "1"])
+        assert refused.value.code == 2 and f"unrecognized arguments: {flag} 1" in capsys.readouterr().err
+
+
 def test_every_chat_composes_the_persons_instruction_files_in_order_and_opens_by_naming_them(
     tmp_path, monkeypatch, capsys
 ):

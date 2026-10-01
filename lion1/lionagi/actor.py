@@ -691,9 +691,6 @@ class Actor:
         self.bus = bus or Bus()
         self.notes_dir = Path(notes_dir) if notes_dir is not None else None
         self.handlers: dict[str, Handler] = {}
-        # names the model may reach for that are not commands here, and where each one lives: the
-        # unknown-command result says so (a session with its own tools calls them outside <lact>)
-        self.elsewhere: dict[str, str] = {}
         self.operable = Operable()
         self.inbox: list[Inbound] = []  # unaddressed inbound, taken by the next run that starts a round
         self.runs: dict[str, Run] = {}  # live runs by id, so an answer reaches the run that asked
@@ -1293,10 +1290,7 @@ class Actor:
     ) -> tuple[Result, Directive | None]:
         if la.name not in subset:
             run.misnamed.append(_nearest(la.name, subset.names()))
-            why = f"unknown command {la.name!r}"
-            if la.name in self.elsewhere:
-                why += f": {self.elsewhere[la.name]}"
-            return Result(la.name, False, error=why, reason="unknown"), None
+            return Result(la.name, False, error=f"unknown command {la.name!r}", reason="unknown"), None
         handler = self.handlers[la.name]
         run.reads[la.alias] = {}
         prior = [run.pending[a] for a in run.waits.get(la.alias, ()) if a in run.pending]

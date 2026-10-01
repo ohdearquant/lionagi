@@ -20,8 +20,6 @@ CHAT: dict[str, type | tuple[str, ...]] = {
     "image": str,
     "apply": bool,
     "code": bool,
-    "tools": list,
-    "max_turns": int,
     "khive_config": str,
     "raw": bool,
     "verbose": bool,
@@ -31,7 +29,6 @@ _SAYS = {
     str: "a string",
     int: "an integer",
     bool: "true or false",
-    list: "a list of names or one comma-separated string",
 }
 
 
@@ -39,12 +36,7 @@ def _value(path: Path, key: str, v: object) -> object:
     want = CHAT.get(key)
     if want is None:  # a typo must not pass for a setting that silently does nothing
         raise SystemExit(f"{path}: [chat] has no key {key!r}; the keys are {', '.join(CHAT)}")
-    if want is list:  # the flag's own form is one comma-separated string, and that is what chat reads
-        if isinstance(v, str):
-            return v
-        if isinstance(v, list) and all(isinstance(t, str) for t in v):
-            return ",".join(v)
-    elif isinstance(want, tuple):
+    if isinstance(want, tuple):
         if v in want:
             return v
     elif type(v) is want:  # exact: a TOML true is not the integer 1
