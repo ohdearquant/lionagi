@@ -27,6 +27,27 @@ class _NonRetryableClientError(Exception):
         self.original = original
 
 
+def _error_in_body(payload: Any, body: Any) -> Any:
+    """The provider error a successful reply to a chat request carries instead of a result.
+
+    Returns None for a result. Only a chat request (one that sends ``messages``) is
+    checked, since other APIs, such as a scrape that answers ``success: false`` with an
+    ``error``, return their own result shapes. Only a bare error envelope counts. A
+    typed API object (one with ``object`` set, such as an OpenAI Responses result whose
+    ``status`` is ``failed``) is a result even when it carries an ``error`` field.
+    """
+    if (
+        isinstance(payload, dict)
+        and "messages" in payload
+        and isinstance(body, dict)
+        and body.get("error")
+        and "choices" not in body
+        and "object" not in body
+    ):
+        return body["error"]
+    return None
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -326,7 +347,32 @@ class Endpoint:
 
                     if response_mode == "bytes":
                         return await response.read()
-                    return await response.json()
+                    body = await response.json()
+                    error = _error_in_body(payload, body)
+                    if error is None:
+                        return body
+
+                    # Some OpenAI-compatible gateways answer a refused request with
+                    # HTTP 200 and an error object in place of a result. Fail it the
+                    # way the status it names would have failed.
+                    code = error.get("code") if isinstance(error, dict) else None
+                    status = (
+                        code
+                        if isinstance(code, int)
+                        and not isinstance(code, bool)
+                        and 400 <= code < 600
+                        else response.status
+                    )
+                    original = aiohttp.ClientResponseError(
+                        request_info=response.request_info,
+                        history=response.history,
+                        status=status,
+                        message=f"{error_context} failed with status {status}: {body}",
+                        headers=response.headers,
+                    )
+                    if status == 429 or status >= 500:
+                        raise original
+                    raise _NonRetryableClientError(original) from original
                 finally:
                     # Ensure response is properly released if coroutine is cancelled between retries.
                     # aiohttp.ClientResponse.release() is synchronous (not a coroutine) — do not await.

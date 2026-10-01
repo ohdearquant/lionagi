@@ -9,6 +9,7 @@ import pytest
 from pydantic import BaseModel
 
 from lionagi.operations.ReAct.utils import Analysis, ReActAnalysis
+from lionagi.providers._provider_errors import ProviderContextError
 from lionagi.session.branch import Branch
 from lionagi.testing import LionAGIMockFactory
 
@@ -138,6 +139,24 @@ async def test_continue_after_failed_response():
 
         # Should complete despite initial failure
         assert mock_operate.call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_cli_provider_error_on_final_answer_is_raised():
+    """A CLI provider refusal of the final turn is raised, not replaced by an earlier reply."""
+    branch = make_mocked_branch_for_react()
+    branch.msgs.add_message(assistant_response="an earlier reply")
+
+    with patch("lionagi.operations.operate.operate.operate") as mock_operate:
+        mock_operate.side_effect = [
+            ReActAnalysis(analysis="Analysis", extension_needed=False),
+            ProviderContextError("prompt is too long"),
+        ]
+
+        with pytest.raises(ProviderContextError):
+            await branch.ReAct(instruct={"instruction": "Test refusal"}, max_extensions=0)
+
+        assert mock_operate.call_count == 2
 
 
 @pytest.mark.asyncio
