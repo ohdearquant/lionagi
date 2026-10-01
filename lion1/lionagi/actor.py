@@ -2137,7 +2137,7 @@ def _validate_whole(spec: Spec, value: Any) -> BaseModel:
     if isinstance(value, str):
         try:
             value = json.loads(value)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError, MemoryError):  # the last two: nested past reading
             pass
     if not isinstance(value, dict):
         fields = list(spec.model_fields)
@@ -2169,7 +2169,9 @@ def _coerce(spec: Spec, fld: str, value: Any) -> Any:
     for reader in (json.loads, ast.literal_eval):
         try:
             return reader(value)
-        except (ValueError, SyntaxError, TypeError):  # TypeError: a literal with an unhashable key
+        # TypeError: a literal with an unhashable key; RecursionError, MemoryError: one nested past
+        # what the reader walks, which the model is told of as any other value the field refuses
+        except (ValueError, SyntaxError, TypeError, RecursionError, MemoryError):
             continue
     return value
 

@@ -646,6 +646,29 @@ def test_an_out_literal_with_an_unhashable_key_is_a_retry_that_names_the_field()
     assert run.output["tally"] == Tally(value=3)
 
 
+@pytest.mark.usefixtures("no_collection")
+@pytest.mark.parametrize(
+    "turn, emits",
+    [
+        (
+            "<lvar done.summary s>ok</lvar><lvar done.files f>x"
+            + "[0]" * 100_000
+            + "</lvar>OUT{done: [s, f]}",
+            Done,
+        ),
+        ("<lvar t>" + "[" * 100_000 + "]" * 100_000 + "</lvar>OUT{tally: [t]}", Tally),
+    ],
+    ids=["a-field", "the-whole-output"],
+)
+def test_a_value_nested_past_what_the_reader_walks_is_a_retry(turn, emits):
+    # json.loads and ast.literal_eval raise RecursionError, or MemoryError, on text this deep: it is
+    # a value the output refuses, told to the model, never an end of the run (ADR-0002/S1)
+    finish = 'OUT{done: {summary: "ok", files: ["a"]}}' if emits is Done else "OUT{tally: {value: 3}}"
+    run = once(Actor("edge-too-deep"), Profile("p"), turn, finish, emits=(emits,))
+    assert "your last turn could not be read: OUT{" in notices(run)[1]
+    assert isinstance(run.outcome, Success) and run.round == 2
+
+
 class Said(BaseModel):
     text: str
 
