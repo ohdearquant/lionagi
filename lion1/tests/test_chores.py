@@ -139,7 +139,9 @@ class FakeKhive:
             for e in self.events:
                 if e["id"] == wanted:
                     return [e]
-            raise KhiveError(f"get: {{'kind': 'not_found', 'message': 'not found: {wanted}'}}")
+            raise KhiveError(
+                f"get: {{'kind': 'not_found', 'message': 'not found: {wanted}'}}", kind="not_found"
+            )
         if ops.startswith("comm.thread"):
             tid = ops.split('id="')[1].split('"')[0]
             msgs = self.threads.get(tid, [])
@@ -1023,7 +1025,7 @@ def test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look(
 
 
 @pytest.mark.parametrize("bare_pages", [False, True])
-@pytest.mark.parametrize("word", ["the row", "a row without a status", "fired"])
+@pytest.mark.parametrize("word", ["the row", "a row without a status", "fired", "a failed read"])
 def test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once(tmp_path, bare_pages, word):
     events = [
         {"id": f"ev{i}", "content": "tick: pr", "status": "missed", "properties": {"created_by_actor": SELF}}
@@ -1038,6 +1040,8 @@ def test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once(tmp
             passes.append(1)  # neither page shows it
         if ops == 'get(id="ev200")' and word != "the row":  # the store's answer, as asked for
             khive.ops.append(ops)
+            if word == "a failed read":  # its text names not_found, but it is no word from the store
+                raise KhiveError("kkernel exited 1: get: upstream_not_found: no route to the store")
             return [
                 {"id": "ev200"} if word == "a row without a status" else {"id": "ev200", "status": "fired"}
             ]
@@ -1060,7 +1064,7 @@ def test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once(tmp
     caught = [r["args"]["missed_tick"] for r in chores.rows() if r["chore"] == "pr"]
     if word == "fired":  # the store's word: no longer missed, let go, and it runs again when it comes back
         assert caught.count("ev200") == 2 and len(caught) == 202
-    else:  # skipped twice, asked for by id; a row, or an answer with no status, keeps it: never re-run
+    else:  # skipped twice and asked for by id: a row, an answer with no status, or no answer keeps it
         assert caught.count("ev200") == 1 and len(caught) == 201
         assert "ev200" in agent.state.get("missed_seen").value
     assert [o for o in khive.ops if o.startswith("get(id=")] == [

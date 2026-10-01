@@ -52,7 +52,7 @@ from hub import guidance
 from lionagi.actor import Context, Profile, Run
 
 from ..areas import partial
-from ..khive import lit
+from ..khive import KhiveError, lit
 from .agent import Agent, AgentError, LoopLock
 
 __all__ = (
@@ -728,9 +728,9 @@ class Chores:
             try:
                 row = (await self.agent.khive.exec(f"get(id={lit(i)})"))[0]
             except Exception as e:
-                if "not_found" not in str(
-                    e
-                ):  # only the store's not-found lets an id go; a failed read keeps it
+                # only the store's own not-found for this id lets it go; any other failed read keeps it,
+                # whatever its text says
+                if not (isinstance(e, KhiveError) and e.kind == "not_found"):
                     held.add(i)
                 continue
             status = row.get("status") if isinstance(row, dict) else None
