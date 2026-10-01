@@ -77,6 +77,9 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   `[chat] khive_config`, else `<dir>/.khive/config.toml`; an explicit one is never a fallback.
 - **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
   defaults for the flags.
+- **instruction files**: the person's instructions a chat composes into its guidance, those that
+  exist and hold text, in order: `~/.lion/CLAUDE.md`, the directory's `AGENTS.md` and `CLAUDE.md`,
+  then its `.lion/CLAUDE.md`.
 
 ## Assumptions
 
@@ -242,16 +245,20 @@ directory and never the cwd, is a link that opens it in VS Code at the line a `:
 code is left as written, a bare word never links, and a path the model wrote in a code span links
 whole. A call's `path` argument links to the file or directory it names; a URL in a notice links to
 itself.
-### C12: A response can be taken whole to the clipboard _(enforced: mechanical)_ ^c12
+### C12: A response, or the whole chat, can be taken to the clipboard _(enforced: mechanical)_ ^c12
 
-- **Subject**: `Console.command`, `Console.copy` and the editor's Alt-C.
-- **Violated when**: `/copy` reaches the model as a message, the text copied differs from the prose
-  shown, a number outside the chat's responses copies anything, or a copy blocks the prompt.
+- **Subject**: `Console.command`, `Console.copy`, `Console.copy_all` and the editor's Alt-C.
+- **Violated when**: `/copy` reaches the model, the text copied differs from the prose shown, a
+  number out of range copies anything, `/copy all` drops or wraps a line, or a copy blocks the
+  prompt.
 
 `/copy` at the prompt puts the last response on the clipboard, `/copy N` the Nth back from it (2 =
 the one before the last), and Alt-C the last without leaving the line being typed; the console says
 what it copied, or why nothing. The route is the platform's tool (pbcopy, wl-copy, xclip), and OSC
 52 through the terminal where there is none, as over ssh. A console command never reaches the model.
+
+`/copy all` copies the whole chat, unwrapped: each message, response, call and result line in order,
+a continued chat's earlier part first; the loop's notices stay in the log.
 
 ### C13: A mermaid block in a reply is drawn _(enforced: mechanical)_ ^c13
 
@@ -275,6 +282,33 @@ land at the cursor, after a space when the line already holds one, for the perso
 Enter sends them. The transcription runs off the loop; the prompt stays live. Enter, Ctrl-C or
 Ctrl-D drops a recording still running. Without the extra, a microphone or a model, the toolbar says
 why and the prompt goes on.
+
+### C15: A failure is said on one line: a backend's ends the chat, a refused turn's shows nothing ran _(enforced: mechanical)_ ^c15
+
+- **Subject**: the backends' own errors reaching `_chat_main`, and `Console._calls`.
+- **Violated when**: a backend failure prints a traceback, skips the closing line or exits 0, the
+  message sent is lost to `-c`, or a refused turn shows its calls as pending.
+
+A backend's own failure (a model the CLI does not know, a timeout, a rate limit) ends the run. The
+working indicator leaves, one red line carries the backend's message, the closing line still names
+the calls, the cost and the log, and the exit code is 1. The record already holds the message that
+was sent, so `lion chat -c` continues the chat from it.
+
+The console reads a turn the way the loop does: a turn the loop refuses (its own frame written by
+the model, a tag that will not parse) prints its prose, then one red line with the loop's reason
+where its calls would be.
+
+### C16: The person's instruction files close the guidance _(enforced: mechanical)_ ^c16
+
+- **Subject**: `instructions`, `console` and `lion config`.
+- **Violated when**: an instruction file is left out or composed out of order, a caller's own system
+  gains them, or the chat opens without naming them.
+
+Every chat composes the instruction files at the end of its model's guidance, each under its own
+name (`~/.lion/CLAUDE.md says:`), a `claude_code` model too, whose CLI reads no setting sources. A
+file reached twice counts once, and one that cannot be read stops the start by name. The chat's
+opening lines and `lion config` name the files composed, with their size. `--code` adds no copy of
+the root files of its own.
 
 ## Decisions
 
@@ -383,9 +417,11 @@ prose, a replayed one too, to `responses`. `Console.command` runs `/copy [N]` an
 loop asks again after one. `to_clipboard` tries each tool present on stdin, uncaptured (xclip and
 wl-copy fork a child that serves the selection), then writes the OSC 52 escape.
 
+`_plain` adds each entry's plain lines to `transcript`, which `/copy all` joins.
+
 - **Landing evidence**: `apps/cli/tests/test_copy.py`: the last and the Nth-back response, a number
-  out of range, the prose without its constructs, the route order and the OSC 52 fallback, the
-  command never sent, Alt-C.
+  out of range, the prose without its constructs, the whole chat unwrapped, the route order and the
+  OSC 52 fallback, the command never sent, Alt-C.
 
 ### D10: `mermaid_blocks`, `diagram_page` and `_fences` ^d10
 
@@ -409,6 +445,30 @@ mlx_whisper, imported on the thread since the import takes seconds; both are inj
 - **Landing evidence**: `tests/test_voice.py`: the toggle, the text at the cursor, the space after a
   word, the failures said on the toolbar, one transcription at a time, the reset, the extra missing.
 
+### D12: `Console.failed` and the backend errors caught in `_chat_main` ^d12
+
+Serves C15. `_chat_main` catches `ClaudeCodeError`, `CodexError` and `OpenRouterError` around the
+run, beside the interrupt: `Console.failed` stops the indicator and prints the message in red, the
+run is closed as `failed`, and `SystemExit(1)` is raised after the closing line. `chat` had already
+flushed the record, so the log holds the message; `chat_main` removes only an empty log.
+`Console._calls` reads a turn through the loop's own `_read`, so the refusal it prints is the
+`LNDLError` the loop raised.
+
+- **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the failed backend, exit 1 and the
+  `-r` continuation; a faked frame printing no call arrow. Controls: without the clause the raw
+  error; with `lndl.parse` for `_read` the arrow.
+
+### D13: `instructions`, `_shown` and where the chat names them ^d13
+
+Serves C16. `instructions(directory)` in `config.py` lists the files that exist and hold text.
+`console` appends each after `guidance("console", …)` when no `system` is given, named by `_shown`
+from the directory, else `~/`, else whole; `code.md` has no `$rules`. `_chat_main` says them after
+the banner; `config_main` prints one comment line each, or where it looked.
+
+- **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the order, the names, a caller's
+  system left whole, the opening line; `apps/cli/tests/test_config.py`: `lion config`'s lines, an
+  empty file skipped. Control: without the append the composition test fails.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -428,6 +488,10 @@ mlx_whisper, imported on the thread since the import takes seconds; both are inj
 | Ctrl-Y, or a mouse button, for the copy | Ctrl-Y is the editor's yank, and a terminal has no buttons; a key the line survives and a command the person can number |
 | Drawing the diagram in the terminal | no terminal draws mermaid; a page in the browser does, at full size, and the log keeps the source |
 | Whisper through a remote API | the recording leaves the machine; the local model answers in seconds on Apple silicon and needs no key |
+| Letting a backend's error propagate as the report | a traceback over the indicator says less than the backend's own line and skips the closing line that names the log |
+| Letting the claude CLI read CLAUDE.md itself (its setting sources) | only one backend would get the files, and with them every setting and hook the CLI finds; composing them into the guidance serves every model alike |
+| Every CLAUDE.md from the directory up to the filesystem root | the directories above a repository hold other projects' rules; the home file is the one every chat means to share |
+| Copying the whole chat from the terminal's scrollback | the terminal wraps and indents what it shows; the copy is built from the entries, unwrapped |
 
 ## Consequences
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from hub.agent.agent import Agent, AgentError, Budget, Gtd, Wake
-from hub.agent.chores import Bounded, Chores, Outcome
+from hub.agent.chores import SPAWN_SALIENCE, Bounded, Chores, Outcome
 from hub.agent.desk import Desk, Reader
 from hub.agent.instruments import GH, GIT, LAUNCHCTL, instruments
 from hub.agent.verdicts import Verdicts
@@ -145,8 +145,8 @@ def chair(directory: Path, cfg: dict, actor: Actor, khive: Bounded) -> Profile:
     specs |= {h.name for h in DEFAULT_HANDLERS}
     tools = (
         f"read(path), list_dir(path), khive_ops(ops) signing as {khive.actor} ({len(khive.allowed)} verbs: "
-        "reads, comm.read, schedule.remind, memory.remember at spawn salience), send(to, thread, text), "
-        "note.get(key), note.list()"
+        f"reads, comm.read, schedule.remind, memory.remember with an explicit salience <= {SPAWN_SALIENCE}), "
+        "send(to, thread, text), note.get(key), note.list()"
     )
     senders = ", ".join(sorted(khive.recipients or ()))
     if own := (cfg.get("claude_code") or {}).get("tools"):

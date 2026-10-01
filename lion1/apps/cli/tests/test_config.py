@@ -4,6 +4,7 @@ value with where it came from."""
 
 import re
 import sys
+from pathlib import Path
 
 import pytest
 from lion_cli.config import CHAT
@@ -127,7 +128,10 @@ def test_lion_config_prints_each_value_with_the_file_it_came_from(dirs, capsys):
     d = write(here, '[chat]\nmodel = "dir/m"\ntools = ["Read"]\n')
     cli.main(["config", "--dir", str(here)])
     lines = capsys.readouterr().out.splitlines()
-    assert lines[0] == "[chat]" and len(lines) == 1 + len(CHAT)
+    assert lines[0] == "[chat]" and len(lines) == 1 + len(CHAT) + 1
+    assert lines[-1] == (
+        "# instructions: none; ~/.lion/CLAUDE.md, AGENTS.md, CLAUDE.md, .lion/CLAUDE.md are read"
+    )
     rows = {line.removeprefix("# ").split(" ")[0].rstrip(":"): line for line in lines[1:]}
     assert rows["model"] == f'model = "dir/m"  # {d.resolve()}'
     assert rows["tools"] == f'tools = "Read"  # {d.resolve()}'
@@ -135,6 +139,21 @@ def test_lion_config_prints_each_value_with_the_file_it_came_from(dirs, capsys):
     assert rows["rounds"] == "rounds = 200  # built-in"
     assert rows["shell"] == "shell = false  # built-in"
     assert rows["image"] == "# image: unset  # built-in"
+
+
+def test_lion_config_names_the_instruction_files_a_chat_composes_home_first(dirs, capsys):
+    home, here = dirs
+    (home / ".lion" / "CLAUDE.md").write_text("Answer in English.\n")
+    (here / "AGENTS.md").write_text("Run the tests.\n")
+    (here / "CLAUDE.md").write_text("   \n")  # holds no text: not composed, not named
+    (here / ".lion" / "CLAUDE.md").write_text("Sign as the lab.\n")
+    cli.main(["config", "--dir", str(here)])
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("# instructions")]
+    assert lines == [
+        f"# instructions: {(home / '.lion' / 'CLAUDE.md').resolve()} (18 chars)",
+        f"# instructions: {(here / 'AGENTS.md').resolve()} (14 chars)",
+        f"# instructions: {(here / '.lion' / 'CLAUDE.md').resolve()} (16 chars)",
+    ]
 
 
 def test_khive_config_in_a_file_resolves_a_relative_path_beside_that_files_lion_and_the_flag_wins(dirs, run):
@@ -145,6 +164,23 @@ def test_khive_config_in_a_file_resolves_a_relative_path_beside_that_files_lion_
     write(here, '[chat]\nkhive_config = "/abs/khive.toml"\n')
     assert run("chat", "--dir", str(here)).khive_config == "/abs/khive.toml"
     assert run("chat", "--dir", str(here), "--khive-config", "x.toml").khive_config == "x.toml"
+    write(here, '[chat]\nkhive_config = "../.khive/config.toml"\n')  # kept as written, opened as written
+    assert run("chat", "--dir", str(here)).khive_config == str(here / ".." / ".khive" / "config.toml")
+
+
+def test_a_relative_khive_config_through_a_link_names_the_file_the_filesystem_reaches(dirs, run, tmp_path):
+    """`linked/../config.toml` with `linked` a link into another tree is that tree's file, never the
+    `config.toml` beside `linked`: dropping `linked/..` by text would sign as another actor."""
+    _, here = dirs
+    named = tmp_path / "named"
+    (named / "sub").mkdir(parents=True)
+    (here / "linked").symlink_to(named / "sub", target_is_directory=True)
+    (named / "config.toml").write_text('[actor]\nid = "named"\n')
+    (here / "config.toml").write_text('[actor]\nid = "beside"\n')
+    write(here, '[chat]\nkhive_config = "linked/../config.toml"\n')
+    chosen = Path(run("chat", "--dir", str(here)).khive_config)
+    assert chosen.resolve() == (named / "config.toml").resolve()
+    assert chosen.read_text() == '[actor]\nid = "named"\n'
 
 
 def test_the_chat_keys_are_the_chat_flags_less_the_ones_that_name_one_run():

@@ -58,7 +58,7 @@ def test_copy_takes_the_last_response_or_the_numbered_one_and_a_missing_number_c
     assert out.count("copied the last response (18 chars)") == 2
     assert "copied the response 2 back from the last (13 chars)" in out
     assert "no response 9 back from the last: this chat has 2; nothing copied" in out
-    assert "/copy takes a count back from the last response, from 1: not 'two'" in out
+    assert "/copy takes a count back from the last response, from 1, or all: not 'two'" in out
     # the person's own words, never the console's
     assert not say.command("/copyright") and not say.command("copy that") and len(copied) == 3
 
@@ -79,6 +79,34 @@ def test_a_copied_response_is_its_prose_without_the_lndl_and_a_command_only_turn
     assert say.command("/copy 2") and copied == ["Let me look.\n\nThen I answer."]
     assert "<lact" not in copied[0] and "read(" not in copied[0]
     assert say.command("/copy 3") and len(copied) == 1
+
+
+def test_copy_all_is_the_whole_chat_unwrapped_messages_responses_calls_and_results_in_order(
+    tmp_path, capsys, copied
+):
+    (tmp_path / "a.txt").write_text("alpha\n")
+    actor, profile = console(tmp_path, model="m")
+    say = Console("m", None, color=False, width=40)  # narrower than the prose: the copy is never wrapped
+    assert say.command("/copy all") and copied == []
+    long = "This answer is longer than the forty columns the console wraps at."
+    backend = scripted('Let me look.\n<lact r1>read(path="a.txt")</lact>', long)
+    asyncio.run(chat(actor, profile, backend, asks("what is in a.txt?", None), say=say))
+    assert say.command("/copy all") and len(copied) == 1
+    assert copied[0].splitlines() == [
+        "you ▸ what is in a.txt?",
+        "",
+        "m ▸",
+        "Let me look.",
+        '→ r1 read(path="a.txt")',
+        "✓ r1 read · 1 line(s), 6 chars",
+        "",
+        "m ▸",
+        long,
+    ]
+    out = capsys.readouterr().out
+    assert "nothing to copy: the chat is empty" in out
+    assert f"copied the whole chat ({len(copied[0])} chars)" in out
+    assert say.command("/copy") and copied[1] == long  # the last response alone, as before
 
 
 def test_a_continued_chat_counts_its_replayed_responses_first(tmp_path, capsys, copied):
