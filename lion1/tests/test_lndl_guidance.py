@@ -264,10 +264,6 @@ def test_an_output_name_too_long_for_the_column_is_followed_by_one_space():
     assert f"  OUT{{{o}: [a1, ...]}} finish: the aliases" in guidance((o,))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: the OUT line's description starts one column left of the two lines above it",
-)
 def test_the_three_construct_lines_align_their_descriptions():
     lines = guidance(("report",)).splitlines()[1:4]
     assert len({_column(line) for line in lines}) == 1
