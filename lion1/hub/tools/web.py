@@ -434,7 +434,8 @@ def html_text(html: str) -> str:
 def _check_url(url: str) -> None:
     """Refuse an address that is not http(s) or whose host resolves to anything but a public address:
     loopback, link-local (cloud metadata lives there), private, shared, multicast, unspecified or
-    reserved, v4 or v6, and v6 forms that wrap a v4 address.
+    reserved, v4 or v6, and v6 forms that carry a v4 address (mapped, compatible, NAT64), which are
+    judged by the address they carry.
 
     What it covers: the address in the request and in every redirect it follows, each resolved here.
     On a direct connection the socket then dials an answer checked in the same call (`_connect_public`),
@@ -455,6 +456,21 @@ def _check_url(url: str) -> None:
     _public_addresses(host, port)
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _carried_v4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """The IPv4 address a v6 form carries in its low 32 bits, which is where the packet may end up:
+    mapped (`::ffff:a.b.c.d`), compatible (`::a.b.c.d`) and NAT64 (`64:ff9b::a.b.c.d`). The v6 form
+    of each reads as public whatever it carries."""
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    number = int(ip)
+    if 1 < number < 2**32 or ip in _NAT64:  # `::` and `::1` are themselves, and neither is public
+        return ipaddress.IPv4Address(number & 0xFFFFFFFF)
+    return None
+
+
 def _public_addresses(host: str, port: int) -> list[tuple]:
     """Every address `host` resolves to, as `getaddrinfo` gives them; one that is not public refuses all."""
     try:
@@ -463,8 +479,8 @@ def _public_addresses(host: str, port: int) -> list[tuple]:
         raise WebError(f"web_fetch: cannot resolve {host!r}: {e}") from None
     for info in infos:
         ip = ipaddress.ip_address(str(info[4][0]).split("%")[0])
-        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-            ip = ip.ipv4_mapped
+        if isinstance(ip, ipaddress.IPv6Address):
+            ip = _carried_v4(ip) or ip
         if not ip.is_global or ip.is_multicast:
             raise WebError(f"web_fetch refuses {host!r}: it resolves to {ip}, not a public address")
     return infos

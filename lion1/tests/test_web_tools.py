@@ -567,6 +567,9 @@ def test_fetch_refuses_what_is_not_text(wire, public_dns, ctype):
         "http://[fe80::1]/",
         "http://[fd00::1]/",
         "http://[::ffff:127.0.0.1]/",
+        "http://[::127.0.0.1]/",  # v4-compatible: reads as public, carries loopback
+        "http://[64:ff9b::7f00:1]/",  # NAT64: the gateway would deliver it to 127.0.0.1
+        "http://[64:ff9b::a9fe:a9fe]/",  # NAT64 carrying 169.254.169.254
         "http://[::ffff:10.0.0.1]/",
     ],
 )
@@ -574,6 +577,14 @@ def test_fetch_refuses_loopback_link_local_and_private_addresses(wire, url):
     with pytest.raises(WebError, match="not a public address"):
         w._fetch(url, 100)
     assert wire.requests == []
+
+
+def test_a_v6_form_that_carries_a_public_v4_address_is_judged_by_that_address(wire):
+    """An IPv6-only network reaches IPv4 sites through NAT64, so the form is not refused as such."""
+    wire.answers = [Resp("ok", "text/plain")]
+    assert w._fetch("http://[64:ff9b::5db8:d822]/", 100) == "ok"  # carries 93.184.216.34
+    assert w._carried_v4(w.ipaddress.IPv6Address("2001:db8::1")) is None
+    assert w._carried_v4(w.ipaddress.IPv6Address("::1")) is None
 
 
 def test_fetch_refuses_a_name_that_resolves_to_a_private_address(wire, monkeypatch):
