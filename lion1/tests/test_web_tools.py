@@ -4,11 +4,13 @@ the two commands driven through a real Actor. One live test per provider runs on
 is set."""
 
 import asyncio
+import http.client
 import http.server
 import importlib
 import io
 import json
 import os
+import socket
 import ssl
 import threading
 import urllib.error
@@ -735,12 +737,97 @@ def test_the_tls_connection_verifies_the_name_it_was_asked_for(monkeypatch):
     assert conn.sock == ("wrapped", ("raw", "pages.example", 443, 5.0), "pages.example")
 
 
-def test_behind_an_environment_proxy_the_request_is_the_proxys_to_open(monkeypatch):
-    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": "http://proxy.example:3128"})
-    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: host == "direct.example")
-    assert w._proxied(urllib.request.Request("https://pages.example/"))
-    assert not w._proxied(urllib.request.Request("http://pages.example/"))  # no proxy for this scheme
-    assert not w._proxied(urllib.request.Request("https://direct.example/"))  # the bypass list
+class Seen(http.server.BaseHTTPRequestHandler):
+    """A local server that records the request line's target and answers with one line."""
+
+    seen: list[str] = []
+
+    def do_GET(self):
+        Seen.seen.append(self.path)
+        body = b"answered"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def local():
+    Seen.seen = []
+    server = http.server.HTTPServer(("127.0.0.1", 0), Seen)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server.server_address[1]
+    server.shutdown()
+    server.server_close()
+    thread.join(5)
+
+
+def test_behind_an_environment_proxy_the_request_is_the_proxys_to_open(local, monkeypatch):
+    # the proxy is dialed by its own name, loopback here, and is handed the whole URL to resolve itself
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"http": f"http://127.0.0.1:{local}"})
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
+    monkeypatch.setattr(w, "_public_addresses", lambda host, port: PUBLIC)
+    assert w._fetch("http://pages.example/a", 100, timeout=5.0) == "answered"
+    assert Seen.seen == ["http://pages.example/a"]
+
+
+def test_a_host_on_the_proxy_bypass_list_is_dialed_at_a_checked_address(local, monkeypatch):
+    resolved: list[str] = []
+
+    def here(host, port):
+        resolved.append(host)
+        return [(2, 1, 6, "", ("127.0.0.1", port))]
+
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"http": "http://proxy.invalid:3128"})
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: True)
+    monkeypatch.setattr(w, "_public_addresses", here)
+    assert w._fetch(f"http://pages.example:{local}/a", 100, timeout=5.0) == "answered"
+    assert Seen.seen == ["/a"] and resolved == ["pages.example"] * 2  # the check, then the connection
+
+
+@pytest.mark.parametrize("first", ["proxied", "direct"])
+def test_proxy_settings_that_change_between_two_readings_open_no_unchecked_connection(
+    local, monkeypatch, first
+):
+    # the settings were read once to choose the transport and again to route the request: a change in
+    # between sent a request by name, on a connection nothing had checked, to wherever the name pointed
+    proxy = {"http": "http://proxy.invalid:3128"}
+    readings = iter([proxy, {}] if first == "proxied" else [{}, proxy])
+    answers = iter([[(2, 1, 6, "", ("93.184.216.34", local))]])  # the check; after it the name is loopback
+
+    def resolve(host, *a, **k):
+        if host == "proxy.invalid":
+            raise socket.gaierror(8, "no such host")
+        return next(answers, [(2, 1, 6, "", ("127.0.0.1", local))])
+
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: next(readings, {}))
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
+    monkeypatch.setattr(w.socket, "getaddrinfo", resolve)
+    with pytest.raises(WebError):
+        w._fetch(f"http://rebind.example:{local}/", 100, timeout=5.0)
+    assert Seen.seen == []
+
+
+def test_the_dial_is_chosen_from_what_the_proxy_handler_did_to_the_request(monkeypatch):
+    picked = []
+    monkeypatch.setattr(
+        urllib.request.AbstractHTTPHandler, "do_open", lambda self, cls, req, **kw: picked.append(cls)
+    )
+    for url, handler in (
+        ("http://pages.example/", w._PinnedHTTP()),
+        ("https://pages.example/", w._PinnedHTTPS()),
+    ):
+        direct, proxied = urllib.request.Request(url), urllib.request.Request(url)
+        proxied.set_proxy("proxy.example:3128", "http")
+        assert not w._via_proxy(direct) and w._via_proxy(proxied)
+        for req in (direct, proxied):
+            getattr(handler, f"{req.type}_open")(req)
+    assert picked == [w._Pinned, http.client.HTTPConnection, w._PinnedTLS, http.client.HTTPSConnection]
 
 
 # --- live: one per provider, only when its variable is set -----------------------------------------

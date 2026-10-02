@@ -115,28 +115,29 @@ class _PinnedTLS(http.client.HTTPSConnection):
         self.sock = _tls().wrap_socket(sock, server_hostname=self.host)
 
 
+def _via_proxy(req: urllib.request.Request) -> bool:
+    """Whether the proxy handler took this request. It is read off the request the handler changed, at
+    the moment of the dial, so no second reading of the proxy settings can disagree with the first."""
+    return req.has_proxy() or getattr(req, "_tunnel_host", None) is not None  # the second: https by CONNECT
+
+
 class _PinnedHTTP(urllib.request.HTTPHandler):
     def http_open(self, req):
-        return self.do_open(_Pinned, req)
+        return self.do_open(http.client.HTTPConnection if _via_proxy(req) else _Pinned, req)
 
 
 class _PinnedHTTPS(urllib.request.HTTPSHandler):
     def https_open(self, req):
-        return self.do_open(_PinnedTLS, req, context=_tls())
-
-
-def _proxied(req: urllib.request.Request) -> bool:
-    """Whether the environment sends this request through a proxy, by the standard library's own rule."""
-    return req.type in urllib.request.getproxies() and not urllib.request.proxy_bypass(req.host)
+        return self.do_open(
+            http.client.HTTPSConnection if _via_proxy(req) else _PinnedTLS, req, context=_tls()
+        )
 
 
 def _urlopen(req: urllib.request.Request, timeout: float, guard: bool = False):
-    if not guard or _proxied(req):
+    if not guard:
         opener = urllib.request.build_opener(_Redirects(guard))
-    else:  # a page fetch on a direct connection: every hop dials an address that was checked
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({}), _PinnedHTTP, _PinnedHTTPS, _Redirects(guard)
-        )
+    else:  # a page fetch: every hop the proxy does not take dials an address that was checked
+        opener = urllib.request.build_opener(_PinnedHTTP, _PinnedHTTPS, _Redirects(guard))
     return opener.open(req, timeout=timeout)
 
 
