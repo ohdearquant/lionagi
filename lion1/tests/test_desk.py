@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from lion_cli.agent import build as cli_build
 
-from hub.agent import Agent, AgentError, Budget, Posture
+from hub.agent import Agent, AgentError, Budget, Posture, Wake, WakeRule
 from hub.agent import desk as desk_module
 from hub.agent.chores import Bounded, Chores, Outcome
 from hub.agent.desk import READ_VERBS, Desk, Leave, Reader, after
@@ -1649,6 +1649,67 @@ def test_a_clarifys_answer_mailed_to_the_desk_is_admitted_and_listed_under_the_c
         ("m-c1", "resolved"),
     ]
     assert rows[-1]["by"] == ANSWER_ID and desk._open_clarifies() == {} and pending(agent) == {}
+
+
+@pytest.mark.parametrize("then", ["batch", "drop"])
+def test_a_clarifys_answer_is_listed_whatever_wake_does_and_its_later_run_resolves_nothing_twice(
+    tmp_path, then
+):
+    """The gate stages the answer before `[wake]` sorts the mail: a `drop` does not keep it from the
+    desk and a `batch` does not delay its listing. The batched mail still runs once its window opens;
+    that run finds the answer's row and the clarify resolved, and nothing is answered, sent, resolved
+    or recorded a second time."""
+    now = [time.time()]
+    out = full(findings=(), evidence="df: 301 GiB free", population="volumes", predicate="under a floor")
+    disk = Probe("disk", out)
+    answer = f'<lact a1>answer(msg="{ANSWER_ID}", chore="disk")</lact>'
+    again = (  # the released mail's run names the answer again, by the commands that take it
+        f'<lact a2>answer(msg="{ANSWER_ID}", chore="disk")</lact>'
+        f'<lact l2>leave(msg="{ANSWER_ID}", why="no-instrument")</lact>'
+    )
+    desk, khive, reader, agent = clarified(tmp_path, [SWEEP, answer, DONE, SWEEP, again, DONE], disk=disk)
+    agent.wake_rules = Wake(batch_after=600, batch_size=5, rules=(WakeRule(then, senders=(ASKER,)),))
+    agent.clock = lambda: now[0]
+    agent.budget = Budget()  # a hop limit of 12: a second reply on the thread is not refused by the cap
+    khive.mail.append(mail(ASKER, "the disk under the roots", mid=ANSWER, thread="t-c1"))
+
+    def held() -> list[str]:  # the mail `batch` keeps under `deferred` for its window
+        return [m["id"] for m in (stored(agent, "deferred") or {}).get("mail", [])]
+
+    assert asyncio.run(agent.wake()) is None  # the rule holds the mail: no run
+    dropped = stored(agent, "cursor").get("dropped", [])
+    if then == "batch":
+        assert held() == [ANSWER] and dropped == []
+    else:
+        assert held() == [] and dropped == [{"id": ANSWER, "from": ASKER, "rule": "drop"}]
+    assert list(pending(agent)) == [ANSWER_ID]  # staged at the gate all the same
+    run = asyncio.run(agent.wake())  # the watch wakes the desk for it; a watch notice releases no mail
+    assert run is not None and stored(agent, "cursor")["mail"] == []
+    assert held() == ([ANSWER] if then == "batch" else [])  # listed while the mail is still held
+    assert results(run)[0].endswith(
+        f"[msg {ANSWER_ID} from {ASKER} subject 'disk or pr?']\n"
+        "is it the disk under the roots or PR 12 that is red?\n"
+        "[the answer to the desk's clarify, 'the disk under the roots' or 'PR 12']\n"
+        "the disk under the roots"
+    )
+    handled = [("m-c1", "clarified"), (ANSWER_ID, "answered"), ("m-c1", "resolved")]
+    assert [(r["msg"], r["class"]) for r in desk.rows()] == handled and len(khive.sent) == 2
+    now[0] += 600  # the window opens on age
+    run = asyncio.run(agent.wake())
+    if then == "batch":  # the held mail runs now, the same envelope, and finds it handled
+        assert run is not None and stored(agent, "cursor")["mail"] == [ANSWER] and held() == []
+        first = next(e for e in run.record if e.kind is Kind.INPUT).content
+        assert f"[mail {ANSWER} from {ASKER} thread t-c1 subject 's' waited since" in first
+        said = results(run)
+        assert any(r.startswith(f"sweep: nothing new for {OWNER}") for r in said)
+        refused = f"desk: '{ANSWER_ID}' is not a message the sweep listed; known: []"
+        assert sum(refused in r for r in said) == 2
+    else:  # dropped mail never runs
+        assert run is None
+    rows = desk.rows()
+    assert [(r["msg"], r["class"]) for r in rows] == handled and rows[-1]["by"] == ANSWER_ID
+    assert len(khive.sent) == 2 and len(disk.args) == 1  # one reply, one instrument run
+    assert desk._open_clarifies() == {} and pending(agent) == {}
 
 
 @pytest.mark.parametrize(

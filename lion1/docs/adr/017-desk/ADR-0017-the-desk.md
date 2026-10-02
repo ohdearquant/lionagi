@@ -496,3 +496,9 @@ least two and at most all of them.
 - **S14**: No test drives a second send inside one reply grant, an ADR finding past two headings or
   two Alternatives rows, a `Record` part that raises, or an unknown send that started before its
   cap's window.
+- **S15**: The listing wins over `[wake]` (S8): the gate runs before the rules, so `Desk.admit`
+  stages a clarify's answer whatever a rule does with the mail; `drop` does not keep it from the
+  desk and `batch` does not delay its listing. The batched mail still runs when its window opens;
+  its run finds the answer's row and resolves nothing twice. Pinned by
+  `test_a_clarifys_answer_is_listed_whatever_wake_does_and_its_later_run_resolves_nothing_twice` in
+  `tests/test_desk.py`.
