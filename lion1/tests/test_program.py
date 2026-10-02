@@ -1170,6 +1170,110 @@ def test_a_dicts_keys_count_toward_the_size_limit():
     assert b.ok and b.value == "v"
 
 
+@pytest.mark.parametrize(
+    "build",
+    [
+        '[DO echo(text=*s), DO echo(text=*s), DO echo(text="after")]',
+        '{a: DO echo(text=*s), b: DO echo(text=*s), c: DO echo(text="after")}',
+    ],
+)
+def test_a_list_or_dict_past_the_size_limit_runs_no_part_after_the_one_that_took_it_there(build):
+    calls: list = []
+    turn = fenced(f's = "a" * {LIMIT // 2 + 1}', f"OUT{{x: {build}}}")
+    run = _run(_actor("prefix", calls), turn, "idle")
+    # the second part took the build past the limit and has run; the part after it never runs
+    assert [text if text == "after" else len(text) for _, text in calls] == [LIMIT // 2 + 1] * 2
+    assert "line 2: the value built here is past the size limit" in _notices(run)
+
+
+def test_a_list_at_exactly_the_size_limit_is_built_and_one_character_more_is_not():
+    n = (LIMIT - 2) // 2
+    s, t = "a" * n, "a" * (LIMIT - 2 - n)  # two items and their characters: LIMIT exactly
+    assert value("[*s, *t]", s=s, t=t) == [s, t]
+    with pytest.raises(EvalError, match="past the size limit"):
+        value("[*s, *t]", s=s, t=t + "a")
+
+
+def test_a_key_a_dict_writes_twice_counts_once_toward_the_size_limit():
+    s = "a" * (LIMIT // 2 + 1)  # either value fits alone, the two together would not
+    assert value('{k: *s, k: *s + "b"}', s=s) == {"k": s + "b"}
+
+
+class Reads(Env):
+    """Counts pointer reads: a filter reading *keep reads it once for each item it examines."""
+
+    def __init__(self, **values):
+        super().__init__(**values)
+        self.reads = 0
+
+    async def point(self, name):
+        self.reads += 1
+        return self.values[name]
+
+
+@pytest.mark.parametrize(
+    ("expr", "values"),
+    [
+        ("(x for x in *xs if *keep)", {"xs": [0] * (2 * LIMIT + 1)}),
+        # neither comprehension reaches LIMIT items alone; together they examine three times that
+        ("(x for x in *xs if (y for y in *ys if *keep))", {"xs": [0] * 300, "ys": [0] * (LIMIT // 100)}),
+    ],
+)
+def test_a_long_comprehension_lets_other_tasks_run_every_limit_items_it_examines_rejected_ones_too(
+    expr, values
+):
+    (node,) = read(fenced(f"x = {expr}")).body
+    env = Reads(keep=False, **values)
+    turns: list[int] = []  # the reads done by each time another task had a turn
+
+    async def other():
+        while True:
+            turns.append(env.reads)
+            await asyncio.sleep(0)
+
+    async def main():
+        task = asyncio.create_task(other())
+        await asyncio.sleep(0)
+        try:
+            return await evaluate(node.expr, env)
+        finally:
+            task.cancel()
+
+    assert asyncio.run(main()) == []
+    gaps = [b - a for a, b in zip(turns, [*turns[1:], env.reads], strict=True)]
+    assert env.reads > 2 * LIMIT and max(gaps) <= LIMIT + 1
+
+
+class Count(BaseModel):
+    items: list[int]
+
+
+def test_the_runs_deadline_cancels_a_command_whose_argument_is_still_a_long_comprehension():
+    calls: list = []
+    actor = _actor("deadline", calls)
+
+    @actor.handler(Count)
+    async def count(req: Count, ctx) -> int:
+        calls.append(("count", len(req.items)))
+        return len(req.items)
+
+    history = (
+        Entry(seq=0, kind=Kind.RESULT, content=Result("listing", True, [0] * 300), alias="outer"),
+        Entry(seq=1, kind=Kind.RESULT, content=Result("listing", True, [0] * (LIMIT // 100)), alias="inner"),
+    )
+
+    async def late(messages: list[Message]) -> str:  # the turn arrives once the time budget is spent
+        await asyncio.sleep(0.3)
+        return fenced("n = count(items=(x for x in *outer if (y for y in *inner if false)))")
+
+    request = RunRequest(inputs=("go",), history=history, time_budget=0.2, max_rounds=1)
+    run = asyncio.run(actor.run(PROGRAM, request, late))
+    # three LIMITs of items to examine: the deadline beside the turn's wait cancels the command
+    # inside its comprehension, which before ran to its end so that only the handler was refused
+    n = run.record.get("n").content
+    assert n.reason == "cancelled" and calls == []
+
+
 class Grid(BaseModel):
     n: int
 

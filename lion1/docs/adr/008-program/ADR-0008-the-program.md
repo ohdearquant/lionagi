@@ -301,3 +301,13 @@ computation binds its failure.
 - **S5**: The raw message is what the model wrote; the normalised program and the repairs applied
   ride the TEXT entry's `meta`, so the admitted reading can be audited after the catalogue changes.
   A version stamp names a parser and keeps nothing.
+- **S6**: A list or dict stops at the part that takes it past the size limit: no later part runs,
+  and the part that crossed it has run. A comprehension lets other tasks run every 100,000 items it
+  examines, kept or rejected, so a cancel reaches it: a command still computing its arguments at the
+  deadline is cancelled there.
+  `test_a_list_or_dict_past_the_size_limit_runs_no_part_after_the_one_that_took_it_there`,
+  `test_a_list_at_exactly_the_size_limit_is_built_and_one_character_more_is_not`,
+  `test_a_key_a_dict_writes_twice_counts_once_toward_the_size_limit`,
+  `test_a_long_comprehension_lets_other_tasks_run_every_limit_items_it_examines_rejected_ones_too`
+  and `test_the_runs_deadline_cancels_a_command_whose_argument_is_still_a_long_comprehension` pin
+  it.
