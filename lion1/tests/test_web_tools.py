@@ -13,6 +13,7 @@ import os
 import socket
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -42,6 +43,7 @@ class Resp:
             self.headers["Content-Type"] = ctype
 
     def read(self, n: int = -1) -> bytes:
+        self.asked = n  # what the caller was willing to read
         return self.body if n < 0 else self.body[:n]
 
     def __enter__(self):
@@ -159,11 +161,16 @@ JINA_BODY = {
             "title": "TaskGroup",
             "url": "https://docs.python.org/3/library/asyncio-task.html",
             "description": "A context manager that holds a group of tasks.",
-            "date": "2024-05-01",
+            "publishedTime": "2024-05-01",
             "content": "# TaskGroup\n" + "long page text " * 200,
             "usage": {"tokens": 1000},
         },
-        {"title": "Only content", "url": "https://example.org/c", "content": "c" * 3000},
+        {
+            "title": "Only content",
+            "url": "https://example.org/c",
+            "content": "c" * 3000,
+            "date": "2024-06-01",
+        },
         {"title": "Third", "url": "https://example.org/d", "description": "third"},
     ],
 }
@@ -319,6 +326,7 @@ def test_jina_builds_its_request_and_parses_its_hits(wire):
         and hits[0].published == "2024-05-01"
     )
     assert hits[1].snippet == "c" * w.SNIPPET_CHARS  # page text stands in for a missing description, cut
+    assert hits[1].published == "2024-06-01"  # `date` where `publishedTime` is absent
 
 
 def test_jina_has_no_recency_and_says_so(wire):
@@ -358,6 +366,29 @@ def test_a_network_failure_and_a_cut_body_name_the_provider(wire, make, _body):
         run(make().search(WebSearch(query="x")))
     with pytest.raises(WebError, match="request failed: ConnectionResetError"):
         run(make().search(WebSearch(query="x")))
+
+
+@pytest.mark.parametrize(("make", "_body"), PROVIDERS)
+def test_a_provider_that_echoes_the_key_has_it_blanked_in_errors_and_hits(wire, make, _body):
+    if make().name == "searxng":  # it takes no key
+        return
+    echoed = {"title": KEY, "url": "https://example.org/k", "content": KEY, "description": KEY}
+    body = {"results": [echoed], "web": {"results": [echoed]}, "data": [echoed]}
+    wire.answers = [http_error(401, f"bad token {KEY}"), Resp(json.dumps(body))]
+    with pytest.raises(WebError) as e:
+        run(make().search(WebSearch(query="x")))
+    assert KEY not in str(e.value) and "[credential]" in str(e.value)
+    (hit,) = run(make().search(WebSearch(query="x")))
+    assert KEY not in hit.model_dump_json() and hit.title == "[credential]"
+
+
+@pytest.mark.parametrize(("make", "_body"), PROVIDERS)
+def test_a_provider_answer_past_the_cap_is_refused_and_never_read_whole(wire, make, _body, monkeypatch):
+    monkeypatch.setattr(w, "MAX_BYTES", 100)
+    wire.answers = [answer := Resp(json.dumps(_body))]
+    with pytest.raises(WebError, match="the response is longer than 100 bytes"):
+        run(make().search(WebSearch(query="x")))
+    assert answer.asked == 101
 
 
 @pytest.mark.parametrize(("make", "_body"), PROVIDERS)
@@ -510,6 +541,14 @@ def test_a_scripted_fetch_reads_a_page_and_a_private_address_is_a_failed_result(
 # --- WebFetch --------------------------------------------------------------------------------------
 
 
+def test_a_self_closed_script_or_a_stray_end_tag_leaves_nothing_hidden_on_the_page():
+    # `<script/>` opens a script in HTML; a `</script>` inside a template closed the template's skip
+    assert w.html_text("<script/>hidden js</script><p>shown</p>") == "shown"
+    assert w.html_text("<style/>hidden css</style><p>shown</p>") == "shown"
+    assert w.html_text("<template><div></script>hidden</div></template><p>shown</p>") == "shown"
+    assert w.html_text("<p>a</p><svg/><p>b</p>") == "a\nb"  # svg is foreign content: `/>` closes it
+
+
 def test_html_becomes_text_without_scripts_styles_or_markup():
     page = (
         "<html><head><title>T</title><style>p {color: red}</style></head><body>"
@@ -530,8 +569,9 @@ def test_fetch_caps_the_text_at_max_chars(wire, public_dns):
 
 def test_fetch_caps_what_it_reads_whatever_max_chars_asks(wire, public_dns, monkeypatch):
     monkeypatch.setattr(w, "MAX_BYTES", 50)
-    wire.answers = [Resp(b"y" * 500, "text/plain; charset=latin-1")]
+    wire.answers = [page := Resp(b"y" * 500, "text/plain; charset=latin-1")]
     assert w._fetch("https://pages.example/huge", 10_000) == "y" * 50 + "\n[cut at 50 characters]"
+    assert page.asked == 51  # read to one byte past the cap, never the whole body
 
 
 def test_fetch_leaves_a_short_page_alone_and_reads_json_and_charsets(wire, public_dns):
@@ -726,15 +766,24 @@ def test_the_tls_connection_verifies_the_name_it_was_asked_for(monkeypatch):
     context = w._tls()
     assert context.verify_mode is ssl.CERT_REQUIRED and context.check_hostname
 
+    class Wrapped:
+        def __init__(self, sock, name, handshake_on_connect):
+            self.made = (sock, name, handshake_on_connect)
+            self.shook = False
+
+        def do_handshake(self):
+            self.shook = True
+
     class Wraps:
-        def wrap_socket(self, sock, server_hostname):
-            return ("wrapped", sock, server_hostname)
+        def wrap_socket(self, sock, server_hostname, do_handshake_on_connect=True):
+            return Wrapped(sock, server_hostname, do_handshake_on_connect)
 
     monkeypatch.setattr(w, "_connect_public", lambda host, port, timeout: ("raw", host, port, timeout))
     monkeypatch.setattr(w, "_tls", Wraps)
     conn = w._PinnedTLS("pages.example", timeout=5.0, context=context)
     conn.connect()
-    assert conn.sock == ("wrapped", ("raw", "pages.example", 443, 5.0), "pages.example")
+    # the handshake runs after the wrap, once the request's clock can see the socket
+    assert conn.sock.made == (("raw", "pages.example", 443, 5.0), "pages.example", False) and conn.sock.shook
 
 
 class Seen(http.server.BaseHTTPRequestHandler):
@@ -818,16 +867,92 @@ def test_the_dial_is_chosen_from_what_the_proxy_handler_did_to_the_request(monke
     monkeypatch.setattr(
         urllib.request.AbstractHTTPHandler, "do_open", lambda self, cls, req, **kw: picked.append(cls)
     )
-    for url, handler in (
-        ("http://pages.example/", w._PinnedHTTP()),
-        ("https://pages.example/", w._PinnedHTTPS()),
-    ):
-        direct, proxied = urllib.request.Request(url), urllib.request.Request(url)
-        proxied.set_proxy("proxy.example:3128", "http")
-        assert not w._via_proxy(direct) and w._via_proxy(proxied)
-        for req in (direct, proxied):
-            getattr(handler, f"{req.type}_open")(req)
-    assert picked == [w._Pinned, http.client.HTTPConnection, w._PinnedTLS, http.client.HTTPSConnection]
+    for pinned in (True, False):
+        for url, handler in (
+            ("http://pages.example/", w._HTTP(pinned)),
+            ("https://pages.example/", w._HTTPS(pinned)),
+        ):
+            direct, proxied = urllib.request.Request(url), urllib.request.Request(url)
+            proxied.set_proxy("proxy.example:3128", "http")
+            assert not w._via_proxy(direct) and w._via_proxy(proxied)
+            for req in (direct, proxied):
+                getattr(handler, f"{req.type}_open")(req)
+    # a page fetch the proxy did not take is pinned; a provider's connection and a proxy's are timed only
+    assert picked == [w._Pinned, w._Timed, w._PinnedTLS, w._TimedTLS] + [
+        w._Timed,
+        w._Timed,
+        w._TimedTLS,
+        w._TimedTLS,
+    ]
+
+
+# --- the deadline: one for the whole request, however its bytes arrive ---------------------------------
+
+
+class Drip(http.server.BaseHTTPRequestHandler):
+    """Answers a byte at a time, each well inside a socket timeout: in the body, or before the headers end."""
+
+    in_headers = False
+
+    def do_GET(self):
+        self.wfile.write(b"HTTP/1.1 200 OK\r\n")
+        if not Drip.in_headers:
+            self.wfile.write(b"Content-Type: text/plain\r\nContent-Length: 1000\r\n\r\n")
+        for _ in range(200):  # 10 s at most, if nothing cuts it
+            try:
+                self.wfile.write(b"x")
+                self.wfile.flush()
+            except OSError:  # the client shut the socket
+                return
+            time.sleep(0.05)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def drip(monkeypatch):
+    monkeypatch.setattr(urllib.request, "getproxies", dict)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Drip)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    yield server.server_address[1]
+    Drip.in_headers = False
+    server.shutdown()
+    server.server_close()
+    thread.join(5)
+
+
+def test_a_provider_that_sends_a_byte_now_and_then_is_cut_at_the_deadline(drip):
+    began = time.monotonic()
+    with pytest.raises(WebError, match="p: timed out after 0.4s"):
+        w._send("p", urllib.request.Request(f"http://127.0.0.1:{drip}/"), timeout=0.4)
+    assert time.monotonic() - began < 2
+
+
+@pytest.mark.parametrize("in_headers", [False, True], ids=["body", "headers"])
+def test_a_page_that_sends_a_byte_now_and_then_is_cut_at_the_deadline(drip, monkeypatch, in_headers):
+    Drip.in_headers = in_headers
+    monkeypatch.setattr(w, "_public_addresses", lambda host, port: [(2, 1, 6, "", ("127.0.0.1", port))])
+    began = time.monotonic()
+    with pytest.raises(WebError, match="web_fetch: timed out after 0.4s"):
+        w._fetch(f"http://pages.example:{drip}/", 100, timeout=0.4)
+    assert time.monotonic() - began < 2
+
+
+def test_past_the_deadline_no_socket_is_opened_and_one_watched_late_is_shut():
+    with w._Clock(0.05) as clock:
+        assert w._left(5.0) <= 0.05
+        time.sleep(0.1)
+        assert clock.expired
+        with pytest.raises(TimeoutError):
+            w._left(5.0)
+        a, b = socket.socketpair()
+        clock.watch(a)  # a socket that arrives after the deadline is shut at once
+        assert b.recv(1) == b""
+        a.close()
+        b.close()
+    assert w._left(5.0) == 5.0  # outside a request, a socket keeps its own timeout
 
 
 # --- live: one per provider, only when its variable is set -----------------------------------------

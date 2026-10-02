@@ -1,7 +1,7 @@
 ---
 adr: ADR-0023
 status: proposed
-liveness: operating (two commands, four provider adapters, the address check, the checked dial and the bounds of a fetch are pinned by tests; the live provider tests are opt-in, S1)
+liveness: operating (two commands, four provider adapters, the address check, the checked dial, the deadline and the bounds of every request are pinned by tests; the live provider tests are opt-in, S1)
 date: "2026-10-02"
 area: web
 kind: new
@@ -82,13 +82,16 @@ model will not follow what a page says (S3).
 
 - **Subject**: every search provider call and every fetch.
 - **Violated when**: a refused key, a rate limit, a timeout, a network failure, a cut body or a body
-  off the documented shape raises anything but `WebError`, ends the run, or shows the key.
+  off the documented shape raises anything but `WebError` or ends the run; or the key reaches the
+  model in an error or a hit.
 
 Each of those is raised as `WebError` with the search provider's name or `web_fetch` first, which
 the runtime settles as a failed command ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]). A search
-with no results is a result that says so. A key is sent only in the header its search provider
-documents, and a search provider's redirect is an error, never followed: it would carry that header
-to another host.
+with no results is a result that says so.
+
+A key is sent only in the header its search provider documents, and a search provider's redirect is
+an error, never followed: it would carry that header to another host. A provider that echoes the
+key, in an error or a result, has it replaced by `[credential]` before anything is read (S8).
 
 ### C4: An argument a search provider does not document is refused, never guessed _(enforced: mechanical)_ ^c4
 
@@ -125,16 +128,21 @@ request is read off the request the proxy handler changed, at the dial, so the s
 once. A request the proxy took is the proxy's to open: it resolves the name, and what it may reach
 is the proxy's to restrict.
 
-### C7: A fetch reads a bounded amount of text _(enforced: mechanical)_ ^c7
+### C7: Every request ends by one deadline and reads a bounded body _(enforced: mechanical)_ ^c7
 
-- **Subject**: the body and the returned text of every fetch.
-- **Violated when**: more than 2,000,000 bytes are read, a body that is not a text type is returned,
-  the text passes `max_chars`, or a cut is not marked.
+- **Subject**: every search provider call and every fetch, redirects included.
+- **Violated when**: a request outlives its deadline by more than one socket operation; more than
+  2,000,000 bytes of a body are read; a fetch returns a body that is not a text type, or page text
+  past `max_chars`; or a cut is not marked.
 
-A fetch reads text types only, at most 2,000,000 bytes whatever `max_chars` asks, and waits 20
-seconds. HTML becomes text without scripts, styles or markup. The text is cut at `max_chars`, at
-most 100,000, and a cut says where. The run's own bounds apply as to any command
-([[ADR-0003-the-bounds|ADR-0003]]).
+A request has one deadline of 20 seconds, from its first connection to the last byte read, however
+the bytes arrive: a peer that sends a byte now and then is cut at the deadline as one that sends
+nothing. A provider's answer past 2,000,000 bytes is refused. A fetch reads text types only, at most
+2,000,000 bytes whatever `max_chars` asks.
+
+HTML becomes text without scripts, styles or markup. The page's text is cut at `max_chars`, at most
+100,000, and a line after it says where; that line is not counted. The run's own bounds apply as to
+any command ([[ADR-0003-the-bounds|ADR-0003]]).
 
 ## Decisions
 
@@ -150,18 +158,20 @@ and returns the names it registered. `hub/tools/__init__.py` exports the models,
   `test_the_model_is_told_the_web_is_material_not_instructions`,
   `test_a_scripted_run_searches_and_reads_the_hits`.
 
-### D2: `_send` and `_json`: one request, and every way it fails as `WebError` ^d2
+### D2: `_send`, `_credentials` and `_failure`: one request, and every way it fails as `WebError` ^d2
 
-Serves C3. `_send` opens one request with redirects refused and turns an HTTP error, a timeout in
-either of its forms, a network failure and a cut body into `WebError` naming the search provider.
-`_json` refuses a body that is not a JSON object, and `_items` a result list that is not a list.
+Serves C3 and C7. `_send` opens one request with redirects refused, reads one byte past the cap, and
+turns an HTTP error, a timeout in either of its forms, a network failure and a cut body into
+`WebError` naming the search provider. `_credentials` takes the key from the request's own
+credential header and `_blank` replaces it in the body and in an error's first 300 bytes. `_json`
+refuses a body that is not a JSON object, and `_items` a result list that is not a list.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_a_bad_key_and_a_rate_limit_are_errors_the_model_reads`,
-  `test_a_timeout_in_either_of_its_two_forms`,
+  `test_a_provider_that_echoes_the_key_has_it_blanked_in_errors_and_hits`,
+  `test_a_provider_answer_past_the_cap_is_refused_and_never_read_whole`,
   `test_a_body_that_is_not_json_or_not_the_documented_shape`,
-  `test_a_provider_redirect_is_an_error_and_never_followed`,
-  `test_no_hits_and_a_provider_error_are_results_not_crashes`.
+  `test_a_provider_redirect_is_an_error_and_never_followed`.
 
 ### D3: `SearXNG`, `Brave`, `Tavily`, `Jina` and `provider_from_env` ^d3
 
@@ -207,12 +217,27 @@ pinned connection unless `_via_proxy` reads the request as taken by the proxy.
 
 Serves C7. `_fetch` checks the address, opens it with the guarded opener, refuses a content type
 that is not text, reads one byte past the cap to know a cut happened, decodes with the declared
-charset or UTF-8, and cuts at `max_chars` with a marker. `html_text` drops script, style, template
-and svg content and breaks lines at block tags.
+charset or UTF-8, and cuts at `max_chars` with a marker. `html_text` drops script, style, noscript,
+template and svg content. An end tag closes only its own element, and `<script/>` opens a script as
+HTML reads it; only svg closes itself.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_fetch_caps_what_it_reads_whatever_max_chars_asks`, `test_fetch_caps_the_text_at_max_chars`,
-  `test_fetch_refuses_what_is_not_text`, `test_html_becomes_text_without_scripts_styles_or_markup`.
+  `test_fetch_refuses_what_is_not_text`, `test_html_becomes_text_without_scripts_styles_or_markup`,
+  `test_a_self_closed_script_or_a_stray_end_tag_leaves_nothing_hidden_on_the_page`.
+
+### D7: `_Clock`: the deadline, held by the thread that makes the request ^d7
+
+Serves C7. `_send` and `_fetch` each open a `_Clock` for the request. Every connection, pinned or
+timed, hands its socket to the clock, and an SSL socket before its handshake. When the deadline
+passes a timer shuts each socket, which ends a read blocked on it, and `_left` refuses a later
+connection. A request whose clock expired is a timeout whatever its read returned. `_Timed` and
+`_TimedTLS` carry provider and proxy connections.
+
+- **Landing evidence**: `tests/test_web_tools.py`:
+  `test_a_provider_that_sends_a_byte_now_and_then_is_cut_at_the_deadline`,
+  `test_a_page_that_sends_a_byte_now_and_then_is_cut_at_the_deadline` (in the body and in the
+  headers), `test_past_the_deadline_no_socket_is_opened_and_one_watched_late_is_shut`.
 
 ## Alternatives
 
@@ -228,10 +253,12 @@ and svg content and breaks lines at block tags.
 
 ## Consequences
 
-- **S1**: D1 to D6 landed with the tests they name. Four changes each turned named tests red:
-  removing the pinned connection, dialing by name, ignoring the carried address, and choosing the
-  transport from a first reading of the proxy settings. The four live tests, one per search
-  provider, run only when that provider's variable is set.
+- **S1**: D1 to D7 landed with the tests they name. Each of these turned named tests red: removing
+  the pinned connection, dialing by name, ignoring the carried address, and choosing the transport
+  from a first reading of the proxy settings. So did a clock that watches no socket, an expired
+  clock that loses to a refusal, a key left in place, a whole read, and each of the two parser
+  rules. The four live tests, one per search provider, run only when that provider's variable is
+  set.
 - **S2**: These are the first handlers under `hub/` to declare an effect class.
   [[ADR-0005-command-handling|ADR-0005]]'s liveness line and its S9 said none did; both are edited
   in the same change.
@@ -247,3 +274,11 @@ and svg content and breaks lines at block tags.
   outside names only through its proxy refuses every fetch as unresolvable, and says so.
 - **S7**: A redirect between http and https is followed. A fetch sends no credential, so the change
   exposes the address asked for and nothing else.
+- **S8**: The key is blanked as its exact bytes. An answer that escapes or encodes it, and a key
+  under 8 characters, are not caught; a provider that reflects its own key back is the provider's
+  defect, and this is a backstop.
+- **S9**: Not under the deadline: name resolution, which the system's resolver bounds, and the TLS
+  handshake with a search provider or a proxy, which the socket's timeout bounds per operation. A
+  page's handshake is under it.
+- **S10**: The pinned connections replace the standard `connect` and raise its audit event,
+  `http.client.connect`, themselves; they do not set `TCP_NODELAY`, which changes latency only.
