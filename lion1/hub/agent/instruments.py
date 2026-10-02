@@ -1700,6 +1700,7 @@ class VerdictFreshness:
         findings, table, control = [], [f"control: {positives[0]}"], True
         prs: list[tuple[str, int, str]] = []
         unread: set[str] = set()  # PRs or repos whose last row is kept: this run could not read them
+        prev = _snapshot(self.state, "verdict-freshness") or {}
         if self.enumerator:
             rc, out, err = await self.sh(list(self.enumerator), timeout=180)
             last = next((ln for ln in reversed(out.splitlines()) if ln.strip()), "")
@@ -1731,6 +1732,7 @@ class VerdictFreshness:
             if len(listed) != int(m.group(1)):
                 control = False
                 findings.append(f"enumerator: TOTAL {m.group(1)} beside {len(listed)} PR line(s) parsed")
+                unread.update(prev)  # an incomplete list closes nothing it did not read closed
             positives.append(
                 f"enumerator TOTAL {m.group(1)} open PR(s) by {m.group(2)}; closed-PR control {m.group(3)}"
             )
@@ -1739,6 +1741,7 @@ class VerdictFreshness:
                 pr = json.loads(out) if rc == 0 else {}
                 if pr.get("state") not in (None, "OPEN"):  # closed since the search indexed it
                     table.append(f"{repo}#{n}: listed open, {pr['state']} now; not judged")
+                    unread.discard(f"{repo}#{n}")
                     continue
                 if not re.fullmatch(r"[0-9a-f]{40}", pr.get("headRefOid") or ""):
                     control = False
@@ -1757,7 +1760,8 @@ class VerdictFreshness:
                     continue
                 positives.append(f"{repo} resolved as itself; pr list answered {len(rows)} row(s)")
                 prs += [(repo, p["number"], p["headRefOid"]) for p in rows]
-        prev = _snapshot(self.state, "verdict-freshness") or {}
+                if len(rows) >= PR_PAGE:  # absent from a full page is not closed: its last row is kept
+                    unread.add(repo)
         snap = {k: v for k, v in prev.items() if k in unread or k.split("#")[0] in unread}
         data, stale_n = [], 0
         for repo, n, head in prs:

@@ -130,8 +130,8 @@ stale or parked, is told once and again only after it cleared.
 
 A list is one page. A pull request absent from a full page is read on its own with `gh pr view`
 before `pr-state` calls it closed, and only `CLOSED` or `MERGED` closes it; a failed view or another
-state fails the control and keeps its row. `required-contexts` and `ci-red` keep its last row
-unread. A short page needs no verify.
+state fails the control and keeps its row. `required-contexts`, `verdict-freshness` and `ci-red`
+keep its last row unread. A short page needs no verify.
 
 ### C6: A floor is read by name, once per device, with its own budget, in GiB base-1024 _(enforced: mechanical)_ ^c6
 
@@ -236,7 +236,9 @@ and strips only a leading `refs/heads/`.
   `test_worktrees_strips_only_the_leading_refs_heads_from_a_branch`,
   `test_worktrees_a_pr_number_past_the_integer_conversion_limit_is_unread`,
   `test_a_pr_list_that_is_not_a_json_list_is_unread_by_every_instrument_reading_through_it`,
-  `test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed`.
+  `test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed`,
+  `test_verdict_freshness_a_pr_absent_from_a_full_page_keeps_its_last_row_until_a_short_page`,
+  `test_verdict_freshness_an_enumerator_total_beside_fewer_prs_retires_only_a_pr_read_closed`.
 
 ### D5: The `disk` instrument ^d5
 
@@ -313,8 +315,10 @@ refused at build.
   nothing was sent, no ledger row was written. A missing known-positive prints as "(none)" and
   nothing refuses it; the tests in D6 drive the check, `render` and `land`.
 - **S4**: A full page of 100 open pull requests costs one `gh pr view` per pull request the last
-  snapshot held and the page lacks, on every `pr-state` run. `verdict-freshness` has no full-page
-  check and calls a pull request beyond the page no longer open.
+  snapshot held and the page lacks, on every `pr-state` run. `verdict-freshness` reads no view of a
+  pull request beyond a full page, so one closed there keeps its last row until a page comes back
+  short. An enumerator whose `TOTAL` disagrees with the pull requests it lists fails the control and
+  retires a prior row only when that pull request's own read gives a state other than `OPEN`.
 - **S5**: `mechanism` is declared by every instrument and read by no code; the structured rows (a
   check inventory per pull request, red lines per run, verdict rows) are read by no code either.
 - **S6**: The model can narrow or replace the population through `args`: `pr-state` takes `repos`

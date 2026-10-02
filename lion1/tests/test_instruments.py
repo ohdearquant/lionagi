@@ -1933,6 +1933,32 @@ def test_verdict_freshness_first_sight_then_transitions(tmp_path):
     assert asyncio.run(inst.run({})).findings == ("o/r#7: no longer open",)
 
 
+def test_verdict_freshness_a_pr_absent_from_a_full_page_keeps_its_last_row_until_a_short_page(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(instr, "PR_PAGE", 2)
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    sh = freshness_sh(prs=((7, HEAD7), (8, HEAD8)))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    asyncio.run(inst.run({}))
+    kept = inst.state.get("verdict-freshness").value["o/r#7"]
+    sh.set(
+        "pr list -R o/r",
+        json.dumps([{"number": 8, "headRefOid": HEAD8}, {"number": 9, "headRefOid": HEAD9}]),
+    )  # #7 fell off a full page
+    told = []
+    for _ in range(2):  # twice: a kept row is neither closed nor told again
+        out = asyncio.run(inst.run({}))
+        assert out.control and inst.state.get("verdict-freshness").value["o/r#7"] == kept
+        assert kept not in out.evidence and [d["number"] for d in out.data] == [8, 9]  # not a fresh read
+        told.append(out.findings)
+    assert told == [("o/r#9 99999999: NEVER-REVIEWED",), ()]
+    sh.set("pr list -R o/r", json.dumps([{"number": 9, "headRefOid": HEAD9}]))  # a short page is the list
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r#7: no longer open", "o/r#8: no longer open")
+    assert set(inst.state.get("verdict-freshness").value) == {"o/r#9"}
+
+
 def test_verdict_freshness_an_empty_verdict_dir_fails_the_instrument_and_judges_no_pr(tmp_path):
     inst = VerdictFreshness(
         MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
@@ -2111,6 +2137,49 @@ def test_verdict_freshness_reads_each_enumerated_prs_head_on_its_own(tmp_path):
     assert out.control and out.findings[0].startswith("o/r#7 77777777: AT-HEAD")
     assert "enumerator TOTAL 1 open PR(s) by bot; closed-PR control 5" in out.positive
     assert sh.calls[0] == ["/x/my_open_prs.sh"]  # run as the chores.toml names it, nothing added
+
+
+def test_verdict_freshness_an_enumerator_total_beside_fewer_prs_retires_only_a_pr_read_closed(tmp_path):
+    """A TOTAL the listed PRs do not reach is an incomplete list: a prior row it lacks is kept, a PR it
+    lists is read and merged, and a PR read MERGED retires its own row."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    prior = {"o/r#8": "o/r#8 88888888: NEVER-REVIEWED", "o/r#9": "o/r#9 99999999: NEVER-REVIEWED"}
+    store.put("verdict-freshness", prior, run="-", seq=0)
+    total = (
+        "TOTAL {n} open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    )
+    listed = "o/r#7 draft=false  a title\no/r#9 draft=false  merged\n"
+    sh = FakeSh(
+        **{
+            "/x/my_open_prs.sh": listed + total.format(n=3),
+            "pr view 7 -R o/r": json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+            "pr view 9 -R o/r": json.dumps({"headRefOid": HEAD9, "state": "MERGED"}),
+        }
+    )
+    inst = VerdictFreshness(
+        store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    told = []
+    for _ in range(2):  # twice: the kept row is neither closed nor told again
+        out = asyncio.run(inst.run({}))
+        snap = store.get("verdict-freshness").value
+        assert not out.control and snap["o/r#8"] == prior["o/r#8"] and "o/r#9" not in snap
+        assert snap["o/r#7"].startswith("o/r#7 77777777: AT-HEAD")
+        told.append(out.findings)
+    assert told == [
+        (
+            "enumerator: TOTAL 3 beside 2 PR line(s) parsed",
+            f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
+            f"{tmp_path}/o-r-7-77777777.json",
+            "o/r#9: no longer open",
+        ),
+        ("enumerator: TOTAL 3 beside 2 PR line(s) parsed",),
+    ]
+    sh.set("/x/my_open_prs.sh", "o/r#7 draft=false  a title\n" + total.format(n=1))  # the count agrees
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r#8: no longer open",)
+    assert set(store.get("verdict-freshness").value) == {"o/r#7"}
 
 
 def test_verdict_freshness_control_fails_when_a_repo_does_not_resolve_as_itself(tmp_path):
