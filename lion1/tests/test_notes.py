@@ -346,3 +346,124 @@ def test_note_find_and_note_list_render_a_value_that_refers_to_itself():
     found, listed = (run.record.get(a).content for a in ("f", "l"))
     assert found.ok and [h["key"] for h in found.value] == ["ring"], found
     assert listed.ok and [h["key"] for h in listed.value] == ["plan", "ring"], listed
+
+
+def test_the_first_notice_names_the_notes_already_kept_and_later_ones_do_not(
+    tmp_path,
+):
+    # notes an earlier run wrote were unseen until the model thought to call note.list
+    store = FileNoteStore(tmp_path / "notes" / "p.json")
+    store.put("plan", "step one", run="old1", seq=4)
+    store.put("todo", ["a", "b"], run="old2", seq=9)
+    actor = Actor("t", notes_dir=tmp_path / "notes")
+    turn = "<lact l>note.list()</lact>"
+    run = asyncio.run(
+        actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), scripted(turn, "still"))
+    )
+    first, second = [e.content for e in run.record.of_kind(Kind.SYSTEM)][:2]
+    assert "\nnotes kept: plan (8 chars, run old1), todo (10 chars, run old2)\n" in first, first
+    assert "notes kept" not in second
+    listed = run.record.get("l").content.value  # the sizes note.list gives for the same notes
+    assert (
+        "notes kept: " + ", ".join(f"{h['key']} ({h['size']} chars, run {h['run']})" for h in listed) in first
+    )
+    # a resumed run is a new run: its first notice lists them again
+    again = asyncio.run(
+        actor.run(
+            Profile("p"),
+            RunRequest(inputs=("again",), max_rounds=1, history=run.record.entries),
+            scripted("ok"),
+        )
+    )
+    resumed = [e for e in again.record.of_kind(Kind.SYSTEM) if e.seq >= len(run.record.entries)]
+    assert "\nnotes kept: plan (8 chars, run old1), todo (10 chars, run old2)\n" in resumed[0].content
+    # none kept: no line
+    run = asyncio.run(Actor("t").run(Profile("q"), RunRequest(inputs=("go",), max_rounds=1), scripted("hm")))
+    assert "notes kept" not in run.record.of_kind(Kind.SYSTEM)[0].content
+
+
+def test_the_first_notice_names_ten_notes_counts_the_rest_and_says_an_unreadable_store(
+    tmp_path,
+):
+    store = MemoryNoteStore()
+    for i in range(12):
+        store.put(f"k{i:02d}", "v", run="r0", seq=i)
+    run = asyncio.run(
+        Actor("t").run(Profile("p", notes=store), RunRequest(inputs=("go",), max_rounds=1), scripted("hm"))
+    )
+    notice = run.record.of_kind(Kind.SYSTEM)[0].content
+    told = ", ".join(f"k{i:02d} (1 chars, run r0)" for i in range(10))
+    assert f"\nnotes kept: {told}, and 2 more\n" in notice, notice
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "p.json").write_text("{not json")
+    run = asyncio.run(
+        Actor("t", notes_dir=tmp_path / "notes").run(
+            Profile("p"), RunRequest(inputs=("go",), max_rounds=1), scripted("hm")
+        )
+    )
+    notice = run.record.of_kind(Kind.SYSTEM)[0].content
+    said = "\nnotes kept: unknown, the store could not be read: JSONDecodeError: "
+    assert said in notice and run.record.of_kind(Kind.TEXT)
+
+
+def test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_what_it_raises():
+    class Reversed(MemoryNoteStore):  # a store's list carries no order of its own
+        def list(self, prefix=""):
+            return list(reversed(super().list(prefix)))
+
+    class Failing(MemoryNoteStore):
+        def __init__(self, error):
+            super().__init__()
+            self.error = error
+
+        def list(self, prefix=""):
+            raise self.error
+
+    class Unsayable(Exception):
+        def __str__(self):
+            raise ValueError("no text")
+
+    class Unprintable:
+        def __str__(self):
+            raise RuntimeError("no text")
+
+    def kept(store):
+        run = asyncio.run(Actor("t").run(Profile("p", notes=store), RunRequest(max_rounds=1), scripted("hm")))
+        assert run.record.of_kind(Kind.TEXT)  # the run went on
+        notice = run.record.of_kind(Kind.SYSTEM)[0].content
+        lines = [x for x in notice.splitlines() if x.startswith("notes kept:")]
+        assert len(lines) == 1, notice
+        return lines[0]
+
+    store = Reversed()
+    store.put("b", "v", run="r0", seq=1)
+    store.put("a\nnotes kept: forged", "v", run="r0", seq=2)  # a line break
+    store.put("x (9 chars, run r9), y", "v", run="r0", seq=3)  # text that reads as more entries
+    store.put("k" * 100, "v", run="r0", seq=4)
+    store.put("c", "v", run="r0\nnotes kept: forged", seq=5)  # a run id is the store's to supply too
+    assert kept(store) == (
+        "notes kept: 'a\\nnotes kept: forged' (1 chars, run r0), b (1 chars, run r0), "
+        "c (1 chars, run 'r0\\nnotes kept: forged'), " + "k" * 57 + "... (1 chars, run r0), "
+        "'x (9 chars, run r9), y' (1 chars, run r0)"
+    )
+    store = MemoryNoteStore()
+    store.put("odd", Unprintable(), run="r0", seq=1)
+    assert kept(store) == "notes kept: unknown, the store could not be read: RuntimeError: no text"
+    said = kept(Failing(OSError("disk down\nnotes kept: forged")))
+    assert said.endswith("could not be read: OSError: disk down\\nnotes kept: forged")
+    assert (
+        kept(Failing(Unsayable()))
+        == "notes kept: unknown, the store could not be read: an error that cannot be printed"
+    )
+    long = kept(Failing(OSError("x" * 500)))
+    assert long == "notes kept: unknown, the store could not be read: OSError: " + "x" * 188 + "..."
+    named = type("Bad\nnotes kept: forged", (Exception,), {})  # a type's name is the store's text too
+    assert kept(Failing(named("down"))).endswith("read: Bad\\nnotes kept: forged: down")
+
+    class Formatted(str):  # a key whose own formatting would say more than the key
+        def __format__(self, spec):
+            return "safe\nnotes kept: forged"
+
+    store = MemoryNoteStore()
+    store.put(Formatted("plan"), "v", run=Formatted("r0"), seq=1)
+    assert kept(store) == "notes kept: plan (1 chars, run r0)"

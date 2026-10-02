@@ -2,7 +2,7 @@ import dataclasses
 import sys
 
 import pytest
-from hypothesis import assume, given
+from hypothesis import given
 from hypothesis import strategies as st
 
 from lionagi.record import Directive, Entry, Kind, Record, ViewEntry, directives, fold
@@ -353,9 +353,6 @@ def test_a_directive_on_a_text_or_input_entry_is_not_applied():
     assert shape(fold(r)) == ["_r0", "_r1", "_m2", "_in3"]
 
 
-@pytest.mark.xfail(
-    strict=True, reason="known defect: showing a span's first entry drops the rest of the span"
-)
 def test_showing_the_first_entry_of_a_summarized_span_keeps_the_rest_of_the_span_in_the_view():
     r = make(Kind.INPUT, Kind.TEXT, Kind.TEXT, Kind.TEXT)
     direct(r, "summarize", "_m1", "_m2", "_m3", text="three notes")
@@ -366,9 +363,6 @@ def test_showing_the_first_entry_of_a_summarized_span_keeps_the_rest_of_the_span
     assert [v.summary for v in view if v.summary is not None] == ["three notes"]
 
 
-@pytest.mark.xfail(
-    strict=True, raises=ValueError, reason="known defect: a name whose digits int() refuses crashes it"
-)
 @pytest.mark.parametrize(
     "name",
     [
@@ -389,20 +383,12 @@ def test_a_name_whose_digits_int_refuses_resolves_to_nothing_and_cannot_crash_th
     assert shape(fold(r)) == ["_in0", "_r1", "_r2"]
 
 
-@pytest.mark.xfail(
-    strict=True, raises=IndexError, reason="known defect: a negative pinned seq indexes from the end"
-)
 def test_a_pinned_seq_that_names_no_entry_is_skipped_and_cannot_crash_the_fold():
     r = make(Kind.RESULT)
     direct(r, "hide", seqs=(-3,))
     assert shape(fold(r)) == ["_r0", "_r1"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="known defect: a negative pinned seq is taken as the anchor and the target loses its summary",
-)
 def test_a_summary_pinned_beside_a_seq_that_names_no_entry_still_stands_in_front_of_its_target():
     r = make(Kind.RESULT)
     direct(r, "summarize", text="kept", seqs=(-1, 0))
@@ -478,34 +464,18 @@ def states(plan, names, protect_input):
 
 
 def standing_summaries(plan, names, protect_input):
-    """Summary texts by the first entry of their span, for spans whose first entry no later show reached."""
+    """Summary texts by where their span begins, in the order they were made (ADR-0007/C3): a summary
+    keeps the names it replaced that no later show brought back, stands in front of the first of
+    them, and is gone once a show has brought back every one."""
     fx = effects(plan, names, protect_input)
     out = {}
     for i, (d, t) in enumerate(fx):
-        if d.op != "summarize" or not t:
+        if d.op != "summarize":
             continue
-        first = min(t)
-        if not any(later.op == "show" and first in lt for later, lt in fx[i + 1 :]):
-            out.setdefault(first, []).append(d.text)
+        kept = [s for s in t if not any(later.op == "show" and s in lt for later, lt in fx[i + 1 :])]
+        if kept:
+            out.setdefault(min(kept), []).append(d.text)
     return out
-
-
-def orphaned(plan, names, protect_input) -> bool:
-    """Whether an entry sits hidden under a summary whose span start a later show reached: the case
-    test_showing_the_first_entry_of_a_summarized_span_keeps_the_rest_of_the_span_in_the_view records."""
-    fx = effects(plan, names, protect_input)
-    standing = [
-        (i, set(t))
-        for i, (d, t) in enumerate(fx)
-        if d.op == "summarize" and t and not any(o.op == "show" and min(t) in ot for o, ot in fx[i + 1 :])
-    ]
-    for s, (hidden, under) in enumerate(states(plan, names, protect_input)):
-        if hidden and under:
-            shows = [i for i, (d, t) in enumerate(fx) if d.op == "show" and s in t]
-            last = shows[-1] if shows else -1
-            if not any(i > last and s in t for i, t in standing):
-                return True
-    return False
 
 
 def rendered(view, seq):
@@ -571,7 +541,6 @@ def test_every_entry_appears_as_itself_exactly_once_unless_hidden(generated, pro
 @given(plans(), st.booleans())
 def test_a_hidden_entry_not_under_a_summary_appears_once_as_a_placeholder(generated, protect_input):
     plan, names = generated
-    assume(not orphaned(plan, names, protect_input))
     view = fold(build(plan), protect_input=protect_input)
     for s, (hidden, under) in enumerate(states(plan, names, protect_input)):
         assert rendered(view, s).count((None, True)) == (1 if hidden and not under else 0)
@@ -580,7 +549,6 @@ def test_a_hidden_entry_not_under_a_summary_appears_once_as_a_placeholder(genera
 @given(plans(), st.booleans())
 def test_a_summarized_span_puts_its_summary_in_front_of_its_first_entry(generated, protect_input):
     plan, names = generated
-    assume(not orphaned(plan, names, protect_input))
     view = fold(build(plan), protect_input=protect_input)
     got = {}
     for v in view:

@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from hub import Box, BoxTree, DaytonaSandbox, LocalTree, Sandbox, code, files, guidance, khive_ops, shell
-from hub.agent.chores import Bounded
+from hub.agent.chores import SPAWN_SALIENCE, Bounded
 from hub.areas import partial
-from hub.backend import ClaudeCodeSession
+from hub.backend import ClaudeCodeError, CodexError, OpenRouterError
 from hub.chat import chat, load_log
 from hub.hooks import install, load
 from hub.khive import Khive, KhiveError
@@ -29,6 +29,7 @@ from lionagi.actor import DEFAULT_HANDLERS, Run, _text
 from lionagi.record import Entry
 
 from .agent import backend_for
+from .config import instructions
 from .view import Console
 
 __all__ = (
@@ -58,17 +59,15 @@ def console(
     notify: Callable[[str], None] | None = None,
     tree: Tree | None = None,
     about_box: str | None = None,
-    own_tools: tuple[str, ...] = (),
     khive_config: Path | None = None,
 ) -> tuple[Actor, Profile]:
     """The actor a person talks to: the file and directory readers, khive when the directory is an
     actor's own (its `.khive/config.toml` names the actor the reads sign as) or `khive_config` names
     the file to sign with instead (explicit: the directory's own is not read), a shell when a sandbox
-    is given, and with `coding` the tools a fix is found and written with (read_lines, search, edit)
-    plus the tree's own rules (AGENTS.md, CLAUDE.md at the root) in the guidance. `tree` is where the
+    is given, and with `coding` the tools a fix is found and written with (read_lines, search, edit).
+    The person's instruction files (`instructions`) close the guidance. `tree` is where the
     file and code tools read and write: the directory itself by default, the copy of it in a box
-    with `about_box` saying so (the VM's own guidance otherwise). `own_tools` are the Claude Code
-    CLI's own tools a claude_code session runs inside each round, named in the guidance."""
+    with `about_box` saying so (the VM's own guidance otherwise)."""
     directory = Path(directory).resolve()
     tree = tree if tree is not None else LocalTree(directory)
     actor = Actor(name, notes_dir=directory / ".lion" / "notes")
@@ -88,12 +87,7 @@ def console(
     if coding:
         specs |= code(actor, tree)
         tools += ", read_lines(path, start, end), search(pattern, path, include), edit(path, old, new)"
-        rules = "\n\n".join(
-            f"{name} at the root says:\n{(directory / name).read_text(errors='replace').strip()}"
-            for name in ("AGENTS.md", "CLAUDE.md")
-            if (directory / name).exists()
-        )
-        about_sandbox += "\n\n" + guidance("code", root=directory, branch=_branch(directory), rules=rules)
+        about_sandbox += "\n\n" + guidance("code", root=directory, branch=_branch(directory))
     config = khive_config if khive_config is not None else directory / ".khive" / "config.toml"
     if khive_config is not None and not config.is_file():  # explicit: said, never the directory's instead
         if notify is not None:
@@ -112,23 +106,25 @@ def console(
             else:
                 specs |= khive_ops(actor, khive)
                 tools += (
-                    f", khive_ops(ops) signing as {actor_id} ({len(khive.allowed)} verbs: reads, comm.read, "
-                    "schedule.remind, memory.remember at spawn salience)"
+                    f", khive_ops(ops) signing as {actor_id} (these verbs and no other: "
+                    f"{', '.join(sorted(khive.allowed))}; memory.remember with an explicit salience <= "
+                    f"{SPAWN_SALIENCE})"
                 )
-    if own_tools:
-        tools += (
-            f"; and your own Claude Code tools ({', '.join(own_tools)}) run inside each round in "
-            f"{directory}, called the way you always call them, never inside <lact> (that is for the "
-            "commands above only). Each call lands on the record as a result under its tool-use id, so "
-            "you can context.hide it once it has served; what the call taught you goes into a note first. "
-            "A context.hide or context.summarize restarts your session from the folded view"
-        )
-    profile = Profile(
-        name=name,
-        specs=frozenset(specs) | {h.name for h in DEFAULT_HANDLERS},
-        system=system or guidance("console", model=model, tools=tools, rounds=rounds, sandbox=about_sandbox),
-    )
+    if not system:
+        system = guidance("console", model=model, tools=tools, rounds=rounds, sandbox=about_sandbox)
+        for path, text in instructions(directory):
+            system += f"\n\n{_shown(path, directory)} says:\n{text}"
+    profile = Profile(name=name, specs=frozenset(specs) | {h.name for h in DEFAULT_HANDLERS}, system=system)
     return actor, profile
+
+
+def _shown(path: Path, directory: Path) -> str:
+    """An instruction file as the guidance and the person read it: from the chat's directory, from
+    the home as `~/…`, else whole."""
+    for base, lead in ((Path(directory).resolve(), ""), (Path.home().resolve(), "~/")):
+        if path.is_relative_to(base):
+            return lead + str(path.relative_to(base))
+    return str(path)
 
 
 async def prepare_box(box: Box, directory: Path, say: Callable[[str], None]) -> str:
@@ -428,12 +424,9 @@ async def _chat_main(
     if getattr(a, "khive_config", None):  # explicit: refused outright rather than falling back
         khive_config = Path(a.khive_config).expanduser().resolve()
         if not khive_config.is_file():
-            raise SystemExit(f"--khive-config {khive_config}: no such file")
+            raise SystemExit(f"--khive-config {a.khive_config}: no such file")  # as typed, not resolved
         if signer(directory, khive_config) is None:
-            raise SystemExit(f"--khive-config {khive_config}: no [actor].id in it")
-    own_tools = tuple(t.strip() for t in (getattr(a, "tools", None) or "").split(",") if t.strip())
-    if own_tools and not (a.model == "claude_code" or a.model.startswith("claude_code/")):
-        raise SystemExit("--tools is for a claude_code model: the CLI runs them, no other backend can")
+            raise SystemExit(f"--khive-config {a.khive_config}: no [actor].id in it")
     actor, profile = console(
         directory,
         model=a.model,
@@ -443,19 +436,11 @@ async def _chat_main(
         notify=degraded.append,
         tree=tree,
         about_box=about_box,
-        own_tools=own_tools,
         khive_config=khive_config,
     )
-    if own_tools:  # the CLI's own tools run in this directory (khive signs as its actor when configured)
-        options = {"tools": list(own_tools), "max_turns": getattr(a, "max_turns", 0)}
-        backend = backend_for(a.model, options, cwd=directory)
-    else:
-        backend = backend_for(a.model)
-    if isinstance(backend, ClaudeCodeSession):  # the CLI's own tool calls ask this actor's gate (ADR-0009/C6)
-        backend.actor = actor
-        actor.elsewhere = {
-            t: f"{t} is one of your own tools; call it as you always do, not inside <lact>" for t in own_tools
-        }
+    # a claude_code model gets no tools of its own: one turn per call, resumed, and everything it does
+    # is a command in its text that this console runs, gates and records
+    backend = backend_for(a.model)
     runs: list[Run] = []
     say = Console(
         a.model,
@@ -473,6 +458,10 @@ async def _chat_main(
     say.open(a.model, directory, chat_id, sorted(profile.specs), resumed)
     for msg in degraded:
         say.notice(msg)
+    if composed := instructions(directory):
+        say.notice(
+            "instructions: " + ", ".join(f"{_shown(p, directory)} ({len(t)} chars)" for p, t in composed)
+        )
     if notice:
         say.notice(notice)
     if hooked := len(actor.befores) + len(actor.afters) + len(actor.sections):
@@ -501,7 +490,7 @@ async def _chat_main(
             if text is None or not say.command(text):  # a console command is run here, then ask again
                 return text
 
-    interrupted = False
+    interrupted = failed = False
     try:
         run = await chat(
             actor,
@@ -517,6 +506,11 @@ async def _chat_main(
         ended = f"ended {type(run.outcome).__name__} after {run.round} round(s)"
     except (KeyboardInterrupt, asyncio.CancelledError):
         ended, interrupted = "interrupted", True
+    except (ClaudeCodeError, CodexError, OpenRouterError) as e:
+        # the backend's own refusal (a model the CLI does not know, a timeout, a rate limit): one
+        # line with its message, then the closing line; the record keeps the message that was sent
+        say.failed(f"the model's call failed: {e}")
+        ended, failed = "failed", True
     finally:
         off()
         off_round()
@@ -556,6 +550,8 @@ async def _chat_main(
                 ended, interrupted = "interrupted", True
     calls = getattr(backend, "calls", [])
     say.close(ended, len(calls), *spent(calls), log)
+    if failed:
+        raise SystemExit(1)
     if interrupted:
         # a backend call may still be on its thread; the loop's shutdown would wait for it
         # (measured: a Ctrl-C that seemed to do nothing). The log is written; leave now.
