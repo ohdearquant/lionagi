@@ -320,9 +320,10 @@ swallowed too: a spin.
   estimate: so its restart is unpriced, and its notice names no figure for what goes.
 - **S15**: A call's read of the cache is stamped at its reply less the rest of its turn after its
   first request, both timed per call (`duration_ms`, `time_to_request_ms`), so the CLI's startup
-  does not age a point. Its exit, 0.34 to 0.38 s on 2.1.287 with no MCP server, can keep a point
-  warm that long past its hour. A call of several requests is stamped at its first. With no usable
-  time printed it is the reply, so unknown timing never reads a held point as expired.
+  ages no point. Its exit (0.34 to 0.38 s on 2.1.287 with no MCP server) can keep a point warm that
+  long past its hour. A call of several requests is stamped at its first. Times missing, not
+  numbers, or not fitting the call leave the reply, so unknown timing never reads a held point as
+  expired.
 - **S16**: A restart is priced at the cache prices of the model the CLI reports serving, else of the
   model asked for; a served name that is no model id falls through to the one asked for. An alias
   reads as the model the CLI runs for it, its `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` when set. An entry

@@ -97,7 +97,7 @@ class _Point:
     prompt: int  # the characters its call's prompt stood in
     count: int | None  # that prompt's count, as the CLI reported it
     envelope: dict  # the call's envelope: the CLI's running totals follow the fork chain
-    read: float  # when the call that last wrote or read its prefix went out, for the provider's cache
+    read: float  # when the provider last read or wrote its prefix: that call's first request, else its reply
 
 
 @dataclass
@@ -374,15 +374,18 @@ class ClaudeCodeSession:
         # to 0.38 s measured with no MCP server, longer while servers shut down): the startup does not
         # age an entry, and the exit can leave one reading that much warmer than it is. A call making
         # several requests (an acting session's tool turns) is stamped at its first, which an acting
-        # session never prices by. With no usable time printed the hour runs from the reply, so timing
-        # this backend does not know never makes an entry the provider still holds read as expired
-        turn_ms, first_ms = envelope.get("duration_ms"), envelope.get("time_to_request_ms", 0)
-        timed = (
-            isinstance(turn_ms, int | float)
-            and isinstance(first_ms, int | float)
+        # session never prices by. With either time missing or not a number, a first request after the
+        # turn's end, or a read the times would place before the call went out, the hour runs from the
+        # reply, so timing this backend does not know never makes an entry the provider still holds
+        # read as expired
+        turn_ms, first_ms = envelope.get("duration_ms"), envelope.get("time_to_request_ms")
+        read_at = now
+        if (
+            all(isinstance(t, int | float) and not isinstance(t, bool) for t in (turn_ms, first_ms))
             and 0 <= first_ms <= turn_ms
-        )
-        read_at = max(started, now - (turn_ms - first_ms) / 1000) if timed else now
+            and now - (turn_ms - first_ms) / 1000 >= started
+        ):
+            read_at = now - (turn_ms - first_ms) / 1000
         if failed is not None:
             # billed for reading the point's prefix, it starts that entry's hour again all the same
             read = (envelope.get("usage") or {}).get("cache_read_input_tokens")
