@@ -6,6 +6,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.35.3] - 2026-10-02
+
+### Fixed
+
+- `ReAct` no longer repeats the caller's `context`. Extension rounds, injected turns and the final
+  answer no longer attach it again on top of the copy the conversation history already carries, so
+  a large context no longer grows each request until the provider refuses it. The decision is made
+  while each request is prepared, so a call whose rendered history shows no instruction carrying the
+  context (a fixed or curated progression, an instruction the history leaves out, or messages that a
+  tool, a context provider or the final answer cleared) still attaches it itself.
+- The message render cache no longer serves a stale rendering for content that holds a list or dict
+  inside a tuple, whose in-place changes it cannot observe; such content is rendered afresh.
+- A provider error returned inside an HTTP 200 in reply to a chat request (an `error` object in
+  place of `choices`, as some OpenAI-compatible gateways send) fails the call instead of reaching the
+  parser as the model's reply. An embedded 429 or 5xx is retried like that status; anything else is
+  raised once. Typed API objects that carry an `error` field, such as a failed Responses result, and
+  replies to requests that are not chats, such as a scrape that reports `success: false`, are
+  returned as before.
+- The final `ReAct` turn raises a provider failure (`ExecutionError` from an API call,
+  `ProviderError` from a CLI provider) instead of returning the previous round's reply.
+- Type annotations corrected so the package type-checks with zero Pyright errors.
+
+### Security
+
+- `anyio` minimum raised to 4.14.2. The repository's lock file also now requires patched releases
+  of tornado (6.5.8), GitPython (3.1.59), soupsieve (2.9.0), transformers (5.10.0) and
+  mkdocs-material (9.7.7); these apply to the repository's own environment and do not change what
+  installing lionagi requires.
+
 ## [0.35.2] - 2026-08-25
 
 Also the first release published as a container image since 0.35.0; 0.35.1 reached
