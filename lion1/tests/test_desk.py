@@ -1704,6 +1704,18 @@ def test_the_gate_reads_the_ledger_once_per_message(tmp_path):
     assert reads == ["read"]
 
 
+def test_a_wake_asks_the_desks_gate_once_per_message(tmp_path):
+    desk, khive, reader, agent = clarified(tmp_path, [DONE])
+    asked: list[str] = []
+    admit = desk.admit
+    desk.admit = lambda m: asked.append(m["id"]) or admit(m)
+    khive.mail.append(mail("lambda:b", "not an answer", mid="b2c3d4e5", thread="t-c1"))
+    khive.mail.append(mail("lambda:c", "nor this", mid="c3d4e5f6", thread="t-c1"))
+    assert asyncio.run(agent.wake()) is None
+    assert asked == ["b2c3d4e5", "c3d4e5f6"]
+    assert [d["id"] for d in stored(agent, "cursor")["dropped"]] == ["b2c3d4e5", "c3d4e5f6"]
+
+
 def test_a_ledger_the_gate_cannot_read_leaves_the_mail_to_the_agents_gate_and_the_error_on_the_wake(tmp_path):
     desk, khive, reader, agent = clarified(tmp_path, [DONE])
     text = desk.ledger.read_text()

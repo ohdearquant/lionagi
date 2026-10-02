@@ -347,13 +347,17 @@ replay is neither capped nor charged again. `_file` keys its task write the same
 Serves C3. `Agent.admit` is a field, `None` admitting all; `build` sets it to the trusted-set test
 unless `[chair] admit = "all"`. The trusted set is fixed at build: the owner, the steward, the
 agent's actor and `trusted`. With `[desk] admit_replies`, `Desk` asks `Desk.admit` before that test
-(S8).
+(S8). A wake, a rerun and a continuous wait ask the gate once per message, and that one answer drops
+the message or lets it run.
 
 - **Landing evidence**:
   `test_mail_from_outside_the_trusted_set_is_dropped_at_the_gate_and_never_runs` in
   `tests/test_chores.py`;
-  `test_a_chair_admitting_all_runs_mail_from_any_sender_and_still_sends_only_to_the_trusted` in
-  `tests/test_agent.py`.
+  `test_a_chair_admitting_all_runs_mail_from_any_sender_and_still_sends_only_to_the_trusted`,
+  `test_the_gate_answers_once_per_message_and_that_answer_alone_drops_it_or_runs_it`,
+  `test_with_no_gate_every_message_runs_and_none_is_dropped` and
+  `test_a_gate_that_raises_runs_none_of_the_batch_records_none_dropped_and_leaves_it_taken` in
+  `tests/test_agent.py`; `test_a_wake_asks_the_desks_gate_once_per_message` in `tests/test_desk.py`.
 
 ### D5: Escalation and triage in `_discover`; `Verdicts` in `hub/agent/verdicts.py` ^d5
 
