@@ -192,13 +192,21 @@ class MemoryExperienceStore:
             self._records[record.id] = record.canonical()
 
 
+def _each_key_once(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """A repeated key would keep its last value and lose the rest: such a file is refused, not read."""
+    out = dict(pairs)
+    if len(out) != len(pairs):
+        raise ValueError("an object of an experience store holds each key once")
+    return out
+
+
 class FileExperienceStore:
     """One JSON file: the file is the store. Every read loads it, a read or parse error is raised (a
     store that cannot be read is not empty), and a persist is a locked read, check, add and atomic
     replace, so two stores over one file keep each other's additions."""
 
     def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+        self.path = Path(path).resolve()  # an alias and its target are one store, one lock, one file
 
     async def recall(self, text: str, k: int, *, scope: _Scope) -> list[ExperienceRecord]:
         return await asyncio.to_thread(self._recall, text, k, scope)
@@ -223,7 +231,7 @@ class FileExperienceStore:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return {}
-        data = json.loads(text)
+        data = json.loads(text, object_pairs_hook=_each_key_once)
         if not isinstance(data, dict) or not isinstance(data.get("records"), list):
             raise ValueError(f"{self.path}: an experience store is {{'records': [...]}}")
         out: dict[str, str] = {}

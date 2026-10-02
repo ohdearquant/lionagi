@@ -102,7 +102,8 @@ def test_a_malformed_file_raises_and_a_hit_is_a_copy(store, tmp_path):
     assert asyncio.run(store.recall("data.txt", 1, scope=SCOPE))[0].lesson == kept.lesson
     path = tmp_path / "bad.json"
     twice = json.dumps({"records": [json.loads(kept.canonical())] * 2})  # one id kept twice is not a store
-    for body in ("{not json", '{"notes": []}', '{"records": [{"id": "x"}]}', twice):
+    repeated = '{"records": [' + kept.canonical() + '], "records": []}'  # a repeated key would read as empty
+    for body in ("{not json", '{"notes": []}', '{"records": [{"id": "x"}]}', twice, repeated):
         path.write_text(body)
         bad = FileExperienceStore(path)
         with pytest.raises(ValueError):
@@ -167,3 +168,18 @@ def test_a_write_that_cannot_land_leaves_no_file_behind(tmp_path, monkeypatch):
         ".experience.json.lock",
         "experience.json",
     ]
+
+
+def test_an_alias_of_the_file_is_the_same_store(tmp_path):
+    target, alias = tmp_path / "store.json", tmp_path / "alias.json"
+    first, second = record(), record(lesson="the alias holds data.txt too")
+    asyncio.run(FileExperienceStore(target).persist(first))
+    alias.symlink_to(target)
+    asyncio.run(FileExperienceStore(alias).persist(second))
+    assert alias.is_symlink() and sorted(p.name for p in tmp_path.iterdir()) == [
+        ".store.json.lock",
+        "alias.json",
+        "store.json",
+    ]
+    hits = asyncio.run(FileExperienceStore(target).recall("data.txt", 5, scope=SCOPE))
+    assert sorted(h.id for h in hits) == sorted([first.id, second.id])

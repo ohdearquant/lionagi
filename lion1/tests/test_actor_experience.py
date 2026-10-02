@@ -169,9 +169,25 @@ class Silent(Kept):
         await asyncio.sleep(10)
 
 
+class Shut(Kept):
+    @property
+    def recall(self):  # the call itself raises, before any store task exists
+        raise ValueError("the store is closed")
+
+
+class Withdrawing(Kept):
+    async def recall(self, text, k, *, scope):
+        raise asyncio.CancelledError  # the store's own task cancels itself; the run is not cancelled
+
+
 @pytest.mark.parametrize(
     "store, reason",
-    [(Unreadable, "ValueError: the store's file is not JSON"), (Silent, "no answer within 0.05s")],
+    [
+        (Unreadable, "ValueError: the store's file is not JSON"),
+        (Silent, "no answer within 0.05s"),
+        (Shut, "ValueError: the store is closed"),
+        (Withdrawing, "the store call was cancelled"),
+    ],
 )
 def test_a_failed_recall_is_a_receipt_and_the_run_goes_on(store, reason):
     actor, kept = Actor("x-recall-fails"), store()
@@ -184,6 +200,42 @@ def test_a_failed_recall_is_a_receipt_and_the_run_goes_on(store, reason):
     got = receipt(first_notice(run))
     assert (got["status"], got["reason"], got["ids"]) == ("failed", reason, [])
     assert run.outcome == Success({"answer": "ok"}) and len(kept.persisted) == 1
+
+
+def test_a_store_that_will_not_let_go_of_its_recall_is_not_waited_for():
+    # the bound is on the run, not on the store: a recall that catches its cancel and keeps waiting
+    # is left behind, and whatever it returns later is read by nobody
+    entered, release, returned = asyncio.Event(), asyncio.Event(), []
+
+    class Stubborn(Kept):
+        async def recall(self, text, k, *, scope):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            returned.append(await super().recall(text, k, scope=scope))
+            return returned[-1]
+
+    actor, store = Actor("x-recall-holds"), Stubborn()
+    stored(store, "x-recall-holds")
+
+    async def go():
+        profile = opted(store, io_timeout=0.05)
+        run = await asyncio.wait_for(
+            actor.run(profile, RunRequest(inputs=(ASK,)), scripted('OUT{answer: "ok"}')), 2
+        )
+        assert entered.is_set() and returned == []
+        release.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        return run
+
+    run = asyncio.run(go())
+    got = receipt(first_notice(run))
+    assert (got["status"], got["reason"], got["ids"]) == ("failed", "no answer within 0.05s", [])
+    assert run.outcome == Success({"answer": "ok"}) and len(returned) == 1 and len(returned[0]) == 1
+    assert "experience:" not in first_notice(run).content and store.persisted[0].lesson is None
 
 
 def test_a_run_with_no_turn_records_a_skipped_recall_and_its_observation():

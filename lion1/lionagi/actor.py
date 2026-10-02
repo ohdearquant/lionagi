@@ -1210,14 +1210,25 @@ class Actor:
             status, reason = "skipped", "no new input to recall against"
         else:
             try:
-                got = await asyncio.wait_for(
-                    experience.store.recall(query, experience.k, scope=scope), experience.io_timeout
-                )
-                hits = list(got)
-            except TimeoutError:
-                status, reason = "failed", f"no answer within {experience.io_timeout:g}s"
-            except Exception as e:  # a store that cannot be read is a receipt, not the run's end
+                task = asyncio.ensure_future(experience.store.recall(query, experience.k, scope=scope))
+            except Exception as e:  # the call itself raised: a receipt, not the run's end
                 status, reason = "failed", f"{type(e).__name__}: {e}"
+            else:
+                task.add_done_callback(_retrieved)
+                try:
+                    await asyncio.wait({task}, timeout=experience.io_timeout)
+                finally:
+                    if not task.done():  # the store is not waited for: a late answer is read by nobody
+                        task.cancel()
+                if not task.done():
+                    status, reason = "failed", f"no answer within {experience.io_timeout:g}s"
+                elif task.cancelled():
+                    status, reason = "failed", "the store call was cancelled"
+                elif task.exception() is not None:  # a store that cannot be read is a receipt
+                    error = task.exception()
+                    status, reason = "failed", f"{type(error).__name__}: {error}"
+                else:
+                    hits = list(task.result())
         # the scope checked again here; then the store's order, up to k, each hit whole or not at all
         mine = [h for h in hits if isinstance(h, ExperienceRecord) and h.scope == scope]
         shown, lines, used, left_out = [], [], 0, 0
