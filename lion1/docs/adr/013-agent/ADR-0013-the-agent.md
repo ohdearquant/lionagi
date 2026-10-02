@@ -49,8 +49,8 @@ and `agent_main` in `apps/cli/lion_cli/agent.py`, `examples/echo_agent.py`,
 - **hop count**: the messages the agent has sent on one thread; a send past the cap is refused.
 - **posture**: the model's own line on what a wake did and what a later wake should look for, kept
   in the profile's notes.
-- **continuous run**: one run that carries many wakes, the next batch queued into it each time the
-  model's reply ends a burst of mail.
+- **continuous run**: one run that carries many wakes, the next batch queued into it each time a
+  turn of plain text ends a burst of mail.
 
 ## Assumptions
 
@@ -159,10 +159,10 @@ it.
 - **Violated when**: mail for the same profile starts a second run, a burst is booked twice, or the
   next process's first run starts from another view than the one checkpointed.
 
-`build` sets `continuous` for a chair. When the model's reply ends a burst, `_wait` books it as one
-wake (spend, cursor, posture, the log line), polls under the same caps, and queues the next batch
-into the same run, whose view folds. A batch that maps to another profile ends the run and runs
-fresh.
+`build` sets `continuous` for a chair. When a turn of plain text ends a burst (C9), `_wait` books it
+as one wake (spend, cursor, posture, the log line), polls under the same caps, and queues the next
+batch into the same run, whose view folds. A batch that maps to another profile ends the run and
+runs fresh.
 
 At a fold, and when a burst's turn bound or the day's cap ends the run, it writes a checkpoint
 ([[ADR-0019-the-checkpoint|ADR-0019]]) in the agent's directory, only where git ignores it; the next
@@ -184,6 +184,22 @@ The child's finish arrives as mail (S4). `report` reads the run's ledger, sends 
 through `Agent.deliver` on the asker's thread, and notes the receipt before it writes the row to
 memory under the tag `agent:bench`. A failed memory write is retried by the next report, and the row
 is not sent again.
+
+### C9: The model has no tools of its own, and the queue is read-only _(enforced: mechanical)_ ^c9
+
+- **Subject**: every agent `lion agent` builds, the chair included.
+- **Violated when**: the model runs a tool of its own, a key that would hand it one loads, a task
+  moves through the agent, or idle work loads.
+
+The model's tools are the runtime's commands, each gated and recorded; what needs git, gh or a click
+goes back to its sender as an ask ([[ADR-0016-the-lion-command#^d3|ADR-0016/D3]]). A chair's
+commands come back next round; a turn of plain text ends its burst.
+
+The queue is read with `gtd.next` and never moved: its writes are refused at the boundary and
+recorded as failed results. A due task reaches the agent as a notice once per `at`; the chair states
+its condition in the posture, and on the owner's thread when their mail is in the batch; the owner
+moves the row. `[gtd] work = "idle"` refuses at load and at a reload: an idle pass would take one
+task forever.
 
 ## Decisions
 
@@ -238,10 +254,9 @@ whole life.
 
 ### D5: The continuous run on the runtime's `wait` and `history`, the checkpoint in `lionagi/checkpoint.py` ^d5
 
-Serves C7. The request carries `wait=_wait`, `reply_on_commands`, `fold_inputs` and no declared
-output, with a stop that ends a burst past `max_rounds` or the day's cap. `_checkpoint` writes the
-record beside a checkpoint through `take` and `save`; `_restore` hands `to_history(load(...))` to
-the process's first run.
+Serves C7. The request carries `wait=_wait`, `fold_inputs` and no declared output, with a stop that
+ends a burst past `max_rounds` or the day's cap. `_checkpoint` writes the record beside a checkpoint
+through `take` and `save`; `_restore` hands `to_history(load(...))` to the process's first run.
 
 - **Landing evidence**: `tests/test_agent.py`:
   `test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_point_as_a_wake`,
@@ -261,6 +276,20 @@ refuses a run with no ledger.
   `test_a_report_goes_through_the_agents_counted_send_and_a_reported_job_is_not_reported_again`,
   `test_delivery_receipt_precedes_remember_failure`.
 
+### D7: No tool channel of the model's own, and a queue it reads ^d7
+
+Serves C9. `claude_code_options` refuses a `[claude_code]` key other than `timeout`, `effort` and
+`cli` in `backend_for`, `build` and a reload. `backend_for` gives a session no tools, allowed tools
+or MCP config, `build` refuses one handed in with them, and the continuous request ends a burst on a
+turn of plain text. The bounded verbs hold `gtd.next` and `gtd.tasks` and no gtd write, and `arm`
+probes that `gtd.transition` and `gtd.complete` refuse. `Gtd.load` refuses `work = "idle"`.
+
+- **Landing evidence**: `tests/test_agent.py`:
+  `test_a_chair_config_giving_the_model_tools_or_idle_work_fails_to_load_and_without_them_loads`,
+  `test_a_chair_with_a_due_task_names_it_in_the_posture_and_its_gtd_write_is_refused_on_the_record`,
+  `test_gtd_config_and_the_task_time`,
+  `test_budget_and_wake_rules_follow_the_config_file_while_serving`.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -273,6 +302,9 @@ refuses a run with no ledger.
 | One process hosting many agents | one death takes every identity, and the lock is per identity |
 | The runtime writing the posture | the runtime's loop knows no agent; the posture is the agent's note to its next wake (C6) |
 | A per-wake agent continuing the last wake's record | the cost grows with history; the cursor and posture carry the next wake, and a chair that needs the record runs continuous (C7) |
+| The model keeping the session CLI's own tools beside the commands | two channels in one turn, and the red lines under a shell are prose; the commands are gated and recorded (C9) |
+| The agent moving its own tasks through the runtime | it widens the runtime's write set past `memory.remember`, a boundary change of its own (C9) |
+| An idle pass over a queue the agent cannot move | it takes the same task at every pass (C9) |
 
 ## Consequences
 

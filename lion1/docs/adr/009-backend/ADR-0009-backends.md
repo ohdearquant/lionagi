@@ -155,17 +155,16 @@ Cancelling a call kills and reaps the CLI child before the cancellation goes on.
 - **Violated when**: a tool runs after a refusal or after a hook that could not ask, or a call lands
   nowhere on the record.
 
-`[claude_code] tools` hands the session CLI its tools, `max_turns` per turn. With an actor, the
-pre-tool hook hands each call to the actor's privilege check
-([[ADR-0001-the-actor#^c4|ADR-0001/C4]]), `requires` naming a tool's privileges, then its before
-hooks ([[ADR-0005-command-handling#^c4|ADR-0005/C4]]). A refusal, or a hook that cannot ask, stops
-the tool; a replacement is its input.
+A session's `tools` run inside each turn, `max_turns` per turn. With an actor, the pre-tool hook
+hands each call to the actor's privilege check ([[ADR-0001-the-actor#^c4|ADR-0001/C4]]), `requires`
+naming a tool's privileges, then its before hooks ([[ADR-0005-command-handling#^c4|ADR-0005/C4]]). A
+refusal, or a hook that cannot ask, stops the tool; a replacement is its input.
 
 Each call lands on the run's record as a RESULT under the CLI's tool-use id, started or not
 executed; a repeated id is refused, landing suffixed by its entry's seq. What the tool did stays in
-the CLI's session, past subset, after hooks and bus (S11). `lion agent` hands over its actor;
-without one the session is trusted as configured. The bench's host-side baseline is no backend
-([[ADR-0012-the-bench|ADR-0012]] S6).
+the CLI's session, past subset, after hooks and bus (S11). `lion chat` and `lion agent` build none
+([[ADR-0016-the-lion-command#^d3|ADR-0016/D3]]). Without an actor it is trusted as configured. The
+bench's host-side baseline is no backend ([[ADR-0012-the-bench|ADR-0012]] S6).
 
 ## Decisions
 
@@ -188,9 +187,9 @@ native call when the content is empty; `calls` keeps the envelopes.
 Serves C1, C2, C4, C5 and C6. `ClaudeCode` runs the CLI once per turn: tools off, no settings,
 strict MCP config. `ClaudeCodeSession` forks a point per call unless it has tools, one session per
 run; `_step` prices a changed view, `plan` answers it for `_notify`; `base` seeds a continued chat's
-first figure. A served run may get the CLI's tools, a directory, one MCP. Both hand back the last
-turn's count. A failed call lands its envelope and leaves no point. Cancellation reaps the child;
-the gate settles (C6).
+first figure. A session may be built with the CLI's tools, a directory, one MCP. Both hand back the
+last turn's count. A failed call lands its envelope and leaves no point. Cancellation reaps the
+child; the gate settles (C6).
 
 - **Landing evidence**: `tests/test_claude_code.py`: forked with only the new entries, a small hide
   waiting, a large one forking, the whole view, the fold, the cache's hour, the seed, the notice,
@@ -301,11 +300,12 @@ swallowed too: a spin.
   `test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_it_arrives`,
   `test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns`,
   `test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once` and
-  `test_a_request_the_hooks_left_that_cannot_be_sent_is_a_refusal_that_lands`; the wiring in `lion
-  agent` by `tests/test_agent.py` `test_the_session_clis_own_tool_calls_ask_the_agents_actor`. The
-  record keeps the call and its verdict, never what the tool returned. Both hook contracts were
-  measured once on the installed CLI: exit 2 stops the tool and the model reads the reason; an allow
-  with `updatedInput` runs the rewritten call. No test runs the live CLI.
+  `test_a_request_the_hooks_left_that_cannot_be_sent_is_a_refusal_that_lands`; `lion agent` refuses
+  such a session, by `tests/test_agent.py`
+  `test_build_refuses_a_claude_code_session_handed_in_with_tools_of_its_own`. The record keeps the
+  call and its verdict, never what the tool returned. Both hook contracts were measured once on the
+  installed CLI: exit 2 stops the tool and the model reads the reason; an allow with `updatedInput`
+  runs the rewritten call. No test runs the live CLI.
 - **S12**: A fork per call leaves the CLI one copy of the session per call under its projects
   directory, about 5 bytes per token held: 3 to 5 MB for an 18-call chat, up to 50 MB for 100 calls
   at 100k tokens. Nothing here removes them; that layout is the CLI's own.

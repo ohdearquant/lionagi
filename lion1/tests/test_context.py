@@ -986,7 +986,7 @@ def test_a_restore_that_cannot_replay_is_said_and_the_run_starts_fresh(tmp_path)
     with pytest.raises(CheckpointError, match="cannot be read"):
         to_history(load(tmp_path))
     khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
-    agent = resident(khive, Growing((REPLY, 1_000)))
+    agent = resident(khive, Growing((REPLY, 1_000), ("answered", 1_000)))
     lines = serve_one(agent)
     (run,) = agent.runs
     assert lines[0].startswith("restore failed, the run starts fresh: restore: CheckpointError")
@@ -1197,7 +1197,10 @@ def test_a_claude_code_checkpoint_in_a_residents_directory_is_refused_by_its_nex
         registry(tmp_path, d), "POST", "/api/context/checkpoint", {"dir": str(d), "why": "manual"}
     )
     assert code == 200 and load(d).id == doc["id"] != own.id and load(d).source["kind"] == "claude-code"
-    again = resident(FakeKhive(mail("lambda:a", "one more", mid="c3d4e5f6"), cwd=d), Growing((REPLY, 1_000)))
+    again = resident(
+        FakeKhive(mail("lambda:a", "one more", mid="c3d4e5f6"), cwd=d),
+        Growing((REPLY, 1_000), ("answered", 1_000)),
+    )
     lines = serve_one(again)
     refused = f"{doc['id']} is a claude-code checkpoint: its restore is the first prompt"
     assert again.errors == [f"restore: CheckpointError: {refused}"]

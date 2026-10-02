@@ -168,11 +168,14 @@ Serves C3. The model is the flag's, else `chores.toml`'s, else `deepseek/deepsee
 `deepseek` name gets the router with a fixed provider order, fallbacks off and data collection
 denied; any other name the router's own routing; both a 2,000-token reasoning budget and a stop on
 the notification frame ([[ADR-0009-backends#^d1|ADR-0009/D1]]). `claude_code[/<model>]` is the
-session CLI with the config's `[claude_code]` options in the agent directory. The subscription CLI
-of [[ADR-0009-backends#^d3|ADR-0009/D3]] is not offered.
+session CLI in the agent directory without tools of its own: `[claude_code]` takes `timeout`,
+`effort` and `cli`, refusing any other by name, and `build` refuses one handed in with tools. The
+subscription CLI of [[ADR-0009-backends#^d3|ADR-0009/D3]] is not offered.
 
-- **Landing evidence**:
-  `tests/test_agent.py::test_backend_for_claude_code_is_the_cli_chat_shape_on_the_named_model`.
+- **Landing evidence**: `tests/test_agent.py`:
+  `test_backend_for_claude_code_is_the_cli_chat_shape_on_the_named_model`,
+  `test_a_claude_code_key_that_is_not_timeout_effort_or_cli_is_refused_by_name_whatever_the_model`,
+  `test_build_refuses_a_claude_code_session_handed_in_with_tools_of_its_own`.
 
 ### D4: `_usage`, `_spend`, `_facts` and `_line` in `hub/agent/agent.py` ^d4
 
