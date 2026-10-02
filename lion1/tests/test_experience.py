@@ -6,12 +6,14 @@ import ast
 import asyncio
 import dataclasses
 import json
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
+import lionagi
 from lionagi.experience import (
     Experience,
     ExperienceRecord,
@@ -99,7 +101,8 @@ def test_a_malformed_file_raises_and_a_hit_is_a_copy(store, tmp_path):
     object.__setattr__(hit, "lesson", "rewritten behind the store's back")
     assert asyncio.run(store.recall("data.txt", 1, scope=SCOPE))[0].lesson == kept.lesson
     path = tmp_path / "bad.json"
-    for body in ("{not json", '{"notes": []}', '{"records": [{"id": "x"}]}'):
+    twice = json.dumps({"records": [json.loads(kept.canonical())] * 2})  # one id kept twice is not a store
+    for body in ("{not json", '{"notes": []}', '{"records": [{"id": "x"}]}', twice):
         path.write_text(body)
         bad = FileExperienceStore(path)
         with pytest.raises(ValueError):
@@ -116,7 +119,7 @@ def test_an_experience_takes_positive_bounds_only():
 
 
 def test_nothing_under_lionagi_imports_hub_or_a_khive_client():
-    root = Path(__file__).resolve().parent.parent / "lionagi"
+    root = Path(lionagi.__file__).resolve().parent  # the package as imported: the source tree or the wheel
     imported = set()
     for path in root.rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
@@ -126,3 +129,41 @@ def test_nothing_under_lionagi_imports_hub_or_a_khive_client():
                 imported.add(node.module)
     assert "pydantic" in imported  # the walk reads imports at all
     assert not {m for m in imported if m.split(".")[0] in ("hub", "khive") or "khive" in m}
+
+
+@pytest.mark.parametrize(
+    "over, error",
+    [
+        ({"actor": 7}, TypeError),
+        ({"version": 1}, TypeError),
+        ({"used_ids": "abc"}, TypeError),
+        ({"used_ids": (1,)}, TypeError),
+        ({"costed": -1}, ValueError),
+        ({"uncosted": True}, ValueError),
+        ({"complete": False}, ValueError),
+        ({"cost": float("nan")}, ValueError),
+        ({"id": "r0"}, ValueError),
+    ],
+)
+def test_a_record_refuses_a_field_of_the_wrong_kind(over, error):
+    with pytest.raises(error):
+        record(**over)
+
+
+def test_a_write_that_cannot_land_leaves_no_file_behind(tmp_path, monkeypatch):
+    path = tmp_path / "experience.json"
+    store = FileExperienceStore(path)
+    first = record()
+    asyncio.run(store.persist(first))
+    before = path.read_text()
+
+    def refuse(src, dst):
+        raise OSError("the volume is read-only")
+
+    monkeypatch.setattr(os, "replace", refuse)
+    with pytest.raises(OSError):
+        asyncio.run(store.persist(record()))
+    assert path.read_text() == before and sorted(p.name for p in tmp_path.iterdir()) == [
+        ".experience.json.lock",
+        "experience.json",
+    ]

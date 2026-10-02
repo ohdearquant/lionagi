@@ -252,6 +252,6 @@ class FileExperienceStore:
                 json.dump(payload, f, ensure_ascii=False, indent=1)
             os.replace(tmp, self.path)
         except BaseException:
-            if os.path.exists(tmp):
+            with contextlib.suppress(FileNotFoundError):
                 os.unlink(tmp)
             raise

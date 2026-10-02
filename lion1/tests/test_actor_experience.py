@@ -1,7 +1,7 @@
 """Experience in the run: one recall before the first notification against the first new INPUT, what
 it found on the record and in the model's first view, the lesson the model leaves, and the terminal
 phase after the reap: one bounded persist, one closure carrying its receipt, the events after their
-entries, the delivery, then any cancel. A profile without an Experience runs as it did."""
+entries, the delivery, then any cancel. A profile without an Experience has none of it."""
 
 import asyncio
 import json
@@ -501,9 +501,25 @@ class Slow(MemoryExperienceStore):
         await asyncio.sleep(10)
 
 
+class Closed(MemoryExperienceStore):
+    @property
+    def persist(self):  # the call itself raises, before any store task exists
+        raise ValueError("the store is closed")
+
+
+class SelfCancelling(MemoryExperienceStore):
+    async def persist(self, record):
+        raise asyncio.CancelledError  # the store's own task cancels itself; the run is not cancelled
+
+
 @pytest.mark.parametrize(
     "store, status, reason",
-    [(Refusing, "failed", "ValueError: the disk is full"), (Slow, "unknown", "no answer within 0.05s")],
+    [
+        (Refusing, "failed", "ValueError: the disk is full"),
+        (Slow, "unknown", "no answer within 0.05s"),
+        (Closed, "failed", "ValueError: the store is closed"),
+        (SelfCancelling, "unknown", "the store call was cancelled"),
+    ],
 )
 def test_a_refused_or_unknown_persist_keeps_the_outcome(store, status, reason):
     actor = Actor("x-store-fails")

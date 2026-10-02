@@ -160,7 +160,7 @@ class Profile:
     language: str = "core"  # core: the three constructs; program: one fenced program (ADR-0008/C6)
     # the role's values for the job's bounds, taken where the job leaves one unset (ADR-0003/C1)
     defaults: dict[str, float] = field(default_factory=dict, hash=False)
-    # None: no recall, no persist, no experience.lesson; a run as it was before (ADR-0020/C1)
+    # None: no recall, no persist, no experience.lesson (ADR-0020/C1)
     experience: Experience | None = None
 
     def __post_init__(self) -> None:
@@ -1175,8 +1175,7 @@ class Actor:
         self.runs.pop(run.id, None)
         self._deliver(run)
         self.bus.emit("run.completed", run=run.id, outcome=type(run.outcome).__name__, rounds=run.round)
-        if cancelled:  # after the closure and the delivery, the outcome kept: not an abort
-            raise asyncio.CancelledError
+        _after_delivery(cancelled)
         return run
 
     # pieces of a round
@@ -2557,6 +2556,13 @@ def _observation(run: Run) -> ExperienceRecord:
         uncosted=run.uncosted,
         complete=run.uncosted == 0,
     )
+
+
+def _after_delivery(cancelled: bool) -> None:
+    """A cancel that landed in the terminal phase, re-raised after the closure and the delivery with the
+    outcome kept: not an abort (ADR-0020/C5)."""
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def _receipt(**fields: Any) -> str:
