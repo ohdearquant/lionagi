@@ -46,6 +46,7 @@ from .spec import Operable, Spec, render_guidance, spec_name
 __all__ = (
     "Message",
     "Reply",
+    "SessionPlan",
     "Backend",
     "Profile",
     "HandlerFn",
@@ -91,6 +92,9 @@ class Message:
     name: str | None = None  # the record entry this message renders, when it renders one
     spec: str | None = None  # for a RESULT that landed: its command (a failed one changed nothing)
     run: str | None = None  # the run whose record this renders: a backend keeping sessions keys on it
+    # a stand-in for entries the view no longer shows whole: a placeholder or a summary. A session that
+    # still holds the entry under this name holds more than the view, which it may keep (ADR-0009/C4)
+    folded: bool = False
 
 
 class Reply(str):
@@ -115,6 +119,20 @@ class Reply(str):
         reply.cost = cost
         reply.refused = refused
         return reply
+
+
+@dataclass(frozen=True)
+class SessionPlan:
+    """What a backend keeping a session will do with the view it is about to get: its `plan(view,
+    forced=..., run=...)` answers before the notification is written, so the notification says it
+    (ADR-0009/C4). `restart`: the session starts over from the view, or from a point it passed
+    before the view changed. `frees`: estimated tokens the session holds that the view does not show,
+    which a restart drops. `tokens`: the prompt count the call is expected to stand in, from the
+    backend's own last count, or None when it has none."""
+
+    restart: bool
+    frees: int
+    tokens: int | None
 
 
 Backend = Callable[[list[Message]], "Awaitable[str] | str"]
@@ -399,6 +417,10 @@ class Run:
         # view (system prompt, tools), which no fold takes off; what it later stands above that is
         # history the record never saw (a session-keeping CLI's tool turns), which a fold does
         self.floor: int | None = None
+        # a backend that keeps a session says what it will do with the view (`SessionPlan`); the
+        # notification tells it, and what the session still holds beyond the view once told
+        self.plan: Callable[..., SessionPlan] | None = None
+        self.frees_told = 0
         self.refusals = 0  # consecutive refusals of OUT{}
         self.repairs: Counter[str] = Counter()  # repairs the reading applied to this run's turns, by name
         # each unknown command name, the nearest name the profile has and the edit distance between them:
@@ -832,6 +854,7 @@ class Actor:
     ) -> Run:
         self.check(profile)
         run = Run(self, profile, request)
+        run.plan = getattr(backend, "plan", None)
         subset = self.subset(profile)
         for e in request.history:
             replayed = run.record.append(e.kind, e.content, alias=e.alias, round=e.round, **e.meta)
@@ -1656,6 +1679,31 @@ class Actor:
             else:
                 rate = run.grown[0] / run.grown[1] if run.grown[1] > 0 else 1.0
                 shown = max(round(reported - rate * (sent - keep)), keep)
+        if run.plan is not None:
+            # a backend keeping a session says what this call will stand in: its session may still hold
+            # what a directive took out of the view (a restart that does not pay yet waits), or start
+            # over from it, dropping more than the view shows (ADR-0009/C4)
+            post = view
+            if folded is not None:
+                post = self._fold(run, _consumed(run) + (dataclasses.replace(folded, at=r.seq),))
+            plan = run.plan(
+                [dataclasses.replace(m, run=run.id) for m in _messages(post)],
+                forced=folded is not None,
+                run=run.id,  # an inputless run's first view holds no message to carry it
+            )
+            if plan.tokens is not None:
+                shown = plan.tokens
+            if plan.restart:
+                gone = f"; ~{plan.frees} tokens it held beyond the view are gone" if plan.frees > 0 else ""
+                lines.append(f"session: starts over from this view{gone}")
+                run.frees_told = 0
+            elif plan.frees > 0 and plan.frees != run.frees_told:
+                lines.append(
+                    f"session: still holds ~{plan.frees} tokens of what you hid or summarized, counted "
+                    "in context: above; they go when a restart pays for itself, at the budget fold, or "
+                    "in a new session"
+                )
+                run.frees_told = plan.frees
         run.context_figure = shown  # what the next round's start checks against the budget
         lines[context_line] = f"context: ~{shown} / {run.bounds['context_budget']} tokens"
         if run.retry_error:
@@ -2430,14 +2478,17 @@ def _placeholder(entries: list[Entry]) -> Message:
         else:
             parts.append(f"{e.name} {e.kind.name.lower()} ~{size} tokens")
     return Message(
-        "user", "[hidden; *name or context.show reopens: " + ", ".join(parts) + "]", name=entries[0].name
+        "user",
+        "[hidden; *name or context.show reopens: " + ", ".join(parts) + "]",
+        name=entries[0].name,
+        folded=True,
     )
 
 
 def _message(v: ViewEntry) -> Message:
     e = v.entry
     if v.summary is not None:
-        return Message("user", f"[summary before {e.name}] {v.summary}", name=e.name)
+        return Message("user", f"[summary before {e.name}] {v.summary}", name=e.name, folded=True)
     if e.kind is Kind.SYSTEM:
         # the runtime's own fold rides a notification; a session-keeping backend reads the mark
         fold_mark = "fold" if isinstance(e.meta.get("directive"), Directive) else None
@@ -2447,7 +2498,8 @@ def _message(v: ViewEntry) -> Message:
     if e.kind is Kind.RESULT:
         res: Result = e.content
         body = _text(res.value) if res.ok else f"error: {res.error}"
-        # a session-keeping backend restarts on a directive's result; a failed one left the view as it was
+        # the command that landed; a failed one left the view as it was. A session-keeping backend reads
+        # what a directive changed off the view itself, never off this mark (ADR-0009/C4)
         spec = res.spec if res.ok else None
         return Message("user", f"[{e.name} {e.alias} {res.spec}] {body}", name=e.name, spec=spec)
     label = e.name

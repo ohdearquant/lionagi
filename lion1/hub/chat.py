@@ -156,12 +156,15 @@ def entry_row(e: Entry) -> dict:
     }
 
 
-def load_log(path: Path, torn: list[str] | None = None, ran: dict | None = None) -> tuple[Entry, ...]:
+def load_log(
+    path: Path, torn: list[str] | None = None, ran: dict | None = None, usage: list[dict] | None = None
+) -> tuple[Entry, ...]:
     """The entries a log holds, as a run's history: results back as Result, the inbound marks, each
     result's execution fact and the context directives kept, the seqs as they were (a log is written
     in order, from 0); rows of other kinds are skipped, and with `ran` given the BOX row, where the
-    chat ran, is copied there. A last line that is not JSON is a write that was cut: with `torn` given
-    it is dropped and described there, else it raises; a bad line with lines after it always raises."""
+    chat ran, is copied there, with `usage` given each USAGE row, what each call cost, is appended
+    there. A last line that is not JSON is a write that was cut: with `torn` given it is dropped and
+    described there, else it raises; a bad line with lines after it always raises."""
     entries: list[Entry] = []
     # a row ends at a line feed: a row may carry U+2028 or NEL unescaped, where str.splitlines would
     # break it, and a write cut inside a multi-byte character is a torn last row, not an unreadable file
@@ -181,6 +184,8 @@ def load_log(path: Path, torn: list[str] | None = None, ran: dict | None = None)
             ) from None
         if ran is not None and r.get("kind") == "BOX":
             ran.update(r)
+        if usage is not None and r.get("kind") == "USAGE":
+            usage.append(r)
         entry = entry_of(r)  # the row back as its entry; the one reading a checkpoint's record uses too
         if entry is not None:
             entries.append(entry)
