@@ -34,6 +34,7 @@ whatever the actor's own config adds.
 
 from __future__ import annotations
 
+import calendar
 import dataclasses
 import json
 import re
@@ -42,7 +43,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -121,8 +122,9 @@ class Check(BaseModel):
 
 class Digest(BaseModel):
     """Tell the owner what the ledger holds for one day: one line per chore, every chore, MISSING
-    for a chore with a period that did not run, and `on ask: no run` for a chore run only on an ask
-    that did not run."""
+    for a chore with a period and no run within one period and the store's fire grace before the
+    digest's moment, `not judged` for a cron chore and for a ledger that cannot be read, and
+    `on ask: no run` for a chore run only on an ask that did not run."""
 
     day: str | None = Field(default=None, description="YYYY-MM-DD; default today")
 
@@ -510,21 +512,54 @@ class Chores:
         return f"instrument dead after {len(streak)} unanswered run(s), told {sent}"
 
     async def digest(self, day: str | None, run: Run) -> str:
-        day = day or _now()[:10]
-        rows = [r for r in self.rows() if r["at"].startswith(day)]
+        now = self.agent.clock()
+        day = day or time.strftime("%Y-%m-%d", time.localtime(now))
+        # the moment a chore is judged at: now, or the end of a past day the digest was asked about
+        moment = min(now, (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).timestamp())
+        try:  # a ledger absent, unreadable or torn judges nothing: a missing subject is not an empty one
+            ledger, unread = [json.loads(x) for x in self.ledger.read_text().splitlines() if x.strip()], ""
+        except (OSError, ValueError) as e:
+            ledger, unread = [], f"{type(e).__name__}: {e}"
+        rows = [r for r in ledger if r["at"].startswith(day)]
         actor = self.owner
         lines = [
-            f"[chores digest {day}] {self.agent.khive.actor}: {len(rows)} check(s); "
-            "a MISSING line is the finding"
+            f"[chores digest {day}] {self.agent.khive.actor}: "
+            + (f"ledger unreadable ({unread})" if unread else f"{len(rows)} check(s)")
+            + "; a MISSING line is the finding"
         ]
         for name in sorted(self.instruments):
+            every = self.instruments[name].every
             mine = [r for r in rows if r["chore"] == name]
-            if not mine and self.instruments[name].every is None:  # runs only when asked, so never due
-                lines.append(f"{actor} {name} on ask: no run")
+            if unread:
+                lines.append(f"{actor} {name} not judged: ledger unreadable")
                 continue
-            if not mine:
-                lines.append(f"MISSING: {name}")
+            # a cron is not judged: no parser here says when it is next due
+            cron = bool(every) and every not in _NAMED and _EVERY.fullmatch(every) is None
+            if not mine and (not every or cron):  # runs only when asked (no tick), so never due; or a cron
+                lines.append(f"{actor} {name} " + ("not judged: cron" if cron else "on ask: no run"))
                 continue
+            if every and not cron:  # judged against one period before the moment
+                ran = [r for r in ledger if r["chore"] == name and _epoch(r) <= moment]
+                latest = max(ran, key=_epoch, default=None)
+                if latest is None:
+                    lines.append(f"MISSING: {name}, no run recorded")
+                    continue
+                if every == "monthly":  # a calendar month in UTC, as the store counts its monthly repeat;
+                    # a run on its month's last day is due by the next month's last (Jan 31, Feb 28, Mar 31)
+                    t = datetime.fromtimestamp(_epoch(latest), UTC)
+                    y, m = divmod(t.year * 12 + t.month, 12)
+                    end = calendar.monthrange(y, m + 1)[1]
+                    d = end if t.day == calendar.monthrange(t.year, t.month)[1] else min(t.day, end)
+                    due = t.replace(year=y, month=m + 1, day=d).timestamp()
+                else:
+                    due = _epoch(latest) + period_s(every)
+                since = f"last run {latest['at']}, due by {_now(due)}"
+                if moment > due + _FIRE_GRACE_S:
+                    lines.append(f"MISSING: {name}, {since}")
+                    continue
+                if not mine:
+                    lines.append(f"{actor} {name} not due: {since}")
+                    continue
             last = mine[-1]
             if not last["control"]:
                 state = f"instrument-failed:{name}"
@@ -544,6 +579,8 @@ class Chores:
             )
             if last["findings"]:
                 clause += f"; last: {last['findings'][0][:80]}"
+            if cron:
+                clause += "; not judged: cron"
             lines.append(f"{actor} {name} {last['at'][11:16]} {state} {clause}")
         spend = _val(self.agent.state, "spend", {})
         if spend.get("day") == day:  # the cost of the day, the number the actor's question is about
@@ -869,18 +906,24 @@ def sender_of(m: dict) -> str:
     return (m.get("properties") or {}).get("from_actor") or m.get("from") or "?"
 
 
+_EVERY = re.compile(r"every:(\d+)([smhd])")
+_NAMED = {"daily": 86400.0, "weekly": 7 * 86400.0, "monthly": 30 * 86400.0}
+_FIRE_GRACE_S = 300.0  # the store fires a reminder up to this late before it marks the reminder missed
+
+
 def period_s(every: str | None) -> float:
-    """Seconds in one period of a khive repeat; a cron or nothing reads as a day."""
+    """Seconds in one period of a khive repeat, as the aged pass counts it; a cron or nothing reads as
+    a day. The digest judges a monthly chore by the calendar instead."""
     if not every:
         return 86400.0
-    m = re.fullmatch(r"every:(\d+)([smhd])", every)
+    m = _EVERY.fullmatch(every)
     if m:
         return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
-    return {"daily": 86400.0, "weekly": 7 * 86400.0, "monthly": 30 * 86400.0}.get(every, 86400.0)
+    return _NAMED.get(every, 86400.0)
 
 
-def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+def _now(t: float | None = None) -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
 
 
 def _aged_key(row: dict) -> str:

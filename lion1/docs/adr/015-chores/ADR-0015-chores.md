@@ -52,8 +52,8 @@ and mail between processes is the layer [[ADR-0010-delegation#^c4|ADR-0010/C4]] 
   declared emptiness expected.
 - **standing state**: findings equal to the last ones a recipient received from that chore; they are
   not sent to that recipient again.
-- **periodic chore**: a chore with a repeat or a UTC cron. With no run recorded that day the digest
-  reads it `MISSING`, a day its cron skips included; a chore with neither runs only on an ask and
+- **periodic chore**: a chore with a repeat or a UTC cron. The digest reads it `MISSING` absent a
+  run in its period and grace, a cron `not judged`; a chore with neither runs only on an ask and
   reads `on ask: no run`, which counts runs, not asks.
 
 ## Assumptions
@@ -63,6 +63,7 @@ and mail between processes is the layer [[ADR-0010-delegation#^c4|ADR-0010/C4]] 
 | A1 | A reminder fires into its creator's inbox, and one the store could not deliver in time is marked missed or failed and never fired again. | `_catch_up` reads the store's `missed` and `failed` rows; the firing is the store's, outside this repository (assumption) | ticks need a second carrier, and the catch-up reads nothing               |
 | A2 | The instruments' commands only read.                                                                        | the argv in `hub/agent/instruments.py` and `hub/agent/lookups.py`; nothing checks them at run time  | a chore can change what it measures, and C6 needs a sandbox (ADR-0011)    |
 | A3 | A model maps a tick or a question to one handler call and nothing more.                                     | the chores guidance; no model text reaches a report (C1) (assumption)                               | a tick names its handler and code calls it without a model                |
+| A4 | The store advances a `daily`, `weekly` or `every:N` reminder by fixed seconds, and a `monthly` one by calendar months in UTC from its first firing, clamped to a short month's last day. It fires a reminder at most 300 seconds late, its default grace. | the store's repeat parser, outside this repository (assumption) | the digest reads a chore `MISSING` before its tick is due, or late past it |
 
 ## Claims
 
@@ -180,7 +181,7 @@ thread per chore, recipient and day, which the hop cap bounds. The standing stat
 recipient; evidence is capped at 4,000 characters, and says so.
 
 `dead_after` unanswered runs in a row escalate once as a dead instrument; an answered run clears it.
-The digest gives the owner one line per chore, `MISSING` where a periodic chore has no run that day,
+The digest gives the owner one line per chore, `MISSING` where a periodic chore is overdue (S12),
 and the day's tokens. The aged pass tells the steward once of each report the owner received and the
 steward did not, left unanswered on its thread past `aged_after` periods of the chore.
 
@@ -319,3 +320,21 @@ bypasses the handler: no refusals, no row, no send.
   (`test_a_missed_tick_of_the_chore_this_check_runs_is_covered_by_the_check_itself`). A check the
   ask narrowed covers nothing: the tick was the whole sweep, so it runs
   (`test_a_check_the_ask_narrowed_covers_no_missed_tick_of_its_chore`).
+- **S12**: A periodic chore is overdue with no run within one period and a grace before the digest's
+  moment, now or the end of a past day asked about. A period is `every:N`, `daily` or `weekly` in
+  seconds, `monthly` a calendar month in UTC. The grace is the store's default, 300 seconds, the
+  longest it fires a reminder late before marking it missed: a run one period and 300 seconds old is
+  within it, a second older is `MISSING`, and `due by` names the period's end
+  (`test_a_weekly_chore_is_judged_against_a_week_since_its_last_run_not_against_the_day`,
+  `test_an_every_90m_chore_reads_missing_past_90_minutes_though_it_ran_that_day`).
+- **S13**: A run on Jan 31 is due by February's last day, and a run on a month's last day by the
+  next month's last (`test_a_monthly_chore_is_due_a_calendar_month_in_utc_after_its_last_run`). The
+  digest reads no anchor, so a monthly chore the store anchored on the 28th to the 30th and last run
+  on a month's last day reads `MISSING` up to three days late.
+- **S14**: A cron reads `not judged: cron`
+  (`test_a_cron_chore_is_not_judged_whether_or_not_it_ran_that_day`). A ledger the digest cannot
+  read, absent, torn or undecodable, judges no chore and says so, where an empty one is judged
+  (`test_a_ledger_the_digest_cannot_read_reads_no_chore_missing_and_says_so`); a daily chore's line
+  is as it was
+  (`test_a_daily_chore_reads_its_days_line_as_before_and_missing_a_day_after_its_last_run`). The
+  aged pass counts a period by `period_s`: a monthly one as 30 days, a cron's as a day.

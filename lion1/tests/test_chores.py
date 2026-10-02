@@ -733,6 +733,143 @@ def test_the_digests_tokens_line_marks_a_days_cost_that_misses_calls_of_unknown_
     )
 
 
+def label(t: float) -> str:
+    """A ledger row's `at` for the instant `t`, local time as `check` writes it."""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+
+
+def ledger(chores: Chores, *instants: tuple[str, float]) -> None:
+    """The ledger holds one quiet run of each named chore at each instant."""
+    rows = [
+        {"at": label(t), "ts": t, "chore": c, "findings": [], "control": True, "escalate": False}
+        for c, t in instants
+    ]
+    chores.ledger.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def digest_at(chores: Chores, agent: Agent, t: float, day: str | None = None) -> str:
+    """The digest of `day` (the clock's own local day unless named) with the agent's clock at `t`."""
+    agent.clock = lambda: t
+    return asyncio.run(chores.digest(day or time.strftime("%Y-%m-%d", time.localtime(t)), "r1"))
+
+
+def test_a_weekly_chore_is_judged_against_a_week_since_its_last_run_not_against_the_day(tmp_path):
+    chores, agent = build(tmp_path, FakeKhive(), [], weekly=Probe("weekly", full(), every="weekly"))
+    t, week = datetime(2026, 9, 14, 12, 0).timestamp(), 7 * 86400  # a local noon
+    ledger(chores, ("weekly", t), ("weekly", t + 20 * 86400))  # the second run is after every moment below
+    due = f"last run {label(t)}, due by {label(t + week)}"
+    text = digest_at(chores, agent, t + 3 * 86400)  # no run that day, and not due
+    assert f"{OWNER} weekly not due: {due}" in text and "MISSING: weekly" not in text
+    text = digest_at(chores, agent, t + week + 300)  # one period and the store's fire grace is within it
+    assert f"{OWNER} weekly not due: {due}" in text and "MISSING: weekly" not in text
+    assert f"MISSING: weekly, {due}" in digest_at(chores, agent, t + week + 301)
+    # a past day is judged at its own end, from the runs recorded by then
+    day = time.strftime("%Y-%m-%d", time.localtime(t + 3 * 86400))
+    assert f"{OWNER} weekly not due: {due}" in digest_at(chores, agent, t + 30 * 86400, day=day)
+    day = time.strftime("%Y-%m-%d", time.localtime(t + 8 * 86400))
+    assert f"MISSING: weekly, {due}" in digest_at(chores, agent, t + 30 * 86400, day=day)
+    with pytest.raises(ValueError):  # a day that is not a date names no moment to judge at
+        asyncio.run(chores.digest("yesterday", "r1"))
+
+
+def test_an_every_90m_chore_reads_missing_past_90_minutes_though_it_ran_that_day(tmp_path):
+    chores, agent = build(tmp_path, FakeKhive(), [], p=Probe("p", full(), every="every:90m"))
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    ledger(chores, ("p", t))
+    line = f"{OWNER} p 09:00 quiet 1 run(s), 1 answered, 1 quiet, 0 report, 0 escalate, 0 instrument-failed"
+    assert line in digest_at(chores, agent, t + 5400 + 300)
+    text = digest_at(chores, agent, t + 5400 + 301)
+    assert f"MISSING: p, last run {label(t)}, due by {label(t + 5400)}" in text and line not in text
+
+
+@pytest.mark.parametrize(
+    ("tz", "last", "due"),
+    [
+        ("UTC", "2027-01-31T09:30", "2027-02-28T09:30"),  # the 31st: due by a short month's last day
+        ("UTC", "2027-02-28T09:30", "2027-03-31T09:30"),  # a month's last day: due by the next month's last
+        ("UTC", "2028-01-31T09:30", "2028-02-29T09:30"),  # a leap February
+        ("UTC", "2028-02-28T09:30", "2028-03-28T09:30"),  # not that February's last day
+        ("UTC", "2027-04-30T09:30", "2027-05-31T09:30"),
+        ("UTC", "2027-12-15T09:30", "2028-01-15T09:30"),  # across the year
+        # 21:00 on Feb 27 in New York is Feb 28 in UTC, the month's last day: the calendar is UTC's
+        ("America/New_York", "2027-02-28T02:00", "2027-03-31T02:00"),
+    ],
+)
+def test_a_monthly_chore_is_due_a_calendar_month_in_utc_after_its_last_run(
+    tmp_path, monkeypatch, tz, last, due
+):
+    monkeypatch.setenv("TZ", tz)
+    time.tzset()
+    try:
+        chores, agent = build(tmp_path, FakeKhive(), [], m=Probe("m", full(), every="monthly"))
+        t, d = (datetime.fromisoformat(x).replace(tzinfo=UTC).timestamp() for x in (last, due))
+        ledger(chores, ("m", t))
+        assert f"{OWNER} m not due: last run {label(t)}, due by {label(d)}" in digest_at(
+            chores, agent, d + 300
+        )
+        assert f"MISSING: m, last run {label(t)}, due by {label(d)}" in digest_at(chores, agent, d + 301)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+def test_a_cron_chore_is_not_judged_whether_or_not_it_ran_that_day(tmp_path):
+    # an empty repeat makes no tick (`ensure_ticks`), so it is an on-ask chore, not a cron
+    probes = {"c": Probe("c", full(), every="0 9 * * 1"), "e": Probe("e", full(), every="")}
+    chores, agent = build(tmp_path, FakeKhive(), [], **probes)
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    ledger(chores, ("c", t))
+    text = digest_at(chores, agent, t + 3 * 86400)
+    assert f"{OWNER} c not judged: cron" in text and "MISSING: c" not in text
+    assert f"{OWNER} e on ask: no run" in text
+    assert (
+        f"{OWNER} c 09:00 quiet 1 run(s), 1 answered, 1 quiet, 0 report, 0 escalate, 0 instrument-failed; "
+        "not judged: cron"
+    ) in digest_at(chores, agent, t + 60)
+
+
+@pytest.mark.parametrize(
+    ("kind", "error"),
+    [
+        ("absent", "FileNotFoundError"),
+        ("torn", "JSONDecodeError"),
+        ("bytes", "UnicodeDecodeError"),
+        ("empty", ""),
+    ],
+)
+def test_a_ledger_the_digest_cannot_read_reads_no_chore_missing_and_says_so(tmp_path, kind, error):
+    khive = FakeKhive()
+    probes = {"w": Probe("w", full(), every="weekly"), "a": Probe("a", full(), every=None)}
+    chores, agent = build(tmp_path, khive, [], **probes)
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    if kind == "torn":  # a row cut short by a crash mid-append, after a whole one
+        ledger(chores, ("w", t - 30 * 86400))
+        with chores.ledger.open("a") as fh:
+            fh.write('{"at": "2026-09-1')
+    elif kind == "bytes":
+        chores.ledger.write_bytes(b'{"at": "\xff"}\n')
+    elif kind == "empty":  # the control: a ledger that reads, with no row, is judged
+        chores.ledger.write_text("")
+    text = digest_at(chores, agent, t)
+    assert khive.sent[-1]["content"] == text
+    head, *lines = text.splitlines()
+    if not error:
+        assert head.endswith(": 0 check(s); a MISSING line is the finding")
+        assert lines == [f"{OWNER} a on ask: no run", "MISSING: w, no run recorded"]
+        return
+    assert f": ledger unreadable ({error}: " in head and head.endswith("; a MISSING line is the finding")
+    assert lines == [f"{OWNER} a not judged: ledger unreadable", f"{OWNER} w not judged: ledger unreadable"]
+
+
+def test_a_daily_chore_reads_its_days_line_as_before_and_missing_a_day_after_its_last_run(tmp_path):
+    chores, agent = build(tmp_path, FakeKhive(), [], d=Probe("d", full(), every="daily"))
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    ledger(chores, ("d", t))
+    line = f"{OWNER} d 09:00 quiet 1 run(s), 1 answered, 1 quiet, 0 report, 0 escalate, 0 instrument-failed"
+    assert line in digest_at(chores, agent, t + 3600)
+    assert "MISSING: d" in digest_at(chores, agent, t + 86400 + 301)
+
+
 def test_aged_tells_the_steward_once_what_the_owner_left_unanswered_and_nothing_acknowledged(tmp_path):
     khive = FakeKhive(
         mail(SELF, "tick: disk"),
