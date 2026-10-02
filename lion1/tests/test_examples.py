@@ -23,6 +23,7 @@ SCRIPTED = (
     "watch_the_artifact",
     "budgets_and_outcomes",
     "structured_output",
+    "experience_twice",
 )
 LIVE = ("backends",)
 # tests/test_bench_agent.py drives this one: a fake store, and a child that writes a ledger
