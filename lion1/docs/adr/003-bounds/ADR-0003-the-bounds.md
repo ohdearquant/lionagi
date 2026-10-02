@@ -80,8 +80,9 @@ job field and no bound ([[ADR-0007-the-record|ADR-0007]]) (D1).
 
 The turn's first act is the check: elapsed time, reported cost, turns, idle turns and the context
 figure against their bounds, so a deadline on the last turn reads time. Time and cost are re-read
-before each handler starts, after its pointer waits; one running at the deadline is cancelled beside
-the turn's wait (S3). `max_idle` counts consecutive idle turns; any turn that is not idle resets it.
+once a conversation's `wait` answers and before each handler starts, after its pointer waits; one
+running at the deadline is cancelled beside the turn's wait (S3). `max_idle` counts consecutive idle
+turns; any turn that is not idle resets it.
 
 `context_budget` compares the anchored figure ([[ADR-0006-the-notification#^c4|ADR-0006/C4]]) as the
 last notification left it; over it, the run ends `Exhausted(context)`. A job over it before any
@@ -139,8 +140,10 @@ the resolved values; nothing re-reads the profile.
   `test_max_rounds_defaults_to_a_hundred`,
   `test_idle_turns_in_a_row_end_the_run_and_any_other_turn_starts_the_count_over`,
   `test_a_time_budget_ends_the_run_as_exhausted_by_time_and_the_header_shows_the_clock`,
+  `test_a_wait_that_outlasts_the_time_budget_admits_no_further_call`,
   `test_a_handler_running_at_the_deadline_is_cancelled_with_the_one_waiting_on_it`,
   `test_reported_cost_ends_the_run_and_a_command_asked_once_it_is_spent_never_starts`,
+  `test_a_reported_cost_that_is_not_a_number_reads_as_spent`,
   `test_the_context_figure_the_last_notification_told_ends_the_run_over_its_budget`,
   `test_a_job_over_its_context_budget_before_any_call_is_refused_as_a_job_error`,
   `test_repeated_refusals_end_the_run_as_refused`.
