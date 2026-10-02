@@ -26,11 +26,7 @@ from hub.tools import SandboxDead
 from hub.tools import runta as runta_mod
 from lionagi import Actor, Kind, Profile, RunRequest
 from lionagi.actor import DEFAULT_HANDLERS
-from tests._swe import Started
-from tests._swe import run_set as swe_run_set
-from tests._swe import sandbox as swe_sandbox
 from tests.test_actor import scripted
-from tests.test_swe_run_set import _args, _one
 
 Egress = runta_mod.Egress
 EgressSecret = runta_mod.EgressSecret
@@ -56,6 +52,10 @@ class _ApiError(Exception):
     def __init__(self, status_code: int | None = None, code: str | None = None):
         super().__init__(f"runta ApiError {status_code} {code}")
         self.status_code, self.code = status_code, code
+
+
+class _InvalidStatus(Exception):
+    """What the exec channel raises for a runtime that is gone: a refused websocket, not an API error."""
 
 
 class _EgressPolicySDK:
@@ -320,6 +320,28 @@ def test_token_and_endpoint_read_the_environment_then_the_config_file(tmp_path, 
     assert runta_mod.token() == "env-token"  # the environment wins over the config file
     monkeypatch.setenv("RUNTA_ENDPOINT", "https://env.example/")
     assert runta_mod.endpoint() == "https://env.example"
+
+
+def test_a_default_run_test_holds_the_test_credential():
+    # the probe of the test below, which runs it where the environment holds another one
+    assert (runta_mod.token(), runta_mod.endpoint()) == ("test-token", "http://api.test")
+
+
+def test_the_fixture_keeps_a_credential_from_the_environment_out_of_a_default_run(tmp_path):
+    config = tmp_path / "config.toml"
+    config.write_text('token = "config-credential"\nendpoint = "http://config.invalid"\n')
+    env = {k: v for k, v in os.environ.items() if k not in ("LION_RUNTA_E2E", "FORCE_COLOR")}
+    env |= {"RUNTA_TOKEN": "env-credential", "RUNTA_ENDPOINT": "http://env.invalid"}
+    env |= {"RUNTA_CONFIG": str(config), "PY_COLORS": "0"}
+    probe = f"{Path(__file__).resolve()}::test_a_default_run_test_holds_the_test_credential"
+    done = subprocess.run(
+        [sys.executable, "-m", "pytest", probe, "-q"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0 and "1 passed" in done.stdout, done.stdout[-1500:] + done.stderr[-500:]
 
 
 # --- 2. Egress ------------------------------------------------------------------------------------
@@ -688,18 +710,74 @@ def test_from_checkpoint_sends_checkpoint_id_and_no_resources_or_image():
     assert "resources" not in body and "image" not in body
 
 
-def test_a_read_back_egress_that_differs_calls_set_egress_an_equal_one_does_not(tmp_path, monkeypatch):
-    wanted = Egress(mode="allowlist", hosts=("a.com",))
-    box, mod, _, _ = _ready_box(monkeypatch, tmp_path, egress=wanted)
-    asyncio.run(box.start())
-    assert mod.runtimes_store["rt-1"].set_policy_calls == 1
+WANTED = Egress(mode="allowlist", hosts=("a.com",))
+
+
+@pytest.mark.parametrize(
+    ("checkpoint", "reported", "said"),
+    [
+        (
+            "ckpt-1",
+            _EgressPolicySDK(mode="denylist", allowed_hosts=[], denied_hosts=["bad.com"]),
+            ("denylist", "bad.com"),
+        ),
+        (
+            None,
+            _EgressPolicySDK(mode="allowlist", allowed_hosts=["b.com"], denied_hosts=[]),
+            ("allowlist", "b.com"),
+        ),
+        ("ckpt-1", None, ("none",)),
+    ],
+    ids=["restored under a denylist", "fresh under another allowlist", "restored under no policy"],
+)
+def test_start_refuses_a_runtime_that_reports_another_policy_naming_both_and_deletes_it(
+    tmp_path, monkeypatch, checkpoint, reported, said
+):
+    box, mod, calls, clients = _ready_box(
+        monkeypatch, tmp_path, egress=WANTED, from_checkpoint=checkpoint, precreate_workdir=False
+    )
+    if reported is not None:
+        mod.preset_policy["rt-1"] = reported
+    with pytest.raises(SandboxDead) as e:
+        asyncio.run(box.start())
+    for part in (*said, "allowlist", "a.com"):  # the runtime's policy, then the box's
+        assert part in str(e.value)
+    rt = mod.runtimes_store["rt-1"]
+    # no policy is set on the way: a restored runtime's processes ran under the other one until now
+    assert rt.deleted is True and rt.set_policy_calls == 0
+    assert not (tmp_path / "work").exists()  # no command ran on the runtime
+    assert box.started is False and box.box_id is None
+    assert clients[0].closed is True and mod.async_runta_instances[-1].closed is True
+    assert [c["method"] for c in calls] == ["POST"]
+    assert calls[0]["json"]["egress_policy"] == WANTED.api()  # the box sent its own with the create
+
+
+@pytest.mark.parametrize("checkpoint", [None, "ckpt-1"], ids=["fresh", "restored"])
+@pytest.mark.parametrize(
+    ("hosts", "reported"),
+    [(("a.com",), ["a.com"]), (("b.com", "a.com"), ["a.com", "b.com"])],
+    ids=["the same policy", "the same hosts in another order"],
+)
+def test_start_returns_a_box_whose_runtime_reports_its_own_policy(
+    tmp_path, monkeypatch, checkpoint, hosts, reported
+):
+    wanted = Egress(mode="allowlist", hosts=hosts)
+    box, mod, _, _ = _ready_box(monkeypatch, tmp_path, egress=wanted, from_checkpoint=checkpoint)
+    mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="allowlist", allowed_hosts=reported, denied_hosts=[])
+    assert asyncio.run(box.start()) is box
+    rt = mod.runtimes_store["rt-1"]
+    assert rt.set_policy_calls == 0 and rt.deleted is False
+    assert box.started is True and box.box_id == "rt-1"
     asyncio.run(box.stop())
 
-    box2, mod2, _, _ = _ready_box(monkeypatch, tmp_path, egress=wanted)
-    mod2.preset_policy["rt-1"] = mod2.EgressPolicy(mode="allowlist", allowed_hosts=["a.com"], denied_hosts=[])
-    asyncio.run(box2.start())
-    assert mod2.runtimes_store["rt-1"].set_policy_calls == 0
-    asyncio.run(box2.stop())
+
+def test_a_box_with_no_policy_sends_none_and_checks_none(tmp_path, monkeypatch):
+    box, mod, calls, _ = _ready_box(monkeypatch, tmp_path, from_checkpoint="ckpt-1")
+    mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="denylist", allowed_hosts=[], denied_hosts=["bad.com"])
+    assert asyncio.run(box.start()) is box  # the restored runtime's own policy is not this box's to judge
+    assert "egress_policy" not in calls[0]["json"]
+    assert mod.runtimes_store["rt-1"].set_policy_calls == 0
+    asyncio.run(box.stop())
 
 
 def test_a_failure_after_the_create_deletes_the_runtime_and_closes_both_clients(tmp_path, monkeypatch):
@@ -729,6 +807,40 @@ def test_start_can_create_a_workdir_that_does_not_already_exist_on_the_runtime(t
     asyncio.run(box.start())
     assert (tmp_path / "work").is_dir()
     asyncio.run(box.stop())
+
+
+async def _refuses_the_workdir_command(cmd, **kwargs):
+    raise _InvalidStatus("server rejected WebSocket connection: HTTP 404")
+
+
+async def _status_is_not_found():
+    raise _ApiError(status_code=404)
+
+
+@pytest.mark.parametrize("ended", ["deleting", "not found"])
+def test_a_runtime_that_ends_before_its_workdir_is_made_raises_sandbox_dead(tmp_path, monkeypatch, ended):
+    box, mod, _, clients = _ready_box(monkeypatch, tmp_path, precreate_workdir=False)
+    rt = asyncio.run(mod.AsyncRunta(token="t", endpoint="e").runtimes.get("rt-1"))
+    rt.exec = _refuses_the_workdir_command
+    if ended == "deleting":
+        rt._status = "deleting"
+    else:
+        rt.status = _status_is_not_found
+    with pytest.raises(SandboxDead, match="HTTP 404"):  # the runner retries on this and nothing else
+        asyncio.run(box.start())
+    assert box.dead is not None and "HTTP 404" in box.dead
+    assert rt.deleted is True and box.started is False
+    assert mod.async_runta_instances[-1].closed is True
+
+
+def test_a_runtime_that_fails_its_workdir_while_running_re_raises_the_error_as_is(tmp_path, monkeypatch):
+    box, mod, _, _ = _ready_box(monkeypatch, tmp_path, precreate_workdir=False)
+    rt = asyncio.run(mod.AsyncRunta(token="t", endpoint="e").runtimes.get("rt-1"))
+    rt.exec = _refuses_the_workdir_command  # the runtime still reads as running: not a dead one
+    with pytest.raises(_InvalidStatus):
+        asyncio.run(box.start())
+    assert box.dead is None
+    assert rt.deleted is True and box.started is False
 
 
 # --- 11. exec --------------------------------------------------------------------------------------
@@ -985,90 +1097,7 @@ def test_the_shell_and_code_tools_run_in_the_runta_box_through_the_same_registra
     assert r["e1"].ok and (work / "pkg" / "m.py").read_text().endswith("return f() + 1\n")
 
 
-# --- 16. bench/swe/sandbox.py: testbed over Runta ---------------------------------------------
-
-
-def test_testbed_runta_gives_a_runta_box_with_the_testbed_shape():
-    box = swe_sandbox.testbed("img-1", "runta", cpu=4, memory=6, label="swe-x")
-    assert isinstance(box, RuntaSandbox)
-    assert (box.workdir, box.prelude) == (swe_sandbox.WORKDIR, swe_sandbox.PRELUDE)
-    assert (box.cpu, box.memory, box.name, box.image) == (4, 6, "swe-x", "img-1")
-
-
-def test_testbed_refuses_an_unknown_where():
-    with pytest.raises(ValueError, match="nowhere"):
-        swe_sandbox.testbed("img", "nowhere")
-
-
-def test_runta_name_is_swe_prefixed_lowercase_after_the_owner():
-    assert swe_sandbox.runta_name({"instance_id": "django__django-11951"}) == "swe-django-11951"
-
-
-def test_runta_image_returns_a_found_image_without_building(monkeypatch):
-    seen = []
-
-    async def fake_find_image(name, *, api=None):
-        seen.append(name)
-        return "img-existing"
-
-    async def fail_build_image(*a, **k):
-        raise AssertionError("build_image was called although an image was found")
-
-    monkeypatch.setattr(swe_sandbox, "find_image", fake_find_image)
-    monkeypatch.setattr(swe_sandbox, "build_image", fail_build_image)
-    row = {"instance_id": "org__has-image-1", "image": "base:1"}
-    assert asyncio.run(swe_sandbox.runta_image(row)) == "img-existing"
-    assert seen == ["swe-has-image-1"]
-
-
-def test_runta_image_builds_from_the_rows_image_when_none_is_found(monkeypatch):
-    async def fake_find_image(name, *, api=None):
-        return None
-
-    built = []
-
-    async def fake_build_image(name, dockerfile, *, architecture="x86_64", timeout=3600.0, api=None):
-        built.append((name, dockerfile, architecture))
-        return "img-built"
-
-    monkeypatch.setattr(swe_sandbox, "find_image", fake_find_image)
-    monkeypatch.setattr(swe_sandbox, "build_image", fake_build_image)
-    row = {"instance_id": "org__needs-build-1", "image": "base:2"}
-    assert asyncio.run(swe_sandbox.runta_image(row)) == "img-built"
-    assert built == [("swe-needs-build-1", "FROM base:2\n", "x86_64")]
-
-
-# --- 17. bench/swe/run_set.py: --where runta --------------------------------------------------
-
-
-def test_the_cli_parser_accepts_where_runta():
-    script = Path(__file__).resolve().parents[1] / "bench" / "swe" / "run_set.py"
-    out = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True)
-    assert out.returncode == 0
-    assert "{local,daytona,runta}" in out.stdout
-
-
-def test_where_runta_reaches_testbed_through_one(tmp_path, monkeypatch):
-    seen = []
-
-    def fake_testbed(image, where, *, cpu, memory, label):
-        seen.append((image, where, cpu, memory, label))
-        return Started()
-
-    async def fake_runta_image(row, *, timeout=3600.0):
-        return row["image"]  # the image build itself is sandbox.py's own concern, not one()'s
-
-    async def fake_solve(row, *a, **k):
-        return {"instance_id": row["instance_id"], "model_patch": ""}
-
-    monkeypatch.setattr(swe_run_set, "testbed", fake_testbed)
-    monkeypatch.setattr(swe_run_set, "runta_image", fake_runta_image)
-    monkeypatch.setattr(swe_run_set, "solve", fake_solve)
-    _one(_args(where="runta"), tmp_path)
-    assert seen == [("img", "runta", 2, 2, "lionagi-swe-r1")]
-
-
-# --- 18. a real Runta runtime, opted in -----------------------------------------------------------
+# --- 16. a real Runta runtime, opted in -----------------------------------------------------------
 
 
 @pytest.mark.skipif(os.environ.get("LION_RUNTA_E2E") != "1", reason="LION_RUNTA_E2E=1 runs a real runtime")

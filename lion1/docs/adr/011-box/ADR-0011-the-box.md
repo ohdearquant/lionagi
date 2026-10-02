@@ -158,14 +158,14 @@ idle stop.
 
 ## Decisions
 
-### D1: `hub/tools/box.py` and three boxes ^d1
+### D1: `hub/tools/box.py` and four boxes ^d1
 
 Serves C1, C2 and C6. `Box`, `BoxBase`, `git_diff`, `inside` and `BoxTree` in `box.py`. The VM
 (`shell.py`) is one container per conversation over the mounted directory. The docker box, named
-`lion-` and eight hex characters, runs any image under `sleep infinity`. The remote box sends stderr
-to a file behind a per-call marker and splits its one stream on it. It is replaced up to three times
-when it never comes up; a box that dies later is named in `dead`, and the bench retries once on a
-fresh box.
+`lion-` and eight hex characters, runs any image under `sleep infinity`. The Daytona box sends
+stderr to a file behind a per-call marker and splits its one stream on it. It is replaced up to
+three times when it never comes up; a box that dies later is named in `dead`, and the bench retries
+once on a fresh box.
 
 - **Landing evidence**: `tests/test_box.py` (the derived verbs, the timeout seam on both transports,
   no deadline reaching `exec` bare), `tests/test_shell.py` and `tests/test_daytona.py` (stubs; the
@@ -206,21 +206,23 @@ to; the person picks `--offline` when the directory holds what the network must 
 
 ### D5: `hub/tools/runta.py`, a box under an egress policy ^d5
 
-Serves C1 and C2. `RuntaSandbox` creates a runtime from a Runta image, built once over another image
-and found by name after, or from a checkpoint, under an egress policy the service enforces outside
-the guest. Its `exec` keeps the remote box's timeout seam and its files go through the runtime's
-file API. It makes `workdir` by a command sent to the runtime directly, and reads the policy back
-after a create, setting it again when the two differ. The service's records of a runtime come back
-as bus events.
+Serves C1 and C2. `RuntaSandbox` starts a runtime from a Runta image or a checkpoint under an egress
+policy the service enforces outside the guest; a box given a policy starts only one that reports it
+(S16). The image is built the first time, then found by name; two concurrent first builds may both
+build. `exec` keeps the remote box's timeout seam, files use the runtime's file API, and the
+`workdir` command raises `SandboxDead` for an ended runtime. Its records come back as bus events and
+need `capture` set.
 
 - **Landing evidence**: `tests/test_runta.py` (the SDK and the HTTP client stubbed; the real service
-  under an opt-in flag, listed in `tests/test_shell.py`'s opt-in test).
+  under an opt-in flag, listed in `tests/test_shell.py`'s opt-in test), among them
+  `test_start_refuses_a_runtime_that_reports_another_policy_naming_both_and_deletes_it` and
+  `test_a_runtime_that_ends_before_its_workdir_is_made_raises_sandbox_dead`.
 
 ## Alternatives
 
 | approach                                            | rejected because                                                                              |
 | --------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| One box class with a backend switch                 | three transports differ in exec, files and liveness; a switch hides that                       |
+| One box class with a backend switch                 | four transports differ in exec, files and liveness; a switch hides that                        |
 | A VM per command                                    | 1.4 s per call and no state between calls; an exec into one VM is 60 ms                        |
 | A host sandbox profile                              | a deprecated, undocumented profile language, and the host's kernel and tools exposed           |
 | `bash` with `sed` and heredocs only                 | a shell line per look, and heredoc edits fought the model's tool-call training                 |
@@ -286,8 +288,10 @@ as bus events.
 - **S15**: A process the model runs in the box reads anywhere already (S6), so the tree's bound is
   no boundary against one: a link it swaps between the resolve and the read reaches what that
   process could read itself.
-- **S16**: The box does not rely on a restored runtime carrying its source's egress policy. It sends
-  its own with every create and sets it again when the runtime reports another, so a box given a
-  policy restores under it, once the change S17 describes has taken hold.
+- **S16**: A box given a policy sends it with the create and starts only a runtime that reports it:
+  a restored runtime runs its checkpoint's processes from the moment it is restored, so a policy set
+  after leaves them a window under another (S17). One that reports another policy, fresh or
+  restored, is deleted and `start` raises `SandboxDead` naming both; a box with no policy sends none
+  and checks none.
 - **S17**: A policy change on a running runtime can read back before it holds. A closure that
   matters is proven from inside the box.

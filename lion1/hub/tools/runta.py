@@ -439,7 +439,9 @@ _TIMED_OUT = "Command timed out after"  # the service's own deadline, as its std
 class RuntaSandbox(BoxBase):
     """One runtime from `image` (a Runta image id, None for the account's default) or from
     `from_checkpoint`. `egress`, `secrets` and `capture` are set when the runtime is made; `set_egress`
-    changes the policy of a running one."""
+    changes the policy of a running one. `start` refuses a runtime that reports another policy than
+    `egress`, so a restored box that needs a stricter one starts under the checkpoint's own, calls
+    `set_egress` and proves the closure from inside."""
 
     image: str | None = None
     workdir: str = "/work"
@@ -493,13 +495,16 @@ class RuntaSandbox(BoxBase):
             self._rt = await self._client.runtimes.get(self.runtime_id)
             await self._rt.wait_until_ready(timeout=self.create_timeout)
             if self.egress is not None:
-                # a restored runtime is not trusted to carry its source's policy: the policy it reports
-                # is the one held to
-                info = await self._rt.refresh_info()
-                if Egress.from_api(_policy_json(info.egress_policy)) != self.egress:
-                    await self.set_egress(self.egress)
+                # a restored runtime runs its checkpoint's processes from the moment it is restored, so a
+                # policy set after leaves them a window under the other, and a change reads back before
+                # it holds: only a runtime that reports the box's own policy is a box
+                got = Egress.from_api(_policy_json((await self._rt.refresh_info()).egress_policy))
+                if _reach(got) != _reach(self.egress):
+                    raise SandboxDead(
+                        f"the runtime reports egress policy {got or 'none'}, not the box's {self.egress}"
+                    )
             # straight to the runtime: `exec` starts in the workdir this makes, after the prelude
-            r = await self._rt.exec(["mkdir", "-p", "--", self.workdir], timeout=60)
+            r = await self._on_runtime(["mkdir", "-p", "--", self.workdir], timeout=60)
             if r.exit_code != 0:
                 err = r.stderr.decode(errors="replace")
                 raise SandboxDead(f"mkdir {self.workdir} exited {r.exit_code}: {err[-300:]}")
@@ -522,6 +527,17 @@ class RuntaSandbox(BoxBase):
             return False
         return status in ("error", "crashed", "deleting", "shutdown")
 
+    async def _on_runtime(self, cmd: list[str], **kwargs: Any) -> Any:
+        """A command sent to the runtime as it is: the runtime's own result, or `SandboxDead` when the
+        runtime has ended, which is all the bench runner retries."""
+        try:
+            return await self._rt.exec(cmd, **kwargs)
+        except Exception as e:
+            if await self._gone(e):
+                self.dead = f"{type(e).__name__}: {e}"
+                raise SandboxDead(self.dead) from None
+            raise
+
     async def exec(
         self,
         argv: list[str],
@@ -537,15 +553,9 @@ class RuntaSandbox(BoxBase):
         if timeout is not None:
             cmd = ["timeout", "-s", "KILL", f"{timeout:g}", *cmd]
         cmd = ["sh", "-c", 'cd -- "$0" && exec "$@"', self.workdir, *cmd]
-        try:
-            r = await self._rt.exec(
-                cmd, timeout=None if timeout is None else timeout + 15, env=env or None, stdin=stdin
-            )
-        except Exception as e:
-            if await self._gone(e):
-                self.dead = f"{type(e).__name__}: {e}"
-                raise SandboxDead(self.dead) from None
-            raise
+        r = await self._on_runtime(
+            cmd, timeout=None if timeout is None else timeout + 15, env=env or None, stdin=stdin
+        )
         elapsed = round(time.monotonic() - t0, 2)
         rc, stderr = r.exit_code, r.stderr.decode(errors="replace")
         # 137 alone is any SIGKILL and 124 a command's own; the clock and the service's line say which
@@ -649,6 +659,12 @@ def _policy_json(policy: Any) -> dict[str, Any] | None:
     if policy is None:
         return None
     return policy.to_json() if hasattr(policy, "to_json") else dict(policy)
+
+
+def _reach(policy: Egress | None) -> tuple[str, frozenset[str]] | None:
+    """What a policy lets through: its mode and its hosts as a set, since the service may list them in
+    another order."""
+    return None if policy is None else (policy.mode, frozenset(policy.hosts))
 
 
 def _sdk_policy(egress: Egress) -> Any:
