@@ -62,6 +62,12 @@ def test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_li
     assert [n.key for n in store.find("mixedcase")] == ["case"]
     assert [n.key for n in store.find("(here)")] == ["case"]  # punctuation is plain substring
     assert [n.key for n in store.list("Foo")] == ["Foo"] and store.list("foo") == []
+    store.put("Straße", "a key", run="r", seq=3)
+    store.put("road", "Hauptstraße 5", run="r", seq=4)
+    store.put("ROAD", "HAUPTSTRASSE 7", run="r", seq=5)
+    # a case is folded as Unicode folds it, query, key and value alike: ß is ss
+    assert [n.key for n in store.find("STRASSE")] == ["ROAD", "Straße", "road"]
+    assert [n.key for n in store.find("hauptstraße")] == ["ROAD", "road"]
 
 
 def test_the_default_commands_get_delete_and_find_with_size_and_version(tmp_path):
@@ -284,6 +290,34 @@ def test_a_value_the_file_cannot_carry_is_refused_before_the_store_takes_its_loc
             store.put("k", value, run="r", seq=1)
     assert store.get("k") is None and store.version == 0
     assert list(tmp_path.iterdir()) == []  # no file, and no lock file: the refusal came first
+
+
+@pytest.mark.parametrize(
+    "value, said",
+    [
+        ((1, 2), "JSON would read it back changed"),  # as a list
+        ({"at": (0, 1)}, "JSON would read it back changed"),
+        ({1: "one"}, "JSON would read it back changed"),  # its key as text
+        ({1: "a", "1": "b"}, "JSON would read it back changed"),  # one key of two
+        (float("nan"), "Out of range float values are not JSON compliant"),
+        ([float("inf")], "Out of range float values are not JSON compliant"),
+    ],
+    ids=["tuple", "nested-tuple", "int-key", "colliding-keys", "nan", "infinity"],
+)
+def test_a_value_json_cannot_carry_whole_is_refused_before_the_lock(tmp_path, value, said):
+    # NaN and Infinity are not standard JSON; the rest JSON would read back changed
+    store = FileNoteStore(tmp_path / "n.json")
+    with pytest.raises(ValueError, match=f"note 'k': {said}.*; the file store carries JSON values only"):
+        store.put("k", value, run="r", seq=1)
+    assert store.get("k") is None and store.version == 0
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal(tmp_path):
+    value = {"dish": "Crème Brûlée", "n": [1, 2.5, -0.0, True, None, ""], "empty": {}, "list": []}
+    FileNoteStore(tmp_path / "n.json").put("k", value, run="r", seq=1)
+    back = FileNoteStore(tmp_path / "n.json").get("k").value
+    assert back == value and [type(x) for x in back["n"]] == [type(x) for x in value["n"]]
 
 
 def test_find_reads_every_note_when_one_value_cannot_be_rendered_as_json():

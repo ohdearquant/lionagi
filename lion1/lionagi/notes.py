@@ -83,11 +83,14 @@ class MemoryNoteStore:
         return [n for k, n in sorted(self._notes.items()) if k.startswith(prefix)]
 
     def find(self, query: str) -> list[Note]:
-        """Case-insensitive substring over key and content; a blank query is refused, `list` is for that."""
+        """Case-insensitive substring over key and content, casefolded (`STRASSE` finds `Straße`); a blank
+        query is refused, `list` is for that."""
         if not query.strip():
             raise ValueError("note.find: a blank query would match every note; use note.list(prefix=...)")
-        q = query.lower()
-        return [n for k, n in sorted(self._notes.items()) if q in k.lower() or q in _text(n.value).lower()]
+        q = query.casefold()
+        return [
+            n for k, n in sorted(self._notes.items()) if q in k.casefold() or q in _text(n.value).casefold()
+        ]
 
     def delete(self, key: str) -> Note | None:
         note = self._notes.pop(key, None)
@@ -155,9 +158,14 @@ class FileNoteStore(MemoryNoteStore):
 
     def put(self, key: str, value: Any, *, run: str, seq: int) -> Note:
         try:
-            # a value the file cannot carry is refused before the write, never coerced: JSON, and UTF-8
-            # (a lone surrogate passes `json.dumps` escaped and fails at the file)
-            json.dumps(value, ensure_ascii=False).encode("utf-8")
+            # a value the file cannot carry, or would carry changed, is refused before the write, never
+            # coerced: standard JSON (no NaN or Infinity), UTF-8 (a lone surrogate passes `json.dumps`
+            # escaped and fails at the file), and read back equal (a tuple comes back a list, a key that
+            # is not a string comes back as text, and two keys can come back as one)
+            text = json.dumps(value, ensure_ascii=False, allow_nan=False)
+            text.encode("utf-8")
+            if json.loads(text) != value:
+                raise ValueError("JSON would read it back changed")
         except (TypeError, ValueError) as e:
             raise ValueError(f"note {key!r}: {e}; the file store carries JSON values only") from None
         with self._locked():

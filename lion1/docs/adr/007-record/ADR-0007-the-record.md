@@ -166,13 +166,15 @@ without `seqs` can carry, so no directive crashes it;
 
 - **Subject**: every put to a note store, and every `note.find`.
 - **Violated when**: an overwrite removes a key, the file store writes or coerces a value JSON
-  cannot carry, or `note.find` misses a note whose key or value holds the query in another case.
+  cannot carry whole, or `note.find` misses a note whose key or value holds the query in another
+  case.
 
 A put replaces the value whole and raises the note's version, an empty value included, so a key
 leaves the store only by a delete, `note.delete` for the model. The file store refuses a value JSON
-cannot carry before it writes anything. `note.find` returns each hit's first 120 characters as its
-preview, with its size, run and version. A store the profile brings (`Profile.notes`) replaces the
-actor's for every run of that profile.
+cannot carry whole, like NaN, a tuple or a non-string key, before it writes anything. `note.find`
+folds case as Unicode does and returns each hit's first 120 characters as its preview, with its
+size, run and version. A store the profile brings (`Profile.notes`) replaces the actor's for every
+run of that profile.
 
 `test_a_memory_store_counts_every_write_and_an_empty_overwrite_keeps_the_key` pins the empty
 overwrite on the memory store, whose put the file store calls, and
@@ -240,12 +242,16 @@ on writing, when decided, sits on those two.
 
 ### D4: The stores take a value as given, and `_note_find` cuts the preview ^d4
 
-Serves C7. `put` on either store keeps the value it is handed; the file store first tries
-`json.dumps` on it and raises `ValueError` before it takes its lock. `_note_find` slices the value's
-text at 120 characters, and `Actor.notes_for` returns `Profile.notes` before it looks for a store of
-its own.
+Serves C7. `put` on either store keeps the value it is handed; the file store first renders it with
+`json.dumps(allow_nan=False)` and reads that text back with `json.loads`, and a value that does not
+render or reads back unequal raises `ValueError` before the store takes its lock. `find` casefolds
+the query, each key and each value's text, so `STRASSE` finds `Straße`. `_note_find` slices the
+value's text at 120 characters, and `Actor.notes_for` returns `Profile.notes` before it looks for a
+store of its own.
 
-- **Landing evidence**: `test_a_file_note_store_refuses_a_value_the_file_cannot_carry` and
+- **Landing evidence**: `test_a_file_note_store_refuses_a_value_the_file_cannot_carry`,
+  `test_a_value_json_cannot_carry_whole_is_refused_before_the_lock`,
+  `test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal` and
   `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`.
 
 ### D5: `_notify` lists the store on the first turn ^d5
