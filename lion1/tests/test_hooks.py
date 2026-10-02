@@ -5,6 +5,7 @@ stdout the reason; 0 with a JSON object on stdout replaces the arguments; a time
 import asyncio
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -477,10 +478,10 @@ TREE_HOOK = "hub.hooks.scripts.tree_changed"
 def tree_call(tmp_path: Path, run: str, round_: int) -> str:
     payload = json.dumps({"event": "round", "run": run, "round": round_})
     done = subprocess.run(
-        [sys.executable, "-m", TREE_HOOK], input=payload, capture_output=True, text=True, cwd=tmp_path
+        [sys.executable, "-m", TREE_HOOK], input=payload.encode(), capture_output=True, cwd=tmp_path
     )
     assert done.returncode == 0, done.stderr
-    return done.stdout.strip()
+    return os.fsdecode(done.stdout).strip()  # the hook's bytes: text mode reads a carriage return as \n
 
 
 def git(tmp_path: Path, *args: str) -> str:
@@ -659,6 +660,101 @@ def test_the_tree_hooks_state_is_one_file_per_run_under_lion_tree_state(tmp_path
     named = [hashlib.blake2b(r.encode(), digest_size=8).hexdigest() + ".json" for r in ("run-a", "run-b")]
     assert sorted(p.name for p in (tmp_path / ".lion" / "tree_state").iterdir()) == sorted(named)
     assert sorted(p.name for p in (tmp_path / ".lion").iterdir()) == ["tree_state"]  # no shared map
+
+
+def test_the_tree_hook_keeps_a_carriage_return_in_a_file_name(tmp_path):
+    # git's names were read as text, whose newline translation turned a carriage return into \n: a
+    # change to `a\rb.txt` was never named, and it and `a\nb.txt` were one key
+    from hub.hooks.scripts.tree_changed import state_path
+
+    git(tmp_path, "init", "-q")
+    for name in ("a\rb.txt", "a\nb.txt", "c.txt"):
+        (tmp_path / name).write_text("one\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "one")
+    (tmp_path / "new\r.txt").write_text("one\n")  # untracked
+    assert tree_call(tmp_path, "r", 1) == ""
+    kept = json.loads((tmp_path / state_path("r")).read_text())["files"]
+    assert sorted(kept) == ["a\nb.txt", "a\rb.txt", "c.txt", "new\r.txt"]
+    (tmp_path / "a\rb.txt").write_text("two\n")
+    (tmp_path / "new\r.txt").write_text("two\n")
+    assert tree_call(tmp_path, "r", 2) == "tree: 2 file(s) changed since round 1: a\rb.txt, new\r.txt"
+
+
+def test_the_tree_hook_reads_a_tracked_name_that_is_not_utf8(tmp_path):
+    # such a name raised UnicodeDecodeError out of the hook (exit 1), past the line that says git
+    # could not list the files; here it is in the index and not on disk, as a checkout leaves it on a
+    # file system that refuses the name
+    from hub.hooks.scripts.tree_changed import state_path
+
+    git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("one\n")
+    git(tmp_path, "add", "a.txt")
+    git(tmp_path, "commit", "-qm", "one")
+    blob, name = git(tmp_path, "hash-object", "-w", "a.txt"), os.fsdecode(b"bad\xff.txt")
+    git(tmp_path, "update-index", "--add", "--cacheinfo", f"100644,{blob},{name}")
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=tmp_path, capture_output=True).stdout
+    assert listed == b"a.txt\0bad\xff.txt\0"
+    assert tree_call(tmp_path, "r", 1) == ""
+    assert sorted(json.loads((tmp_path / state_path("r")).read_text())["files"]) == ["a.txt"]
+    (tmp_path / "a.txt").write_text("two\n")
+    assert tree_call(tmp_path, "r", 2) == "tree: 1 file(s) changed since round 1: a.txt"
+
+
+def test_the_tree_hook_names_a_changed_file_whose_name_is_not_utf8(tmp_path):
+    # the name goes out as git's bytes; printed as text it raised UnicodeEncodeError
+    from hub.hooks.scripts.tree_changed import state_path
+
+    name = os.fsdecode(b"bad\xff.txt")
+    try:
+        (tmp_path / name).write_bytes(b"one\n")
+    except OSError as e:  # APFS, for one: no file can carry the name
+        pytest.skip(f"this file system refuses a name that is not UTF-8: {e}")
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "one")
+    assert tree_call(tmp_path, "r", 1) == ""
+    assert list(json.loads((tmp_path / state_path("r")).read_text())["files"]) == [name]
+    (tmp_path / name).write_bytes(b"two\n")
+    assert tree_call(tmp_path, "r", 2) == f"tree: 1 file(s) changed since round 1: {name}"
+
+
+def test_the_tree_hook_reads_a_conflicted_file_once(tmp_path, monkeypatch):
+    # `git ls-files` lists a conflicted path once per index stage, and each row was read and hashed
+    import hashlib
+    from collections import Counter
+
+    from hub.hooks.scripts import tree_changed
+
+    git(tmp_path, "init", "-q")
+    for name in ("c.txt", "same.txt"):  # same.txt: another path with c.txt's content stays a key
+        (tmp_path / name).write_text("base\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "base")
+    git(tmp_path, "checkout", "-qb", "other")
+    (tmp_path / "c.txt").write_text("other\n")
+    git(tmp_path, "commit", "-qam", "other")
+    git(tmp_path, "checkout", "-q", "-")
+    (tmp_path / "c.txt").write_text("ours\n")
+    git(tmp_path, "commit", "-qam", "ours")
+    who = ["-c", "user.email=t@example.com", "-c", "user.name=t"]
+    merge = subprocess.run(["git", *who, "merge", "-q", "other"], cwd=tmp_path, capture_output=True)
+    assert merge.returncode == 1 and b"CONFLICT" in merge.stdout + merge.stderr
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=tmp_path, capture_output=True).stdout
+    assert listed.split(b"\0").count(b"c.txt") == 3  # stages 1, 2 and 3
+    reads: Counter[str] = Counter()
+    real = Path.read_bytes
+
+    def counted(self: Path) -> bytes:
+        reads[self.relative_to(tmp_path).as_posix()] += 1
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counted)
+    _, kept = tree_changed.snapshot(tmp_path)
+    monkeypatch.undo()
+    assert reads == {"c.txt": 1, "same.txt": 1}
+    digest = {n: hashlib.blake2b((tmp_path / n).read_bytes(), digest_size=16).hexdigest() for n in reads}
+    assert kept == digest
 
 
 def plant_hub(proj: Path, escaped: Path) -> None:

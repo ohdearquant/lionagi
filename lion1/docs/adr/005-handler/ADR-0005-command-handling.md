@@ -257,9 +257,13 @@ runs under `-I` with lion's own interpreter (C7).
   `test_writable_editable_hook_origin_is_refused` (C7),
   `test_git_global_options_cannot_hide_push_or_destructive_subcommand`,
   `test_the_tree_hook_names_the_files_that_changed_and_the_head_that_moved`,
-  `test_the_tree_hook_keeps_its_baseline_when_git_cannot_list_the_files` and
-  `test_the_tree_hooks_state_is_one_file_per_run_under_lion_tree_state` (C8); the console test that
-  installs a directory's hooks.
+  `test_the_tree_hook_keeps_its_baseline_when_git_cannot_list_the_files`,
+  `test_the_tree_hooks_state_is_one_file_per_run_under_lion_tree_state`,
+  `test_the_tree_hook_keeps_a_carriage_return_in_a_file_name`,
+  `test_the_tree_hook_reads_a_tracked_name_that_is_not_utf8`,
+  `test_the_tree_hook_names_a_changed_file_whose_name_is_not_utf8` and
+  `test_the_tree_hook_reads_a_conflicted_file_once` (C8); the console test that installs a
+  directory's hooks.
 
 ## Alternatives
 

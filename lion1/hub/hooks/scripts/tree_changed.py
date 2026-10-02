@@ -28,9 +28,10 @@ def state_path(run: str) -> Path:
     return STATE / (hashlib.blake2b(run.encode(), digest_size=8).hexdigest() + ".json")
 
 
-def _git(cwd: Path, *args: str) -> str | None:
-    """A git line's stdout, None when git refuses (not a work tree, no HEAD yet, a lock, a bad index)."""
-    done = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+def _git(cwd: Path, *args: str) -> bytes | None:
+    """A git line's stdout as bytes (text mode reads a carriage return in a name as \\n and raises on a
+    name not UTF-8), None when git refuses (not a work tree, no HEAD yet, a lock, a bad index)."""
+    done = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True)
     return done.stdout if done.returncode == 0 else None
 
 
@@ -38,7 +39,7 @@ def snapshot(cwd: Path) -> tuple[str, dict[str, str] | None] | None:
     """(HEAD sha, path -> blake2b digest) over what a reader could see: tracked files present in the
     work tree plus untracked-but-present ones, `.lion/` out. None outside a git work tree; the map is
     None when git could not list the files, which is no observation, never an empty tree."""
-    head = (_git(cwd, "rev-parse", "HEAD") or "").strip()
+    head = (_git(cwd, "rev-parse", "HEAD") or b"").decode().strip()
     if not head:
         return None
     listed = _git(cwd, "ls-files", "-z")
@@ -46,7 +47,9 @@ def snapshot(cwd: Path) -> tuple[str, dict[str, str] | None] | None:
     if listed is None or untracked is None:
         return head, None
     files: dict[str, str] = {}
-    for rel in listed.split("\0") + untracked.split("\0"):
+    # a name is git's bytes up to a NUL, decoded as the file system does; a conflicted path is listed
+    # once per index stage and read once
+    for rel in dict.fromkeys(map(os.fsdecode, listed.split(b"\0") + untracked.split(b"\0"))):
         if not rel or rel.startswith(IGNORED):
             continue
         f = cwd / rel
@@ -91,6 +94,7 @@ def main() -> int:
                 f"tree: could not be read (git ls-files failed); round {prev.get('round')} stays the baseline"
             )
         return 0
+    sys.stdout.reconfigure(errors="surrogateescape")  # a name not UTF-8 goes out as git's bytes
     for line in notice(prev, head, files) if isinstance(prev, dict) else []:
         print(line)
     path.parent.mkdir(parents=True, exist_ok=True)
