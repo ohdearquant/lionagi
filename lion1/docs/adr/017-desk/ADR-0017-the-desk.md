@@ -499,6 +499,8 @@ least two and at most all of them.
 - **S15**: The listing wins over `[wake]` (S8): the gate runs before the rules, so `Desk.admit`
   stages a clarify's answer whatever a rule does with the mail; `drop` does not keep it from the
   desk and `batch` does not delay its listing. The batched mail still runs when its window opens;
-  its run finds the answer's row and resolves nothing twice. Pinned by
-  `test_a_clarifys_answer_is_listed_whatever_wake_does_and_its_later_run_resolves_nothing_twice` in
-  `tests/test_desk.py`.
+  its run finds the answer's row and resolves nothing twice. Pinned in `tests/test_desk.py` by
+  `test_a_clarifys_answer_is_listed_whatever_wake_does_and_its_later_run_resolves_nothing_twice` for
+  `Agent.wake` and
+  `test_a_continuous_chairs_wait_lists_a_clarifys_answer_whatever_wake_does_and_answers_it_once` for
+  a chair's in-run wait.
