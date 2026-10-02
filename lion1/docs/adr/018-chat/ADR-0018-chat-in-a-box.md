@@ -207,7 +207,7 @@ chat. A pipe keeps the plain line reader. The status line sits under the prompt 
 round notice under `--verbose`. The flags' defaults come from the config file: the nearer file wins
 per key, a flag on the line over both.
 
-### C9: A first Ctrl-C cuts the call; a fold, not a failed directive, restarts a session _(enforced: mechanical)_ ^c9
+### C9: A first Ctrl-C cuts the call; a failed directive leaves a session as it was _(enforced: mechanical)_ ^c9
 
 - **Subject**: `Interrupt`, `Run.interrupt` and the `claude_code` session.
 - **Violated when**: a Ctrl-C mid-call waits for the round, a cut ends the run, a failed directive
@@ -398,11 +398,13 @@ as `--config`, over the cwd's (measured); missing, or naming no actor, it refuse
 ### D6: `Run.interrupt`, `run.cut`, and a result's `spec` ^d6
 
 Serves C9. `Run.interrupt` sets `pause` and cancels the call the loop holds in `run.call`; the loop
-reads `run.cut` to tell that cancellation from the run's own and continues. `_message` renders a
-failed result with `spec=None`, which `ClaudeCodeSession` reads before restarting. `chat_main` calls
-`backend_for` with the model alone, so the session runs `--tools ""` and `--max-turns 1`.
+reads `run.cut` to tell that cancellation from the run's own and continues. `ClaudeCodeSession`
+reads what changed off the view, which a failed result leaves as it was. `chat_main` calls
+`backend_for` with the model alone, so the session runs `--tools ""` and `--max-turns 1`. On `-c`,
+`chat_main` seeds the session's `base` from the log's last bill.
 
 - **Landing evidence**: `tests/test_chat.py`: the cut with its two controls;
+  `test_a_continued_chat_seeds_its_sessions_first_figure_from_the_last_billed_call`;
   `apps/cli/tests/test_chat_command.py`: the Ctrl-C presses,
   `test_a_claude_code_model_gets_no_tools_of_its_own_one_turn_per_call_and_no_gate_hook`;
   `tests/test_claude_code.py`: `test_a_failed_context_directive_does_not_restart_the_session`.
@@ -570,7 +572,7 @@ set.
   boxed chat.
 - **S11**: A cut round leaves no turn on the record, only a notice. A `claude_code` session killed
   mid-call resumes on the next call from the CLI's own persisted session, which keeps its own
-  transcript until a directive or a fold restarts it from the folded view.
+  transcript until a restart that pays, or the fold, starts it over from the folded view.
 - **S12**: The config file cannot switch a `true` off for one run: the flags are switches, so a
   nearer file's `false` is the only override. `lion chat --help` shows the built-in defaults, not
   the files'.

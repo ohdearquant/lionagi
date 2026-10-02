@@ -120,8 +120,8 @@ hard-set pair as code-host-closed, not unaided (0012 C8).
   subscription's spend is unknown, never zero (0009 C1, C2, C5).
 - The fold measures the estimate plus what the last count stands above it beyond the run's floor; the
   floor, the backend's fixed context, stays in the figure and out of the measure; a session-keeping
-  backend starts over from the folded view on a directive or the fold event, one session per run
-  (0009 C3, C4).
+  backend starts over from a point or the whole view when that repays itself, always on the fold
+  event, one session per run (0009 C3, C4).
 - Which model a name binds to, through which route and on whose key, and whether the served model is
   the one named, are below the boundary; the envelope keeps the response's model and compares nothing
   (0009 S5).

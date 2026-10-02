@@ -1,7 +1,7 @@
 ---
 adr: ADR-0015
 status: draft
-liveness: operating (the handler, the gate, the store boundary, the ticks and the catch-up are pinned by tests with scripted backends and a fake store; the hand-run check is driven both ways; the catch-up passes its creator and status filters to the store)
+liveness: operating (the handler, the gate, the store boundary, the ticks, the catch-up over every page of the store's filtered lists and the aged pass's one telling per report are pinned by tests with scripted backends and a fake store; the hand-run check is driven both ways)
 date: "2026-09-25"
 area: chores
 kind: new
@@ -195,9 +195,11 @@ dead-instrument check. The defaults: aged after 2 periods, dead after 3 runs, th
 aged pass hourly. The digest's line per chore names the last ending and counts the day's runs,
 answered, quiet, report, escalate and instrument-failed.
 
-- **Landing evidence**: `tests/test_chores.py`, 30 tests: the three endings, each refusal, the
-  standing state per recipient, the dead instrument, the digest, the aged pass, the missed tick,
-  `ensure_ticks`.
+- **Landing evidence**: `tests/test_chores.py`, 38 tests: the three endings, each refusal, the
+  standing state per recipient, the dead instrument, the digest, the aged pass (each report told
+  once at 1,000 and 1,001 unanswered,
+  `test_each_unanswered_report_is_told_to_the_steward_once_however_many_markers_the_ledger_holds`),
+  the missed tick, `ensure_ticks`.
 
 ### D2: `instruments()` and `Record` build the chores from `chores.toml` ^d2
 
@@ -224,15 +226,22 @@ with the expected actor asserted (C4).
 
 ### D4: Ticks are the store's reminders, and missed ones are caught up once ^d4
 
-Serves C3. `ensure_ticks` reads the actor's own pending reminders from `schedule.agenda` and creates
-each missing one with `schedule.remind`, first firing a minute out. `_catch_up` asks the store for
-the actor's own scheduled rows marked missed and those marked failed, filtered by creator and status
-before a page of 200 each. It checks both again in code and runs each row once, remembered under
-`missed_seen`. The CLI creates ticks at serve start and on `--ticks`, never for a chair.
+Serves C3. `ensure_ticks` reads the actor's pending reminders from `schedule.agenda` and creates
+each missing one with `schedule.remind`, first firing a minute out. The CLI creates ticks at serve
+start and on `--ticks`, never for a chair.
+
+`_catch_up` asks the store for the actor's missed and failed rows, filtered before each page of 200,
+pages each list to its end, rechecks both in code and runs each row once. An id stays under
+`missed_seen` while the store lists it; two misses ask the store for it by id (S9).
 
 - **Landing evidence**: `test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those`,
   `test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once`,
-  `test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page`;
+  `test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page`,
+  `test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once` (201 rows, two passes),
+  `test_a_seen_missed_tick_is_remembered_while_the_store_lists_it_however_many_there_are` (501
+  rows), `test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once`,
+  `test_a_page_that_is_not_a_page_fails_the_missed_tick_read_and_lets_no_id_go`,
+  `test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look`;
   `test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread` asserts
   `--ticks` creates nothing for a chair.
 
@@ -271,10 +280,9 @@ bypasses the handler: no refusals, no row, no send.
   write by the agent's own actor is the kernel's to give, with the identity's grants
   ([[ADR-0013-the-agent|ADR-0013]] S9).
 - **S3**: The missed-tick read passes the store's `list` the actor as creator and each of missed and
-  failed as status, so another actor's rows and fired ones never fill the page. The creator is
-  display metadata, not attribution, so the code checks both again. It reads a row's status at the
-  item's top level, beside `properties`, as the store returns it. More than 200 of the actor's own
-  missed rows still leave the rest past a page no later run advances.
+  failed as status, so another actor's rows and fired ones never fill a page. The creator is display
+  metadata, not attribution, so the code checks both again, and reads a row's status at the item's
+  top level, beside `properties`, as the store returns it.
 - **S4**: A standing state is told once until it changes, a standing failure included: a chore that
   recovers quietly and fails again the same way is not resent. The digest carries the counts, and an
   owner who wants a state again asks.
@@ -285,6 +293,8 @@ bypasses the handler: no refusals, no row, no send.
 - **S6**: The chore ledger is read whole on every check and never rotated, so a check's cost grows
   with the agent's age. Its `at` stamps are local time without a zone; a row also carries `ts`, the
   instant in epoch seconds, which the aged pass reads, and a row without one is read by its `at`.
+  The aged pass keeps a marker per report told or found answered while its row is in the ledger, so
+  the markers grow with it.
 - **S7**: A front desk runs a chore's instrument through the same refusals to answer the owner's
   mail, and the digest's period becomes the desk's brief, every 12 hours unless set
   ([[ADR-0017-the-desk|ADR-0017]]).
@@ -292,3 +302,20 @@ bypasses the handler: no refusals, no row, no send.
   answer's message and thread go on the row. A later tick names that answer as its prior and does
   not resend the same findings, and the aged pass waits for the owner's reply on the ask's thread.
   `test_the_owners_own_ask_keeps_its_receipt_so_the_report_ages_and_is_not_repeated` pins it.
+- **S9**: Each list is paged, 200 to a page, by offset until the store says no more (`has_more`
+  false, or a bare page short of 200), so no number of missed rows leaves one unread. A row an
+  offset read skips is read by the next pass, its id held
+  (`test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once`, both page shapes). An id
+  missed twice is asked for by `get`: still missed or failed is kept, moved on or not-found is let
+  go, a failed read or an answer with no status keeps it
+  (`test_a_row_the_pages_skip_twice_is_kept_on_the_stores_word_and_runs_once`).
+- **S10**: A page that is no page, with no list in it or empty while the store says more is behind
+  it, fails the whole read: nothing runs and no id is let go
+  (`test_a_page_that_is_not_a_page_fails_the_missed_tick_read_and_lets_no_id_go`). Seen ids are
+  matched by set, so a long list costs each row one look
+  (`test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look`).
+- **S11**: A missed tick of the chore a check is running is covered by that check: it is marked seen
+  and noted, never run a second time
+  (`test_a_missed_tick_of_the_chore_this_check_runs_is_covered_by_the_check_itself`). A check the
+  ask narrowed covers nothing: the tick was the whole sweep, so it runs
+  (`test_a_check_the_ask_narrowed_covers_no_missed_tick_of_its_chore`).

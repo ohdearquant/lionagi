@@ -19,7 +19,8 @@ from typing import Any
 from hub import Box, BoxTree, DaytonaSandbox, LocalTree, Sandbox, code, files, guidance, khive_ops, shell
 from hub.agent.chores import SPAWN_SALIENCE, Bounded
 from hub.areas import partial
-from hub.backend import ClaudeCodeError, CodexError, OpenRouterError
+from hub.backend import ClaudeCodeError, ClaudeCodeSession, CodexError, OpenRouterError
+from hub.backend.claude_code import _prompt_tokens
 from hub.chat import chat, load_log
 from hub.hooks import install, load
 from hub.khive import Khive, KhiveError
@@ -382,9 +383,10 @@ async def _chat_main(
     history: tuple = ()
     resumed = notice = None
     ran: dict = {}  # where the continued chat ran, from its log's BOX row; a flag given now wins
+    billed: list[dict] = []  # its USAGE rows: the last session call's count seeds the new session's figure
     if prior is not None:
         torn: list[str] = []
-        history = load_log(prior, torn, ran)
+        history = load_log(prior, torn, ran, billed)
         resumed = (prior.stem, len(history))
         notes = [f"the previous session's log ended mid-write: {t}" for t in torn]
         if left := unsettled(history):
@@ -441,6 +443,12 @@ async def _chat_main(
     # a claude_code model gets no tools of its own: one turn per call, resumed, and everything it does
     # is a command in its text that this console runs, gates and records
     backend = backend_for(a.model)
+    if isinstance(backend, ClaudeCodeSession):
+        # a continued chat's new session starts from the whole view: its first figure stands on the
+        # count the last session call reported and the characters it stood in (ADR-0009/C4)
+        last = next((r for r in reversed(billed) if "prompt_chars" in r), None)
+        if last is not None and (count := _prompt_tokens(last)) is not None:
+            backend.base = (count, int(last["prompt_chars"]))
     runs: list[Run] = []
     say = Console(
         a.model,
