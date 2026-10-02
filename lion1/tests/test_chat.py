@@ -4,6 +4,11 @@ that the model sees whole; the person ends it, as Stopped; and a log read back i
 
 import asyncio
 import json
+import os
+import re
+import shlex
+import shutil
+import time
 
 import pytest
 
@@ -743,6 +748,158 @@ def test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_
     rows = [json.loads(r) for r in resolve_chat(chats, "last").read_text().splitlines()]
     told = [r["content"] for r in rows if r["kind"] == "INPUT" and r["meta"].get("origin") == "console"]
     assert len(told) == 1 and f"saved as {saved}, could not be checked against {tmp_path}" in told[0]
+
+
+def resumed(monkeypatch, directory, chat_id: str) -> tuple[BaseException | None, list[str]]:
+    """`lion chat -r <chat_id> --box vm` over `directory`: what it raised, and what the resume told
+    the model."""
+    from lion_cli.chat import resolve_chat
+
+    from tests.test_daytona import ChatBox, box_chat
+
+    err = box_chat(monkeypatch, ChatBox, directory, "done", resume=chat_id, box="vm", image=None)
+    rows = [
+        json.loads(r) for r in resolve_chat(directory / ".lion" / "chats", "last").read_text().splitlines()
+    ]
+    return err, [r["content"] for r in rows if r["kind"] == "INPUT" and r["meta"].get("origin") == "console"]
+
+
+def test_a_resumed_chat_tells_a_patch_git_could_not_check_as_unknown_with_gits_reason(tmp_path, monkeypatch):
+    # any failure of the reverse check was told as "not applied": a patch git cannot read, and a file
+    # edited after the patch landed, read as a patch never applied, and git's reason was dropped
+    from lion_cli.chat import resolve_chat
+
+    from tests.test_daytona import ChatBox, box_chat, repo_git
+
+    repo = tmp_path / "repo"
+    src = repo / "sub"  # a subdirectory: both checks run from the top, with its prefix
+    src.mkdir(parents=True)
+    (src / "f.txt").write_text("a\n")
+    repo_git(repo, "init", "-q")
+    repo_git(repo, "add", "-A")
+    repo_git(repo, "commit", "-qm", "one")
+    patch = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n"
+    monkeypatch.setattr(ChatBox, "patch", patch)
+    assert box_chat(monkeypatch, ChatBox, src, "done") is None
+    first = resolve_chat(src / ".lion" / "chats", "last")
+    saved = src / ".lion" / "chats" / f"{first.stem}.patch"
+    monkeypatch.setattr(ChatBox, "patch", "")
+    # the controls: a patch that goes on whole is not applied; one that comes off is, and nothing is said
+    err, (told,) = resumed(monkeypatch, src, first.stem)
+    assert err is None and f"saved as {saved}, are not applied to {src} as it stands, so edits" in told
+    (src / "f.txt").write_text("b\n")
+    assert resumed(monkeypatch, src, first.stem) == (None, [])
+    # the person edited the line the patch changed: it neither comes off nor goes on
+    (src / "f.txt").write_text("c\n")
+    err, (told,) = resumed(monkeypatch, src, first.stem)
+    assert f"saved as {saved}, could not be checked against {src} as it stands (git apply exited 1: " in told
+    assert "patch failed: sub/f.txt:1)" in told and "not applied" not in told and err is None
+    # a patch git cannot read
+    saved.write_text(patch.removesuffix("+b\n"))
+    err, (told,) = resumed(monkeypatch, src, first.stem)
+    assert f"could not be checked against {src} as it stands (git apply exited 128: " in told
+    assert "corrupt patch at" in told and "not applied" not in told and err is None
+
+
+REAL_GIT = shutil.which("git")  # resolved before any test puts a stub first on PATH
+
+
+def hanging_git(tmp_path, monkeypatch, discovery: float | None = None):
+    """`git` on PATH that hangs, each call's pid appended to the file returned; `rev-parse` hangs too
+    unless `discovery` is how long it takes before the real git answers it."""
+    real = REAL_GIT
+    pids = tmp_path / "git-pids"
+    stub = tmp_path / "hanging-bin"
+    stub.mkdir(exist_ok=True)
+    find = (
+        "exec /bin/sleep 15"
+        if discovery is None
+        else f'/bin/sleep {discovery}; exec {shlex.quote(real)} "$@"'
+    )
+    (stub / "git").write_text(
+        f"#!/bin/sh\necho $$ >> {shlex.quote(str(pids))}\n"
+        f'case " $* " in *" rev-parse "*) {find} ;; esac\nexec /bin/sleep 15\n'
+    )
+    (stub / "git").chmod(0o755)
+    monkeypatch.setenv("PATH", str(stub))
+    return pids
+
+
+def reaped(pids) -> int:
+    """How many git calls the stub took, each a process of its own, all killed and waited for:
+    nothing left running, nor a zombie."""
+    started = [int(p) for p in pids.read_text().split()]
+    assert len(set(started)) == len(started)
+    for pid in started:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    pids.unlink()
+    return len(started)
+
+
+def test_a_resumed_chat_whose_git_hangs_is_told_its_patch_could_not_be_checked_within_one_bound(
+    tmp_path, monkeypatch
+):
+    # the resume's git ran with no time limit: a git that hangs held the chat before its first call
+    from lion_cli.chat import resolve_chat
+
+    from tests.test_daytona import ChatBox, box_chat
+
+    (tmp_path / "f.txt").write_text("a\n")
+    patch = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n"
+    monkeypatch.setattr(ChatBox, "patch", patch)
+    assert box_chat(monkeypatch, ChatBox, tmp_path, "done") is None
+    first = resolve_chat(tmp_path / ".lion" / "chats", "last")
+    monkeypatch.setattr(ChatBox, "patch", "")
+    # git hangs finding the repository; then it answers late and the check hangs: the check gets what
+    # is left of the one bound, never a fresh one (1.5 s + 2 s would be past the 3 s asserted)
+    for bound, discovery in ((1.0, None), (2.0, 1.5)):
+        monkeypatch.setattr("lion_cli.chat.GIT_TIMEOUT", bound, raising=False)
+        pids = hanging_git(tmp_path, monkeypatch, discovery)
+        start = time.monotonic()
+        err, told = resumed(monkeypatch, tmp_path, first.stem)
+        assert time.monotonic() - start < bound + 1, err
+        assert err is None and len(told) == 1
+        unchecked = (
+            f"could not be checked against {tmp_path} as it stands (git did not answer within {bound:g}s)"
+        )
+        assert unchecked in told[0]
+        assert reaped(pids) == (1 if discovery is None else 2)  # the lookup; or it and the check
+
+
+def test_a_patch_apply_that_hangs_is_stopped_and_what_it_changed_is_said_to_be_unknown(
+    tmp_path, monkeypatch, capsys
+):
+    # take_patch's git ran with no time limit; and an apply stopped mid-way may have changed the
+    # directory, so it is never told as "not applied", nor the directory as it was
+    from tests.test_daytona import ChatBox, box_chat, repo_git
+
+    src = tmp_path / "proj"
+    src.mkdir()
+    (src / "f.txt").write_text("a\n")
+    repo_git(src, "init", "-q")
+    repo_git(src, "add", "-A")
+    repo_git(src, "commit", "-qm", "one")
+    patch = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n"
+    monkeypatch.setattr(ChatBox, "patch", patch)
+    monkeypatch.setattr("lion_cli.chat.GIT_TIMEOUT", 1.0, raising=False)
+    ChatBox.made.clear()
+    for apply, discovery, said in (
+        (True, 0, "box: git apply did not finish within 1s and was stopped; whether it changed"),
+        (False, None, "box: not applied; git rev-parse did not answer within 1s"),  # nothing ran
+    ):
+        pids = hanging_git(tmp_path, monkeypatch, discovery)
+        start = time.monotonic()
+        err = box_chat(monkeypatch, ChatBox, src, "done", apply=apply)
+        assert time.monotonic() - start < 3, err
+        assert err is None
+        out = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out).split())
+        assert said in out and "box: applied" not in out
+        assert ("is unknown: read the files before applying" in out) is apply
+        assert ("not applied" in out) is not apply
+        assert ChatBox.made[-1].stopped  # the patch is saved: the box is not its only copy
+        assert reaped(pids) == (2 if apply else 1)
+    assert [p.read_text() for p in sorted((src / ".lion" / "chats").glob("*.patch"))] == [patch, patch]
 
 
 def test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed(tmp_path):
