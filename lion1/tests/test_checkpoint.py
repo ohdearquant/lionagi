@@ -927,3 +927,12 @@ def test_a_computed_field_is_written_as_a_key_that_a_model_forbidding_extras_ref
     with pytest.raises(ValidationError, match="upper\n  Extra inputs are not permitted"):
         Shut.model_validate(written)
     assert Shut.model_validate({"title": "dune"}).upper == "DUNE"
+
+
+class Open(Shut):
+    model_config = ConfigDict(extra="allow")
+
+
+def test_a_computed_field_is_written_as_a_key_that_a_model_allowing_extras_keeps_as_extra_data():
+    back = Open.model_validate(jsonable(Open(title="dune")))
+    assert back.model_extra == {"upper": "DUNE"} and back.title == "dune" and back.upper == "DUNE"

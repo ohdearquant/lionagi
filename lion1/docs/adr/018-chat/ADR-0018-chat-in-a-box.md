@@ -333,19 +333,21 @@ It gave a count and a summary before, and a model learned a verb was allowed onl
 
 ### C19: A model value in the chat log comes back as its fields _(enforced: mechanical)_ ^c19
 
-- **Subject**: `jsonable`, the `default=` of every chat log writer and of the checkpoint's file.
+- **Subject**: `jsonable`, the `default=` of every chat log entry writer and of the checkpoint's
+  file.
 - **Violated when**: a model value is logged as anything but its fields, a command typed with the
   model is handed anything but the model, or a value an older log holds as a string resumes as
   anything else.
 
 A model value, a command's result or a program's value, is logged as `model_dump(mode="json")`,
-computed fields included, and a resume reads it back as that dict. A program reads its fields
-(`*b.title`), and a command whose argument is typed as the model is handed the model, validated from
-the dict. A computed field's key is ignored there, unless the model forbids extra fields, which
-refuses it.
+computed fields included, and a resume reads that dict back. A program reads its fields
+(`*b.title`), and a command typed as the model is handed the model, validated from the dict.
 
-A model whose fields JSON cannot hold is logged as its string. An older log holds every model value
-as its string, and a resume reads it back as that string.
+On that validation a computed field's key is ignored, refused if the model forbids extra fields,
+kept as extra data if it allows them. A model with aliased fields replays under its field names,
+which a command typed as it accepts only if the model validates by name.
+
+A model whose fields JSON cannot hold is logged as its string.
 
 ## Decisions
 
@@ -534,16 +536,16 @@ set.
 
 Serves C19. `jsonable` returns `model_dump(mode="json")` for a pydantic model and the `str` of
 anything else, or of a model whose dump raises pydantic's serialization error. `Console` writes each
-chat log row with it, the long-running agent its checkpointed record, and the checkpoint its file
-and each value its restore shows. `entry_of` hands the dict back as written, and a Spec field typed
-as the model validates it into the model again.
+chat log entry row with it, the long-running agent its checkpointed record, and the checkpoint its
+file and each value its restore shows; a usage row is written with `str`. `entry_of` hands the dict
+back as written, and a Spec field typed as the model validates it into the model again.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`:
   `test_a_logged_model_value_resumes_as_its_fields_and_a_command_typed_as_the_model_gets_the_model`,
+  `test_a_logged_aliased_model_replays_under_its_field_names_which_only_a_by_name_command_accepts`,
   `test_a_resumed_program_reads_a_field_of_a_logged_model_value`,
   `test_a_log_written_before_model_values_were_logged_as_fields_resumes_the_value_as_its_string`;
-  the model value tests of `tests/test_checkpoint.py` and `tests/test_context.py`. Control:
-  `default=str` at any one writer fails that writer's test.
+  the model value tests of `tests/test_checkpoint.py` and `tests/test_context.py`.
 
 ## Alternatives
 

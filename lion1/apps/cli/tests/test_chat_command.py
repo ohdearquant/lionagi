@@ -11,7 +11,7 @@ import pytest
 from lion_cli.chat import Interrupt, _branch, chat_main, console, signer, unsettled
 from lion_cli.main import parser
 from lion_cli.view import RESULT_LINES, Console
-from pydantic import BaseModel, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from hub.chat import chat, entry_row, load_log
 from lionagi import Actor, Profile
@@ -598,9 +598,31 @@ class Echo(BaseModel):
     text: str
 
 
+class Doc(BaseModel):
+    title: str = Field(alias="name")
+
+
+class Pull(BaseModel):
+    title: str
+
+
+class Named(Doc):
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class Index(BaseModel):
+    doc: Doc
+
+
+class Catalog(BaseModel):
+    doc: Named
+
+
 def shelf(language: str, got: list) -> tuple[Actor, Profile]:
-    """A console of three commands: `fetch` returns a Book, `shelve` takes one, `echo` takes text;
-    `got` collects what `shelve` and `echo` were handed."""
+    """A console of six commands: `fetch` returns a Book, `shelve` takes one, `echo` takes text, `pull`
+    returns a Doc, whose field is read under an alias, `index` takes a Doc and `catalog` a Named one,
+    which validates by the field's name too; `got` collects what `shelve`, `echo`, `index` and
+    `catalog` were handed."""
     actor = Actor("shelf")
 
     @actor.handler(Fetch)
@@ -617,7 +639,23 @@ def shelf(language: str, got: list) -> tuple[Actor, Profile]:
         got.append(req.text)
         return req.text
 
-    return actor, Profile("shelf", specs=frozenset({"fetch", "shelve", "echo"}), language=language)
+    @actor.handler(Pull)
+    async def pull(req: Pull, ctx) -> Doc:
+        return Doc(name=req.title)
+
+    @actor.handler(Index)
+    async def index(req: Index, ctx) -> str:
+        got.append(req.doc)
+        return "indexed"
+
+    @actor.handler(Catalog)
+    async def catalog(req: Catalog, ctx) -> str:
+        got.append(req.doc)
+        return "cataloged"
+
+    return actor, Profile(
+        "shelf", specs=frozenset({"fetch", "shelve", "echo", "pull", "index", "catalog"}), language=language
+    )
 
 
 def lion_chat(monkeypatch, tmp_path, made, turns: tuple[str, ...], log, *flags: str) -> list[dict]:
@@ -734,3 +772,40 @@ def test_a_log_written_before_model_values_were_logged_as_fields_resumes_the_val
         "echo it",
     )
     assert got == [was] and by_alias(rows, "e")["value"] == was and by_alias(rows, "b")["value"] == was
+
+
+def test_a_logged_aliased_model_replays_under_its_field_names_which_only_a_by_name_command_accepts(
+    tmp_path, monkeypatch
+):
+    """The log holds the model by its field names, not by the alias a handler typed as it validates by;
+    `lion chat -r` replays that dict, a command typed as the model is refused as invalid arguments
+    naming the field, and one typed as a model that validates by name too is handed the model."""
+    got: list = []
+    first = tmp_path / "first.jsonl"
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("core", got),
+        ('<lact d>pull(title="Dune")</lact>', "Pulled."),
+        first,
+        "--say",
+        "pull Dune",
+    )
+    assert by_alias(rows, "d")["value"] == {"title": "Dune"}  # the field's name; its alias is `name`
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("core", got),
+        ("<lact i>index(doc=*d)</lact><lact c>catalog(doc=*d)</lact>", "Filed."),
+        tmp_path / "second.jsonl",
+        "-r",
+        str(first),
+        "--say",
+        "file it",
+    )
+    refused = by_alias(rows, "i")
+    assert (refused["ok"], refused["reason"]) == (False, "invalid")
+    assert refused["error"] == "invalid arguments: doc.name: Field required"
+    assert (by_alias(rows, "c")["ok"], by_alias(rows, "c")["value"]) == (True, "cataloged")
+    assert [type(g) for g in got] == [Named] and got[0].title == "Dune"
+    assert by_alias(rows, "d")["value"] == {"title": "Dune"}
