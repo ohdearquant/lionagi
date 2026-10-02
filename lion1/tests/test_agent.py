@@ -20,6 +20,7 @@ from hub.backend import claude_code
 from hub.backend.claude_code import ClaudeCodeSession
 from hub.khive import Khive
 from lionagi import Actor, FileNoteStore, Kind, MemoryNoteStore, Message, Profile, Success
+from lionagi.checkpoint import load
 
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
 HOLD = (  # a process that takes the pid file's lock and keeps it until its stdin closes
@@ -162,6 +163,71 @@ def test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_poi
     assert "Finish by filling these with OUT{}" not in system  # no declared output, no OUTPUT section
 
 
+@pytest.mark.parametrize(
+    ("stop", "posture"),
+    [
+        ('OUT{posture: {done: "answered", awaiting: "the owner"}}', "answered Awaiting: the owner"),
+        ('OUT{posture: "stopping, the store is gone"}', "stopping, the store is gone"),
+        ('OUT{posture: {why: "the store is gone"}}', '{"why": "the store is gone"}'),
+        ('OUT{why: "the store is gone"}', '{"why": "the store is gone"}'),
+        ('OUT{posture: {(1, 2): "x"}}', "{(1, 2): 'x'}"),  # a key JSON cannot hold
+    ],
+    ids=["done-awaiting", "text", "other-fields", "no-posture", "not-json"],
+)
+def test_a_continuous_chairs_out_is_its_stop_its_posture_as_written_and_its_end_checkpointed(
+    tmp_path, stop, posture
+):
+    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    later = mail("lambda:a", "one more", mid="c3d4e5f6")
+    lines: list[str] = []
+    again = REPLY.replace("<lact s1>", "<lact s2>")
+    backend = Scripted(REPLY, stop, again, "answered again", khive=khive)
+    agent = Agent(
+        Actor("echo", privileges={"comm.send"}), khive, backend, profile_for, continuous=True, poll_ms=20
+    )
+    agent.actor.notes_for(ACTING).put("posture", "an earlier wake's posture", run="r-old", seq=3)
+
+    def wakes() -> int:
+        return sum(1 for line in lines if line.startswith("wake "))
+
+    def until() -> bool:
+        if wakes() == 1 and later["full_id"] not in khive.read and later not in khive.mail:
+            khive.mail.append(later)
+        return wakes() >= 2
+
+    asyncio.run(agent.serve(until=until, log=lines.append))
+    first, second = agent.runs  # the stop ended the conversation; the next mail runs fresh
+    assert isinstance(first.outcome, Success) and khive.sent == [SENT, SENT]
+    held = load(tmp_path)  # the end is checkpointed as the cap's is, the stop's posture among its vars
+    assert lines[0] == f"checkpoint {held.id} (end) at seq {first.record.seq}"
+    assert held.why == "end" and held.source["run"] == first.id and held.source["seq"] == first.record.seq
+    assert {v.name: v.value for v in held.vars}.get("posture", "") == posture  # an empty note is not held
+    opening = next(e.content for e in second.record if e.kind is Kind.INPUT)
+    assert not any("say hi back" in str(e.content) for e in second.record)
+    assert f"Your posture then: {posture}\n" in opening and "an earlier wake's posture" not in opening
+    assert "'outcome': 'Success'" in opening
+
+
+@pytest.mark.parametrize("reply", ["", "OUT{}"], ids=["empty", "bare-out"])  # a bare OUT{} reads as nothing
+def test_an_empty_turn_ending_a_burst_leaves_an_empty_posture_of_that_burst(tmp_path, reply):
+    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    lines: list[str] = []
+    agent = Agent(
+        Actor("echo", privileges={"comm.send"}),
+        khive,
+        Scripted(REPLY, reply, khive=khive),
+        profile_for,
+        continuous=True,
+        poll_ms=20,
+    )
+    agent.actor.notes_for(ACTING).put("posture", "an earlier wake's posture", run="r-old", seq=3)
+    asyncio.run(agent.serve(until=lambda: len(lines) >= 1, log=lines.append))
+    (run,) = agent.runs
+    note, cursor = agent.actor.notes_for(ACTING).get("posture"), agent.state.get("cursor")
+    assert lines[0].startswith("wake 1: Quiet after 2 rounds") and khive.sent == [SENT]
+    assert (note.value, note.run, note.seq) == ("", run.id, cursor.seq) and cursor.run == run.id
+
+
 def test_rerun_finds_read_mail_by_the_short_id_the_cursor_carries():
     """The box answers with full ids; the cursor and the owner's notice name the short one."""
     m = mail("lambda:a", "say hi back")
@@ -229,7 +295,9 @@ def test_mail_for_another_profile_ends_the_conversation_and_runs_fresh(tmp_path)
     first, second = agent.runs
     assert first.profile is ACTING and second.profile is READER and khive.sent == [SENT]
     assert "read this" not in "".join(str(e.content) for e in first.record)
-    assert lines[1].startswith("wake 2: Success after 1 rounds, 1 mail, 0 sent")
+    # the second run's OUT{} is the model's stop: its end is checkpointed before the wake's line
+    assert lines[1] == f"checkpoint {load(tmp_path).id} (end) at seq {second.record.seq}"
+    assert lines[2].startswith("wake 2: Success after 1 rounds, 1 mail, 0 sent")
 
 
 def test_a_profile_changed_under_the_same_name_ends_the_conversation_and_runs_fresh(tmp_path):
@@ -1233,6 +1301,11 @@ def test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the
     # the queue is read-only: the chair says a task's condition and the owner moves the row
     assert "You cannot take a task to active, complete it or move its `at`" in system
     assert "the owner moves the row" in system
+    # a task says why it is in the batch, and the queue line is there only while it holds tasks
+    assert "a task in a batch says why it is there" in system and "While the queue holds tasks" in system
+    # OUT{} ends the conversation: said with what the next one opens on, and the hand-run wake it ends
+    assert "the next mail starts a new one without its record" in system
+    assert "a wake's input asks you to finish with it" in system
     assert "Bash" not in system and "Claude Code" not in system and "khive MCP" not in system
     results = [e.content.value for e in run.record if e.kind is Kind.RESULT]
     assert any("twin: hello from the directory" in str(r) for r in results)
