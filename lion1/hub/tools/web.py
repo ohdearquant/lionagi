@@ -15,6 +15,7 @@ import http.client
 import ipaddress
 import json
 import os
+import re
 import socket
 import ssl
 import sys
@@ -262,13 +263,19 @@ def _blank(data: bytes, credentials: tuple[bytes, ...]) -> bytes:
     return data
 
 
-def _failure(name: str, e: BaseException, timeout: float, expired: bool) -> WebError:
+def _failure(
+    name: str, e: BaseException, timeout: float, expired: bool, credentials: tuple[bytes, ...] = ()
+) -> WebError:
     reason = e.reason if isinstance(e, urllib.error.URLError) else e
     if expired or isinstance(reason, TimeoutError):
         return WebError(f"{name}: timed out after {timeout:g}s")
     if isinstance(e, urllib.error.URLError):
-        return WebError(f"{name}: request failed: {e.reason}")
-    return WebError(f"{name}: request failed: {type(e).__name__}: {e}")
+        text = f"{name}: request failed: {e.reason}"
+    else:
+        text = f"{name}: request failed: {type(e).__name__}: {e}"
+    for secret in credentials:  # an exception's text can quote what the provider sent, the key too
+        text = text.replace(secret.decode(), "[credential]")
+    return WebError(text)
 
 
 _FAILED = (OSError, ValueError, http.client.HTTPException)  # URLError is an OSError; a cut body is neither
@@ -294,7 +301,7 @@ def _send(name: str, req: urllib.request.Request, timeout: float = TIMEOUT) -> b
                 raise WebError(f"{name}: timed out after {timeout:g}s") from None
             raise
         except _FAILED as e:  # a reset socket, a cut body, an address urllib cannot open, the deadline
-            raise _failure(name, e, timeout, clock.expired) from None
+            raise _failure(name, e, timeout, clock.expired, credentials) from None
     if clock.expired:  # the shut socket read as the end of the body
         raise WebError(f"{name}: timed out after {timeout:g}s")
     if len(body) > MAX_BYTES:
@@ -326,7 +333,10 @@ def _items(name: str, value: Any) -> list[dict]:
         return []
     if not isinstance(value, list):
         raise WebError(f"{name}: unexpected response, results are a {type(value).__name__}, not a list")
-    return [r for r in value if isinstance(r, dict)]
+    for r in value:
+        if not isinstance(r, dict):
+            raise WebError(f"{name}: unexpected response, a result is a {type(r).__name__}, not an object")
+    return value
 
 
 def _text(value: Any) -> str:
@@ -341,8 +351,9 @@ def _hit(title: Any, url: Any, snippet: Any, published: Any = None) -> Hit | Non
 
 
 def _domain(site: str) -> str:
+    """Labels of ASCII letters, digits and hyphens joined by dots; an internationalized name in punycode."""
     site = site.strip()
-    if not site or any(c.isspace() or c in "/:" for c in site):
+    if not re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*", site):
         raise WebError(f"site must be a bare domain such as docs.python.org, not {site!r}")
     return site
 
@@ -423,7 +434,10 @@ class Brave:
 
     def parse(self, data: dict) -> list[Hit]:
         section = data.get("web")
-        results = section.get("results") if isinstance(section, dict) else None
+        if section is not None and not isinstance(section, dict):
+            kind = type(section).__name__
+            raise WebError(f"{self.name}: unexpected response, the web section is a {kind}, not an object")
+        results = section.get("results") if section is not None else None
         hits = (
             _hit(r.get("title"), r.get("url"), r.get("description"), r.get("page_age") or r.get("age"))
             for r in _items(self.name, results)
@@ -556,13 +570,17 @@ class _Text(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list) -> None:
         if tag in _SKIP:
             self.open[tag] = self.open.get(tag, 0) + 1
+            if tag == "noscript":  # raw text to its end tag, as a browser running scripts reads it
+                self.set_cdata_mode(tag)
         elif tag in _BREAK:
             self.parts.append("\n")
 
     def handle_startendtag(self, tag: str, attrs: list) -> None:
         # in HTML `<script/>` opens a script like `<script>`; only svg, foreign content, closes itself
         self.handle_starttag(tag, attrs)
-        if tag not in _SKIP or tag == "svg":
+        if tag in _SKIP and tag in self.CDATA_CONTENT_ELEMENTS:  # script, style
+            self.set_cdata_mode(tag)  # raw text to the end tag, as the parser reads it after `<script>`
+        elif tag not in _SKIP or tag == "svg":
             self.handle_endtag(tag)
 
     def handle_endtag(self, tag: str) -> None:
@@ -588,8 +606,8 @@ def html_text(html: str) -> str:
 def _check_url(url: str) -> None:
     """Refuse an address that is not http(s) or whose host resolves to anything but a public address:
     loopback, link-local (cloud metadata lives there), private, shared, multicast, unspecified or
-    reserved, v4 or v6, and v6 forms that carry a v4 address (mapped, compatible, NAT64), which are
-    judged by the address they carry.
+    reserved, v4 or v6, and v6 forms that carry a v4 address (mapped, compatible, translated, NAT64),
+    which are judged by the address they carry.
 
     What it covers: the address in the request and in every redirect it follows, each resolved here.
     On a direct connection the socket then dials an answer checked in the same call (`_connect_public`),
@@ -611,16 +629,18 @@ def _check_url(url: str) -> None:
 
 
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")
 
 
 def _carried_v4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
     """The IPv4 address a v6 form carries in its low 32 bits, which is where the packet may end up:
-    mapped (`::ffff:a.b.c.d`), compatible (`::a.b.c.d`) and NAT64 (`64:ff9b::a.b.c.d`). The v6 form
-    of each reads as public whatever it carries."""
+    mapped (`::ffff:a.b.c.d`), compatible (`::a.b.c.d`), translated (`::ffff:0:a.b.c.d`) and NAT64
+    (`64:ff9b::a.b.c.d`). All but the mapped form read as public whatever they carry."""
     if ip.ipv4_mapped is not None:
         return ip.ipv4_mapped
     number = int(ip)
-    if 1 < number < 2**32 or ip in _NAT64:  # `::` and `::1` are themselves, and neither is public
+    # `::` and `::1` are themselves, and neither is public
+    if 1 < number < 2**32 or ip in _NAT64 or ip in _TRANSLATED:
         return ipaddress.IPv4Address(number & 0xFFFFFFFF)
     return None
 
@@ -645,9 +665,10 @@ def _connect_public(host: str, port: int, timeout: float | None) -> socket.socke
     socket dials one of those answers by its address, never the name again."""
     failure: OSError | None = None
     for family, kind, proto, _, address in _public_addresses(host, port):
+        left = _left(timeout)  # the resolution may have outlasted the request's deadline: then no dial
         sock = socket.socket(family, kind, proto)
         try:
-            sock.settimeout(timeout)
+            sock.settimeout(left)
             sock.connect(address)
         except OSError as e:
             sock.close()

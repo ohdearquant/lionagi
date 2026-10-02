@@ -344,10 +344,11 @@ def test_jina_has_no_recency_and_says_so(wire):
 )
 @pytest.mark.parametrize(("make", "_body"), PROVIDERS)
 def test_a_bad_key_and_a_rate_limit_are_errors_the_model_reads(wire, make, _body, code, words):
-    wire.answers = [http_error(code, '{"detail": "no"}')]
+    echo = "" if make().name == "searxng" else KEY  # it takes no key
+    wire.answers = [http_error(code, f'{{"detail": "no such key {echo}"}}')]
     with pytest.raises(WebError, match=words) as e:
         run(make().search(WebSearch(query="x")))
-    assert KEY not in str(e.value)
+    assert KEY not in str(e.value) and ("[credential]" in str(e.value)) == bool(echo)
     assert str(e.value).startswith(make().name + ": ")
 
 
@@ -383,6 +384,21 @@ def test_a_provider_that_echoes_the_key_has_it_blanked_in_errors_and_hits(wire, 
 
 
 @pytest.mark.parametrize(("make", "_body"), PROVIDERS)
+def test_a_failure_whose_text_carries_the_key_has_it_blanked(wire, make, _body):
+    if make().name == "searxng":  # it takes no key
+        return
+    wire.answers = [
+        http.client.BadStatusLine(f"HTTP/1.1 {KEY}"),
+        urllib.error.URLError(f"refused for {KEY}"),
+        ConnectionResetError(f"reset by {KEY}"),
+    ]
+    for _ in range(3):
+        with pytest.raises(WebError, match="request failed") as e:
+            run(make().search(WebSearch(query="x")))
+        assert KEY not in str(e.value) and "[credential]" in str(e.value)
+
+
+@pytest.mark.parametrize(("make", "_body"), PROVIDERS)
 def test_a_provider_answer_past_the_cap_is_refused_and_never_read_whole(wire, make, _body, monkeypatch):
     monkeypatch.setattr(w, "MAX_BYTES", 100)
     wire.answers = [answer := Resp(json.dumps(_body))]
@@ -397,28 +413,70 @@ def test_a_body_that_is_not_json_or_not_the_documented_shape(wire, make, _body):
         Resp("<html>nope</html>", "text/html"),
         Resp("[1, 2]"),
         Resp(json.dumps({"results": 5, "web": 5, "data": 5})),
+        Resp(json.dumps({"results": [5], "web": {"results": [5]}, "data": [5]})),
     ]
     with pytest.raises(WebError, match="the response is not JSON"):
         run(make().search(WebSearch(query="x")))
     with pytest.raises(WebError, match="a list where an object was expected"):
         run(make().search(WebSearch(query="x")))
-    if make().name != "brave":  # Brave's `web` that is not an object reads as no results
-        with pytest.raises(WebError, match="results are a int, not a list"):
-            run(make().search(WebSearch(query="x")))
+    section = "the web section is a int, not an object" if make().name == "brave" else "results are a int"
+    with pytest.raises(WebError, match=f"unexpected response, {section}"):
+        run(make().search(WebSearch(query="x")))
+    with pytest.raises(WebError, match="unexpected response, a result is a int, not an object"):
+        run(make().search(WebSearch(query="x")))
 
 
-def test_a_provider_redirect_is_an_error_and_never_followed():
-    req = urllib.request.Request("https://api.example/search", headers={"Authorization": "Bearer x"})
-    assert (
-        w._Redirects(False).redirect_request(req, None, 302, "Found", {}, "https://elsewhere.example/")
-        is None
+def test_a_provider_redirect_is_an_error_and_never_followed(monkeypatch):
+    class Moved(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.path)
+            if self.path == "/search":
+                self.send_response(302)
+                self.send_header("Location", "/elsewhere")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args):
+            pass
+
+    seen: list[str] = []
+    server = http.server.HTTPServer(("127.0.0.1", 0), Moved)
+    port = server.server_address[1]
+    monkeypatch.setattr(urllib.request, "getproxies", dict)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/search", headers={"Authorization": f"Bearer {KEY}"}
     )
+    try:
+        with pytest.raises(WebError, match="p: HTTP 302"):
+            w._send("p", req, timeout=5.0)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+    assert seen == ["/search"]  # the header carrying the key went nowhere else
 
 
 def test_a_site_that_is_not_a_domain_is_refused():
-    for site in ("https://docs.python.org", "docs.python.org/3", "a b", " "):
+    for site in (
+        "https://docs.python.org",
+        "docs.python.org/3",
+        "a b",
+        " ",
+        "example.com?x",
+        "bücher.example",
+    ):
         with pytest.raises(WebError, match="bare domain"):
             Brave(KEY).request(WebSearch(query="x", site=site))
+    punycode = Brave(KEY).request(WebSearch(query="x", site="xn--bcher-kva.example"))
+    assert query(punycode)["q"] == "site:xn--bcher-kva.example x"  # an IDN is given as punycode
 
 
 # --- choosing a provider ---------------------------------------------------------------------------
@@ -545,8 +603,18 @@ def test_a_self_closed_script_or_a_stray_end_tag_leaves_nothing_hidden_on_the_pa
     # `<script/>` opens a script in HTML; a `</script>` inside a template closed the template's skip
     assert w.html_text("<script/>hidden js</script><p>shown</p>") == "shown"
     assert w.html_text("<style/>hidden css</style><p>shown</p>") == "shown"
+    # what follows `<script/>` is raw text to its end tag, so a tag spelled inside it opens nothing
+    assert w.html_text('<script/>const s = "<script/>";</script><p>visible</p>') == "visible"
+    assert w.html_text('<style/>p::after {content: "<style/>"}</style><p>visible</p>') == "visible"
     assert w.html_text("<template><div></script>hidden</div></template><p>shown</p>") == "shown"
+    assert w.html_text("<template/><p>hidden</p></template><p>shown</p>") == "shown"  # opened, not raw
     assert w.html_text("<p>a</p><svg/><p>b</p>") == "a\nb"  # svg is foreign content: `/>` closes it
+
+
+def test_a_tag_spelled_inside_a_noscript_opens_nothing_so_its_end_tag_ends_it():
+    assert w.html_text("<noscript><noscript></noscript><p>visible</p>") == "visible"
+    assert w.html_text("<noscript><p>hidden</p><script></noscript><p>shown</p>") == "shown"
+    assert w.html_text("<noscript/>hidden</noscript><p>shown</p>") == "shown"  # `/>` opens it
 
 
 def test_html_becomes_text_without_scripts_styles_or_markup():
@@ -613,6 +681,8 @@ def test_fetch_refuses_what_is_not_text(wire, public_dns, ctype):
         "http://[64:ff9b::7f00:1]/",  # NAT64: the gateway would deliver it to 127.0.0.1
         "http://[64:ff9b::a9fe:a9fe]/",  # NAT64 carrying 169.254.169.254
         "http://[::ffff:10.0.0.1]/",
+        "http://[::ffff:0:7f00:1]/",  # IPv4-translated: reads as public, carries loopback
+        "http://[::ffff:0:a9fe:a9fe]/",  # IPv4-translated carrying 169.254.169.254
     ],
 )
 def test_fetch_refuses_loopback_link_local_and_private_addresses(wire, url):
@@ -623,8 +693,9 @@ def test_fetch_refuses_loopback_link_local_and_private_addresses(wire, url):
 
 def test_a_v6_form_that_carries_a_public_v4_address_is_judged_by_that_address(wire):
     """An IPv6-only network reaches IPv4 sites through NAT64, so the form is not refused as such."""
-    wire.answers = [Resp("ok", "text/plain")]
+    wire.answers = [Resp("ok", "text/plain"), Resp("ok", "text/plain")]
     assert w._fetch("http://[64:ff9b::5db8:d822]/", 100) == "ok"  # carries 93.184.216.34
+    assert w._fetch("http://[::ffff:0:5db8:d822]/", 100) == "ok"  # IPv4-translated, the same address
     assert w._carried_v4(w.ipaddress.IPv6Address("2001:db8::1")) is None
     assert w._carried_v4(w.ipaddress.IPv6Address("::1")) is None
 
@@ -940,18 +1011,39 @@ def test_a_page_that_sends_a_byte_now_and_then_is_cut_at_the_deadline(drip, monk
     assert time.monotonic() - began < 2
 
 
-def test_past_the_deadline_no_socket_is_opened_and_one_watched_late_is_shut():
-    with w._Clock(0.05) as clock:
-        assert w._left(5.0) <= 0.05
-        time.sleep(0.1)
-        assert clock.expired
-        with pytest.raises(TimeoutError):
-            w._left(5.0)
-        a, b = socket.socketpair()
-        clock.watch(a)  # a socket that arrives after the deadline is shut at once
-        assert b.recv(1) == b""
-        a.close()
-        b.close()
+def test_past_the_deadline_no_socket_is_opened_and_one_watched_late_is_shut(monkeypatch):
+    server = socket.create_server(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    dialed: list[tuple] = []
+
+    class Late(socket.socket):  # connects, but only once the request's deadline has passed
+        def connect(self, address):
+            dialed.append(address)
+            time.sleep(0.1)
+            super().connect(address)
+
+    def resolve(host, port):
+        if host == "slow.example":
+            time.sleep(0.1)  # the dial's own resolution outlasts the deadline
+        return [(2, 1, 6, "", ("127.0.0.1", port))]
+
+    monkeypatch.setattr(w, "_public_addresses", resolve)
+    monkeypatch.setattr(w.socket, "socket", Late)
+    try:
+        for pinned in (w._Pinned("slow.example", port, timeout=5.0), w._PinnedTLS("slow.example", port)):
+            with w._Clock(0.05), pytest.raises(TimeoutError):
+                pinned.connect()
+        assert dialed == []  # the deadline passed during the resolution: nothing was dialed
+        late = w._Pinned("late.example", port, timeout=5.0)
+        with w._Clock(0.05):
+            late.connect()
+        peer, _ = server.accept()
+        peer.settimeout(2)
+        assert peer.recv(1) == b""  # a socket that arrives after the deadline is shut at once
+        peer.close()
+        late.close()
+    finally:
+        server.close()
     assert w._left(5.0) == 5.0  # outside a request, a socket keeps its own timeout
 
 

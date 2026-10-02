@@ -1,7 +1,7 @@
 ---
 adr: ADR-0023
 status: proposed
-liveness: operating (two commands, four provider adapters, the address check, the checked dial, the deadline and the bounds of every request are pinned by tests; the live provider tests are opt-in, S1)
+liveness: operating (two commands, four provider adapters, the address check, the checked dial, and every request's bounds and deadline, save the steps S9 leaves out of it, are pinned by tests; the live provider tests are opt-in, S1)
 date: "2026-10-02"
 area: web
 kind: new
@@ -38,8 +38,8 @@ it reach, stay the operator's decisions (A1). Source: `hub/tools/web.py`, `hub/t
   behind one protocol of one method.
 - **hit**: one search result as the model reads it: a title, a link, a snippet cut at 1,000
   characters and, when the search provider gives one, a date.
-- **carried address**: the IPv4 address held in the low 32 bits of a mapped, compatible or NAT64
-  IPv6 address.
+- **carried address**: the IPv4 address held in the low 32 bits of a mapped, compatible, translated
+  or NAT64 IPv6 address.
 - **public address**: an address the standard library calls global and not multicast, judged after
   an IPv6 form is replaced by its carried address.
 - **checked dial**: a connection made to one of the addresses a single resolution returned, after
@@ -91,7 +91,8 @@ with no results is a result that says so.
 
 A key is sent only in the header its search provider documents, and a search provider's redirect is
 an error, never followed: it would carry that header to another host. A provider that echoes the
-key, in an error or a result, has it replaced by `[credential]` before anything is read (S8).
+key, in an error, a result or the text of any failure, has it replaced by `[credential]` before
+anything is read (S8).
 
 ### C4: An argument a search provider does not document is refused, never guessed _(enforced: mechanical)_ ^c4
 
@@ -101,8 +102,10 @@ key, in an error or a result, has it replaced by `[credential]` before anything 
 
 SearXNG has no site filter and no week range, and Jina has no recency: each says so in a failed
 result that tells the model to search again without it. Brave documents the `site:` operator inside
-the query and gets it there. A `site` that is not a bare domain is refused. The environment's choice
-is the first set of `SEARXNG_URL`, `BRAVE_API_KEY`, `TAVILY_API_KEY`, `JINA_API_KEY`.
+the query and gets it there. A `site` is refused unless it is a bare domain: labels of ASCII
+letters, digits and hyphens joined by dots, so an internationalized name is given in punycode. The
+environment's choice is the first set of `SEARXNG_URL`, `BRAVE_API_KEY`, `TAVILY_API_KEY`,
+`JINA_API_KEY`.
 
 ### C5: A fetch is made only to a public address, at every hop _(enforced: mechanical)_ ^c5
 
@@ -111,16 +114,17 @@ is the first set of `SEARXNG_URL`, `BRAVE_API_KEY`, `TAVILY_API_KEY`, `JINA_API_
   a public address is fetched, or an IPv6 form passes on a carried address that is not public.
 
 The host is resolved and every answer must be a public address: one loopback, link-local, private,
-shared, reserved or multicast answer refuses the host. A mapped, compatible or NAT64 form is judged
-by its carried address, since its own form reads as global whatever it carries. Numeric spellings of
-a host are whatever the resolver makes of them, and that answer is the one checked.
+shared, reserved or multicast answer refuses the host. A mapped (`::ffff:a.b.c.d`), compatible
+(`::a.b.c.d`), translated (`::ffff:0:a.b.c.d`) or NAT64 (`64:ff9b::a.b.c.d`) form is judged by its
+carried address, since the compatible, translated and NAT64 forms read as global whatever they
+carry. Numeric spellings of a host are whatever the resolver makes of them, and that answer is the
+one checked.
 
 ### C6: A fetch the proxy does not take dials an address that was checked _(enforced: mechanical)_ ^c6
 
 - **Subject**: every connection a fetch opens, redirects included.
-- **Violated when**: a socket dials a name, a name whose answer changed after C5's check is
-  connected to, TLS verifies a name other than the host asked for, or a second reading of the proxy
-  settings changes the route.
+- **Violated when**: a socket dials a name or an answer that was not checked, TLS verifies a name
+  other than the host asked for, or a second reading of the proxy settings changes the route.
 
 A direct connection is a checked dial: the name is resolved once more at the connection, every
 answer is checked again, and the socket connects to one of those addresses. Whether the proxy took a
@@ -132,13 +136,13 @@ is the proxy's to restrict.
 
 - **Subject**: every search provider call and every fetch, redirects included.
 - **Violated when**: a request outlives its deadline by more than one socket operation; more than
-  2,000,000 bytes of a body are read; a fetch returns a body that is not a text type, or page text
+  2,000,001 bytes of a body are read; a fetch returns a body that is not a text type, or page text
   past `max_chars`; or a cut is not marked.
 
 A request has one deadline of 20 seconds, from its first connection to the last byte read, however
 the bytes arrive: a peer that sends a byte now and then is cut at the deadline as one that sends
 nothing. A provider's answer past 2,000,000 bytes is refused. A fetch reads text types only, at most
-2,000,000 bytes whatever `max_chars` asks.
+2,000,001 bytes whatever `max_chars` asks.
 
 HTML becomes text without scripts, styles or markup. The page's text is cut at `max_chars`, at most
 100,000, and a line after it says where; that line is not counted. The run's own bounds apply as to
@@ -163,12 +167,14 @@ and returns the names it registered. `hub/tools/__init__.py` exports the models,
 Serves C3 and C7. `_send` opens one request with redirects refused, reads one byte past the cap, and
 turns an HTTP error, a timeout in either of its forms, a network failure and a cut body into
 `WebError` naming the search provider. `_credentials` takes the key from the request's own
-credential header and `_blank` replaces it in the body and in an error's first 300 bytes. `_json`
-refuses a body that is not a JSON object, and `_items` a result list that is not a list.
+credential header and `_blank` replaces it in the body and an error's first 300 bytes, `_failure` in
+an exception's text. `_json` refuses a body that is not a JSON object, and `_items` a result list
+that is not a list.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_a_bad_key_and_a_rate_limit_are_errors_the_model_reads`,
   `test_a_provider_that_echoes_the_key_has_it_blanked_in_errors_and_hits`,
+  `test_a_failure_whose_text_carries_the_key_has_it_blanked`,
   `test_a_provider_answer_past_the_cap_is_refused_and_never_read_whole`,
   `test_a_body_that_is_not_json_or_not_the_documented_shape`,
   `test_a_provider_redirect_is_an_error_and_never_followed`.
@@ -176,8 +182,9 @@ refuses a body that is not a JSON object, and `_items` a result list that is not
 ### D3: `SearXNG`, `Brave`, `Tavily`, `Jina` and `provider_from_env` ^d3
 
 Serves C4. Each adapter has `request`, which builds the one request its reference describes, and
-`parse`, which reads the documented fields into hits. The reference and the date it was read sit in
-a comment above each class. An unsupported argument raises before any request is made.
+`parse`, which reads the documented fields into hits. A result with no link is skipped; a section or
+a result of another type than its reference names raises (C3). The reference and the date it was
+read sit in a comment above each class. An unsupported argument raises before any request is made.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_searxng_has_no_week_and_no_site_and_says_so`, `test_jina_has_no_recency_and_says_so`,
@@ -189,8 +196,9 @@ a comment above each class. An unsupported argument raises before any request is
 
 Serves C5. `_check_url` takes the scheme, the host and the port from the address and calls
 `_public_addresses`, which resolves the host and refuses on the first answer that is not a public
-address. `_carried_v4` returns the low 32 bits of a mapped, compatible or `64:ff9b::/96` address.
-`_Redirects` runs `_check_url` on each redirect's target before it is followed.
+address. `_carried_v4` returns the low 32 bits of a mapped, compatible, `::ffff:0:0:0/96` or
+`64:ff9b::/96` address. `_Redirects` runs `_check_url` on each redirect's target before it is
+followed.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_fetch_refuses_loopback_link_local_and_private_addresses`,
@@ -218,21 +226,24 @@ pinned connection unless `_via_proxy` reads the request as taken by the proxy.
 Serves C7. `_fetch` checks the address, opens it with the guarded opener, refuses a content type
 that is not text, reads one byte past the cap to know a cut happened, decodes with the declared
 charset or UTF-8, and cuts at `max_chars` with a marker. `html_text` drops script, style, noscript,
-template and svg content. An end tag closes only its own element, and `<script/>` opens a script as
-HTML reads it; only svg closes itself.
+template and svg content. An end tag closes only its own element. Script, style and noscript content
+is raw text to its end tag, `<script/>` and `<noscript/>` included, as HTML reads it; only svg
+closes itself.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_fetch_caps_what_it_reads_whatever_max_chars_asks`, `test_fetch_caps_the_text_at_max_chars`,
   `test_fetch_refuses_what_is_not_text`, `test_html_becomes_text_without_scripts_styles_or_markup`,
-  `test_a_self_closed_script_or_a_stray_end_tag_leaves_nothing_hidden_on_the_page`.
+  `test_a_self_closed_script_or_a_stray_end_tag_leaves_nothing_hidden_on_the_page`,
+  `test_a_tag_spelled_inside_a_noscript_opens_nothing_so_its_end_tag_ends_it`.
 
 ### D7: `_Clock`: the deadline, held by the thread that makes the request ^d7
 
 Serves C7. `_send` and `_fetch` each open a `_Clock` for the request. Every connection, pinned or
 timed, hands its socket to the clock, and an SSL socket before its handshake. When the deadline
 passes a timer shuts each socket, which ends a read blocked on it, and `_left` refuses a later
-connection. A request whose clock expired is a timeout whatever its read returned. `_Timed` and
-`_TimedTLS` carry provider and proxy connections.
+connection, a checked dial whose resolution outlasted the deadline included. A request whose clock
+expired is a timeout whatever its read returned. `_Timed` and `_TimedTLS` carry provider and proxy
+connections.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_a_provider_that_sends_a_byte_now_and_then_is_cut_at_the_deadline`,
