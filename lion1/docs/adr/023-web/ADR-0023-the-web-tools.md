@@ -40,8 +40,8 @@ it reach, stay the operator's decisions (A1). Source: `hub/tools/web.py`, `hub/t
   characters and, when the search provider gives one, a date.
 - **carried address**: the IPv4 address held in the low 32 bits of a mapped, compatible, translated
   or NAT64 IPv6 address.
-- **public address**: an address the standard library calls global and not multicast, judged after
-  an IPv6 form is replaced by its carried address.
+- **public address**: an address the standard library calls global and not multicast, outside the
+  five ranges C5 names, judged after an IPv6 form is replaced by its carried address.
 - **checked dial**: a connection made to one of the addresses a single resolution returned, after
   every address of that resolution was found to be a public address.
 
@@ -50,7 +50,7 @@ it reach, stay the operator's decisions (A1). Source: `hub/tools/web.py`, `hub/t
 | # | statement | source | if false |
 | - | --------- | ------ | -------- |
 | A1 | The process runs where reaching the open internet, and only that, is acceptable. The commands are not a boundary against the operator's own network. | the deployment | an egress proxy goes in front of the process; C6 names what the proxy then owns |
-| A2 | The standard library's table of global addresses is right on the supported interpreters, 3.11 to 3.14. | the `ipaddress` documentation | the check carries its own table of ranges |
+| A2 | The supported interpreters, 3.11 to 3.14 at any patch release, disagree on which addresses are global only inside the five ranges C5 names. | the `ipaddress` documentation, and the module's source in 3.11.16, 3.12.14, 3.13.15 and 3.14.7 | an address one release calls global and another does not passes where it reads as global; its range joins C5's |
 | A3 | Each search provider's API is what its reference said when read on 2026-10-02; the references are cited beside each adapter. | the provider references | the adapter raises on the unexpected body (C3) and is rewritten from the new reference |
 | A4 | `Request.has_proxy()` and `Request._tunnel_host` say whether urllib's proxy handler took a request, on 3.11 to 3.14. | the CPython source of `urllib.request` | a request reads as direct: a private proxy's address is refused, the safe direction |
 
@@ -120,6 +120,9 @@ carried address, since the compatible, translated and NAT64 forms read as global
 carry. Numeric spellings of a host are whatever the resolver makes of them, and that answer is the
 one checked.
 
+Five ranges are refused whole, whatever the interpreter calls them, because the supported patch
+releases disagree on them (A2): 192.0.0.0/24, 64:ff9b:1::/48, 2001::/23, 2002::/16 and 3fff::/20.
+
 ### C6: A fetch the proxy does not take dials an address that was checked _(enforced: mechanical)_ ^c6
 
 - **Subject**: every connection a fetch opens, redirects included.
@@ -164,12 +167,12 @@ and returns the names it registered. `hub/tools/__init__.py` exports the models,
 
 ### D2: `_send`, `_credentials` and `_failure`: one request, and every way it fails as `WebError` ^d2
 
-Serves C3 and C7. `_send` opens one request with redirects refused, reads one byte past the cap, and
-turns an HTTP error, a timeout in either of its forms, a network failure and a cut body into
-`WebError` naming the search provider. `_credentials` takes the key from the request's own
-credential header and `_blank` replaces it in the body and an error's first 300 bytes, `_failure` in
-an exception's text. `_json` refuses a body that is not a JSON object, and `_items` a result list
-that is not a list.
+Serves C3 and C7. `_send` opens one request with redirects refused; `_read` reads one byte past the
+cap and raises on a body short of its declared length. An HTTP error, a timeout in either form, a
+network failure and a cut body become `WebError` naming the search provider. `_credentials` takes
+the key from the request's credential header; `_blank` replaces it in the body and an error's first
+300 bytes, `_failure` in an exception's text. `_json` refuses a non-object body, `_items` a missing
+or non-list result list.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_a_bad_key_and_a_rate_limit_are_errors_the_model_reads`,
@@ -177,18 +180,22 @@ that is not a list.
   `test_a_failure_whose_text_carries_the_key_has_it_blanked`,
   `test_a_provider_answer_past_the_cap_is_refused_and_never_read_whole`,
   `test_a_body_that_is_not_json_or_not_the_documented_shape`,
-  `test_a_provider_redirect_is_an_error_and_never_followed`.
+  `test_a_provider_redirect_is_an_error_and_never_followed`,
+  `test_a_body_that_ends_short_of_its_declared_length_is_a_cut_body_not_an_answer`.
 
 ### D3: `SearXNG`, `Brave`, `Tavily`, `Jina` and `provider_from_env` ^d3
 
 Serves C4. Each adapter has `request`, which builds the one request its reference describes, and
-`parse`, which reads the documented fields into hits. A result with no link is skipped; a section or
-a result of another type than its reference names raises (C3). The reference and the date it was
-read sit in a comment above each class. An unsupported argument raises before any request is made.
+`parse`, which reads the documented fields into hits. A result with no link is skipped. A missing
+result list raises, as does a section or a result of another type than its reference names (C3);
+Brave's `web` section, which its reference makes optional, reads as no hits when it is absent. The
+reference and the date it was read sit in a comment above each class. An unsupported argument raises
+before any request is made.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_searxng_has_no_week_and_no_site_and_says_so`, `test_jina_has_no_recency_and_says_so`,
-  `test_brave_builds_its_request_and_parses_its_hits`,
+  `test_brave_builds_its_request_and_parses_its_hits`, `test_brave_with_no_web_section_has_no_hits`,
+  `test_a_body_without_its_result_list_is_off_the_shape_not_empty`,
   `test_tavily_sends_only_the_filters_it_was_given`, `test_a_site_that_is_not_a_domain_is_refused`,
   `test_provider_from_env_takes_the_first_configured_in_order`.
 
@@ -196,13 +203,15 @@ read sit in a comment above each class. An unsupported argument raises before an
 
 Serves C5. `_check_url` takes the scheme, the host and the port from the address and calls
 `_public_addresses`, which resolves the host and refuses on the first answer that is not a public
-address. `_carried_v4` returns the low 32 bits of a mapped, compatible, `::ffff:0:0:0/96` or
-`64:ff9b::/96` address. `_Redirects` runs `_check_url` on each redirect's target before it is
-followed.
+address; C5's five ranges are `_DISPUTED`. `_carried_v4` returns the low 32 bits of a mapped,
+compatible, `::ffff:0:0:0/96` or `64:ff9b::/96` address. `_Redirects` runs `_check_url` on each
+redirect's target before it is followed.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_fetch_refuses_loopback_link_local_and_private_addresses`,
   `test_a_v6_form_that_carries_a_public_v4_address_is_judged_by_that_address`,
+  `test_the_local_use_translation_prefix_is_refused_whatever_the_interpreter_calls_it`,
+  `test_every_address_gets_one_verdict_whichever_table_the_interpreter_has`,
   `test_fetch_refuses_a_name_that_resolves_to_a_private_address`,
   `test_fetch_refuses_other_schemes_and_hosts_that_do_not_resolve`,
   `test_a_redirect_is_followed_only_to_a_public_address`.
@@ -224,7 +233,7 @@ pinned connection unless `_via_proxy` reads the request as taken by the proxy.
 ### D6: `_fetch` and `html_text` ^d6
 
 Serves C7. `_fetch` checks the address, opens it with the guarded opener, refuses a content type
-that is not text, reads one byte past the cap to know a cut happened, decodes with the declared
+that is not text, reads through `_read` (D2) to know a cut happened, decodes with the declared
 charset or UTF-8, and cuts at `max_chars` with a marker. `html_text` drops script, style, noscript,
 template and svg content. An end tag closes only its own element. Script, style and noscript content
 is raw text to its end tag, `<script/>` and `<noscript/>` included, as HTML reads it; only svg
@@ -238,17 +247,20 @@ closes itself.
 
 ### D7: `_Clock`: the deadline, held by the thread that makes the request ^d7
 
-Serves C7. `_send` and `_fetch` each open a `_Clock` for the request. Every connection, pinned or
-timed, hands its socket to the clock, and an SSL socket before its handshake. When the deadline
-passes a timer shuts each socket, which ends a read blocked on it, and `_left` refuses a later
-connection, a checked dial whose resolution outlasted the deadline included. A request whose clock
-expired is a timeout whatever its read returned. `_Timed` and `_TimedTLS` carry provider and proxy
-connections.
+Serves C7. `_send` and `_fetch` each open a `_Clock` for the request. Every connection hands its
+socket to the clock before a handshake or a proxy reads from it: `_TimedTLS`, for provider and proxy
+TLS, as `_dial` connects. When the deadline passes a timer shuts each socket, which ends a read
+blocked on it, and `_left` refuses a later connection, a checked dial whose resolution outlasted the
+deadline included. A request whose clock expired is a timeout whatever its read returned, an HTTP
+error's detail included.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_a_provider_that_sends_a_byte_now_and_then_is_cut_at_the_deadline`,
   `test_a_page_that_sends_a_byte_now_and_then_is_cut_at_the_deadline` (in the body and in the
-  headers), `test_past_the_deadline_no_socket_is_opened_and_one_watched_late_is_shut`.
+  headers), `test_past_the_deadline_no_socket_is_opened_and_one_watched_late_is_shut`,
+  `test_a_timed_tls_connection_is_watched_from_its_dial_and_before_its_handshake`,
+  `test_a_proxy_that_answers_connect_a_byte_now_and_then_is_cut_at_the_deadline`,
+  `test_an_error_whose_detail_outlasts_the_deadline_is_a_timeout`.
 
 ## Alternatives
 
@@ -278,9 +290,10 @@ connections.
   this record.
 - **S4**: Not read: pages that need scripts, PDFs and other binary types, `robots.txt`. There is no
   cache and no rate limit beyond the run's bounds.
-- **S5**: NAT64 is recognised by its well-known prefix only. A network that translates under a
-  prefix of its own gives a global IPv6 address this check cannot tell from any other; that network
-  is the operator's (A1).
+- **S5**: NAT64 is judged by its carried address under the well-known prefix only; the local-use
+  prefix 64:ff9b:1::/48 is refused whole (C5). A network that translates under a prefix of its own
+  gives a global IPv6 address this check cannot tell from any other; that network is the operator's
+  (A1).
 - **S6**: Behind a proxy the address is still resolved here for C5's check. A host that can resolve
   outside names only through its proxy refuses every fetch as unresolvable, and says so.
 - **S7**: A redirect between http and https is followed. A fetch sends no credential, so the change
@@ -288,8 +301,10 @@ connections.
 - **S8**: The key is blanked as its exact bytes. An answer that escapes or encodes it, and a key
   under 8 characters, are not caught; a provider that reflects its own key back is the provider's
   defect, and this is a backstop.
-- **S9**: Not under the deadline: name resolution, which the system's resolver bounds, and the TLS
-  handshake with a search provider or a proxy, which the socket's timeout bounds per operation. A
-  page's handshake is under it.
+- **S9**: Not under the deadline: name resolution, which the system's resolver bounds.
 - **S10**: The pinned connections replace the standard `connect` and raise its audit event,
   `http.client.connect`, themselves; they do not set `TCP_NODELAY`, which changes latency only.
+- **S11**: The tests D2, D3, D4 and D7 name turn red when C5's five ranges are left to the
+  interpreter, when a timed socket reaches the clock after a proxy's answer or its handshake, or
+  when a short body reads as whole. They also turn red when a missing result list reads as none, or
+  when an HTTP status is kept past the deadline.

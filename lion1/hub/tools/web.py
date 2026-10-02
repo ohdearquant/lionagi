@@ -187,11 +187,21 @@ class _Timed(http.client.HTTPConnection):
         _watch(self.sock)
 
 
+def _dial(address: tuple, timeout: float | None, source_address: tuple | None = None) -> socket.socket:
+    sock = socket.create_connection(address, timeout, source_address)
+    _watch(sock)  # before anything reads from it: a proxy's answer to CONNECT may drip too
+    return sock
+
+
 class _TimedTLS(http.client.HTTPSConnection):
     def connect(self) -> None:
         self.timeout = _left(self.timeout)
-        super().connect()  # the handshake runs in here, bounded by the socket's timeout alone
-        _watch(self.sock)
+        self._create_connection = _dial
+        http.client.HTTPConnection.connect(self)  # the socket, and through a proxy its CONNECT
+        host = self._tunnel_host or self.host
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=host, do_handshake_on_connect=False)
+        _watch(self.sock)  # the handshake waits until the clock watches the socket, as a pinned one's does
+        self.sock.do_handshake()
 
 
 class _Pinned(http.client.HTTPConnection):
@@ -281,6 +291,15 @@ def _failure(
 _FAILED = (OSError, ValueError, http.client.HTTPException)  # URLError is an OSError; a cut body is neither
 
 
+def _read(resp: http.client.HTTPResponse) -> bytes:
+    """A body to one byte past the cap. `read` with a size returns a body the peer cut short of its
+    declared length as if it were whole; here it raises what a read of the whole body would."""
+    body = resp.read(MAX_BYTES + 1)
+    if len(body) <= MAX_BYTES and resp.length:
+        raise http.client.IncompleteRead(body, resp.length)
+    return body
+
+
 def _send(name: str, req: urllib.request.Request, timeout: float = TIMEOUT) -> bytes:
     """One request and its body, within `timeout` and `MAX_BYTES`, with the request's own key blanked
     out of whatever comes back; every way it can fail is a `WebError` that names the provider."""
@@ -288,13 +307,15 @@ def _send(name: str, req: urllib.request.Request, timeout: float = TIMEOUT) -> b
     with _Clock(timeout) as clock:
         try:
             with _urlopen(req, timeout) as resp:
-                body = resp.read(MAX_BYTES + 1)
+                body = _read(resp)
         except urllib.error.HTTPError as e:
             try:
                 detail = _blank(e.read(300), credentials).decode(errors="replace").strip()
             except _FAILED:
                 detail = ""
             e.close()
+            if clock.expired:  # the detail was cut, by a shut socket or a read past the deadline
+                raise WebError(f"{name}: timed out after {timeout:g}s") from None
             raise WebError(f"{name}: {_http(e.code)}" + (f": {detail}" if detail else "")) from None
         except WebError:
             if clock.expired:
@@ -329,8 +350,8 @@ def _json(name: str, req: urllib.request.Request, timeout: float = TIMEOUT) -> d
 
 
 def _items(name: str, value: Any) -> list[dict]:
-    if value is None:
-        return []
+    if value is None:  # missing or null: a renamed field would otherwise read as no results, every time
+        raise WebError(f"{name}: unexpected response, it has no result list")
     if not isinstance(value, list):
         raise WebError(f"{name}: unexpected response, results are a {type(value).__name__}, not a list")
     for r in value:
@@ -434,13 +455,14 @@ class Brave:
 
     def parse(self, data: dict) -> list[Hit]:
         section = data.get("web")
-        if section is not None and not isinstance(section, dict):
+        if section is None:  # the reference makes the section optional: no web results
+            return []
+        if not isinstance(section, dict):
             kind = type(section).__name__
             raise WebError(f"{self.name}: unexpected response, the web section is a {kind}, not an object")
-        results = section.get("results") if section is not None else None
         hits = (
             _hit(r.get("title"), r.get("url"), r.get("description"), r.get("page_age") or r.get("age"))
-            for r in _items(self.name, results)
+            for r in _items(self.name, section.get("results"))
         )
         return [h for h in hits if h]
 
@@ -607,7 +629,8 @@ def _check_url(url: str) -> None:
     """Refuse an address that is not http(s) or whose host resolves to anything but a public address:
     loopback, link-local (cloud metadata lives there), private, shared, multicast, unspecified or
     reserved, v4 or v6, and v6 forms that carry a v4 address (mapped, compatible, translated, NAT64),
-    which are judged by the address they carry.
+    which are judged by the address they carry; and every address in a range the supported
+    interpreters disagree on (`_DISPUTED`).
 
     What it covers: the address in the request and in every redirect it follows, each resolved here.
     On a direct connection the socket then dials an answer checked in the same call (`_connect_public`),
@@ -630,6 +653,13 @@ def _check_url(url: str) -> None:
 
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 _TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")
+# Where the supported interpreters' tables of global addresses disagree. Python 3.11 before 3.11.10
+# reads most of 192.0.0.0/24, the local-use translation prefix 64:ff9b:1::/48, 6to4 and 3fff::/20 as
+# global and some service ranges inside 2001::/23 as not; current releases read each the other way.
+# Every address in these ranges is refused, so a fetch gets one verdict whichever release runs it.
+_DISPUTED = tuple(
+    ipaddress.ip_network(n) for n in ("192.0.0.0/24", "64:ff9b:1::/48", "2001::/23", "2002::/16", "3fff::/20")
+)
 
 
 def _carried_v4(ip: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
@@ -655,7 +685,7 @@ def _public_addresses(host: str, port: int) -> list[tuple]:
         ip = ipaddress.ip_address(str(info[4][0]).split("%")[0])
         if isinstance(ip, ipaddress.IPv6Address):
             ip = _carried_v4(ip) or ip
-        if not ip.is_global or ip.is_multicast:
+        if not ip.is_global or ip.is_multicast or any(ip in net for net in _DISPUTED):
             raise WebError(f"web_fetch refuses {host!r}: it resolves to {ip}, not a public address")
     return infos
 
@@ -692,7 +722,7 @@ def _fetch(url: str, max_chars: int, timeout: float = TIMEOUT) -> str:
                 if not (kind.startswith("text/") or kind in _TEXT_TYPES):
                     raise WebError(f"web_fetch reads text pages; {url} is {kind or 'of no declared type'}")
                 charset = resp.headers.get_content_charset() or "utf-8"
-                body = resp.read(MAX_BYTES + 1)
+                body = _read(resp)
         except urllib.error.HTTPError as e:
             e.close()
             raise WebError(f"web_fetch: {_http(e.code)}") from None

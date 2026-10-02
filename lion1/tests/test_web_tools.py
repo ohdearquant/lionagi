@@ -8,6 +8,7 @@ import http.client
 import http.server
 import importlib
 import io
+import ipaddress
 import json
 import os
 import socket
@@ -35,6 +36,8 @@ PUBLIC = [(2, 1, 6, "", ("93.184.216.34", 443))]
 
 class Resp:
     """What `urlopen` hands back: a body, headers, a context manager."""
+
+    length = None  # no declared length: the body ends where it ends
 
     def __init__(self, body: bytes | str, ctype: str | None = "application/json"):
         self.body = body.encode() if isinstance(body, str) else body
@@ -426,6 +429,16 @@ def test_a_body_that_is_not_json_or_not_the_documented_shape(wire, make, _body):
         run(make().search(WebSearch(query="x")))
 
 
+@pytest.mark.parametrize(("make", "_body"), PROVIDERS)
+def test_a_body_without_its_result_list_is_off_the_shape_not_empty(wire, make, _body):
+    # a renamed or dropped field would otherwise read as a search with no results, every time
+    absent = {"web": {"type": "search"}} if make().name == "brave" else {"query": "x"}
+    wire.answers = [Resp(json.dumps(absent)), Resp(json.dumps({"results": None, "web": {}, "data": None}))]
+    for _ in range(2):
+        with pytest.raises(WebError, match=f"{make().name}: unexpected response, it has no result list"):
+            run(make().search(WebSearch(query="x")))
+
+
 def test_a_provider_redirect_is_an_error_and_never_followed(monkeypatch):
     class Moved(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -700,6 +713,96 @@ def test_a_v6_form_that_carries_a_public_v4_address_is_judged_by_that_address(wi
     assert w._carried_v4(w.ipaddress.IPv6Address("::1")) is None
 
 
+# `ipaddress`'s ranges of addresses that are not global, and the exceptions inside them, as 3.11 had
+# them before 3.11.10 and as 3.11.16, 3.12.14, 3.13.15 and 3.14.7 have them. `is_global` is the
+# opposite of membership, save in 100.64.0.0/10, which is neither.
+TABLES = {
+    "before-3.11.10": (
+        (
+            *("0.0.0.0/8", "10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/29"),
+            *("192.0.0.170/31", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24"),
+            *("203.0.113.0/24", "240.0.0.0/4", "255.255.255.255/32", "::1/128", "::/128", "::ffff:0:0/96"),
+            *("100::/64", "2001::/23", "2001:2::/48", "2001:db8::/32", "2001:10::/28", "fc00::/7"),
+            "fe80::/10",
+        ),
+        (),
+    ),
+    "3.11.16": (
+        (
+            *("0.0.0.0/8", "10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24"),
+            *("192.0.0.170/31", "192.0.2.0/24", "192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24"),
+            *("203.0.113.0/24", "240.0.0.0/4", "255.255.255.255/32", "::1/128", "::/128", "::ffff:0:0/96"),
+            *("64:ff9b:1::/48", "100::/64", "2001::/23", "2001:db8::/32", "2002::/16", "3fff::/20"),
+            *("fc00::/7", "fe80::/10"),
+        ),
+        (
+            *("192.0.0.9/32", "192.0.0.10/32", "2001:1::1/128", "2001:1::2/128", "2001:3::/32"),
+            *("2001:4:112::/48", "2001:20::/28", "2001:30::/28"),
+        ),
+    ),
+}
+
+
+def use_table(mp: pytest.MonkeyPatch, name: str) -> None:
+    """`ipaddress` answers `is_global` from the named table, whatever interpreter runs the test."""
+    private, exceptions = ([ipaddress.ip_network(n) for n in nets] for nets in TABLES[name])
+    shared = ipaddress.ip_network("100.64.0.0/10")
+
+    def is_global(a) -> bool:
+        listed = any(a in n for n in private) and not any(a in n for n in exceptions)
+        return a not in shared and not listed
+
+    mp.setattr(ipaddress.IPv4Address, "is_global", property(is_global))
+    mp.setattr(ipaddress.IPv6Address, "is_global", property(is_global))
+
+
+@pytest.mark.parametrize("table", [None, "before-3.11.10"], ids=["this-interpreter", "before-3.11.10"])
+def test_the_local_use_translation_prefix_is_refused_whatever_the_interpreter_calls_it(
+    wire, monkeypatch, table
+):
+    if table:
+        use_table(monkeypatch, table)
+        assert ipaddress.ip_address("64:ff9b:1::7f00:1").is_global  # what those releases answered
+    wire.answers = [Resp("ok", "text/plain")]
+    with pytest.raises(WebError, match="not a public address"):
+        w._fetch("http://[64:ff9b:1::7f00:1]/", 100)  # 64:ff9b:1::/48 translates to a local network's v4
+    assert wire.requests == []
+    assert w._fetch("http://[64:ff9b::5db8:d822]/", 100) == "ok"  # the well-known prefix, a public v4
+
+
+def test_every_address_gets_one_verdict_whichever_table_the_interpreter_has(monkeypatch):
+    """The tables are compared at the first and the last address of every range either names, and one
+    past each end: between two of those points neither table changes its answer."""
+    points = set()
+    for net in (ipaddress.ip_network(n) for nets in TABLES.values() for part in nets for n in part):
+        points |= {net.network_address, net.broadcast_address}
+        if int(net.network_address):
+            points.add(net.network_address - 1)
+        if int(net.broadcast_address) < 2**net.max_prefixlen - 1:
+            points.add(net.broadcast_address + 1)
+    monkeypatch.setattr(w.socket, "getaddrinfo", lambda host, port, **k: [(0, 1, 6, "", (host, port))])
+
+    def refused(ip) -> bool:
+        try:
+            w._public_addresses(str(ip), 80)
+        except WebError:
+            return True
+        return False
+
+    seen = []
+    for name in TABLES:
+        with monkeypatch.context() as m:
+            use_table(m, name)
+            seen.append(({ip: ip.is_global for ip in points}, {ip: refused(ip) for ip in points}))
+    (old_global, old), (new_global, new) = seen
+    disputed = {ip for ip in points if old_global[ip] != new_global[ip]}
+    assert disputed >= set(
+        map(ipaddress.ip_address, ("192.0.0.8", "64:ff9b:1::", "2002::", "3fff::", "2001:3::"))
+    )
+    assert {ip for ip in points if old[ip] != new[ip]} == set()  # the tables disagree; the check does not
+    assert any(new.values()) and not all(new.values())
+
+
 def test_fetch_refuses_a_name_that_resolves_to_a_private_address(wire, monkeypatch):
     mixed = PUBLIC + [(2, 1, 6, "", ("10.1.2.3", 80))]  # one bad answer among good ones is enough
     monkeypatch.setattr(w.socket, "getaddrinfo", lambda *a, **k: mixed)
@@ -833,6 +936,40 @@ def test_a_direct_fetch_follows_a_redirect_through_checked_connections(monkeypat
     assert resolved == ["pages.example"] * 4  # each hop: once for the check, once for its connection
 
 
+def test_a_body_that_ends_short_of_its_declared_length_is_a_cut_body_not_an_answer(monkeypatch):
+    class Short(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # declares 1,000 bytes, sends a valid JSON object of 15, and hangs up
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", "1000")
+            self.end_headers()
+            self.wfile.write(b'{"results": []}')
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Short)
+    port = server.server_address[1]
+    monkeypatch.setattr(w, "_public_addresses", lambda host, port: [(2, 1, 6, "", ("127.0.0.1", port))])
+    monkeypatch.setattr(urllib.request, "getproxies", dict)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    search = urllib.request.Request(f"http://127.0.0.1:{port}/search")
+    try:
+        with pytest.raises(WebError, match=r"p: request failed: IncompleteRead: .*15 bytes read, 985 more"):
+            w._send("p", search, timeout=5.0)
+        with pytest.raises(WebError, match=r"web_fetch: request failed: IncompleteRead: .*15 bytes read"):
+            w._fetch(f"http://pages.example:{port}/", 100, timeout=5.0)
+        monkeypatch.setattr(w, "MAX_BYTES", 5)  # the cap reached first is the cap, not a cut body
+        with pytest.raises(WebError, match="p: the response is longer than 5 bytes"):
+            w._send("p", search, timeout=5.0)
+        assert w._fetch(f"http://pages.example:{port}/", 100, timeout=5.0) == '{"res\n[cut at 5 characters]'
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+
+
 def test_the_tls_connection_verifies_the_name_it_was_asked_for(monkeypatch):
     context = w._tls()
     assert context.verify_mode is ssl.CERT_REQUIRED and context.check_hostname
@@ -855,6 +992,47 @@ def test_the_tls_connection_verifies_the_name_it_was_asked_for(monkeypatch):
     conn.connect()
     # the handshake runs after the wrap, once the request's clock can see the socket
     assert conn.sock.made == (("raw", "pages.example", 443, 5.0), "pages.example", False) and conn.sock.shook
+
+
+def test_a_timed_tls_connection_is_watched_from_its_dial_and_before_its_handshake(monkeypatch):
+    # a provider's or a proxy's: the CONNECT exchange and the handshake both read from the socket
+    events: list[tuple] = []
+
+    class Raw:
+        def setsockopt(self, *args):
+            pass
+
+    class Wrapped:
+        def do_handshake(self):
+            events.append(("handshake",))
+
+    raw, wrapped = Raw(), Wrapped()
+
+    class Wraps:
+        verify_mode, check_hostname = ssl.CERT_REQUIRED, True
+
+        def wrap_socket(self, sock, server_hostname, do_handshake_on_connect=True):
+            events.append(("wrap", sock, server_hostname, do_handshake_on_connect))
+            return wrapped
+
+    def dial(address, timeout, source_address=None):
+        events.append(("dial", address, timeout))
+        return raw
+
+    monkeypatch.setattr(w.socket, "create_connection", dial)
+    monkeypatch.setattr(w, "_watch", lambda sock: events.append(("watch", sock)))
+    conn = w._TimedTLS("proxy.example", 3128, timeout=5.0, context=Wraps())
+    conn.set_tunnel("search.example", 443)
+    monkeypatch.setattr(conn, "_tunnel", lambda: events.append(("tunnel",)))
+    conn.connect()
+    assert events == [
+        ("dial", ("proxy.example", 3128), 5.0),
+        ("watch", raw),
+        ("tunnel",),
+        ("wrap", raw, "search.example", False),
+        ("watch", wrapped),
+        ("handshake",),
+    ]
 
 
 class Seen(http.server.BaseHTTPRequestHandler):
@@ -964,9 +1142,10 @@ class Drip(http.server.BaseHTTPRequestHandler):
     """Answers a byte at a time, each well inside a socket timeout: in the body, or before the headers end."""
 
     in_headers = False
+    status = b"200 OK"
 
     def do_GET(self):
-        self.wfile.write(b"HTTP/1.1 200 OK\r\n")
+        self.wfile.write(b"HTTP/1.1 " + Drip.status + b"\r\n")
         if not Drip.in_headers:
             self.wfile.write(b"Content-Type: text/plain\r\nContent-Length: 1000\r\n\r\n")
         for _ in range(200):  # 10 s at most, if nothing cuts it
@@ -976,6 +1155,8 @@ class Drip(http.server.BaseHTTPRequestHandler):
             except OSError:  # the client shut the socket
                 return
             time.sleep(0.05)
+
+    do_CONNECT = do_GET  # as a proxy: CONNECT answered, then the rest of its answer a byte at a time
 
     def log_message(self, *args):
         pass
@@ -988,7 +1169,7 @@ def drip(monkeypatch):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield server.server_address[1]
-    Drip.in_headers = False
+    Drip.in_headers, Drip.status = False, b"200 OK"
     server.shutdown()
     server.server_close()
     thread.join(5)
@@ -998,6 +1179,24 @@ def test_a_provider_that_sends_a_byte_now_and_then_is_cut_at_the_deadline(drip):
     began = time.monotonic()
     with pytest.raises(WebError, match="p: timed out after 0.4s"):
         w._send("p", urllib.request.Request(f"http://127.0.0.1:{drip}/"), timeout=0.4)
+    assert time.monotonic() - began < 2
+
+
+def test_an_error_whose_detail_outlasts_the_deadline_is_a_timeout(drip):
+    Drip.status = b"401 Unauthorized"  # the status in time, its body a byte at a time
+    began = time.monotonic()
+    with pytest.raises(WebError, match="p: timed out after 0.4s"):
+        w._send("p", urllib.request.Request(f"http://127.0.0.1:{drip}/"), timeout=0.4)
+    assert time.monotonic() - began < 2
+
+
+def test_a_proxy_that_answers_connect_a_byte_now_and_then_is_cut_at_the_deadline(drip, monkeypatch):
+    Drip.in_headers = True  # `200`, then a header line that never ends
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": f"http://127.0.0.1:{drip}"})
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: False)
+    began = time.monotonic()
+    with pytest.raises(WebError, match="p: timed out after 0.4s"):
+        w._send("p", urllib.request.Request("https://search.example/"), timeout=0.4)
     assert time.monotonic() - began < 2
 
 
