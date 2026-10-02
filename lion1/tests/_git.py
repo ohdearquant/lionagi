@@ -1,8 +1,8 @@
 """git as the bench tests run it: the repository's own configuration alone and a fixed identity, so a
 commit a test makes does not depend on this machine's global or system config (signing, hooks), on the
-ignore file git reads by default from the user's config directory, nor on git variables the process
-running the tests carries: settings passed down as GIT_CONFIG_COUNT or GIT_CONFIG_PARAMETERS, or the
-GIT_DIR and GIT_INDEX_FILE a hook runs under, which would send a test's commands to another
+ignore and attributes files git reads by default from the user's config directory, nor on git variables
+the process running the tests carries: settings passed down as GIT_CONFIG_COUNT or GIT_CONFIG_PARAMETERS,
+or the GIT_DIR and GIT_INDEX_FILE a hook runs under, which would send a test's commands to another
 repository."""
 
 import os
@@ -15,10 +15,13 @@ ENV = {
     **{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_NOSYSTEM": "1",
-    # core.excludesFile defaults to $XDG_CONFIG_HOME/git/ignore even when no config file is read
-    "GIT_CONFIG_COUNT": "1",
+    # core.excludesFile and core.attributesFile default to $XDG_CONFIG_HOME/git/ignore and
+    # $XDG_CONFIG_HOME/git/attributes even when no config file is read
+    "GIT_CONFIG_COUNT": "2",
     "GIT_CONFIG_KEY_0": "core.excludesFile",
     "GIT_CONFIG_VALUE_0": os.devnull,
+    "GIT_CONFIG_KEY_1": "core.attributesFile",
+    "GIT_CONFIG_VALUE_1": os.devnull,
     "GIT_AUTHOR_NAME": "t",
     "GIT_AUTHOR_EMAIL": "t@example.com",
     "GIT_COMMITTER_NAME": "t",
