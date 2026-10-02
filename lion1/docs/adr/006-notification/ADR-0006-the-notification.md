@@ -71,7 +71,7 @@ none.
 ### C2: The contents are what the runtime knows and the model does not _(enforced: mechanical)_ ^c2
 
 - **Subject**: every notification.
-- **Violated when**: a settled command is missing, a value is repeated in full, a refusal carries no
+- **Violated when**: a settled command is missing, a value repeats in full, a refusal carries no
   reason, or a line outside this list appears.
 
 In order:
@@ -79,16 +79,17 @@ In order:
 - the header: turn against `max_rounds`, time against `time_budget`, sequence;
 - `context:`, C4's figure against `context_budget`;
 - `folded:`, the fold event against `view_budget` (ADR-0007);
+- `session:`, a restart or excess (ADR-0009/C4);
 - "your last turn could not be read", the error and its repeat count;
 - the idle and identical-turn notes;
 - `settled:` with alias, record name, Spec, type and preview;
-- `failed after starting:` and `completion unknown:`, by the RESULT's `execution` mark
-  (ADR-0005/C1);
+- `failed after starting:` and `completion unknown:`, by `execution` mark (ADR-0005/C1);
 - `out of view now`, what left the view;
 - `not executed:` with alias and reason, a repair's note among them
   ([[ADR-0004-the-language#^c3|ADR-0004/C3]]);
 - `notes written:`;
-- `hooks failed`, after hooks that raised (ADR-0005/C5);
+- turn one's `notes kept:` (ADR-0007/C8);
+- `hooks failed` (ADR-0005/C5);
 - `inbound:` with origin and handle;
 - each section's text, or `section failed:` with the exception.
 
@@ -120,7 +121,7 @@ When the view shrinks (a fold or a `context.hide`), the figure takes off what le
 measured rate, the reported growth over the estimated growth summed across the run's calls, and
 never below the estimate. A backend that reports nothing leaves the figure at the view estimate; the
 fold measures the estimate plus the reported context above the run's floor
-([[ADR-0009-backends#^c3|ADR-0009/C3]]).
+([[ADR-0009-backends#^c3|ADR-0009/C3]]). A session backend's plan gives the figure (ADR-0009/C4).
 
 ## Decisions
 
@@ -150,9 +151,10 @@ diagnostics on the record (ADR-0002/C4).
 - **S1**: A name is told once when it leaves the view, and the model can bring it back by name.
 - **S2**: The notification is the one place a section can steer the model; the bench's settle and
   criteria lines live there ([[ADR-0012-the-bench|ADR-0012]], the bench).
-- **S3**: The figure is an estimate for one turn after a fold on a backend that keeps its own
-  conversation, which starts over from the folded view ([[ADR-0009-backends#^c4|ADR-0009/C4]]); the
-  next reported count corrects it.
+- **S3**: On a backend keeping its own conversation the figure is the count its plan expects, a
+  change not yet started over for still counted ([[ADR-0009-backends#^c4|ADR-0009/C4]]). A new
+  session with no count yet keeps the view's estimate. After a restart it is an estimate for one
+  turn; the next reported count corrects it.
 - **S4**: A section has no timeout: one that hangs holds the turn, where a hook is cut at its
   `timeout` (ADR-0005/A4).
 - **S5**: A `still running:` line, for a command pending at the notification, was in this list and

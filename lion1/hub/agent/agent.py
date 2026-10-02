@@ -59,6 +59,8 @@ __all__ = (
     "WakeRule",
     "Wake",
     "Gtd",
+    "CLAUDE_CODE",
+    "claude_code_options",
     "Agent",
 )
 
@@ -231,11 +233,13 @@ def _span(value: Any) -> float:
 
 @dataclass(frozen=True)
 class Gtd:
-    """`[gtd]`: the chair's own task queue as a wake source and a line in every notification (the
-    chair keeps its gtd through the khive MCP itself; the runtime only reads it). The
-    queue is `gtd.next` for the actor, read every `poll` seconds while serving. A task whose `at` has
-    passed wakes the model like `now` mail, once per `at` (`due`); with `work = "idle"` a quiet chair
-    (no mail, nothing waiting, `idle_after` since its last wake) takes the top task of its queue."""
+    """`[gtd]`: the agent's own task queue as a wake source and a line in every notification. The
+    queue is `gtd.next` for the actor, read every `poll` seconds while serving; nothing here moves a
+    task. A task whose `at` has passed wakes the model like `now` mail, once per `at` (`due`); with
+    `work = "idle"` a quiet agent (no mail, nothing waiting, `idle_after` since its last wake) takes
+    the top task of its queue. An agent built from a config reads its queue and cannot move a task,
+    so it would take the same task at every idle pass: `load` refuses `work = "idle"`
+    (ADR-0013/C9), and the pass is left for an agent whose tools can close what it takes."""
 
     poll: float = 60.0  # seconds between queue reads
     due: str = "now"  # now | off: a task past its `at`
@@ -251,8 +255,13 @@ class Gtd:
         due, work = str(table.get("due", "now")), str(table.get("work", "off"))
         if due not in ("now", "off"):
             raise ValueError(f"[gtd] due {due!r}: now or off")
-        if work not in ("off", "idle"):
-            raise ValueError(f"[gtd] work {work!r}: off or idle")
+        if work == "idle":
+            raise ValueError(
+                '[gtd] work "idle": the queue is read-only to the agent, so it would take the same task at '
+                "every idle pass (ADR-0013/C9); due tasks still wake it"
+            )
+        if work != "off":
+            raise ValueError(f"[gtd] work {work!r}: off")
         return cls(
             poll=_span(table.get("poll", 60.0)),
             due=due,
@@ -266,6 +275,24 @@ class Gtd:
         return f"poll {self.poll:.0f}s, due {self.due}, work {self.work}" + (
             f" after {self.idle_after:.0f}s quiet" if self.work == "idle" else ""
         )
+
+
+CLAUDE_CODE = ("timeout", "effort", "cli")  # the `[claude_code]` keys: none of them gives the model a tool
+
+
+def claude_code_options(table: dict | None) -> dict:
+    """`[claude_code]` as an agent takes it: `timeout`, `effort` and `cli`. A claude_code model has no
+    tools of its own (ADR-0016/D3), so any other key refuses by name, whatever the model, at load and at
+    a reload, never ignored."""
+    if table is not None and not isinstance(table, dict):
+        raise ValueError(f"[claude_code] is a table of timeout, effort and cli, not {table!r}")
+    options = dict(table or {})
+    if extra := sorted(set(options) - set(CLAUDE_CODE)):
+        raise ValueError(
+            f"[claude_code] {', '.join(extra)}: a claude_code model has no tools of its own "
+            f"(ADR-0016/D3); the keys are {', '.join(CLAUDE_CODE)}"
+        )
+    return options
 
 
 def _at(task: dict) -> float | None:
@@ -482,6 +509,9 @@ class Agent:
             cfg = tomllib.loads(self.config.read_text())
             budget, rules = Budget.load(cfg.get("budget")), Wake.load(cfg.get("wake"))
             gtd = Gtd.load(cfg.get("gtd"))
+            claude_code_options(
+                cfg.get("claude_code")
+            )  # the backend stays until a restart: said, not ignored
         except (OSError, tomllib.TOMLDecodeError, ValueError, TypeError) as e:
             self.errors.append(f"reload failed: {type(e).__name__}: {e}")
             self._say(f"reload failed, the values in force stay: {type(e).__name__}: {e}")
@@ -826,8 +856,9 @@ class Agent:
                 emits=(),
                 max_rounds=1_000_000,
                 accept=None,
+                # the model has no tools of its own: its commands' results reach it next round, and a turn
+                # of plain text, the posture, ends the batch
                 wait=self._wait,
-                reply_on_commands=True,  # the work runs on the model's own tools; its reply carries the rest
                 fold_inputs=True,  # a day of mail and replies folds too; the latest batch stays
                 history=history,
             )
@@ -1344,9 +1375,8 @@ class Agent:
             head.append(f"Your posture then: {posture.value}")
         if self.continuous and self._serving:
             head.append(
-                "Deal with the mail as your role says, with your own tools. Your reply then carries what "
-                "goes through the runtime (the send on the thread, notes, context operations) beside your "
-                "posture in plain text; that reply ends this batch unless a command is refused or fails, "
+                "Deal with the mail as your role says, with the commands: each one's result reaches you "
+                "next round. When the work is done, a turn of plain text, your posture, ends this batch, "
                 f"and the next mail arrives in this same conversation. You have {self.max_rounds} rounds "
                 "for this batch."
             )

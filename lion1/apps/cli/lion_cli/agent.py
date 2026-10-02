@@ -11,8 +11,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from hub.agent.agent import Agent, AgentError, Budget, Gtd, Wake
-from hub.agent.chores import Bounded, Chores, Outcome
+from hub.agent.agent import Agent, AgentError, Budget, Gtd, Wake, claude_code_options
+from hub.agent.chores import SPAWN_SALIENCE, Bounded, Chores, Outcome
 from hub.agent.desk import Desk, Reader
 from hub.agent.instruments import GH, GIT, LAUNCHCTL, instruments
 from hub.agent.verdicts import Verdicts
@@ -43,6 +43,10 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
     recipients and the desks `[desk.routes]` names; mail from anyone else is dropped at the agent's
     gate before any run."""
     cfg = tomllib.loads((directory / "chores.toml").read_text())
+    claude_code_options(cfg.get("claude_code"))  # whoever built the backend
+    if isinstance(backend, ClaudeCodeSession) and (backend.tools or backend.allowed or backend.mcp_config):
+        # `backend_for` builds none; a session handed in with tools would act outside every gate
+        raise ValueError("a claude_code session with tools of its own: the model gets none (ADR-0016/D3)")
     actor_id = cfg["actor"]
     trusted = frozenset({cfg["owner"], cfg.get("steward"), actor_id, *cfg.get("trusted", [])} - {None})
     routes = dict((cfg.get("desk") or {}).get("routes", {}))  # the desk forwards to these; `Desk` checks them
@@ -50,8 +54,6 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
         raise ValueError("[desk.routes] needs the front desk: front = false names no routes")
     khive = Bounded(Khive(directory, actor_id), recipients=trusted | frozenset(routes.values()))
     actor = Actor("chores", privileges={"comm.send"}, notes_dir=directory / "notes")
-    if isinstance(backend, ClaudeCodeSession):  # the CLI's own tool calls ask this actor's gate (ADR-0009/C6)
-        backend.actor = actor
     if (hooks := directory / "hooks.toml").exists():
         install(actor, load(hooks), directory)
     profiles: dict[str, Profile] = {}
@@ -134,9 +136,8 @@ def chair(directory: Path, cfg: dict, actor: Actor, khive: Bounded) -> Profile:
     """The chair as the resident: what the trusted senders mail is its own work, answered on the
     thread with `send`, with the directory's files, the bounded khive reads and its notes as the
     runtime's tools; `[chair].system` adds the chair's own role text. No chore runs under it. The
-    runtime's tools cannot act irreversibly; the CLI's own tools under `[claude_code]` can (Bash
-    reaches git and gh), and there the chair's red lines are guidance, as for a Claude Code session: no
-    merge, no approve, no push, no process signal, no secret; a click stays with the steward."""
+    model has no tools of its own (`backend_for`), so what needs git, gh or a click goes back to its
+    sender as an ask."""
     if not isinstance(
         cfg["chair"], dict
     ):  # `chair = true` is not a section: name the shape, not an AttributeError
@@ -144,17 +145,11 @@ def chair(directory: Path, cfg: dict, actor: Actor, khive: Bounded) -> Profile:
     specs = files(actor, LocalTree(directory)) | khive_ops(actor, khive) | {"send"}
     specs |= {h.name for h in DEFAULT_HANDLERS}
     tools = (
-        f"read(path), list_dir(path), khive_ops(ops) signing as {khive.actor} ({len(khive.allowed)} verbs: "
-        "reads, comm.read, schedule.remind, memory.remember at spawn salience), send(to, thread, text), "
-        "note.get(key), note.list()"
+        f"read(path), list_dir(path), khive_ops(ops) signing as {khive.actor} (these verbs and no other: "
+        f"{', '.join(sorted(khive.allowed))}; memory.remember with an explicit salience <= "
+        f"{SPAWN_SALIENCE}), send(to, thread, text), note.get(key), note.list()"
     )
     senders = ", ".join(sorted(khive.recipients or ()))
-    if own := (cfg.get("claude_code") or {}).get("tools"):
-        dirs = ", ".join([str(directory), *map(str, cfg["claude_code"].get("add_dirs", ()))])
-        tools += (
-            f"; and your own Claude Code tools ({', '.join(own)}) run inside each round in {dirs}, "
-            "with the khive MCP signing as you when it is configured"
-        )
     text = guidance("chair", actor=cfg["actor"], owner=cfg["owner"], senders=senders, tools=tools)
     if role := str(cfg["chair"].get("system", "")).strip():
         text += "\n\n" + role
@@ -188,6 +183,7 @@ async def arm(chores: Chores, agent: Agent) -> tuple[int, list[str]]:
         rc = 1
     for probe in (
         'gtd.complete(id="00000000-0000-0000-0000-000000000000")',
+        'gtd.transition(id="00000000-0000-0000-0000-000000000000", status="done")',
         'update(id="x", content="y")',
         'x.gtd.complete(id="a")',
         'comm.send(to="email:outsider@example.com", content="arm")',
@@ -292,25 +288,18 @@ def backend_for(
     never the first-party endpoint; other models take OpenRouter's own routing. `claude_code` or
     `claude_code/<model>` is the claude CLI on the subscription, never an API key, on one resumed
     session per run: each round sends only what the view gained, so the prefix caches (the chat shape
-    resent the whole transcript every round). `options`
-    is the config's `[claude_code]` table: `tools` gives the CLI its own tools inside each round, in
-    `cwd` (the agent directory: khive signs as its actor) with `add_dirs` reachable, `allowed` for
-    permission rules beyond the tools, `mcp_config` for the one MCP it loads, `max_turns` per round,
-    `timeout` seconds a round may take (a round of real work can run past the default, 300),
-    `effort` the CLI's effort level, `requires` the privileges each of its tools needs by tool name."""
+    resent the whole transcript every round). `options` is the config's `[claude_code]` table:
+    `timeout` seconds a round may take (a round of real work can run past the default, 300), `effort`
+    the CLI's effort level, `cli` the binary. The model gets no tools of its own, as in the chat: one
+    turn per call in `cwd`, and everything it does is a command the runtime runs, gates and records.
+    Any other key, `tools` among them, is refused by name whatever the model, never ignored."""
+    o = claude_code_options(options)
     if model == "claude_code" or model.startswith("claude_code/"):
-        o = options or {}
         return ClaudeCodeSession(
             model=model.partition("/")[2] or None,
-            tools=tuple(o.get("tools", ())),
-            allowed=tuple(o.get("allowed", ())),
-            max_turns=int(o.get("max_turns", 1)),
             timeout=float(o.get("timeout", 300.0)),
             effort=o.get("effort"),  # the CLI's --effort; absent = the CLI's default
             cwd=cwd,
-            add_dirs=tuple(str(d) for d in o.get("add_dirs", ())),
-            mcp_config=o.get("mcp_config"),
-            requires={tool: tuple(names) for tool, names in o.get("requires", {}).items()},
             cli=o.get("cli"),  # under launchd the PATH holds no claude: the config names the binary
         )
     deepseek = model.startswith("deepseek")
@@ -374,9 +363,7 @@ async def agent_main(a: argparse.Namespace) -> None:
         # a chair runs no chore: no digest, no aged pass, no tick in its box (each would be a model call)
         created = [] if "chair" in cfg else await chores.ensure_ticks()
         settings = (  # the values this process holds; the file may say otherwise until a restart
-            f"; claude_code timeout={backend.timeout:.0f}s max_turns={backend.max_turns}"
-            if isinstance(backend, ClaudeCodeSession)
-            else ""
+            f"; claude_code timeout={backend.timeout:.0f}s" if isinstance(backend, ClaudeCodeSession) else ""
         )
         rules = agent.wake_rules  # [budget] and [wake] follow the file while serving; the start values here
         settings += (

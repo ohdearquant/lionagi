@@ -63,8 +63,6 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
 - **working indicator**: `⠋ thinking · 12s` under the scrollback while a round's call is in flight,
   `running` once the turn's commands run; a finished result folds to its head, its detail parked
   under the indicator until the next result lands.
-- **own tools**: with a `claude_code` model, the Claude Code CLI's tools `--tools` names, run by the
-  CLI inside each round.
 - **link**: a terminal hyperlink (OSC 8) the console draws: a URL to itself, a path naming an
   existing file to `vscode://file/<abs>[:line[:col]]`, which opens it in the editor.
 - **response**: a reply's prose as the console showed it, constructs cut; `/copy N` counts back from
@@ -77,6 +75,9 @@ parser in `apps/cli/lion_cli/main.py`; `Console` in `apps/cli/lion_cli/view.py`;
   `[chat] khive_config`, else `<dir>/.khive/config.toml`; an explicit one is never a fallback.
 - **config file**: `~/.lion/config.toml` and `<dir>/.lion/config.toml`, whose `[chat]` table holds
   defaults for the flags.
+- **instruction files**: the person's instructions a chat composes into its guidance, those that
+  exist and hold text, in order: `~/.lion/CLAUDE.md`, the directory's `AGENTS.md` and `CLAUDE.md`,
+  then its `.lion/CLAUDE.md`.
 
 ## Assumptions
 
@@ -206,31 +207,31 @@ chat. A pipe keeps the plain line reader. The status line sits under the prompt 
 round notice under `--verbose`. The flags' defaults come from the config file: the nearer file wins
 per key, a flag on the line over both.
 
-### C9: A first Ctrl-C cuts the call; a fold, not a failed directive, restarts a session _(enforced: mechanical)_ ^c9
+### C9: A first Ctrl-C cuts the call; a failed directive leaves a session as it was _(enforced: mechanical)_ ^c9
 
-- **Subject**: `Interrupt`, `Run.interrupt` and the `claude_code` session under `--tools`.
+- **Subject**: `Interrupt`, `Run.interrupt` and the `claude_code` session.
 - **Violated when**: a Ctrl-C mid-call waits for the round, a cut ends the run, a failed directive
-  restarts the session, or an own-tool call misses the record.
+  restarts the session, or the session's CLI is handed a tool of its own.
 
 Mid-round a first Ctrl-C cuts the backend call in flight: the round ends with a notice and no turn,
 the run goes on, and a `claude_code` session resumes where it was; with no call in flight the round
 settles first. Only a result that changed the view carries its `spec`, so a failed directive leaves
-the session as it was. `--tools`, for a `claude_code` model only, names the CLI's own tools; each
-call passes the console's gate and lands on the record as a result the model can hide.
+the session as it was.
+
+A `claude_code` model gets no tools of its own: each call is one turn with none, so everything it
+does is a command in its text that the console runs, gates and records.
 
 ### C10: The console shows the model working, and folds what finished _(enforced: mechanical)_ ^c10
 
 - **Subject**: `Console.working`, `Console.idle`, `_Working` and the status line's head on a
   terminal.
 - **Violated when**: a call in flight shows nothing moving, a finished result stays open above the
-  next, the status line names no model, or an own-tool call prints its arguments whole.
+  next, or the status line names no model.
 
 On a terminal the working indicator runs under the scrollback from a round's start until its turn
 lands, `running` while the turn's commands run. With `--verbose` a result prints its head to the
-scrollback and parks its detail under the indicator until the next lands; a call of the model's own
-tools prints as one line, `✓ Bash command=…`, clipped. The status line leads with the model and the
-actor. A pipe gets none of this. A command named like an own tool is refused with where that tool
-lives.
+scrollback and parks its detail under the indicator until the next lands. The status line leads with
+the model and the actor. A pipe gets none of this.
 ### C11: What the console shows, the person can open _(enforced: mechanical)_ ^c11
 
 - **Subject**: `linked`, `Console._args` and `Console.notice`.
@@ -242,16 +243,20 @@ directory and never the cwd, is a link that opens it in VS Code at the line a `:
 code is left as written, a bare word never links, and a path the model wrote in a code span links
 whole. A call's `path` argument links to the file or directory it names; a URL in a notice links to
 itself.
-### C12: A response can be taken whole to the clipboard _(enforced: mechanical)_ ^c12
+### C12: A response, or the whole chat, can be taken to the clipboard _(enforced: mechanical)_ ^c12
 
-- **Subject**: `Console.command`, `Console.copy` and the editor's Alt-C.
-- **Violated when**: `/copy` reaches the model as a message, the text copied differs from the prose
-  shown, a number outside the chat's responses copies anything, or a copy blocks the prompt.
+- **Subject**: `Console.command`, `Console.copy`, `Console.copy_all` and the editor's Alt-C.
+- **Violated when**: `/copy` reaches the model, the text copied differs from the prose shown, a
+  number out of range copies anything, `/copy all` drops or wraps a line, or a copy blocks the
+  prompt.
 
 `/copy` at the prompt puts the last response on the clipboard, `/copy N` the Nth back from it (2 =
 the one before the last), and Alt-C the last without leaving the line being typed; the console says
 what it copied, or why nothing. The route is the platform's tool (pbcopy, wl-copy, xclip), and OSC
 52 through the terminal where there is none, as over ssh. A console command never reaches the model.
+
+`/copy all` copies the whole chat, unwrapped: each message, response, call and result line in order,
+a continued chat's earlier part first; the loop's notices stay in the log.
 
 ### C13: A mermaid block in a reply is drawn _(enforced: mechanical)_ ^c13
 
@@ -275,6 +280,55 @@ land at the cursor, after a space when the line already holds one, for the perso
 Enter sends them. The transcription runs off the loop; the prompt stays live. Enter, Ctrl-C or
 Ctrl-D drops a recording still running. Without the extra, a microphone or a model, the toolbar says
 why and the prompt goes on.
+
+### C15: A failure is said on one line: a backend's ends the chat, a refused turn's shows nothing ran _(enforced: mechanical)_ ^c15
+
+- **Subject**: the backends' own errors reaching `_chat_main`, and `Console._calls`.
+- **Violated when**: a backend failure prints a traceback, skips the closing line or exits 0, the
+  message sent is lost to `-c`, or a refused turn shows its calls as pending.
+
+A backend's own failure (a model the CLI does not know, a timeout, a rate limit) ends the run. The
+working indicator leaves, one red line carries the backend's message, the closing line still names
+the calls, the cost and the log, and the exit code is 1. The record already holds the message that
+was sent, so `lion chat -c` continues the chat from it.
+
+The console reads a turn the way the loop does: a turn the loop refuses (its own frame written by
+the model, a tag that will not parse) prints its prose, then one red line with the loop's reason
+where its calls would be.
+
+### C16: The person's instruction files close the guidance _(enforced: mechanical)_ ^c16
+
+- **Subject**: `instructions`, `console` and `lion config`.
+- **Violated when**: an instruction file is left out or composed out of order, a caller's own system
+  gains them, or the chat opens without naming them.
+
+Every chat composes the instruction files at the end of its model's guidance, each under its own
+name (`~/.lion/CLAUDE.md says:`), a `claude_code` model too, whose CLI reads no setting sources. A
+file reached twice counts once, and one that cannot be read stops the start by name. The chat's
+opening lines and `lion config` name the files composed, with their size. `--code` adds no copy of
+the root files of its own.
+
+### C17: The guidance tells a turn that issues commands to state no result _(enforced: mechanical)_ ^c17
+
+- **Subject**: the console guidance, `hub/guidance/console.md`.
+- **Violated when**: the guidance leaves out that a turn issuing commands says what it is doing and
+  never what their results are, or that results are read only in the notice the loop writes.
+
+A turn's commands answer only after the turn ends, in the notice the loop writes. A model that
+wanted a result within its turn wrote that notice itself, results invented, and built a reply on
+them. The guidance says a turn that issues commands says what it is doing, never what their results
+are: results are read only in the notice the loop writes. A turn that writes the notice is refused
+([[ADR-0004-the-language#^c4|ADR-0004/C4]]).
+
+### C18: The khive tool names every verb it takes _(enforced: mechanical)_ ^c18
+
+- **Subject**: the `khive_ops` line of the guidance `console()` composes, and the chair's in `lion
+  agent`.
+- **Violated when**: a verb the bound client admits is missing from the line, or the line names a
+  verb the client refuses.
+
+The line lists the client's allow list by name, sorted, then the salience cap on `memory.remember`.
+It gave a count and a summary before, and a model learned a verb was allowed only by calling it.
 
 ## Decisions
 
@@ -344,26 +398,27 @@ as `--config`, over the cwd's (measured); missing, or naming no actor, it refuse
 ### D6: `Run.interrupt`, `run.cut`, and a result's `spec` ^d6
 
 Serves C9. `Run.interrupt` sets `pause` and cancels the call the loop holds in `run.call`; the loop
-reads `run.cut` to tell that cancellation from the run's own and continues. `_message` renders a
-failed result with `spec=None`, which `ClaudeCodeSession` reads before restarting. `backend_for`
-takes the tool names and `chat_main` hands the session the console's actor as its gate.
+reads `run.cut` to tell that cancellation from the run's own and continues. `ClaudeCodeSession`
+reads what changed off the view, which a failed result leaves as it was. `chat_main` calls
+`backend_for` with the model alone, so the session runs `--tools ""` and `--max-turns 1`. On `-c`,
+`chat_main` seeds the session's `base` from the log's last bill.
 
 - **Landing evidence**: `tests/test_chat.py`: the cut with its two controls;
-  `apps/cli/tests/test_chat_command.py`: the Ctrl-C presses; `tests/test_claude_code.py`:
-  `test_a_failed_context_directive_does_not_restart_the_session`.
+  `test_a_continued_chat_seeds_its_sessions_first_figure_from_the_last_billed_call`;
+  `apps/cli/tests/test_chat_command.py`: the Ctrl-C presses,
+  `test_a_claude_code_model_gets_no_tools_of_its_own_one_turn_per_call_and_no_gate_hook`;
+  `tests/test_claude_code.py`: `test_a_failed_context_directive_does_not_restart_the_session`.
 
-### D7: `Console.working`, `Console.idle`, `signer` and `Actor.elsewhere` ^d7
+### D7: `Console.working`, `Console.idle` and `signer` ^d7
 
 Serves C10. `Console.working(what)` starts a transient rich `Live` at eight frames a second holding
 a `_Working` (frame, what, elapsed) and any parked detail; `idle()` stops it. `chat_main` subscribes
 `round.started` to `working("thinking")`, and `Console.__call__` turns it to `running` when a turn
-carries commands. `signer(directory)` reads the actor id for the status line. `Actor.elsewhere` maps
-a name to the sentence appended to the unknown-command error; the chat fills it with the own tools.
+carries commands. `signer(directory)` reads the actor id for the status line.
 
 - **Landing evidence**: `tests/test_chat.py`:
   `test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detail_under_it`,
-  `test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked`,
-  `test_an_own_tool_call_folds_to_one_line_and_an_unknown_name_is_told_where_it_lives`.
+  `test_the_status_line_leads_with_the_model_and_the_khive_actor_when_asked`.
 ### D8: `linked`, `_target` and the links in calls and notices ^d8
 
 Serves C11. `linked(text, directory)` walks the prose outside fences token by token (an escape, a
@@ -383,9 +438,11 @@ prose, a replayed one too, to `responses`. `Console.command` runs `/copy [N]` an
 loop asks again after one. `to_clipboard` tries each tool present on stdin, uncaptured (xclip and
 wl-copy fork a child that serves the selection), then writes the OSC 52 escape.
 
+`_plain` adds each entry's plain lines to `transcript`, which `/copy all` joins.
+
 - **Landing evidence**: `apps/cli/tests/test_copy.py`: the last and the Nth-back response, a number
-  out of range, the prose without its constructs, the route order and the OSC 52 fallback, the
-  command never sent, Alt-C.
+  out of range, the prose without its constructs, the whole chat unwrapped, the route order and the
+  OSC 52 fallback, the command never sent, Alt-C.
 
 ### D10: `mermaid_blocks`, `diagram_page` and `_fences` ^d10
 
@@ -409,6 +466,51 @@ mlx_whisper, imported on the thread since the import takes seconds; both are inj
 - **Landing evidence**: `tests/test_voice.py`: the toggle, the text at the cursor, the space after a
   word, the failures said on the toolbar, one transcription at a time, the reset, the extra missing.
 
+### D12: `Console.failed` and the backend errors caught in `_chat_main` ^d12
+
+Serves C15. `_chat_main` catches `ClaudeCodeError`, `CodexError` and `OpenRouterError` around the
+run, beside the interrupt: `Console.failed` stops the indicator and prints the message in red, the
+run is closed as `failed`, and `SystemExit(1)` is raised after the closing line. `chat` had already
+flushed the record, so the log holds the message; `chat_main` removes only an empty log.
+`Console._calls` reads a turn through the loop's own `_read`, so the refusal it prints is the
+`LNDLError` the loop raised.
+
+- **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the failed backend, exit 1 and the
+  `-r` continuation; a faked frame printing no call arrow. Controls: without the clause the raw
+  error; with `lndl.parse` for `_read` the arrow.
+
+### D13: `instructions`, `_shown` and where the chat names them ^d13
+
+Serves C16. `instructions(directory)` in `config.py` lists the files that exist and hold text.
+`console` appends each after `guidance("console", …)` when no `system` is given, named by `_shown`
+from the directory, else `~/`, else whole; `code.md` has no `$rules`. `_chat_main` says them after
+the banner; `config_main` prints one comment line each, or where it looked.
+
+- **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the order, the names, a caller's
+  system left whole, the opening line; `apps/cli/tests/test_config.py`: `lion config`'s lines, an
+  empty file skipped. Control: without the append the composition test fails.
+
+### D14: The sentence in `hub/guidance/console.md` ^d14
+
+Serves C17. The sentence follows the one that sends a question needing a fact to a command first, in
+the first paragraph of `console.md`, which `console()` composes into every chat that names no system
+of its own.
+
+- **Landing evidence**: `tests/test_guidance.py`:
+  `test_each_guidance_file_is_read_by_name_and_its_fields_filled` holds the sentence. Control:
+  without it the test fails.
+
+### D15: The tool line writes the client's own `allowed` ^d15
+
+Serves C18. `console` in `lion_cli/chat.py` and `chair` in `lion_cli/agent.py` join
+`sorted(khive.allowed)` of the `Bounded` client they register, so the line and the boundary read one
+set.
+
+- **Landing evidence**: `apps/cli/tests/test_chat_command.py`:
+  `test_a_console_in_an_actors_directory_gets_khive_signing_as_that_actor`; `tests/test_agent.py`:
+  `test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread`. Control:
+  the old line fails both.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -428,6 +530,11 @@ mlx_whisper, imported on the thread since the import takes seconds; both are inj
 | Ctrl-Y, or a mouse button, for the copy | Ctrl-Y is the editor's yank, and a terminal has no buttons; a key the line survives and a command the person can number |
 | Drawing the diagram in the terminal | no terminal draws mermaid; a page in the browser does, at full size, and the log keeps the source |
 | Whisper through a remote API | the recording leaves the machine; the local model answers in seconds on Apple silicon and needs no key |
+| Letting a backend's error propagate as the report | a traceback over the indicator says less than the backend's own line and skips the closing line that names the log |
+| Letting the claude CLI read CLAUDE.md itself (its setting sources) | only one backend would get the files, and with them every setting and hook the CLI finds; composing them into the guidance serves every model alike |
+| Every CLAUDE.md from the directory up to the filesystem root | the directories above a repository hold other projects' rules; the home file is the one every chat means to share |
+| Copying the whole chat from the terminal's scrollback | the terminal wraps and indents what it shows; the copy is built from the entries, unwrapped |
+| The claude CLI's own tools inside each round (`--tools`) | a second channel beside the commands: a model that called a command natively was told it did not exist, then wrote the loop's result frame itself with invented results |
 
 ## Consequences
 
@@ -463,10 +570,9 @@ mlx_whisper, imported on the thread since the import takes seconds; both are inj
   the model and the person; only that session's patch is checked.
   `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch` resumes a
   boxed chat.
-- **S11**: A cut round leaves no turn on the record, only a notice; a `claude_code` session killed
-  mid-call resumes on the next call from the CLI's own persisted session. A hide of what the CLI's
-  own tools did folds the record; the CLI's session keeps its own transcript until a directive or a
-  fold restarts it from the folded view.
+- **S11**: A cut round leaves no turn on the record, only a notice. A `claude_code` session killed
+  mid-call resumes on the next call from the CLI's own persisted session, which keeps its own
+  transcript until a restart that pays, or the fold, starts it over from the folded view.
 - **S12**: The config file cannot switch a `true` off for one run: the flags are switches, so a
   nearer file's `false` is the only override. `lion chat --help` shows the built-in defaults, not
   the files'.

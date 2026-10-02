@@ -52,7 +52,7 @@ from hub import guidance
 from lionagi.actor import Context, Profile, Run
 
 from ..areas import partial
-from ..khive import lit
+from ..khive import KhiveError, lit
 from .agent import Agent, AgentError, LoopLock
 
 __all__ = (
@@ -336,7 +336,8 @@ class Chores:
                     f"{req.asker} on thread {req.thread} is not a message this wake admitted; "
                     f"its threads here: {sorted(threads) or 'none'}"
                 )
-        caught = await self._catch_up(run, skip=req.chore)
+        # a check the ask narrowed (args) covers no missed tick: the tick was the whole sweep
+        caught = await self._catch_up(run, skip=req.chore if not req.args else None)
         t0 = time.time()
         try:
             # the run id is the handler's fact, set after the model's args so they cannot name another
@@ -574,9 +575,9 @@ class Chores:
         if not self.steward:
             return "aged: no steward"
         async with self._aging:
-            now, done = time.time(), set(_val(self.agent.state, "aged_sent", []))
+            now, done, rows = time.time(), set(_val(self.agent.state, "aged_sent", [])), self.rows()
             due: list[tuple[dict, float, str]] = []
-            for r in self.rows():
+            for r in rows:
                 if not r.get("msg") or not r["findings"] or self.steward in (r.get("sent_to") or []):
                     continue  # only reports the owner alone received; the steward has the rest already
                 if chore and r["chore"] != chore:
@@ -614,7 +615,9 @@ class Chores:
                 )
                 for r, _, _ in due:
                     done.add(_aged_key(r))
-            self.agent.state.put("aged_sent", sorted(done)[-1000:], run=run.id, seq=run.record.seq)
+            # a marker lives as long as the ledger row it covers: no count of reports lets one be told twice
+            live = {_aged_key(r) for r in rows}
+            self.agent.state.put("aged_sent", sorted(done & live), run=run.id, seq=run.record.seq)
             return f"aged: {len(due)} report(s) sent to {self.steward}" if due else "aged: nothing unanswered"
 
     # ticks
@@ -647,33 +650,54 @@ class Chores:
             created.append(content)
         return created
 
-    async def _catch_up(self, run: Run, *, skip: str) -> list[str]:
+    async def _catch_up(self, run: Run, *, skip: str | None) -> list[str]:
         """Once per run: the actor's own reminders khive marked missed (never fired) or failed, not
         seen before, run now. A missed digest or aged tick runs those handlers."""
         if self._caught_up == run.id:
             return []
         self._caught_up = run.id
-        me = self.agent.khive.actor
-        try:  # the store filters by creator and status before the page, so the page holds only these
-            pages = await self.agent.khive.exec(
-                "["
-                + ", ".join(
-                    f'list(kind="scheduled_event", created_by_actor={lit(me)}, status={lit(s)}, limit=200)'
-                    for s in ("missed", "failed")
+        me, items = self.agent.khive.actor, []
+        try:  # the store filters by creator and status before a page; a row caught up keeps its status, so
+            # the first page alone comes back every pass: each list is paged by offset until it says no more
+            offsets = {"missed": 0, "failed": 0}
+            while offsets:
+                live = list(offsets)
+                pages = await self.agent.khive.exec(
+                    "["
+                    + ", ".join(
+                        f'list(kind="scheduled_event", created_by_actor={lit(me)}, status={lit(s)}, limit=200'
+                        + (f", offset={offsets[s]}" if offsets[s] else "")
+                        + ")"
+                        for s in live
+                    )
+                    + "]"
                 )
-                + "]"
-            )
+                for s, rows in zip(live, pages, strict=True):
+                    # a page is a dict with a list under `items`, or a bare list; anything else, or an
+                    # empty page that says more is behind it, is a broken read: nothing runs or is let go
+                    if isinstance(rows, dict):
+                        got, more = rows.get("items"), rows.get("has_more")
+                        more = len(got) == 200 if more is None and isinstance(got, list) else more
+                    else:
+                        got, more = rows, isinstance(rows, list) and len(rows) == 200
+                    if not isinstance(got, list) or (not got and more):
+                        raise ValueError(
+                            f"the {s} page at offset {offsets[s]} is not a page: {str(rows)[:80]!r}"
+                        )
+                    items += got
+                    offsets[s] += len(got)
+                    if not got or not more:
+                        del offsets[s]
         except Exception as e:
             return [f"missed-tick read failed: {type(e).__name__}: {e}"]
-        items = [
-            it for rows in pages for it in (rows.get("items", []) if isinstance(rows, dict) else (rows or []))
-        ]
         seen, done = list(_val(self.agent.state, "missed_seen", [])), []
+        seen_ids = set(seen)  # membership by set: the list keeps the order the record shows
         for it in items:
             p, status = it.get("properties") or {}, it.get("status")  # status sits beside properties
-            if p.get("created_by_actor") != me or status not in ("missed", "failed") or it["id"] in seen:
+            if p.get("created_by_actor") != me or status not in ("missed", "failed") or it["id"] in seen_ids:
                 continue
             seen.append(it["id"])
+            seen_ids.add(it["id"])
             content = str(it.get("content") or "")
             m = re.match(r"tick: ([\w-]+)", content)
             chore = m.group(1) if m else None
@@ -682,15 +706,41 @@ class Chores:
                 done.append(f"{content}: {status}, digest sent now")
             elif chore == "aged":
                 done.append(f"{content}: {status}, " + await self.aged(None, run))
-            elif chore in self.instruments and chore != skip:
+            elif chore == skip:  # the chore this check runs: its run now covers the missed tick
+                done.append(f"{content}: {status}, this check runs it")
+            elif chore in self.instruments:
                 done.append(
                     f"{content}: {status}, ran now: "
                     + await self.check(Check(chore=chore, args={"missed_tick": it["id"]}), run)
                 )
             else:
                 done.append(f"{content}: {status}, noted")
-        if done:
-            self.agent.state.put("missed_seen", seen[-500:], run=run.id, seq=run.record.seq)
+        # an id is kept while the store lists its row: no count of rows lets one run twice. A list read
+        # by offset can skip a row one pass, so an id is let go only when two passes in a row miss it,
+        # and then only on the store's own word for that id: a row it still holds was skipped twice
+        listed = {it["id"] for it in items}
+        gone_before = set(_val(self.agent.state, "missed_gone", []))
+        gone = [i for i in seen if i not in listed]
+        held = set()
+        for i in gone:
+            if i not in gone_before:
+                continue
+            try:
+                row = (await self.agent.khive.exec(f"get(id={lit(i)})"))[0]
+            except Exception as e:
+                # only the store's own not-found for this id lets it go; any other failed read keeps it,
+                # whatever its text says
+                if not (isinstance(e, KhiveError) and e.kind == "not_found"):
+                    held.add(i)
+                continue
+            status = row.get("status") if isinstance(row, dict) else None
+            if not isinstance(status, str) or status in ("missed", "failed"):  # no status = no word
+                held.add(i)
+        kept = [i for i in seen if i in listed or i not in gone_before or i in held]
+        if done or kept != seen:
+            self.agent.state.put("missed_seen", kept, run=run.id, seq=run.record.seq)
+        if set(gone) != gone_before:
+            self.agent.state.put("missed_gone", gone, run=run.id, seq=run.record.seq)
         return done
 
     def profiles(self) -> tuple[Profile, Profile]:

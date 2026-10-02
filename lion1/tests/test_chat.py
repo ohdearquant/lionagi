@@ -397,6 +397,72 @@ def test_a_start_that_fails_frees_its_empty_log_so_continue_keeps_the_old_histor
     assert sorted(p.name for p in chats.iterdir()) == [old.name]
 
 
+def test_a_continued_chat_seeds_its_sessions_first_figure_from_the_last_billed_call(tmp_path, monkeypatch):
+    """A continued chat's new CLI session starts from the whole view; its first figure stands on the
+    count the last call reported and the characters that call stood in, both from the log's bill."""
+    import argparse
+    import io
+
+    from lion_cli.chat import chat_main
+    from lion_cli.view import Console
+
+    from hub.backend.claude_code import ClaudeCodeSession
+
+    billed = {"usage": {"input_tokens": 9, "cache_read_input_tokens": 31000}, "prompt_chars": 60000}
+    fh = io.StringIO()
+    Console("m", None, color=False, width=200, calls=[billed])._bill(fh, 7)
+    row = json.loads(fh.getvalue())
+    assert row["prompt_chars"] == 60000  # the bill keeps what the call's prompt stood in
+    chats = tmp_path / ".lion" / "chats"
+    chats.mkdir(parents=True)
+    first = {
+        "seq": 0,
+        "kind": "INPUT",
+        "name": "_in0",
+        "round": 0,
+        "alias": None,
+        "meta": {},
+        "content": "hi",
+    }
+    failed = {
+        "kind": "USAGE",
+        "round": 8,
+        "model": None,
+        "total_cost_usd": None,
+    }  # a call that printed nothing
+
+    async def eof(*args, **kwargs):
+        return None
+
+    made: list[ClaudeCodeSession] = []
+    monkeypatch.setattr("lion_cli.view.stdin_ask", eof)
+    monkeypatch.setattr(
+        "lion_cli.chat.backend_for",
+        lambda model: made.append(ClaudeCodeSession(cli="/bin/claude")) or made[-1],
+    )
+    for n, rows in enumerate(
+        ([first, row, failed], [first, {k: v for k, v in row.items() if k != "prompt_chars"}])
+    ):
+        (chats / f"20260929-10000{n}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        a = argparse.Namespace(
+            dir=str(tmp_path),
+            resume=f"20260929-10000{n}",
+            log=None,
+            shell=False,
+            code=False,
+            offline=False,
+            model="claude_code",
+            rounds=1,
+            raw=False,
+            say=None,
+            verbose=False,
+        )
+        with pytest.raises(SystemExit):
+            asyncio.run(chat_main(a))
+    assert [b.base for b in made] == [(31009, 60000), None]  # a log without the characters seeds nothing
+    assert all(not b.calls for b in made)
+
+
 def test_the_cost_line_reads_what_was_billed_across_every_attempt():
     from lion_cli.chat import spent
 
@@ -1000,32 +1066,3 @@ def test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detai
     say.working("thinking")
     say.close("ended", 0, 0.0, 0, None)  # closing clears the live region too
     assert say.live is None
-
-
-def test_an_own_tool_call_folds_to_one_line_and_an_unknown_name_is_told_where_it_lives(
-    tmp_path,
-):
-    from lion_cli.view import Console
-
-    from lionagi.actor import Result
-    from lionagi.record import Entry
-
-    say = Console("m", None, color=False, width=120)
-    e = Entry(
-        seq=3,
-        kind=Kind.RESULT,
-        round=1,
-        alias="toolu_01AB",
-        content=Result("Bash", True, {"command": "sleep 60 && echo SLEPT", "description": "wait"}),
-    )
-    [head] = say.render(e)
-    assert head == "[green]✓ Bash[/green] [dim]command=sleep 60 && echo SLEPT[/dim]"
-    say.verbose = True
-    assert say.render(e) == [head]  # its arguments are the whole of it: no detail to fold
-    actor, profile = reader(tmp_path)
-    actor.elsewhere = {"Bash": "Bash is one of your own tools; call it as you always do, not inside <lact>"}
-    run = asyncio.run(
-        chat(actor, profile, scripted('<lact g1>Bash(command="ls")</lact>', "ok"), asks("go", None))
-    )
-    [r] = [e.content for e in run.record if e.kind is Kind.RESULT]
-    assert r.error == "unknown command 'Bash': " + actor.elsewhere["Bash"]

@@ -90,7 +90,6 @@ def test_unsubscribe_stops_delivery_and_a_second_call_changes_nothing():
     assert others == ["a", "b", "c"]
 
 
-@pytest.mark.xfail(strict=True, reason="known defect: unsubscribe removes an equal registration, not its own")
 @pytest.mark.parametrize("resubscribe", [False, True], ids=["held-twice", "resubscribed"])
 def test_an_unsubscribe_removes_only_its_own_registration_and_then_nothing(resubscribe):
     bus = Bus()
@@ -241,7 +240,6 @@ def test_drain_returns_when_a_tracked_task_was_cancelled_and_records_no_error():
     asyncio.run(main())
 
 
-@pytest.mark.xfail(strict=True, reason="known defect: an early cancel leaves the handler's task running")
 def test_cancelling_a_tracked_task_before_it_starts_cancels_the_task_the_handler_returned():
     async def main():
         bus = Bus()
@@ -269,7 +267,6 @@ def test_cancelling_a_tracked_task_before_it_starts_cancels_the_task_the_handler
     asyncio.run(main())
 
 
-@pytest.mark.xfail(strict=True, reason="known defect: an early cancel leaves the handler's coroutine open")
 def test_cancelling_a_tracked_task_before_it_starts_closes_the_coroutine_the_handler_returned():
     async def main():
         bus = Bus()
@@ -295,14 +292,12 @@ def test_cancelling_a_tracked_task_before_it_starts_closes_the_coroutine_the_han
 
 
 @pytest.mark.skipif(not hasattr(asyncio, "eager_task_factory"), reason="eager tasks arrive in Python 3.12")
-@pytest.mark.xfail(
-    strict=True, raises=TimeoutError, reason="known defect: drain spins on a task that finished early"
-)
 def test_drain_returns_after_a_handler_that_ran_to_its_end_inside_emit():
     # An eager task runs until its first suspension inside create_task, so a handler with none is
     # finished before the bus tracks it, and the callback that drops it from `tasks` is still queued
-    # when `drain` looks. From Python 3.12, gathering finished tasks returns without yielding, so that
-    # callback never runs and `drain` loops without end. The alarm bounds the test; a cancel cannot.
+    # when `drain` looks. From Python 3.12, gathering finished tasks returns without yielding, so a
+    # drain that never yields itself would loop without end. The alarm bounds the test; a cancel
+    # cannot.
     async def main():
         asyncio.get_running_loop().set_task_factory(asyncio.eager_task_factory)
         bus = Bus()
@@ -377,6 +372,26 @@ def test_a_returned_future_is_tracked_like_a_coroutine():
         assert [(e, str(x)) for e, _, x in bus.errors] == [(event, "no")]
 
     asyncio.run(main())
+
+
+def test_a_future_from_another_loop_is_recorded_and_never_reaches_the_emitter():
+    other = asyncio.new_event_loop()
+    try:
+        foreign = other.create_future()
+
+        async def main():
+            bus = Bus()
+            after = []
+            bus.subscribe("x", lambda e: foreign)
+            bus.subscribe("x", after.append)
+            event = bus.emit("x")
+            assert after == [event] and bus.tasks == set()
+            ((got_event, _, exc),) = bus.errors
+            assert got_event is event and isinstance(exc, ValueError)
+
+        asyncio.run(main())
+    finally:
+        other.close()
 
 
 def test_the_log_keeps_ten_thousand_events_by_default():

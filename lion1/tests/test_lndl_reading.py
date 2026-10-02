@@ -1,5 +1,4 @@
 import re
-import sys
 
 import pytest
 
@@ -345,13 +344,6 @@ def test_json_words_inside_containers_are_python_literals():
     assert parse_call("f(x={'a': true, 'b': [null, false]})") == ("f", {"x": {"a": True, "b": [None, False]}})
 
 
-@pytest.mark.xfail(
-    sys.version_info < (3, 12),
-    raises=LNDLError,
-    strict=True,
-    reason="known defect: on 3.11 an invalid escape warns as DeprecationWarning, which the reader does "
-    "not silence, so under warnings-as-errors (this suite's setting) the call is unreadable",
-)
 def test_a_regex_escape_in_a_string_argument_is_kept_as_written():
     assert parse_call('grep(pattern="\\s+\\d")') == ("grep", {"pattern": "\\s+\\d"})
 
@@ -362,6 +354,14 @@ def test_a_regex_escape_in_a_string_argument_is_kept_as_written():
 def test_two_heredocs_with_the_same_tag_in_one_call_are_two_values():
     p = parse("<lact e>edit(old=<<EOF\none\nEOF, new=<<EOF\ntwo\nEOF)</lact>")
     assert p.lacts[0].args == {"old": "one", "new": "two"} and p.problems == []
+
+
+@pytest.mark.parametrize("gap", [" ", "\t", "  "])
+def test_a_closing_line_that_goes_on_to_the_next_argument_reads_both_and_names_the_comma(gap):
+    call = f"f(x=<<EOF\nhello\nEOF{gap}y=1)"
+    assert parse_call_noting(call) == ("f", {"x": "hello", "y": 1}, ("comma",))
+    p = parse(f"<lact a>{call}</lact>")
+    assert p.lacts[0].args == {"x": "hello", "y": 1} and p.problems == [_repaired("a", COMMA)]
 
 
 def test_an_escaped_quote_before_a_heredoc_does_not_end_its_string():
@@ -600,24 +600,14 @@ def test_plain_keeps_the_prose_lines_without_the_constructs():
     assert plain("") == ""
 
 
-# known defects: each test states the intended behaviour
+# edge cases of the reading: each test states the intended behaviour
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: an apostrophe in a heredoc body makes the scan read the call's closing tag as "
-    "inside a string, so a closing tag in an earlier string argument ends the call (ADR-0004/C1, C2)",
-)
 def test_a_heredoc_body_with_an_apostrophe_does_not_move_the_calls_end():
     turn = "<lact a>f(x='</lact>', y=<<EOF\nit's\nEOF)</lact>"
     assert _calls(turn) == [("a", {"x": "</lact>", "y": "it's"})] and parse(turn).problems == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: backticks inside string arguments of two calls pair as a markdown fence, "
-    "which hides the calls between them and loses the turn (ADR-0004/C1)",
-)
 def test_a_fence_inside_string_arguments_is_text():
     assert _calls('<lact a>f(x="```")</lact>\n<lact b>g(y="```")</lact>') == [
         ("a", {"x": "```"}),
@@ -625,33 +615,25 @@ def test_a_fence_inside_string_arguments_is_text():
     ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: a fence inside a string argument pairs with a fence in a later value, which "
-    "drops both constructs (ADR-0004/C1)",
-)
 def test_a_fence_inside_a_string_argument_does_not_pair_with_a_later_value():
     p = parse('<lact a>f(x="```")</lact>\n<lvar b>```</lvar>')
     assert _calls('<lact a>f(x="```")</lact>\n<lvar b>```</lvar>') == [("a", {"x": "```"})]
     assert [(v.alias, v.value) for v in p.lvars] == [("b", "```")]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: backticks in two sibling values pair as markdown code, so the first value "
-    "swallows the second (ADR-0004/C1: each construct owns its span)",
-)
 @pytest.mark.parametrize("tick", ["```", "`"])
 def test_backticks_in_sibling_values_do_not_pair(tick):
     p = parse(f"<lvar a>{tick}x</lvar> <lvar b>y{tick}</lvar>")
     assert [(v.alias, v.value) for v in p.lvars] == [("a", f"{tick}x"), ("b", f"y{tick}")]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: a string literal spelled like the internal pointer placeholder is read as a "
-    "pointer (ADR-0004/C1: a quoted string means the string)",
-)
+@pytest.mark.parametrize("tick", ["```", "`"])
+def test_a_tag_quoted_in_markdown_code_inside_a_value_stays_text(tick):
+    value = f"close one with {tick}</lvar>{tick}, open one with {tick}<lvar k>{tick}"
+    p = parse(f"<lvar note.syntax>{value}</lvar> <lvar b>y</lvar>")
+    assert [(v.alias, v.value) for v in p.lvars] == [("note.syntax", value), ("b", "y")] and p.problems == []
+
+
 @pytest.mark.parametrize("where", ["call", "out"])
 def test_a_string_spelled_like_the_pointer_placeholder_is_a_string(where):
     if where == "call":
@@ -660,11 +642,6 @@ def test_a_string_spelled_like_the_pointer_placeholder_is_a_string(where):
         assert parse('OUT{answer: "\\x00ptr:a"}').out.fields == {"answer": "\x00ptr:a"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: a string literal spelled like the internal heredoc placeholder is replaced by "
-    "the call's heredoc (ADR-0004/C1: a quoted string means the string)",
-)
 @pytest.mark.parametrize(
     "literal, value",
     [
@@ -691,6 +668,24 @@ def test_a_pointer_where_a_key_or_a_set_member_stands_is_refused(literal):
     assert p.problems == [f"OUT{{...}} could not be read, so this turn ran without it: {why}"]
 
 
+@pytest.mark.parametrize(
+    "body, name",
+    [
+        ("read(path=__x)", "__x"),
+        ("f(x=__doc_0)", "__doc_0"),
+        ("f(x=[__ptr_0])", "__ptr_0"),
+        # the name the reader gives `*x` is `__ptr_0` too: written beside it, it stands twice
+        ("f(a=*x, b=__ptr_0)", "__ptr_0"),
+    ],
+)
+def test_a_name_written_in_the_readers_own_spelling_is_refused(body, name):
+    why = f"{name}: a name starting with __ is the reader's own, never a value"
+    with pytest.raises(LNDLError, match=re.escape(why)):
+        parse_call(body)
+    with pytest.raises(LNDLError, match=re.escape(why)):
+        parse(f"<lact a>{body}</lact>")
+
+
 @pytest.mark.parametrize("key", ["*a", "\x00ptr:a"])
 def test_a_quoted_key_spelled_like_a_pointer_or_its_placeholder_is_a_string(key):
     name, args = parse_call(f"f(x={{{key!r}: 1}})")
@@ -698,11 +693,6 @@ def test_a_quoted_key_spelled_like_a_pointer_or_its_placeholder_is_a_string(key)
     assert pointers_in(args) == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: a pointer that starts a continuation line inside a literal is not read, "
-    "because the token before it is the line break (ADR-0004/C1: arguments are literals or pointers)",
-)
 def test_a_pointer_that_starts_a_continuation_line_is_read():
     assert parse_call("send(cc=[*c,\n        *d])") == ("send", {"cc": [Pointer("c"), Pointer("d")]})
 
@@ -713,51 +703,26 @@ def test_a_call_needing_a_comma_and_its_closers_names_both_repairs():
     assert len(p.problems) == 1 and COMMA in p.problems[0] and CLOSERS in p.problems[0]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: the call is stripped before its closers are supplied, so a string left open "
-    "at the closing tag loses the whitespace it ends with (ADR-0004/A2: the call the model meant, short "
-    "of its closers)",
-)
 def test_a_string_left_open_at_the_closing_tag_keeps_its_trailing_space():
     assert _calls('<lact j>join(items=*xs, sep=", </lact>') == [("j", {"items": Pointer("xs"), "sep": ", "})]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: a missing comma after a pointer, True, False, None or a JSON word is not "
-    "supplied (ADR-0004/C3)",
-)
 @pytest.mark.parametrize("value", ["*a", "True", "None", "true", "null"])
 def test_a_missing_comma_after_any_argument_is_supplied(value):
     name, args, repairs = parse_call_noting(f"run(cmd={value} timeout=1)")
     assert name == "run" and args["timeout"] == 1 and repairs == ("comma",)
 
 
-_TOO_DEEP = "known defect: deeply nested input raises RecursionError out of parse instead of LNDLError"
-
-
+@pytest.mark.usefixtures("no_collection")
 @pytest.mark.parametrize(
     "text",
     [
-        pytest.param(
-            "<lact a>f(x=" + "-" * 3000 + "1)</lact>",
-            id="unary-argument",
-            marks=pytest.mark.xfail(raises=RecursionError, strict=True, reason=_TOO_DEEP),
-        ),
-        pytest.param(
-            "<lact a>" + ".".join(["a"] * 3000) + "(x=1)</lact>",
-            id="dotted-callee",
-            marks=pytest.mark.xfail(raises=RecursionError, strict=True, reason=_TOO_DEEP),
-        ),
+        pytest.param("<lact a>f(x=" + "-" * 3000 + "1)</lact>", id="unary-argument"),
+        # past the parser's own stack: MemoryError, not RecursionError
+        pytest.param("<lact a>f(x=" + "-" * 100000 + "1)</lact>", id="unary-argument-past-the-parser"),
+        pytest.param("<lact a>" + ".".join(["a"] * 3000) + "(x=1)</lact>", id="dotted-callee"),
         # from 3.12 the parser builds this without recursing, and the literal is then refused
-        pytest.param(
-            "OUT{a: " + "-" * 3000 + "1}",
-            id="unary-out",
-            marks=pytest.mark.xfail(
-                sys.version_info < (3, 12), raises=RecursionError, strict=True, reason=_TOO_DEEP
-            ),
-        ),
+        pytest.param("OUT{a: " + "-" * 3000 + "1}", id="unary-out"),
     ],
 )
 def test_deeply_nested_input_is_an_lndl_error_or_a_program(text):
@@ -768,11 +733,12 @@ def test_deeply_nested_input_is_an_lndl_error_or_a_program(text):
     assert isinstance(result, (Program, LNDLError))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="known defect: plain() cuts constructs with its own pattern, not the parser's scan, so it "
-    "keeps text the parser read as a construct and drops text it read as prose",
-)
+@pytest.mark.usefixtures("no_collection")
+def test_a_call_every_supported_python_parses_but_the_reading_cannot_walk_is_refused():
+    with pytest.raises(LNDLError, match="it is nested too deeply to read"):
+        parse("<lact a>f(x=" + "-" * 1500 + "1)</lact>")
+
+
 @pytest.mark.parametrize(
     "text, prose",
     [

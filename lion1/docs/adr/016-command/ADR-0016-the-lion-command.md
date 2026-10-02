@@ -67,8 +67,8 @@ neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 | `lion agent --dir D --ticks` | the chores' missing reminders | the reminders on the khive schedule; none for a chair |
 | `lion agent --dir D --arm` | the identity read and the boundary probes (D2) | a landing file; exit 0 only when every probe holds |
 | `lion agent --dir D --stats` | a read of the notes and the ledgers (C4) | nothing |
-| `lion chat` | a console actor over a directory ([[ADR-0018-chat-in-a-box|ADR-0018]]); its flags default from the config file; `--tools` runs a `claude_code` model's own tools, `--khive-config` names the file its khive calls sign with | `.lion/chats/<id>.jsonl` with a usage row per call, and beside it `.lion/history`, a diagram page per mermaid block; notes under `.lion/notes`; a box's patch, applied only under `--apply`; the clipboard under `/copy` |
-| `lion config [--dir D]` | the chat's effective defaults for `D`, one TOML line per key with the file each came from | nothing |
+| `lion chat` | a console actor over a directory ([[ADR-0018-chat-in-a-box|ADR-0018]]); its flags default from the config file; `--khive-config` names the file its khive calls sign with; the instruction files close its guidance | `.lion/chats/<id>.jsonl` with a usage row per call, and beside it `.lion/history`, a diagram page per mermaid block; notes under `.lion/notes`; a box's patch, applied only under `--apply`; the clipboard under `/copy` and `/copy all` |
+| `lion config [--dir D]` | the chat's effective defaults for `D`, one TOML line per key with the file each came from, then the instruction files it composes | nothing |
 | `lion areas [--serve PORT]` | the residents by area, or a page and its API ([[ADR-0017-the-desk|ADR-0017]]) | nothing without `--serve`; with it, a resident's `hold`, `wake-now`, `[budget]` keys, `landing/controls.log`, mail, a launchd restart, and checkpoints through the `lion context` functions |
 | `lion context` `set`, `checkpoint`, `restore`, `status`, `show` | a Claude Code session's checkpoint and restore, no model call ([[ADR-0019-the-checkpoint|ADR-0019]]) | `.khive/context/pending.jsonl`, `<id>.json` and `latest.json` |
 
@@ -140,7 +140,8 @@ Serves C1. `parser(chat=None)` builds `agent`, `chat`, `areas`, `context` and `c
 its own flags. `main()` parses `chat` twice, the second time with the config file's values as the
 chat parser's defaults; it runs `agent` and `chat` under `asyncio.run`, the rest directly, and ends
 a chat quietly on an interrupt. `context` takes its verbs as a second level of subcommands. At the
-chat's prompt a line the console owns (`/copy [N]`, `/quit`) runs there and never reaches the model.
+chat's prompt a line the console owns (`/copy [N]`, `/copy all`, `/quit`) runs there and never
+reaches the model.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the chat flags through `parser()`;
   `apps/cli/tests/test_config.py`: the two files, the flag over them, the refusals, `lion config`;
@@ -167,11 +168,14 @@ Serves C3. The model is the flag's, else `chores.toml`'s, else `deepseek/deepsee
 `deepseek` name gets the router with a fixed provider order, fallbacks off and data collection
 denied; any other name the router's own routing; both a 2,000-token reasoning budget and a stop on
 the notification frame ([[ADR-0009-backends#^d1|ADR-0009/D1]]). `claude_code[/<model>]` is the
-session CLI with the config's `[claude_code]` options in the agent directory. The subscription CLI
-of [[ADR-0009-backends#^d3|ADR-0009/D3]] is not offered.
+session CLI in the agent directory without tools of its own: `[claude_code]` takes `timeout`,
+`effort` and `cli`, refusing any other by name, and `build` refuses one handed in with tools. The
+subscription CLI of [[ADR-0009-backends#^d3|ADR-0009/D3]] is not offered.
 
-- **Landing evidence**:
-  `tests/test_agent.py::test_backend_for_claude_code_is_the_cli_chat_shape_on_the_named_model`.
+- **Landing evidence**: `tests/test_agent.py`:
+  `test_backend_for_claude_code_is_the_cli_chat_shape_on_the_named_model`,
+  `test_a_claude_code_key_that_is_not_timeout_effort_or_cli_is_refused_by_name_whatever_the_model`,
+  `test_build_refuses_a_claude_code_session_handed_in_with_tools_of_its_own`.
 
 ### D4: `_usage`, `_spend`, `_facts` and `_line` in `hub/agent/agent.py` ^d4
 

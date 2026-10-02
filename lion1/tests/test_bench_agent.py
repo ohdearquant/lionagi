@@ -26,6 +26,18 @@ spec.loader.exec_module(bench_agent)
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
 
 
+def _put_job(agent) -> None:
+    """A launched job t1, asked for on THREAD by lambda:a, as the launch leaves it in the state."""
+    job = {
+        "asker": "lambda:a",
+        "thread": THREAD,
+        "pid": 1,
+        "started": "now",
+        "ask": {"set": "mini50", "model": "m"},
+    }
+    agent.state.put("jobs", {"t1": job}, run="-", seq=0)
+
+
 @pytest.fixture(autouse=True)
 def identity(monkeypatch):
     """The example's identity is configured by its caller; the tests configure it here."""
@@ -196,14 +208,7 @@ def test_a_report_goes_through_the_agents_counted_send_and_a_reported_job_is_not
     agent = bench_agent.build(
         khive, Scripted(twice, 'OUT{posture: {done: "reported t1", awaiting: ""}}', khive=khive)
     )
-    job = {
-        "asker": "lambda:a",
-        "thread": THREAD,
-        "pid": 1,
-        "started": "now",
-        "ask": {"set": "mini50", "model": "m"},
-    }
-    agent.state.put("jobs", {"t1": job}, run="-", seq=0)
+    _put_job(agent)
     run = asyncio.run(agent.wake(wait_ms=0))
     results = [e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report"]
     assert sorted(r.ok for r in results) == [False, True] and len(khive.sent) == 1
@@ -325,14 +330,7 @@ def test_delivery_receipt_precedes_remember_failure(tmp_path, monkeypatch):
     )
     done = 'OUT{posture: {done: "x", awaiting: ""}}'
     agent = bench_agent.build(khive, Scripted('<lact r1>report(run_id="t1")</lact>', done, khive=khive))
-    job = {
-        "asker": "lambda:a",
-        "thread": THREAD,
-        "pid": 1,
-        "started": "now",
-        "ask": {"set": "mini50", "model": "m"},
-    }
-    agent.state.put("jobs", {"t1": job}, run="-", seq=0)
+    _put_job(agent)
     run = asyncio.run(agent.wake(wait_ms=0))
     result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
     assert len(khive.sent) == 1 and not result.ok and "m1" in str(result.error)  # the receipt is named
@@ -367,20 +365,7 @@ def test_the_report_send_is_keyed_by_the_job_so_a_lost_receipt_replays_and_never
             '<lact r1>report(run_id="t1")</lact>', 'OUT{posture: {done: "x", awaiting: ""}}', khive=khive
         ),
     )
-    agent.state.put(
-        "jobs",
-        {
-            "t1": {
-                "asker": "lambda:a",
-                "thread": THREAD,
-                "pid": 1,
-                "started": "now",
-                "ask": {"set": "mini50", "model": "m"},
-            }
-        },
-        run="-",
-        seq=0,
-    )
+    _put_job(agent)
     asyncio.run(agent.wake(wait_ms=0))
     assert keys == ["bench:lambda:a:bench:t1:report"]
 
@@ -403,14 +388,7 @@ def test_a_report_retried_after_a_lost_receipt_sends_the_body_it_first_sent(tmp_
     khive.send = send
     done = 'OUT{posture: {done: "x", awaiting: ""}}'
     agent = bench_agent.build(khive, Scripted('<lact r1>report(run_id="t1")</lact>', done, khive=khive))
-    job = {
-        "asker": "lambda:a",
-        "thread": THREAD,
-        "pid": 1,
-        "started": "now",
-        "ask": {"set": "mini50", "model": "m"},
-    }
-    agent.state.put("jobs", {"t1": job}, run="-", seq=0)
+    _put_job(agent)
     run = asyncio.run(agent.wake(wait_ms=0))
     result = next(e.content for e in run.record if e.kind is Kind.RESULT and e.content.spec == "report")
     assert not result.ok and "TimeoutError" in str(result.error) and len(bodies) == 1
@@ -448,20 +426,7 @@ def test_a_launch_during_a_reports_send_is_not_written_away_by_the_report(tmp_pa
     agent = bench_agent.build(
         khive, Scripted(program, 'OUT{posture: {done: "x", awaiting: "t2"}}', khive=khive)
     )
-    agent.state.put(
-        "jobs",
-        {
-            "t1": {
-                "asker": "lambda:a",
-                "thread": THREAD,
-                "pid": 1,
-                "started": "now",
-                "ask": {"set": "mini50", "model": "m"},
-            }
-        },
-        run="-",
-        seq=0,
-    )
+    _put_job(agent)
     run = asyncio.run(agent.wake(wait_ms=0))
     results = {e.content.spec: e.content for e in run.record if e.kind is Kind.RESULT}
     assert results["report"].ok and results["launch"].ok

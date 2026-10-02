@@ -19,6 +19,7 @@ import json
 import math
 import re
 import time
+import unicodedata
 import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
@@ -26,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from . import lndl
 from .bus import Bus
@@ -40,11 +41,12 @@ from .program import check as check_script
 from .program import guidance as program_guidance
 from .program import read as read_script
 from .record import Directive, Entry, Kind, Record, ViewEntry, fold
-from .spec import Operable, Spec, render_guidance, spec_name
+from .spec import Operable, Spec, field_keys, render_guidance, spec_name
 
 __all__ = (
     "Message",
     "Reply",
+    "SessionPlan",
     "Backend",
     "Profile",
     "HandlerFn",
@@ -90,6 +92,9 @@ class Message:
     name: str | None = None  # the record entry this message renders, when it renders one
     spec: str | None = None  # for a RESULT that landed: its command (a failed one changed nothing)
     run: str | None = None  # the run whose record this renders: a backend keeping sessions keys on it
+    # a stand-in for entries the view no longer shows whole: a placeholder or a summary. A session that
+    # still holds the entry under this name holds more than the view, which it may keep (ADR-0009/C4)
+    folded: bool = False
 
 
 class Reply(str):
@@ -114,6 +119,20 @@ class Reply(str):
         reply.cost = cost
         reply.refused = refused
         return reply
+
+
+@dataclass(frozen=True)
+class SessionPlan:
+    """What a backend keeping a session will do with the view it is about to get: its `plan(view,
+    forced=..., run=...)` answers before the notification is written, so the notification says it
+    (ADR-0009/C4). `restart`: the session starts over from the view, or from a point it passed
+    before the view changed. `frees`: estimated tokens the session holds that the view does not show,
+    which a restart drops. `tokens`: the prompt count the call is expected to stand in, from the
+    backend's own last count, or None when it has none."""
+
+    restart: bool
+    frees: int
+    tokens: int | None
 
 
 Backend = Callable[[list[Message]], "Awaitable[str] | str"]
@@ -254,7 +273,9 @@ class Stopped:
 Outcome = Success | Continue | Retry | Exhausted | Refused | Stopped
 
 _CALL_SHAPED = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*\(.*\)\s*$", re.DOTALL)  # `name(...)` as a whole value
-_SYSTEM_FRAME = re.compile(r"<system round=")  # the notification's own opening tag
+# the notification's own opening tag, in any case or spacing after `system`, its `<` as itself or `&lt;`
+_SYSTEM_FRAME = re.compile(r"(?:<|&lt;)system\s+round\s*=", re.IGNORECASE)
+_BREAK = re.compile(r"\r\n|\r|\n")
 
 
 # the runtime's value for each bound a job and its profile leave unset (ADR-0003/C1); None: unbounded
@@ -266,6 +287,18 @@ _BOUNDS: dict[str, float | None] = {
     "context_budget": 200_000,
     "max_refusals": 3,
 }
+
+
+_NOTES_TOLD = 10  # the first notification names this many of the notes already kept, then counts the rest
+_TOKEN = re.compile(r"[\w.:/-]+")  # a store's key or run id written as itself; anything else is quoted
+
+
+def _said(text: str) -> str:
+    """A key or run id a note store supplied, as the notification writes it: a plain token as itself,
+    anything else by its repr, so none breaks the line, reads as another entry, or runs past 60."""
+    text = str.__str__(text)  # the plain string: a subclass's own formatting never runs
+    shown = text if _TOKEN.fullmatch(text) else repr(text)
+    return shown if len(shown) <= 60 else shown[:57] + "..."
 
 
 def _grant(run: Run, bound: str, amount: float, reason: str) -> bool:
@@ -384,6 +417,10 @@ class Run:
         # view (system prompt, tools), which no fold takes off; what it later stands above that is
         # history the record never saw (a session-keeping CLI's tool turns), which a fold does
         self.floor: int | None = None
+        # a backend that keeps a session says what it will do with the view (`SessionPlan`); the
+        # notification tells it, and what the session still holds beyond the view once told
+        self.plan: Callable[..., SessionPlan] | None = None
+        self.frees_told = 0
         self.refusals = 0  # consecutive refusals of OUT{}
         self.repairs: Counter[str] = Counter()  # repairs the reading applied to this run's turns, by name
         # each unknown command name, the nearest name the profile has and the edit distance between them:
@@ -691,9 +728,6 @@ class Actor:
         self.bus = bus or Bus()
         self.notes_dir = Path(notes_dir) if notes_dir is not None else None
         self.handlers: dict[str, Handler] = {}
-        # names the model may reach for that are not commands here, and where each one lives: the
-        # unknown-command result says so (a session with its own tools calls them outside <lact>)
-        self.elsewhere: dict[str, str] = {}
         self.operable = Operable()
         self.inbox: list[Inbound] = []  # unaddressed inbound, taken by the next run that starts a round
         self.runs: dict[str, Run] = {}  # live runs by id, so an answer reaches the run that asked
@@ -820,6 +854,7 @@ class Actor:
     ) -> Run:
         self.check(profile)
         run = Run(self, profile, request)
+        run.plan = getattr(backend, "plan", None)
         subset = self.subset(profile)
         for e in request.history:
             replayed = run.record.append(e.kind, e.content, alias=e.alias, round=e.round, **e.meta)
@@ -1293,10 +1328,7 @@ class Actor:
     ) -> tuple[Result, Directive | None]:
         if la.name not in subset:
             run.misnamed.append(_nearest(la.name, subset.names()))
-            why = f"unknown command {la.name!r}"
-            if la.name in self.elsewhere:
-                why += f": {self.elsewhere[la.name]}"
-            return Result(la.name, False, error=why, reason="unknown"), None
+            return Result(la.name, False, error=f"unknown command {la.name!r}", reason="unknown"), None
         handler = self.handlers[la.name]
         run.reads[la.alias] = {}
         prior = [run.pending[a] for a in run.waits.get(la.alias, ()) if a in run.pending]
@@ -1479,9 +1511,14 @@ class Actor:
                 required = [n for n, f in spec.model_fields.items() if f.is_required()]
                 try:
                     if isinstance(value, dict):  # a pointed-at lvar is text; the field decides
-                        out[key] = spec.model_validate({k: _coerce(spec, k, v) for k, v in value.items()})
+                        keys = field_keys(spec)
+                        out[key] = spec.model_validate(
+                            {k: _coerce(spec, _field_named(keys, k), v) for k, v in value.items()}
+                        )
                     elif len(spec.model_fields) == 1 or len(required) == 1:
-                        out[key] = spec.model_validate({(required or list(spec.model_fields))[0]: value})
+                        out[key] = spec.model_validate(
+                            _keyed(spec, {(required or list(spec.model_fields))[0]: value})
+                        )
                     else:
                         raise lndl.LNDLError(
                             f"OUT{{{key}: ...}}: {key} has several fields; give a dict literal or aliases"
@@ -1491,13 +1528,17 @@ class Actor:
                 continue
             fields: dict[str, Any] = {}
             whole: list[Any] = []
+            keys: dict[str, list[str | int]] | None = None  # taken when a field's alias first needs it
             for alias in value:
                 if alias not in run.values and run.record.get(alias) is None:
                     raise lndl.LNDLError(f"OUT{{{key}: ...}}: {alias!r} was never declared")
                 fld = run.fields.get(alias)
                 resolved = run.resolve(alias)
-                if fld is not None:
-                    fields[fld] = _coerce(spec, fld, resolved) if spec is not None else resolved
+                if fld is not None and spec is None:
+                    fields[fld] = resolved
+                elif fld is not None:
+                    keys = keys if keys is not None else field_keys(spec)
+                    fields[fld] = _coerce(spec, _field_named(keys, fld), resolved)
                 else:
                     whole.append(resolved)
             if spec is None:
@@ -1511,7 +1552,7 @@ class Actor:
                 elif len(whole) == len(spec.model_fields):
                     names = list(spec.model_fields)
                     out[key] = spec.model_validate(
-                        {n: _coerce(spec, n, v) for n, v in zip(names, whole, strict=True)}
+                        _keyed(spec, {n: _coerce(spec, n, v) for n, v in zip(names, whole, strict=True)})
                     )
                 else:
                     raise lndl.LNDLError(
@@ -1647,6 +1688,31 @@ class Actor:
             else:
                 rate = run.grown[0] / run.grown[1] if run.grown[1] > 0 else 1.0
                 shown = max(round(reported - rate * (sent - keep)), keep)
+        if run.plan is not None:
+            # a backend keeping a session says what this call will stand in: its session may still hold
+            # what a directive took out of the view (a restart that does not pay yet waits), or start
+            # over from it, dropping more than the view shows (ADR-0009/C4)
+            post = view
+            if folded is not None:
+                post = self._fold(run, _consumed(run) + (dataclasses.replace(folded, at=r.seq),))
+            plan = run.plan(
+                [dataclasses.replace(m, run=run.id) for m in _messages(post)],
+                forced=folded is not None,
+                run=run.id,  # an inputless run's first view holds no message to carry it
+            )
+            if plan.tokens is not None:
+                shown = plan.tokens
+            if plan.restart:
+                gone = f"; ~{plan.frees} tokens it held beyond the view are gone" if plan.frees > 0 else ""
+                lines.append(f"session: starts over from this view{gone}")
+                run.frees_told = 0
+            elif plan.frees > 0 and plan.frees != run.frees_told:
+                lines.append(
+                    f"session: still holds ~{plan.frees} tokens of what you hid or summarized, counted "
+                    "in context: above; they go when a restart pays for itself, at the budget fold, or "
+                    "in a new session"
+                )
+                run.frees_told = plan.frees
         run.context_figure = shown  # what the next round's start checks against the budget
         lines[context_line] = f"context: ~{shown} / {run.bounds['context_budget']} tokens"
         if run.retry_error:
@@ -1684,6 +1750,23 @@ class Actor:
                 lines.append(f"  {alias}: {why}")
         if run.notes_written:
             lines.append("notes written: " + ", ".join(run.notes_written))
+        if run.round == 1:  # the notes this profile already keeps, from earlier runs, so none goes unread
+            try:
+                kept = sorted(run.notes.list(), key=lambda n: n.key)  # a store need not list in order
+                told = []
+                for n in kept[:_NOTES_TOLD]:
+                    told.append(f"{_said(n.key)} ({len(_text(n.value))} chars, run {_said(n.run)})")
+            except Exception as e:  # a store that cannot be read is a line, not the run's end
+                try:
+                    why = repr(f"{type(e).__name__}: {e}")[1:-1]  # escaped onto one line, unquoted
+                    why = why if len(why) <= 200 else why[:197] + "..."
+                except Exception:  # an error that cannot be said is not said
+                    why = "an error that cannot be printed"
+                lines.append(f"notes kept: unknown, the store could not be read: {why}")
+            else:
+                if kept:
+                    more = f", and {len(kept) - _NOTES_TOLD} more" if len(kept) > _NOTES_TOLD else ""
+                    lines.append(f"notes kept: {', '.join(told)}{more}")
         if run.hook_errors:
             lines.append("hooks failed (the commands ran; their results stand):")
             for alias, what in run.hook_errors:
@@ -1788,13 +1871,19 @@ def _read(text: str, language: str = "core", refused: str | None = None) -> Prog
     """A turn as the loop reads it, live or resumed; LNDLError is what the model is told."""
     if refused:  # the backend refused the turn (a mixed response, ADR-0004/C4); the record keeps why
         raise lndl.LNDLError(refused)
-    if _SYSTEM_FRAME.search(text):
+    seen = "".join(c for c in text if unicodedata.category(c) != "Cf")  # zero-width characters hide nothing
+    if frame := _SYSTEM_FRAME.search(seen):
         # the model wrote the loop's own frame and went on as if the results in it were real (9 of
-        # 50 thinking-off runs, half their output tokens); none of it runs
+        # 50 thinking-off runs, half their output tokens); none of it runs. A mention is refused too:
+        # every rule that spared the tag in backticks also spared a frame made to look like one
+        line = len(_BREAK.findall(seen, 0, frame.start())) + 1
+        shown = _BREAK.split(seen[frame.start() :], 1)[0].strip()
+        shown = shown if len(shown) <= 80 else shown[:77] + "..."
         raise lndl.LNDLError(
-            "the turn carries a <system round=...> frame; only the loop writes those and the results "
-            "inside it were never observed, so nothing in the turn was executed: write one program, "
-            "end the turn, and read the real results in the next notification"
+            f"the turn carries a <system round=...> frame, at line {line}: {shown}; only the loop "
+            "writes those and the results inside it were never observed, so nothing in the turn was "
+            "executed: write one program, end the turn, and read the real results in the next "
+            "notification. To speak of it, call it the notice; never write its tag"
         )
     return lndl.parse(text) if language == "core" else read_script(text)
 
@@ -2134,7 +2223,7 @@ def _validate_whole(spec: Spec, value: Any) -> BaseModel:
     if isinstance(value, str):
         try:
             value = json.loads(value)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError, MemoryError):  # the last two: nested past reading
             pass
     if not isinstance(value, dict):
         fields = list(spec.model_fields)
@@ -2144,8 +2233,14 @@ def _validate_whole(spec: Spec, value: Any) -> BaseModel:
                 f"{name} has fields {fields}: give one <lvar {name}.<field> alias> per field and "
                 f"OUT{{{name}: [the aliases]}}, or one alias holding a JSON object"
             )
-        value = {fields[0]: _coerce(spec, fields[0], value)}
+        value = _keyed(spec, {fields[0]: _coerce(spec, fields[0], value)})
     return spec.model_validate(value)
+
+
+def _field_named(keys: dict[str, list[str | int]], key: str) -> str:
+    """The field a key the model wrote fills: the one whose key (`field_keys`) it is, else the field of
+    that name."""
+    return next((n for n, k in keys.items() if k == [key]), key)
 
 
 def _coerce(spec: Spec, fld: str, value: Any) -> Any:
@@ -2166,7 +2261,9 @@ def _coerce(spec: Spec, fld: str, value: Any) -> Any:
     for reader in (json.loads, ast.literal_eval):
         try:
             return reader(value)
-        except (ValueError, SyntaxError, TypeError):  # TypeError: a literal with an unhashable key
+        # TypeError: a literal with an unhashable key; RecursionError, MemoryError: one nested past
+        # what the reader walks, which the model is told of as any other value the field refuses
+        except (ValueError, SyntaxError, TypeError, RecursionError, MemoryError):
             continue
     return value
 
@@ -2325,19 +2422,22 @@ def _captured(value: Any, memo: dict[int, Any] | None = None) -> Any:
 
 def _fields(spec: BaseModel) -> dict[Any, Any]:
     # the declared fields only: a computed field is no input, and a spec that forbids extras refuses it.
-    # Each sits where validation reads it, under its alias unless the spec reads names only, and the
-    # extras a spec keeps come along; an alias path reads an int key from a dict as from a list
+    # Each sits where validation reads it, at the key `field_key` names, and the extras a spec keeps
+    # come along; an alias path reads an int key from a dict as from a list
     cls = type(spec)
-    out: dict[Any, Any] = dict(spec.model_extra or {})
-    for name, info in cls.model_fields.items():
-        alias = info.validation_alias if cls.model_config.get("validate_by_alias", True) else None
-        if isinstance(alias, AliasChoices):  # validation reads any one of them
-            alias = alias.choices[0]
-        *walk, last = [name] if alias is None else [alias] if isinstance(alias, str) else alias.path
+    return _keyed(cls, {name: getattr(spec, name) for name in cls.model_fields}, dict(spec.model_extra or {}))
+
+
+def _keyed(spec: Spec, values: dict[str, Any], out: dict[Any, Any] | None = None) -> dict[Any, Any]:
+    """Field values by field name, each set in `out` where validation reads it (`field_key`)."""
+    out = {} if out is None else out
+    keys = field_keys(spec)
+    for name, value in values.items():
+        *walk, last = keys[name]
         node = out
         for key in walk:
             node = node.setdefault(key, {})
-        node[last] = getattr(spec, name)
+        node[last] = value
     return out
 
 
@@ -2396,14 +2496,17 @@ def _placeholder(entries: list[Entry]) -> Message:
         else:
             parts.append(f"{e.name} {e.kind.name.lower()} ~{size} tokens")
     return Message(
-        "user", "[hidden; *name or context.show reopens: " + ", ".join(parts) + "]", name=entries[0].name
+        "user",
+        "[hidden; *name or context.show reopens: " + ", ".join(parts) + "]",
+        name=entries[0].name,
+        folded=True,
     )
 
 
 def _message(v: ViewEntry) -> Message:
     e = v.entry
     if v.summary is not None:
-        return Message("user", f"[summary before {e.name}] {v.summary}", name=e.name)
+        return Message("user", f"[summary before {e.name}] {v.summary}", name=e.name, folded=True)
     if e.kind is Kind.SYSTEM:
         # the runtime's own fold rides a notification; a session-keeping backend reads the mark
         fold_mark = "fold" if isinstance(e.meta.get("directive"), Directive) else None
@@ -2413,7 +2516,8 @@ def _message(v: ViewEntry) -> Message:
     if e.kind is Kind.RESULT:
         res: Result = e.content
         body = _text(res.value) if res.ok else f"error: {res.error}"
-        # a session-keeping backend restarts on a directive's result; a failed one left the view as it was
+        # the command that landed; a failed one left the view as it was. A session-keeping backend reads
+        # what a directive changed off the view itself, never off this mark (ADR-0009/C4)
         spec = res.spec if res.ok else None
         return Message("user", f"[{e.name} {e.alias} {res.spec}] {body}", name=e.name, spec=spec)
     label = e.name

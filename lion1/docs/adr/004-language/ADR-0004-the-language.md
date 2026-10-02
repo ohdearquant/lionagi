@@ -134,9 +134,9 @@ runs on a message read by halves. A call named `lact...` or `lvar...` is the tag
 rebuilt with its arguments; any other becomes `<lact auto_hash>name(...)</lact>`, dispatched like a
 typed one (ADR-0005). DeepSeek's markup around a tag reads as the tag; a swallowed closer is closed.
 
-A message containing `<system round=` is refused whole, even inside a string: the check reads the
-raw text first. Only the loop writes that frame; its results were never observed (9 of 50
-thinking-off runs, half their output).
+A message containing `<system round=`, in any case or spacing after `system`, is refused whole, even
+inside backticks, naming its line. Only the loop writes that frame; its results were never observed
+(9 of 50 thinking-off runs, half their output).
 
 ### C5: A message with no LNDL is legal and told _(enforced: mechanical)_ ^c5
 
@@ -182,6 +182,20 @@ form, the pointer rule, and the turn rule; it is the second part of every system
 
 - **Landing evidence**: `test_guidance_names_the_runs_outputs_in_the_out_example`.
 
+### D4: `_read` names the frame's line, and the guidance says the alias rules the run keeps ^d4
+
+Serves C1 and C4. `_read` in `lionagi/actor.py` drops format characters (Unicode `Cf`) and raises on
+the first `<system round=` anywhere, in any case or spacing after `system`, its `<` also read as
+`&lt;`. It names the line number, a lone CR breaking a line too, and the line from the frame on, and
+tells the model to call it the notice and never write its tag. The guidance says a command's alias
+is unique for the whole run and a value declared again rebinds, the rules the actor keeps.
+
+- **Landing evidence**: `tests/test_actor.py`:
+  `test_a_frame_anywhere_a_mention_included_is_refused_naming_its_line`;
+  `tests/test_lndl_guidance.py`. Controls: a backtick exemption, an off-by-one line, the refusal
+  without its word on the notice, the old alias wording, a case-sensitive match, exact spacing, no
+  `&lt;`, keeping `Cf` characters, and counting only `\n` each fail them.
+
 ## Alternatives
 
 | approach                                          | rejected because                                                                                 |
@@ -190,6 +204,8 @@ form, the pointer rule, and the turn rule; it is the second part of every system
 | A raw-body form where the tag body is the value   | a command needs a name and fields to validate; a non-call body becomes a value instead (C3)      |
 | Native tool calling as the channel                | a provider's wire format, and no native form for a pointer from one call into another in the same message (ADR-0005) |
 | Substituting aliases into arguments               | reversed: pointers dereference at execution, so a value is never repeated in the text            |
+| Matching the tag's exact bytes                    | `<SYSTEM round=`, `&lt;system round=` and a zero-width space inside `system` each passed it      |
+| Sparing the tag inside an inline code span        | a frame whose opener alone is in backticks is then read and its commands run; a rule on syntax cannot tell a mention from a frame made to look like one |
 | Python string literals inside the tags            | fought the model's JSON training on every multi-line or quoted value: 52 of 952 messages unreadable on a 50-instance SWE-bench run |
 
 ## Consequences
@@ -200,3 +216,8 @@ form, the pointer rule, and the turn rule; it is the second part of every system
   the raw message.
 - **S3**: The context layer is barely exercised on short tasks: 109 `<lvar>`, 6 notes and 9 context
   commands in 952 turns. Long tasks are where it is measured.
+- **S4**: A turn that only mentions the tag is refused like a frame; the refusal tells the model to
+  call it the notice. The check reads the spellings a model copying the frame writes; one built to
+  evade it, a lookalike letter or a numeric entity, passes. A turn stating invented results without
+  the frame is refused by nothing; the guidance says a turn states none
+  ([[ADR-0018-chat-in-a-box#^c17|ADR-0018/C17]]).
