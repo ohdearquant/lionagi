@@ -22,6 +22,7 @@ SCRIPTED = (
     "notes_and_context",
     "watch_the_artifact",
     "budgets_and_outcomes",
+    "structured_output",
     "experience_twice",
 )
 LIVE = ("backends",)

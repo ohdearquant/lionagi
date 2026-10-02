@@ -1,7 +1,7 @@
 # Examples
 
 One idea per file, read in the order of the table: two notebooks open with the run and the language
-the model speaks in it, four scripts take one mechanism each, a third notebook hands work from one
+the model speaks in it, five scripts take one mechanism each, a third notebook hands work from one
 actor to another, and the last script puts a real model behind the same loop. Everything but the
 last runs offline, with no key: where a model is needed, its turns are written in advance.
 
@@ -19,6 +19,7 @@ with no key and no CLI, where it names what is missing and stops.
 | `examples/notes_and_context.py` | notes that outlive a run; hiding and summarizing the view; pointers to hidden entries | big picture in notes, details behind pointers; the record is never edited, only the view |
 | `examples/watch_the_artifact.py` | a section reporting the artifact; a stop rule; an accept gate on `OUT{}` | the system watches the thing being worked on, not the model's claims |
 | `examples/budgets_and_outcomes.py` | rounds, the clock, refusals, the view budget; every outcome constructed | each way a run ends is a value the caller reads, never a string |
+| `examples/structured_output.py` | a nested Pydantic output (`emits`), a `Literal`, a field validator, an accept gate; the dict-literal and the field-by-field forms of `OUT{}` | the run ends in the object, held to its types and the system's gate, a value refused is told back as the exact error, and a gate never satisfied ends the run as `Refused` |
 | `notebooks/03_two_actors.ipynb` | one actor asking another from inside a handler, both scripted | delegation is one command and one round trip on the record |
 | `examples/backends.py` | OpenRouter with DeepSeek pinned, a thinking budget and the stop frame; Codex; Claude Code (`claude`/`session` resume one CLI session per run, `claude-oneshot` is one call per round); cost and cache per call (live) | a backend is messages in, text out; the loop never depends on native tool calling |
 
