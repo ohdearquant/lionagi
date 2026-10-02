@@ -209,7 +209,8 @@ def test_an_interrupt_during_the_call_cuts_it_now_and_the_person_speaks_next_whi
 def test_a_cancel_of_the_run_that_lands_with_an_interrupt_is_the_cancel(tmp_path, order):
     """Both arrive before the loop wakes, so one CancelledError reaches it with `run.cut` set. The run's
     own cancellation wins: the task ends cancelled with no outcome, no second call is made and the
-    wait is never asked. Read as the cut alone, the run went on to its wait and the cancel was lost."""
+    wait is never asked. Were it read as the cut alone, the run would go on to its wait and the cancel
+    would be lost."""
     actor, profile = reader(tmp_path)
     started = asyncio.Event()
     calls: list[int] = []
@@ -237,7 +238,7 @@ def test_a_cancel_of_the_run_that_lands_with_an_interrupt_is_the_cancel(tmp_path
             assert run.interrupt() is True  # the call is cancelled and has not ended yet
         done, _ = await asyncio.wait({task}, timeout=2)
         ended = bool(done)
-        while not task.done():  # the defect's path: free the loop before the assertions name it
+        while not task.done():  # a run that missed the cancel is still going: end it so the asserts report it
             task.cancel()
             await asyncio.wait({task}, timeout=2)
         return run, task, ended
