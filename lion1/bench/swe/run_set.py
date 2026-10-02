@@ -6,8 +6,10 @@
 `--where local` runs the eval image under docker on this machine (amd64 emulation: one at a time is
 what it can bear) and streams images: pull, solve, grade, remove. `--where daytona` creates one
 Daytona sandbox per instance from the same image, natively x86_64, `--parallel` wide; nothing lands
-on this machine but the records. Grading happens inside the instance's own box either way
-(sandbox.grade mirrors the official harness), so there is no second container and no oracle pass.
+on this machine but the records. `--where runta` does the same on Runta, from a Runta image built
+over the eval image the first time an instance runs there
+(`sandbox.runta_image`). Grading happens inside the instance's own box either way (sandbox.grade
+mirrors the official harness), so there is no second container and no oracle pass.
 
 The ledger (one JSON line per instance) is the resumable state: instances already in it are
 skipped, so a run can be stopped and restarted under the same run id. A run id is one run: its
@@ -43,7 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from codex_cli import solve as solve_codex_cli  # noqa: E402
 from run_swe import HERE, RESULTS, solve  # noqa: E402
 from run_swe import cost_known as _cost_known  # noqa: E402
-from sandbox import close_code_hosts, grade, open_code_hosts, testbed  # noqa: E402
+from sandbox import close_code_hosts, grade, open_code_hosts, runta_image, testbed  # noqa: E402
 
 from hub.tools import docker  # noqa: E402
 
@@ -120,9 +122,10 @@ async def one(row: dict, args: argparse.Namespace, out_dir: Path, ledger: Path, 
                 box = testbed(row["image"], "local")
                 eval_timeout = 3600.0  # emulated
             else:
+                image = await runta_image(row) if args.where == "runta" else row["image"]
                 box = testbed(
-                    row["image"],
-                    "daytona",
+                    image,
+                    args.where,
                     cpu=args.cpu,
                     memory=args.memory,
                     label=f"lionagi-swe-{args.run_id}",
@@ -419,7 +422,7 @@ async def _run(
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--set", choices=sorted(SETS), default="mini50")
-    ap.add_argument("--where", choices=["local", "daytona"], default="daytona")
+    ap.add_argument("--where", choices=["local", "daytona", "runta"], default="daytona")
     ap.add_argument("--repo", default=None)
     ap.add_argument("--instances", nargs="*")
     ap.add_argument("--limit", type=int, default=None)
@@ -489,8 +492,8 @@ if __name__ == "__main__":
         "arms (they have no meter, and a cap there is refused)",
     )
     ap.add_argument("--parallel", type=int, default=4)
-    ap.add_argument("--cpu", type=int, default=2, help="vCPU per Daytona sandbox")
-    ap.add_argument("--memory", type=int, default=2, help="GiB per Daytona sandbox; the org pool is shared")
+    ap.add_argument("--cpu", type=int, default=2, help="vCPU per Daytona sandbox or Runta runtime")
+    ap.add_argument("--memory", type=int, default=2, help="GiB per remote box; Daytona's org pool is shared")
     ap.add_argument("--run-id", required=True)
     ap.add_argument("--keep-images", action="store_true")
     asyncio.run(main(ap.parse_args()))

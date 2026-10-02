@@ -1,11 +1,12 @@
 """A SWE-bench instance as a box, and its grading in the same box.
 
 The boxes are the hub's (`hub.tools.box`): a docker container (`DockerSandbox`, amd64 under
-emulation on an arm64 host, one at a time is what it can bear) or a Daytona sandbox
-(`DaytonaSandbox`, native x86_64, many in parallel, the provider's memory quota is the cap).
-`testbed` makes either from the instance's eval image, which already holds the repository at the
-base commit under /testbed with its environment installed: the box is the privilege boundary and the
-host only reads the diff out.
+emulation on an arm64 host, one at a time is what it can bear), a Daytona sandbox
+(`DaytonaSandbox`, native x86_64, many in parallel, the provider's memory quota is the cap) or a
+Runta runtime (`RuntaSandbox`, native x86_64, from a Runta image built once per instance over the
+eval image: `runta_image`). `testbed` makes one from the instance's eval image, which already holds
+the repository at the base commit under /testbed with its environment installed: the box is the
+privilege boundary and the host only reads the diff out.
 
 `grade` scores a patch the official way inside the same box: clean tree, apply the patch with the
 harness's three attempts, run the instance's own eval script, parse the log with the harness's
@@ -19,7 +20,8 @@ import re
 import shlex
 from pathlib import Path
 
-from hub.tools import Box, DaytonaSandbox, DockerSandbox
+from hub.tools import Box, DaytonaSandbox, DockerSandbox, RuntaSandbox
+from hub.tools.runta import build_image, find_image
 
 WORKDIR = "/testbed"
 PRELUDE = "source /opt/miniconda3/bin/activate testbed 2>/dev/null"  # the eval image's environment
@@ -28,10 +30,31 @@ PRELUDE = "source /opt/miniconda3/bin/activate testbed 2>/dev/null"  # the eval 
 def testbed(
     image: str, where: str = "local", *, cpu: int = 2, memory: int = 2, label: str = "lionagi-swe"
 ) -> Box:
-    """A box over the instance's eval image, not yet started: docker for `local`, else Daytona."""
+    """A box over the instance's eval image, not yet started: docker for `local`, Daytona for
+    `daytona`, and for `runta` a runtime from `image`, the Runta image `runta_image` returned."""
     if where == "local":
         return DockerSandbox(image, workdir=WORKDIR, prelude=PRELUDE)
-    return DaytonaSandbox(image, workdir=WORKDIR, prelude=PRELUDE, cpu=cpu, memory=memory, label=label)
+    if where == "runta":
+        return RuntaSandbox(image, workdir=WORKDIR, prelude=PRELUDE, cpu=cpu, memory=memory, name=label)
+    if where == "daytona":
+        return DaytonaSandbox(image, workdir=WORKDIR, prelude=PRELUDE, cpu=cpu, memory=memory, label=label)
+    raise ValueError(f"no box is called {where!r}")
+
+
+def runta_name(row: dict) -> str:
+    """The Runta image name for an instance: `swe-` and the id after its owner, `swe-django-11951`.
+    SWE-bench ids are `owner__repo-number` and no two of its repositories share a name."""
+    return "swe-" + row["instance_id"].split("__", 1)[-1].lower()
+
+
+async def runta_image(row: dict, *, timeout: float = 3600.0) -> str:
+    """The Runta image id for the instance: the newest successful build of `runta_name(row)`, else a
+    build from the eval image, waited for (the first one takes minutes)."""
+    name = runta_name(row)
+    found = await find_image(name)
+    if found is not None:
+        return found
+    return await build_image(name, f"FROM {row['image']}\n", architecture="x86_64", timeout=timeout)
 
 
 # --- grading in the box ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ from .daytona import DaytonaSandbox, SandboxDead
 from .docker import DockerSandbox, docker
 from .fs import ListDir, Read, files
 from .khive import KhiveOps, khive_ops
+from .runta import Egress, EgressSecret, RuntaSandbox, SecretInjection
 from .shell import Bash, Python, Sandbox, shell
 from .watch import Criteria, Watch, criteria
 
@@ -30,6 +31,10 @@ __all__ = (
     "files",
     "KhiveOps",
     "khive_ops",
+    "Egress",
+    "EgressSecret",
+    "RuntaSandbox",
+    "SecretInjection",
     "Bash",
     "Python",
     "Sandbox",

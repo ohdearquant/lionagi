@@ -1,21 +1,26 @@
-"""A box: somewhere commands run and files live, apart from this machine. Three of them share this
-shape: the local VM (`shell.Sandbox`, Apple's `container`), a docker container (`docker.DockerSandbox`)
-and a Daytona sandbox (`daytona.DaytonaSandbox`). Every command runs from `workdir` after `prelude`
-(an environment to activate, say; `wrap` puts it in front of an argv exactly once). `exec` is one
-argv with stdout and stderr apart, what `shell()` hands `bash` and `python`; `run` is a shell line
-under `bash -o pipefail` with its combined output, rc 124 at the timeout, what a caller scripting
-the box wants. `BoxTree` puts the code tools (read_lines, search, edit) over the box's files, and
-`git_diff` reads the model's patch out of a repository in it."""
+"""A box: somewhere commands run and files live, apart from this machine. Four of them share this
+shape: the local VM (`shell.Sandbox`, Apple's `container`), a docker container
+(`docker.DockerSandbox`), a Daytona sandbox (`daytona.DaytonaSandbox`) and a Runta runtime
+(`runta.RuntaSandbox`). Every command runs from `workdir` after `prelude` (an environment to activate,
+say; `wrap` puts it in front of an argv exactly once). `exec` is one argv with stdout and stderr apart,
+what `shell()` hands `bash` and `python`; `run` is a shell line under `bash -o pipefail` with its
+combined output, rc 124 at the timeout, what a caller scripting the box wants. `BoxTree` puts the code
+tools (read_lines, search, edit) over the box's files, and `git_diff` reads the model's patch out of a
+repository in it."""
 
 from __future__ import annotations
 
 import base64
+import io
 import posixpath
 import re
 import shlex
+import subprocess
+import tarfile
+from pathlib import Path
 from typing import Any, Protocol
 
-__all__ = ("Box", "BoxBase", "git_diff", "inside", "BoxTree")
+__all__ = ("Box", "BoxBase", "git_diff", "inside", "pack", "BoxTree")
 
 
 class Box(Protocol):
@@ -103,6 +108,41 @@ class BoxBase:
 
     async def diff(self, base: str = "HEAD") -> str:
         return await git_diff(self, base)  # type: ignore[arg-type]
+
+
+def _in_repository(directory: Path) -> bool:
+    """Whether `directory` is inside a git work tree (read without the index: a broken one still says yes)."""
+    done = subprocess.run(
+        ["git", "-C", str(directory), "rev-parse", "--is-inside-work-tree"], capture_output=True
+    )
+    return done.returncode == 0 and done.stdout.strip() == b"true"
+
+
+def pack(directory: Path) -> tuple[bytes, list[str]]:
+    """`directory` as a gzipped tar for a remote box's `push`, and the names in it: the files git sees
+    when it is a repository (tracked and untracked, ignored ones left out), else every file."""
+    directory = Path(directory).resolve()
+    done = subprocess.run(
+        ["git", "-C", str(directory), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        capture_output=True,
+    )
+    if done.returncode == 0:
+        names = [n.decode("utf-8", "surrogateescape") for n in done.stdout.split(b"\0") if n]
+    elif _in_repository(directory):
+        # a repository git could not list (a broken index): every-file would send what its
+        # .gitignore keeps out, so the push stops here instead
+        said = done.stderr.decode(errors="replace").strip()[-300:]
+        raise OSError(f"git ls-files in {directory} exited {done.returncode}: {said}")
+    else:
+        names = [str(p.relative_to(directory)) for p in directory.rglob("*") if p.is_file()]
+    buf = io.BytesIO()
+    packed: list[str] = []
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name in names:
+            if (directory / name).is_file():
+                tar.add(directory / name, arcname=name, recursive=False)
+                packed.append(name)
+    return buf.getvalue(), packed
 
 
 def bytecode(path: str) -> bool:
