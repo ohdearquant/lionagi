@@ -388,7 +388,7 @@ parsed message with a defect is refused.
 | --------------- | ---- | ------- |
 | `GET /` | the card | 200 |
 | `GET /runs` | the states of live and kept runs | 200 |
-| `POST /runs` | starts a run from D2's fields | 201 with the state, or 200 for a repeated `once` key; 400, 404, 409 or 429 |
+| `POST /runs` | starts a run from D2's fields | 201 with the state, or 200 for a repeated `once` key; 400, 404, 409, 410 or 429 |
 | `GET /runs/{id}` | the state | 200; 404 or 410 |
 | `GET /runs/{id}/record?start=N` | at most 500 rows from N, and `more` | 200; 400, 404 or 410 |
 | `GET /runs/{id}/events` and `GET /events` | the stream of one run, or of every run | 200 as `text/event-stream`; 404 or 410 |
@@ -447,7 +447,8 @@ client raises the card's protocol version.
 
 | code | status | when |
 | ---- | ------ | ---- |
-| `bad_request` | 400 | a body outside D2's table or the one above, a `start` that is not an integer from 0 to the count of rows published, a request D8 refuses |
+| `bad_request` | 400 | a body outside D2's table or the one above; a request D8 refuses |
+| `bad_request` | 400 | a record `start` outside 0 to the rows that read can serve: the confirmed rows while the service runs, the whole rows of a cut-short log after a restart |
 | `forbidden` | 403 | the peer, the Host or the Origin |
 | `unknown_offer`, `unknown_run`, `not_found` | 404 | no such offer, run or route |
 | `method_not_allowed` | 405 | a route asked with the other method |
@@ -500,14 +501,15 @@ seconds.
 
 ### D13: A repeated `once` key ^d13
 
-Serves C1 and C5. A key is checked and held in one step, before any await, and a repeat is answered
-before the run's phase is checked. A repeated start with the same fields gets 200 and the current
-state of the run the first one started; a repeated input with the same text gets the first handle. A
-repeat while the first is in flight waits for its answer. One with other fields or text is refused
-`conflict`, and a refused act releases its key.
+Serves C1 and C5. A key is checked and held in one step, and a repeat is answered before the phase
+check. A repeated start with the same fields gets 200 and the first run's current state while it is
+readable, else `gone`; it never starts a run. A repeated input with the same text gets the first
+handle. A repeat in flight waits for the first answer. Other fields or text are refused `conflict`,
+the key unchanged; only the refusal of the act that took a key releases it.
 
-- **Landing evidence**: owed: two starts with one key in one loop turn, a repeat after the run
-  ended, a repeat with other fields, and a key reused after its first start was refused.
+- **Landing evidence**: owed: two starts with one key in one loop turn, a repeat after the run ended
+  or was dropped, a repeat with other fields and then the first's own, and a key reused after its
+  first start was refused.
 
 ## Alternatives
 
