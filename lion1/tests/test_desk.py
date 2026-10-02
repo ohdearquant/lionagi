@@ -1695,6 +1695,64 @@ def test_a_message_pending_on_another_thread_does_not_hold_a_clarify_past_the_ca
     assert list(pending(agent)) == ["m-c2"] and desk._open_clarifies() == {}
 
 
+def fyi(i: int) -> dict:
+    """A notice on a thread of its own, stamped `i` seconds past ten."""
+    return inbox_row(
+        "lambda:b", f"n{i}", "fyi", f"m-n{i:02d}", f"t-n{i:02d}", at=f"2026-09-22T10:00:{i:02d}Z"
+    )
+
+
+def test_a_sweep_whose_read_paged_past_a_clarifys_answer_leaves_no_clarify(tmp_path):
+    """Offsets index the unread set, which the chair changes between pages: the chair reads the newest
+    row after the first page, the second page starts one row late, and the answer, the oldest row
+    stamped, is never read. That sweep leaves no clarify past the cap; the next lists the answer, and
+    leaving it resolves the clarify."""
+    desk, khive, reader, agent = clarified(tmp_path, [])
+    agent.state.put("desk_watch", LIVE, run="-", seq=0)
+    newer = [fyi(i) for i in range(1, 21)]
+    answer = inbox_row(ASKER, "Re: disk or pr?", "the disk", "m-c2", "t-c1", at="2026-09-22T10:00:00Z")
+    reader.rows += [*newer, answer]
+    read = reader.exec
+
+    async def chair_reads_between_pages(ops: str):
+        page = await read(ops)
+        newer[-1].setdefault("status", "read")
+        return page
+
+    reader.exec = chair_reads_between_pages
+    desk.clarify_hours = -1  # the cap is already behind us
+    said = asyncio.run(desk.sweep(sweep_run("r1")))
+    assert "m-c2" not in pending(agent) and "unanswered" not in said
+    assert list(desk._open_clarifies()) == ["m-c1"]
+    run = sweep_run("r2")
+    said = asyncio.run(desk.sweep(run))
+    assert f"[msg m-c2 from {ASKER}" in said and "unanswered" not in said
+    asyncio.run(desk.leave(Leave(msg="m-c2", why="no-instrument"), run))
+    rows = desk.rows()
+    assert [(r["msg"], r["class"]) for r in rows] == [
+        ("m-c1", "clarified"),
+        ("m-c2", "left"),
+        ("m-c1", "resolved"),
+    ]
+    assert rows[-1]["by"] == "m-c2" and desk._open_clarifies() == {}
+
+
+def test_a_clarify_past_the_cap_is_left_by_the_first_sweep_whose_read_fits_one_page(tmp_path):
+    """Twenty notices and the clarified message, unread, are two pages: that sweep leaves nothing. The
+    chair reads one, the next read fits a page, and with nothing pending on its thread the clarify is
+    left as unanswered."""
+    desk, khive, reader, agent = clarified(tmp_path, [])
+    agent.state.put("desk_watch", LIVE, run="-", seq=0)
+    newer = [fyi(i) for i in range(1, 21)]
+    reader.rows += newer
+    desk.clarify_hours = -1
+    said = asyncio.run(desk.sweep(sweep_run("r1")))
+    assert "unanswered" not in said and list(desk._open_clarifies()) == ["m-c1"]
+    newer[-1]["status"] = "read"
+    said = asyncio.run(desk.sweep(sweep_run("r2")))
+    assert "1 clarify unanswered past -1h, left: ['m-c1']" in said and desk._open_clarifies() == {}
+
+
 @pytest.mark.parametrize(
     "sender, thread, close, admit_replies",
     [
