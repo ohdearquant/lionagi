@@ -59,7 +59,6 @@ __all__ = (
     "Result",
     "Success",
     "Continue",
-    "Retry",
     "Exhausted",
     "Refused",
     "Stopped",
@@ -247,11 +246,6 @@ class Continue:
 
 
 @dataclass(frozen=True)
-class Retry:
-    error: str
-
-
-@dataclass(frozen=True)
 class Exhausted:
     """A bound was spent at a round's start, `rounds` rounds in: `reason` names it, rounds (max_rounds),
     idle (max_idle), time (time_budget), cost (cost_budget) or context (context_budget)."""
@@ -273,7 +267,7 @@ class Stopped:
     round: int
 
 
-Outcome = Success | Continue | Retry | Exhausted | Refused | Stopped
+Outcome = Success | Continue | Exhausted | Refused | Stopped
 
 _CALL_SHAPED = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*\(.*\)\s*$", re.DOTALL)  # `name(...)` as a whole value
 # the notification's own opening tag, in any case or spacing after `system`, its `<` as itself or `&lt;`

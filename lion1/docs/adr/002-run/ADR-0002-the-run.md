@@ -165,8 +165,7 @@ pins the three `wait` rows. The caller reads `run.outcome` after the loop return
 - **S2**: The idle row keeps a talking model alive; `max_idle` (ADR-0003) is what ends it.
 - **S3**: The code still says round where this corpus says turn: `max_rounds`, `Exhausted(rounds)`,
   `<system round=`, "rounds running", the `round.*` events, `Stopped(round)`. The rename is owed
-  with the first change that touches them; the `Retry` class the code defines and never constructs
-  goes with it.
+  with the first change that touches them. A retry is no outcome: the run has no `Retry` class.
 - **S4**: The gather of every command of the turn before `OUT{}` assembled is gone: `OUT{}` waits
   for what it references, and an assembly that fails or an output refused settles the rest of the
   turn. What is pending when the run ends, by an outcome or an abort, is cancelled and reaped before

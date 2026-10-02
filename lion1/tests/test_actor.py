@@ -14,7 +14,6 @@ from lionagi import (
     Profile,
     Refused,
     Result,
-    Retry,
     RunRequest,
     Success,
 )
@@ -167,7 +166,7 @@ def test_unreadable_turn_is_a_retry_not_an_end():
             scripted("<lact a>not a call</lact>"),
         )
     )
-    assert isinstance(run.outcome, Retry) or run.outcome.__class__.__name__ == "Exhausted"
+    assert run.outcome == Exhausted(1)
 
 
 def test_repeated_refusals_end_the_run_as_refused():
