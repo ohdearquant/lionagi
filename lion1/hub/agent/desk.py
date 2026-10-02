@@ -845,11 +845,14 @@ class Desk:
         return open_
 
     def _expire(self, run: Run) -> list[str]:
-        """A clarify unanswered past the cap is left for the chair; unbounded pending is a silent drop."""
+        """A clarify unanswered past the cap is left for the chair; unbounded pending is a silent drop. A
+        message pending on its thread is an answer received and not yet handled: the sweep lists it, and
+        an answer or a leave of it resolves the clarify, so the cap leaves nothing while it waits."""
         cut = time.time() - self.clarify_hours * 3600
+        waiting = {m.get("thread") for m in _val(self.agent.state, "desk_pending", {}).values()}
         out = []
         for mid, r in self._open_clarifies().items():
-            if _epoch(r) < cut:
+            if _epoch(r) < cut and r["thread"] not in waiting:
                 self._row(mid, r, "left", why="clarify unanswered", run=run)
                 out.append(mid)
         return sorted(out)

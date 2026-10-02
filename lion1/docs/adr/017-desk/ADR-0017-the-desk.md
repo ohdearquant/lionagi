@@ -142,7 +142,7 @@ then a repository map, never the login.
 
 | command | gate, in code, before anything is sent |
 | ------- | -------------------------------------- |
-| `sweep()` | none of its own; lists at most a page (20) of pending messages, oldest first, and apart the deliveries unresolved the model may leave; leaves a clarify past `clarify_hours` (24) |
+| `sweep()` | none of its own; lists at most a page (20) of pending messages, oldest first, and apart the deliveries unresolved the model may leave; leaves a clarify past `clarify_hours` (24) with nothing pending on its thread |
 | `answer(msg, chore, args)` | an id this run's sweep listed, held by no other handler, with no recorded send or task; the chore's `senders` (`record`: `Record.senders` only); `answers_per_hour` (10), shared with `route`; a void outcome is left with the instrument's reason |
 | `leave(msg, why)` | a listed id; `why` one of six tests, else kept as other |
 | `clarify(msg, a, b)` | two different readings, each the message's own words or a chore or test name; `CLARIFY_SENDERS` only; once per thread; never a message that is itself a clarify |
@@ -316,7 +316,9 @@ slip one more; no test pins the six.
 
 - **Landing evidence**: `tests/test_desk.py` (89 tests), among them
   `test_build_wires_the_desk_from_chores_toml_with_a_reader_that_only_reads` (the nine-command
-  profile, the watch) and `test_failed_selected_message_blocks_success_and_remains_pending`.
+  profile, the watch), `test_failed_selected_message_blocks_success_and_remains_pending`,
+  `test_a_clarify_whose_answer_is_pending_at_the_cap_is_resolved_by_it_and_never_left_unanswered`
+  and `test_a_message_pending_on_another_thread_does_not_hold_a_clarify_past_the_cap`.
 
 ### D2: The reader is built from the owner's directory, beside the agent's own client ^d2
 
@@ -455,7 +457,8 @@ least two and at most all of them.
 - **S3**: A clarify asks the sender to answer the owner on the thread. A reply mailed to the desk's
   own actor meets C3's gate and is dropped unless its sender is trusted or S8's gate lets it
   through. The next message handled on the thread resolves the clarify; otherwise `clarify_hours`
-  leaves it as unanswered.
+  leaves it as unanswered, but not while a message on its thread is pending, an answer received and
+  not yet handled.
 - **S4**: Nothing checks a desk's owner against its area's chair, and the registry's `desks` lists
   every resident's directory whatever its role; only a directory whose `chores.toml` has `[desk]`
   runs a desk.

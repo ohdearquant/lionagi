@@ -1652,6 +1652,50 @@ def test_a_clarifys_answer_mailed_to_the_desk_is_admitted_and_listed_under_the_c
 
 
 @pytest.mark.parametrize(
+    "sender, mid, to_desk",
+    [(ASKER, "m-c2", False), ("lambda:b", "m-c3", False), (ASKER, ANSWER_ID, True)],
+    ids=["to-the-chair", "another-sender-on-the-thread", "to-the-desk"],
+)
+def test_a_clarify_whose_answer_is_pending_at_the_cap_is_resolved_by_it_and_never_left_unanswered(
+    tmp_path, sender, mid, to_desk
+):
+    """An answer received and not yet handled is not an unanswered clarify: the sweep past the cap lists
+    it and leaves nothing, and handling it resolves the clarify. The thread is the association, as in
+    the resolution."""
+    leave = f'<lact l1>leave(msg="{mid}", why="no-instrument")</lact>'
+    desk, khive, reader, agent = clarified(tmp_path, [SWEEP, leave, DONE], admit_replies=to_desk)
+    if to_desk:  # the gate admits it into the intake
+        khive.mail.append(mail(sender, "the disk under the roots", mid=ANSWER, thread="t-c1"))
+    else:
+        reader.rows.append(inbox_row(sender, "Re: disk or pr?", "the disk", mid, "t-c1"))
+        khive.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))
+    desk.clarify_hours = -1  # the cap is already behind us
+    run = asyncio.run(agent.wake())
+    said = results(run)[0]
+    assert f"[msg {mid} from {sender}" in said and "unanswered" not in said
+    rows = desk.rows()
+    assert [(r["msg"], r["class"]) for r in rows] == [
+        ("m-c1", "clarified"),
+        (mid, "left"),
+        ("m-c1", "resolved"),
+    ]
+    assert rows[-1]["by"] == mid and desk._open_clarifies() == {} and pending(agent) == {}
+
+
+def test_a_message_pending_on_another_thread_does_not_hold_a_clarify_past_the_cap(tmp_path):
+    desk, khive, reader, agent = clarified(tmp_path, [])
+    reader.rows.append(inbox_row(ASKER, "Re: disk or pr?", "the disk", "m-c2", "t-other"))
+    desk.clarify_hours = -1
+    said = asyncio.run(desk.sweep(sweep_run()))
+    assert "1 clarify unanswered past -1h, left: ['m-c1']" in said and f"[msg m-c2 from {ASKER}" in said
+    rows = desk.rows()
+    assert [(r["msg"], r["class"], r.get("why")) for r in rows[1:]] == [
+        ("m-c1", "left", "clarify unanswered")
+    ]
+    assert list(pending(agent)) == ["m-c2"] and desk._open_clarifies() == {}
+
+
+@pytest.mark.parametrize(
     "sender, thread, close, admit_replies",
     [
         ("lambda:b", "t-c1", False, True),
