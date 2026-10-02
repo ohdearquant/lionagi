@@ -21,6 +21,7 @@
 | [ADR-0017](017-desk/ADR-0017-the-desk.md) | 017-desk | draft | operating (every claim is pinned by tests with scripted backends and a stubbed store; no bench exercises the desk; the gate for a clarify's answer mailed to the desk holds under `[desk] admit_replies`, S8) | ADR-0001, ADR-0002, ADR-0003, ADR-0010 |
 | [ADR-0018](018-chat/ADR-0018-chat-in-a-box.md) | 018-chat | draft | operating (the chat, its resume and the boxed chat, a resumed boxed chat included, are pinned by tests against scripted backends and a stubbed box; the one real-box test runs only when enabled; no test interrupts a boxed chat) | ADR-0002, ADR-0003, ADR-0005, ADR-0007 |
 | [ADR-0019](019-checkpoint/ADR-0019-the-checkpoint.md) | 019-checkpoint | draft | operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests) | ADR-0006, ADR-0007, ADR-0009, ADR-0013, ADR-0016, ADR-0017 |
+| [ADR-0020](020-experience/ADR-0020-the-experience.md) | 020-experience | proposed | unimplemented (nothing of this record is built; the store, the two lifecycle points, the command, the example and its mutation control are owed, S1) | ADR-0002, ADR-0005, ADR-0006, ADR-0007, ADR-0012 |
 
 ## By topic
 
@@ -43,3 +44,4 @@
 - **017-desk**, ADR-0017: The desk: front desk, record answers, areas and chairs
 - **018-chat**, ADR-0018: Chat in a box
 - **019-checkpoint**, ADR-0019: The checkpoint and the restore
+- **020-experience**, ADR-0020: Experience across runs
