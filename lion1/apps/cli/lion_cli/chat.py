@@ -48,7 +48,9 @@ __all__ = (
     "chat_main",
 )
 
-GIT_TIMEOUT = 30.0  # seconds: a resume's patch check, git's own lookup included; each of take_patch's calls
+# seconds: a resume's patch check, git's own lookup included; the branch `--code` names; each of
+# take_patch's calls on this machine (the box's own git for the diff runs under the box's exec timeout)
+GIT_TIMEOUT = 30.0
 
 
 def console(
@@ -171,7 +173,8 @@ async def take_patch(
     from the top of the repository `directory` sits in (a patch from a subdirectory gets its prefix),
     which lands whole or not at all. None when nothing changed; a diff that fails raises. A patch that
     will not apply is still saved, the failure is said, and the directory is left as it was. Each git
-    call has `GIT_TIMEOUT`; an apply stopped at it is said to leave the directory unknown."""
+    call on this machine has `GIT_TIMEOUT`; an apply stopped at it is said to leave the directory
+    unknown. The diff is the box's own git, each call under the box's `exec` timeout (120 s)."""
     patch = await box.diff(baseline)
     if not patch.strip():
         say("box: no change in the copy")
@@ -281,15 +284,18 @@ def _k(n: float) -> str:
 
 def _branch(directory: Path) -> str:
     """The checked-out branch, from git itself (so a linked worktree's `.git` file and a
-    subdirectory both resolve), or `(no git)`."""
+    subdirectory both resolve), `(no git)`, or that git did not answer within `GIT_TIMEOUT`."""
     try:
         result = subprocess.run(
             ["git", "-C", str(directory), "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
+            timeout=GIT_TIMEOUT,
         )
     except FileNotFoundError:
         return "(no git)"
+    except subprocess.TimeoutExpired:
+        return f"(git did not answer within {GIT_TIMEOUT:g}s)"
     if result.returncode != 0:
         return "(no git)"
     return result.stdout.strip()

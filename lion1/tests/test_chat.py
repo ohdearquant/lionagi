@@ -867,6 +867,39 @@ def test_a_resumed_chat_whose_git_hangs_is_told_its_patch_could_not_be_checked_w
         assert reaped(pids) == (1 if discovery is None else 2)  # the lookup; or it and the check
 
 
+def test_a_resumed_coding_chat_whose_git_hangs_starts_with_the_branch_said_unknown_within_its_bound(
+    tmp_path, monkeypatch
+):
+    # with --code the guidance names the branch, read from git with no time limit: past the bounded
+    # patch check, a git that hangs still held the resumed chat before its first call
+    from lion_cli.chat import console, resolve_chat
+
+    from tests.test_daytona import ChatBox, box_chat
+
+    (tmp_path / "f.txt").write_text("a\n")
+    patch = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b\n"
+    monkeypatch.setattr(ChatBox, "patch", patch)
+    assert box_chat(monkeypatch, ChatBox, tmp_path, "done") is None
+    first = resolve_chat(tmp_path / ".lion" / "chats", "last")
+    monkeypatch.setattr(ChatBox, "patch", "")
+    systems: list[str] = []
+
+    def seen(*args, **kwargs):
+        actor, profile = console(*args, **kwargs)
+        systems.append(profile.system)
+        return actor, profile
+
+    monkeypatch.setattr("lion_cli.chat.console", seen)
+    monkeypatch.setattr("lion_cli.chat.GIT_TIMEOUT", 1.0, raising=False)
+    pids = hanging_git(tmp_path, monkeypatch)
+    start = time.monotonic()
+    err = box_chat(monkeypatch, ChatBox, tmp_path, "done", resume=first.stem, code=True)
+    assert time.monotonic() - start < 3, err  # the patch check's bound, then the branch's
+    assert err is None and len(systems) == 1
+    assert f"the tree is {tmp_path} on branch (git did not answer within 1s)," in systems[0]
+    assert reaped(pids) == 2  # the patch check's lookup and the branch
+
+
 def test_a_patch_apply_that_hangs_is_stopped_and_what_it_changed_is_said_to_be_unknown(
     tmp_path, monkeypatch, capsys
 ):

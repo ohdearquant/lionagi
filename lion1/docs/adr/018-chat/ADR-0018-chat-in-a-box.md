@@ -353,20 +353,22 @@ registers the tools over the `Tree`: `LocalTree` of the directory, or a `BoxTree
 `--box` is `vm` or `daytona`. Under `vm`, `chat_main` builds a `Sandbox` VM for `--shell` or
 `--code`; for a boxed chat, a `DaytonaSandbox` whose workdir is the directory's own path, `--image`
 defaulting to `python:3.12`, and as `about_box` the box guidance naming its kind and image.
-`--model` picks the backend ([[ADR-0009-backends|ADR-0009]]).
+`--model` picks the backend ([[ADR-0009-backends|ADR-0009]]). `--code` asks git for the branch
+within one `GIT_TIMEOUT`.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py` (khive only in an actor's directory,
   the root rules, the hooks);
   `test_the_console_reads_and_codes_over_a_given_tree_with_the_box_guidance`;
-  `test_the_local_tree_refuses_paths_that_leave_it`.
+  `test_the_local_tree_refuses_paths_that_leave_it`; `tests/test_chat.py`:
+  `test_a_resumed_coding_chat_whose_git_hangs_starts_with_the_branch_said_unknown_within_its_bound`.
 
 ### D3: `prepare_box` and `take_patch`, the patch before the stop ^d3
 
 Serves C3, C4 and C5. `prepare_box` starts the box, pushes, and commits the baseline, returning its
 hash. At the end `chat_main` takes the patch under `asyncio.shield`, then stops the box; a failure
 taking it keeps the box and names it. The default is print and save; `--apply` lands. `take_patch`'s
-git calls have `GIT_TIMEOUT` (30 s) each; an apply stopped at it may have written part of the patch,
-so the directory is said to be unknown, and the box stops.
+host git calls have `GIT_TIMEOUT` (30 s) each, the box's diff calls 120 s each; an apply stopped at
+it may have written part of the patch, so the directory is said to be unknown, and the box stops.
 
 - **Landing evidence**: `tests/test_daytona.py`: the chat in a box end to end, the subdirectory
   apply, committed edits, the ignored tracked file, the kept box named; `tests/test_chat.py`: failed
