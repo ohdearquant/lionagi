@@ -6,9 +6,10 @@ fields one by one with `<lvar extraction.field alias>` and finishes with `OUT{ex
 A value a field refuses, a `Literal` off its list or a dose a validator rejects, is told back as the
 exact validation error and the run goes on. The request's `accept` gate judges the validated object
 last, here that every quoted evidence is in the note verbatim; its refusal is told the same way and
-counted against `max_refusals`. The caller reads `run.output["extraction"]` as the object, never as
-text. The guidance lists a nested model by its name only, so the role prompt describes the nested
-models with `render_guidance`. The note is invented; scripted backend; runs offline.
+counted against `max_refusals`, where the run ends as `Refused` with no output. The caller reads
+`run.output["extraction"]` as the object, never as text. The guidance lists a nested model by its
+name only, so the role prompt describes the nested models with `render_guidance`. The note is
+invented; scripted backend; runs offline.
 
     uv run python examples/structured_output.py
 """
@@ -187,6 +188,14 @@ async def main() -> None:
         "| allergies, never declared, at the field's default:",
         extraction.allergies,
     )
+
+    print("\n=== a model that never quotes the note: the gate ends the run, and there is no object to read")
+    strict = RunRequest(inputs=(NOTE,), emits=(Extraction,), accept=evidence_is_in_the_note, max_refusals=2)
+    never = await actor.run(profile, strict, scripted(TURNS[1], TURNS[1], seen=[]))
+    print(
+        "outcome:", type(never.outcome).__name__, "| times:", never.outcome.times, "| output:", never.output
+    )
+    print(" ", never.outcome.why)
 
 
 if __name__ == "__main__":
