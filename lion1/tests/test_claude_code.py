@@ -962,6 +962,65 @@ def test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_i
     assert 1.0 <= took < 2.0, took  # the read's bound ended the wait
 
 
+def test_an_ask_that_finished_as_the_call_settles_is_not_waited_on(monkeypatch):
+    """An ask arrives as the call ends and returns some turns later. Ending in the turn before the
+    call's settling resumes, it is finished and still among the call's asks, since what takes it out
+    runs only once the settling yields: the call returns whichever turn the ask ends on. An alarm
+    turns a call that never returns into a failure, so the test fails rather than hangs."""
+    import shlex
+    import signal
+    import socket
+
+    async def window(after: int):
+        actor = Actor("gated")
+        state = {"calls": 0, "client": None}
+
+        async def ask(actor, run, requires, closed, arrived, reader, writer):
+            try:
+                await closed.wait()
+                arrived.set()
+                for _ in range(after):
+                    await asyncio.sleep(0)
+            finally:  # one still running when the call settles is cancelled
+                writer.close()
+
+        async def fake_exec(cli, args, prompt, **kw):
+            state["calls"] += 1
+            settings = json.loads(args[args.index("--settings") + 1])
+            sock = shlex.split(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"])[-1]
+            state["client"] = socket.socket(socket.AF_UNIX)
+            state["client"].connect(sock)
+            return "ok", {"total_cost_usd": 0.0}
+
+        monkeypatch.setattr(claude_code, "_ask", ask)
+        monkeypatch.setattr(claude_code, "_exec", fake_exec)
+        backend = ClaudeCodeSession(cli="/bin/echo", tools=("Read",), actor=actor)
+        try:
+            await actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend)
+        finally:
+            state["client"].close()
+        return state["calls"]
+
+    class OutOfTime(BaseException):  # past any handler in the call that would take an Exception
+        pass
+
+    def out_of_time(signum, frame):
+        raise OutOfTime
+
+    previous = signal.signal(signal.SIGALRM, out_of_time)
+    try:
+        for after in range(8):
+            signal.setitimer(signal.ITIMER_REAL, 5)
+            try:
+                assert asyncio.run(window(after)) == 1, after
+            except OutOfTime:
+                pytest.fail(f"the call never returned with the ask ending {after} turns after it arrived")
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+    finally:
+        signal.signal(signal.SIGALRM, previous)
+
+
 def test_a_cancel_as_a_hook_is_accepted_at_the_calls_end_still_returns(monkeypatch):
     """The hook connects as the CLI exits, so its task is created by the call's own settle, and the run
     is cancelled before that task takes its first step: the task never ran, the call still returns
