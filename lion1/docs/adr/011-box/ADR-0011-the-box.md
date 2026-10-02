@@ -1,7 +1,7 @@
 ---
 adr: ADR-0011
 status: draft
-liveness: operating (three boxes under tests and live runs, each box's answer to a missing deadline pinned, the coding tools under tests and one live console run, the box tree's bound resolved in the box, the watch under tests and on the bench; the real-box tests are opt-in)
+liveness: operating (four boxes under tests and live runs, each box's answer to a missing deadline pinned, the coding tools under tests and one live console run, the box tree's bound resolved in the box, the watch under tests and on the bench; the real-box tests are opt-in)
 date: "2026-09-25"
 area: box
 kind: new
@@ -22,16 +22,16 @@ tags:
 ## Context
 
 A model that reads well next needs to run what it reads, and a model that edits needs the system to
-watch the tree rather than believe its claims. Three places run a model's commands: a VM over the
-console's directory, a container from an evaluation image, and a remote sandbox from any image. This
-record fixes one shape for the three, what a command may touch, the three tools a fix is found and
+watch the tree rather than believe its claims. Four places run a model's commands: a VM over the
+console's directory, a container from an evaluation image, and remote boxes on two services. This
+record fixes one shape for the four, what a command may touch, the three tools a fix is found and
 written with, and the watch that ends a run on the tree's evidence.
 
 The commands are handlers ([[ADR-0005-command-handling|ADR-0005]]); the watch is a section of the
 notification ([[ADR-0006-the-notification#^c3|ADR-0006/C3]]) and its gate is the job's `accept`
 ([[ADR-0003-the-bounds#^c4|ADR-0003/C4]]); a whole value stays whole and the view budget is the only
 size control ([[ADR-0007-the-record#^c2|ADR-0007/C2]]). Source: `hub/tools/box.py`, `shell.py`,
-`docker.py`, `daytona.py`, `code.py`, `fs.py`, `watch.py`; the box half of
+`docker.py`, `daytona.py`, `runta.py`, `code.py`, `fs.py`, `watch.py`; the box half of
 `apps/cli/lion_cli/chat.py`; `bench/swe/sandbox.py`.
 
 ## Definitions
@@ -204,6 +204,18 @@ to; the person picks `--offline` when the directory holds what the network must 
 
 - **Landing evidence**: the internal network measured without DNS, egress or host reach, 2026-09-21.
 
+### D5: `hub/tools/runta.py`, a box under an egress policy ^d5
+
+Serves C1 and C2. `RuntaSandbox` creates a runtime from a Runta image, built once over another image
+and found by name after, or from a checkpoint, under an egress policy the service enforces outside
+the guest. Its `exec` keeps the remote box's timeout seam and its files go through the runtime's
+file API. It makes `workdir` by a command sent to the runtime directly, and reads the policy back
+after a create, setting it again when the two differ. The service's records of a runtime come back
+as bus events.
+
+- **Landing evidence**: `tests/test_runta.py` (the SDK and the HTTP client stubbed; the real service
+  under an opt-in flag, listed in `tests/test_shell.py`'s opt-in test).
+
 ## Alternatives
 
 | approach                                            | rejected because                                                                              |
@@ -274,3 +286,9 @@ to; the person picks `--offline` when the directory holds what the network must 
 - **S15**: A process the model runs in the box reads anywhere already (S6), so the tree's bound is
   no boundary against one: a link it swaps between the resolve and the read reaches what that
   process could read itself.
+- **S16**: A runtime restored from a checkpoint comes up without its source's egress policy. The box
+  sends its own with every create and sets it again when the runtime reports another, so a box given
+  a policy restores under it, once the change S17 describes has taken hold.
+- **S17**: A policy change on a running runtime reads back at once and holds only seconds later: a
+  host was still reached 4 s after one change, and every host outside the policy was refused by 18
+  s. A closure that matters is proven from inside the box.
