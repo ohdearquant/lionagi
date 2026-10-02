@@ -311,3 +311,5 @@ computation binds its failure.
   `test_a_long_comprehension_lets_other_tasks_run_every_limit_items_it_examines_rejected_ones_too`
   and `test_the_runs_deadline_cancels_a_command_whose_argument_is_still_a_long_comprehension` pin
   it.
+- **S7**: The run's time budget is the only bound on a comprehension's total work: a run without one
+  is unbounded by design, and a long comprehension in it runs to its end.
