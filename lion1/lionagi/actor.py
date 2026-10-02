@@ -971,10 +971,15 @@ class Actor:
                 text = backend(messages)
                 if inspect.isawaitable(text):
                     run.call = asyncio.ensure_future(text)
+                    task = asyncio.current_task()  # there is one: awaiting a future needs a task
+                    asked = task.cancelling()
                     try:
                         text = await run.call
                     except asyncio.CancelledError:
-                        if not run.cut:  # the run itself is being cancelled
+                        # the run itself is being cancelled: no cut, or a cancel of the run's task
+                        # that arrived with one. Both reach here as one error; the task's count of
+                        # cancel requests is what tells them apart, and the run's own wins
+                        if not run.cut or task.cancelling() > asked:
                             raise
                         run.cut = False
                         run.uncosted += 1  # a call was made and no cost came back
