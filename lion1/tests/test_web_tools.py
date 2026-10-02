@@ -4,10 +4,13 @@ the two commands driven through a real Actor. One live test per provider runs on
 is set."""
 
 import asyncio
+import http.server
 import importlib
 import io
 import json
 import os
+import ssl
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -616,6 +619,117 @@ def test_fetch_errors_are_failed_results_that_name_the_cause(wire, public_dns):
     ):
         with pytest.raises(WebError, match=words):
             w._fetch("https://pages.example/a", 100)
+
+
+# --- the connection: a direct fetch dials an address that was checked ---------------------------------
+
+
+class Dialed:
+    """Stands in for `socket.socket`: records what it is asked to dial and refuses the connection."""
+
+    made: list["Dialed"] = []
+
+    def __init__(self, family, kind, proto):
+        self.address, self.timeout, self.closed = None, None, False
+        Dialed.made.append(self)
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def connect(self, address):
+        self.address = address
+        raise ConnectionRefusedError("refused")
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def dialed(monkeypatch):
+    Dialed.made = []
+    monkeypatch.setattr(w.socket, "socket", Dialed)
+    monkeypatch.setattr(urllib.request, "getproxies", dict)
+    return Dialed
+
+
+def test_the_connection_dials_the_address_that_was_checked_and_never_the_name(dialed, public_dns):
+    with pytest.raises(ConnectionRefusedError):
+        w._connect_public("pages.example", 443, 5.0)
+    assert [(s.address, s.timeout, s.closed) for s in dialed.made] == [(("93.184.216.34", 443), 5.0, True)]
+
+
+def test_a_name_whose_answer_changes_after_the_check_is_refused_at_the_connection(dialed, monkeypatch):
+    answers = iter([PUBLIC, [(2, 1, 6, "", ("127.0.0.1", 80))]])  # the check, then the connection
+    monkeypatch.setattr(w.socket, "getaddrinfo", lambda *a, **k: next(answers))
+    with pytest.raises(WebError, match="resolves to 127.0.0.1, not a public address"):
+        w._fetch("http://rebind.example/", 100)
+    assert dialed.made == [] and next(answers, None) is None  # both answers were asked for, nothing dialed
+
+
+def test_a_direct_fetch_follows_a_redirect_through_checked_connections(monkeypatch):
+    class Page(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append((self.path, self.headers["Host"]))
+            if self.path == "/a":
+                self.send_response(302)
+                self.send_header("Location", "/b")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = b"the page"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    seen: list[tuple[str, str]] = []
+    resolved: list[str] = []
+    server = http.server.HTTPServer(("127.0.0.1", 0), Page)
+    port = server.server_address[1]
+
+    def here(host, port):  # the one thing replaced: which address the name is said to have
+        resolved.append(host)
+        return [(2, 1, 6, "", ("127.0.0.1", port))]
+
+    monkeypatch.setattr(w, "_public_addresses", here)
+    monkeypatch.setattr(urllib.request, "getproxies", dict)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert w._fetch(f"http://pages.example:{port}/a", 100, timeout=5.0) == "the page"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(5)
+    assert seen == [("/a", f"pages.example:{port}"), ("/b", f"pages.example:{port}")]
+    assert resolved == ["pages.example"] * 4  # each hop: once for the check, once for its connection
+
+
+def test_the_tls_connection_verifies_the_name_it_was_asked_for(monkeypatch):
+    context = w._tls()
+    assert context.verify_mode is ssl.CERT_REQUIRED and context.check_hostname
+
+    class Wraps:
+        def wrap_socket(self, sock, server_hostname):
+            return ("wrapped", sock, server_hostname)
+
+    monkeypatch.setattr(w, "_connect_public", lambda host, port, timeout: ("raw", host, port, timeout))
+    monkeypatch.setattr(w, "_tls", Wraps)
+    conn = w._PinnedTLS("pages.example", timeout=5.0, context=context)
+    conn.connect()
+    assert conn.sock == ("wrapped", ("raw", "pages.example", 443, 5.0), "pages.example")
+
+
+def test_behind_an_environment_proxy_the_request_is_the_proxys_to_open(monkeypatch):
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": "http://proxy.example:3128"})
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda host: host == "direct.example")
+    assert w._proxied(urllib.request.Request("https://pages.example/"))
+    assert not w._proxied(urllib.request.Request("http://pages.example/"))  # no proxy for this scheme
+    assert not w._proxied(urllib.request.Request("https://direct.example/"))  # the bypass list
 
 
 # --- live: one per provider, only when its variable is set -----------------------------------------

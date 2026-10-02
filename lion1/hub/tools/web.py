@@ -9,10 +9,13 @@ as `WebError`, which the runtime turns into a failed command result the model re
 from __future__ import annotations
 
 import asyncio
+import functools
+import http.client
 import ipaddress
 import json
 import os
 import socket
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -96,8 +99,45 @@ class _Redirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+@functools.cache
+def _tls() -> ssl.SSLContext:
+    return ssl.create_default_context()
+
+
+class _Pinned(http.client.HTTPConnection):
+    def connect(self) -> None:
+        self.sock = _connect_public(self.host, self.port, self.timeout)
+
+
+class _PinnedTLS(http.client.HTTPSConnection):
+    def connect(self) -> None:
+        sock = _connect_public(self.host, self.port, self.timeout)
+        self.sock = _tls().wrap_socket(sock, server_hostname=self.host)
+
+
+class _PinnedHTTP(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_Pinned, req)
+
+
+class _PinnedHTTPS(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_PinnedTLS, req, context=_tls())
+
+
+def _proxied(req: urllib.request.Request) -> bool:
+    """Whether the environment sends this request through a proxy, by the standard library's own rule."""
+    return req.type in urllib.request.getproxies() and not urllib.request.proxy_bypass(req.host)
+
+
 def _urlopen(req: urllib.request.Request, timeout: float, guard: bool = False):
-    return urllib.request.build_opener(_Redirects(guard)).open(req, timeout=timeout)
+    if not guard or _proxied(req):
+        opener = urllib.request.build_opener(_Redirects(guard))
+    else:  # a page fetch on a direct connection: every hop dials an address that was checked
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _PinnedHTTP, _PinnedHTTPS, _Redirects(guard)
+        )
+    return opener.open(req, timeout=timeout)
 
 
 def _send(name: str, req: urllib.request.Request, timeout: float = TIMEOUT) -> bytes:
@@ -397,10 +437,11 @@ def _check_url(url: str) -> None:
     reserved, v4 or v6, and v6 forms that wrap a v4 address.
 
     What it covers: the address in the request and in every redirect it follows, each resolved here.
-    What it does not: the name is resolved again when the connection opens, so a DNS answer that
-    changes between this check and that connection (a rebinding server) is not caught; nor does it
-    stop a public host from serving what it likes. Run the tool where reaching the open internet,
-    and only that, is acceptable."""
+    On a direct connection the socket then dials an answer checked in the same call (`_connect_public`),
+    so a name whose answer changes after this check has nowhere to enter. What it does not: behind an
+    environment proxy the proxy resolves the name itself, and what the proxy may reach is the proxy's
+    to restrict; nor does any of it stop a public host from serving what it likes. Run the tool
+    where reaching the open internet, and only that, is acceptable."""
     parts = urllib.parse.urlsplit(url)
     if parts.scheme not in ("http", "https"):
         raise WebError(f"web_fetch reads http and https addresses, not {parts.scheme or 'a bare path'!r}")
@@ -408,9 +449,16 @@ def _check_url(url: str) -> None:
     if not host:
         raise WebError(f"web_fetch: {url!r} has no host")
     try:
-        infos = socket.getaddrinfo(
-            host, parts.port or (443 if parts.scheme == "https" else 80), type=socket.SOCK_STREAM
-        )
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError as e:
+        raise WebError(f"web_fetch: {url!r}: {e}") from None
+    _public_addresses(host, port)
+
+
+def _public_addresses(host: str, port: int) -> list[tuple]:
+    """Every address `host` resolves to, as `getaddrinfo` gives them; one that is not public refuses all."""
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except (socket.gaierror, UnicodeError, ValueError) as e:
         raise WebError(f"web_fetch: cannot resolve {host!r}: {e}") from None
     for info in infos:
@@ -419,6 +467,24 @@ def _check_url(url: str) -> None:
             ip = ip.ipv4_mapped
         if not ip.is_global or ip.is_multicast:
             raise WebError(f"web_fetch refuses {host!r}: it resolves to {ip}, not a public address")
+    return infos
+
+
+def _connect_public(host: str, port: int, timeout: float | None) -> socket.socket:
+    """A socket connected to `host`: the name is resolved once here, every answer is checked, and the
+    socket dials one of those answers by its address, never the name again."""
+    failure: OSError | None = None
+    for family, kind, proto, _, address in _public_addresses(host, port):
+        sock = socket.socket(family, kind, proto)
+        try:
+            sock.settimeout(timeout)
+            sock.connect(address)
+        except OSError as e:
+            sock.close()
+            failure = e
+            continue
+        return sock
+    raise failure or OSError(f"{host!r} resolves to no address")
 
 
 def _fetch(url: str, max_chars: int, timeout: float = TIMEOUT) -> str:
