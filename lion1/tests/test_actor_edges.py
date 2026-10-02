@@ -754,8 +754,8 @@ def test_a_history_that_does_not_replay_leaves_no_live_run(twice):
 
 
 def test_two_live_runs_of_one_actor_never_share_an_id(monkeypatch):
-    # the id is 8 hex digits and the registry is keyed by it: a second run drawing a live run's id took
-    # its place there, and the first run's end then removed the second
+    # the registry is keyed by the 8-hex id: a second live run with the first's id would take its place
+    # there, and the second's end would then remove the first
     import uuid
 
     class Drawn:

@@ -176,7 +176,9 @@ long-running agent is the something outside the loop that runs the actor.
   the request stays on the peer's inbox with its ask open. The asking command waits, and its turn
   with it, until the next run of that actor takes the request.
   `test_a_request_no_peer_run_took_waits_on_the_peers_inbox_for_its_next_run` pins both bounds.
-- **S9**: A run's id is eight hex digits drawn at random, so two live runs of one actor could draw
-  the same one: the second took the first's place in the registry, and the first's end removed the
-  second. D1 now draws again, pinned by `test_two_live_runs_of_one_actor_never_share_an_id` in
-  `tests/test_actor_edges.py`. Ids of runs that have ended may repeat.
+- **S9**: A run's id is eight hex digits drawn at random, and D1 draws again while a live run of the
+  same actor holds the draw, so two live runs never share one
+  (`test_two_live_runs_of_one_actor_never_share_an_id` in `tests/test_actor_edges.py`). Ids of runs
+  that have ended may repeat. A late answer for an ended run then reaches a new run under its id
+  only if its handle also matches one of that run's open asks, a second eight-hex draw; otherwise it
+  goes to the actor's inbox as C3 says.
