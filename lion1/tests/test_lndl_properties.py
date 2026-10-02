@@ -34,11 +34,6 @@ def _chars(exclude: str) -> st.SearchStrategy[str]:
     return st.characters(blacklist_characters=exclude, blacklist_categories=("Cs",))
 
 
-def _no_marker(s: str) -> bool:
-    # a string spelled like the reader's internal placeholders is a known defect, tested on its own
-    return not s.startswith("\x00")
-
-
 # Prose never opens a construct: no `<`, no backtick (markdown code quotes what it holds), no `OUT`.
 PROSE = st.text(_chars("<`")).filter(lambda s: "OUT" not in s)
 
@@ -55,8 +50,7 @@ def _literals(strings: st.SearchStrategy[str], dicts: bool = True) -> st.SearchS
     return st.recursive(scalars, containers, max_leaves=6)
 
 
-# Backticks in strings and values are left out: see the known defects on backticks.
-STRINGS = st.text(_chars("`")).filter(_no_marker)
+STRINGS = st.text(_chars(""))
 LITERALS = _literals(STRINGS)
 
 
@@ -111,20 +105,17 @@ def calls(draw, strings=STRINGS, exclude=""):
 
 
 @st.composite
-def turns(draw, plain_safe: bool = False):
-    """A well-formed turn, prose around value tags, calls and at most one OUT{}, with what it holds.
-    `plain_safe` keeps closing tags and braces out of the constructs' insides."""
-    strings = STRINGS.filter(lambda s: not ({"<", "{", "}"} & set(s))) if plain_safe else STRINGS
-    exclude = "<" if plain_safe else ""
+def turns(draw):
+    """A well-formed turn, prose around value tags, calls and at most one OUT{}, with what it holds."""
     aliases = draw(st.lists(ALIAS, max_size=4, unique=True))
     constructs, lvars, lacts = [], [], []
     for alias in aliases:
         if draw(st.booleans()):
-            value = draw(st.text(_chars("<`")))  # a value's body holds no tag
+            value = draw(st.text(_chars("<")))  # a value's body holds no tag
             constructs.append(f"<lvar {alias}>{value}</lvar>")
             lvars.append((alias, value.strip()))
         else:
-            text, name, args = draw(calls(strings, exclude))
+            text, name, args = draw(calls())
             constructs.append(f"<lact {alias}>{text}</lact>")
             lacts.append((alias, name, args))
     out = None
@@ -137,7 +128,7 @@ def turns(draw, plain_safe: bool = False):
                 bare = len(named) == 1 and draw(st.booleans())
                 parts.append(f"{key}: {named[0]}" if bare else f"{key}: [{', '.join(named)}]")
             else:
-                value = draw(_literals(strings, dicts=not plain_safe))
+                value = draw(LITERALS)
                 fields[key] = value
                 parts.append(f"{key}: {value!r}")
         out = fields
@@ -241,7 +232,7 @@ def test_a_triple_quoted_literal_holding_line_breaks_is_never_read_for_tags_or_o
     assert [(a.alias, a.args) for a in p.lacts] == [("a", {"x": inside, "y": 1})] and p.problems == []
 
 
-@given(turns(plain_safe=True))
+@given(turns())
 def test_plain_keeps_the_prose_lines_and_holds_no_construct(turn):
     text, _, _, _, prose = turn
     view = plain(text)
@@ -257,21 +248,19 @@ def slipped_calls(draw):
     """A call with one slip a model makes, the call it stands for, and the repair that reads it."""
     name = draw(NAME)
     keys = draw(st.lists(KEY, min_size=2, max_size=4, unique=True))
-    values = [draw(LITERALS) for _ in keys]
-    args = dict(zip(keys, values, strict=True))
-    parts = [f"{k}={v!r}" for k, v in args.items()]
+    drawn = [draw(arguments(STRINGS, "")) for _ in keys]
+    args = {k: value for k, (_, value) in zip(keys, drawn, strict=True)}
+    parts = [f"{k}={source}" for k, (source, _) in zip(keys, drawn, strict=True)]
     slip = draw(st.sampled_from(["comma", "closers", "string"]))
     if slip == "comma":
-        # the comma is supplied after a value that ends in a string, a number or a closing bracket
-        spots = [i for i, v in enumerate(values[:-1]) if v is not None and not isinstance(v, bool)]
-        assume(spots)
-        i = draw(st.sampled_from(spots))
+        # the comma is supplied after any value: a string, a number, a closing bracket, a name, a
+        # pointer, or a heredoc's closing line (ADR-0004/C2 lets the next argument follow the tag)
+        i = draw(st.integers(0, len(drawn) - 2))
         return f"{name}({', '.join(parts[: i + 1])} {', '.join(parts[i + 1 :])})", name, args, COMMA
     if slip == "closers":
         return f"{name}({', '.join(parts)}", name, args, CLOSERS
-    # a string argument's closing quote left off along with the call's closer; whitespace at the end
-    # of such a string is a known defect, tested on its own
-    last = draw(STRINGS.filter(lambda s: s == s.rstrip()))
+    # a string argument's closing quote left off along with the call's closer
+    last = draw(STRINGS)
     args[keys[-1]] = last
     parts[-1] = f"{keys[-1]}={last!r}"
     return f"{name}({', '.join(parts)}"[:-1], name, args, CLOSERS

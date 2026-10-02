@@ -73,22 +73,8 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     ch.add_argument(
         "--code",
         action="store_true",
-        help="the coding preset: read_lines, search and edit on this directory, the shell VM (implies "
-        "--shell), and the root AGENTS.md/CLAUDE.md in the guidance",
-    )
-    ch.add_argument(
-        "--tools",
-        default=None,
-        metavar="NAMES",
-        help="with a claude_code model: the CLI's own tools inside each round, comma-separated (Bash, "
-        "Read, Edit, Write, Grep, Glob, WebSearch); every call passes this console's gate and lands on "
-        "the record as a result the model can hide; a fold restarts the session from the folded view",
-    )
-    ch.add_argument(
-        "--max-turns",
-        type=int,
-        default=0,
-        help="with --tools: the CLI's tool turns per round; 0 = no cap",
+        help="the coding preset: read_lines, search and edit on this directory, and the shell VM (implies "
+        "--shell)",
     )
     ch.add_argument(
         "--khive-config",

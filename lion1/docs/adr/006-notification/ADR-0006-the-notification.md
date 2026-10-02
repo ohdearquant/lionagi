@@ -88,6 +88,7 @@ In order:
 - `not executed:` with alias and reason, a repair's note among them
   ([[ADR-0004-the-language#^c3|ADR-0004/C3]]);
 - `notes written:`;
+- turn one's `notes kept:` (ADR-0007/C8);
 - `hooks failed`, after hooks that raised (ADR-0005/C5);
 - `inbound:` with origin and handle;
 - each section's text, or `section failed:` with the exception.

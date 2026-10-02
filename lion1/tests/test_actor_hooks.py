@@ -433,6 +433,7 @@ def test_a_capture_copies_a_value_reached_twice_once(shape):
     assert inner == ["leaf"] and inner is not leaf
 
 
+@pytest.mark.usefixtures("no_collection")
 def test_a_result_too_deep_to_capture_settles_the_command_failed_and_the_run_goes_on():
     actor = Actor("hooked-deep")
 
