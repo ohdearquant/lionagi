@@ -6,6 +6,7 @@ reads and the validator the system runs; there is no second schema.
 
 from __future__ import annotations
 
+import itertools
 import json
 import keyword
 import re
@@ -48,23 +49,45 @@ def field_key(spec: Spec, name: str) -> list[str | int]:
     spec reads names only, the first alternative that is one key, the name when the alias is a path
     and the spec reads names too; else the alias path whole, which only a nested value fills.
 
-    That one key is kept only while no other field is read from it, or from anywhere validation tries
-    before it, nested inside it or around it, and nothing validation tries before it lies inside it or
-    around it, so validation reads the field back from it; else the first path validation tries, when
-    no other field is read from it (a later path is read only when every earlier one is missing, and
-    a field written there would be read from the first); else the one key, as before. So two fields'
-    values never land in one place when a key exists that keeps them apart."""
-    paths = _paths(spec, name)
-    key = _one_key(spec, name)
-    earlier = paths[: paths.index(key)]
-    others = [p for other in spec.model_fields if other != name for p in _paths(spec, other)]
-    if not any(_overlap(p, q) for p in [*earlier, key] for q in others) and not any(
-        _overlap(p, key) for p in earlier
-    ):
-        return key
-    if not any(_overlap(paths[0], q) for q in others):
-        return paths[0]
-    return key
+    The keys are chosen for the whole spec at once, so that a value written at each field's key is
+    read back as that field (`_reads_back`). A field is offered its one key first unless another field
+    is read from in or around it, then its paths in the order validation tries them; earlier fields
+    are served first. When no choice reads every field back, each field is named by the first path
+    validation tries."""
+    return list(_keys(spec)[name])
+
+
+def _keys(spec: Spec) -> dict[str, list[str | int]]:
+    paths = {name: _paths(spec, name) for name in spec.model_fields}
+    offered = []
+    for name, own in paths.items():
+        key = _one_key(spec, name)
+        shared = any(_overlap(key, q) for other, theirs in paths.items() if other != name for q in theirs)
+        offered.append(own if shared else [key, *(p for p in own if p != key)])
+    # in order of preference; past the first 1024 a spec keeps the first paths
+    for keys in itertools.islice(itertools.product(*offered), 1024):
+        chosen = dict(zip(paths, keys, strict=True))
+        if _reads_back(chosen, paths):
+            return chosen
+    return {name: own[0] for name, own in paths.items()}
+
+
+def _reads_back(keys: dict[str, list[str | int]], paths: dict[str, list[list[str | int]]]) -> bool:
+    """Whether every field is read back from its key when each is written there and nothing else is: no
+    key is another's or lies inside it, and each path validation tries before a field's key is then
+    missing (it touches no key) or lies inside another field's value, which holds there what it held
+    when that value was read, with no missing path tried before it."""
+    for name, key in keys.items():
+        others = [k for other, k in keys.items() if other != name]
+        if any(_overlap(key, k) for k in others):
+            return False
+        missing = False
+        for path in paths[name][: paths[name].index(key)]:
+            hit = [k for k in others if _overlap(path, k)]
+            if _overlap(path, key) or any(len(path) <= len(k) for k in hit) or (hit and missing):
+                return False
+            missing = missing or not hit
+    return True
 
 
 def _one_key(spec: Spec, name: str) -> list[str | int]:

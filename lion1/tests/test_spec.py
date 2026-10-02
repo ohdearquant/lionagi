@@ -117,6 +117,17 @@ class SelfShadow(BaseModel):
     a: dict = Field(validation_alias=AliasChoices(AliasPath("x", "y"), "x"))
 
 
+class LaterPathInside(BaseModel):
+    a: dict[str, str] = Field(validation_alias="x")
+    b: str = Field(validation_alias=AliasChoices(AliasPath("x", "a"), "x"))
+
+
+class TwoPathsInside(BaseModel):
+    a: dict[str, int] = Field(validation_alias="x")
+    b: int = Field(validation_alias=AliasChoices(AliasPath("x", "a"), "x"))
+    c: int = Field(validation_alias=AliasPath("x", "c"))
+
+
 T = TypeVar("T")
 
 
@@ -305,13 +316,30 @@ def test_a_key_a_path_read_before_it_lies_inside_gives_way_to_that_path():
     assert SelfShadow.model_validate(_fields(original)) == original
 
 
-def test_a_field_whose_first_path_lies_inside_another_field_keeps_its_one_key():
-    # b[0] is read before `safe` and lies inside b's value: no key keeps them apart while b holds
-    # an item, so the field keeps the key it had, which validation reads when b is empty
+@pytest.mark.parametrize("b, a", [([], 9), (["7"], 7)], ids=["b empty", "b holding an item"])
+def test_a_field_whose_first_path_lies_inside_another_field_keeps_its_one_key(b, a):
+    # b[0] is read before `safe` and lies inside b's value, which a rebuilt spec holds as it was: a
+    # read from b[0] is read from there again, and one read from `safe` finds b[0] missing again
     assert field_key(FirstPathTaken, "a") == ["safe"]
-    original = FirstPathTaken.model_validate({"b": [], "safe": 9})
-    assert original.a == 9
+    original = FirstPathTaken.model_validate({"b": b, "safe": 9})
+    assert original.a == a
     assert FirstPathTaken.model_validate(_fields(original)) == original
+
+
+@pytest.mark.parametrize(
+    "spec, keys, data",
+    [
+        (LaterPathInside, {"a": ["x"], "b": ["x", "a"]}, {"x": {"a": "B", "z": "Z"}}),
+        (TwoPathsInside, {"a": ["x"], "b": ["x", "a"], "c": ["x", "c"]}, {"x": {"a": 1, "c": 2, "z": 3}}),
+    ],
+    ids=["one path inside", "two paths inside"],
+)
+def test_a_field_no_key_keeps_apart_is_named_by_the_first_path_validation_tries(spec, keys, data):
+    # every key of b and c lies in or around a's x: no choice reads every field back, so each field is
+    # named by its first path, and b, read from inside a's value, is written there again
+    assert {name: field_key(spec, name) for name in spec.model_fields} == keys
+    original = spec.model_validate(data)
+    assert spec.model_validate(_fields(original)) == original
 
 
 @pytest.mark.parametrize("spec, keys, data", COLLIDING, ids=COLLIDING_IDS)
