@@ -30,6 +30,7 @@ import Button from "@/components/ui/Button";
 import StatusVerdictChips from "@/components/ui/StatusVerdictChips";
 import { deriveDisplayStatus } from "@/lib/runStatus";
 import { resolveRunLabel } from "@/lib/runLabel";
+import { runSessionId } from "@/lib/runIdentity";
 import Duration from "@/components/ui/Duration";
 import { useToast } from "@/components/ui/Toast";
 
@@ -297,9 +298,9 @@ export function PlaybookTemplateDetail({
               <div className="overflow-hidden rounded border border-edge">
                 {runs.map((run, i) => (
                   <Link
-                    key={run.run_id}
+                    key={runSessionId(run)}
                     to="/fleet"
-                    search={{ s: run.run_id }}
+                    search={{ s: runSessionId(run) }}
                     className="flex items-center gap-3 bg-surface-raised px-3 py-1.5 transition-colors duration-100 hover:bg-surface-overlay"
                     style={{ borderTop: i === 0 ? undefined : "1px solid var(--edge-hairline)" }}
                   >
@@ -315,7 +316,7 @@ export function PlaybookTemplateDetail({
                         one identical label -- the short id stays visible as a muted
                         secondary so rows remain distinguishable. */}
                     <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
-                      {run.run_id.slice(-12)}
+                      {runSessionId(run).slice(-12)}
                     </span>
                     <span className="shrink-0 font-data text-[length:var(--t-xs)] text-content-muted">
                       {/* Only terminal runs have a stable duration — a still-running

@@ -175,6 +175,19 @@ describe("fleetReducer — invocation join", () => {
     expect(s.orgUnits[0].agents).toHaveLength(1);
   });
 
+  it("keeps sessions distinct when compatibility run_id values collide", () => {
+    const s = dispatchOk(
+      initialFleetState(),
+      [],
+      [
+        makeRun({ id: "session-1", run_id: "shared-run", status: "running" }),
+        makeRun({ id: "session-2", run_id: "shared-run", status: "running" }),
+      ],
+    );
+
+    expect(s.orgUnits[0].agents.map((agent) => agent.id)).toEqual(["session-1", "session-2"]);
+  });
+
   it("an agent row's name matches the shared resolver, never a raw playbook/agent fallback", () => {
     const run = makeRun({
       run_id: "r1",

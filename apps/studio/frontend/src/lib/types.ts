@@ -76,7 +76,9 @@ export type ArtifactVerification = ArtifactVerificationResult | ArtifactVerifica
 // list_runs() (services/runs.py). Fields worker_name/finished_at were stale
 // filesystem-run remnants; the real fields are playbook_name/ended_at etc.
 export interface RunSummary {
+  /** Compatibility alias retained for older clients; navigation uses `id`. */
   run_id: string;
+  /** Session identity used by the current runs projection and routes. */
   id?: string;
   name?: string | null;
   playbook_name?: string | null;

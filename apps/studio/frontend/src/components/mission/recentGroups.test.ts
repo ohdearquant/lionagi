@@ -38,6 +38,19 @@ describe("groupConsecutiveRecentRuns", () => {
     expect(groups[0].runs).toHaveLength(1);
   });
 
+  it("uses session identity for the stable group key", () => {
+    const groups = groupConsecutiveRecentRuns([
+      makeRun({
+        id: "session-1",
+        run_id: "shared-run",
+        status: "completed",
+        playbook_name: "reviewer",
+      }),
+    ]);
+
+    expect(groups[0].key).toBe("session-1");
+  });
+
   it("consecutive same name + status collapse into one group", () => {
     const runs = [
       makeRun({ run_id: "r3", status: "failed", playbook_name: "reviewer", ended_at: 300 }),

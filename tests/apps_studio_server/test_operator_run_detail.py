@@ -388,6 +388,15 @@ async def test_project_scrubs_absolute_paths_out_of_the_detail_only_fields():
 # ── Mandatory arm: happy path ────────────────────────────────────────────────
 
 
+async def test_projection_uses_session_identity_before_the_compatibility_scalar():
+    from lionagi.studio.operator.run_detail import _project
+
+    fields, _ = _project({"id": "session-1", "run_id": "legacy-run"})
+
+    assert fields["runId"] == "session-1"
+    assert fields["id"] == "session-1"
+
+
 async def test_run_detail_happy_path(db_path):
     from lionagi.studio.operator.run_detail import run_detail
 

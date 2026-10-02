@@ -334,6 +334,9 @@ function DispositionControls({ item }: { item: AttentionItem }) {
     setError(null);
     try {
       await deleteAttentionDisposition(item.id);
+      // The row may have been discharged under an older id, and the join reads
+      // both, so clearing one of them leaves the row discharged.
+      if (item.legacyId) await deleteAttentionDisposition(item.legacyId);
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : t("attention.action.saveFailed", { message: "" }),
