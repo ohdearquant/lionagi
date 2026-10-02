@@ -182,3 +182,25 @@ def test_an_explicit_config_rides_every_call_and_a_missing_one_is_refused_never_
         Khive(cwd, "lambda:y", kkernel=str(stub), config=tmp_path / "missing.toml")
     with pytest.raises(KhiveError, match="holds no .khive/config.toml"):  # the control: no config= at all
         Khive(cwd, "lambda:y", kkernel=str(stub))
+
+
+@pytest.mark.parametrize("code", [0, 1])
+@pytest.mark.parametrize(
+    "error, kind",
+    [
+        ({"kind": "not_found", "message": "not found: ev1"}, "not_found"),
+        ({"message": "upstream_not_found: no route"}, None),
+        ("not_found", None),
+    ],
+    ids=["the store's not-found", "a message naming not_found", "bare text"],
+)
+def test_a_failed_op_raises_with_the_kind_the_store_gave_its_error_and_no_other(tmp_path, code, error, kind):
+    (tmp_path / ".khive").mkdir()
+    (tmp_path / ".khive" / "config.toml").write_text('[actor]\nid = "lambda:x"\n')
+    answer = {"results": [{"ok": False, "tool": "get", "error": error}], "status": "partial"}
+    stub = tmp_path / "kkernel"
+    stub.write_text(f"#!{sys.executable}\nimport sys\nprint({json.dumps(answer)!r})\nsys.exit({code})\n")
+    stub.chmod(0o755)
+    with pytest.raises(KhiveError) as raised:
+        asyncio.run(Khive(tmp_path, "lambda:x", kkernel=str(stub)).exec('get(id="ev1")'))
+    assert raised.value.kind == kind
