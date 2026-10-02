@@ -1248,6 +1248,25 @@ class Count(BaseModel):
     items: list[int]
 
 
+# a nested comprehension that examines 300 * `inner` items of the listings below and keeps none
+LONG = "(x for x in *outer if (y for y in *inner if false))"
+
+
+def _spent(turn: str, inner: int = LIMIT // 100):
+    """A one-round request over two listings and a backend whose turn arrives once its 0.2 s time
+    budget is spent."""
+    history = (
+        Entry(seq=0, kind=Kind.RESULT, content=Result("listing", True, [0] * 300), alias="outer"),
+        Entry(seq=1, kind=Kind.RESULT, content=Result("listing", True, [0] * inner), alias="inner"),
+    )
+
+    async def late(messages: list[Message]) -> str:
+        await asyncio.sleep(0.3)
+        return turn
+
+    return RunRequest(inputs=("go",), history=history, time_budget=0.2, max_rounds=1), late
+
+
 def test_the_runs_deadline_cancels_a_command_whose_argument_is_still_a_long_comprehension():
     calls: list = []
     actor = _actor("deadline", calls)
@@ -1257,21 +1276,37 @@ def test_the_runs_deadline_cancels_a_command_whose_argument_is_still_a_long_comp
         calls.append(("count", len(req.items)))
         return len(req.items)
 
-    history = (
-        Entry(seq=0, kind=Kind.RESULT, content=Result("listing", True, [0] * 300), alias="outer"),
-        Entry(seq=1, kind=Kind.RESULT, content=Result("listing", True, [0] * (LIMIT // 100)), alias="inner"),
-    )
-
-    async def late(messages: list[Message]) -> str:  # the turn arrives once the time budget is spent
-        await asyncio.sleep(0.3)
-        return fenced("n = count(items=(x for x in *outer if (y for y in *inner if false)))")
-
-    request = RunRequest(inputs=("go",), history=history, time_budget=0.2, max_rounds=1)
-    run = asyncio.run(actor.run(PROGRAM, request, late))
+    run = asyncio.run(actor.run(PROGRAM, *_spent(fenced(f"n = count(items={LONG})"))))
     # three LIMITs of items to examine: the deadline beside the turn's wait cancels the command
     # inside its comprehension, which before ran to its end so that only the handler was refused
     n = run.record.get("n").content
     assert n.reason == "cancelled" and calls == []
+
+
+@pytest.mark.parametrize(
+    "turn",
+    [(f"if not {LONG}:", '    a = echo(text="after")'), (f'OUT{{n: {LONG}, a: DO echo(text="after")}}',)],
+)
+def test_the_runs_deadline_stops_a_branch_test_or_an_output_field_still_in_a_long_comprehension(turn):
+    calls: list = []
+    run = asyncio.run(_actor("walk-deadline", calls).run(PROGRAM, *_spent(fenced(*turn))))
+    # the program computes these itself, in no command: the comprehension ran to its end past the
+    # deadline and the command after it was launched; the deadline stops it there now
+    assert ("turn", "the time_budget of 0.2 is spent; nothing after it ran") in run.refused
+    assert [e.alias for e in run.record if e.kind is Kind.RESULT] == ["outer", "inner"] and calls == []
+
+
+def test_a_value_whose_reader_the_deadline_cancelled_stops_computing_before_the_run_returns():
+    async def main():
+        run = await _actor("value-deadline", []).run(
+            PROGRAM, *_spent(fenced(f"v = {LONG}", "n = echo(text=*v)"), inner=LIMIT // 10)
+        )
+        return run, [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    run, alive = asyncio.run(main())
+    # thirty LIMITs of items: the deadline cancels the command reading *v, and the value, computed in
+    # a task of its own, went on computing for nobody after the run returned
+    assert run.record.get("n").content.reason == "cancelled" and alive == []
 
 
 class Grid(BaseModel):

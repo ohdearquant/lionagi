@@ -302,14 +302,18 @@ computation binds its failure.
   ride the TEXT entry's `meta`, so the admitted reading can be audited after the catalogue changes.
   A version stamp names a parser and keeps nothing.
 - **S6**: A list or dict stops at the part that takes it past the size limit: no later part runs,
-  and the part that crossed it has run. A comprehension lets other tasks run every 100,000 items it
-  examines, kept or rejected, so a cancel reaches it: a command still computing its arguments at the
-  deadline is cancelled there.
+  and the part that crossed it has run.
   `test_a_list_or_dict_past_the_size_limit_runs_no_part_after_the_one_that_took_it_there`,
-  `test_a_list_at_exactly_the_size_limit_is_built_and_one_character_more_is_not`,
-  `test_a_key_a_dict_writes_twice_counts_once_toward_the_size_limit`,
-  `test_a_long_comprehension_lets_other_tasks_run_every_limit_items_it_examines_rejected_ones_too`
-  and `test_the_runs_deadline_cancels_a_command_whose_argument_is_still_a_long_comprehension` pin
-  it.
-- **S7**: The run's time budget is the only bound on a comprehension's total work: a run without one
-  is unbounded by design, and a long comprehension in it runs to its end.
+  `test_a_list_at_exactly_the_size_limit_is_built_and_one_character_more_is_not` and
+  `test_a_key_a_dict_writes_twice_counts_once_toward_the_size_limit` pin it.
+- **S7**: Comprehensions let other tasks run every 100,000 items they examine, kept or rejected,
+  counted once per task across nesting. So the deadline cancels one wherever it is computed: in a
+  command's arguments, in a branch's test or an `OUT{}` field, where nothing after it runs, and in a
+  value still computing once its turn's commands settle.
+  `test_a_long_comprehension_lets_other_tasks_run_every_limit_items_it_examines_rejected_ones_too`,
+  `test_the_runs_deadline_cancels_a_command_whose_argument_is_still_a_long_comprehension`,
+  `test_the_runs_deadline_stops_a_branch_test_or_an_output_field_still_in_a_long_comprehension` and
+  `test_a_value_whose_reader_the_deadline_cancelled_stops_computing_before_the_run_returns` pin it.
+- **S8**: The run's time budget is the only bound on a comprehension's total work: a run without one
+  is unbounded by design, so no number of rejected items stops a comprehension in it, while the
+  items it keeps stop it at the size limit.

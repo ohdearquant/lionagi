@@ -2119,8 +2119,15 @@ class _Walk:
 
     async def execute(self, script: Script) -> dict[str, Any] | None:
         try:
-            return await self.block(script.body)
+            # what the walk computes itself, a branch's test and OUT{}'s fields, the time budget bounds
+            # as it bounds a command's arguments: one still computing at the deadline stops there
+            async with asyncio.timeout(_left(self.run)):
+                return await self.block(script.body)
         except _Failed:
+            return None
+        except TimeoutError:
+            spent = f"the time_budget of {self.run.bounds['time_budget']:g} is spent"
+            self.run.refused.append(("turn", f"{spent}; nothing after it ran"))
             return None
         except (
             asyncio.CancelledError
@@ -2130,6 +2137,11 @@ class _Walk:
             raise
         finally:
             await _settle(self.run, self.tasks, _left(self.run))  # the time budget bounds it as any turn's
+            # a value still computing now has no reader left (each was cancelled): it stops with them
+            computing = [c for c in self.computed.values() if not c.done()]
+            for c in computing:
+                c.cancel()
+            await asyncio.gather(*computing, return_exceptions=True)
             for alias, reads in self.reads.items():
                 entry = self.run.record.get(alias)
                 if entry.content.ok:
