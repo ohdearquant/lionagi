@@ -120,8 +120,9 @@ class Check(BaseModel):
 
 
 class Digest(BaseModel):
-    """Tell the owner what the ledger holds for one day: one line per chore, every chore, and
-    MISSING for a chore that did not run."""
+    """Tell the owner what the ledger holds for one day: one line per chore, every chore, MISSING
+    for a chore with a period that did not run, and `on ask: no run` for a chore run only on an ask
+    that did not run."""
 
     day: str | None = Field(default=None, description="YYYY-MM-DD; default today")
 
@@ -517,6 +518,9 @@ class Chores:
         ]
         for name in sorted(self.instruments):
             mine = [r for r in rows if r["chore"] == name]
+            if not mine and self.instruments[name].every is None:  # runs only when asked, so never due
+                lines.append(f"{actor} {name} on ask: no run")
+                continue
             if not mine:
                 lines.append(f"MISSING: {name}")
                 continue

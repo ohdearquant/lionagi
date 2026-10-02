@@ -666,6 +666,7 @@ def test_the_digest_is_one_line_per_chore_to_the_owner_with_missing_as_the_findi
         disk=Probe("disk", full(findings=("low",), evidence="df")),
         pr=Probe("pr", RuntimeError("down")),
         gtd=Probe("gtd", full(), every=None),
+        idle=Probe("idle", full()),
     )
     for _ in range(3):
         asyncio.run(agent.wake())
@@ -682,7 +683,9 @@ def test_the_digest_is_one_line_per_chore_to_the_owner_with_missing_as_the_findi
         f"{OWNER} pr {t1} instrument-failed:pr 1 run(s), 0 answered, 0 quiet, 0 report, 0 escalate, "
         "1 instrument-failed" in text
     )
-    assert "MISSING: gtd" in text and f"---\n{t0} disk msg m1: low" in text
+    # a chore with a period that did not run is the finding; one run only on an ask was not due
+    assert "MISSING: idle" in text and f"---\n{t0} disk msg m1: low" in text
+    assert f"{OWNER} gtd on ask: no run" in text and "MISSING: gtd" not in text
     assert "a MISSING line is the finding" in text
     day = rows[0]["at"][:10]  # the third wake's tokens are not yet in the spend when the digest is built
     assert (

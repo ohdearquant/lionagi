@@ -52,6 +52,9 @@ and mail between processes is the layer [[ADR-0010-delegation#^c4|ADR-0010/C4]] 
   declared emptiness expected.
 - **standing state**: findings equal to the last ones a recipient received from that chore; they are
   not sent to that recipient again.
+- **periodic chore**: a chore with a repeat or a UTC cron. With no run recorded that day the digest
+  reads it `MISSING`, a day its cron skips included; a chore with neither runs only on an ask and
+  reads `on ask: no run`, which counts runs, not asks.
 
 ## Assumptions
 
@@ -177,9 +180,9 @@ thread per chore, recipient and day, which the hop cap bounds. The standing stat
 recipient; evidence is capped at 4,000 characters, and says so.
 
 `dead_after` unanswered runs in a row escalate once as a dead instrument; an answered run clears it.
-The digest gives the owner one line per chore, `MISSING` where none ran that day, and the day's
-tokens. The aged pass tells the steward once of each report the owner received and the steward did
-not, left unanswered on its thread past `aged_after` periods of the chore.
+The digest gives the owner one line per chore, `MISSING` where a periodic chore has no run that day,
+and the day's tokens. The aged pass tells the steward once of each report the owner received and the
+steward did not, left unanswered on its thread past `aged_after` periods of the chore.
 
 ## Decisions
 
