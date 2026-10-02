@@ -106,8 +106,9 @@ def console(
             else:
                 specs |= khive_ops(actor, khive)
                 tools += (
-                    f", khive_ops(ops) signing as {actor_id} ({len(khive.allowed)} verbs: reads, comm.read, "
-                    f"schedule.remind, memory.remember with an explicit salience <= {SPAWN_SALIENCE})"
+                    f", khive_ops(ops) signing as {actor_id} (these verbs and no other: "
+                    f"{', '.join(sorted(khive.allowed))}; memory.remember with an explicit salience <= "
+                    f"{SPAWN_SALIENCE})"
                 )
     if not system:
         system = guidance("console", model=model, tools=tools, rounds=rounds, sandbox=about_sandbox)

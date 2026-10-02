@@ -175,6 +175,21 @@ preview, with its size, run and version. A store the profile brings (`Profile.no
 actor's for every run of that profile. No test pins the empty overwrite, the 120-character cut or a
 brought store.
 
+### C8: The first notification names the notes already kept _(enforced: mechanical)_ ^c8
+
+- **Subject**: the notification of every run's first turn.
+- **Violated when**: a note the profile's store holds when the run starts is neither named nor
+  counted there, a later notification repeats the list, or a store that cannot be read ends the run.
+
+A note outlives its run (C5), but one an earlier run wrote went unseen until the model called
+`note.list`. The first notification lists the store under `notes kept:` in key order: each note's
+key, its size in characters and the run that wrote it, ten named and the rest counted as `and N
+more`.
+
+Nothing the store supplies can break the line, stretch it or read as another entry. An empty store
+adds no line. A store that cannot be read makes the line `notes kept: unknown` with the error, and
+the run goes on.
+
 ## Decisions
 
 ### D1: `record.py` and `fold` ^d1
@@ -228,6 +243,21 @@ its own.
 
 - **Landing evidence**: `test_a_file_note_store_refuses_a_value_the_file_cannot_carry` and
   `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`.
+
+### D5: `_notify` lists the store on the first turn ^d5
+
+Serves C8. On turn 1, after `notes written:`, `_notify` reads `run.notes.list()`, sorts it by key,
+and writes one line if it holds any, sizes as `note.list` gives them, `_NOTES_TOLD` (10) named.
+`_said` takes the plain string, then writes a key or run id that is not a plain token by its `repr`,
+cut at 60. An exception, from the store or a note's rendering, is escaped onto the line, cut at 200,
+or said to be unprintable. A resumed chat is a new run and is told again.
+
+- **Landing evidence**: `tests/test_notes.py`:
+  `test_the_first_notice_names_the_notes_already_kept_and_later_ones_do_not`,
+  `test_the_first_notice_names_ten_notes_counts_the_rest_and_says_an_unreadable_store` and
+  `test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_what_it_raises`.
+  Controls: dropping the block, the catch, the sort, the plain string, the quoting, either cut, the
+  escaping or the inner catch, or skipping a resumed run, fails a test.
 
 ## Alternatives
 
