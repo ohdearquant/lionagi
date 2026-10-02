@@ -133,14 +133,14 @@ def _reads_back(keys: dict[str, list[str | int]], paths: dict[str, list[list[str
     key is another's or lies inside it, and each path validation tries before a field's key is then
     missing (it touches no key) or lies inside another field's value, which holds there what it held
     when that value was read, with no missing path tried before it."""
+    around = _index({name: [key] for name, key in keys.items()})
     for name, key in keys.items():
-        others = [k for other, k in keys.items() if other != name]
-        if any(_overlap(key, k) for k in others):
+        if around(key) - {name}:
             return False
         missing = False
         for path in paths[name][: paths[name].index(key)]:
-            hit = [k for k in others if _overlap(path, k)]
-            if _overlap(path, key) or any(len(path) <= len(k) for k in hit) or (hit and missing):
+            hit = around(path) - {name}
+            if _overlap(path, key) or any(len(path) <= len(keys[k]) for k in hit) or (hit and missing):
                 return False
             missing = missing or not hit
     return True

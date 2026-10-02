@@ -1505,16 +1505,17 @@ class Actor:
                 continue
             fields: dict[str, Any] = {}
             whole: list[Any] = []
-            keys = field_keys(spec) if spec is not None else {}
+            keys: dict[str, list[str | int]] | None = None  # taken when a field's alias first needs it
             for alias in value:
                 if alias not in run.values and run.record.get(alias) is None:
                     raise lndl.LNDLError(f"OUT{{{key}: ...}}: {alias!r} was never declared")
                 fld = run.fields.get(alias)
                 resolved = run.resolve(alias)
-                if fld is not None:
-                    fields[fld] = (
-                        _coerce(spec, _field_named(keys, fld), resolved) if spec is not None else resolved
-                    )
+                if fld is not None and spec is None:
+                    fields[fld] = resolved
+                elif fld is not None:
+                    keys = keys if keys is not None else field_keys(spec)
+                    fields[fld] = _coerce(spec, _field_named(keys, fld), resolved)
                 else:
                     whole.append(resolved)
             if spec is None:
