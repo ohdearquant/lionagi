@@ -92,9 +92,9 @@ A client's bound is the run's starting bound, at or below what the template reso
 
 The service calls `Actor.run` once per start and awaits it as a task on the actor's loop. It reads
 the run and writes two things on it: inbound input (C5) and the interrupt (C6). An error before
-`run.started` is a refusal with no run, and the log reserved for it is removed. After it the run
-exists and its state says how it ended. A log that stops its run (C8) is the one stated departure
-from this parity.
+`run.started` is a refusal with no run, and the log reserved for it is removed; a cancel before then
+keeps it, aborted (D7). After it the run exists and its state says how it ended. A log that stops
+its run (C8) is the one stated departure from this parity.
 
 ### C3: A row is published complete, once, in order _(enforced: mechanical; owed, S1)_ ^c3
 
@@ -173,17 +173,17 @@ Without a directory a resume is refused.
 ### C8: A log that cannot be written stops its run and is never written again _(enforced: mechanical; owed, S1)_ ^c8
 
 - **Subject**: a log file that cannot be created, and an append that fails.
-- **Violated when**: a row past a failed append is published; anything, the `END` row included, is
-  appended after it; or a `round.started` or a backend call follows it. Also when the failure is
-  absent from the state, it changes the outcome, or a run starts whose log could not be created.
+- **Violated when**: a row past a failed append is served; anything, the `END` row included, is
+  appended after it; or a `round.started` follows it. Also when the failure is absent from the
+  state, it changes the outcome, or a run starts whose log could not be created.
 
 The bus records a subscriber's error and goes on ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]), so
 the service catches its own write failure. The first failed append latches the log: nothing more is
 written to it, so a torn line can only be its last. Reads and streams serve the rows confirmed
-before it.
+before it, and a dropped latched run answers `gone`.
 
-The run is stopped (C6) and its state names the failure beside whatever outcome it reaches. With no
-`END` row, the log reads as cut short after a restart. A start whose log cannot be created is
+The run is stopped (C6) and its state names the failure. A failure at a `round.started` follows that
+round's stop check, so its backend call still goes out. A start whose log cannot be created is
 refused before any run exists.
 
 ### C9: The transport answers this machine's loopback only _(enforced: mechanical; owed, S1)_ ^c9
@@ -256,11 +256,13 @@ conversations. It names the actor and protocol version 1.
 - **Subject**: ended runs kept in memory, inputs queued on a run, and frames queued for a
   subscriber.
 - **Violated when**: a read of a run no longer kept answers as an unknown run or as an empty one; a
-  record read with a directory lacks rows its log holds; or an input past the cap is accepted.
+  record read with a directory lacks rows its unlatched log holds; or an input past the cap is
+  accepted.
 
 Live runs are always held. Ended runs are held up to a count, the oldest dropped first. With a
-directory, the state and the record of a dropped run are read from its log. With none, a dropped run
-answers `gone`, between two pages as on a first read, and a client starts over from what it holds.
+directory, a dropped run's state and record are read from its log, unless it was latched (C8). With
+none, a dropped run answers `gone`, between two pages as on a first read, and a client starts over
+from what it holds.
 
 A run holds at most 64 inputs not yet taken, and one more is refused. The bounds are counts: a row
 is as large as the model or a handler made it, and no byte limit is promised on it.
@@ -276,8 +278,9 @@ An offer made as a conversation gives its runs a `wait`: after a reply the run w
 is refused, a waiting run wakes, and the run ends `Stopped` at its next wait unless a bound or an
 accepted output ended it first.
 
-Input queued before the `end` and not yet taken stays untaken, and the final state lists it (C5). An
-`end` on any other run is refused.
+Input may still be taken while the current exchange goes on through command rounds. A handle not
+taken when the next wait or the run's end closes it stays untaken, and the final state lists it
+(C5). An `end` on any other run is refused.
 
 ## Decisions
 
@@ -296,9 +299,9 @@ from `Actor.subset` and `model_json_schema`. `entry_row` moves from `hub/chat.py
 
 Serves C1, C2, C7 and C8. `start` checks the fields below, loads a resume's history, and only then
 draws a 16-hex id that no live run, kept run, log file or kept `once` answer has. It creates the log
-with its `SERVE` row and creates the task in one step; from then the run counts as live. The wrapper
-subscribes to `run.started`, calls `Actor.run`, and removes the subscription on every exit (A1).
-`start` answers when the run began or was refused; a refusal after the reservation removes the log.
+with its `SERVE` row and the task in one step, and from then the run is live. The wrapper subscribes
+to `run.started`, calls `Actor.run` and unsubscribes on every exit (A1). `start` answers once the
+run began, was refused or was cancelled first (D6); a refusal after the reservation removes the log.
 
 | field | type | rule |
 | ----- | ---- | ---- |
@@ -322,9 +325,9 @@ and `run.completed` call it, as do the service's `wait` and the task's end. A wr
 raises latches the log: the file is closed, the cursor stays, the state takes the failure, the run
 is stopped, and later calls publish nothing.
 
-- **Landing evidence**: owed: a first round with a recall and a fold, row by row across record, log
-  and stream; order and once-only; an overflow; a short write, a failed flush and calls after the
-  latch.
+- **Landing evidence**: owed: a recall and a fold in round one across record, log and stream; order
+  and once-only; an overflow; a short write, a failed flush, a failed first and later
+  `round.started` under both backend kinds, and calls after the latch.
 
 ### D4: The reads: `state`, `record` and `events` ^d4
 
@@ -347,13 +350,16 @@ the ended or the stopped flag is set, true when the inbox holds input, else it c
 event, checks both again and sleeps on it. The flags are read before the inbox.
 
 - **Landing evidence**: owed: input mid-round, before a wait and at the end; `end` while waiting,
-  mid-call and with input queued; a wake that finds nothing; the 65th input.
+  mid-call, during command rounds, a retry and the first round, with input queued; a wake that finds
+  nothing; the 65th input.
 
 ### D6: `interrupt`, `stop` and `cancel` ^d6
 
 Serves C6. `interrupt(id)` calls `Run.interrupt`. `stop(id)` sets the flag `Actor.run` reads as
 `stop` and the wake event with no await between, then calls `Run.interrupt`. `cancel(id)` cancels
-the task and awaits it. Each answers the state; one on an ended run is refused.
+the task and awaits it; on a run still starting that is the reserved task, and the run is aborted
+with no runtime id. Each answers the state. One on an ended run is refused, and so is every one but
+`cancel` on a starting run.
 
 - **Landing evidence**: owed: stop while waiting, mid-call, during a command and after an accepted
   output; cancel before the commit and during it; cancel with an interrupt in both orders.
@@ -361,13 +367,15 @@ the task and awaits it. Each answers the state; one on an ended run is refused.
 ### D7: The log's `SERVE` and `END` rows ^d7
 
 Serves C7 and C8. The `SERVE` row holds `kind`, `version`, `id`, `offer`, `resumed` and `replayed`.
-The `END` row holds `kind`, `phase`, `outcome`, `output` and `rows`; a task cancelled before its
-first step gets one with `phase` aborted. `entry_of` returns none for both, so a log read as history
-holds entries only. A last line that is not JSON is a write that was cut, and is dropped. The
-listing after a restart reads each log's first and last line.
+The `END` row holds `kind` and the final `state` (D9), `pending` included, so a dropped run reads
+whole from its log; a task cancelled before its first step gets one in phase `aborted`. `entry_of`
+returns none for both, so a log read as history holds entries only. A last line that is not JSON is
+a write that was cut, and is dropped. The listing after a restart reads each log's first and last
+line.
 
-- **Landing evidence**: owed: a resumed run that aborts after an ancestor that succeeded, a cut
-  `END` row, a file with no whole `SERVE` row, and a resume id that is a path.
+- **Landing evidence**: owed: a resumed run aborting after an ancestor that succeeded, a cut `END`
+  row, a file with no whole `SERVE` row, a resume id that is a path, a dropped run's untaken input,
+  and a latched log after a restart.
 
 ### D8: The HTTP transport on `asyncio.start_server` ^d8
 
@@ -380,7 +388,7 @@ parsed message with a defect is refused.
 | --------------- | ---- | ------- |
 | `GET /` | the card | 200 |
 | `GET /runs` | the states of live and kept runs | 200 |
-| `POST /runs` | starts a run from D2's fields | 201 with the state; 400, 404, 409 or 429 |
+| `POST /runs` | starts a run from D2's fields | 201 with the state, or 200 for a repeated `once` key; 400, 404, 409 or 429 |
 | `GET /runs/{id}` | the state | 200; 404 or 410 |
 | `GET /runs/{id}/record?start=N` | at most 500 rows from N, and `more` | 200; 400, 404 or 410 |
 | `GET /runs/{id}/events` and `GET /events` | the stream of one run, or of every run | 200 as `text/event-stream`; 404 or 410 |
@@ -404,37 +412,60 @@ parsed message with a defect is refused.
 ### D9: Shapes, frames and errors ^d9
 
 Serves C4, C10 and C14. Every answer is one JSON object in a shape below; a key holds null where it
-has no value. Values become JSON through `pydantic_core.to_jsonable_python`; one it cannot project
-is carried as an object with the single key `repr`, so what a client reads is a projection and never
-the object. A change that breaks a client raises the card's protocol version.
+has no value, and a null `pending` means unknown, never empty. Values become JSON through
+`pydantic_core.to_jsonable_python`; one it cannot project is carried as an object with the single
+key `repr`, so what a client reads is a projection and never the object. A change that breaks a
+client raises the card's protocol version.
 
 | shape | keys |
 | ----- | ---- |
-| `state` | `id`; `run`, the runtime's id or null; `offer`; `phase`: `starting` until `run.started`, then `working`, `waiting`, `ended` or `aborted`; `round`; `cost`; `rows`, a count; `pending`, the handles not taken; `outcome` and `output`, null until ended; `error`, the log failure or null; `resumed`, an id or null |
+| `state` | the keys of the next table |
 | `runs` | `runs`, a list of `state` |
-| `card` | `actor`; `protocol`; `offers`, each with `name`, `language`, `commands`, `outputs`, `bounds`, `converse` |
+| `card` | `actor`; `protocol`; `offers`, a list of `offer` |
+| `offer` | `name`; `language`; `commands`, each with `name`, `doc`, `schema`, `effect` (`write`, `read` or `pure`) and `privileges`, a list; `outputs`, each with `name` and `schema`; `bounds`, each bound's name to a number or null; `converse`, a boolean |
+| `outcome` | `kind`, one of `Success`, `Exhausted`, `Refused` and `Stopped`, beside that outcome's own fields but `output`: `rounds` and `reason`, `why` and `times`, or `round` |
 | `rows` | `id`; `start`; `rows`, each in the log's row form; `more`, on a record read |
 | `bus` | `id`; `kind`; `payload` |
 | `handle` | `id`; `handle` |
 | `error` | `error`, a code below; `reason`, a sentence |
 
+| state key | value |
+| --------- | ----- |
+| `id`, `offer`, `resumed` | the service's id; the offer's name; the id of the run resumed, or null |
+| `run` | the runtime's id; null until `run.started`, on a run aborted before it began and on a cut-short log |
+| `phase` | `starting` until `run.started`, then `working` or `waiting`, and last `ended` or `aborted`; `starting` may go straight to `aborted`; `cut_short` for a log with no `END` row after a restart |
+| `round`, `cost` | the run's round and cost so far; null on a cut-short log |
+| `rows` | the count of rows published; null on a cut-short log, whose record read holds them |
+| `pending` | the handles not taken; null on a cut-short log |
+| `outcome`, `output` | an `outcome` and a `Success`'s output; null until ended, after an abort and on a cut-short log |
+| `error` | the log's failure, or null |
+
+| request | body |
+| ------- | ---- |
+| input | `text`, a string of at least one character; `once`, optional, in D2's form; no other key |
+| `end`, `interrupt`, `stop`, `cancel` | an empty object |
+
 | code | status | when |
 | ---- | ------ | ---- |
-| `bad_request` | 400 | a field outside D2's table, a `start` that is not an integer from 0 to the count of rows published, a request D8 refuses |
+| `bad_request` | 400 | a body outside D2's table or the one above, a `start` that is not an integer from 0 to the count of rows published, a request D8 refuses |
 | `forbidden` | 403 | the peer, the Host or the Origin |
 | `unknown_offer`, `unknown_run`, `not_found` | 404 | no such offer, run or route |
 | `method_not_allowed` | 405 | a route asked with the other method |
 | `timeout` | 408 | the request's deadline |
-| `ended`, `not_conversation`, `no_resume` | 409 | input or a control on an ended run; `end` on a run that is no conversation; a resume with no directory, no such log or a live run |
-| `gone` | 410 | a run no longer held and no log to read |
+| `ended` | 409 | input after the run's `end` or on an ended run; a control on an ended run |
+| `starting` | 409 | input, or a control other than `cancel`, on a run still starting |
+| `not_conversation` | 409 | `end` on a run that is no conversation |
+| `no_resume`, `unreadable_log` | 409 | a resume with no directory, no such log or a live run; a resume whose log cannot be read or whose history does not replay |
+| `conflict` | 409 | a held `once` key repeated with other fields (D13) |
+| `gone` | 410 | a run no longer held, with no log to read or a latched one |
 | `too_large` | 413 | the head or the body |
 | `unsupported_type` | 415 | a POST that is not `application/json` |
 | `too_many` | 429 | live runs, or inputs not taken |
 | `log_failed` | 500 | a log that could not be created |
 | `busy` | 503 | connections or subscribers past the cap, or the service ending |
 
-- **Landing evidence**: owed: the example of D11, written against D8 and D9 alone, and one test per
-  code.
+- **Landing evidence**: owed: the example of D11, written against D8 and D9 alone, a table-driven
+  request per body and per code, and every outcome kind projected.
 
 ### D10: `Actor.serve`, and the order of shutdown ^d10
 
@@ -466,6 +497,18 @@ seconds.
 - **Landing evidence**: owed: each phase change on one run's stream and on the stream of every run,
   and the comment line under a stepped clock.
 
+
+### D13: A repeated `once` key ^d13
+
+Serves C1 and C5. A key is checked and held in one step, before any await, and a repeat is answered
+before the run's phase is checked. A repeated start with the same fields gets 200 and the current
+state of the run the first one started; a repeated input with the same text gets the first handle. A
+repeat while the first is in flight waits for its answer. One with other fields or text is refused
+`conflict`, and a refused act releases its key.
+
+- **Landing evidence**: owed: two starts with one key in one loop turn, a repeat after the run
+  ended, a repeat with other fields, and a key reused after its first start was refused.
+
 ## Alternatives
 
 | approach | rejected because |
@@ -484,10 +527,12 @@ seconds.
 | Trusting the parsed headers | the parser accepts a folded line, a space before the colon and a repeated Origin; the raw checks of D8 run first (C10) |
 | Calling a handler with no run | a `Context` belongs to a run, and the gates, receipts and bounds are the run's ([[ADR-0005-command-handling#^c3\|ADR-0005/C3]]) |
 | A WebSocket | it needs a framing layer or a dependency; a stream down and POSTs up carry everything here |
+| A check in the loop before each backend call, so a log failing at `round.started` holds that call back | a change to the core for one failure path; the one call it lets out is bounded, and its output may stand (C8) |
+| A gate in the loop that takes no input after `end` | a second change to the core; the exchange in flight finishes its command rounds, and what it never took stays listed (C15) |
 
 ## Consequences
 
-- **S1**: Nothing is built. D1 to D12 land with the tests they name, and until then every claim is
+- **S1**: Nothing is built. D1 to D13 land with the tests they name, and until then every claim is
   owed here.
 - **S2**: The areas server and the terminal chat are unchanged. Two servers stand until a client
   moves; a chat's box and its patch behind an offer are not decided here.
@@ -516,7 +561,8 @@ seconds.
 - **S13**: One service owns a directory. A second service over the same directory cannot write into
   a log it did not create, and lists the first one's live runs as cut short.
 - **S14**: A row is written and flushed, never synced. A power loss may take the log's tail, which
-  then reads as a write that was cut.
+  then reads as a write that was cut. After a restart a log with no `END` row is read whole, so a
+  line whose flush failed may be among its rows though no client was sent it.
 - **S15**: C6 rests on a correction to the loop that lands before the service: a cancel of the run's
   task that arrives with an interrupt was read as the interrupt and lost.
 - **S16**: The caps count runs, inputs, frames and connections, never bytes. An input is at most 1
