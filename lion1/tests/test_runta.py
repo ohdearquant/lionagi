@@ -38,10 +38,13 @@ SecretInjection = runta_mod.SecretInjection
 
 
 @pytest.fixture(autouse=True)
-def _runta_env(monkeypatch):
+def _runta_env(request, monkeypatch):
     """A token and endpoint for every test: the handful of calls that build their own `RuntaApi`
     with none passed in (`events`, `token_savings`, `tool_calls`, `find_image`, `build_image`,
-    `RuntaSandbox.start`) need one. A test of `token()`/`endpoint()` itself overrides this."""
+    `RuntaSandbox.start`) need one. A test of `token()`/`endpoint()` itself overrides this. The
+    real-runtime test keeps the real environment."""
+    if request.function is test_a_real_runtime_runs_the_shell_and_code_tools_proves_egress_and_stops:
+        return
     monkeypatch.setenv("RUNTA_TOKEN", "test-token")
     monkeypatch.setenv("RUNTA_ENDPOINT", "http://api.test")
 
@@ -324,13 +327,10 @@ def test_token_and_endpoint_read_the_environment_then_the_config_file(tmp_path, 
 
 def test_egress_api_shape_and_from_api_roundtrip():
     allow = Egress(mode="allowlist", hosts=("example.com", "a-b.example.co.uk"))
-    assert allow.api() == {
-        "mode": "allowlist",
-        "allowed_hosts": ["example.com", "a-b.example.co.uk"],
-        "denied_hosts": [],
-    }
+    # the service refuses the other mode's list as an unknown field, so only the mode's own is sent
+    assert allow.api() == {"mode": "allowlist", "allowed_hosts": ["example.com", "a-b.example.co.uk"]}
     deny = Egress(mode="denylist", hosts=("bad.com",))
-    assert deny.api() == {"mode": "denylist", "allowed_hosts": [], "denied_hosts": ["bad.com"]}
+    assert deny.api() == {"mode": "denylist", "denied_hosts": ["bad.com"]}
     assert Egress.from_api(None) is None
     assert Egress.from_api(allow.api()) == allow
     assert Egress.from_api(deny.api()) == deny
@@ -677,7 +677,7 @@ def test_the_create_body_shapes_resources_image_egress_secrets_and_capture():
     assert body["name"] == "n1" and body["llm_tool_io_capture_enabled"] is True
     assert body["resources"] == {"requests": {"vcpus": 4, "memory_mib": 3 * 1024}}
     assert body["image"] == {"id": "img-1"}
-    assert body["egress_policy"] == {"mode": "allowlist", "allowed_hosts": ["a.com"], "denied_hosts": []}
+    assert body["egress_policy"] == {"mode": "allowlist", "allowed_hosts": ["a.com"]}
     assert body["secret_configuration"] == [{"secret_id": "s1"}]
     assert "checkpoint_id" not in body
 
@@ -722,17 +722,8 @@ def test_a_refused_create_closes_both_clients_and_deletes_nothing(tmp_path, monk
     assert len(calls) == 1  # the refused POST alone; no DELETE
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        'RuntaSandbox.exec always runs a command through `cd -- "$0" && exec "$@"` into '
-        "self.workdir first (hub/tools/runta.py, exec()), so start()'s own bootstrap "
-        "`mkdir -p {workdir}` (hub/tools/runta.py, start()) cannot create a workdir that does not "
-        "already exist on the runtime: the cd fails before the mkdir ever runs, and start() raises "
-        "SandboxDead instead of making the directory."
-    ),
-)
 def test_start_can_create_a_workdir_that_does_not_already_exist_on_the_runtime(tmp_path, monkeypatch):
+    # guards start making its workdir straight on the runtime: exec starts in the workdir it makes
     box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, precreate_workdir=False)
     assert not (tmp_path / "work").exists()
     asyncio.run(box.start())
@@ -1105,7 +1096,8 @@ def test_a_real_runtime_runs_the_shell_and_code_tools_proves_egress_and_stops(tm
             assert sorted(await box.push(src)) == ["calc.py", "test_calc.py"]
             call = "python3 -c 'from calc import add; print(add(2, 2))'"
             allowed = "curl -sS -m 8 -o /dev/null -w '%{http_code}' https://pypi.org/ || echo blocked"
-            blocked = "curl -sS -m 8 -o /dev/null -w '%{http_code}' https://example.com/ || echo blocked"
+            # without -f curl exits 0 on any HTTP answer, so `blocked` means the connection itself failed
+            blocked = "curl -sS -m 8 -o /dev/null https://example.com/ && echo open || echo blocked"
             backend = scripted(
                 f'<lact b1>bash(command="{call}; ls *.py")</lact>'
                 '<lact s1>search(pattern="return a", path=".")</lact>'

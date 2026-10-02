@@ -110,12 +110,9 @@ class Egress(BaseModel):
         return hosts
 
     def api(self) -> dict[str, Any]:
-        allow = self.mode == "allowlist"
-        return {
-            "mode": self.mode,
-            "allowed_hosts": list(self.hosts) if allow else [],
-            "denied_hosts": [] if allow else list(self.hosts),
-        }
+        # the create body takes one list, the mode's own: the other one is refused as unknown
+        key = "allowed_hosts" if self.mode == "allowlist" else "denied_hosts"
+        return {"mode": self.mode, key: list(self.hosts)}
 
     @classmethod
     def from_api(cls, policy: Mapping[str, Any] | None) -> Egress | None:
@@ -501,9 +498,11 @@ class RuntaSandbox(BoxBase):
                 info = await self._rt.refresh_info()
                 if Egress.from_api(_policy_json(info.egress_policy)) != self.egress:
                     await self.set_egress(self.egress)
-            r = await self.exec(["mkdir", "-p", self.workdir], timeout=60)
-            if r["rc"] != 0:
-                raise SandboxDead(f"mkdir {self.workdir} exited {r['rc']}: {r['stderr'][-300:]}")
+            # straight to the runtime: `exec` starts in the workdir this makes, after the prelude
+            r = await self._rt.exec(["mkdir", "-p", "--", self.workdir], timeout=60)
+            if r.exit_code != 0:
+                err = r.stderr.decode(errors="replace")
+                raise SandboxDead(f"mkdir {self.workdir} exited {r.exit_code}: {err[-300:]}")
         except BaseException:
             await self.stop()
             raise
@@ -655,7 +654,8 @@ def _policy_json(policy: Any) -> dict[str, Any] | None:
 def _sdk_policy(egress: Egress) -> Any:
     from runta import EgressPolicy
 
-    body = egress.api()
+    allow = egress.mode == "allowlist"
+    hosts = list(egress.hosts)
     return EgressPolicy(
-        mode=body["mode"], allowed_hosts=body["allowed_hosts"], denied_hosts=body["denied_hosts"]
+        mode=egress.mode, allowed_hosts=hosts if allow else [], denied_hosts=[] if allow else hosts
     )
