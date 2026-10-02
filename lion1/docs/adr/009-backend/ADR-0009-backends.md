@@ -125,9 +125,10 @@ floor stays in the figure, out of the measure.
 One session per run id (S14). A call sends what the session lacks.
 
 Without tools, each resumed call forks its point. On a changed view it prices going on against
-starting over from an intact point or from the whole view. It starts over when the prompt saved over
-`payback` turns covers what it writes again, at 40 reads a character, and always on the fold (A3).
-An acting session goes on in place and starts over whole on a context directive or the fold.
+starting over from an intact point or the whole view. It starts over when the prompt saved over
+`payback` turns covers what it writes again at the served model's prices (S16), and always on the
+fold (A3). An acting session goes on in place and starts over whole on a context directive or the
+fold.
 
 The actor asks `plan` first, so the figure and a `session:` line say what the call does, unless a
 cache hour ends between them (S13).
@@ -308,8 +309,8 @@ swallowed too: a spin.
 - **S12**: A fork per call leaves the CLI one copy of the session per call under its projects
   directory, about 5 bytes per token held: 3 to 5 MB for an 18-call chat, up to 50 MB for 100 calls
   at 100k tokens. Nothing here removes them; that layout is the CLI's own.
-- **S13**: A point's cache hour runs from the last call that resumed that point itself, a failed one
-  too when it reports a cache read: a request refreshes the cache entry it hits, not the shorter
+- **S13**: A point's cache hour runs from the last call resuming that point (S15), a failed one too
+  when it reports a cache read: a request refreshes the cache entry it hits, not the shorter
   prefixes inside it (assumed, not measured). If a descendant's read keeps them warm, a fork from an
   earlier point is priced too high and the session goes on where a restart would pay. At the hour's
   edge the call can decide otherwise than the plan its notice told.
@@ -317,3 +318,14 @@ swallowed too: a spin.
   its own session. A view that only shrank sends its notification again, so no call goes out empty.
   Starting over also drops the tool turns an acting session's CLI held, which this backend does not
   estimate: so its restart is unpriced, and its notice names no figure for what goes.
+- **S15**: A call's read of the cache is stamped at its reply less the rest of its turn after its
+  first request, both timed per call (`duration_ms`, `time_to_request_ms`), so the CLI's startup
+  ages no point. Its exit (0.34 to 0.38 s on 2.1.287 with no MCP server) can keep a point warm that
+  long past its hour. A call of several requests is stamped at its first. Times missing, not
+  numbers, or not fitting the call leave the reply, so unknown timing never reads a held point as
+  expired.
+- **S16**: A restart is priced at the cache prices of the model the CLI reports serving, else of the
+  model asked for; a served name that is no model id falls through to the one asked for. An alias
+  reads as the model the CLI runs for it, its `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` when set. An entry
+  also names an id continuing it after a hyphen, as a dated id does. A model id the table does not
+  name, or no model at all, prices at 20 reads per character written.

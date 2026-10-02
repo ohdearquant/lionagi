@@ -145,6 +145,33 @@ def test_the_docker_box_derives_run_read_write_and_diff_from_exec(tmp_path, monk
     assert box.started is False
 
 
+def test_a_git_read_that_fails_is_an_error_not_an_empty_patch():
+    class Scripted:
+        """git as the patch read sees it: a tracked change and a new file, the read `fails` names failing."""
+
+        workdir, fails = "/w", None
+
+        async def exec(self, argv, *, stdin=None, timeout=120, env=None):
+            args = argv[3:]  # after `git -C /w`
+            if args[0] == "ls-files":
+                return {"rc": 0, "stdout": "new.py\0", "stderr": ""}
+            if "--no-index" in args:  # 1 is the difference it was asked for
+                if self.fails == "new":
+                    return {"rc": 128, "stdout": "", "stderr": "fatal: bad object"}
+                return {"rc": 1, "stdout": "diff --git a/new.py b/new.py\n+x = 2\n", "stderr": ""}
+            if self.fails == "tracked":  # partial output, then the error
+                return {"rc": 128, "stdout": "diff --git a/a.py", "stderr": "fatal: bad revision"}
+            return {"rc": 0, "stdout": "diff --git a/a.py b/a.py\n-x = 1\n+x = 2\n", "stderr": ""}
+
+    box = Scripted()
+    patch = asyncio.run(git_diff(box, "b" * 40))  # the control: both reads healthy
+    assert "a/a.py" in patch and "b/new.py" in patch
+    for fails, said in (("tracked", "fatal: bad revision"), ("new", "fatal: bad object")):
+        box.fails = fails
+        with pytest.raises(RuntimeError, match=f"exited 128: {said}"):
+            asyncio.run(git_diff(box, "b" * 40))
+
+
 def test_the_box_tree_resolves_a_symlink_in_the_box_before_its_bound(tmp_path, monkeypatch):
     # the bound read the path's text, so a link inside `workdir` read and wrote through to its target
     for k, v in shim(tmp_path).items():

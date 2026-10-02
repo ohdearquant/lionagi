@@ -27,7 +27,14 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel
 
-from .lndl import LNDLError, _close_dangling, _escape_newlines_in_strings, _insert_commas, _line_offsets
+from .lndl import (
+    LNDLError,
+    _close_dangling,
+    _dotted,
+    _escape_newlines_in_strings,
+    _insert_commas,
+    _line_offsets,
+)
 
 __all__ = (
     "LIMIT",
@@ -139,9 +146,15 @@ class Script:
     repairs: tuple[str, ...] = ()  # the same repairs by catalogue name, for the run's count
 
 
-_FENCE = re.compile(r"```[^\n`]*\n(.*?)```", re.DOTALL)
+# a block opens at a fence wherever it stands (after a list bullet or a sentence too) and closes at
+# the first fence that starts a line, blanks before it allowed, so a ``` inside a string argument is
+# the string's text; with no such line, the first fence after the opener closes it
+_OPEN_FENCE = re.compile(r"```[^\n`]*\n")
+_CLOSE_FENCE = re.compile(r"^[ \t]*```", re.MULTILINE)
+_ANY_FENCE = re.compile(r"```")
 _PTR = "__ptr_"
 _DO = "__do_"
+_TOO_DEEP = "the program is nested too deeply to read; the program was not run"
 _OUT = "__out__"
 _NOTE = ("note", _PTR + "note")
 _WORDS = {"true": True, "false": False, "null": None}
@@ -168,7 +181,13 @@ _CMP = {
 def read(text: str) -> Script:
     """The turn's program: its one fenced block read and lowered to nodes, the catalogue tried in order
     when it does not read as written. LNDLError, naming the line, when no reading reads."""
-    blocks = _FENCE.findall(text)
+    blocks, i = [], 0
+    while (opener := _OPEN_FENCE.search(text, i)) is not None:
+        closer = _CLOSE_FENCE.search(text, opener.end()) or _ANY_FENCE.search(text, opener.end())
+        if closer is None:
+            break
+        blocks.append(text[opener.end() : closer.start()])
+        i = closer.end()
     if len(blocks) > 1:
         raise LNDLError(f"{len(blocks)} fenced blocks: a turn is one program in one block")
     if not blocks:
@@ -198,13 +217,20 @@ def read(text: str) -> Script:
 def _parse(source: str) -> tuple[Node, ...]:
     try:
         with warnings.catch_warnings():
+            # an invalid escape in a string: SyntaxWarning from 3.12, DeprecationWarning before
             warnings.simplefilter("ignore", SyntaxWarning)
+            warnings.simplefilter("ignore", DeprecationWarning)
             tree = ast.parse(_mark(source), mode="exec")
     except SyntaxError as e:
         raise LNDLError(f"line {e.lineno}: {e.msg}; the program was not run") from None
     except ValueError as e:  # a NUL byte
         raise LNDLError(f"{e}; the program was not run") from None
-    return _block(tree.body)
+    except (RecursionError, MemoryError):  # the parser's own limits on nested text
+        raise LNDLError(_TOO_DEEP) from None
+    try:
+        return _block(tree.body)
+    except RecursionError:  # the checker walks the tree by recursion
+        raise LNDLError(_TOO_DEEP) from None
 
 
 def _mark(source: str) -> str:
@@ -325,15 +351,6 @@ def _command(call: ast.Call) -> str:
     if name is None:
         raise _refuse(call, "the command must be a name: name(field=value, ...)")
     return name
-
-
-def _dotted(node: ast.expr) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        base = _dotted(node.value)
-        return None if base is None else f"{base}.{node.attr}"
-    return None
 
 
 def _note_path(node: ast.expr) -> tuple[str, tuple[str, ...]] | None:

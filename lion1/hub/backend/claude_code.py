@@ -97,7 +97,7 @@ class _Point:
     prompt: int  # the characters its call's prompt stood in
     count: int | None  # that prompt's count, as the CLI reported it
     envelope: dict  # the call's envelope: the CLI's running totals follow the fork chain
-    read: float  # when its prefix was last written or read, for the provider's cache
+    read: float  # when the provider last read or wrote its prefix: that call's first request, else its reply
 
 
 @dataclass
@@ -125,7 +125,8 @@ class ClaudeCodeSession:
     either keeps what it holds, or starts over from a point the change left intact (one past the
     cache's hour priced as written again), sending the changed rest as one transcript, or from the
     whole view. It starts over only when that pays: what it frees, read on each of the next
-    `payback` turns, must cost at least what it writes again (a cache write costs 40 reads here).
+    `payback` turns, must cost at least what it writes again (a cache write costs 20 reads, 40 on
+    Opus 5.5 and 80 on Fable 5.1, by the model the CLI reports serving).
     The fold event always starts it over, and with it the CLI's tool-turn history goes (the fold is
     what bounds a chair's context; before it, one call read 14.8M tokens over its tool turns). A
     session given tools goes on in place, keeping no earlier point, and starts over from the whole
@@ -157,7 +158,7 @@ class ClaudeCodeSession:
     requires: dict[str, tuple[str, ...]] = field(default_factory=dict)
     calls: list[dict] = field(default_factory=list)
     # the turns a restart the view asks for must repay itself in: the characters it frees, read on each
-    # of them, against the characters it writes again at a cache write's price (_WRITE_OVER_READ reads)
+    # of them, against the characters it writes again at a cache write's price (_write_over_read reads)
     payback: int = 10
     # a prompt count and the characters it stood in, from a session before this backend's (a resumed
     # chat's last call): the first start's figure stands on it; each start after sets its own
@@ -349,6 +350,7 @@ class ClaudeCodeSession:
                 hook["timeout"] = math.ceil(self.timeout)  # the call's deadline, never the hook's, ends it
                 settings = {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}}
                 args += ["--settings", json.dumps(settings)]
+            started = _clock()
             try:
                 text, envelope = await _exec(
                     self.cli, args, prompt, model=self.model, timeout=self.timeout, cwd=self.cwd, persist=True
@@ -364,11 +366,30 @@ class ClaudeCodeSession:
         # not: the share is read against the point resumed. A failed call's fork is never gone on from
         call = {**_delta(envelope, prev), "prompt_chars": (step.base.chars if step.base else 0) + len(prompt)}
         self.calls.append(call if failed is None else {**call, "error": str(failed)})
+        now = _clock()
+        # the provider's hour runs from a request's read of the cache. The CLI times its turn from after
+        # it started (which can wait on MCP servers) and prints when in that turn its first request went
+        # out; both are this call's own (2.1.287), no running total. The reply's time less the rest of
+        # the turn is that request, late by what the CLI takes from printing its answer to exiting (0.34
+        # to 0.38 s measured with no MCP server, longer while servers shut down): the startup does not
+        # age an entry, and the exit can leave one reading that much warmer than it is. A call making
+        # several requests (an acting session's tool turns) is stamped at its first, which an acting
+        # session never prices by. With either time missing or not a number, a first request after the
+        # turn's end, or a turn longer than the call, the hour runs from the reply, so timing this backend
+        # does not know never makes an entry the provider still holds read as expired
+        turn_ms, first_ms = envelope.get("duration_ms"), envelope.get("time_to_request_ms")
+        read_at = now
+        if (
+            all(isinstance(t, int | float) and not isinstance(t, bool) for t in (turn_ms, first_ms))
+            and 0 <= first_ms <= turn_ms
+            and turn_ms / 1000 <= now - started
+        ):
+            read_at = now - (turn_ms - first_ms) / 1000
         if failed is not None:
             # billed for reading the point's prefix, it starts that entry's hour again all the same
             read = (envelope.get("usage") or {}).get("cache_read_input_tokens")
             if step.base is not None and int(read or 0):
-                step.base.read = _clock()
+                step.base.read = read_at
             if self.tools and step.base is not None:
                 # an acting session went on in place, so its running totals now hold this call's
                 # spend: the next call's share is read against the totals printed here. A total not
@@ -382,11 +403,10 @@ class ClaudeCodeSession:
                 step.base.envelope = {**step.base.envelope, **printed}
             raise failed
         count = _prompt_tokens(envelope)
-        now = _clock()
         if step.base is not None:
             # its prefix was read again: the provider keeps that entry longer. A request refreshes the
             # entry it hits, never the shorter prefixes inside it, so an earlier point's hour runs on
-            step.base.read = now
+            step.base.read = read_at
         base = step.base
         content = (base.content if base else ()) + tuple(
             (m.name, hash(m.content), len(m.content)) for m in step.sends
@@ -394,7 +414,13 @@ class ClaudeCodeSession:
         content += ((_REPLY, hash(text), len(text)),)
         chars = (base.chars if base else 0) + len(prompt)
         point = _Point(
-            str(envelope.get("session_id") or sid), content, chars + len(text), chars, count, envelope, now
+            str(envelope.get("session_id") or sid),
+            content,
+            chars + len(text),
+            chars,
+            count,
+            envelope,
+            read_at,
         )
         # past the cache's life a point costs its whole prefix again, as starting over does: it goes
         points[:] = [p for p in points if now - p.read < _CACHE_TTL_S and not self.tools] + [point]
@@ -470,8 +496,9 @@ class ClaudeCodeSession:
             step = _Step("fork", p, view[k:] + tail, _prompt(view[k:] + tail), kept - size, tokens)
             options.append((writes, step))
         options.append((system + whole - len(_plain(new)) - stale, full))
-        writes, best = min(options, key=lambda o: _WRITE_OVER_READ * o[0] - self.payback * o[1].frees)
-        if forced or (best.frees > 0 and self.payback * best.frees >= _WRITE_OVER_READ * writes):
+        ratio = _write_over_read(cur.envelope, self.model)
+        writes, best = min(options, key=lambda o: ratio * o[0] - self.payback * o[1].frees)
+        if forced or (best.frees > 0 and self.payback * best.frees >= ratio * writes):
             return best
         return cont
 
@@ -530,6 +557,46 @@ class ClaudeCodeAgentic:
             raise
         self.calls.append(envelope)
         return text
+
+
+def _write_over_read(envelope: dict, model: str | None) -> int:
+    """A cache write's price in reads for the model the CLI reported serving the call (the one that
+    took the most input when it names several), else for the model asked for, a family alias read as
+    the model the CLI resolves it to. A served name that is no model id falls through to the one asked
+    for; a model id the table does not name prices at 20, the table's usual, and so does nothing named."""
+    served = envelope.get("modelUsage")
+    if isinstance(served, dict) and served:
+
+        def taken(item: tuple[str, object]) -> int:
+            entry = item[1] if isinstance(item[1], dict) else {}
+            return sum(
+                int(entry.get(k) or 0)
+                for k in ("inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens")
+            )
+
+        name, entry = max(served.items(), key=taken)
+        for said in ((entry.get("canonicalModel") if isinstance(entry, dict) else None), name):
+            if (ratio := _ratio(said)) is not None:
+                return ratio
+    ratio = _ratio(model)
+    return 20 if ratio is None else ratio
+
+
+def _ratio(model: object) -> int | None:
+    """The table's price for a model id, a family alias resolved first; None for a name that is
+    neither, which says nothing about the model."""
+    if not isinstance(model, str):
+        return None
+    model = model.removesuffix("[1m]")  # the same model with the long context
+    if model in _ALIASES:
+        model = os.environ.get(f"ANTHROPIC_DEFAULT_{model.upper()}_MODEL") or _ALIASES[model]
+    if not model.startswith("claude-"):
+        return None
+    # an entry names its model and an id continuing it after a hyphen (a dated id), never another id
+    # that only begins alike
+    return next(
+        (r for name, r in _WRITE_OVER_READ.items() if model == name or model.startswith(f"{name}-")), 20
+    )
 
 
 def _prompt_tokens(envelope: dict) -> int | None:
@@ -634,9 +701,19 @@ async def _exec(
     return text, data
 
 
-# a restart's price: the costs the CLI reports fit a character written to the hour-long cache at 40
-# times one read from it
-_WRITE_OVER_READ = 40
+# a restart's price, a character written to the hour-long cache in reads of one, by model: a write is 2
+# times the model's input price and a read 0.1 times, except 0.05 on Opus 5.5 and 0.025 on Fable 5.1 and
+# Mythos 5.1 (Anthropic's published pricing table)
+_WRITE_OVER_READ = {"claude-opus-5-5": 40, "claude-fable-5-1": 80, "claude-mythos-5-1": 80}
+# what the CLI runs for a family alias unless ANTHROPIC_DEFAULT_<FAMILY>_MODEL names another (the
+# model Claude Code 2.1.287 reported serving for each, 2026-10-02); `--setting-sources ""` keeps user
+# and project settings from moving it
+_ALIASES = {
+    "opus": "claude-opus-5-5",
+    "fable": "claude-fable-5-1",
+    "sonnet": "claude-sonnet-5-5",
+    "haiku": "claude-haiku-4-5",
+}
 _CONTEXT = frozenset({"context.hide", "context.show", "context.summarize"})
 _CACHE_TTL_S = 3600.0  # the provider's cache life the CLI writes for (`ephemeral_1h`), from its last read
 _clock = time.monotonic
