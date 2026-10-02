@@ -158,15 +158,18 @@ def test_accept_gate_refuses_then_lets_a_later_turn_through():
 
 
 def test_unreadable_turn_is_a_retry_not_an_end():
+    # a call written with a positional argument cannot be read: the turn is refused whole and retried
     actor = Actor("t3")
     run = asyncio.run(
         actor.run(
             Profile("p"),
-            RunRequest(inputs=("go",), emits=(Done,), max_rounds=1),
-            scripted("<lact a>not a call</lact>"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=2),
+            scripted("<lact a>echo(1)</lact>", 'OUT{done: {summary: "read", files: []}}'),
         )
     )
-    assert run.outcome == Exhausted(1)
+    assert isinstance(run.outcome, Success) and run.output["done"].summary == "read"
+    sys_entries = [e.content for e in run.record if e.name.startswith("_sys")]
+    assert any("your last turn could not be read" in c for c in sys_entries)
 
 
 def test_repeated_refusals_end_the_run_as_refused():

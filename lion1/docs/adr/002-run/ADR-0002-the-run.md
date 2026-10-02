@@ -59,7 +59,7 @@ Source: `Actor.run` in `lionagi/actor.py`.
 | a bound is spent at the turn's start                      | nothing                                             | `Exhausted(reason)`, unless `run.more` was granted in an earlier turn (ADR-0003) |
 | under `wait`, after a reply or a pause with no command pending, `wait` answers false at the turn's start | nothing, not even the notification | `Stopped(n)`                                     |
 | `stop()` is true after the notification                   | nothing                                             | `Stopped(n)`                                                     |
-| the message carries the loop's own `<system round=` frame, two `OUT{}` or a backend's refusal | nothing                             | a retry; the error rides the next notification                   |
+| the message carries the loop's own `<system round=` frame, two `OUT{}`, an unreadable call or a backend's refusal | nothing | a retry; the error rides the next notification |
 | under `wait`, the message has no command and no `OUT{}`   | no command; a value or note it declares is taken   | the run continues as a reply; `wait` is asked at the next turn's start |
 | the message has no LNDL, in a run without `wait`          | nothing                                             | the run continues, with an idle note                             |
 | the message has `OUT{}` and its fields do not assemble | every command; `OUT{}` waits, then fails to assemble; the turn settles | a retry; the error rides the next notification, a repeat counted (C3) |
@@ -70,10 +70,9 @@ Source: `Actor.run` in `lionagi/actor.py`.
 
 Every command in a turn is dispatched, `OUT{}` or not: a model that writes "edit, then done" in one
 turn means both. A command is admitted at alias reservation, entered when its handler is called,
-settled when its RESULT lands; one cancelled before it entered is recorded by the loop. A construct
-that cannot be read is dropped and named while the rest runs
-([[ADR-0004-the-language#^c3|ADR-0004/C3]]); only the frame, two `OUT{}` and backend refusals refuse
-the message whole.
+settled when its RESULT lands; one cancelled before it entered is recorded by the loop. Only the
+fourth row refuses the message whole; any other construct that cannot be read is dropped and named
+while the rest runs ([[ADR-0004-the-language#^c3|ADR-0004/C3]]).
 
 `OUT{}` waits for what it references, through pointers, and for no effect
 ([[ADR-0005-command-handling#^c6|ADR-0005/C6]]); "edit, then done" points `OUT{}` at the edit. An
