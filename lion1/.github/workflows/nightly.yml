@@ -1,8 +1,7 @@
 name: nightly
 
+# run by hand only: no schedule spends hosted minutes
 on:
-  schedule:
-    - cron: "23 7 * * *"
   workflow_dispatch:
 
 permissions:
