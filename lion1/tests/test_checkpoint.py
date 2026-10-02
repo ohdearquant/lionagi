@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from pydantic import BaseModel, ConfigDict, ValidationError, computed_field
 
 from lionagi import checkpoint as module
 from lionagi.actor import Result
@@ -30,6 +31,7 @@ from lionagi.checkpoint import (
     assert_ignored,
     entry_of,
     fold_turns,
+    jsonable,
     load,
     render_prompt,
     save,
@@ -884,3 +886,44 @@ def test_a_value_the_file_cannot_carry_is_refused_before_anything_is_written(pla
         save(lone, plain)
     assert (sorted(p.name for p in ctx.iterdir()), (ctx / "latest.json").read_text()) == before
     assert load(plain).vars[0].value == "snowman: ☃"
+
+
+class Book(BaseModel):
+    title: str
+    year: int
+
+
+class Loose(BaseModel):
+    v: object
+
+
+def test_a_model_value_is_written_as_its_fields_and_one_json_cannot_hold_as_its_str(plain):
+    # a var's value that is a model was written, shown and sized as its str, which a restore cannot
+    # read a field of
+    book = Book(title="Dune", year=1965)
+    odd = Loose(v=types.SimpleNamespace(x=1))  # pydantic has no JSON form for the namespace
+    assert jsonable(book) == {"title": "Dune", "year": 1965}
+    assert jsonable(odd) == str(odd) == "v=namespace(x=1)" and jsonable(AT) == str(AT)
+    c = take({}, [var("value.b", "fact", book)], actor=ACTOR, why="manual", budget=100, now=AT)
+    assert '- value.b: {"title": "Dune", "year": 1965}' in render_prompt(c)
+    save(c, plain)
+    assert load(plain).vars[0].value == {"title": "Dune", "year": 1965}
+
+
+class Shut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str
+
+    @computed_field
+    @property
+    def upper(self) -> str:
+        return self.title.upper()
+
+
+def test_a_computed_field_is_written_as_a_key_that_a_model_forbidding_extras_refuses():
+    # a replay validates the dict into the model: a computed field's key is extra input there
+    written = jsonable(Shut(title="dune"))
+    assert written == {"title": "dune", "upper": "DUNE"}
+    with pytest.raises(ValidationError, match="upper\n  Extra inputs are not permitted"):
+        Shut.model_validate(written)
+    assert Shut.model_validate({"title": "dune"}).upper == "DUNE"

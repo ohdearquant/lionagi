@@ -22,6 +22,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
+
 from .actor import Result
 from .record import Directive, Entry, Kind, Record, fold
 
@@ -35,6 +37,7 @@ __all__ = (
     "Var",
     "Checkpoint",
     "entry_of",
+    "jsonable",
     "fold_turns",
     "take",
     "render_prompt",
@@ -152,6 +155,18 @@ def entry_of(row: dict) -> Entry | None:
         round=row.get("round", 0),
         meta=meta,
     )
+
+
+def jsonable(value: Any) -> Any:
+    """The `default=` of every JSON write of a log row and of a checkpoint: a Spec instance as its
+    fields, computed ones included, so a replay reads it as a dict; anything else, or a model with a
+    field JSON cannot hold, as its str."""
+    if isinstance(value, BaseModel):
+        try:
+            return value.model_dump(mode="json")
+        except ValueError:  # pydantic's serialization error: a field of a type it cannot write
+            pass
+    return str(value)
 
 
 def fold_turns(turns: Sequence[dict], budget: int) -> dict:
@@ -277,7 +292,7 @@ def _fenced(text: str) -> str:
 
 
 def _one(value: Any) -> str:
-    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=jsonable)
 
 
 def _shown(c: Checkpoint, v: Var) -> str:
@@ -476,7 +491,7 @@ def save(checkpoint: Checkpoint, directory: str | Path) -> Path:
 
 
 def _bytes(doc: dict) -> bytes:
-    return json.dumps(doc, ensure_ascii=False, indent=1, default=str).encode("utf-8")
+    return json.dumps(doc, ensure_ascii=False, indent=1, default=jsonable).encode("utf-8")
 
 
 def load(directory: str | Path, id: str | None = None) -> Checkpoint:

@@ -173,8 +173,8 @@ the box before the model works; a saved patch, an empty one and a refused apply 
   the old log is written to, or an unsettled command or an unapplied chat patch goes unnamed.
 
 `-c` continues the last log; `-r` takes an id, a unique prefix or a path. The rows come back as
-entries with sequences, results, inbound marks and directives; usage and `BOX` rows are skipped. The
-loop admits each turn's values in order, and the fold lands where it did
+entries with sequences, results (C19), inbound marks and directives; usage and `BOX` rows are
+skipped. The loop admits each turn's values in order, and the fold lands where it did
 ([[ADR-0007-the-record#^c4|ADR-0007/C4]]). A refused turn admits nothing; one an older reader ran
 and today's refuses admits what that reader did.
 
@@ -330,6 +330,22 @@ are: results are read only in the notice the loop writes. A turn that writes the
 
 The line lists the client's allow list by name, sorted, then the salience cap on `memory.remember`.
 It gave a count and a summary before, and a model learned a verb was allowed only by calling it.
+
+### C19: A model value in the chat log comes back as its fields _(enforced: mechanical)_ ^c19
+
+- **Subject**: `jsonable`, the `default=` of every chat log writer and of the checkpoint's file.
+- **Violated when**: a model value is logged as anything but its fields, a command typed with the
+  model is handed anything but the model, or a value an older log holds as a string resumes as
+  anything else.
+
+A model value, a command's result or a program's value, is logged as `model_dump(mode="json")`,
+computed fields included, and a resume reads it back as that dict. A program reads its fields
+(`*b.title`), and a command whose argument is typed as the model is handed the model, validated from
+the dict. A computed field's key is ignored there, unless the model forbids extra fields, which
+refuses it.
+
+A model whose fields JSON cannot hold is logged as its string. An older log holds every model value
+as its string, and a resume reads it back as that string.
 
 ## Decisions
 
@@ -513,6 +529,21 @@ set.
   `test_a_console_in_an_actors_directory_gets_khive_signing_as_that_actor`; `tests/test_agent.py`:
   `test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread`. Control:
   the old line fails both.
+
+### D16: `jsonable` in `lionagi/checkpoint.py`, the writers' `default=` ^d16
+
+Serves C19. `jsonable` returns `model_dump(mode="json")` for a pydantic model and the `str` of
+anything else, or of a model whose dump raises pydantic's serialization error. `Console` writes each
+chat log row with it, the long-running agent its checkpointed record, and the checkpoint its file
+and each value its restore shows. `entry_of` hands the dict back as written, and a Spec field typed
+as the model validates it into the model again.
+
+- **Landing evidence**: `apps/cli/tests/test_chat_command.py`:
+  `test_a_logged_model_value_resumes_as_its_fields_and_a_command_typed_as_the_model_gets_the_model`,
+  `test_a_resumed_program_reads_a_field_of_a_logged_model_value`,
+  `test_a_log_written_before_model_values_were_logged_as_fields_resumes_the_value_as_its_string`;
+  the model value tests of `tests/test_checkpoint.py` and `tests/test_context.py`. Control:
+  `default=str` at any one writer fails that writer's test.
 
 ## Alternatives
 

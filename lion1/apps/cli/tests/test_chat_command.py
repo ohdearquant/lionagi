@@ -11,8 +11,10 @@ import pytest
 from lion_cli.chat import Interrupt, _branch, chat_main, console, signer, unsettled
 from lion_cli.main import parser
 from lion_cli.view import RESULT_LINES, Console
+from pydantic import BaseModel, computed_field
 
-from hub.chat import chat, load_log
+from hub.chat import chat, entry_row, load_log
+from lionagi import Actor, Profile
 from tests.test_actor import scripted
 
 
@@ -572,3 +574,163 @@ def test_a_turn_the_backend_refused_prints_that_nothing_in_it_ran_live_and_in_th
     copied = "\n".join(say.transcript)
     for shown in (capsys.readouterr().out, copied):
         assert "→ r1" not in shown and f"✗ nothing in this turn ran: {why}" in shown
+
+
+class Book(BaseModel):
+    title: str
+    year: int
+
+    @computed_field
+    @property
+    def label(self) -> str:
+        return f"{self.title} ({self.year})"
+
+
+class Fetch(BaseModel):
+    title: str
+
+
+class Shelve(BaseModel):
+    book: Book
+
+
+class Echo(BaseModel):
+    text: str
+
+
+def shelf(language: str, got: list) -> tuple[Actor, Profile]:
+    """A console of three commands: `fetch` returns a Book, `shelve` takes one, `echo` takes text;
+    `got` collects what `shelve` and `echo` were handed."""
+    actor = Actor("shelf")
+
+    @actor.handler(Fetch)
+    async def fetch(req: Fetch, ctx) -> Book:
+        return Book(title=req.title, year=1965)
+
+    @actor.handler(Shelve)
+    async def shelve(req: Shelve, ctx) -> str:
+        got.append(req.book)
+        return "shelved"
+
+    @actor.handler(Echo)
+    async def echo(req: Echo, ctx) -> str:
+        got.append(req.text)
+        return req.text
+
+    return actor, Profile("shelf", specs=frozenset({"fetch", "shelve", "echo"}), language=language)
+
+
+def lion_chat(monkeypatch, tmp_path, made, turns: tuple[str, ...], log, *flags: str) -> list[dict]:
+    """One `lion chat` in `tmp_path` writing `log`, over the console `made` builds, the model saying
+    `turns` and the person ending it after the reply; the rows the log holds."""
+    import lion_cli.chat as cli
+
+    async def typed(prompt: str = "", out=None) -> str | None:
+        return None
+
+    monkeypatch.setattr(cli, "console", lambda directory, **kw: made())
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: scripted(*turns))
+    monkeypatch.setattr("lion_cli.view.stdin_ask", typed)
+    asyncio.run(chat_main(parser().parse_args(["chat", "--dir", str(tmp_path), "--log", str(log), *flags])))
+    return [json.loads(ln) for ln in log.read_text().splitlines()]
+
+
+def by_alias(rows: list[dict], alias: str) -> dict:
+    return next(r for r in rows if r.get("kind") == "RESULT" and r["alias"] == alias)["content"]
+
+
+def test_a_logged_model_value_resumes_as_its_fields_and_a_command_typed_as_the_model_gets_the_model(
+    tmp_path, monkeypatch
+):
+    """The log holds a model value as its fields, a computed one included; `lion chat -r` replays it
+    as that dict, and a command whose argument is typed as the model is handed the model again,
+    validated from the dict, the computed field's key ignored."""
+    got: list = []
+    first = tmp_path / "first.jsonl"
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("core", got),
+        ('<lact b>fetch(title="Dune")</lact>', "Fetched."),
+        first,
+        "--say",
+        "fetch Dune",
+    )
+    fields = {"title": "Dune", "year": 1965, "label": "Dune (1965)"}
+    assert by_alias(rows, "b")["value"] == fields
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("core", got),
+        ("<lact s>shelve(book=*b)</lact>", "Shelved."),
+        tmp_path / "second.jsonl",
+        "-r",
+        str(first),
+        "--say",
+        "shelve it",
+    )
+    assert [type(g) for g in got] == [Book] and got == [Book(title="Dune", year=1965)]
+    assert (by_alias(rows, "s")["ok"], by_alias(rows, "s")["value"]) == (True, "shelved")
+    assert by_alias(rows, "b")["value"] == fields  # the replayed row is logged again as it was read
+
+
+def test_a_resumed_program_reads_a_field_of_a_logged_model_value(tmp_path, monkeypatch):
+    """`*v.title` on a model value from the previous session, a command's result and a value the
+    program computed from it: its str had no field to read."""
+    got: list = []
+    first = tmp_path / "first.jsonl"
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("program", got),
+        ('```\nb = fetch(title="Dune")\nv = *b\nf = echo(text=*v.title)\n```', "Fetched."),
+        first,
+        "--say",
+        "fetch Dune",
+    )
+    computed = next(r for r in rows if r.get("meta", {}).get("values"))["meta"]["values"]
+    assert computed == [["v", 2, {"title": "Dune", "year": 1965, "label": "Dune (1965)"}]]
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("program", got),
+        ('```\nt = echo(text=*v.title + " " + *b.title)\ns = shelve(book=*v)\n```', "Done."),
+        tmp_path / "second.jsonl",
+        "-r",
+        str(first),
+        "--say",
+        "its title?",
+    )
+    assert by_alias(rows, "t")["value"] == "Dune Dune" and by_alias(rows, "s")["ok"]
+    assert got == ["Dune", "Dune Dune", Book(title="Dune", year=1965)] and type(got[2]) is Book
+
+
+def test_a_log_written_before_model_values_were_logged_as_fields_resumes_the_value_as_its_string(
+    tmp_path, monkeypatch
+):
+    """An older log holds a model value as its str; it resumes as that string, as it always did."""
+    from lionagi import Kind, Record
+    from lionagi.actor import Result
+
+    rec = Record("old")
+    rec.append(Kind.INPUT, "fetch Dune")
+    rec.append(Kind.TEXT, '<lact b>fetch(title="Dune")</lact>', round=1)
+    rec.append(Kind.RESULT, Result("fetch", True, Book(title="Dune", year=1965)), alias="b", round=1)
+    rec.append(Kind.TEXT, "Fetched.", round=2)
+    old = tmp_path / "old.jsonl"
+    old.write_text("".join(json.dumps(entry_row(e), default=str) + "\n" for e in rec))  # the old writer
+    was = "title='Dune' year=1965 label='Dune (1965)'"
+    assert by_alias([json.loads(ln) for ln in old.read_text().splitlines()], "b")["value"] == was
+    got: list = []
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: shelf("core", got),
+        ("<lact e>echo(text=*b)</lact>", "Echoed."),
+        tmp_path / "new.jsonl",
+        "-r",
+        str(old),
+        "--say",
+        "echo it",
+    )
+    assert got == [was] and by_alias(rows, "e")["value"] == was and by_alias(rows, "b")["value"] == was

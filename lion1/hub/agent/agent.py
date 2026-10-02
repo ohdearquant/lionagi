@@ -40,7 +40,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from lionagi.actor import Actor, Backend, Context, Handle, Inbound, Profile, Run, RunRequest, Success
-from lionagi.checkpoint import Var, assert_ignored, load, save, take, to_history
+from lionagi.checkpoint import Var, assert_ignored, jsonable, load, save, take, to_history
 from lionagi.lndl import plain
 from lionagi.notes import FileNoteStore, MemoryNoteStore, NoteStore
 from lionagi.record import Directive, Entry, Kind
@@ -979,7 +979,7 @@ class Agent:
             ctx.mkdir(parents=True, exist_ok=True)
             log = ctx / f"record-{run.id}.jsonl"
             tmp = log.with_name(f".{log.name}.{os.getpid()}.tmp")
-            tmp.write_text("".join(json.dumps(entry_row(e), default=str) + "\n" for e in run.record))
+            tmp.write_text("".join(json.dumps(entry_row(e), default=jsonable) + "\n" for e in run.record))
             os.replace(tmp, log)
             # a note over LAZY is carried by its key (`take`): the model's note.get reaches the profile's
             # notes; the agent's own (the cursor) are a file the model never reads, named by its path
