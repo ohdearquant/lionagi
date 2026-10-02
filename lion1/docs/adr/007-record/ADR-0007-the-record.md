@@ -172,8 +172,12 @@ A put replaces the value whole and raises the note's version, an empty value inc
 leaves the store only by a delete, `note.delete` for the model. The file store refuses a value JSON
 cannot carry before it writes anything. `note.find` returns each hit's first 120 characters as its
 preview, with its size, run and version. A store the profile brings (`Profile.notes`) replaces the
-actor's for every run of that profile. No test pins the empty overwrite, the 120-character cut or a
-brought store.
+actor's for every run of that profile.
+
+`test_a_memory_store_counts_every_write_and_an_empty_overwrite_keeps_the_key` pins the empty
+overwrite on the memory store, whose put the file store calls, and
+`test_a_profile_that_brings_its_own_note_store_writes_its_notes_there` the brought store; no test
+pins the 120-character cut.
 
 ### C8: The first notification names the notes already kept _(enforced: mechanical)_ ^c8
 
