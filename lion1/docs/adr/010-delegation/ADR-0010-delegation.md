@@ -97,11 +97,11 @@ cancelled.
 
 - **Subject**: every delivery at a peer run's end.
 - **Violated when**: a `Success` whose asker has ended is dropped, a failed peer writes to an
-  origin's inbox, or a reply is delivered twice.
+  origin's inbox, a reply is delivered twice, or two live runs of one actor share an id.
 
 At its end, `Success` or not, a run delivers once for every inbound it consumed that is not itself a
-reply. The origin is found by name, its run by id. A live run with the ask open takes the answer or
-the failure.
+reply. The origin is found by name, its run by id, and no two live runs of one actor share an id. A
+live run with the ask open takes the answer or the failure.
 
 An origin whose run has ended, or whose command already read its ask, gets a reply on its inbox from
 a peer that ended `Success`; its next run takes it as INPUT and delivers nothing back for it. A
@@ -123,9 +123,10 @@ proposes a scheduler above the actors, or a second send path.
 
 ### D1: One in-process registry so an answer finds its asker ^d1
 
-Serves C2 and C3. `_ACTORS` maps names to actors; each actor keeps its live runs by id. `_deliver`
-runs when a run ends by an outcome, and when an exception ends it, before the re-raise; it resolves
-the ask's future, or falls back to the origin's inbox.
+Serves C2 and C3. `_ACTORS` maps names to actors; each actor keeps its live runs by id, and a new
+run draws its id again while a live run holds it. `_deliver` runs when a run ends by an outcome, and
+when an exception ends it, before the re-raise; it resolves the ask's future, or falls back to the
+origin's inbox.
 
 - **Landing evidence**: five tests in `tests/test_actor.py`: the answer settles the ask with the
   peer's plain output; a peer ending `Exhausted` or whose backend raises settles it failed naming
@@ -175,3 +176,7 @@ long-running agent is the something outside the loop that runs the actor.
   the request stays on the peer's inbox with its ask open. The asking command waits, and its turn
   with it, until the next run of that actor takes the request.
   `test_a_request_no_peer_run_took_waits_on_the_peers_inbox_for_its_next_run` pins both bounds.
+- **S9**: A run's id is eight hex digits drawn at random, so two live runs of one actor could draw
+  the same one: the second took the first's place in the registry, and the first's end removed the
+  second. D1 now draws again, pinned by `test_two_live_runs_of_one_actor_never_share_an_id` in
+  `tests/test_actor_edges.py`. Ids of runs that have ended may repeat.

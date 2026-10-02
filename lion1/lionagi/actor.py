@@ -364,6 +364,8 @@ class Inbound:
 class Run:
     def __init__(self, actor: Actor, profile: Profile, request: RunRequest):
         self.id = uuid.uuid4().hex[:8]
+        while self.id in actor.runs:  # an answer finds a live run by this id: no two share one
+            self.id = uuid.uuid4().hex[:8]
         self.actor = actor
         self.profile = profile
         self.request = request

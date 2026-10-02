@@ -751,3 +751,36 @@ def test_a_history_that_does_not_replay_leaves_no_live_run(twice):
         asyncio.run(actor.run(Profile("p"), request, backend))
         assert calls == [1]
     assert actor.runs == {}
+
+
+def test_two_live_runs_of_one_actor_never_share_an_id(monkeypatch):
+    # the id is 8 hex digits and the registry is keyed by it: a second run drawing a live run's id took
+    # its place there, and the first run's end then removed the second
+    import uuid
+
+    class Drawn:
+        hex = "5eed5eed" + "0" * 24
+
+    real, forced = uuid.uuid4, iter([Drawn, Drawn])  # the first two draws are the same id
+    monkeypatch.setattr("lionagi.actor.uuid.uuid4", lambda: next(forced, None) or real())
+    actor = Actor("ids")
+
+    async def both():
+        first_in, release = asyncio.Event(), asyncio.Event()
+
+        async def held(messages):
+            first_in.set()
+            await release.wait()
+            return 'OUT{answer: "a"}'
+
+        first = asyncio.ensure_future(actor.run(Profile("p"), RunRequest(inputs=("a",)), held))
+        await first_in.wait()
+        second = await actor.run(Profile("p"), RunRequest(inputs=("b",)), scripted('OUT{answer: "b"}'))
+        live = dict(actor.runs)
+        release.set()
+        return await first, second, live
+
+    first, second, live = asyncio.run(both())
+    assert first.id == "5eed5eed" and second.id != first.id and len(second.id) == 8
+    assert live == {first.id: first}  # the second run's end left the first where it was
+    assert isinstance(first.outcome, Success) and isinstance(second.outcome, Success) and actor.runs == {}
