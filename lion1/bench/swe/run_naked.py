@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -27,9 +26,10 @@ from typing import Any
 from hub.backend import ClaudeCodeAgentic
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from run_swe import DATA, RESULTS, oracle  # noqa: E402
+from run_swe import DATA, RESULTS, baseline, oracle, selected, write_predictions  # noqa: E402
 
 from hub.tools import docker as _docker  # noqa: E402
+from hub.tools.box import BoxBase, git_diff  # noqa: E402
 
 TOOLS = ("Read", "Grep", "Glob", "Edit", "Write", "Bash")
 
@@ -69,7 +69,7 @@ async def solve(row: dict, model: str, max_turns: int, out_dir: Path) -> dict:
         try:
             await _docker("create", "--platform", "linux/amd64", "--name", tmp, row["image"])
             await _docker("cp", f"{tmp}:/testbed/.", str(host))
-            rec["base"] = _baseline(host)
+            rec["base"] = await baseline(HostBox(host))
         finally:
             await _docker("container", "remove", "--force", tmp, check=False)
         await _docker(
@@ -93,7 +93,7 @@ async def solve(row: dict, model: str, max_turns: int, out_dir: Path) -> dict:
         rec["outcome"] = env.get("subtype") or "completed"
         rec["final_text"] = text[-2000:]
         _spend(rec, env)
-        rec["model_patch"] = _diff(host, rec["base"])
+        rec["model_patch"] = await git_diff(HostBox(host), rec["base"])
     except BaseException as e:  # a cancellation too: the paid work is on disk and is kept
         rec["error"] = f"{type(e).__name__}: {e}"
         # the fix on disk is graded and the spend is counted whatever ended the run
@@ -101,7 +101,7 @@ async def solve(row: dict, model: str, max_turns: int, out_dir: Path) -> dict:
             _spend(rec, harness.calls[-1])
         try:
             if "base" in rec:  # no baseline read: nothing was handed to a model, so there is no patch
-                rec["model_patch"] = _diff(host, rec["base"])
+                rec["model_patch"] = await git_diff(HostBox(host), rec["base"])
         except Exception as e2:
             rec["diff_error"] = f"{type(e2).__name__}: {e2}"
         if not isinstance(e, Exception):
@@ -134,44 +134,23 @@ def _spend(rec: dict, env: dict) -> None:
     }
 
 
-def _baseline(host: Path) -> str:
-    """The commit the model is handed, read before it runs: the prediction is the diff against it,
-    so a commit the model makes stays in the patch."""
-    r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=host, capture_output=True, text=True)
-    sha = r.stdout.strip()
-    if r.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", sha):
-        raise RuntimeError(f"no baseline commit: rev-parse exited {r.returncode}: {r.stderr.strip()[:200]}")
-    return sha
+class HostBox(BoxBase):
+    """The host copy of the repository as a box: the baseline and the patch are read the way every
+    other arm reads them from its box."""
 
+    prelude = ""
 
-def _git(host: Path, *argv: str, ok: tuple[int, ...] = (0,)) -> str:
-    """git's stdout, or a RuntimeError naming the command and its stderr: a read that failed is not
-    an empty result, and an empty result is not a patch of nothing."""
-    r = subprocess.run(["git", *argv], cwd=host, capture_output=True, text=True)
-    if r.returncode not in ok:
-        raise RuntimeError(f"git {argv[0]} exited {r.returncode}: {r.stderr.strip()[:200]}")
-    return r.stdout
+    def __init__(self, host: Path):
+        self.workdir = str(host)
 
-
-def _diff(host: Path, base: str) -> str:
-    """The tree against `base`, staged or committed since or not, plus new source files, no bytecode."""
-    parts = []
-    tracked = _git(host, "diff", "--binary", base)
-    if tracked.strip():
-        parts.append(tracked)
-    for path in _git(host, "ls-files", "--others", "--exclude-standard").split():
-        if path.endswith((".pyc", ".pyo")) or "__pycache__" in path:
-            continue
-        # --no-index implies --exit-code: 1 is the difference it was asked for
-        d = _git(host, "diff", "--no-index", "--binary", "/dev/null", path, ok=(0, 1))
-        if d.strip():
-            parts.append(d)
-    return "".join(parts)
+    async def exec(self, argv: list[str], *, stdin=None, timeout=120, env=None) -> dict:
+        r = subprocess.run(argv, input=stdin, cwd=self.workdir, capture_output=True, timeout=timeout)
+        return {"rc": r.returncode, "stdout": r.stdout.decode(), "stderr": r.stderr.decode()}
 
 
 async def main(args: argparse.Namespace) -> None:
     rows = {r["instance_id"]: r for r in json.loads(DATA.read_text())}
-    ids = args.instances or list(rows)
+    ids = selected(rows, args.instances)
     run_id = args.run_id or time.strftime("naked_%Y%m%d_%H%M%S")
     out_dir = RESULTS / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -187,16 +166,7 @@ async def main(args: argparse.Namespace) -> None:
             return rec
 
     recs = await asyncio.gather(*(one(i) for i in ids))
-    preds = out_dir / "predictions.jsonl"
-    with preds.open("w") as f:
-        for r in recs:
-            row = {
-                "instance_id": r["instance_id"],
-                "model_name_or_path": f"claude-code-naked-{args.model}",
-                "model_patch": r["model_patch"],
-            }
-            f.write(json.dumps(row) + "\n")
-    print(f"predictions: {preds}")
+    preds = write_predictions(out_dir, recs, f"claude-code-naked-{args.model}")
     if args.oracle:
         report = oracle(preds, run_id, ids, args.parallel)
         resolved = set(report.get("resolved_ids", []))

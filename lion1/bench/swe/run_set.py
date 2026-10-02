@@ -42,6 +42,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from codex_cli import solve as solve_codex_cli  # noqa: E402
 from run_swe import HERE, RESULTS, solve  # noqa: E402
+from run_swe import cost_known as _cost_known  # noqa: E402
 from sandbox import close_code_hosts, grade, open_code_hosts, testbed  # noqa: E402
 
 from hub.tools import docker  # noqa: E402
@@ -67,17 +68,23 @@ async def pull(image: str) -> None:
 RUN_KEYS = ("unaided", "model", "backend", "harness")  # what makes two launches one run
 
 
+def stamp(run: dict) -> dict:
+    """What a ledger row carries to say which run it came from: `one` writes it, `ledger_clash`
+    reads it back, so the two cannot disagree."""
+    return {
+        "aided": not run["unaided"],
+        "model": run["model"],
+        "backend": "codex-cli" if run["harness"] == "codex-cli" else run["backend"],
+    }
+
+
 def ledger_clash(ledger: Path, run: dict) -> list[str]:
     """The ledger rows that do not say they came from `run`, each with the field that differs or is
     missing: a resumed run must not count another run's row, nor a row that says nothing (a row from
     before the fields were written is not this run's because one manifest matches)."""
     if not ledger.exists():
         return []
-    want = {
-        "aided": not run["unaided"],
-        "model": run["model"],
-        "backend": "codex-cli" if run["harness"] == "codex-cli" else run["backend"],
-    }
+    want = stamp(run)
     out = []
     for r in (json.loads(line) for line in ledger.read_text().splitlines() if line.strip()):
         for k, v in want.items():
@@ -88,17 +95,6 @@ def ledger_clash(ledger: Path, run: dict) -> list[str]:
                 out.append(f"{r['instance_id']} {k}={r[k]!r}")
                 break
     return out
-
-
-def _cost_known(r: dict) -> bool:
-    """Whether a row's spend is wholly known: a row that never reached paid work has none to know."""
-    if "cost_usd" not in r:
-        return True
-    return (
-        r["cost_usd"] is not None
-        and r.get("cost_complete") is not False
-        and r.get("usage_complete") is not False
-    )
 
 
 def ledger_ids(ledger: Path) -> set[str]:
@@ -214,9 +210,7 @@ async def one(row: dict, args: argparse.Namespace, out_dir: Path, ledger: Path, 
         rec["cost_complete"] = all(_cost_known(a) for a in attempts)
         rec["retried"] = retried
     rec["total_seconds"] = time.perf_counter() - t0
-    rec["aided"] = not args.unaided
-    rec["model"] = args.model  # the row says which run it belongs to even when no loop ran
-    rec["backend"] = "codex-cli" if args.harness == "codex-cli" else args.backend
+    rec.update(stamp(vars(args)))  # the row says which run it belongs to even when no loop ran
     rec["difficulty"] = row.get("difficulty")
     rec["repo"] = row.get("repo")
     rec["where"] = args.where
@@ -328,7 +322,8 @@ async def main(args: argparse.Namespace) -> None:
     if args.repo:
         rows = [r for r in rows if r["repo"] == args.repo]
     if args.instances:
-        rows = [r for r in rows if r["instance_id"] in set(args.instances)]
+        wanted = set(args.instances)
+        rows = [r for r in rows if r["instance_id"] in wanted]
     if args.limit:
         rows = rows[: args.limit]
     src = provenance()  # before anything is written
