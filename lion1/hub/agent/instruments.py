@@ -1573,6 +1573,12 @@ _TOTAL = re.compile(
 _LISTED = re.compile(r"^([\w.-]+/[\w.-]+)#(\d+)\b", re.M)
 
 
+def _pr_id(key: str) -> str:
+    """A PR row's key as rows are matched: its repo case-blind, its number unpadded."""
+    repo, _, n = key.rpartition("#")
+    return f"{repo.lower()}#{n.lstrip('0') or '0'}"
+
+
 class VerdictFreshness:
     """The newest review verdict of each open PR against the PR's head now: AT-HEAD, STALE (both sha8
     shown) or NEVER-REVIEWED, with its decision, blocking count (asserted against the verdict's own
@@ -1699,7 +1705,9 @@ class VerdictFreshness:
         positives = [f"{self.dir}: newest verdict {name} parses{md}; {len(entries)} entries"]
         findings, table, control = [], [f"control: {positives[0]}"], True
         prs: list[tuple[str, int, str]] = []
-        unread: set[str] = set()  # PRs or repos whose last row is kept: this run could not read them
+        unread: set[str] = (
+            set()
+        )  # repos, and PRs as `_pr_id`, whose last row is kept: this run did not read them
         prev = _snapshot(self.state, "verdict-freshness") or {}
         if self.enumerator:
             rc, out, err = await self.sh(list(self.enumerator), timeout=180)
@@ -1729,10 +1737,9 @@ class VerdictFreshness:
                     control=False,
                 )
             parsed = _LISTED.findall(out)
-            # a PR is counted once, however often or spelled: its repo case-blind, its number unpadded
-            ids: dict[tuple[str, str], tuple[str, str]] = {}
+            ids: dict[str, tuple[str, str]] = {}  # a PR is counted once, however often or spelled
             for repo, n in parsed:
-                ids.setdefault((repo.lower(), n.lstrip("0")), (repo, n))
+                ids.setdefault(_pr_id(f"{repo}#{n}"), (repo, n))
             listed = list(ids.values())
             if len(parsed) != int(m.group(1)) or len(listed) != len(parsed):
                 control = False
@@ -1740,7 +1747,9 @@ class VerdictFreshness:
                     f"enumerator: TOTAL {m.group(1)} beside {len(parsed)} PR line(s) parsed"
                     + (f", {len(listed)} distinct" if len(listed) != len(parsed) else "")
                 )
-                unread.update(prev)  # an incomplete list closes nothing it did not read closed
+                unread.update(
+                    _pr_id(k) for k in prev
+                )  # an incomplete list closes nothing it did not read closed
             positives.append(
                 f"enumerator TOTAL {m.group(1)} open PR(s) by {m.group(2)}; closed-PR control {m.group(3)}"
             )
@@ -1749,11 +1758,11 @@ class VerdictFreshness:
                 pr = json.loads(out) if rc == 0 else {}
                 if pr.get("state") not in (None, "OPEN"):  # closed since the search indexed it
                     table.append(f"{repo}#{n}: listed open, {pr['state']} now; not judged")
-                    unread.discard(f"{repo}#{n}")
+                    unread.discard(_pr_id(f"{repo}#{n}"))
                     continue
                 if not re.fullmatch(r"[0-9a-f]{40}", pr.get("headRefOid") or ""):
                     control = False
-                    unread.add(f"{repo}#{n}")
+                    unread.add(_pr_id(f"{repo}#{n}"))
                     findings.append(f"{repo}#{n}: head not read: {err.strip()[:120] or out[:120]}")
                     continue
                 prs.append((repo, int(n), pr["headRefOid"]))
@@ -1770,10 +1779,11 @@ class VerdictFreshness:
                 prs += [(repo, p["number"], p["headRefOid"]) for p in rows]
                 if len(rows) >= PR_PAGE:  # absent from a full page is not closed: its last row is kept
                     unread.add(repo)
-        snap = {k: v for k, v in prev.items() if k in unread or k.split("#")[0] in unread}
+        snap = {k: v for k, v in prev.items() if _pr_id(k) in unread or k.split("#")[0] in unread}
         data, stale_n = [], 0
+        keys = {_pr_id(k): k for k in prev}  # a PR keeps its row's key however it is spelled now
         for repo, n, head in prs:
-            key = f"{repo}#{n}"
+            key = keys.get(_pr_id(f"{repo}#{n}"), f"{repo}#{n}")
             rec = self._newest(index.get(f"{repo.replace('/', '-')}-{n}", {}), repo, n)
             if rec is None:
                 state, line = "NEVER-REVIEWED", f"{key} {head[:8]}: NEVER-REVIEWED"

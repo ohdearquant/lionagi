@@ -2224,6 +2224,52 @@ def test_verdict_freshness_a_pr_listed_twice_beside_an_equal_total_closes_no_uns
     assert set(store.get("verdict-freshness").value) == {"o/r#7"}
 
 
+@pytest.mark.parametrize("listed", ["O/R#07", "o/r#007"])
+def test_verdict_freshness_a_prs_own_read_meets_its_row_however_the_enumerator_spells_it(tmp_path, listed):
+    """A PR's row is matched by its repo case-blind and its number unpadded: a closed read retires it
+    from an incomplete list, an unread head keeps it, and an open read keeps its key."""
+    total = (
+        "TOTAL {n} open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    )
+    shown = listed.split("#")[1]
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+
+    def inst_with(prior, lines, n, view):
+        store = MemoryNoteStore()
+        store.put("verdict-freshness", prior, run="-", seq=0)
+        sh = FakeSh(**{"/x/my_open_prs.sh": lines + total.format(n=n), f"pr view {shown} -R": view})
+        return store, VerdictFreshness(
+            store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+        )
+
+    seven, eight = "o/r#7 77777777: NEVER-REVIEWED", "o/r#8 88888888: NEVER-REVIEWED"
+    # closed, in a list that repeats it: its own read retires its row; the unseen #8 keeps its row
+    store, inst = inst_with(
+        {"o/r#7": seven, "o/r#8": eight},
+        f"{listed} draft=false  a title\no/r#7 draft=false  a title\n",
+        2,
+        json.dumps({"headRefOid": HEAD7, "state": "CLOSED"}),
+    )
+    out = asyncio.run(inst.run({}))
+    assert store.get("verdict-freshness").value == {"o/r#8": eight}
+    assert "o/r#7: no longer open" in out.findings and not out.control
+    # its head not read, in a complete list: the row is kept and nothing says it closed
+    store, inst = inst_with({"o/r#7": seven}, f"{listed} draft=false  a title\n", 1, (1, "", "boom"))
+    out = asyncio.run(inst.run({}))
+    assert store.get("verdict-freshness").value == {"o/r#7": seven}
+    assert not any("no longer open" in f for f in out.findings) and not out.control
+    # open and read: the row keeps its key, so the PR is neither closed nor new
+    store, inst = inst_with(
+        {"o/r#7": seven},
+        f"{listed} draft=false  a title\n",
+        1,
+        json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+    )
+    out = asyncio.run(inst.run({}))
+    assert set(store.get("verdict-freshness").value) == {"o/r#7"}
+    assert not any("no longer open" in f for f in out.findings) and out.control
+
+
 def test_verdict_freshness_control_fails_when_a_repo_does_not_resolve_as_itself(tmp_path):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     sh = FakeSh(**{"api repos/o/r --jq": json.dumps({"full_name": "o/elsewhere", "id": 1, "admin": True})})
