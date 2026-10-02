@@ -204,10 +204,10 @@ row is appended under a lock. A dead box gets one fresh box. A head not a full c
 hex digits) is a failed git read. Defaults: unaided, settle 0, criteria off, a 1200 s time budget,
 100 turns as a backstop, a cost cap on a metered arm only.
 
-- **Landing evidence**: `tests/test_swe_run_set.py`: the retried spend kept, a cap on an unmetered
-  arm refused before any box, an unconfirmed stop not graded, a disagreeing resume refused, a
-  matching resume skipping ledger rows, manifests never overwritten;
-  `test_the_manifest_keeps_the_status_columns_of_an_unstaged_change`,
+- **Landing evidence**: `tests/test_swe_run_set.py`: the retried spend kept, an unmetered arm's cap
+  refused before any box, an unconfirmed stop not graded, a disagreeing resume refused, a matching
+  resume skipping ledger rows, `test_a_ledger_row_counts_only_when_it_says_it_came_from_this_run`,
+  manifests never overwritten; `test_the_manifest_keeps_the_status_columns_of_an_unstaged_change`,
   `test_the_manifest_digests_the_bytes_the_rows_were_read_from`,
   `test_a_git_read_that_fails_refuses_the_launch_before_anything_is_written` and its control
   `test_the_manifest_names_a_clean_tree_and_a_dirty_one_as_git_reads_them`.
@@ -220,7 +220,7 @@ stop. `close_code_hosts` writes marked `/etc/hosts` lines and probes from inside
 rewrites the file in place, since it is a bind mount, and proves no marked line is left.
 
 - **Landing evidence**: `tests/test_swe_sandbox.py`: `test_failed_reset_is_not_graded`, the probe
-  test refusing a reachable or elsewhere-resolving host, the ledger stamp test.
+  test refusing a reachable or elsewhere-resolving host.
 
 ### D3: The loop arm in `bench/swe/run_swe.py` ^d3
 
@@ -273,7 +273,7 @@ model has no cost.
   whole task per call (`ClaudeCodeAgentic`), over a copied tree and grades with the harness's own
   evaluation. It has no ledger, manifest or closure, and it writes an unreported cost as zero. Since
   swebench 5.0.2 skips an instance holding a per-instance report under its run id, its oracle grades
-  under the run id joined to the predictions' digest (`tests/test_swe_naked.py`:
+  under the run id joined to the predictions' digest (`tests/test_swe_oracle.py`:
   `test_new_predictions_under_a_reused_run_id_are_graded_not_read_from_an_earlier_evaluation`).
 - **S7**: A CLI row's `outcome` is read off the exec's exit code and names no run outcome; only a
   loop row's is one.
@@ -287,7 +287,7 @@ model has no cost.
   or one of other predictions, is never read. Two evaluations of the same bytes share the id and its
   report. The harness reads a snapshot of those bytes, not a file an overlapping run may rewrite. A
   nonzero exit, no report, or a report not naming exactly the predictions handed in raises
-  (`tests/test_swe_naked.py`: `test_the_oracle_reads_only_a_report_its_own_evaluation_wrote`,
+  (`tests/test_swe_oracle.py`: `test_the_oracle_reads_only_a_report_its_own_evaluation_wrote`,
   `test_an_overlapping_evaluations_report_under_the_same_run_id_is_not_this_ones`,
   `test_the_harness_grades_the_bytes_the_digest_names_whatever_rewrites_the_predictions`,
   `test_the_snapshot_the_harness_reads_is_whole_or_absent`,

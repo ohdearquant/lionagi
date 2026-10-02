@@ -48,8 +48,10 @@ name and answers with text. Source: `Backend`, `Reply` and the anchor in `lionag
   none when the provider did not say, and why the backend refused the turn when it did.
 - **envelope**: what a backend keeps per call beside the text: usage, cost, attempts, timing, the
   provider's finish reason; a failed call keeps one too.
-- **session**: a CLI conversation a backend keeps across calls, one per run, each call sending only
-  what the view gained.
+- **session**: a CLI conversation a backend keeps across calls, one per run, each call that goes on
+  sending only what the view gained.
+- **point**: what one session call left, which a later call can go on from: the entries it holds,
+  their size, the count its call reported.
 - **floor**: the least a run's prompt count has stood above the view estimate sent with it: the
   backend's own fixed context, which no fold takes off.
 
@@ -113,21 +115,23 @@ session starts over (C4). The figure is the count plus the estimated growth sinc
 the count less what left at the run's rate ([[ADR-0006-the-notification#^c4|ADR-0006/C4]]); the
 floor stays in the figure, out of the measure.
 
-### C4: A session sends only what the view gained, and starts over from the folded view on a directive or the fold event _(enforced: mechanical)_ ^c4
+### C4: A session sends what the view gained, and starts over when that pays or on the fold _(enforced: mechanical)_ ^c4
 
-- **Subject**: every call on a session backend.
-- **Violated when**: a call after a context directive or a fold resumes the old conversation, a view
-  that only shrank without one restarts it, or two runs share a session.
+- **Subject**: every session backend call and the notice before it.
+- **Violated when**: a restart is taken or skipped against its `payback` price, an acting session
+  ignores a context directive, the fold event goes on, notice and call disagree within a cache hour,
+  or two runs share a session.
 
-Every message names its run; the backend keeps a session per run id, so two runs through one backend
-never share a conversation. A caller naming no run falls back to content: a first entry with other
-content, or another system prompt, is another run. A call sends the entries not yet sent; a view
-that only shrank resends the notification.
+One session per run id (S14). A call sends what the session lacks.
 
-When a new entry is a context directive's result or the notification carrying the fold event, the
-session starts over from the folded view: one cache miss, and the CLI's tool-turn history goes with
-the old session. That restart bounds a run whose CLI runs its own tools (A3). Cost accumulates over
-a session; the envelope keeps this call's delta.
+Without tools, each resumed call forks its point. On a changed view it prices going on against
+starting over from an intact point or the whole view. It starts over when the prompt saved over
+`payback` turns covers what it writes again at the served model's prices (S16), and always on the
+fold (A3). An acting session goes on in place and starts over whole on a context directive or the
+fold.
+
+The actor asks `plan` first, so the figure and a `session:` line say what the call does, unless a
+cache hour ends between them (S13).
 
 ### C5: Every call lands an envelope, failed ones too, and only a transient failure is retried _(enforced: mechanical)_ ^c5
 
@@ -182,17 +186,15 @@ native call when the content is empty; `calls` keeps the envelopes.
 ### D2: The two CLI shapes in `hub/backend/claude_code.py` ^d2
 
 Serves C1, C2, C4, C5 and C6. `ClaudeCode` runs the CLI once per turn: tools off, no settings,
-strict MCP config. `ClaudeCodeSession` resumes one session per run, restarting on a directive or the
-fold; a served run may get the CLI's tools, a working directory, one MCP. Both hand back the last
-turn's count. A failed call lands its envelope before its error. Cancellation kills and reaps the
-child. A tool call at the gate when the call ends lands not executed, none runs after, an unsendable
-one is refused.
+strict MCP config. `ClaudeCodeSession` forks a point per call unless it has tools, one session per
+run; `_step` prices a changed view, `plan` answers it for `_notify`; `base` seeds a continued chat's
+first figure. A served run may get the CLI's tools, a directory, one MCP. Both hand back the last
+turn's count. A failed call lands its envelope and leaves no point. Cancellation reaps the child;
+the gate settles (C6).
 
-- **Landing evidence**: `tests/test_claude_code.py`: both shapes hand back this call's count, the
-  last turn's when several ran, resumed with only the new entries, restarted by a directive and the
-  fold, one session per run, cancellation stopping the child,
-  `test_a_failed_session_call_lands_its_envelope_and_the_next_call_bills_only_its_own_share`, the
-  gate settled (S11).
+- **Landing evidence**: `tests/test_claude_code.py`: forked with only the new entries, a small hide
+  waiting, a large one forking, the whole view, the fold, the cache's hour, the seed, the notice,
+  one session per run, failed calls' bills and cache reads, the gate (S11).
 
 ### D3: The subscription CLI backend in `hub/backend/codex.py` ^d3
 
@@ -244,7 +246,12 @@ swallowed too: a spin.
 | Anchoring on the envelope's summed usage                        | a retried call bills two prompts; the sum is the size of neither                                                                       |
 | Resending the whole transcript to the CLI each turn             | the prefix never caches: 160k tokens in for one five-round exchange, measured 2026-09-23                                               |
 | Scaling a shrunk count by the view's ratio                      | it scales the fixed context too, which never shrinks: up to 96% off at a fold in simulation, 5% by the run's rate                      |
-| Folding by editing the CLI's history                            | the conversation is the CLI's; only a restart from the folded view applies the fold, at one cache miss                                 |
+| Folding by editing the CLI's history                            | the conversation is the CLI's; a fork from a point before the change applies the fold and reads that point from the cache              |
+| Starting over on every context directive                        | a hide of about 730 estimated tokens wrote 25.7k again; one chat's four restarts added about 29% of its whole cost over going on, re-derived from its bills |
+| Keeping every change until a forced restart                     | the session reads what it holds every turn: for that chat about three times the premium of forking where it pays                       |
+| Going on in place, forking only to start over                   | an in-place call leaves no earlier point to go back to; the checkpoint needs a fork per call                                          |
+| Cutting a session at an entry with `--resume-session-at`        | a hidden flag of the CLI, unmeasured; a fork per call costs a session copy on disk instead (S12)                                       |
+| Resuming the old session after `lion chat -c`                   | it needs the same system prompt and each entry's digest in the log; the first call starts over, its figure seeded (S8)                |
 | Reading the served model off the response and refusing a mismatch | which model a name binds to is decided below the boundary; the envelope keeps the response's model and compares nothing (S5)         |
 
 ## Consequences
@@ -269,18 +276,22 @@ swallowed too: a spin.
 - **S7**: The session CLI's default model emits thinking on the language path, about 330 output
   tokens for a 30-token turn; a dollar figure is read from a run's envelopes, never from a price
   table.
-- **S8**: The figure is an estimate for one turn after a session starts over from the folded view
-  (C4); the next count corrects it ([[ADR-0006-the-notification|ADR-0006]] S3).
+- **S8**: After a session starts over from a point, the figure is that point's count plus the
+  characters sent over four. A start from the whole view stands on the session's last start the same
+  way, and a continued chat's first call on its log's last billed count and `prompt_chars`. With no
+  count it is the view's estimate. The next count corrects either
+  ([[ADR-0006-the-notification|ADR-0006]] S3). On one continued chat 15,317 was told against 31,730
+  sent; the seed replayed gives 30,698.
 - **S9**: A backend that raises ends the run by its exception ([[ADR-0002-the-run#^c4|ADR-0002/C4]])
   with the notification already on the record ([[ADR-0006-the-notification#^d1|ADR-0006/D1]]); a
   command still pending then is reaped before the exception leaves `run`
   ([[ADR-0002-the-run|ADR-0002]] S4).
 - **S10**: A failed session CLI call lands its envelope before the error goes on: the one the CLI
-  printed, as a delta kept as its last, else one whose cost is unknown. A running total missing
-  leaves this share and the next unknown; one below the last leaves this share unknown, never
-  negative. It is not retried, and a spend row counts it ([[ADR-0016-the-lion-command|ADR-0016]]
-  S2). Before, it landed none. That a failed call's cost is in the running total is read from
-  success envelopes, not measured on a failure.
+  printed, as a delta over the point it resumed, else one of unknown cost. It leaves no point; the
+  next call goes on from the one it resumed. A running total missing, or below that point's, leaves
+  the share unknown, never negative. It is not retried, and a spend row counts it
+  ([[ADR-0016-the-lion-command|ADR-0016]] S2). A fork's total being its point's plus its own was
+  measured once on the installed CLI.
 - **S11**: The gate over an acting session holds (C6), pinned with a scripted CLI that runs the
   pre-tool hook: in `tests/test_claude_code.py`,
   `test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record`,
@@ -295,3 +306,26 @@ swallowed too: a spin.
   record keeps the call and its verdict, never what the tool returned. Both hook contracts were
   measured once on the installed CLI: exit 2 stops the tool and the model reads the reason; an allow
   with `updatedInput` runs the rewritten call. No test runs the live CLI.
+- **S12**: A fork per call leaves the CLI one copy of the session per call under its projects
+  directory, about 5 bytes per token held: 3 to 5 MB for an 18-call chat, up to 50 MB for 100 calls
+  at 100k tokens. Nothing here removes them; that layout is the CLI's own.
+- **S13**: A point's cache hour runs from the last call resuming that point (S15), a failed one too
+  when it reports a cache read: a request refreshes the cache entry it hits, not the shorter
+  prefixes inside it (assumed, not measured). If a descendant's read keeps them warm, a fork from an
+  earlier point is priced too high and the session goes on where a restart would pay. At the hour's
+  edge the call can decide otherwise than the plan its notice told.
+- **S14**: With no run id named, another first entry or another system prompt is another run with
+  its own session. A view that only shrank sends its notification again, so no call goes out empty.
+  Starting over also drops the tool turns an acting session's CLI held, which this backend does not
+  estimate: so its restart is unpriced, and its notice names no figure for what goes.
+- **S15**: A call's read of the cache is stamped at its reply less the rest of its turn after its
+  first request, both timed per call (`duration_ms`, `time_to_request_ms`), so the CLI's startup
+  ages no point. Its exit (0.34 to 0.38 s on 2.1.287 with no MCP server) can keep a point warm that
+  long past its hour. A call of several requests is stamped at its first. Times missing, not
+  numbers, or not fitting the call leave the reply, so unknown timing never reads a held point as
+  expired.
+- **S16**: A restart is priced at the cache prices of the model the CLI reports serving, else of the
+  model asked for; a served name that is no model id falls through to the one asked for. An alias
+  reads as the model the CLI runs for it, its `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` when set. An entry
+  also names an id continuing it after a hyphen, as a dated id does. A model id the table does not
+  name, or no model at all, prices at 20 reads per character written.

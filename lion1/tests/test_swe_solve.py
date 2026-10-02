@@ -2,21 +2,15 @@
 
 import asyncio
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench" / "swe"))
-from run_swe import solve  # noqa: E402
-
 from hub.backend import CodexError
 from hub.tools import SandboxDead
+from tests._swe import BASE, run_swe
 
 DIFF = "diff --git a/pkg/x.py b/pkg/x.py\n--- a/pkg/x.py\n+++ b/pkg/x.py\n@@ -1 +1 @@\n-old\n+new\n"
-
-
-BASE = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"  # the commit the boxes were handed
 
 
 class Box:
@@ -54,11 +48,11 @@ class RepairedThenDies(DiesOnRoundTwo):
 
 def test_a_backend_failure_keeps_what_the_readings_before_it_counted(tmp_path: Path):
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
-    rec = asyncio.run(solve(row, "m", 5, tmp_path, "codex", box=ToolBox(), backend=RepairedThenDies()))
+    rec = asyncio.run(
+        run_swe.solve(row, "m", 5, tmp_path, "codex", box=ToolBox(), backend=RepairedThenDies())
+    )
     assert rec["error"].startswith("CodexError: codex exited 1") and rec["rounds"] == 1
     assert rec["repairs"] == {"closers": 1} and rec["unknown_names"] == [["bsh", "bash", 1]]
-    rec = asyncio.run(solve(row, "m", 5, tmp_path, "codex", box=ToolBox(), backend=DiesOnRoundTwo()))
-    assert rec["repairs"] == {} and rec["unknown_names"] == []  # a turn that read clean, then the failure
 
 
 def test_the_tdd_flag_swaps_the_no_tests_sentence_and_the_other_flags_append():
@@ -83,8 +77,9 @@ def test_the_thinking_flag_maps_to_the_reasoning_field():
 
 def test_a_backend_failure_keeps_the_rounds_that_ran_and_the_fix_on_disk(tmp_path: Path):
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
-    rec = asyncio.run(solve(row, "m", 5, tmp_path, "codex", box=Box(), backend=DiesOnRoundTwo()))
+    rec = asyncio.run(run_swe.solve(row, "m", 5, tmp_path, "codex", box=Box(), backend=DiesOnRoundTwo()))
     assert rec["error"].startswith("CodexError: codex exited 1")
+    assert rec["repairs"] == {} and rec["unknown_names"] == []  # a turn that read clean, then the failure
     assert rec["rounds"] == 1 and len(rec["calls"]) == 1 and rec["calls"][0]["attempts"] == 1
     assert rec["tokens"] == {"input": 10, "cache_read": 3, "cache_create": 0, "output": 2}
     assert rec["model_patch"] == DIFF  # graded whatever ended the loop
@@ -145,7 +140,7 @@ def test_a_turn_cut_at_the_cap_or_blank_is_named_in_the_next_notice(tmp_path: Pa
         ("   ", {"finish_reason": None, "message": {"content": "   "}}),
         ('<lact a3>bash(command="ls")</lact>', {"finish_reason": "stop"}),
     )
-    rec = asyncio.run(solve(row, "m", 3, tmp_path, "codex", box=ToolBox(), backend=backend))
+    rec = asyncio.run(run_swe.solve(row, "m", 3, tmp_path, "codex", box=ToolBox(), backend=backend))
     record = (tmp_path / "pkg__pkg-1.record.txt").read_text()
     assert "cut off at the output cap of 100 tokens, 40 of them reasoning" in record
     assert "came back with no readable text (2 output tokens, finish_reason=None)" in record
@@ -158,7 +153,9 @@ def test_the_row_counts_the_repairs_by_name_and_measures_each_unknown_name(tmp_p
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
     turn = '<lact a1>bsh(command="ls")</lact>\n<lact a2>bash(command="ls"</lact>'
     rec = asyncio.run(
-        solve(row, "m", 1, tmp_path, "codex", box=ToolBox(), backend=Turns((turn, {"finish_reason": "stop"})))
+        run_swe.solve(
+            row, "m", 1, tmp_path, "codex", box=ToolBox(), backend=Turns((turn, {"finish_reason": "stop"}))
+        )
     )
     assert rec["repairs"] == {"closers": 1}
     assert rec["unknown_names"] == [["bsh", "bash", 1]]
@@ -180,7 +177,7 @@ class DyingBox(ToolBox):
 def test_a_dead_box_ends_the_run_at_the_next_round_as_an_infrastructure_error(tmp_path: Path):
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
     backend = Turns(*[('<lact a1>bash(command="true")</lact>', {"finish_reason": "stop"})] * 5)
-    rec = asyncio.run(solve(row, "m", 5, tmp_path, "codex", box=DyingBox(), backend=backend))
+    rec = asyncio.run(run_swe.solve(row, "m", 5, tmp_path, "codex", box=DyingBox(), backend=backend))
     assert rec["error"] == "SandboxDead: failed to resolve container IP after 3 attempts"
     assert rec["rounds"] == 1 and len(backend.turns) == 4  # one turn ran, the box was dead, no more
     assert rec["diff_error"].startswith("SandboxDead") and rec["model_patch"] == ""
@@ -209,7 +206,9 @@ def test_two_edits_to_one_file_in_one_turn_both_land(tmp_path: Path):
         '<lact e2>edit(path="a.py", old="two", new="TWO")</lact>'
     )
     asyncio.run(
-        solve(row, "m", 1, tmp_path, "codex", box=box, backend=Turns((turn, {"finish_reason": "stop"})))
+        run_swe.solve(
+            row, "m", 1, tmp_path, "codex", box=box, backend=Turns((turn, {"finish_reason": "stop"}))
+        )
     )
     assert box.files["a.py"] == "ONE\nTWO\n"  # the second edit carried the first, not the original
 
@@ -230,13 +229,23 @@ class Costs:
         return "Reading the code first.\n"
 
 
+def test_a_cost_cap_on_an_unmetered_backend_is_refused_before_a_box_or_a_call(tmp_path: Path):
+    box, backend = ToolBox(), Costs(None)
+    row = {"instance_id": "a", "problem_statement": "x"}
+    with pytest.raises(ValueError, match="cost"):
+        asyncio.run(run_swe.solve(row, "m", 3, tmp_path, "codex", box=box, backend=backend, cost_budget=0.01))
+    assert backend.calls == [] and backend.costs == [None]
+
+
 def test_missing_usage_is_incomplete_not_zero(tmp_path: Path):
     import run_set
 
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
 
     def run(kind, *costs):
-        return asyncio.run(solve(row, "m", len(costs), tmp_path, kind, box=ToolBox(), backend=Costs(*costs)))
+        return asyncio.run(
+            run_swe.solve(row, "m", len(costs), tmp_path, kind, box=ToolBox(), backend=Costs(*costs))
+        )
 
     # with no cap: a meter that never answers
     unmetered = run("codex", None, None)
@@ -268,7 +277,7 @@ class FailedEnvelopeThenRaise(Costs):
 def test_a_failed_envelope_is_not_counted_as_a_round(tmp_path: Path):
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
     backend = FailedEnvelopeThenRaise(0.10, "fail")
-    rec = asyncio.run(solve(row, "m", 5, tmp_path, "openrouter", box=ToolBox(), backend=backend))
+    rec = asyncio.run(run_swe.solve(row, "m", 5, tmp_path, "openrouter", box=ToolBox(), backend=backend))
     assert rec["rounds"] == 1 and len(rec["calls"]) == 2  # the failed call is spend, not a round
     assert rec["calls"][1]["error"] == "HTTP 400: bad" and rec["cost_usd"] == pytest.approx(0.15)
 
@@ -291,7 +300,7 @@ def test_a_finish_beside_an_edit_is_judged_before_the_edit_and_its_refusal_lets_
         (f'<lact b1>bash(command="python -m pytest -q")</lact>\n{out}', {"finish_reason": "stop"}),
         (out, {"finish_reason": "stop"}),
     ]
-    rec = asyncio.run(solve(row, "m", 3, tmp_path, "codex", box=box, backend=Turns(*turns)))
+    rec = asyncio.run(run_swe.solve(row, "m", 3, tmp_path, "codex", box=box, backend=Turns(*turns)))
     assert box.files["a.py"] == "ONE\ntwo\n"
     record = (tmp_path / "pkg__pkg-1.record.txt").read_text()
     assert "the repository has no changes" in record
@@ -315,7 +324,7 @@ def test_the_prediction_is_the_diff_against_the_commit_the_model_was_handed(tmp_
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
     box = BaseBox()
     backend = Turns(('OUT{done: {summary: "fixed"}}', {"finish_reason": "stop"}))
-    rec = asyncio.run(solve(row, "m", 5, tmp_path, "openrouter", box=box, backend=backend))
+    rec = asyncio.run(run_swe.solve(row, "m", 5, tmp_path, "openrouter", box=box, backend=backend))
     assert rec["base"] == BASE and box.bases and set(box.bases) == {BASE}  # the watch reads it too
     assert json.loads((tmp_path / "pkg__pkg-1.json").read_text())["base"] == BASE
 
@@ -327,6 +336,6 @@ def test_a_box_with_no_baseline_commit_is_no_run(tmp_path: Path):
 
     row = {"instance_id": "pkg__pkg-1", "problem_statement": "x is wrong"}
     backend = Turns(('OUT{done: {summary: "fixed"}}', {"finish_reason": "stop"}))
-    rec = asyncio.run(solve(row, "m", 5, tmp_path, "openrouter", box=NoGit(), backend=backend))
+    rec = asyncio.run(run_swe.solve(row, "m", 5, tmp_path, "openrouter", box=NoGit(), backend=backend))
     assert rec["error"].startswith("RuntimeError: no baseline commit: rev-parse exited 128")
     assert backend.turns and "base" not in rec  # the model never ran

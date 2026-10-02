@@ -3,7 +3,6 @@ testbed environment as the prelude and /testbed as the directory; a box that nev
 replaced and a box that dies is named (through the hub's own start logic)."""
 
 import asyncio
-import os
 import subprocess
 import sys
 import types
@@ -11,11 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from hub.tools import DaytonaSandbox, DockerSandbox, SandboxDead
-from hub.tools import daytona as daytona_mod
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench" / "swe"))
-import sandbox  # noqa: E402
+from hub.tools import DaytonaSandbox, DockerSandbox
+from tests import _git
+from tests._swe import sandbox
 
 NO_IP = "Failed to execute command: bad request: failed to resolve container IP after 3 attempts"
 
@@ -33,65 +30,6 @@ def test_testbed_makes_the_hub_box_over_the_eval_image():
         and remote.prelude == sandbox.PRELUDE
     )
     assert (remote.cpu, remote.memory, remote.label) == (4, 8, "lionagi-swe-x")
-
-
-def stub_daytona(created: list, deleted: list) -> types.ModuleType:
-    class DaytonaError(Exception):
-        pass
-
-    class Timeout(Exception):
-        pass
-
-    class Proc:
-        def __init__(self, ok: bool):
-            self.ok = ok
-
-        async def exec(self, cmd, cwd=None, env=None, timeout=None):
-            if not self.ok:
-                raise DaytonaError(NO_IP)
-            return types.SimpleNamespace(exit_code=0, result="")
-
-    class Box:
-        def __init__(self, ok: bool):
-            self.process = Proc(ok)
-
-        async def delete(self):
-            deleted.append(self)
-
-    class Client:
-        def __init__(self, cfg):
-            pass
-
-        async def create(self, params, timeout=None):
-            box = Box(ok=len(created) >= 1)  # the first box never comes up, the second does
-            created.append(box)
-            return box
-
-        async def close(self):
-            pass
-
-    mod = types.ModuleType("daytona")
-    mod.AsyncDaytona = Client
-    mod.DaytonaConfig = lambda api_key: None
-    mod.CreateSandboxFromImageParams = lambda **kw: kw
-    mod.Resources = lambda **kw: kw
-    mod.DaytonaError = DaytonaError
-    mod.DaytonaProcessExecutionTimeoutError = Timeout
-    return mod
-
-
-def test_a_box_that_never_comes_up_is_replaced_and_a_box_that_dies_is_named(monkeypatch):
-    created: list = []
-    deleted: list = []
-    monkeypatch.setitem(sys.modules, "daytona", stub_daytona(created, deleted))
-    monkeypatch.setattr(daytona_mod, "api_key", lambda: "k")
-    box = asyncio.run(sandbox.testbed("img", "daytona").start())
-    assert len(created) == 2 and deleted == [created[0]] and box._box is created[1] and box.dead is None
-    assert asyncio.run(box.run("true")) == (0, "")
-    created[1].process.ok = False
-    with pytest.raises(SandboxDead, match="resolve container IP"):
-        asyncio.run(box.run("true"))
-    assert "resolve container IP" in box.dead  # the harness reads this to end the run
 
 
 class ScriptedBox:
@@ -155,6 +93,11 @@ def test_the_unaided_probe_reads_dns_and_the_fetch_apart_and_a_reachable_host_is
     index = ScriptedBox({**hosts, **pypi_open, gh: (0, "127.0.0.1 github.com\n\n000 curl=7\n")})
     with pytest.raises(RuntimeError, match="pypi.org is reachable"):
         asyncio.run(sandbox.close_code_hosts(index))
+    # a box with no curl prints the rc alone: no fetch was tried, so nothing proves the host closed
+    for fetch in ("\n curl=127\n", "\n curl=126\n", "\n\n"):
+        blind = ScriptedBox({**hosts, **pypi_closed, gh: (0, ours.format(h="github.com") + fetch)})
+        with pytest.raises(RuntimeError, match="github.com was not fetched"):
+            asyncio.run(sandbox.close_code_hosts(blind))
     # reopening deletes exactly the marked lines and proves none is left
     reopened = ScriptedBox({"grep -v": (0, "")})
     asyncio.run(sandbox.open_code_hosts(reopened))
@@ -223,39 +166,6 @@ def test_failed_reset_is_not_graded(monkeypatch, tmp_path):
     assert reports == ["x__x-1"]
 
 
-def test_a_ledger_row_counts_only_when_it_says_it_came_from_this_run(tmp_path):
-    import json
-
-    import run_set
-
-    ledger = tmp_path / "ledger.jsonl"
-    run = {"unaided": True, "model": "m", "backend": "openrouter", "harness": "lndl"}
-    assert run_set.ledger_clash(ledger, run) == []
-    rows = [
-        {
-            "instance_id": "old-1",
-            "resolved": True,
-            "model": "m",
-            "backend": "openrouter",
-        },  # no policy verdict
-        {"instance_id": "aided-1", "resolved": True, "aided": True, "model": "m", "backend": "openrouter"},
-        {
-            "instance_id": "unaided-1",
-            "resolved": False,
-            "aided": False,
-            "model": "m",
-            "backend": "openrouter",
-        },
-        {"instance_id": "cli-1", "resolved": False, "aided": False, "model": "m", "backend": "codex-cli"},
-    ]
-    ledger.write_text("".join(json.dumps(r) + "\n" for r in rows))
-    assert [c.split()[0] for c in run_set.ledger_clash(ledger, run)] == ["old-1", "aided-1", "cli-1"]
-    aided = {**run, "unaided": False}
-    assert [c.split()[0] for c in run_set.ledger_clash(ledger, aided)] == ["old-1", "unaided-1", "cli-1"]
-    cli = {**run, "harness": "codex-cli"}
-    assert [c.split()[0] for c in run_set.ledger_clash(ledger, cli)] == ["old-1", "aided-1", "unaided-1"]
-
-
 class LocalGitBox:
     """A box over a real repository on this host: `exec` runs the argv here, `run` the shell line from
     the repository. The box's absolute scratch paths land under `scratch`."""
@@ -287,26 +197,7 @@ class LocalGitBox:
 def _repo(tmp_path: Path) -> tuple[Path, str]:
     """A repository at its base commit, holding a.py; returns it and the base sha."""
     repo = tmp_path / "repo"
-    repo.mkdir()
-    env = {
-        "GIT_AUTHOR_NAME": "t",
-        "GIT_AUTHOR_EMAIL": "t@example.com",
-        "GIT_COMMITTER_NAME": "t",
-        "GIT_COMMITTER_EMAIL": "t@example.com",
-        "PATH": os.environ["PATH"],
-        "HOME": str(tmp_path),
-    }
-
-    def git(*args):
-        return subprocess.run(
-            ["git", *args], cwd=repo, env=env, capture_output=True, text=True, check=True
-        ).stdout
-
-    git("init", "-q")
-    (repo / "a.py").write_text("x = 1\n")
-    git("add", "a.py")
-    git("commit", "-q", "-m", "base")
-    return repo, git("rev-parse", "HEAD").strip()
+    return repo, _git.repo(repo, {"a.py": "x = 1\n"})
 
 
 PATCH = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x = 1\n+x = 2\n"
@@ -322,39 +213,29 @@ def test_the_grade_resets_index_and_tree_to_the_baseline_so_the_models_own_git_s
     reports = _fake_swebench(monkeypatch)
     repo, base = _repo(tmp_path)
     (repo / "a.py").write_text("x = 2\n")
-    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
+    _git.git(repo, "add", "a.py")
     if how == "committed":
-        subprocess.run(
-            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "model"],
-            cwd=repo,
-            check=True,
-        )
+        _git.git(repo, "commit", "-q", "-m", "model")
     box = LocalGitBox(repo, tmp_path)
     row = {"instance_id": "x__x-1", "eval_script": "true", "base_commit": base}
     verdict = asyncio.run(sandbox.grade(box, row, PATCH, "m", tmp_path / "log.txt", base=base))
     assert verdict["status"] == "GRADED" and reports == ["x__x-1"]
     assert (repo / "a.py").read_text() == "x = 2\n"  # the patch, applied forward onto the base
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True
-    ).stdout.strip()
-    assert head == base
-    staged = subprocess.run(
-        ["git", "diff", "--cached", "--stat"], cwd=repo, capture_output=True, text=True
-    ).stdout
-    assert staged == ""
+    assert _git.git(repo, "rev-parse", "HEAD").strip() == base
+    assert _git.git(repo, "diff", "--cached", "--stat") == ""
 
 
 def test_the_grade_resets_to_the_rows_base_commit_when_the_caller_read_no_baseline(monkeypatch, tmp_path):
     _fake_swebench(monkeypatch)
     repo, base = _repo(tmp_path)
     (repo / "a.py").write_text("x = 2\n")
-    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
+    _git.git(repo, "add", "a.py")
     row = {"instance_id": "x__x-1", "eval_script": "true", "base_commit": base}
     verdict = asyncio.run(sandbox.grade(LocalGitBox(repo, tmp_path), row, PATCH, "m", tmp_path / "log.txt"))
     assert verdict["status"] == "GRADED" and (repo / "a.py").read_text() == "x = 2\n"
     # and a row naming none resets to HEAD, which still clears the index
     (repo / "a.py").write_text("x = 3\n")
-    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
+    _git.git(repo, "add", "a.py")
     verdict = asyncio.run(
         sandbox.grade(
             LocalGitBox(repo, tmp_path),
