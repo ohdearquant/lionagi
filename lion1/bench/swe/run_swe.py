@@ -141,12 +141,14 @@ UNAIDED = (  # the same sentence in both arms: the published fix is out of bound
 async def baseline(box: Any) -> str:
     """The commit the model is handed, read before it runs: the prediction is the diff against it
     and the grade resets to it, so a commit the model makes neither vanishes from the patch nor
-    survives the reset. `HEAD` at diff time would move with that commit."""
+    survives the reset. `HEAD` at diff time would move with that commit. The commit is the one line
+    that is one: what git writes on stderr (a trace, a warning) comes back in the same output, and on
+    Daytona in the same stream."""
     rc, out = await box.run("git rev-parse HEAD")
-    sha = out.strip()
-    if rc != 0 or not re.fullmatch(r"[0-9a-f]{40}", sha):
+    shas = [s for s in (ln.strip() for ln in out.split("\n")) if re.fullmatch(r"[0-9a-f]{40}", s)]
+    if rc != 0 or len(shas) != 1:
         raise RuntimeError(f"no baseline commit: rev-parse exited {rc}: {out.strip()[:200]}")
-    return sha
+    return shas[0]
 
 
 def _harvest(rec: dict, backend: Any) -> None:
@@ -481,12 +483,41 @@ def _text(stream: str | bytes | None) -> str:
     return stream.decode(errors="replace") if isinstance(stream, bytes) else (stream or "")
 
 
-async def main(args: argparse.Namespace) -> None:
-    rows = {r["instance_id"]: r for r in json.loads(DATA.read_text())}
-    ids = args.instances or list(rows)
+def selected(rows: dict, wanted: list[str] | None) -> list[str]:
+    """The instances to run, all of them when none is named; an id not in the data is refused before
+    any instance starts paid work."""
+    ids = wanted or list(rows)
     missing = [i for i in ids if i not in rows]
     if missing:
         raise SystemExit(f"not in {DATA}: {missing}")
+    return ids
+
+
+def cost_known(r: dict) -> bool:
+    """Whether a row's spend is wholly known: a row that never reached paid work has none to know."""
+    if "cost_usd" not in r:
+        return True
+    return (
+        r["cost_usd"] is not None
+        and r.get("cost_complete") is not False
+        and r.get("usage_complete") is not False
+    )
+
+
+def write_predictions(out_dir: Path, recs: list[dict], name: str) -> Path:
+    """The harness's input: one line per instance, its patch under the arm's model name."""
+    preds = out_dir / "predictions.jsonl"
+    with preds.open("w") as f:
+        for r in recs:
+            row = {"instance_id": r["instance_id"], "model_name_or_path": name}
+            f.write(json.dumps({**row, "model_patch": r["model_patch"]}) + "\n")
+    print(f"predictions: {preds}")
+    return preds
+
+
+async def main(args: argparse.Namespace) -> None:
+    rows = {r["instance_id"]: r for r in json.loads(DATA.read_text())}
+    ids = selected(rows, args.instances)
     run_id = args.run_id or time.strftime("%Y%m%d_%H%M%S")
     out_dir = RESULTS / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -504,16 +535,7 @@ async def main(args: argparse.Namespace) -> None:
             return rec
 
     recs = await asyncio.gather(*(one(i) for i in ids))
-    preds = out_dir / "predictions.jsonl"
-    with preds.open("w") as f:
-        for r in recs:
-            row = {
-                "instance_id": r["instance_id"],
-                "model_name_or_path": f"lionagi-lndl-{args.backend}-{args.model.replace('/', '_')}",
-                "model_patch": r["model_patch"],
-            }
-            f.write(json.dumps(row) + "\n")
-    print(f"predictions: {preds}")
+    preds = write_predictions(out_dir, recs, f"lionagi-lndl-{args.backend}-{args.model.replace('/', '_')}")
     if args.oracle:
         report = oracle(preds, run_id, ids, args.parallel)
         resolved = set(report.get("resolved_ids", []))
@@ -521,10 +543,8 @@ async def main(args: argparse.Namespace) -> None:
             r["resolved"] = r["instance_id"] in resolved
             (out_dir / f"{r['instance_id']}.json").write_text(json.dumps(r, indent=1))
         print(f"resolved {len(resolved)}/{len(ids)}: {sorted(resolved)}")
-        spent = [r.get("cost_usd", 0.0) for r in recs]
-        unknown = sum(
-            1 for r, c in zip(recs, spent, strict=True) if c is None or r.get("cost_complete") is False
-        )
+        spent = [r.get("cost_usd") for r in recs]
+        unknown = sum(1 for r in recs if not cost_known(r))
         print(
             f"total cost ${sum(c for c in spent if c is not None):.3f}"
             + (f" known; unknown or partial on {unknown} of {len(recs)}" if unknown else "")

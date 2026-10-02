@@ -1,19 +1,15 @@
 """The naked arm: a harness failure after paid work still records the patch on disk and the spend."""
 
+import argparse
 import asyncio
-import hashlib
 import json
-import os
 import shutil
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bench" / "swe"))
-
-import run_naked  # noqa: E402
+from tests._git import git, repo
+from tests._swe import run_naked
 
 ROW = {"instance_id": "x__x-1", "image": "img", "problem_statement": "It breaks."}
 ENV = {
@@ -31,18 +27,7 @@ def _fake_docker(monkeypatch):
     async def docker(*argv, check=True):
         calls.append(argv)
         if argv[0] == "cp":
-            host = Path(argv[2])
-            env = {
-                "GIT_AUTHOR_NAME": "t",
-                "GIT_AUTHOR_EMAIL": "t@example.com",
-                "GIT_COMMITTER_NAME": "t",
-                "GIT_COMMITTER_EMAIL": "t@example.com",
-                "PATH": __import__("os").environ["PATH"],
-            }
-            subprocess.run(["git", "init", "-q"], cwd=host, env=env, check=True)
-            (host / "a.py").write_text("x = 1\n")
-            subprocess.run(["git", "add", "a.py"], cwd=host, env=env, check=True)
-            subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=host, env=env, check=True)
+            repo(Path(argv[2]), {"a.py": "x = 1\n"})
         return 0, ""
 
     monkeypatch.setattr(run_naked, "_docker", docker)
@@ -60,14 +45,7 @@ class Harness:
     async def __call__(self, prompt: str) -> str:
         (self.cwd / "a.py").write_text("x = 2\n")
         if Harness.commit:  # the model committed its fix: HEAD moved past the commit it was handed
-            env = {
-                "GIT_AUTHOR_NAME": "m",
-                "GIT_AUTHOR_EMAIL": "m@example.com",
-                "GIT_COMMITTER_NAME": "m",
-                "GIT_COMMITTER_EMAIL": "m@example.com",
-                "PATH": __import__("os").environ["PATH"],
-            }
-            subprocess.run(["git", "commit", "-q", "-am", "fix"], cwd=self.cwd, env=env, check=True)
+            git(self.cwd, "commit", "-q", "-am", "fix")
         self.calls.append(dict(ENV))
         if Harness.fail:
             raise TimeoutError("the harness hung after its last turn")
@@ -99,6 +77,48 @@ def test_a_commit_the_model_made_stays_in_the_naked_prediction(tmp_path, monkeyp
     finally:
         Harness.commit = False
     assert "+x = 2" in rec["model_patch"] and len(rec["base"]) == 40
+
+
+def test_the_naked_patch_keeps_odd_names_and_drops_staged_bytecode(tmp_path, monkeypatch):
+    _fake_docker(monkeypatch)
+
+    class Odd(Harness):
+        async def __call__(self, prompt):
+            (self.cwd / "new file.py").write_text("y = 1\n")  # a name with a space
+            (self.cwd / "-n.py").write_text("z = 1\n")  # a name that reads as an option
+            (self.cwd / "__pycache__").mkdir()
+            (self.cwd / "__pycache__" / "a.cpython-312.pyc").write_bytes(b"\x00pyc")
+            git(self.cwd, "add", "__pycache__")  # staged bytecode
+            self.calls.append(dict(ENV))
+            return "done"
+
+    monkeypatch.setattr(run_naked, "ClaudeCodeAgentic", Odd)
+    rec = asyncio.run(run_naked.solve(ROW, "m", 3, tmp_path))
+    assert "diff_error" not in rec and "error" not in rec, rec
+    patch = rec["model_patch"]
+    assert "b/new file.py" in patch and "+y = 1" in patch
+    assert "b/-n.py" in patch and "+z = 1" in patch
+    assert ".pyc" not in patch and "__pycache__" not in patch
+
+
+def test_an_unknown_instance_is_refused_before_any_run(tmp_path, monkeypatch):
+    data = tmp_path / "data.json"
+    data.write_text(json.dumps([ROW]))
+    monkeypatch.setattr(run_naked, "DATA", data)
+    monkeypatch.setattr(run_naked, "RESULTS", tmp_path / "results")
+    solved = []
+
+    async def solve(row, *a):
+        solved.append(row["instance_id"])
+        return {"instance_id": row["instance_id"], "model_patch": "", "seconds": 0.0}
+
+    monkeypatch.setattr(run_naked, "solve", solve)
+    args = argparse.Namespace(instances=[], run_id="r", parallel=2, model="m", max_turns=3, oracle=False)
+    with pytest.raises(SystemExit, match="nope"):
+        asyncio.run(run_naked.main(argparse.Namespace(**{**vars(args), "instances": ["x__x-1", "nope"]})))
+    assert solved == []  # refused before any instance started paid work
+    asyncio.run(run_naked.main(argparse.Namespace(**{**vars(args), "instances": ["x__x-1"]})))
+    assert solved == ["x__x-1"]  # the control: a known instance runs
 
 
 def test_a_failure_before_any_turn_records_the_error_alone(tmp_path, monkeypatch):
@@ -133,42 +153,13 @@ def test_a_cancellation_after_paid_work_keeps_the_patch_and_the_spend_and_still_
     assert calls[-1][:3] == ("container", "remove", "--force")
 
 
-def test_a_git_read_that_fails_is_an_error_not_an_empty_patch(tmp_path, monkeypatch):
-    base = "b" * 40
-    seen = []
-
-    def run(argv, *, cwd, capture_output, text):
-        seen.append(argv[1:])
-        rc, out, err = 0, "", ""
-        if argv[1] == "diff" and "--no-index" in argv:
-            rc, out = 1, "diff --git a/new.py b/new.py\n+x = 2\n"  # --no-index: 1 is a difference
-            if run.new_fails:
-                rc, out, err = 128, "", "fatal: bad object"
-        elif argv[1] == "diff":
-            out = "diff --git a/a.py b/a.py\n-x = 1\n+x = 2\n"
-            if run.tracked_fails:
-                rc, out, err = 128, out[:20], "fatal: bad revision"  # partial output, then the error
-        elif argv[1] == "ls-files":
-            out = "new.py\n"
-        return subprocess.CompletedProcess(argv, rc, out, err)
-
-    monkeypatch.setattr(run_naked.subprocess, "run", run)
-    run.tracked_fails = run.new_fails = False
-    patch = run_naked._diff(tmp_path, base)  # the control: both reads healthy
-    assert "+x = 2" in patch and "new.py" in patch and seen[0] == ["diff", "--binary", base]
-    run.tracked_fails = True
-    with pytest.raises(RuntimeError, match="git diff exited 128: fatal: bad revision"):
-        run_naked._diff(tmp_path, base)
-    run.tracked_fails, run.new_fails = False, True
-    with pytest.raises(RuntimeError, match="git diff exited 128: fatal: bad object"):
-        run_naked._diff(tmp_path, base)
-
-
 def test_the_source_container_is_removed_when_the_baseline_read_refuses(tmp_path, monkeypatch):
     calls = _fake_docker(monkeypatch)
-    monkeypatch.setattr(
-        run_naked, "_baseline", lambda host: (_ for _ in ()).throw(RuntimeError("no baseline"))
-    )
+
+    async def refused(box):
+        raise RuntimeError("no baseline")
+
+    monkeypatch.setattr(run_naked, "baseline", refused)
     rec = asyncio.run(run_naked.solve(ROW, "m", 3, tmp_path))
     assert (
         rec["error"] == "RuntimeError: no baseline" and rec["model_patch"] == "" and "diff_error" not in rec
@@ -178,18 +169,22 @@ def test_the_source_container_is_removed_when_the_baseline_read_refuses(tmp_path
     assert "run" not in [c[0] for c in calls]  # nothing was started for a model
 
 
+def test_a_trace_git_writes_beside_the_baseline_read_is_no_part_of_the_commit(tmp_path, monkeypatch):
+    # git writes a trace or a warning on stderr beside a read that succeeded, into the same output
+    head = repo(tmp_path / "r", {"a.py": "x = 1\n"})
+    monkeypatch.setenv("GIT_TRACE", "1")
+    assert asyncio.run(run_naked.baseline(run_naked.HostBox(tmp_path / "r"))) == head
+
+
 def test_a_tree_whose_patch_could_not_be_read_is_kept_and_named(tmp_path, monkeypatch):
     calls = _fake_docker(monkeypatch)
     monkeypatch.setattr(run_naked, "ClaudeCodeAgentic", Harness)
     Harness.fail = False
-    real = run_naked.subprocess.run
 
-    def run(argv, **kw):
-        if argv[:2] == ["git", "diff"]:
-            return subprocess.CompletedProcess(argv, 128, "", "fatal: bad object")
-        return real(argv, **kw)
+    async def unreadable(box, base):
+        raise RuntimeError("git diff exited 128: fatal: bad object")
 
-    monkeypatch.setattr(run_naked.subprocess, "run", run)
+    monkeypatch.setattr(run_naked, "git_diff", unreadable)
     rec = asyncio.run(run_naked.solve(ROW, "m", 3, tmp_path))
     assert rec["error"] == "RuntimeError: git diff exited 128: fatal: bad object"
     assert rec["diff_error"] == rec["error"] and rec["model_patch"] == "" and rec["cost_usd"] == 0.25
@@ -219,230 +214,3 @@ def test_a_cancellation_during_cleanup_still_leaves_the_record(tmp_path, monkeyp
     assert "error" not in rec and rec["cost_usd"] == 0.25 and "+x = 2" in rec["model_patch"]
     host = Path(next(c[2] for c in calls if c[0] == "cp"))
     assert not host.exists()  # the host copy still went, its patch being on the record
-
-
-def _harness(monkeypatch, resolves, report=None) -> list[str]:
-    """The harness as it grades: an instance whose per-instance report exists under the run id is
-    skipped, and the run's report is written fresh from the per-instance ones. `report` replaces
-    the run's report when given."""
-    ids: list[str] = []
-
-    def run(argv, *, capture_output, text, cwd, timeout):
-        rid = argv[argv.index("--run_id") + 1]
-        ids.append(rid)
-        preds = [
-            json.loads(line)
-            for line in Path(argv[argv.index("--predictions_path") + 1]).read_text().splitlines()
-        ]
-        resolved = []
-        for p in preds:
-            done = Path(cwd) / "logs" / "run_evaluation" / rid / "m" / p["instance_id"] / "report.json"
-            if not done.exists():
-                done.parent.mkdir(parents=True)
-                done.write_text(json.dumps({p["instance_id"]: {"resolved": resolves(p["model_patch"])}}))
-            if json.loads(done.read_text())[p["instance_id"]]["resolved"]:
-                resolved.append(p["instance_id"])
-        doc = {"submitted_ids": sorted(p["instance_id"] for p in preds), "resolved_ids": resolved}
-        (Path(cwd) / f"m.{rid}.json").write_text(json.dumps(report if report is not None else doc))
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    monkeypatch.setattr(run_naked.subprocess, "run", run)
-    return ids
-
-
-def test_new_predictions_under_a_reused_run_id_are_graded_not_read_from_an_earlier_evaluation(
-    tmp_path, monkeypatch
-):
-    preds = tmp_path / "predictions.jsonl"
-
-    def predict(patch: str) -> None:
-        preds.write_text(
-            json.dumps({"instance_id": "x__x-1", "model_name_or_path": "m", "model_patch": patch}) + "\n"
-        )
-
-    ids = _harness(monkeypatch, lambda patch: "+x = 2" in patch)
-    earlier = tmp_path / "logs" / "run_evaluation" / "r1" / "m" / "x__x-1" / "report.json"
-    earlier.parent.mkdir(parents=True)
-    earlier.write_text(json.dumps({"x__x-1": {"resolved": True}}))  # an earlier evaluation under this run id
-    predict("+x = 3\n")
-    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1)["resolved_ids"] == []
-    predict("+x = 2\n")  # new predictions, the same run id
-    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1)["resolved_ids"] == ["x__x-1"]
-    predict("+x = 3\n")  # the first predictions again: their own earlier grade is theirs
-    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1)["resolved_ids"] == []
-    assert ids[0] == ids[2] != ids[1] and all(i.startswith("r1.") for i in ids)
-    predict("+x = 2\n")  # a run id holding glob syntax names its report literally
-    assert run_naked.oracle(preds, "r[1]", ["x__x-1"], 1)["resolved_ids"] == ["x__x-1"]
-
-
-def test_a_report_that_does_not_name_the_predictions_handed_in_is_refused(tmp_path, monkeypatch):
-    preds = tmp_path / "predictions.jsonl"
-    preds.write_text(
-        json.dumps({"instance_id": "x__x-1", "model_name_or_path": "m", "model_patch": "+x = 2\n"}) + "\n"
-    )
-    for report in ({"submitted_ids": ["y__y-2"], "resolved_ids": ["y__y-2"]}, {"resolved_ids": ["x__x-1"]}):
-        _harness(monkeypatch, lambda patch: True, report)
-        with pytest.raises(RuntimeError, match=r"not the predictions handed in \['x__x-1'\]"):
-            run_naked.oracle(preds, "r1", ["x__x-1"], 1)
-    _harness(monkeypatch, lambda patch: True)  # the control: the harness's own report on these predictions
-    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1)["resolved_ids"] == ["x__x-1"]
-
-
-def test_the_oracle_reads_only_a_report_its_own_evaluation_wrote(tmp_path, monkeypatch):
-    preds = tmp_path / "predictions.jsonl"
-    preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 2\n"}) + "\n")
-    digest = hashlib.sha256(preds.read_bytes()).hexdigest()[:16]
-    report = tmp_path / f"claude-code-naked-m.r1.{digest}.json"
-    report.write_text(json.dumps({"resolved_ids": ["x__x-1"]}))  # an earlier evaluation under this run id
-
-    def evaluator(rc: int, writes: dict | None) -> None:
-        def run(argv, *, capture_output, text, cwd, timeout):
-            if writes is not None:
-                report.write_text(json.dumps(writes))
-            return subprocess.CompletedProcess(argv, rc, "evaluated\n", "failed\n" if rc else "")
-
-        monkeypatch.setattr(run_naked.subprocess, "run", run)
-
-    evaluator(1, None)  # the evaluation fails and writes nothing
-    with pytest.raises(RuntimeError, match="the harness exited 1; see oracle_r1.log"):
-        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
-    assert (tmp_path / "oracle_r1.log").read_text() == "evaluated\n\n--- stderr ---\nfailed\n"
-    evaluator(1, {"resolved_ids": []})  # a report beside a failed exit is not a grade either
-    with pytest.raises(RuntimeError, match="the harness exited 1"):
-        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
-    report.write_text(json.dumps({"resolved_ids": ["x__x-1"]}))
-    evaluator(0, None)  # a clean exit that wrote no report: the one on disk is still the earlier one
-    with pytest.raises(RuntimeError, match="no harness report from this evaluation"):
-        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
-    own = {"submitted_ids": ["x__x-1"], "resolved_ids": []}
-    evaluator(0, own)  # the control: this evaluation's own report, under the same name
-    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1) == own
-
-
-def test_an_overlapping_evaluations_report_under_the_same_run_id_is_not_this_ones(tmp_path, monkeypatch):
-    preds = tmp_path / "predictions.jsonl"
-    preds.write_text(json.dumps({"instance_id": "y__y-2", "model_patch": "+y = 2\n"}) + "\n")
-
-    def run(argv, *, capture_output, text, cwd, timeout):
-        # another evaluation of other predictions under the same run id lands its report while this one
-        # runs, named as a harness handed the bare run id names it; this one writes nothing
-        (tmp_path / "claude-code-naked-m.r1.json").write_text(json.dumps({"submitted_ids": ["x__x-1"]}))
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    monkeypatch.setattr(run_naked.subprocess, "run", run)
-    with pytest.raises(RuntimeError, match="no harness report from this evaluation"):
-        run_naked.oracle(preds, "r1", ["y__y-2"], 1)
-
-
-def test_the_harness_grades_the_bytes_the_digest_names_whatever_rewrites_the_predictions(
-    tmp_path, monkeypatch
-):
-    preds = tmp_path / "predictions.jsonl"
-    first = json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 1\n"}) + "\n"
-    preds.write_text(first)
-    handed: list[str] = []
-
-    def run(argv, *, capture_output, text, cwd, timeout):
-        # an overlapping run under the same run id rewrites the predictions before the harness reads
-        preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 2\n"}) + "\n")
-        path = Path(argv[argv.index("--predictions_path") + 1])
-        handed.append(path.read_text())
-        rid = argv[argv.index("--run_id") + 1]
-        (Path(cwd) / f"m.{rid}.json").write_text(
-            json.dumps({"submitted_ids": ["x__x-1"], "resolved_ids": []})
-        )
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    monkeypatch.setattr(run_naked.subprocess, "run", run)
-    run_naked.oracle(preds, "r1", ["x__x-1"], 1)
-    assert handed == [first]  # the patch the digest names, not the rewrite
-
-
-def test_the_snapshot_the_harness_reads_is_whole_or_absent(tmp_path, monkeypatch):
-    preds = tmp_path / "predictions.jsonl"
-    preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 1\n"}) + "\n")
-    digest = hashlib.sha256(preds.read_bytes()).hexdigest()[:16]
-    snapshot = tmp_path / f"predictions.{digest}.jsonl"
-    real = Path.write_bytes
-
-    def cut(self, data):  # the write dies half way: whatever path it was writing holds half the bytes
-        real(self, data[: len(data) // 2])
-        raise OSError("disk full")
-
-    monkeypatch.setattr(Path, "write_bytes", cut)
-    with pytest.raises(OSError, match="disk full"):
-        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
-    assert not snapshot.exists()  # never a half-written snapshot under the name the harness reads
-    assert list(tmp_path.glob("*.part")) == []  # and no scratch file left behind
-    # the move fails: the snapshot is untouched, the scratch file gone, the harness never called
-    monkeypatch.setattr(Path, "write_bytes", real)
-    snapshot.write_bytes(b"earlier, whole\n")
-    calls: list = []
-
-    def refuse(*a):
-        raise OSError("replace failed")
-
-    monkeypatch.setattr(os, "replace", refuse)
-    monkeypatch.setattr(run_naked.subprocess, "run", lambda *a, **k: calls.append(a))
-    with pytest.raises(OSError, match="replace failed"):
-        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
-    assert (
-        snapshot.read_bytes() == b"earlier, whole\n" and list(tmp_path.glob("*.part")) == [] and calls == []
-    )
-    # the scratch file cannot be removed either: the first fault is what the caller sees, noted
-    unlink = Path.unlink
-
-    def denied(self, missing_ok=False):
-        if self.name.endswith(".part"):
-            raise PermissionError("cleanup denied")
-        unlink(self, missing_ok=missing_ok)
-
-    monkeypatch.setattr(Path, "unlink", denied)
-    with pytest.raises(OSError, match="replace failed") as caught:
-        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
-    assert caught.value.__notes__ == [
-        f"the scratch file {snapshot.name}.{os.getpid()}.part could not be removed: "
-        "PermissionError: cleanup denied"
-    ]
-    assert calls == [] and snapshot.read_bytes() == b"earlier, whole\n"
-
-
-def test_an_earlier_report_is_known_by_its_digest_and_not_held_through_the_evaluation(tmp_path, monkeypatch):
-    preds = tmp_path / "predictions.jsonl"
-    preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 2\n"}) + "\n")
-    digest = hashlib.sha256(preds.read_bytes()).hexdigest()[:16]
-    report = tmp_path / f"claude-code-naked-m.r1.{digest}.json"
-    earlier = json.dumps({"submitted_ids": ["x__x-1"], "resolved_ids": ["x__x-1"], "pad": "p" * 4000})
-    report.write_text(earlier)
-    held: list[str] = []
-
-    def run(argv, *, capture_output, text, cwd, timeout):
-        frame = sys._getframe(1)
-        assert frame.f_code.co_name == "oracle"
-        held.extend(k for k, v in frame.f_locals.items() if isinstance(v, bytes) and len(v) >= len(earlier))
-        held.extend(f"before.{k}" for k, v in frame.f_locals["before"].items() if bytes in map(type, v))
-        # rewritten within the same nanosecond as the earlier report: a different report all the same
-        stat = report.stat()
-        report.write_text(json.dumps(own))
-        os.utime(report, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    own = {"submitted_ids": ["x__x-1"], "resolved_ids": [], "pad": "q" * 4000}
-    monkeypatch.setattr(run_naked.subprocess, "run", run)
-    assert run_naked.oracle(preds, "r1", ["x__x-1"], 1) == own
-    assert held == []
-
-
-@pytest.mark.parametrize("streams", [(b"so far\n", b"slow\n"), ("so far\n", "slow\n"), (None, None)])
-def test_an_evaluation_that_times_out_leaves_its_log_and_the_timeout_stands(tmp_path, monkeypatch, streams):
-    preds = tmp_path / "predictions.jsonl"
-    preds.write_text(json.dumps({"instance_id": "x__x-1", "model_patch": "+x = 2\n"}) + "\n")
-
-    def run(argv, *, capture_output, text, cwd, timeout):
-        raise subprocess.TimeoutExpired(argv, timeout, output=streams[0], stderr=streams[1])
-
-    monkeypatch.setattr(run_naked.subprocess, "run", run)
-    with pytest.raises(subprocess.TimeoutExpired):
-        run_naked.oracle(preds, "r1", ["x__x-1"], 1)
-    so_far, slow = ("so far\n", "slow\n") if streams[0] else ("", "")
-    assert (tmp_path / "oracle_r1.log").read_text() == f"{so_far}\n--- stderr ---\n{slow}"
