@@ -17,7 +17,13 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = ROOT / "examples"
 NOTEBOOKS = ROOT / "notebooks"
-SCRIPTED = ("tools_and_gates", "notes_and_context", "watch_the_artifact", "budgets_and_outcomes")
+SCRIPTED = (
+    "tools_and_gates",
+    "notes_and_context",
+    "watch_the_artifact",
+    "budgets_and_outcomes",
+    "experience_twice",
+)
 LIVE = ("backends",)
 # tests/test_bench_agent.py drives this one: a fake store, and a child that writes a ledger
 OWN_TESTS = ("bench_agent",)

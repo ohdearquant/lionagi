@@ -1,7 +1,7 @@
 ---
 adr: ADR-0020
 status: proposed
-liveness: unimplemented (nothing of this record is built; the store, the two lifecycle points, the command, the example and its mutation control are owed, S1)
+liveness: operating (the two stores, the recall and its block, the lesson command, the terminal phase and its cancel shape, the spend and model fields, and the example with its two removal arms are pinned by tests, S1)
 date: "2026-10-02"
 area: experience
 kind: new
@@ -35,8 +35,8 @@ recalled lesson improves the next run; that is a bench question
 
 The port source is an earlier loop built as a graph with an evaluator node and a goal record; none
 of that shape is kept. Source: `lionagi/actor.py` (`run`, `_notify`, `_closure`),
-`lionagi/notes.py`, `lionagi/bus.py`, `lionagi/record.py`; nothing in the tree implements this
-record yet.
+`lionagi/notes.py`, `lionagi/bus.py`, `lionagi/record.py`; `lionagi/experience.py` and the two
+lifecycle points in `run` implement this record.
 
 ## Definitions
 
@@ -69,7 +69,7 @@ record yet.
 
 ## Claims
 
-### C1: Experience is opt-in per profile, and the core imports no provider _(enforced: mechanical; owed, S1)_ ^c1
+### C1: Experience is opt-in per profile, and the core imports no provider _(enforced: mechanical)_ ^c1
 
 - **Subject**: every profile and every run; `lionagi/experience.py` and the actor's two lifecycle
   points.
@@ -81,7 +81,7 @@ commands, the same notifications, no event. A profile that binds an `Experience`
 recall and the persist of C2 and C5, and only then is `experience.lesson` in its subset. The stores
 under `lionagi/` are in memory and on file; the khive-backed store is a hub adapter (D7).
 
-### C2: One recall per run, against the first new INPUT, inside the experience scope _(enforced: mechanical; owed, S1)_ ^c2
+### C2: One recall per run, against the first new INPUT, inside the experience scope _(enforced: mechanical)_ ^c2
 
 - **Subject**: every run of an opted-in profile, queued, inputless and history-backed runs included.
 - **Violated when**: a run recalls twice, recalls against an INPUT replayed from `history`, recalls
@@ -95,7 +95,7 @@ before its first notification carries the skip in its closure. The store filters
 experience scope before it ranks, and the runtime checks each hit's scope again. A failed or
 timed-out recall is a receipt with its reason; the run goes on.
 
-### C3: What was recalled is on the record and in the model's first view, before the call _(enforced: mechanical; owed, S1)_ ^c3
+### C3: What was recalled is on the record and in the model's first view, before the call _(enforced: mechanical)_ ^c3
 
 - **Subject**: every hit a recall selects; `_notify` on the first turn and the view estimate.
 - **Violated when**: a hit is kept only in metadata, a lesson is cut without the cut being counted,
@@ -112,7 +112,7 @@ The block is counted in the first turn's view estimate, so the job's context che
 whole and counted in the receipt. This is a stated addition to
 [[ADR-0006-the-notification#^c2|ADR-0006/C2]]: a value obtained outside the run, shown once.
 
-### C4: An observation is a fact and a lesson is a claim, and neither is ever rewritten _(enforced: mechanical; owed, S1)_ ^c4
+### C4: An observation is a fact and a lesson is a claim, and neither is ever rewritten _(enforced: mechanical)_ ^c4
 
 - **Subject**: every experience record and every experience store.
 - **Violated when**: a persist replaces a record, the same id arrives with different bytes and is
@@ -129,7 +129,7 @@ request as the handler entered it ([[ADR-0005-command-handling#^c5|ADR-0005/C5]]
 stay on the record and never reach the store. A record with no lesson is kept and is not recalled by
 default.
 
-### C5: Each terminal commit makes one persist attempt, after the reap, that cannot change the outcome _(enforced: mechanical; owed, S1)_ ^c5
+### C5: Each terminal commit makes one persist attempt, after the reap, that cannot change the outcome _(enforced: mechanical)_ ^c5
 
 - **Subject**: the four outcomes of an opted-in run; the phase between the reap and the closure.
 - **Violated when**: a persist runs before the reap or on an abort, a store failure or timeout
@@ -145,7 +145,7 @@ A cancellation in this phase is re-raised after the closure and the delivery, wi
 it is not an abort. An abort during the model's work or the reap persists nothing, as today
 ([[ADR-0002-the-run#^c4|ADR-0002/C4]]). This phase is the amendment S2 names.
 
-### C6: What the runtime did not measure stays unknown _(enforced: mechanical; owed, S1)_ ^c6
+### C6: What the runtime did not measure stays unknown _(enforced: mechanical)_ ^c6
 
 - **Subject**: the model, version and spend fields of every experience record.
 - **Violated when**: a served model is invented from a backend that names none, a missing cost reads
@@ -156,7 +156,7 @@ not read ([[ADR-0009-backends|ADR-0009]] S5). Spend is the sum of finite non-neg
 beside a count of the calls that reported none; a run with no calls is zero, a call reporting zero
 is zero, a call reporting nothing is unmetered ([[ADR-0012-the-bench#^c2|ADR-0012/C2]]).
 
-### C7: A claimed use names only ids this run was shown _(enforced: mechanical; owed, S1)_ ^c7
+### C7: A claimed use names only ids this run was shown _(enforced: mechanical)_ ^c7
 
 - **Subject**: every `experience.lesson` carrying `used_ids`, and the closure that copies it.
 - **Violated when**: an id not in this run's first notification is accepted, a hit from replayed
@@ -168,7 +168,7 @@ reported, not none used. The bench grader stays the only evaluator
 ([[ADR-0012-the-bench#^c1|ADR-0012/C1]]); a grade attached later is a new fact beside the record,
 never a change to it.
 
-### C8: The two events mirror receipts the record already holds _(enforced: mechanical; owed, S1)_ ^c8
+### C8: The two events mirror receipts the record already holds _(enforced: mechanical)_ ^c8
 
 - **Subject**: `memory.recalled` and `memory.persisted`.
 - **Violated when**: an event is emitted before its record entry lands, its `receipt_json` differs
@@ -180,7 +180,7 @@ the record. Recording comes first, then the emit, once per operation. The bus ob
 nothing ([[ADR-0005-command-handling#^c2|ADR-0005/C2]]); with `keep=0` the record still holds both
 receipts.
 
-### C9: A record survives a new store instance, and a store that cannot be read is not empty _(enforced: mechanical; owed, S1)_ ^c9
+### C9: A record survives a new store instance, and a store that cannot be read is not empty _(enforced: mechanical)_ ^c9
 
 - **Subject**: `FileExperienceStore`.
 - **Violated when**: a reopened store misses a persisted record, two concurrent persists lose one, a
@@ -210,7 +210,7 @@ and tuple fields only, with one canonical serialization. `ExperienceStore` is a 
 the ask and the lesson, drops zero overlap and lesson-less records, and breaks ties by id. `__all__`
 is a tuple right below the imports.
 
-- **Landing evidence**: owed (S1); `tests/test_experience.py`:
+- **Landing evidence**: `tests/test_experience.py`:
   `test_a_replay_of_the_same_id_is_idempotent_and_other_bytes_are_refused`,
   `test_a_reopened_file_store_holds_every_concurrent_addition`,
   `test_scope_filters_before_k_and_a_blank_query_is_a_skip`,
@@ -224,7 +224,7 @@ store once under `io_timeout`; the hits and the receipt are held on the run for 
 carries its receipt; a cancellation in that phase is re-raised after `_deliver`. Nothing of this
 runs for a profile with no `experience`.
 
-- **Landing evidence**: owed (S1); `tests/test_actor_experience.py`:
+- **Landing evidence**: `tests/test_actor_experience.py`:
   `test_the_recall_reads_the_first_new_input_once_queued_and_resumed_runs_included`,
   `test_a_run_with_no_turn_records_a_skipped_recall_and_its_observation`,
   `test_each_of_the_four_outcomes_persists_after_the_reap_and_an_abort_does_not`.
@@ -236,7 +236,7 @@ Serves C3. On round 1 `_notify` renders the held hits as quoted data under `expe
 the view estimate the context check reads. A lesson is escaped onto its lines; a hit that would
 cross `max_chars` is left out whole and counted.
 
-- **Landing evidence**: owed (S1); `tests/test_actor_experience.py`:
+- **Landing evidence**: `tests/test_actor_experience.py`:
   `test_the_first_backend_call_sees_the_hits_and_the_role_prompt_is_unchanged`,
   `test_the_recall_block_is_counted_before_the_first_call`,
   `test_a_hostile_lesson_cannot_forge_a_notification_frame`.
@@ -249,7 +249,7 @@ the hits this run was shown, returns the proposal as its result, and settles lik
 sequence from the captured request; `OUT{}` does not wait for an unsettled one, so a proposal the
 model wants kept is awaited in an earlier turn or pointed at.
 
-- **Landing evidence**: owed (S1); `tests/test_actor_experience.py`:
+- **Landing evidence**: `tests/test_actor_experience.py`:
   `test_the_last_ok_proposal_by_sequence_is_the_lesson`,
   `test_used_ids_name_only_what_this_run_was_shown`,
   `test_a_hook_rewrite_keeps_the_entered_request_as_provenance`,
@@ -262,7 +262,7 @@ persist attempt, one closure with the receipt, the two events emitted after thei
 `_deliver`, then any cancellation re-raised. The `except BaseException` arm keeps today's shape for
 aborts before the terminal commit.
 
-- **Landing evidence**: owed (S1); `tests/test_actor_experience.py`:
+- **Landing evidence**: `tests/test_actor_experience.py`:
   `test_record_and_bus_receipts_agree_with_bus_keep_zero`,
   `test_a_refused_or_unknown_persist_keeps_the_outcome`,
   `test_a_cancel_before_the_terminal_commit_aborts_without_a_persist`,
@@ -274,7 +274,7 @@ Serves C6. Beside the `Reply` reading in `run`, the loop counts the calls that r
 the calls that did not; the record carries the sum, both counts and a `complete` flag. The model is
 `Experience.model` or none; no backend is asked.
 
-- **Landing evidence**: owed (S1); `tests/test_actor_experience.py`:
+- **Landing evidence**: `tests/test_actor_experience.py`:
   `test_missing_and_partial_costs_are_unknown_and_a_reported_zero_is_known`,
   `test_an_unnamed_model_and_version_stay_none`.
 
@@ -286,7 +286,7 @@ run's record, bus and first backend call, then repeats with the store write remo
 file deleted. `hub/experience.py` (`KhiveExperienceStore` over `hub/khive.py`) lands under its own
 record once it proves scope filtering before `k` and idempotency over an ambiguous write.
 
-- **Landing evidence**: owed (S1); `tests/test_experience_example.py`:
+- **Landing evidence**: `tests/test_experience_example.py`:
   `test_the_second_run_recalls_the_first_runs_lesson_on_record_bus_and_call`,
   `test_removing_only_the_persist_recalls_nothing`,
   `test_a_reopened_empty_store_recalls_nothing_from_the_actors_memory`.
@@ -305,9 +305,13 @@ record once it proves scope filtering before `k` and idempotency over an ambiguo
 
 ## Consequences
 
-- **S1**: Nothing of this record is built. Every mechanical claim above is owed until D1 to D7 land
-  with the tests they name; this row is the debt they point at, and the index reads `unimplemented`
-  until then.
+- **S1**: D1 to D7 landed with the tests they name. C1 is also pinned by
+  `test_a_profile_without_experience_runs_as_it_did_and_offers_no_lesson` and
+  `test_nothing_under_lionagi_imports_hub_or_a_khive_client`, and C2's failed recall by
+  `test_a_failed_recall_is_a_receipt_and_the_run_goes_on`. Each of these turned a named test red:
+  deleting the file store's write, the store's scope filter, the block's count in the view estimate
+  or the cancel's catch at the store call, and emitting the recall event before its entry. C9's two
+  writers are threads with a store each over one file, not two processes.
 - **S2**: The terminal phase amends [[ADR-0002-the-run#^c4|ADR-0002/C4]] and
   [[ADR-0006-the-notification#^c1|ADR-0006/C1]]: after the reap a cancellation no longer aborts the
   run; it is re-raised after the closure and the delivery with the outcome kept. ADR-0006/C2 gains
@@ -315,6 +319,9 @@ record once it proves scope filtering before `k` and idempotency over an ambiguo
 - **S3**: The store and the record are two failure domains: a process killed between the store's
   acknowledgement and the closure leaves a stored record whose run has no closure. Nothing promises
   exactly-once delivery or recovery across a kill; a replay of the same id is the only idempotency.
+  A cancel during the store call leaves the closure written, its receipt `unknown`, and the answer
+  delivered, then is re-raised; neither step awaits, so no cancel lands between them, and a slow
+  store is not waited for (`test_a_cancel_during_the_persist_closes_delivers_then_re_raises`).
 - **S4**: The product claim, that the same model inside the loop solves a task class faster and more
   often than the same model alone, is not made here. It needs paired, held-out trials on frozen
   stores with the same served model, tools and budgets, and an external grade. The arms are four:
