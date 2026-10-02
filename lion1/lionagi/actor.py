@@ -19,6 +19,7 @@ import json
 import math
 import re
 import time
+import unicodedata
 import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable
@@ -254,7 +255,9 @@ class Stopped:
 Outcome = Success | Continue | Retry | Exhausted | Refused | Stopped
 
 _CALL_SHAPED = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*\(.*\)\s*$", re.DOTALL)  # `name(...)` as a whole value
-_SYSTEM_FRAME = re.compile(r"<system round=")  # the notification's own opening tag
+# the notification's own opening tag, in any case or spacing after `system`, its `<` as itself or `&lt;`
+_SYSTEM_FRAME = re.compile(r"(?:<|&lt;)system\s+round\s*=", re.IGNORECASE)
+_BREAK = re.compile(r"\r\n|\r|\n")
 
 
 # the runtime's value for each bound a job and its profile leave unset (ADR-0003/C1); None: unbounded
@@ -266,6 +269,18 @@ _BOUNDS: dict[str, float | None] = {
     "context_budget": 200_000,
     "max_refusals": 3,
 }
+
+
+_NOTES_TOLD = 10  # the first notification names this many of the notes already kept, then counts the rest
+_TOKEN = re.compile(r"[\w.:/-]+")  # a store's key or run id written as itself; anything else is quoted
+
+
+def _said(text: str) -> str:
+    """A key or run id a note store supplied, as the notification writes it: a plain token as itself,
+    anything else by its repr, so none breaks the line, reads as another entry, or runs past 60."""
+    text = str.__str__(text)  # the plain string: a subclass's own formatting never runs
+    shown = text if _TOKEN.fullmatch(text) else repr(text)
+    return shown if len(shown) <= 60 else shown[:57] + "..."
 
 
 def _grant(run: Run, bound: str, amount: float, reason: str) -> bool:
@@ -691,9 +706,6 @@ class Actor:
         self.bus = bus or Bus()
         self.notes_dir = Path(notes_dir) if notes_dir is not None else None
         self.handlers: dict[str, Handler] = {}
-        # names the model may reach for that are not commands here, and where each one lives: the
-        # unknown-command result says so (a session with its own tools calls them outside <lact>)
-        self.elsewhere: dict[str, str] = {}
         self.operable = Operable()
         self.inbox: list[Inbound] = []  # unaddressed inbound, taken by the next run that starts a round
         self.runs: dict[str, Run] = {}  # live runs by id, so an answer reaches the run that asked
@@ -1293,10 +1305,7 @@ class Actor:
     ) -> tuple[Result, Directive | None]:
         if la.name not in subset:
             run.misnamed.append(_nearest(la.name, subset.names()))
-            why = f"unknown command {la.name!r}"
-            if la.name in self.elsewhere:
-                why += f": {self.elsewhere[la.name]}"
-            return Result(la.name, False, error=why, reason="unknown"), None
+            return Result(la.name, False, error=f"unknown command {la.name!r}", reason="unknown"), None
         handler = self.handlers[la.name]
         run.reads[la.alias] = {}
         prior = [run.pending[a] for a in run.waits.get(la.alias, ()) if a in run.pending]
@@ -1684,6 +1693,23 @@ class Actor:
                 lines.append(f"  {alias}: {why}")
         if run.notes_written:
             lines.append("notes written: " + ", ".join(run.notes_written))
+        if run.round == 1:  # the notes this profile already keeps, from earlier runs, so none goes unread
+            try:
+                kept = sorted(run.notes.list(), key=lambda n: n.key)  # a store need not list in order
+                told = []
+                for n in kept[:_NOTES_TOLD]:
+                    told.append(f"{_said(n.key)} ({len(_text(n.value))} chars, run {_said(n.run)})")
+            except Exception as e:  # a store that cannot be read is a line, not the run's end
+                try:
+                    why = repr(f"{type(e).__name__}: {e}")[1:-1]  # escaped onto one line, unquoted
+                    why = why if len(why) <= 200 else why[:197] + "..."
+                except Exception:  # an error that cannot be said is not said
+                    why = "an error that cannot be printed"
+                lines.append(f"notes kept: unknown, the store could not be read: {why}")
+            else:
+                if kept:
+                    more = f", and {len(kept) - _NOTES_TOLD} more" if len(kept) > _NOTES_TOLD else ""
+                    lines.append(f"notes kept: {', '.join(told)}{more}")
         if run.hook_errors:
             lines.append("hooks failed (the commands ran; their results stand):")
             for alias, what in run.hook_errors:
@@ -1788,13 +1814,19 @@ def _read(text: str, language: str = "core", refused: str | None = None) -> Prog
     """A turn as the loop reads it, live or resumed; LNDLError is what the model is told."""
     if refused:  # the backend refused the turn (a mixed response, ADR-0004/C4); the record keeps why
         raise lndl.LNDLError(refused)
-    if _SYSTEM_FRAME.search(text):
+    seen = "".join(c for c in text if unicodedata.category(c) != "Cf")  # zero-width characters hide nothing
+    if frame := _SYSTEM_FRAME.search(seen):
         # the model wrote the loop's own frame and went on as if the results in it were real (9 of
-        # 50 thinking-off runs, half their output tokens); none of it runs
+        # 50 thinking-off runs, half their output tokens); none of it runs. A mention is refused too:
+        # every rule that spared the tag in backticks also spared a frame made to look like one
+        line = len(_BREAK.findall(seen, 0, frame.start())) + 1
+        shown = _BREAK.split(seen[frame.start() :], 1)[0].strip()
+        shown = shown if len(shown) <= 80 else shown[:77] + "..."
         raise lndl.LNDLError(
-            "the turn carries a <system round=...> frame; only the loop writes those and the results "
-            "inside it were never observed, so nothing in the turn was executed: write one program, "
-            "end the turn, and read the real results in the next notification"
+            f"the turn carries a <system round=...> frame, at line {line}: {shown}; only the loop "
+            "writes those and the results inside it were never observed, so nothing in the turn was "
+            "executed: write one program, end the turn, and read the real results in the next "
+            "notification. To speak of it, call it the notice; never write its tag"
         )
     return lndl.parse(text) if language == "core" else read_script(text)
 
@@ -2134,7 +2166,7 @@ def _validate_whole(spec: Spec, value: Any) -> BaseModel:
     if isinstance(value, str):
         try:
             value = json.loads(value)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError, MemoryError):  # the last two: nested past reading
             pass
     if not isinstance(value, dict):
         fields = list(spec.model_fields)
@@ -2166,7 +2198,9 @@ def _coerce(spec: Spec, fld: str, value: Any) -> Any:
     for reader in (json.loads, ast.literal_eval):
         try:
             return reader(value)
-        except (ValueError, SyntaxError, TypeError):  # TypeError: a literal with an unhashable key
+        # TypeError: a literal with an unhashable key; RecursionError, MemoryError: one nested past
+        # what the reader walks, which the model is told of as any other value the field refuses
+        except (ValueError, SyntaxError, TypeError, RecursionError, MemoryError):
             continue
     return value
 

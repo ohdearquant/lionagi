@@ -67,8 +67,8 @@ neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 | `lion agent --dir D --ticks` | the chores' missing reminders | the reminders on the khive schedule; none for a chair |
 | `lion agent --dir D --arm` | the identity read and the boundary probes (D2) | a landing file; exit 0 only when every probe holds |
 | `lion agent --dir D --stats` | a read of the notes and the ledgers (C4) | nothing |
-| `lion chat` | a console actor over a directory ([[ADR-0018-chat-in-a-box|ADR-0018]]); its flags default from the config file; `--tools` runs a `claude_code` model's own tools, `--khive-config` names the file its khive calls sign with | `.lion/chats/<id>.jsonl` with a usage row per call, and beside it `.lion/history`, a diagram page per mermaid block; notes under `.lion/notes`; a box's patch, applied only under `--apply`; the clipboard under `/copy` |
-| `lion config [--dir D]` | the chat's effective defaults for `D`, one TOML line per key with the file each came from | nothing |
+| `lion chat` | a console actor over a directory ([[ADR-0018-chat-in-a-box|ADR-0018]]); its flags default from the config file; `--khive-config` names the file its khive calls sign with; the instruction files close its guidance | `.lion/chats/<id>.jsonl` with a usage row per call, and beside it `.lion/history`, a diagram page per mermaid block; notes under `.lion/notes`; a box's patch, applied only under `--apply`; the clipboard under `/copy` and `/copy all` |
+| `lion config [--dir D]` | the chat's effective defaults for `D`, one TOML line per key with the file each came from, then the instruction files it composes | nothing |
 | `lion areas [--serve PORT]` | the residents by area, or a page and its API ([[ADR-0017-the-desk|ADR-0017]]) | nothing without `--serve`; with it, a resident's `hold`, `wake-now`, `[budget]` keys, `landing/controls.log`, mail, a launchd restart, and checkpoints through the `lion context` functions |
 | `lion context` `set`, `checkpoint`, `restore`, `status`, `show` | a Claude Code session's checkpoint and restore, no model call ([[ADR-0019-the-checkpoint|ADR-0019]]) | `.khive/context/pending.jsonl`, `<id>.json` and `latest.json` |
 
@@ -140,7 +140,8 @@ Serves C1. `parser(chat=None)` builds `agent`, `chat`, `areas`, `context` and `c
 its own flags. `main()` parses `chat` twice, the second time with the config file's values as the
 chat parser's defaults; it runs `agent` and `chat` under `asyncio.run`, the rest directly, and ends
 a chat quietly on an interrupt. `context` takes its verbs as a second level of subcommands. At the
-chat's prompt a line the console owns (`/copy [N]`, `/quit`) runs there and never reaches the model.
+chat's prompt a line the console owns (`/copy [N]`, `/copy all`, `/quit`) runs there and never
+reaches the model.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`: the chat flags through `parser()`;
   `apps/cli/tests/test_config.py`: the two files, the flag over them, the refusals, `lion config`;

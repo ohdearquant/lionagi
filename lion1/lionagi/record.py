@@ -106,8 +106,15 @@ class Record:
         if name in self._aliases:
             return self._entries[self._aliases[name]]
         for kind, prefix in _PREFIX.items():
-            if name.startswith(prefix) and name[len(prefix) :].isdigit():
-                seq = int(name[len(prefix) :])
+            if not name.startswith(prefix):
+                continue
+            # ASCII digits only: `str.isdigit` also takes `²`, which `int` refuses, and `١`, which it
+            # reads as 1. No seq has more significant digits than the record's length, so a longer
+            # name is nothing and `int` never meets one past its digit limit.
+            digits = name[len(prefix) :]
+            value = digits.lstrip("0")
+            if digits.isascii() and digits.isdigit() and len(value) <= len(str(len(self._entries))):
+                seq = int(value or "0")
                 if seq < len(self._entries) and self._entries[seq].kind is kind:
                     return self._entries[seq]
         return None
@@ -168,8 +175,7 @@ def fold(
     """
     entries = record.entries
     hidden: set[int] = set()
-    summarized: set[int] = set()
-    summaries: dict[int, list[str]] = {}
+    spans: list[tuple[str, set[int]]] = []  # each summary's text and the entries it still replaces
 
     def resolve(refs: Iterable[str]) -> list[int]:
         seqs = []
@@ -180,23 +186,28 @@ def fold(
         return seqs
 
     for d in directives(record, consumed):
-        targets = [s for s in (d.seqs if d.seqs is not None else resolve(d.refs)) if s < d.at]
+        targets = [s for s in (d.seqs if d.seqs is not None else resolve(d.refs)) if 0 <= s < d.at]
         if protect_input:
             targets = [s for s in targets if entries[s].kind is not Kind.INPUT]
         if d.op == "hide":
             hidden.update(targets)
         elif d.op == "show":
             hidden.difference_update(targets)
-            summarized.difference_update(targets)
-            # A shown entry is back as itself (ADR-0007/C3); without this the stale text in
-            # `summaries` would still render at this seq, and the view would carry the entry and its
-            # summary.
-            for s in targets:
-                summaries.pop(s, None)
+            # A shown entry is back as itself (ADR-0007/C3) and leaves every span it was under; the
+            # rest of a span stays summarized, so its summary still stands.
+            for _, members in spans:
+                members.difference_update(targets)
         elif d.op == "summarize" and targets:
             hidden.update(targets)
-            summarized.update(targets)
-            summaries.setdefault(min(targets), []).append(d.text)
+            spans.append((d.text, set(targets)))
+
+    # A summary stands where what it still replaces begins, in the order the summaries were made.
+    summarized: set[int] = set()
+    summaries: dict[int, list[str]] = {}
+    for text, members in spans:
+        if members:
+            summarized.update(members)
+            summaries.setdefault(min(members), []).append(text)
 
     view: list[ViewEntry] = []
     for e in entries:

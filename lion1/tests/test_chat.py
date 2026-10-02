@@ -1000,32 +1000,3 @@ def test_the_working_indicator_lives_on_a_terminal_only_and_holds_the_last_detai
     say.working("thinking")
     say.close("ended", 0, 0.0, 0, None)  # closing clears the live region too
     assert say.live is None
-
-
-def test_an_own_tool_call_folds_to_one_line_and_an_unknown_name_is_told_where_it_lives(
-    tmp_path,
-):
-    from lion_cli.view import Console
-
-    from lionagi.actor import Result
-    from lionagi.record import Entry
-
-    say = Console("m", None, color=False, width=120)
-    e = Entry(
-        seq=3,
-        kind=Kind.RESULT,
-        round=1,
-        alias="toolu_01AB",
-        content=Result("Bash", True, {"command": "sleep 60 && echo SLEPT", "description": "wait"}),
-    )
-    [head] = say.render(e)
-    assert head == "[green]✓ Bash[/green] [dim]command=sleep 60 && echo SLEPT[/dim]"
-    say.verbose = True
-    assert say.render(e) == [head]  # its arguments are the whole of it: no detail to fold
-    actor, profile = reader(tmp_path)
-    actor.elsewhere = {"Bash": "Bash is one of your own tools; call it as you always do, not inside <lact>"}
-    run = asyncio.run(
-        chat(actor, profile, scripted('<lact g1>Bash(command="ls")</lact>', "ok"), asks("go", None))
-    )
-    [r] = [e.content for e in run.record if e.kind is Kind.RESULT]
-    assert r.error == "unknown command 'Bash': " + actor.elsewhere["Bash"]
