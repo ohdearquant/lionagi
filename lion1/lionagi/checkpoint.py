@@ -468,7 +468,9 @@ def save(checkpoint: Checkpoint, directory: str | Path) -> Path:
         except FileExistsError:
             n += 1
             cid = f"{checkpoint.id}-{n:02d}"
-            data = _bytes({**doc, "id": cid})
+    if cid != checkpoint.id:  # encoded once: the id is the first field and a name JSON writes as it is,
+        # so a taken name changes those bytes alone
+        data = f'{{\n "id": "{cid}"'.encode() + data[len(f'{{\n "id": "{checkpoint.id}"') :]
     with os.fdopen(fd, "wb") as f:
         f.write(data)
     _replace_text(ctx / "latest.json", json.dumps({"id": cid}) + "\n")
@@ -513,8 +515,9 @@ def to_history(checkpoint: Checkpoint) -> tuple[Entry, ...]:
     path, n = Path(str(src.get("record"))), int(src.get("seq", 0))
     try:
         # a row ends at a line feed: a JSON string may carry U+2028 or U+0085 unescaped, where
-        # str.splitlines would break the row in two
-        rows = path.read_text().split("\n")
+        # str.splitlines would break the row in two; a row is decoded when admitted, so a write cut
+        # inside a multi-byte character past the take is never read
+        rows = path.read_bytes().split(b"\n")
     except OSError as e:
         raise CheckpointError(f"{checkpoint.id}: its record {path} cannot be read: {e}") from None
     entries: list[Entry] = []
@@ -524,8 +527,8 @@ def to_history(checkpoint: Checkpoint) -> tuple[Entry, ...]:
         if not raw.strip():
             continue
         try:
-            e = entry_of(json.loads(raw))
-        except (ValueError, KeyError, TypeError) as err:
+            e = entry_of(json.loads(raw.decode()))
+        except (ValueError, KeyError, TypeError) as err:  # UnicodeDecodeError is a ValueError
             raise CheckpointError(
                 f"{path} line {i} is not a record row ({err}); nothing was replayed"
             ) from None

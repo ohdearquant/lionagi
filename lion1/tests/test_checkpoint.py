@@ -485,6 +485,25 @@ def test_a_row_whose_text_carries_a_separator_is_one_row_and_a_var_with_one_roun
     assert to_history(again) == history
 
 
+def test_a_row_cut_inside_a_character_past_the_take_is_never_decoded_and_one_inside_it_is_named(plain):
+    # the record was decoded whole before the cutoff: a write cut inside a multi-byte character after
+    # the take raised UnicodeDecodeError, which is not the CheckpointError a restore's caller reads
+    rec = Record("r0")
+    rec.append(Kind.INPUT, "say hi back", inbound="actor:two")
+    rec.append(Kind.TEXT, "hi back ☃", round=1)
+    rows = [json.dumps(row_of(e), ensure_ascii=False).encode() for e in rec]
+    path = plain / "r0.jsonl"
+    path.write_bytes(b"\n".join(rows) + b"\n\xff not text\n" + "☃".encode()[:2])
+    c = take({"record": str(path)}, [], actor=ACTOR, why="end", budget=100, record=rec, now=AT)
+    save(c, plain)
+    assert to_history(load(plain)) == tuple(rec)
+    path.write_bytes(rows[0] + b"\n" + rows[1][:-5] + b"\xe2\x98")
+    with pytest.raises(
+        CheckpointError, match=r"r0\.jsonl line 2 is not a record row \(.*utf-8.*\); nothing was replayed"
+    ):
+        to_history(c)
+
+
 def test_the_first_line_re_arms_each_watch_verbatim_before_any_work():
     turns = [turn(1, "t" * 400), turn(2, "text two"), turn(3, "", kind="event"), turn(4, "text four")]
     view = fold_turns(turns, 100)  # 102 + 4 + 2 + 4: the first goes
@@ -761,6 +780,26 @@ def test_save_lands_the_file_names_it_latest_and_never_overwrites(plain):
         f"{ID}.json",
         "latest.json",
     ]
+
+
+def test_a_taken_name_costs_a_probe_and_never_another_encoding_of_the_document(plain, monkeypatch):
+    # each occupied name built the file's bytes again from scratch: the eighth save of one id in one
+    # second encoded the document eight times, 36 over the eight
+    c = take({}, [var("a", "fact", "x" * 300)], actor=ACTOR, why="manual", budget=100, now=AT)
+    encoded: list[str] = []
+    real = module._bytes
+    monkeypatch.setattr(module, "_bytes", lambda doc: encoded.append(doc["id"]) or real(doc))
+    counts, paths = [], []
+    for _ in range(8):
+        before = len(encoded)
+        paths.append(save(c, plain))
+        counts.append(len(encoded) - before)
+    assert counts == [1] * 8 and encoded == [ID] * 8
+    assert [p.stem for p in paths] == [ID, *(f"{ID}-{n:02d}" for n in range(2, 9))]
+    for p in paths:  # each file the bytes an encoding under its own name gives, its id that name
+        assert p.read_bytes() == real({**dataclasses.asdict(c), "id": p.stem})
+        assert load(plain, p.stem) == dataclasses.replace(c, id=p.stem)
+    assert load(plain).id == f"{ID}-08"
 
 
 def test_load_says_what_is_missing_or_malformed_and_takes_only_a_name(plain):
