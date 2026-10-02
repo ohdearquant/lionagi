@@ -18,6 +18,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -87,15 +88,21 @@ LAUNCHCTL = "/bin/launchctl"
 LSOF = _bin("lsof", "/usr/sbin/lsof", "/usr/bin/lsof")
 
 
+_GRACE = 5  # seconds a stopped command's process group gets to close its pipes and be reaped
+
+
 async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) -> tuple[int, str, str]:
     """One read-only command: rc, stdout, stderr. Every program path is the caller's; nothing here
-    is a shell."""
+    is a shell. Past `timeout`, or on a cancel, the command's process group is killed and its pipes
+    drained for up to `_GRACE` seconds, so the call returns within `timeout` plus that grace. A
+    descendant that left the group is not killed, and its pipe is abandoned at the grace."""
     proc = await asyncio.create_subprocess_exec(
         *argv,
         cwd=cwd,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,  # the command's whole process group: a timeout ends its children too
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -109,9 +116,14 @@ async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) ->
 
 
 async def _stop(proc: asyncio.subprocess.Process) -> None:
-    with contextlib.suppress(ProcessLookupError):  # it may have exited on its own
-        proc.kill()
-    await proc.wait()
+    # the group may have ended on its own; macOS answers EPERM for one whose only member is its leader,
+    # exited and not yet reaped
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    # drain, then reap: a command that filled its pipe holds it paused, and on 3.11 and 3.12 `wait`
+    # returns only once every pipe has closed, so waiting before draining never returns
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(proc.communicate(), _GRACE)
 
 
 def _age_h(iso: str, now: float | None = None) -> float:

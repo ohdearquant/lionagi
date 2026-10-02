@@ -5,10 +5,13 @@ later runs report transitions, and a floor is read with the budget of the instru
 it."""
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
 import re
+import signal
+import sys
 import time
 import tomllib
 from datetime import UTC, datetime, timedelta
@@ -545,35 +548,43 @@ def test_disk_reads_df_in_the_posix_layout_because_gnu_wraps_a_long_device_name_
 
 
 class Child:
-    """A child whose output never comes: records the kill and whether it was waited for."""
+    """A child whose output never comes until its process group is killed: records the kill and
+    whether its pipes were drained after it."""
 
-    def __init__(self, gone: bool = False):
-        self.killed = self.waited = False
-        self.gone, self.returncode = gone, None
+    pid = 424242
+
+    def __init__(self):
+        self.killed = self.drained = False
+        self.returncode = None
 
     async def communicate(self):
-        await asyncio.sleep(60)
-
-    def kill(self):
-        self.killed = True
-        if self.gone:
-            raise ProcessLookupError
-
-    async def wait(self):
-        self.waited, self.returncode = True, -9
-        return -9
+        while not self.killed:  # the pipes stay open while the group lives
+            await asyncio.sleep(0.005)
+        self.drained, self.returncode = True, -9
+        return b"", b""
 
 
-@pytest.mark.parametrize("gone", [False, True], ids=["running", "exited-on-its-own"])
+@pytest.mark.parametrize(
+    "gone",
+    [None, ProcessLookupError, PermissionError],
+    ids=["running", "exited-on-its-own", "exited-not-yet-reaped"],
+)
 def test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation(monkeypatch, gone):
-    child = Child(gone)
+    child = Child()
 
     async def spawn(*argv, **kw):
         return child
 
+    def killpg(pid, sig):
+        assert (pid, sig) == (Child.pid, signal.SIGKILL)
+        child.killed = True
+        if gone is not None:  # macOS answers EPERM for a group whose only member is an unreaped leader
+            raise gone
+
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(os, "killpg", killpg)
     assert asyncio.run(instr.sh(["/bin/x"], timeout=0.01)) == (124, "", "/bin/x did not finish within 0.01s")
-    assert child.killed and child.waited
+    assert child.killed and child.drained
 
     async def cancelled():
         task = asyncio.create_task(instr.sh(["/bin/x"]))
@@ -582,9 +593,136 @@ def test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation(monkeyp
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    child.killed = child.waited = False
+    child.killed = child.drained = False
     asyncio.run(cancelled())
-    assert child.killed and child.waited
+    assert child.killed and child.drained
+
+
+# a command writing without end: past its timeout its pipe stays full until something reads it
+FLOOD = "import os, sys\nb = b'y' * 65536\nwhile True:\n    os.write(int(sys.argv[1]), b)"
+# a command that starts a sleeping descendant on its own stdout and stderr and writes the
+# descendant's pid, then sleeps on or exits; a descendant `apart` leads a session of its own
+FAMILY = (
+    "import subprocess, sys, time\n"
+    "p = subprocess.Popen(['sleep', '30'], start_new_session=sys.argv[3] == 'apart')\n"
+    "open(sys.argv[1], 'w').write(str(p.pid))\n"
+    "if sys.argv[2] == 'running':\n"
+    "    time.sleep(30)\n"
+)
+BOUND = 10.0  # seconds: a call still running then is a regression that fails, never one that hangs
+
+
+def alive(pid: int, settle: float = 0.0) -> bool:
+    """Whether the pid still runs once `settle` seconds have let a killed one be reaped."""
+    end = time.monotonic() + settle
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        if time.monotonic() >= end:
+            return True
+        time.sleep(0.02)
+
+
+def real_sh(monkeypatch, argv, *, timeout, cancels=0, pidfile=None, settle=5.0):
+    """sh on a real command under the test's own clock: (what it gave, "cancelled", or "hung" past
+    BOUND; the seconds it took, from the first cancel when there is one; whether the descendant in
+    `pidfile` still runs; whether every command it started was reaped). Whatever the outcome, the
+    descendant is killed and each command's pipes are read to their end before the loop closes."""
+    started = []
+    spawn = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        started.append(await spawn(*args, **kwargs))
+        return started[-1]
+
+    async def written() -> int:
+        while not (pidfile.exists() and pidfile.read_text()):
+            await asyncio.sleep(0.01)
+        return int(pidfile.read_text())
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+
+    async def go():
+        t0 = time.monotonic()
+        task = asyncio.create_task(instr.sh(argv, timeout=timeout))
+        # the descendant runs before the call is timed out or cancelled
+        pid = await asyncio.wait_for(written(), BOUND) if pidfile is not None else None
+        if cancels:
+            t0 = time.monotonic()
+        for _ in range(cancels):  # a second cancel lands while the first one's cleanup runs
+            task.cancel()
+            await asyncio.sleep(0.05)
+        done, _ = await asyncio.wait([task], timeout=BOUND)
+        took = time.monotonic() - t0
+        if task in done:
+            got = "cancelled" if task.cancelled() else task.result()
+        else:
+            got = "hung"
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        left = None
+        if pid is not None:
+            left = alive(pid, settle)
+            if left:
+                os.kill(pid, signal.SIGKILL)
+        for proc in started:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            await asyncio.wait_for(proc.communicate(), 5)
+        return got, took, left, all(p.returncode is not None for p in started)
+
+    return asyncio.run(go())
+
+
+@pytest.mark.parametrize("fd", ["1", "2"], ids=["stdout", "stderr"])
+def test_sh_returns_at_its_timeout_when_the_command_filled_its_pipe(monkeypatch, fd):
+    # the kill alone frees nothing: the full pipe is paused, and on 3.11 and 3.12 a wait returns only
+    # once every pipe has closed
+    got, took, _, reaped = real_sh(monkeypatch, [sys.executable, "-c", FLOOD, fd], timeout=0.05)
+    assert got == (124, "", f"{sys.executable} did not finish within 0.05s")
+    assert took < 0.05 + 3 and reaped
+
+
+@pytest.mark.parametrize("leader", ["running", "exited"])
+def test_sh_ends_the_descendant_holding_its_pipe_at_the_timeout(monkeypatch, tmp_path, leader):
+    pidfile = tmp_path / "descendant.pid"
+    argv = [sys.executable, "-c", FAMILY, str(pidfile), leader, "in-group"]
+    got, took, left, reaped = real_sh(monkeypatch, argv, timeout=1.0, pidfile=pidfile)
+    assert got == (124, "", f"{sys.executable} did not finish within 1.0s")
+    assert took < 1.0 + 3  # the group is killed, so the pipe closes without waiting out the grace
+    assert left is False and reaped
+
+
+def test_a_cancelled_sh_ends_the_descendant_holding_its_pipe_and_stays_cancelled(monkeypatch, tmp_path):
+    pidfile = tmp_path / "descendant.pid"
+    argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "in-group"]
+    got, took, left, reaped = real_sh(monkeypatch, argv, timeout=30, cancels=1, pidfile=pidfile)
+    assert got == "cancelled" and took < 3
+    assert left is False and reaped
+
+
+@pytest.mark.parametrize("cancels", [0, 1, 2], ids=["a-timeout", "a-cancel", "a-second-cancel"])
+def test_sh_returns_within_its_grace_when_a_descendant_that_left_the_group_holds_the_pipe(
+    monkeypatch, tmp_path, cancels
+):
+    # the bound on the caller holds; ending every descendant does not: one in a session of its own is
+    # out of the group's reach, and is left running
+    monkeypatch.setattr(instr, "_GRACE", 1, raising=False)
+    pidfile = tmp_path / "descendant.pid"
+    argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "apart"]
+    timeout = 30 if cancels else 1.0
+    got, took, left, reaped = real_sh(
+        monkeypatch, argv, timeout=timeout, cancels=cancels, pidfile=pidfile, settle=0
+    )
+    if cancels:
+        assert got == "cancelled" and took < 1 + 3
+    else:
+        assert got == (124, "", f"{sys.executable} did not finish within 1.0s")
+        assert took < 1.0 + 1 + 3
+    assert left is True and reaped
 
 
 class ExecKhive:
