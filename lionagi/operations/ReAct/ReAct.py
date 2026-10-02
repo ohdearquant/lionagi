@@ -8,13 +8,16 @@ from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from pydantic import BaseModel
 
+from lionagi._errors import ExecutionError
 from lionagi.libs.schema.as_readable import as_readable
 from lionagi.libs.validate.common_field_validators import validate_model_to_type
 from lionagi.models.field_model import FieldModel
+from lionagi.providers._provider_errors import ProviderError
 from lionagi.service.imodel import iModel
 
 from .._defaults import make_parse_param
 from .._turn_origin import TurnOrigin
+from ..chat._prepare import _react_context
 from ..fields import Instruct
 from ..types import ActionParam, ChatParam, HandleValidation, InterpretParam, ParseParam
 from .utils import Analysis, ReActAnalysis
@@ -456,6 +459,33 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
     out = verbose_yield("\n### ReAct Round No.1 Analysis:\n", analysis)
     yield out
 
+    # Every round's instruction holds the caller's context, so a later call's history
+    # renders a copy per earlier round and round n would send n copies of it. Each later
+    # call runs with the context in `_react_context`, and the request's own preparation
+    # shows it once: where the history it renders, read in that same pass, first shows an
+    # instruction carrying it, leaving it out of the later ones and of the current turn
+    # in that request alone (chat/_prepare.py). Stored instructions keep it, for any
+    # other request that renders them. When that history holds none (a progression fixed
+    # by the caller or curated during the run, a carrier the renderer drops, or one a
+    # tool, a context provider or a final clear took away), the call attaches the context
+    # as before. An instruction counts as a carrier only when its rendering shows the
+    # caller's context, whoever stored it.
+    once = chat_param.context
+    once = once if isinstance(once, list) else [once] if once is not None else None
+
+    async def _context_once(call: Callable[..., Awaitable[Any]], **kwargs: Any) -> Any:
+        if not once:
+            return await call(**kwargs)
+        # A copy per call, emptied when the call returns: a task the call starts copies the
+        # variable, and an empty list tells it the call is over.
+        scope = list(once)
+        token = _react_context.set(scope)
+        try:
+            return await call(**kwargs)
+        finally:
+            scope.clear()
+            _react_context.reset(token)
+
     extensions = max_extensions or 0
     round_count = 1
 
@@ -530,8 +560,9 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
                 _inj_chat = chat_param.with_updates(
                     response_format=ReActAnalysis, turn_origin=TurnOrigin.no_origin()
                 )
-                analysis = await _op(
-                    branch,
+                analysis = await _context_once(
+                    _op,
+                    branch=branch,
                     instruction=injected,
                     chat_param=_inj_chat,
                     action_param=action_param,
@@ -562,8 +593,9 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
             else None
         )
 
-        analysis = await operate(
-            branch,
+        analysis = await _context_once(
+            operate,
+            branch=branch,
             instruction=kwargs["instruction"],
             chat_param=kwargs["chat_param"],
             action_param=kwargs.get("action_param"),
@@ -641,7 +673,10 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
                 operate_kwargs[param] = resp_ctx[param]
 
     try:
-        out = await operate(**operate_kwargs)
+        if "context" in resp_ctx_updates:  # the final call's own context, not the caller's
+            out = await operate(**operate_kwargs)
+        else:
+            out = await _context_once(operate, **operate_kwargs)
 
         if isinstance(out, dict) and all(i is None for i in out.values()):
             if not continue_after_failed_response:
@@ -650,6 +685,9 @@ async def ReActStream(  # noqa: N802  # public name preserves the ReAct acronym
                     "This might be due to a failed response. "
                     "Set `continue_after_failed_response=True` to ignore this error."
                 )
+    except (ExecutionError, ProviderError):
+        # The provider refused the final call; an earlier round's reply is not its answer.
+        raise
     except Exception:
         out = branch.msgs.last_response.response
 

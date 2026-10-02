@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
 
@@ -24,6 +25,11 @@ from ..types import ChatParam, RunParam
 if TYPE_CHECKING:
     from lionagi.protocols.context_providers import ProviderReport
     from lionagi.session.branch import Branch
+
+# ReAct's caller context while one of its later calls runs (ReAct.py). That call's request shows
+# the context once: `_prepare_run_kwargs`, in the same pass that renders the history, leaves it out
+# of every rendered instruction after the first one carrying it, the current turn included.
+_react_context: ContextVar[list[Any] | None] = ContextVar("_react_context", default=None)
 
 
 @dataclass
@@ -89,6 +95,82 @@ def _build_instruction(
     return branch.msgs.create_instruction(**params)
 
 
+def _render_context(context: Sequence[Any]) -> list[str]:
+    """Each context item as an instruction renders it, an entry of its context list."""
+    from lionagi.libs.schema.minimal_yaml import minimal_yaml
+
+    return [minimal_yaml([value]) for value in context]
+
+
+def _held_context(instruction: Instruction) -> list[str]:
+    """The instruction's context items as it renders them, through its render cache.
+
+    The cache renders afresh whenever the content changed in place or holds a value whose
+    change it cannot observe, the rule the history's own rendering follows, so a stored
+    context changed in place is read as it renders now.
+    """
+    held = instruction.content.prompt_context
+    return instruction._render_cached("context_items", lambda: _render_context(held))
+
+
+def _carries_context(instruction: Instruction, shown: Sequence[str]) -> bool:
+    """Whether the instruction, rendered now, shows every one of these rendered context items.
+
+    An instruction renders the context it was sent with as a list, one entry per item,
+    unless plain content replaces its rendering. Each item has to render as the same text
+    as a different item the instruction holds, so ``True`` does not stand in for ``1``
+    nor ``0.0`` for ``-0.0``, and a context that repeats an item is carried only by an
+    instruction that holds it as often. A value that cannot be rendered answers no.
+    """
+    if instruction.content.plain_content:
+        return False
+    try:
+        if len(instruction.content.prompt_context) < len(shown):
+            return False
+        held = _held_context(instruction)
+        for text in shown:
+            if text not in held:
+                return False
+            held.remove(text)
+    except Exception:
+        return False
+    return True
+
+
+def _history_carriers(branch: "Branch", progression: Sequence, shown: Sequence[str]) -> list[int]:
+    """The positions in ``progression`` of the instructions the history pass of
+    ``_prepare_run_kwargs`` renders carrying the context, oldest first.
+
+    Mirrors that pass: action responses fold into the next instruction, other message
+    kinds are skipped, and an instruction that directly follows another instruction is
+    dropped, so of consecutive instructions only the first is rendered.
+    """
+    carriers = []
+    previous = None
+    for i, msg in enumerate(branch.msgs.messages[j] for j in progression):
+        if isinstance(msg, ActionResponse) or not isinstance(msg, AssistantResponse | Instruction):
+            continue
+        if (
+            isinstance(msg, Instruction)
+            and (previous is None or isinstance(previous, AssistantResponse))
+            and _carries_context(msg, shown)
+        ):
+            carriers.append(i)
+        previous = msg
+    return carriers
+
+
+def _without_context(instruction: Instruction, shown: Sequence[str]) -> list[Any]:
+    """The instruction's context with the items rendered as ``shown`` left out, one held
+    item per shown item; only for an instruction that carries them."""
+    held = list(instruction.content.prompt_context)
+    rendered = _held_context(instruction)
+    for text in shown:
+        k = rendered.index(text)
+        del rendered[k], held[k]
+    return held
+
+
 def _prepare_run_kwargs(
     branch: "Branch",
     instruction: JsonValue | Instruction,
@@ -106,7 +188,31 @@ def _prepare_run_kwargs(
     _act_res = []
     progression = param.progression or branch.progression
 
-    for msg in (branch.msgs.messages[j] for j in progression):
+    # Within one of ReAct's later calls the request shows the caller's context once, where
+    # the history first renders it: later rendered instructions carrying it, and the current
+    # turn, go out without those items. Only this request's copies change, never a stored
+    # instruction, which another request may render. Decided in this pass, with no await
+    # between it and the history read below, so nothing that runs earlier in the call (a
+    # hook, a context provider) can change the history after the decision. A context that
+    # cannot be rendered is left in: sent twice costs less than lost.
+    shown: list[str] | None = None
+    _leave_out: set[int] = set()
+    context = _react_context.get()
+    if context:
+        try:
+            shown = _render_context(context)
+        except Exception:
+            shown = None
+    if shown is not None:
+        carriers = _history_carriers(branch, progression, shown)
+        if carriers:
+            _leave_out = set(carriers[1:])
+            if _carries_context(ins, shown):
+                _use_ins_content = ins.content.with_updates(
+                    prompt_context=_without_context(ins, shown)
+                )
+
+    for i, msg in enumerate(branch.msgs.messages[j] for j in progression):
         if isinstance(msg, ActionResponse):
             _act_res.append(msg)
 
@@ -120,28 +226,32 @@ def _prepare_run_kwargs(
 
         elif isinstance(msg, Instruction):
             updates = {"tool_schemas": [], "response_format": None}
-            has_action_context = bool(_act_res)
+            overlay = bool(_act_res) or i in _leave_out
+
+            if i in _leave_out:
+                updates["prompt_context"] = _without_context(msg, shown)
 
             if _act_res:
                 d_ = _collect_action_dicts(_act_res)
-                extended_ctx = list(msg.content.prompt_context)
+                extended_ctx = list(updates.get("prompt_context", msg.content.prompt_context))
                 extended_ctx.extend(z for z in d_ if z not in extended_ctx)
                 updates["prompt_context"] = extended_ctx
                 _act_res = []
 
             _contents.append(
                 _PreparedContent(
-                    source=msg if not has_action_context else None,
-                    cache_variant="prepared_instruction" if not has_action_context else None,
-                    content=(msg.content.with_updates(**updates) if has_action_context else None),
+                    source=msg if not overlay else None,
+                    cache_variant="prepared_instruction" if not overlay else None,
+                    content=(msg.content.with_updates(**updates) if overlay else None),
                 )
             )
 
     if _act_res:
         d_ = _collect_action_dicts(_act_res)
-        extended_ctx = list(ins.content.prompt_context)
+        current = _use_ins_content if _use_ins_content is not None else ins.content
+        extended_ctx = list(current.prompt_context)
         extended_ctx.extend(z for z in d_ if z not in extended_ctx)
-        _use_ins_content = ins.content.with_updates(prompt_context=extended_ctx)
+        _use_ins_content = current.with_updates(prompt_context=extended_ctx)
 
     _contents = [entry for entry in _contents if entry.role != MessageRole.UNSET]
 

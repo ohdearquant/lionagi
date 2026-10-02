@@ -428,11 +428,11 @@ def _has_untracked_mutable(root: Any) -> bool:
     recursive) so deep-but-safe input can't raise `RecursionError`; fails safe
     (True) for a cyclic container or once traversal exceeds a bounded depth.
     See docs/internals/core.md#message-render-cache-safety."""
-    stack: list[tuple[Any, int]] = [(root, 0)]
+    stack: list[tuple[Any, int, bool]] = [(root, 0, False)]
     on_path: set[int] = set()
 
     while stack:
-        value, depth = stack.pop()
+        value, depth, in_tuple = stack.pop()
 
         if isinstance(value, _ExitFrame):
             on_path.discard(value.obj_id)
@@ -442,6 +442,11 @@ def _has_untracked_mutable(root: Any) -> bool:
             continue
 
         if isinstance(value, (list, tuple, frozenset, dict)):
+            # `_track_mutable` never copies into a tuple, so a list or dict held
+            # by one changes without touching this content's revision.
+            if in_tuple and isinstance(value, (list, dict)):
+                return True
+
             if depth > _UNTRACKED_MUTABLE_MAX_DEPTH:
                 return True
 
@@ -450,14 +455,15 @@ def _has_untracked_mutable(root: Any) -> bool:
                 return True  # cyclic reference: cannot prove safe
 
             on_path.add(obj_id)
-            stack.append((_ExitFrame(obj_id), depth))
+            stack.append((_ExitFrame(obj_id), depth, in_tuple))
+            in_tuple = in_tuple or isinstance(value, tuple)
             if isinstance(value, dict):
                 for key, item in value.items():
-                    stack.append((key, depth + 1))
-                    stack.append((item, depth + 1))
+                    stack.append((key, depth + 1, in_tuple))
+                    stack.append((item, depth + 1, in_tuple))
             else:
                 for item in value:
-                    stack.append((item, depth + 1))
+                    stack.append((item, depth + 1, in_tuple))
             continue
 
         return True

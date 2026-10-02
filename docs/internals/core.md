@@ -565,7 +565,10 @@ it every call is the only way to keep it honest.
 `_has_untracked_mutable` walks a value looking for anything besides JSON-safe
 primitives and list/dict/tuple/frozenset nesting of them — `type` objects are
 exempt, since content only ever reads their class-level schema, never live
-instance state. It's iterative (explicit stack, not recursion) so deeply
+instance state. A list or dict held by a tuple counts as untracked too:
+`_track_mutable` copies lists and dicts into revision-tracking containers but
+leaves tuples as they are, so whatever a tuple holds changes without touching
+the content's revision. It's iterative (explicit stack, not recursion) so deeply
 nested-but-safe input cannot raise `RecursionError`, and it fails safe
 (returns `True` without raising) for a self-referential (cyclic) container or
 once traversal exceeds a bounded depth, since neither can be proven safe to

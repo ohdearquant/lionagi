@@ -190,6 +190,26 @@ def test_response_format_mutable_dict_key_mutation_invalidates_cache():
     assert cached == uncached
 
 
+@pytest.mark.parametrize("tracked_by", [None, "another message"], ids=["plain", "borrowed"])
+def test_a_dict_held_by_a_tuple_renders_as_it_is_now(tracked_by):
+    branch = Branch()
+    selection = {"menu": "draft"}
+    if tracked_by:
+        # A dict another message tracks reports its changes to that message only.
+        other = branch.msgs.add_message(instruction="other", context=[selection])
+        selection = other.content.prompt_context[0]
+    message = branch.msgs.add_message(instruction="historic", context=[(selection,)])
+
+    assert "draft" in message.chat_msg["content"]
+    selection["menu"] = "final"
+
+    cached = message.chat_msg["content"]
+    uncached = message._chat_msg(use_render_cache=False)["content"]
+    assert "final" in cached
+    assert "draft" not in cached
+    assert cached == uncached
+
+
 def test_cyclic_prompt_context_does_not_raise_recursion_error():
     branch = Branch()
 
