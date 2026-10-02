@@ -23,10 +23,11 @@ from lionagi.actor import DEFAULT_HANDLERS
 from tests.test_actor import scripted
 
 
-def stub_daytona(root: Path, ok: list[bool]) -> types.ModuleType:
+def stub_daytona(root: Path, ok: list[bool], up: list[bool] | None = None) -> types.ModuleType:
     """A `daytona` module whose one box runs commands here: `cwd` is `root`, files live under it, and
     `timeout -s KILL <s> argv` is a shim that ends the command at `<s>` with rc 137, as the guest's
-    does (coreutils is not on every machine)."""
+    does (coreutils is not on every machine). `up` says, box by box, whether a created box ever comes
+    up; every box does when it is not given."""
     shim = root / "shim"
     shim.mkdir()
     (shim / "timeout").write_text(
@@ -46,8 +47,11 @@ def stub_daytona(root: Path, ok: list[bool]) -> types.ModuleType:
         return root / path.lstrip("/") if path.startswith("/tmp/lion-") else Path(path)
 
     class Proc:
+        def __init__(self, up: bool):
+            self.up = up
+
         async def exec(self, cmd, cwd=None, env=None, timeout=None):
-            if not ok[0]:
+            if not (ok[0] and self.up):
                 raise DaytonaError("bad request: failed to resolve container IP after 3 attempts")
             cmd = cmd.replace("/tmp/lion-", f"{root}/tmp/lion-")  # the box's /tmp is ours
             done = subprocess.run(
@@ -73,7 +77,7 @@ def stub_daytona(root: Path, ok: list[bool]) -> types.ModuleType:
 
     class Box:
         def __init__(self):
-            self.process, self.fs, self.deleted = Proc(), FS(), False
+            self.process, self.fs, self.deleted = Proc(up.pop(0) if up else True), FS(), False
 
         async def delete(self):
             self.deleted = True
@@ -175,6 +179,26 @@ def test_push_copies_what_git_sees_and_a_dead_box_is_named(stubbed, tmp_path):
     assert "resolve container IP" in box.dead
     asyncio.run(box.stop())
     assert mod.Client.made[-1].deleted and box.started is False
+
+
+def test_a_box_that_never_comes_up_is_replaced_and_three_in_a_row_are_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(daytona_mod, "api_key", lambda: "k")
+    for name, up in (("once", [False, True]), ("never", [False, False, False])):
+        root = tmp_path / name
+        root.mkdir()
+        mod = stub_daytona(root, [True], up)
+        monkeypatch.setitem(sys.modules, "daytona", mod)
+        box = DaytonaSandbox("img", workdir=str(root / "work"))
+        if name == "once":
+            asyncio.run(box.start())
+            made = mod.Client.made
+            assert len(made) == 2 and made[0].deleted and box._box is made[1] and not made[1].deleted
+            assert box.started and box.dead is None and asyncio.run(box.run("true")) == (0, "")
+        else:
+            with pytest.raises(daytona_mod.SandboxDead, match="three boxes in a row never came up"):
+                asyncio.run(box.start())
+            assert len(mod.Client.made) == 3 and all(b.deleted for b in mod.Client.made)
+            assert box.started is False and box._box is None
 
 
 def test_push_counts_what_was_actually_uploaded_not_what_git_listed(stubbed, tmp_path):

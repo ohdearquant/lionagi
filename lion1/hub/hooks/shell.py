@@ -100,14 +100,30 @@ def load(path: Path) -> list[Hook]:
 async def run_hook(hook: Hook, payload: dict, cwd: Path) -> tuple[int | None, str, str]:
     """(exit code, stdout, stderr); the code is None when the hook was killed at its timeout."""
     data = json.dumps(payload, default=str).encode()  # a payload that cannot be encoded starts nothing
-    proc = await asyncio.create_subprocess_shell(
-        hook.run,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(cwd),
-        start_new_session=True,  # the hook's whole process group: a timeout ends its children too
+    # the launch is a task of its own: a cancel landing while asyncio still connects the pipes would
+    # have asyncio kill the shell alone, and the group it already leads would live on
+    launch = asyncio.ensure_future(
+        asyncio.create_subprocess_shell(
+            hook.run,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(cwd),
+            start_new_session=True,  # the hook's whole process group: a timeout ends its children too
+        )
     )
+    try:
+        await asyncio.wait([launch])  # a cancel stops this wait and never reaches the launch
+    except asyncio.CancelledError:  # the launch is waited out, a second cancel too: it takes milliseconds
+        while not launch.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.wait([launch])
+        # a launch cancelled itself, as a loop's shutdown cancels every task, gives back no pid: asyncio
+        # ends the shell, and a child the shell had started by then is out of reach
+        if not launch.cancelled() and launch.exception() is None:
+            await _end(launch.result())
+        raise
+    proc = launch.result()
     done = False
     try:
         out, err = await asyncio.wait_for(proc.communicate(data), hook.timeout)
@@ -116,17 +132,20 @@ async def run_hook(hook: Hook, payload: dict, cwd: Path) -> tuple[int | None, st
         return None, "", ""
     finally:  # timed out, cancelled or failed: the group goes and is reaped before the hook returns
         if not done:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(proc.pid, signal.SIGKILL)
-            # drain first: a hook that filled its pipe holds it paused, and on 3.11 and 3.12 `wait`
-            # returns only once every pipe has closed, so waiting before draining never returns. A
-            # pipe that fails to drain, or a child that outlives the grace, changes nothing the
-            # caller is told
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(proc.communicate(), 5)
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(proc.wait(), 5)
+            await _end(proc)
     return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
+
+
+async def _end(proc: asyncio.subprocess.Process) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    # drain first: a hook that filled its pipe holds it paused, and on 3.11 and 3.12 `wait` returns
+    # only once every pipe has closed, so waiting before draining never returns. A pipe that fails to
+    # drain, or a child that outlives the grace, changes nothing the caller is told
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(proc.communicate(), 5)
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(proc.wait(), 5)
 
 
 def install(actor: Actor, hooks: Iterable[Hook], cwd: Path) -> int:

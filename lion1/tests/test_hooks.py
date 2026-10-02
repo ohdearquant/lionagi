@@ -270,6 +270,42 @@ def test_a_cancelled_hook_takes_its_children_with_it_too(tmp_path):
     assert not (tmp_path / "marker.txt").exists()
 
 
+@pytest.mark.parametrize("cancels", [1, 2], ids=["a-cancel", "a-second-cancel"])
+def test_a_hook_cancelled_while_its_pipes_connect_takes_its_children_with_it(tmp_path, monkeypatch, cancels):
+    # a cancel that landed while asyncio was still connecting the pipes made asyncio kill the shell
+    # alone: the group it led lived on, and its child wrote after the hook had gone
+    import asyncio.base_subprocess as bs
+    import time
+
+    from hub.hooks.shell import Hook
+
+    connect, seen = bs.BaseSubprocessTransport._connect_pipes, []
+
+    async def late(self, waiter):  # a loaded machine: the shell already runs, its pipes connect late
+        seen.append("connecting")
+        await asyncio.sleep(0.3)
+        seen.append("connected")
+        await connect(self, waiter)
+
+    monkeypatch.setattr(bs.BaseSubprocessTransport, "_connect_pipes", late)
+    hook = Hook("before", "(sleep 1; echo x > marker.txt) & sleep 5", "slow", "*", 30)
+
+    async def go():
+        task = asyncio.create_task(run_hook(hook, {"event": "before"}, tmp_path))
+        await asyncio.sleep(0.05)
+        at_cancel = list(seen)
+        for _ in range(cancels):  # a second cancel lands while the first still waits the launch out
+            task.cancel()
+            await asyncio.sleep(0.05)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return at_cancel
+
+    assert asyncio.run(go()) == ["connecting"]  # the cancel landed mid-launch, the window at issue
+    time.sleep(1.5)
+    assert not (tmp_path / "marker.txt").exists()
+
+
 class HookProcess:
     """A process double: `killpg` on its pid kills it, `wait` reaps it into a returncode, and waiting
     on one nobody killed is the hang a real child would be."""
@@ -311,6 +347,42 @@ def spawn_doubles(monkeypatch, *procs: HookProcess) -> tuple[list, list]:
     monkeypatch.setattr(asyncio, "create_subprocess_shell", spawn)
     monkeypatch.setattr(os, "killpg", killpg)
     return spawned, killed
+
+
+@pytest.mark.parametrize("launch", ["fails", "is-cancelled"])
+def test_a_cancel_mid_launch_whose_launch_ends_without_a_process_kills_nothing(tmp_path, monkeypatch, launch):
+    # a launch that raised, or that was cancelled itself as a loop's shutdown cancels every task, gives
+    # back no process: the cancel still leaves, nothing is killed, and the launch's error is retrieved
+    import os
+
+    from hub.hooks.shell import Hook
+
+    killed, errors = [], []
+
+    async def spawn(*args, **kwargs):
+        await asyncio.sleep(0.1 if launch == "fails" else 30)
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_shell", spawn)
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: killed.append(pid))
+
+    async def go():
+        asyncio.get_running_loop().set_exception_handler(lambda loop, context: errors.append(context))
+        task = asyncio.create_task(run_hook(Hook("before", "x", "x", "*", 5), {"event": "before"}, tmp_path))
+        await asyncio.sleep(0.02)
+        task.cancel()
+        await asyncio.sleep(0.02)
+        if launch == "is-cancelled":
+            (spawning,) = [t for t in asyncio.all_tasks() if t.get_coro().__name__ == "spawn"]
+            spawning.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        import gc
+
+        gc.collect()  # an exception nobody retrieved is reported when its task is collected
+
+    asyncio.run(go())
+    assert killed == [] and errors == []
 
 
 def test_an_after_hook_whose_payload_refers_to_itself_starts_nothing_and_the_result_stands(

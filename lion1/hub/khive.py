@@ -29,10 +29,22 @@ __all__ = (
 
 
 class KhiveError(Exception):
-    pass
+    """A khive call that failed. `kind` is the kind the store gave the first failed op's error, as
+    "not_found" for an id it does not hold; None when the call failed before the store answered or
+    the answer named no kind."""
+
+    def __init__(self, message: str, kind: str | None = None) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 LOST = "daemon response lost after request was sent"  # kkernel dropping a READ's answer; see inbox
+
+
+def _kind(bad: list[dict]) -> str | None:
+    error = bad[0].get("error") if bad else None
+    kind = error.get("kind") if isinstance(error, dict) else None
+    return kind if isinstance(kind, str) else None
 
 
 def lit(value: Any) -> str:
@@ -103,10 +115,12 @@ class Khive:
             # the op's own error is on stdout; stderr carries the refusal class and the actor line
             said = "; ".join(f"{r.get('tool')}: {str(r.get('error') or r)[:300]}" for r in bad)
             said = said or " | ".join(detail).strip() or out.decode(errors="replace").strip()
-            raise KhiveError(f"kkernel exited {proc.returncode}: {said[-600:]}")
+            raise KhiveError(f"kkernel exited {proc.returncode}: {said[-600:]}", kind=_kind(bad))
         self.calls.append({"ops": ops, "status": data.get("status"), "summary": data.get("summary")})
         if bad:
-            raise KhiveError(f"{bad[0].get('tool')}: {str(bad[0].get('error') or bad[0])[:500]}")
+            raise KhiveError(
+                f"{bad[0].get('tool')}: {str(bad[0].get('error') or bad[0])[:500]}", kind=_kind(bad)
+            )
         return [r.get("result") for r in results]
 
     # the mailbox
