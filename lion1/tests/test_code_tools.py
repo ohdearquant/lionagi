@@ -2,12 +2,13 @@
 match, an edit that lands only where `old` is unique and serializes with another edit of the same file."""
 
 import asyncio
+import itertools
 from pathlib import Path
 
 import pytest
 
 from hub import LocalTree, code
-from hub.tools.code import numbered, replace_once
+from hub.tools.code import Edit, numbered, replace_once
 from lionagi import Actor, Kind, Profile, RunRequest
 from lionagi.actor import DEFAULT_HANDLERS
 from tests.test_actor import scripted
@@ -128,6 +129,86 @@ def test_an_edit_keeps_each_line_of_a_mixed_endings_file(tmp_path):
     assert r["e"].ok, r["e"].error
     assert (tmp_path / "mixed.txt").read_bytes() == b"a = 1\r\nb = 1\nc = 2\r\nc2 = 3\r\nd = 1"
     assert reend("x\r\ny\n", "x\ny\nz\n") == "x\r\ny\nz\n" and reend("x\r\n", "w\nx\n") == "w\r\nx\r\n"
+
+
+def test_an_edit_leaves_a_bare_carriage_return_where_it_was(tmp_path):
+    # a line's ending was stripped as any run of CR and LF while the edit folded only CRLF, so a CR
+    # not before an LF read as part of the ending and was written back once more on every edit
+    actor, profile = tree(tmp_path)
+    (tmp_path / "one.txt").write_bytes(b"a\r\nb\r")
+    (tmp_path / "two.txt").write_bytes(b"x\r\r\ny\r\n")
+    run = asyncio.run(
+        actor.run(
+            profile,
+            RunRequest(inputs=("go",), max_rounds=2),
+            scripted(
+                '<lact e1>edit(path="one.txt", old="a", new="A")</lact>'
+                '<lact e2>edit(path="two.txt", old="y", new="Y")</lact>',
+                "done",
+            ),
+        )
+    )
+    r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
+    assert r["e1"].ok and r["e2"].ok, (r["e1"].error, r["e2"].error)
+    written = ((tmp_path / "one.txt").read_bytes(), (tmp_path / "two.txt").read_bytes())
+    assert written == (b"A\r\nb\r", b"x\r\r\nY\r\n")
+
+
+def test_read_lines_shows_a_bare_carriage_return_as_text(tmp_path):
+    # the read dropped it with the ending, so an `old` copied from the read missed the line
+    actor, profile = tree(tmp_path)
+    (tmp_path / "one.txt").write_bytes(b"a\r\nb\r")
+    (tmp_path / "two.txt").write_bytes(b"x\r\r\ny\r\n")
+    run = asyncio.run(
+        actor.run(
+            profile,
+            RunRequest(inputs=("go",), max_rounds=2),
+            scripted(
+                '<lact r1>read_lines(path="one.txt")</lact><lact r2>read_lines(path="two.txt")</lact>',
+                "done",
+            ),
+        )
+    )
+    r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
+    assert r["r1"].value == "one.txt lines 1-2 of 2\n1: a\n2: b\r"
+    assert r["r2"].value == "two.txt lines 1-2 of 2\n1: x\r\n2: y"
+
+
+def test_an_edit_of_a_small_corpus_matches_the_read_and_changes_no_other_line(tmp_path):
+    # every string of length 0..6 over a, CR and LF holding a CRLF: the file as read_lines shows it is
+    # what an edit matches, an edit of it to itself writes the same bytes, and in a file whose LFs all
+    # follow a CR an edit of one line leaves every other line byte-identical (with mixed endings the
+    # diff may pair an untouched line with an equal line ending otherwise, so those take only the first)
+    actor = Actor("c")
+    code(actor, LocalTree(tmp_path))
+    edit, f = actor.handlers["edit"].fn, tmp_path / "f.txt"
+
+    async def corpus() -> int:
+        edits = 0
+        for chars in itertools.chain.from_iterable(itertools.product("a\r\n", repeat=n) for n in range(7)):
+            text = "".join(chars)
+            if "\r\n" not in text:
+                continue
+            shown = [row.partition(": ")[2] for row in numbered(text)[0].split("\n")]
+            tail = "\n" if text.endswith("\n") else ""
+            read = "\n".join(shown) + tail
+            f.write_bytes(text.encode())
+            await edit(Edit(path="f.txt", old=read, new=read), None)
+            assert f.read_bytes().decode() == text, repr(text)
+            edits += 1
+            if text.count("\n") != text.count("\r\n"):
+                continue
+            lines = text.split("\n")
+            for i in range(len(shown)):
+                new = "\n".join([*shown[:i], "Z", *shown[i + 1 :]]) + tail
+                f.write_bytes(text.encode())
+                await edit(Edit(path="f.txt", old=read, new=new), None)
+                want = [*lines[:i], "Z\r" if i < len(lines) - 1 else "Z", *lines[i + 1 :]]
+                assert f.read_bytes().decode().split("\n") == want, (repr(text), i)
+                edits += 1
+        return edits
+
+    assert asyncio.run(corpus()) == 484 + 306  # every string once, then each line of the 161 CRLF-only ones
 
 
 def test_search_reaches_hidden_files_but_never_the_git_directory(tmp_path):

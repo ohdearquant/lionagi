@@ -177,12 +177,15 @@ Serves C3. `code(actor, tree)` registers the three handlers and `files(actor, ro
 readers; the console passes a tree of its directory or of the box, the bench a tree of the box. The
 tools do not know which. Both trees list a directory alike: every entry, hidden ones included,
 sorted, `/` after a directory. An edit gives a new line the ending of the line before it, so a file
-with mixed endings stays mixed.
+with mixed endings stays mixed. One ending is taken per line, CRLF else LF; a bare CR is data.
 
-- **Landing evidence**: `tests/test_code_tools.py` (nine: exactness, the single-file filename, the
-  empty file, CRLF and mixed endings, hidden files, paths that leave the tree, the listing);
-  `tests/test_daytona.py`, the box tree's listing; `tests/test_box.py`, symlinks out refused in both
-  trees.
+- **Landing evidence**: `tests/test_code_tools.py` (thirteen: exactness, the single-file filename,
+  the empty file, CRLF and mixed endings, bare CRs
+  (`test_an_edit_leaves_a_bare_carriage_return_where_it_was`,
+  `test_read_lines_shows_a_bare_carriage_return_as_text`,
+  `test_an_edit_of_a_small_corpus_matches_the_read_and_changes_no_other_line`), hidden files, paths
+  that leave the tree, the listing); `tests/test_daytona.py`, the box tree's listing;
+  `tests/test_box.py`, symlinks out refused in both trees.
 
 ### D3: `hub/tools/watch.py`: `Watch`, `Criteria`, `criteria`, `accept` ^d3
 
