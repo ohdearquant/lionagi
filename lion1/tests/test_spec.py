@@ -103,6 +103,20 @@ class FirstPathTaken(BaseModel):
     a: int = Field(validation_alias=AliasChoices(AliasPath("b", 0), "safe"))
 
 
+class ReaderCollision(BaseModel):
+    a: int = Field(validation_alias=AliasPath("x", "a"))
+    b: dict[str, int] = Field(validation_alias=AliasChoices("x", AliasPath("x", "b")))
+
+
+class EarlierPathTaken(BaseModel):
+    b: tuple[str, ...]
+    a: int = Field(validation_alias=AliasChoices(AliasPath("n", "a"), AliasPath("b", 0), "safe"))
+
+
+class SelfShadow(BaseModel):
+    a: dict = Field(validation_alias=AliasChoices(AliasPath("x", "y"), "x"))
+
+
 T = TypeVar("T")
 
 
@@ -250,7 +264,7 @@ COLLIDING = [
     (KeyTaken, {"a": ["nested", "a"], "b": ["b"]}, {"nested": {"a": 1}, "b": 2}),
     (KeyTakenEarlier, {"b": ["b"], "a": ["nested", "a"]}, {"nested": {"a": 1}, "b": 2}),
     (KeyShared, {"a": ["x", "a"], "c": ["y", "c"]}, {"x": {"a": 1}, "y": {"c": 2}}),
-    (NameTaken, {"a": ["x", "y"], "c": ["c"]}, {"x": {"y": 1}, "a": 2}),
+    (NameTaken, {"a": ["x", "y"], "c": ["a"]}, {"x": {"y": 1}, "a": 2}),
 ]
 COLLIDING_IDS = [
     "key of a later field",
@@ -265,11 +279,38 @@ def test_a_key_another_field_is_read_from_gives_way_to_a_path_no_other_field_rea
     assert {name: field_key(spec, name) for name in spec.model_fields} == keys
 
 
-def test_a_first_path_inside_another_field_gives_way_to_a_later_path_no_field_reads():
-    # `a` is read from b[0] first, then from `safe`: writing it at b[0] would land inside b's value
+def test_a_later_path_an_earlier_one_is_read_before_never_names_the_field():
+    # `b` is read from x first, and x holds a's value too, so x.b would never be read
+    assert {name: field_key(ReaderCollision, name) for name in ReaderCollision.model_fields} == {
+        "a": ["x", "a"],
+        "b": ["x"],
+    }
+    original = ReaderCollision.model_validate({"x": {"a": 1, "z": 2}})
+    assert ReaderCollision.model_validate(_fields(original)) == original
+
+
+def test_a_key_behind_a_path_inside_another_field_gives_way_to_the_first_path():
+    # `safe` is read only when b[0] is missing, and b holds a value: a is named by n.a, read first
+    assert field_key(EarlierPathTaken, "a") == ["n", "a"]
+    original = EarlierPathTaken.model_validate({"n": {"a": 5}, "b": ["7"]})
+    assert original.a == 5
+    assert EarlierPathTaken.model_validate(_fields(original)) == original
+
+
+def test_a_key_a_path_read_before_it_lies_inside_gives_way_to_that_path():
+    # x.y is read before x, so a value written at x that holds y would be read from x.y
+    assert field_key(SelfShadow, "a") == ["x", "y"]
+    original = SelfShadow.model_validate({"x": {"y": {"y": {"k": 2}}}})
+    assert original.a == {"y": {"k": 2}}
+    assert SelfShadow.model_validate(_fields(original)) == original
+
+
+def test_a_field_whose_first_path_lies_inside_another_field_keeps_its_one_key():
+    # b[0] is read before `safe` and lies inside b's value: no key keeps them apart while b holds
+    # an item, so the field keeps the key it had, which validation reads when b is empty
     assert field_key(FirstPathTaken, "a") == ["safe"]
-    original = FirstPathTaken.model_validate({"b": ["1", "2"]})
-    assert original.model_dump() == {"b": ("1", "2"), "a": 1}
+    original = FirstPathTaken.model_validate({"b": [], "safe": 9})
+    assert original.a == 9
     assert FirstPathTaken.model_validate(_fields(original)) == original
 
 

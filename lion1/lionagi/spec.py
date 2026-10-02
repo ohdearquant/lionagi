@@ -49,15 +49,22 @@ def field_key(spec: Spec, name: str) -> list[str | int]:
     and the spec reads names too; else the alias path whole, which only a nested value fills.
 
     That one key is kept only while no other field is read from it, or from anywhere validation tries
-    before it, nested inside it or around it; else the first of the field's paths, in the order
-    validation tries them, that no other field is read from (its first path when every one is), so
-    two fields' values never land in one place."""
+    before it, nested inside it or around it, and nothing validation tries before it lies inside it or
+    around it, so validation reads the field back from it; else the first path validation tries, when
+    no other field is read from it (a later path is read only when every earlier one is missing, and
+    a field written there would be read from the first); else the one key, as before. So two fields'
+    values never land in one place when a key exists that keeps them apart."""
     paths = _paths(spec, name)
     key = _one_key(spec, name)
+    earlier = paths[: paths.index(key)]
     others = [p for other in spec.model_fields if other != name for p in _paths(spec, other)]
-    if not any(_overlap(p, q) for p in paths[: paths.index(key) + 1] for q in others):
+    if not any(_overlap(p, q) for p in [*earlier, key] for q in others) and not any(
+        _overlap(p, key) for p in earlier
+    ):
         return key
-    return next((p for p in paths if not any(_overlap(p, q) for q in others)), paths[0])
+    if not any(_overlap(paths[0], q) for q in others):
+        return paths[0]
+    return key
 
 
 def _one_key(spec: Spec, name: str) -> list[str | int]:
