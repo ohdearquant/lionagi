@@ -41,7 +41,7 @@ from .program import check as check_script
 from .program import guidance as program_guidance
 from .program import read as read_script
 from .record import Directive, Entry, Kind, Record, ViewEntry, fold
-from .spec import Operable, Spec, field_key, render_guidance, spec_name
+from .spec import Operable, Spec, field_keys, render_guidance, spec_name
 
 __all__ = (
     "Message",
@@ -1488,8 +1488,9 @@ class Actor:
                 required = [n for n, f in spec.model_fields.items() if f.is_required()]
                 try:
                     if isinstance(value, dict):  # a pointed-at lvar is text; the field decides
+                        keys = field_keys(spec)
                         out[key] = spec.model_validate(
-                            {k: _coerce(spec, _field_named(spec, k), v) for k, v in value.items()}
+                            {k: _coerce(spec, _field_named(keys, k), v) for k, v in value.items()}
                         )
                     elif len(spec.model_fields) == 1 or len(required) == 1:
                         out[key] = spec.model_validate(
@@ -1504,6 +1505,7 @@ class Actor:
                 continue
             fields: dict[str, Any] = {}
             whole: list[Any] = []
+            keys = field_keys(spec) if spec is not None else {}
             for alias in value:
                 if alias not in run.values and run.record.get(alias) is None:
                     raise lndl.LNDLError(f"OUT{{{key}: ...}}: {alias!r} was never declared")
@@ -1511,7 +1513,7 @@ class Actor:
                 resolved = run.resolve(alias)
                 if fld is not None:
                     fields[fld] = (
-                        _coerce(spec, _field_named(spec, fld), resolved) if spec is not None else resolved
+                        _coerce(spec, _field_named(keys, fld), resolved) if spec is not None else resolved
                     )
                 else:
                     whole.append(resolved)
@@ -2186,9 +2188,10 @@ def _validate_whole(spec: Spec, value: Any) -> BaseModel:
     return spec.model_validate(value)
 
 
-def _field_named(spec: Spec, key: str) -> str:
-    """The field a key the model wrote fills: the one whose `field_key` it is, else the field of that name."""
-    return next((n for n in spec.model_fields if field_key(spec, n) == [key]), key)
+def _field_named(keys: dict[str, list[str | int]], key: str) -> str:
+    """The field a key the model wrote fills: the one whose key (`field_keys`) it is, else the field of
+    that name."""
+    return next((n for n, k in keys.items() if k == [key]), key)
 
 
 def _coerce(spec: Spec, fld: str, value: Any) -> Any:
@@ -2379,8 +2382,9 @@ def _fields(spec: BaseModel) -> dict[Any, Any]:
 def _keyed(spec: Spec, values: dict[str, Any], out: dict[Any, Any] | None = None) -> dict[Any, Any]:
     """Field values by field name, each set in `out` where validation reads it (`field_key`)."""
     out = {} if out is None else out
+    keys = field_keys(spec)
     for name, value in values.items():
-        *walk, last = field_key(spec, name)
+        *walk, last = keys[name]
         node = out
         for key in walk:
             node = node.setdefault(key, {})

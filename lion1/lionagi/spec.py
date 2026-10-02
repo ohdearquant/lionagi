@@ -6,7 +6,6 @@ reads and the validator the system runs; there is no second schema.
 
 from __future__ import annotations
 
-import functools
 import itertools
 import json
 import keyword
@@ -14,7 +13,7 @@ import re
 import types
 import typing
 import unicodedata
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 
 from pydantic import AliasChoices, BaseModel, ConfigDict
 
@@ -22,6 +21,7 @@ __all__ = (
     "Spec",
     "spec_name",
     "field_key",
+    "field_keys",
     "render_guidance",
     "Operable",
 )
@@ -55,21 +55,23 @@ def field_key(spec: Spec, name: str) -> list[str | int]:
     outside its group. A field is offered its one key first unless another field is read from in or
     around it, then its paths in the order validation tries them; earlier fields are served first.
     When no choice among a group's first 1024 reads every field of it back, each field of the group is
-    named by the first path validation tries."""
-    return list(_keys(spec)[name])
+    named by the first path validation tries. Each call chooses every field's key: to name several
+    fields, take `field_keys` once."""
+    return field_keys(spec)[name]
 
 
-@functools.lru_cache(maxsize=256)
-def _keys(spec: Spec) -> dict[str, list[str | int]]:
-    # once per class: guidance and the actor ask for every field's key in turn
+def field_keys(spec: Spec) -> dict[str, list[str | int]]:
+    """Every field's `field_key`, chosen together, by field name. Read from the spec as it stands, so
+    a changed config or a rebuilt class is followed."""
     paths = {name: _paths(spec, name) for name in spec.model_fields}
+    around = _index(paths)
     offered = {}
     for name, own in paths.items():
         key = _one_key(spec, name)
-        shared = any(_overlap(key, q) for other, theirs in paths.items() if other != name for q in theirs)
+        shared = bool(around(key) - {name})
         offered[name] = own if shared else [key, *(p for p in own if p != key)]
     keys: dict[str, list[str | int]] = {}
-    for group in _groups(paths):
+    for group in _groups(paths, around):
         # in order of preference; past the first 1024 the group keeps its first paths
         for choice in itertools.islice(itertools.product(*(offered[n] for n in group)), 1024):
             chosen = dict(zip(group, choice, strict=True))
@@ -81,16 +83,49 @@ def _keys(spec: Spec) -> dict[str, list[str | int]]:
     return {name: keys[name] for name in paths}
 
 
-def _groups(paths: dict[str, list[list[str | int]]]) -> list[list[str]]:
+def _index(paths: dict[str, list[list[str | int]]]) -> Callable[[list[str | int]], set[str]]:
+    """Who reads in or around a path: the fields with a path that is it, leads into it, or lies inside
+    it (`_overlap`), found by the path's own prefixes rather than by every other path."""
+    exact: dict[tuple[str | int, ...], set[str]] = {}
+    under: dict[tuple[str | int, ...], set[str]] = {}
+    for name, own in paths.items():
+        for path in own:
+            key = tuple(path)
+            exact.setdefault(key, set()).add(name)
+            for i in range(1, len(key) + 1):
+                under.setdefault(key[:i], set()).add(name)
+
+    def around(path: list[str | int]) -> set[str]:
+        key = tuple(path)
+        found = set(under.get(key, ()))
+        for i in range(1, len(key)):
+            found |= exact.get(key[:i], set())
+        return found
+
+    return around
+
+
+def _groups(
+    paths: dict[str, list[list[str | int]]], around: Callable[[list[str | int]], set[str]]
+) -> list[list[str]]:
     """The fields joined wherever a path of one overlaps a path of another, each group in declaration
     order."""
-    order = list(paths)
-    groups: list[list[str]] = []
+    root = {name: name for name in paths}
+
+    def find(name: str) -> str:
+        while root[name] != name:
+            root[name] = root[root[name]]
+            name = root[name]
+        return name
+
     for name, own in paths.items():
-        joined = [g for g in groups if any(_overlap(p, q) for m in g for p in own for q in paths[m])]
-        merged = sorted([n for g in joined for n in g] + [name], key=order.index)
-        groups = [g for g in groups if g not in joined] + [merged]
-    return groups
+        for path in own:
+            for other in around(path):
+                root[find(other)] = find(name)
+    groups: dict[str, list[str]] = {}
+    for name in paths:
+        groups.setdefault(find(name), []).append(name)
+    return list(groups.values())
 
 
 def _reads_back(keys: dict[str, list[str | int]], paths: dict[str, list[list[str | int]]]) -> bool:
@@ -204,9 +239,10 @@ def render_guidance(spec: Spec) -> str:
     if doc:
         head += f": {doc[0].strip()}"
     lines = [head]
+    keys = field_keys(spec)
     for name, field in spec.model_fields.items():
         # a path is said as the nesting it reads, `report["summary"]`: a dotted key would read as one key
-        first, *rest = field_key(spec, name)
+        first, *rest = keys[name]
         key = _said(str(first)) + "".join(f"[{_quoted(k)}]" for k in rest)
         line = f"  {key}: {_render_type(field.annotation)}"
         if not field.is_required():

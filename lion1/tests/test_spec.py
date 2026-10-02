@@ -369,7 +369,7 @@ def test_fields_that_share_no_path_with_others_do_not_crowd_out_the_choices_of_t
     assert spec.model_validate(_fields(original)) == original
 
 
-def test_the_keys_of_a_spec_are_chosen_once(monkeypatch):
+def test_guidance_and_a_rebuilt_record_each_choose_the_keys_once(monkeypatch):
     calls = 0
     reads_back = spec_module._reads_back
 
@@ -381,8 +381,31 @@ def test_the_keys_of_a_spec_are_chosen_once(monkeypatch):
     monkeypatch.setattr(spec_module, "_reads_back", counted)
     spec = many_choices(200)
     render_guidance(spec)
-    render_guidance(spec)
-    assert calls < 2 * len(spec.model_fields)
+    assert 0 < calls < 2 * len(spec.model_fields)
+    calls = 0
+    spec = many_choices(200)
+    record = spec.model_validate({"x": {"child": "C"}, "d": "D", **{f"p{i}": str(i) for i in range(200)}})
+    _fields(record)
+    assert 0 < calls < 2 * len(spec.model_fields)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param({"populate_by_name": True}, id="names read too"),
+        pytest.param(
+            {"validate_by_alias": False, "validate_by_name": True}, id="names only", marks=by_name_setting
+        ),
+    ],
+)
+def test_a_key_follows_a_config_changed_after_the_key_was_first_named(config):
+    spec = create_model("Rebuilt", value=(str, Field(validation_alias=AliasPath("old", "v"))))
+    assert field_key(spec, "value") == ["old", "v"]
+    spec.model_config.update(config)
+    spec.model_rebuild(force=True)
+    assert field_key(spec, "value") == ["value"]
+    original = spec.model_validate({"value": "ok"})
+    assert spec.model_validate(_fields(original)) == original
 
 
 def test_a_key_handed_out_is_the_callers_own():
