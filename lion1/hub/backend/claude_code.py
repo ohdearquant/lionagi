@@ -263,8 +263,10 @@ class ClaudeCodeSession:
                         # that becomes one) is not swallowed on every turn of an unending join
                         cancelled = False
                         until = loop.time() + _JOIN_S
-                        while asks:
-                            pending = list(asks)
+                        # only an ask still running is waited on: one that has finished leaves `asks`
+                        # by its done callback, which runs only once this loop yields, and a gather
+                        # of finished tasks completes without yielding (3.12+), so waiting on it spins
+                        while pending := [task for task in asks if not task.done()]:
                             for task in pending:
                                 task.cancel()
                             join = asyncio.gather(*pending, return_exceptions=True)
