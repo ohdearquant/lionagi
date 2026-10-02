@@ -286,9 +286,8 @@ as bus events.
 - **S15**: A process the model runs in the box reads anywhere already (S6), so the tree's bound is
   no boundary against one: a link it swaps between the resolve and the read reaches what that
   process could read itself.
-- **S16**: A runtime restored from a checkpoint comes up without its source's egress policy. The box
-  sends its own with every create and sets it again when the runtime reports another, so a box given
-  a policy restores under it, once the change S17 describes has taken hold.
-- **S17**: A policy change on a running runtime reads back at once and holds only seconds later: a
-  host was still reached 4 s after one change, and every host outside the policy was refused by 18
-  s. A closure that matters is proven from inside the box.
+- **S16**: The box does not rely on a restored runtime carrying its source's egress policy. It sends
+  its own with every create and sets it again when the runtime reports another, so a box given a
+  policy restores under it, once the change S17 describes has taken hold.
+- **S17**: A policy change on a running runtime can read back before it holds. A closure that
+  matters is proven from inside the box.

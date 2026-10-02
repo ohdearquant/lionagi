@@ -89,8 +89,8 @@ _HOST = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,6
 
 class Egress(BaseModel):
     """Where a runtime may connect out. Runta enforces it outside the guest, so a process in the box
-    cannot widen it. A change to a running runtime is read back at once but takes effect seconds later
-    (measured 4 to 18 s): a caller that needs it closed proves it from inside."""
+    cannot widen it. A change to a running runtime can read back before it takes effect: a caller that
+    needs it closed proves it from inside."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -493,8 +493,8 @@ class RuntaSandbox(BoxBase):
             self._rt = await self._client.runtimes.get(self.runtime_id)
             await self._rt.wait_until_ready(timeout=self.create_timeout)
             if self.egress is not None:
-                # a runtime restored from a checkpoint came up with an empty policy although its source
-                # had one (measured): the policy it reports is the one held to
+                # a restored runtime is not trusted to carry its source's policy: the policy it reports
+                # is the one held to
                 info = await self._rt.refresh_info()
                 if Egress.from_api(_policy_json(info.egress_policy)) != self.egress:
                     await self.set_egress(self.egress)

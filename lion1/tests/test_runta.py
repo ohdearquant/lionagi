@@ -1,7 +1,7 @@
 """The Runta box in the hub. `runta` (the SDK) and `httpx` are stubbed as modules in `sys.modules`,
-never installed: the suite passes with neither present, as it does in the gate environments. A
+never installed: the suite passes with neither present, as it does where neither is installed. A
 stub runtime that genuinely executes runs commands on this machine, under a shim `timeout` on PATH
-(coreutils is not on every machine), as the house `daytona` stub does; a stub that only records a
+(coreutils is not on every machine), as the existing `daytona` stub does; a stub that only records a
 call is used where the exact argv or the exact SDK timeout matters more than a real process. The
 real service is exercised once end to end with `LION_RUNTA_E2E=1`."""
 
@@ -145,7 +145,7 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
 
         async def exec(self, cmd, *, timeout=None, env=None, stdin=None):
             # `push`'s archive lives at a literal /tmp path, outside the box's own workdir tree;
-            # redirected under `root` here, as the house `daytona` stub redirects it too
+            # redirected under `root` here, as the existing `daytona` stub redirects it too
             cmd = [a.replace("/tmp/lion-", f"{root}/tmp/lion-") if isinstance(a, str) else a for a in cmd]
             merged = {**os.environ, "PATH": f"{shim}:{os.environ['PATH']}", **(env or {})}
             r = subprocess.run(cmd, capture_output=True, env=merged, input=stdin)
