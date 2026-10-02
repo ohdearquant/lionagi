@@ -470,6 +470,52 @@ def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_e
     assert [r["content"] for r in rows if r.get("kind") == "TEXT"] == ["Hello."]
 
 
+def test_the_logs_usage_rows_read_back_to_the_sum_and_the_count_of_calls_it_misses(
+    tmp_path, monkeypatch, capsys
+):
+    """A router call whose known subtotal misses an attempt is partial live and on its USAGE row
+    alike: the row keeps `cost_complete`, the failed last call's row too, which the close writes."""
+    import lion_cli.chat as cli
+    from lion_cli.chat import spent
+
+    from hub.backend import OpenRouter, OpenRouterError
+    from hub.backend import openrouter as router
+    from tests.test_openrouter import _answers, _NoSleep
+
+    answer = {
+        "choices": [{"message": {"content": "Hello."}, "finish_reason": "stop"}],
+        "usage": {"cost": 0.1},
+    }
+    blank = {"choices": [{"message": {"content": None}, "finish_reason": "stop"}], "usage": {"cost": 0.25}}
+    # the second call is billed for a blank attempt, then its retry goes out and nothing readable
+    # comes back: its known subtotal misses that attempt, and the call fails
+    cut = OpenRouterError("request failed: ConnectionResetError")
+    monkeypatch.setattr(router, "asyncio", _NoSleep)
+    monkeypatch.setattr(router, "_post", _answers(answer, blank, cut))
+    backend = OpenRouter(model="m", retries=1)
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: backend)
+    typed = iter(["again"])
+
+    async def ask(prompt: str = "", out=None) -> str | None:
+        return next(typed, None)
+
+    monkeypatch.setattr("lion_cli.view.stdin_ask", ask)
+    log = tmp_path / "chat.jsonl"
+    args = ["chat", "--dir", str(tmp_path), "--log", str(log), "--say", "hi"]
+    with pytest.raises(SystemExit):
+        asyncio.run(chat_main(parser().parse_args(args)))
+    live = spent(backend.calls)
+    assert live == (pytest.approx(0.35), 1)
+    assert "$0.3500 (partial: 1 call(s) of unknown cost)" in capsys.readouterr().out
+    rows: list[dict] = []
+    load_log(log, usage=rows)
+    assert [(r["round"], r["total_cost_usd"], r.get("cost_complete")) for r in rows] == [
+        (1, 0.1, True),
+        (0, 0.25, False),  # written by the close: no entry landed after the failed call
+    ]
+    assert spent(rows) == live
+
+
 def test_a_claude_code_model_gets_no_tools_of_its_own_one_turn_per_call_and_no_gate_hook(
     tmp_path, monkeypatch, capsys
 ):

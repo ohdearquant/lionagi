@@ -242,6 +242,61 @@ def test_failed_envelope_is_preserved(tmp_path: Path, monkeypatch):
     assert "403 Forbidden" in call["error"] and call["total_cost_usd"] is None
 
 
+def test_a_failed_calls_stream_stderr_and_error_on_calls_keep_their_head_and_tail_within_the_cap(
+    tmp_path: Path,
+):
+    """A child that prints a megabyte on each stream, forty error items and no message: the error
+    raised is whole, the envelope keeps the head and tail of the error, the raw stream and stderr
+    around a mark counting the characters left out, and the attempt's usage whole."""
+    from hub.backend import claude_code
+
+    usage = json.dumps({"type": "turn.completed", "usage": {"input_tokens": 120, "output_tokens": 9}})
+    script = tmp_path / "fake_codex.py"
+    script.write_text(
+        "import json, sys\n"
+        "sys.stdin.read()\n"
+        f"print({usage!r})\n"
+        "for n in range(40):\n"
+        '    item = {"type": "error", "message": f"note {n} " + "n" * 400}\n'
+        '    print(json.dumps({"type": "item.completed", "item": item}))\n'
+        'sys.stdout.write("x" * 1_000_000 + " TAIL-OUT")\n'
+        'sys.stderr.write("HEAD-ERR " + "y" * 1_000_000 + " TAIL-ERR")\n'
+    )
+    cli = tmp_path / "codex"
+    cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{script}" "$@"\n')
+    cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+    backend = Codex(cli=str(cli), retries=0)
+    with pytest.raises(CodexError, match="^codex no message") as e:
+        asyncio.run(backend([Message("user", "go")]))
+    call = backend.calls[-1]
+    whole = {
+        "error": str(e.value),
+        "stream": usage
+        + "\n"
+        + "".join(
+            json.dumps(
+                {"type": "item.completed", "item": {"type": "error", "message": f"note {n} " + "n" * 400}}
+            )
+            + "\n"
+            for n in range(40)
+        )
+        + "x" * 1_000_000
+        + " TAIL-OUT",
+        "stderr": "HEAD-ERR " + "y" * 1_000_000 + " TAIL-ERR",
+    }
+    assert len(whole["error"]) > 10_000  # forty notes of 300 characters each
+    for key, text in whole.items():
+        kept = call[key]
+        m = re.search(r"\n\[(\d+) characters omitted\]\n", kept)
+        assert m is not None, (key, kept[:200])
+        head, tail = kept[: m.start()], kept[m.end() :]
+        assert text.startswith(head) and text.endswith(tail) and head and tail
+        assert len(head) + int(m[1]) + len(tail) == len(text)
+        assert len(kept) <= claude_code._DIAGNOSTIC_CHARS
+    assert call["usage"]["input_tokens"] == 120 and call["usage"]["output_tokens"] == 9
+    assert call["total_cost_usd"] is None and call["attempts"] == 1
+
+
 _real_sleep = asyncio.sleep
 
 

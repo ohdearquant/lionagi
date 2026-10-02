@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import subprocess
 import sys
 from dataclasses import replace
@@ -346,6 +347,40 @@ def test_failed_envelope_is_preserved(tmp_path):
     with pytest.raises(claude_code.ClaudeCodeError, match="TAIL-REASON"):
         asyncio.run(crashed([Message("user", "go")]))
     assert crashed.calls[0]["total_cost_usd"] is None and "TAIL-REASON" in crashed.calls[0]["error"]
+
+
+def test_a_failed_calls_error_on_calls_keeps_its_head_and_tail_within_the_cap(tmp_path):
+    """A CLI that prints a megabyte and no result: the error raised carries all of it, and in every
+    shape the copy on `calls` keeps its head and its tail around a mark counting the characters left
+    out; what the call cost is kept as printed, the unknown as unknown."""
+    flood = "HEAD-CAUSE " + "é" * 1_000_000 + " TAIL-REASON"
+    printed = _cli(tmp_path, "printed", flood, 1)  # no JSON and nothing on stderr: the detail is stdout
+    loud = _cli(tmp_path, "loud", REFUSAL, 1, flood)  # a priced result, the detail on stderr
+    for cli, cost in ((printed, None), (loud, 0.0213)):
+        for backend, call in (
+            (claude_code.ClaudeCode(cli=cli), [Message("user", "go")]),
+            (claude_code.ClaudeCodeAgentic(cli=cli), "go"),
+            (ClaudeCodeSession(cli=cli), [SYSTEM, IN0]),
+        ):
+            with pytest.raises(claude_code.ClaudeCodeError) as e:
+                asyncio.run(backend(call))
+            whole, kept = str(e.value), backend.calls[-1]["error"]
+            assert whole.startswith("claude exited 1: HEAD-CAUSE") and len(whole) > 1_000_000
+            m = re.search(r"\n\[(\d+) characters omitted\]\n", kept)
+            assert m is not None, kept[:200]
+            head, tail = kept[: m.start()], kept[m.end() :]
+            assert whole.startswith(head) and whole.endswith(tail) and tail.endswith("é TAIL-REASON")
+            assert len(head) + int(m[1]) + len(tail) == len(whole)  # counted in characters, not bytes
+            assert len(kept) <= claude_code._DIAGNOSTIC_CHARS
+            assert backend.calls[-1]["total_cost_usd"] == cost and "cost_complete" not in backend.calls[-1]
+    prefix = len("claude exited 1: ")
+    for size in (claude_code._DIAGNOSTIC_CHARS, claude_code._DIAGNOSTIC_CHARS + 1):  # at the cap, one past
+        backend = claude_code.ClaudeCode(cli=_cli(tmp_path, f"at{size}", "y" * (size - prefix), 1))
+        with pytest.raises(claude_code.ClaudeCodeError) as e:
+            asyncio.run(backend([Message("user", "go")]))
+        kept = backend.calls[-1]["error"]
+        assert len(str(e.value)) == size and len(kept) <= claude_code._DIAGNOSTIC_CHARS
+        assert (kept == str(e.value)) is (size == claude_code._DIAGNOSTIC_CHARS)
 
 
 def test_a_failed_session_call_lands_its_envelope_and_the_next_call_bills_only_its_own_share(monkeypatch):

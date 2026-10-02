@@ -199,7 +199,7 @@ resident's row from its own `chores.toml`, notes and lock, drops a row of anothe
 what it could not read; serving is the lock, never the pid in the file. `wakes` parses the serve log
 with the pattern the page shares. `spent` sums each call's `total_cost_usd`, its `usage.cost` only
 when the total is null, and counts the calls with neither or with `cost_complete` false; the chat
-log keeps each envelope's cost as it came.
+log keeps each envelope's cost and `cost_complete` as they came.
 
 - **Landing evidence**: `tests/test_areas.py`: the resident's row read from its own files, serving
   as the lock, the serve log's wake lines,

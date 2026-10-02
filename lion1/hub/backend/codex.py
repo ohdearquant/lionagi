@@ -28,7 +28,8 @@ returned nothing: `turn.failed` on a 429/5xx or a timeout (never on 401/403), or
 with no message (a reasoning-heavy turn that ran out of output). Each call has its own scratch
 directory, reused by its retries and removed once its child is joined; a call that fails for good
 lands on `calls` as a failed envelope carrying its attempts' usage and the last attempt's raw
-stream and stderr, since the scratch is gone.
+stream and stderr, since the scratch is gone: each text, the error's too, by its head and tail
+within `claude_code._DIAGNOSTIC_CHARS` characters, counting what it left out.
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ from pathlib import Path
 
 from lionagi.actor import Message, Reply
 
-from .claude_code import _transcript
+from .claude_code import _clipped, _transcript
 
 __all__ = (
     "TRANSIENT",
@@ -201,8 +202,10 @@ class Codex:
         envelope = self._envelope(usage_total, notes, t0, attempt + 1)
         if error is not None:
             # the billed attempts' usage and the last attempt's raw stream ride on the failed envelope
-            # (ADR-0009/C5): the scratch that held the stream is gone
-            self.calls.append({**envelope, "error": error, **raw})
+            # (ADR-0009/C5): the scratch that held the stream is gone. Each text is kept by head and tail
+            self.calls.append(
+                {**envelope, "error": _clipped(error), **{k: _clipped(v) for k, v in raw.items()}}
+            )
             raise CodexError(error)
         self.calls.append(envelope)
         # the answering attempt's input count, cache read included, is the prompt it sent (ADR-0009/C2);
