@@ -850,7 +850,7 @@ class Agent:
         if self.continuous and self._serving:
             # rounds run on across bursts; `_stop` ends the run at a burst past max_rounds or the day's
             # cap. No declared output: the runtime would ask for OUT{} at every turn, and a batch ends in
-            # plain text; an OUT{} the model writes anyway is taken as a literal and ends the run.
+            # plain text; an OUT{} is the model's stop, taken as a literal that ends the run.
             request = RunRequest(
                 inputs=inputs,
                 emits=(),
@@ -900,10 +900,23 @@ class Agent:
             self._spend(mail=len(b["mail"]) + len(b["notices"]), **self._usage(b["before"]))
             facts = self._burst_facts(run, type(run.outcome).__name__, profile)
             self.state.put("cursor", facts, run=run.id, seq=seq)
-        posture = run.output.get("posture") if isinstance(run.outcome, Success) else None
+        # a continuous run declares no output: its OUT{} is the model's stop, the literal what it wrote
+        stopped = stop is not None and isinstance(run.outcome, Success)
+        out = run.output if isinstance(run.outcome, Success) else {}
+        posture = out.get("posture", out if stopped else None)
+        if isinstance(posture, dict) and "done" in posture:
+            posture = Posture(done=str(posture["done"]), awaiting=str(posture.get("awaiting") or ""))
         if isinstance(posture, Posture):
             line = posture.done + (f" Awaiting: {posture.awaiting}" if posture.awaiting else "")
             notes.put("posture", line, run=run.id, seq=seq)
+        elif stopped:  # an earlier posture never stands for the stop's
+            try:
+                line = posture if isinstance(posture, str) else json.dumps(posture, default=str)
+            except (TypeError, ValueError):  # a literal JSON cannot hold, a tuple key: as Python writes it
+                line = repr(posture)
+            notes.put("posture", line, run=run.id, seq=seq)
+        if stopped:
+            self._checkpoint(run, "end")  # the run ends here, as at the cap
         return run
 
     def _burst_facts(self, run: Run | None, outcome: str, profile: Profile, done: int | None = None) -> dict:
@@ -1042,9 +1055,10 @@ class Agent:
         self.state.put("cursor", facts, run=run.id, seq=run.record.seq)
         notes = self.actor.notes_for(run.profile)
         last = run.record.latest(Kind.TEXT)
+        # what the model said beside its commands, written even when it said nothing: an earlier burst's
+        # posture never stands for this one
         posture = plain(str(last.content)) if last is not None else ""
-        if posture:  # what the model said beside its commands; a reply of commands only keeps the last
-            notes.put("posture", posture, run=run.id, seq=run.record.seq)
+        notes.put("posture", posture, run=run.id, seq=run.record.seq)
         b["booked"] = True
         self._say(_line(facts))
         folded = any(

@@ -149,24 +149,26 @@ A per-wake run declares `Posture` as its output and ends with `OUT{posture: ...}
 ([[ADR-0003-the-bounds#^c4|ADR-0003/C4]]). After a `Success` the agent's own code writes its `done`
 and `awaiting` as one line under `posture` in the profile's notes; the runtime's loop writes none.
 
-A continuous run declares no output: its plain reply at each quiet point is the posture. The next
-wake's INPUT opens with the last cursor and the posture, and the record stays with the run that made
-it.
+A continuous run declares no output: its plain reply at each quiet point is the posture, written
+even when empty, so an earlier burst's posture never stands for it; the model's stop writes its
+OUT{} literal the same way (C7). The next wake's INPUT opens with the last cursor and the posture,
+and the record stays with the run that made it.
 
 ### C7: A continuous run carries many wakes, and its checkpoint carries the record across a restart _(enforced: mechanical)_ ^c7
 
 - **Subject**: every run `serve` starts with `continuous` set.
-- **Violated when**: mail for the same profile starts a second run, a burst is booked twice, or the
-  next process's first run starts from another view than the one checkpointed.
+- **Violated when**: mail for the same profile starts a second run while the first stands, a burst
+  is booked twice, or the next process's first run starts from another view than the one
+  checkpointed.
 
 `build` sets `continuous` for a chair. When a turn of plain text ends a burst (C9), `_wait` books it
 as one wake (spend, cursor, posture, the log line), polls under the same caps, and queues the next
 batch into the same run, whose view folds. A batch that maps to another profile ends the run and
-runs fresh.
+runs fresh, as the next mail does after the model's stop, an OUT{} whose literal is the posture.
 
-At a fold, and when a burst's turn bound or the day's cap ends the run, it writes a checkpoint
-([[ADR-0019-the-checkpoint|ADR-0019]]) in the agent's directory, only where git ignores it; the next
-process's first run replays it as history.
+At a fold, and when a burst's turn bound, the day's cap or the model's stop ends the run, it writes
+a checkpoint ([[ADR-0019-the-checkpoint|ADR-0019]]) in the agent's directory, only where git ignores
+it; the next process's first run replays it as history.
 
 ### C8: The bench example answers a typed ask through its typed pair only, and the row goes back as JSON _(enforced: mechanical)_ ^c8
 
@@ -255,13 +257,16 @@ whole life.
 ### D5: The continuous run on the runtime's `wait` and `history`, the checkpoint in `lionagi/checkpoint.py` ^d5
 
 Serves C7. The request carries `wait=_wait`, `fold_inputs` and no declared output, with a stop that
-ends a burst past `max_rounds` or the day's cap. `_checkpoint` writes the record beside a checkpoint
-through `take` and `save`; `_restore` hands `to_history(load(...))` to the process's first run.
+ends a burst past `max_rounds` or the day's cap; `_run_batch` takes the same `end` checkpoint when
+the model's OUT{} ends the run. `_checkpoint` writes the record beside a checkpoint through `take`
+and `save`; `_restore` hands `to_history(load(...))` to the process's first run.
 
 - **Landing evidence**: `tests/test_agent.py`:
   `test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_point_as_a_wake`,
-  `test_mail_for_another_profile_ends_the_conversation_and_runs_fresh`; `tests/test_checkpoint.py`:
-  the fold, stop and failed-restore tests.
+  `test_mail_for_another_profile_ends_the_conversation_and_runs_fresh`,
+  `test_a_continuous_chairs_out_is_its_stop_its_posture_as_written_and_its_end_checkpointed`,
+  `test_an_empty_turn_ending_a_burst_leaves_an_empty_posture_of_that_burst`;
+  `tests/test_checkpoint.py`: the fold, stop and failed-restore tests.
 
 ### D6: The bench example: two typed handlers on one `Agent` ^d6
 
@@ -301,6 +306,7 @@ probes that `gtd.transition` and `gtd.complete` refuse. `Gtd.load` refuses `work
 | Counting a hop after the transport | a reply that lost its receipt and was settled by replay went uncounted: three went out on a thread capped at two (D4) |
 | One process hosting many agents | one death takes every identity, and the lock is per identity |
 | The runtime writing the posture | the runtime's loop knows no agent; the posture is the agent's note to its next wake (C6) |
+| A chair leaving `serve` at the model's stop | a clean exit reads to the supervisor as deliberate, so nothing restarts it: a supervision decision, not the chair's (C7) |
 | A per-wake agent continuing the last wake's record | the cost grows with history; the cursor and posture carry the next wake, and a chair that needs the record runs continuous (C7) |
 | The model keeping the session CLI's own tools beside the commands | two channels in one turn, and the red lines under a shell are prose; the commands are gated and recorded (C9) |
 | The agent moving its own tasks through the runtime | it widens the runtime's write set past `memory.remember`, a boundary change of its own (C9) |
