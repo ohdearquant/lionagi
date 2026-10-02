@@ -375,15 +375,14 @@ class ClaudeCodeSession:
         # age an entry, and the exit can leave one reading that much warmer than it is. A call making
         # several requests (an acting session's tool turns) is stamped at its first, which an acting
         # session never prices by. With either time missing or not a number, a first request after the
-        # turn's end, or a read the times would place before the call went out, the hour runs from the
-        # reply, so timing this backend does not know never makes an entry the provider still holds
-        # read as expired
+        # turn's end, or a turn longer than the call, the hour runs from the reply, so timing this backend
+        # does not know never makes an entry the provider still holds read as expired
         turn_ms, first_ms = envelope.get("duration_ms"), envelope.get("time_to_request_ms")
         read_at = now
         if (
             all(isinstance(t, int | float) and not isinstance(t, bool) for t in (turn_ms, first_ms))
             and 0 <= first_ms <= turn_ms
-            and now - (turn_ms - first_ms) / 1000 >= started
+            and turn_ms / 1000 <= now - started
         ):
             read_at = now - (turn_ms - first_ms) / 1000
         if failed is not None:

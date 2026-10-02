@@ -1477,6 +1477,7 @@ def test_a_failed_call_that_read_the_cache_starts_its_points_hour_again(monkeypa
     [
         ({"duration_ms": 50000, "time_to_request_ms": 20000, "duration_api_ms": 1}, 30.0),
         ({"duration_ms": 90000, "time_to_request_ms": 0, "duration_api_ms": 1}, 60.0),
+        ({"duration_ms": 90000, "time_to_request_ms": 40000, "duration_api_ms": 1}, 60.0),
         ({}, 60.0),
         ({"duration_ms": 50000, "duration_api_ms": 1}, 60.0),
         ({"duration_ms": 50000, "time_to_request_ms": True, "duration_api_ms": 1}, 60.0),
@@ -1485,6 +1486,7 @@ def test_a_failed_call_that_read_the_cache_starts_its_points_hour_again(monkeypa
     ids=[
         "one request",
         "a turn longer than the call",
+        "a turn longer than the call, its first request inside the call",
         "no time printed",
         "no first-request time printed",
         "a time printed as true",
@@ -1500,9 +1502,9 @@ def test_a_points_hour_runs_from_the_providers_read_not_the_clis_startup(
     rest of the turn: a second short of that hour the point is still warm though more than an hour has
     passed since the call went out, and a second past it a small hide starts over. The CLI's running api
     total, printed unchanged here, plays no part. With either time missing or not a number, a first
-    request after the turn's end, or a turn longer than the call (which would place the read before the
-    call went out), the hour runs from the reply, so the point is never taken as expired while the
-    provider may still hold it. A failed call that reports a cache read starts the point's hour the
+    request after the turn's end, or a turn longer than the call, wherever its first request would
+    fall, the hour runs from the reply, so the point is never taken as expired while the provider may
+    still hold it. A failed call that reports a cache read starts the point's hour the
     same way."""
     now = [0.0]
     monkeypatch.setattr(claude_code, "_clock", lambda: now[0])
