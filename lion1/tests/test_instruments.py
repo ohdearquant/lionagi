@@ -986,7 +986,7 @@ def test_worktrees_a_row_stored_under_the_old_detached_label_is_compared_on_its_
     inst = Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=sh)
     out = asyncio.run(inst.run({}))
     assert out.control and out.findings == (
-        f"{tmp_path}/named: detached/? -> detached/none",
+        f"{tmp_path}/named: detached or (detached HEAD)/? -> detached/none",
         f"{tmp_path}/named (detached): parked: dirty, HEAD older than 3 days, no open PR",
     )
     sh.set("worktree list --porcelain -z", _named_and_loose(tmp_path, named="loose", loose="named"))

@@ -1168,10 +1168,12 @@ class Worktrees:
                     )
                 else:
                     # a row stored before a detached HEAD was kept as no branch reads `detached` with PR
-                    # `?` in either state: its branch is unknown, so only its PR is compared
+                    # `?` in either state: its branch is unknown, so only its PR is compared and the
+                    # report says the row could be either
                     known = not (a.get("branch") == "detached" and a.get("pr") == "?")
                     if a.get("pr") != b["pr"] or (known and a.get("branch") != b["branch"]):
-                        was = f"{_head(a.get('branch'))}/{a.get('pr')}"
+                        label = _head(a.get("branch")) if known else "detached or (detached HEAD)"
+                        was = f"{label}/{a.get('pr')}"
                         now_ = f"{_head(b['branch'])}/{b['pr']}"
                         findings.append(f"{p}: {was} -> {now_}")
                     if b["parked"] and not a.get("parked"):
