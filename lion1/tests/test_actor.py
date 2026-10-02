@@ -3,8 +3,9 @@ import re
 from typing import Literal
 
 import pytest
-from pydantic import BaseModel, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator
 
+import lionagi.actor as actor_module
 from lionagi import (
     Actor,
     Exhausted,
@@ -46,6 +47,91 @@ def test_out_dict_literal_fills_a_multi_field_spec():
     )
     assert isinstance(run.outcome, Success)
     assert run.output["done"] == Done(summary="s", files=["a.py"])
+
+
+class AliasedItems(BaseModel):
+    items: list[int] = Field(alias="wire_items")
+
+
+class AliasedCount(BaseModel):
+    n: int = Field(alias="count_value")
+
+
+class AliasedPair(BaseModel):
+    a: int = Field(alias="first_value")
+    b: str = Field(alias="second_value")
+
+
+ALIASED_OUTPUTS = [
+    (
+        AliasedItems,
+        "<lvar aliased_items.wire_items x>[1, 2, 3]</lvar>\nOUT{aliased_items: [x]}",
+        {"wire_items": [1, 2, 3]},
+    ),
+    (AliasedItems, 'OUT{aliased_items: {wire_items: "[1, 2, 3]"}}', {"wire_items": [1, 2, 3]}),
+    (AliasedCount, "OUT{aliased_count: 3}", {"count_value": 3}),
+    (AliasedCount, "<lvar x>3</lvar>\nOUT{aliased_count: [x]}", {"count_value": 3}),
+    (
+        AliasedPair,
+        "<lvar x>1</lvar>\n<lvar y>s</lvar>\nOUT{aliased_pair: [x, y]}",
+        {"first_value": 1, "second_value": "s"},
+    ),
+    (
+        AliasedPair,
+        "<lvar aliased_pair.first_value x>1</lvar>\n<lvar aliased_pair.second_value y>s</lvar>\n"
+        "OUT{aliased_pair: [x, y]}",
+        {"first_value": 1, "second_value": "s"},
+    ),
+]
+
+
+@pytest.mark.parametrize("spec, turn, value", ALIASED_OUTPUTS)
+def test_an_aliased_output_is_filled_by_its_keys_every_way_the_guidance_offers(spec, turn, value):
+    # per-field lvars, a dict literal, a bare value, one alias holding it all, one alias per field: each
+    # reaches validation under the key validation reads, and text is read for the field that key names
+    run = asyncio.run(
+        Actor("t").run(Profile("p"), RunRequest(inputs=("go",), emits=(spec,), max_rounds=1), scripted(turn))
+    )
+    assert isinstance(run.outcome, Success)
+    assert run.output[spec_name(spec)] == spec.model_validate(value)
+
+
+@pytest.mark.parametrize("spec, turn, value", ALIASED_OUTPUTS)
+def test_an_output_takes_its_specs_keys_once(monkeypatch, spec, turn, value):
+    asked = []
+    field_keys = actor_module.field_keys
+
+    def counted(of):
+        asked.append(of)
+        return field_keys(of)
+
+    monkeypatch.setattr(actor_module, "field_keys", counted)
+    run = asyncio.run(
+        Actor("t").run(Profile("p"), RunRequest(inputs=("go",), emits=(spec,), max_rounds=1), scripted(turn))
+    )
+    assert isinstance(run.outcome, Success)
+    assert asked == [spec]
+
+
+def test_an_output_with_no_spec_is_filled_field_by_field_and_takes_no_keys(monkeypatch):
+    asked = []
+    field_keys = actor_module.field_keys
+
+    def counted(of):
+        asked.append(of)
+        return field_keys(of)
+
+    monkeypatch.setattr(actor_module, "field_keys", counted)
+    run = asyncio.run(
+        Actor("t").run(
+            Profile("p"),
+            RunRequest(inputs=("go",), max_rounds=1),
+            scripted("<lvar note.a x>1</lvar>\n<lvar note.b y>two</lvar>\nOUT{note: [x, y]}"),
+        )
+    )
+    assert isinstance(run.outcome, Success)
+    assert run.output == {"note": {"a": "1", "b": "two"}}
+    assert asked == []
 
 
 def test_accept_gate_refuses_then_lets_a_later_turn_through():

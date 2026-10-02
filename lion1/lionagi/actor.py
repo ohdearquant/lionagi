@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from . import lndl
 from .bus import Bus
@@ -41,7 +41,7 @@ from .program import check as check_script
 from .program import guidance as program_guidance
 from .program import read as read_script
 from .record import Directive, Entry, Kind, Record, ViewEntry, fold
-from .spec import Operable, Spec, render_guidance, spec_name
+from .spec import Operable, Spec, field_keys, render_guidance, spec_name
 
 __all__ = (
     "Message",
@@ -1511,9 +1511,14 @@ class Actor:
                 required = [n for n, f in spec.model_fields.items() if f.is_required()]
                 try:
                     if isinstance(value, dict):  # a pointed-at lvar is text; the field decides
-                        out[key] = spec.model_validate({k: _coerce(spec, k, v) for k, v in value.items()})
+                        keys = field_keys(spec)
+                        out[key] = spec.model_validate(
+                            {k: _coerce(spec, _field_named(keys, k), v) for k, v in value.items()}
+                        )
                     elif len(spec.model_fields) == 1 or len(required) == 1:
-                        out[key] = spec.model_validate({(required or list(spec.model_fields))[0]: value})
+                        out[key] = spec.model_validate(
+                            _keyed(spec, {(required or list(spec.model_fields))[0]: value})
+                        )
                     else:
                         raise lndl.LNDLError(
                             f"OUT{{{key}: ...}}: {key} has several fields; give a dict literal or aliases"
@@ -1523,13 +1528,17 @@ class Actor:
                 continue
             fields: dict[str, Any] = {}
             whole: list[Any] = []
+            keys: dict[str, list[str | int]] | None = None  # taken when a field's alias first needs it
             for alias in value:
                 if alias not in run.values and run.record.get(alias) is None:
                     raise lndl.LNDLError(f"OUT{{{key}: ...}}: {alias!r} was never declared")
                 fld = run.fields.get(alias)
                 resolved = run.resolve(alias)
-                if fld is not None:
-                    fields[fld] = _coerce(spec, fld, resolved) if spec is not None else resolved
+                if fld is not None and spec is None:
+                    fields[fld] = resolved
+                elif fld is not None:
+                    keys = keys if keys is not None else field_keys(spec)
+                    fields[fld] = _coerce(spec, _field_named(keys, fld), resolved)
                 else:
                     whole.append(resolved)
             if spec is None:
@@ -1543,7 +1552,7 @@ class Actor:
                 elif len(whole) == len(spec.model_fields):
                     names = list(spec.model_fields)
                     out[key] = spec.model_validate(
-                        {n: _coerce(spec, n, v) for n, v in zip(names, whole, strict=True)}
+                        _keyed(spec, {n: _coerce(spec, n, v) for n, v in zip(names, whole, strict=True)})
                     )
                 else:
                     raise lndl.LNDLError(
@@ -2224,8 +2233,14 @@ def _validate_whole(spec: Spec, value: Any) -> BaseModel:
                 f"{name} has fields {fields}: give one <lvar {name}.<field> alias> per field and "
                 f"OUT{{{name}: [the aliases]}}, or one alias holding a JSON object"
             )
-        value = {fields[0]: _coerce(spec, fields[0], value)}
+        value = _keyed(spec, {fields[0]: _coerce(spec, fields[0], value)})
     return spec.model_validate(value)
+
+
+def _field_named(keys: dict[str, list[str | int]], key: str) -> str:
+    """The field a key the model wrote fills: the one whose key (`field_keys`) it is, else the field of
+    that name."""
+    return next((n for n, k in keys.items() if k == [key]), key)
 
 
 def _coerce(spec: Spec, fld: str, value: Any) -> Any:
@@ -2407,19 +2422,22 @@ def _captured(value: Any, memo: dict[int, Any] | None = None) -> Any:
 
 def _fields(spec: BaseModel) -> dict[Any, Any]:
     # the declared fields only: a computed field is no input, and a spec that forbids extras refuses it.
-    # Each sits where validation reads it, under its alias unless the spec reads names only, and the
-    # extras a spec keeps come along; an alias path reads an int key from a dict as from a list
+    # Each sits where validation reads it, at the key `field_key` names, and the extras a spec keeps
+    # come along; an alias path reads an int key from a dict as from a list
     cls = type(spec)
-    out: dict[Any, Any] = dict(spec.model_extra or {})
-    for name, info in cls.model_fields.items():
-        alias = info.validation_alias if cls.model_config.get("validate_by_alias", True) else None
-        if isinstance(alias, AliasChoices):  # validation reads any one of them
-            alias = alias.choices[0]
-        *walk, last = [name] if alias is None else [alias] if isinstance(alias, str) else alias.path
+    return _keyed(cls, {name: getattr(spec, name) for name in cls.model_fields}, dict(spec.model_extra or {}))
+
+
+def _keyed(spec: Spec, values: dict[str, Any], out: dict[Any, Any] | None = None) -> dict[Any, Any]:
+    """Field values by field name, each set in `out` where validation reads it (`field_key`)."""
+    out = {} if out is None else out
+    keys = field_keys(spec)
+    for name, value in values.items():
+        *walk, last = keys[name]
         node = out
         for key in walk:
             node = node.setdefault(key, {})
-        node[last] = getattr(spec, name)
+        node[last] = value
     return out
 
 
