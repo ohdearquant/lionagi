@@ -160,7 +160,7 @@ hands each call to the actor's privilege check ([[ADR-0001-the-actor#^c4|ADR-000
 naming a tool's privileges, then its before hooks ([[ADR-0005-command-handling#^c4|ADR-0005/C4]]). A
 refusal, or a hook that cannot ask, stops the tool; a replacement is its input.
 
-Each call lands on the run's record as a RESULT under the CLI's tool-use id, started or not
+Each call lands on the run's record as a RESULT under the CLI's tool-use id, admitted or not
 executed; a repeated id is refused, landing suffixed by its entry's seq. What the tool did stays in
 the CLI's session, past subset, after hooks and bus (S11). `lion chat` and `lion agent` build none
 ([[ADR-0016-the-lion-command#^d3|ADR-0016/D3]]). Without an actor it is trusted as configured. The
@@ -286,11 +286,12 @@ swallowed too: a spin.
   command still pending then is reaped before the exception leaves `run`
   ([[ADR-0002-the-run|ADR-0002]] S4).
 - **S10**: A failed session CLI call lands its envelope before the error goes on: the one the CLI
-  printed, as a delta over the point it resumed, else one of unknown cost. It leaves no point; the
-  next call goes on from the one it resumed. A running total missing, or below that point's, leaves
-  the share unknown, never negative. It is not retried, and a spend row counts it
-  ([[ADR-0016-the-lion-command|ADR-0016]] S2). A fork's total being its point's plus its own was
-  measured once on the installed CLI.
+  printed, as a delta over the point it resumed
+  (`test_a_session_call_the_cli_fails_lands_its_envelope_with_its_own_share`), else one of unknown
+  cost. It leaves no point; the next call goes on from the one it resumed. A running total missing,
+  or below that point's, leaves the share unknown, never negative. It is not retried, and a spend
+  row counts it ([[ADR-0016-the-lion-command|ADR-0016]] S2). A fork's total being its point's plus
+  its own was measured once on the installed CLI.
 - **S11**: The gate over an acting session holds (C6), pinned with a scripted CLI that runs the
   pre-tool hook: in `tests/test_claude_code.py`,
   `test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record`,
@@ -329,3 +330,11 @@ swallowed too: a spin.
   reads as the model the CLI runs for it, its `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` when set. An entry
   also names an id continuing it after a hyphen, as a dated id does. A model id the table does not
   name, or no model at all, prices at 20 reads per character written.
+- **S17**: A gated call's RESULT (C6) reads admitted: the gate's verdict, written before the CLI
+  acts on it, never that the tool ran. A log written before reads started there, and the log's
+  readers keep either as written
+  (`test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record`).
+- **S18**: The hook answers `allow` only for a tool the CLI's `--allowedTools` names exactly; any
+  other admitted call goes back with its input and no decision, for the CLI's own rules
+  (`test_the_hook_allows_only_a_tool_the_clis_allowed_list_names`). Whether an `allow` would skip
+  the CLI's own check of that list is not measured; the rule holds either way.
