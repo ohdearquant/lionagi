@@ -1728,10 +1728,18 @@ class VerdictFreshness:
                     evidence=m.group(0),
                     control=False,
                 )
-            listed = _LISTED.findall(out)
-            if len(listed) != int(m.group(1)):
+            parsed = _LISTED.findall(out)
+            # a PR is counted once, however often or spelled: its repo case-blind, its number unpadded
+            ids: dict[tuple[str, str], tuple[str, str]] = {}
+            for repo, n in parsed:
+                ids.setdefault((repo.lower(), n.lstrip("0")), (repo, n))
+            listed = list(ids.values())
+            if len(parsed) != int(m.group(1)) or len(listed) != len(parsed):
                 control = False
-                findings.append(f"enumerator: TOTAL {m.group(1)} beside {len(listed)} PR line(s) parsed")
+                findings.append(
+                    f"enumerator: TOTAL {m.group(1)} beside {len(parsed)} PR line(s) parsed"
+                    + (f", {len(listed)} distinct" if len(listed) != len(parsed) else "")
+                )
                 unread.update(prev)  # an incomplete list closes nothing it did not read closed
             positives.append(
                 f"enumerator TOTAL {m.group(1)} open PR(s) by {m.group(2)}; closed-PR control {m.group(3)}"

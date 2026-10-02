@@ -2182,6 +2182,48 @@ def test_verdict_freshness_an_enumerator_total_beside_fewer_prs_retires_only_a_p
     assert set(store.get("verdict-freshness").value) == {"o/r#7"}
 
 
+@pytest.mark.parametrize("again", ["o/r#7", "o/r#07", "O/R#7"])
+def test_verdict_freshness_a_pr_listed_twice_beside_an_equal_total_closes_no_unseen_pr(tmp_path, again):
+    """Lines that reach the TOTAL by listing one PR twice, however its repo or number is spelled, are an
+    incomplete list: the PR they omit keeps its row, and the PR they repeat is read once."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    prior = {"o/r#8": "o/r#8 88888888: NEVER-REVIEWED"}
+    store.put("verdict-freshness", prior, run="-", seq=0)
+    total = (
+        "TOTAL {n} open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    )
+    sh = FakeSh(
+        **{
+            "/x/my_open_prs.sh": f"o/r#7 draft=false  a title\n{again} draft=false  a title\n"
+            + total.format(n=2),
+            "pr view 7 -R o/r": json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+        }
+    )
+    inst = VerdictFreshness(
+        store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    told = []
+    for _ in range(2):  # twice: the kept row is neither closed nor told again
+        out = asyncio.run(inst.run({}))
+        assert not out.control and store.get("verdict-freshness").value["o/r#8"] == prior["o/r#8"]
+        assert out.count == 1 and [d["number"] for d in out.data] == [7]
+        told.append(out.findings)
+    assert told == [
+        (
+            "enumerator: TOTAL 2 beside 2 PR line(s) parsed, 1 distinct",
+            f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
+            f"{tmp_path}/o-r-7-77777777.json",
+        ),
+        ("enumerator: TOTAL 2 beside 2 PR line(s) parsed, 1 distinct",),
+    ]
+    assert [c[2:6] for c in sh.calls if "view" in c] == [["view", "7", "-R", "o/r"]] * 2  # once a run
+    sh.set("/x/my_open_prs.sh", "o/r#7 draft=false  a title\n" + total.format(n=1))  # a complete list
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r#8: no longer open",)
+    assert set(store.get("verdict-freshness").value) == {"o/r#7"}
+
+
 def test_verdict_freshness_control_fails_when_a_repo_does_not_resolve_as_itself(tmp_path):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     sh = FakeSh(**{"api repos/o/r --jq": json.dumps({"full_name": "o/elsewhere", "id": 1, "admin": True})})
