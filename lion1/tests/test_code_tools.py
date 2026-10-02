@@ -174,11 +174,49 @@ def test_read_lines_shows_a_bare_carriage_return_as_text(tmp_path):
     assert r["r2"].value == "two.txt lines 1-2 of 2\n1: x\r\n2: y"
 
 
+@pytest.mark.parametrize(
+    ("file", "new", "want"),
+    [
+        (b"a\r\nb\r\n", "B\r\nC", b"a\r\nB\r\nC\r\n"),
+        (b"a\r\nb\r\n", "B\nC", b"a\r\nB\r\nC\r\n"),
+        (b"a\r\nb\r\n", "B\rC", b"a\r\nB\rC\r\n"),
+        (b"a\r\nb\r\n", "B\r\r\nC", b"a\r\nB\r\r\nC\r\n"),
+        (b"a\nb\n", "B\r\nC", b"a\nB\nC\n"),
+        (b"a\nb\n", "B\nC", b"a\nB\nC\n"),
+        (b"a\nb\n", "B\rC", b"a\nB\rC\n"),
+        (b"a\r\nb\nc\r\n", "B\r\nC", b"a\r\nB\nC\nc\r\n"),
+        (b"a\r\nb", "B\r\nC", b"a\r\nB\r\nC"),
+    ],
+    ids=[
+        "crlf-file-crlf-new",
+        "crlf-file-lf-new",
+        "crlf-file-bare-cr-new",
+        "crlf-file-bare-cr-then-crlf-new",
+        "lf-file-crlf-new",
+        "lf-file-lf-new",
+        "lf-file-bare-cr-new",
+        "mixed-file-crlf-new",
+        "unterminated-last-line-crlf-new",
+    ],
+)
+def test_an_edit_reads_each_crlf_of_the_replacement_as_a_line_end(tmp_path, file, new, want):
+    # `a\r\nb\r\n` with `b` replaced by `B\r\nC` was written `a\r\nB\r\r\nC\r\n`: the CRLF of the
+    # replacement was split at its LF, so its CR stayed on the line and took a second one; a bare CR in
+    # the replacement stays text, and every new line takes the ending of the line before it
+    actor = Actor("c")
+    code(actor, LocalTree(tmp_path))
+    (tmp_path / "f.txt").write_bytes(file)
+    asyncio.run(actor.handlers["edit"].fn(Edit(path="f.txt", old="b", new=new), None))
+    assert (tmp_path / "f.txt").read_bytes() == want
+
+
 def test_an_edit_of_a_small_corpus_matches_the_read_and_changes_no_other_line(tmp_path):
     # every string of length 0..6 over a, CR and LF holding a CRLF: the file as read_lines shows it is
     # what an edit matches, an edit of it to itself writes the same bytes, and in a file whose LFs all
     # follow a CR an edit of one line leaves every other line byte-identical (with mixed endings the
-    # diff may pair an untouched line with an equal line ending otherwise, so those take only the first)
+    # diff may pair an untouched line with an equal line ending otherwise, so those take only the first).
+    # The replacement is spelled with CRLF line ends, and with LF ones where no row ends in a CR of its
+    # own: an LF after a CR in the replacement is a CRLF, a line end, and the CR is not kept as text.
     actor = Actor("c")
     code(actor, LocalTree(tmp_path))
     edit, f = actor.handlers["edit"].fn, tmp_path / "f.txt"
@@ -193,22 +231,27 @@ def test_an_edit_of_a_small_corpus_matches_the_read_and_changes_no_other_line(tm
             tail = "\n" if text.endswith("\n") else ""
             read = "\n".join(shown) + tail
             f.write_bytes(text.encode())
-            await edit(Edit(path="f.txt", old=read, new=read), None)
+            await edit(Edit(path="f.txt", old=read, new=text), None)  # spelled as the file spells it
             assert f.read_bytes().decode() == text, repr(text)
             edits += 1
             if text.count("\n") != text.count("\r\n"):
                 continue
             lines = text.split("\n")
             for i in range(len(shown)):
-                new = "\n".join([*shown[:i], "Z", *shown[i + 1 :]]) + tail
-                f.write_bytes(text.encode())
-                await edit(Edit(path="f.txt", old=read, new=new), None)
                 want = [*lines[:i], "Z\r" if i < len(lines) - 1 else "Z", *lines[i + 1 :]]
-                assert f.read_bytes().decode().split("\n") == want, (repr(text), i)
-                edits += 1
+                for end in ("\r\n", "\n"):
+                    new = end.join([*shown[:i], "Z", *shown[i + 1 :]]) + (end if tail else "")
+                    if end == "\n" and "\r\n" in new:
+                        continue
+                    f.write_bytes(text.encode())
+                    await edit(Edit(path="f.txt", old=read, new=new), None)
+                    assert f.read_bytes().decode().split("\n") == want, (repr(text), i, end)
+                    edits += 1
         return edits
 
-    assert asyncio.run(corpus()) == 484 + 306  # every string once, then each line of the 161 CRLF-only ones
+    # every string once, then each line of the 161 CRLF-only ones with a CRLF replacement and, in 254 of
+    # those lines, with an LF one
+    assert asyncio.run(corpus()) == 484 + 306 + 254
 
 
 def test_search_reaches_hidden_files_but_never_the_git_directory(tmp_path):

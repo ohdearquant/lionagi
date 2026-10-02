@@ -176,11 +176,12 @@ fresh box.
 Serves C3. `code(actor, tree)` registers the three handlers and `files(actor, root)` the two
 readers; the console passes a tree of its directory or of the box, the bench a tree of the box. The
 tools do not know which. Both trees list a directory alike: every entry, hidden ones included,
-sorted, `/` after a directory. An edit gives a new line the ending of the line before it, so a file
-with mixed endings stays mixed. One ending is taken per line, CRLF else LF; a bare CR is data.
+sorted, `/` after a directory. An edit gives a new line the ending of the line before it, so mixed
+endings stay mixed. A line ends in CRLF, else LF, else none if last; a bare CR is data.
 
-- **Landing evidence**: `tests/test_code_tools.py` (thirteen: exactness, the single-file filename,
-  the empty file, CRLF and mixed endings, bare CRs
+- **Landing evidence**: `tests/test_code_tools.py` (fourteen: exactness, the single-file filename,
+  the empty file, CRLF and mixed endings
+  (`test_an_edit_reads_each_crlf_of_the_replacement_as_a_line_end`), bare CRs
   (`test_an_edit_leaves_a_bare_carriage_return_where_it_was`,
   `test_read_lines_shows_a_bare_carriage_return_as_text`,
   `test_an_edit_of_a_small_corpus_matches_the_read_and_changes_no_other_line`), hidden files, paths

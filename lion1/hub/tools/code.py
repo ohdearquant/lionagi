@@ -44,7 +44,7 @@ class Edit(BaseModel):
 
     path: str = Field(description="absolute, or relative to the console's directory")
     old: str = Field(min_length=1, description="the exact text to replace, as read_lines showed it")
-    new: str = Field(description="what replaces it; empty deletes")
+    new: str = Field(description="what replaces it, its lines ended by \\n or \\r\\n; empty deletes")
 
 
 class Tree(Protocol):
@@ -193,10 +193,11 @@ def code(actor: Actor, tree: Tree) -> set[str]:
 
     @actor.handler(Edit)
     async def edit(req: Edit, ctx: Context) -> str:
+        new = req.new.replace("\r\n", "\n")  # a CRLF here is a line end, written as the file's own
         async with edits:
             before = await tree.read(req.path)
             crlf = "\r\n" in before  # matched as read_lines showed it; written with each line's own ending
-            after = replace_once(before.replace("\r\n", "\n") if crlf else before, req.old, req.new)
+            after = replace_once(before.replace("\r\n", "\n") if crlf else before, req.old, new)
             await tree.write(req.path, reend(before, after) if crlf else after)
         return f"edited {req.path}: {before.count(chr(10))} -> {after.count(chr(10))} lines"
 
