@@ -1,0 +1,1129 @@
+"""The Runta box in the hub. `runta` (the SDK) and `httpx` are stubbed as modules in `sys.modules`,
+never installed: the suite passes with neither present, as it does in the gate environments. A
+stub runtime that genuinely executes runs commands on this machine, under a shim `timeout` on PATH
+(coreutils is not on every machine), as the house `daytona` stub does; a stub that only records a
+call is used where the exact argv or the exact SDK timeout matters more than a real process. The
+real service is exercised once end to end with `LION_RUNTA_E2E=1`."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import stat
+import subprocess
+import sys
+import time
+import types
+from pathlib import Path
+from typing import Any
+
+import pytest
+from pydantic import ValidationError
+
+from hub import BoxTree, RuntaSandbox, code, shell
+from hub.tools import SandboxDead
+from hub.tools import runta as runta_mod
+from lionagi import Actor, Kind, Profile, RunRequest
+from lionagi.actor import DEFAULT_HANDLERS
+from tests._swe import Started
+from tests._swe import run_set as swe_run_set
+from tests._swe import sandbox as swe_sandbox
+from tests.test_actor import scripted
+from tests.test_swe_run_set import _args, _one
+
+Egress = runta_mod.Egress
+EgressSecret = runta_mod.EgressSecret
+SecretInjection = runta_mod.SecretInjection
+
+
+@pytest.fixture(autouse=True)
+def _runta_env(monkeypatch):
+    """A token and endpoint for every test: the handful of calls that build their own `RuntaApi`
+    with none passed in (`events`, `token_savings`, `tool_calls`, `find_image`, `build_image`,
+    `RuntaSandbox.start`) need one. A test of `token()`/`endpoint()` itself overrides this."""
+    monkeypatch.setenv("RUNTA_TOKEN", "test-token")
+    monkeypatch.setenv("RUNTA_ENDPOINT", "http://api.test")
+
+
+# --- shared doubles ----------------------------------------------------------------------------
+
+
+class _ApiError(Exception):
+    def __init__(self, status_code: int | None = None, code: str | None = None):
+        super().__init__(f"runta ApiError {status_code} {code}")
+        self.status_code, self.code = status_code, code
+
+
+class _EgressPolicySDK:
+    def __init__(self, *, mode: str, allowed_hosts: list[str], denied_hosts: list[str]):
+        self.mode, self.allowed_hosts, self.denied_hosts = mode, list(allowed_hosts), list(denied_hosts)
+
+    def to_json(self) -> dict[str, Any]:
+        return {"mode": self.mode, "allowed_hosts": self.allowed_hosts, "denied_hosts": self.denied_hosts}
+
+
+def install_runta_minimal(monkeypatch) -> types.ModuleType:
+    """A `runta` module with just `ApiError` and `EgressPolicy`: enough for a test whose runtime is
+    its own hand-rolled double, not the SDK's own shapes."""
+    mod = types.ModuleType("runta")
+    mod.ApiError = _ApiError
+    mod.EgressPolicy = _EgressPolicySDK
+    monkeypatch.setitem(sys.modules, "runta", mod)
+    return mod
+
+
+def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.ModuleType:
+    """A `runta` module whose one runtime executes commands on this machine: a box whose `workdir`
+    is a real path under `root` runs genuinely there, and `timeout -s KILL <s> argv` is a shim
+    ending a command with rc 137, as the service's own does. `fail_wait`, when given, is raised by
+    every runtime's `wait_until_ready`. `preset_policy[rt_id]` seeds a runtime's reported egress
+    policy before any `set_egress`; `runtimes_store` and `async_runta_instances` let a test reach
+    back into what the SDK made."""
+    shim = root / "shim"
+    shim.mkdir(exist_ok=True)
+    (shim / "timeout").write_text(
+        f"#!{sys.executable}\nimport subprocess, sys\n"
+        "try:\n    sys.exit(subprocess.run(sys.argv[4:], timeout=float(sys.argv[3])).returncode)\n"
+        "except subprocess.TimeoutExpired:\n    sys.exit(137)\n"
+    )
+    (shim / "timeout").chmod((shim / "timeout").stat().st_mode | stat.S_IEXEC)
+    (root / "tmp").mkdir(exist_ok=True)
+
+    def local(path: str) -> Path:
+        return root / "tmp" / Path(path).name if path.startswith("/tmp/lion-") else Path(path)
+
+    runtimes_store: dict[str, Any] = {}
+    preset_policy: dict[str, Any] = {}
+    async_runta_instances: list[Any] = []
+
+    class Files:
+        async def read(self, path):
+            p = local(path)
+            if not p.exists():
+                raise _ApiError(status_code=404)
+            return p.read_bytes()
+
+        async def write(self, path, data):
+            p = local(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+
+    class EgressApi:
+        def __init__(self, rt):
+            self._rt = rt
+
+        async def set_policy(self, policy):
+            self._rt.set_policy_calls += 1
+            self._rt.policy = policy
+            return types.SimpleNamespace(egress_policy=policy)
+
+    class Checkpoints:
+        def __init__(self, rt):
+            self._rt = rt
+
+        async def create(self, *, name=None, timeout=600.0):
+            self._rt.checkpoint_names.append(name)
+            return types.SimpleNamespace(
+                id=f"ckpt-{len(self._rt.checkpoint_names)}", display_name=name or "", state="ready"
+            )
+
+    class Runtime:
+        def __init__(self, rt_id):
+            self.id = rt_id
+            self.policy = preset_policy.get(rt_id)
+            self.deleted = self.paused = False
+            self.set_policy_calls = 0
+            self.checkpoint_names: list[str | None] = []
+            self.files = Files()
+            self.egress = EgressApi(self)
+            self.checkpoints = Checkpoints(self)
+            self._status = "running"
+
+        async def exec(self, cmd, *, timeout=None, env=None, stdin=None):
+            # `push`'s archive lives at a literal /tmp path, outside the box's own workdir tree;
+            # redirected under `root` here, as the house `daytona` stub redirects it too
+            cmd = [a.replace("/tmp/lion-", f"{root}/tmp/lion-") if isinstance(a, str) else a for a in cmd]
+            merged = {**os.environ, "PATH": f"{shim}:{os.environ['PATH']}", **(env or {})}
+            r = subprocess.run(cmd, capture_output=True, env=merged, input=stdin)
+            return types.SimpleNamespace(exit_code=r.returncode, stdout=r.stdout, stderr=r.stderr)
+
+        async def wait_until_ready(self, timeout=600.0):
+            if fail_wait is not None:
+                raise fail_wait
+
+        async def status(self):
+            return types.SimpleNamespace(value=self._status)
+
+        async def refresh_info(self):
+            return types.SimpleNamespace(egress_policy=self.policy)
+
+        async def pause(self):
+            self.paused = True
+
+        async def resume(self, timeout=300.0):
+            self.paused = False
+
+        async def delete(self):
+            self.deleted = True
+
+    class Runtimes:
+        async def get(self, rt_id):
+            if rt_id not in runtimes_store:
+                runtimes_store[rt_id] = Runtime(rt_id)
+            return runtimes_store[rt_id]
+
+    class AsyncRunta:
+        def __init__(self, *, token, endpoint):
+            self.token, self.endpoint = token, endpoint
+            self.runtimes = Runtimes()
+            self.closed = False
+            async_runta_instances.append(self)
+
+        async def close(self):
+            self.closed = True
+
+    mod = types.ModuleType("runta")
+    mod.AsyncRunta = AsyncRunta
+    mod.ApiError = _ApiError
+    mod.EgressPolicy = _EgressPolicySDK
+    mod.runtimes_store = runtimes_store
+    mod.preset_policy = preset_policy
+    mod.async_runta_instances = async_runta_instances
+    return mod
+
+
+class Resp:
+    """One `httpx` response: a JSON body (or `text`, raw and possibly not JSON)."""
+
+    def __init__(self, status_code: int, body: Any = None, *, text: str | None = None):
+        self.status_code = status_code
+        self.content = text.encode() if text is not None else (json.dumps(body).encode() if body else b"")
+
+    def json(self) -> Any:
+        return json.loads(self.content)
+
+    @property
+    def text(self) -> str:
+        return self.content.decode(errors="replace")
+
+
+def install_httpx(monkeypatch, queue: list) -> tuple[list[dict], list[Any], type[Exception]]:
+    """An `httpx` module whose `AsyncClient.request` answers from `queue`, in order (an exception
+    instance is raised rather than returned); records every call and every client made."""
+    calls: list[dict] = []
+    clients: list[Any] = []
+
+    class TransportError(Exception):
+        pass
+
+    class AsyncClient:
+        def __init__(self, *, base_url, headers, timeout):
+            self.base_url, self.headers, self.timeout = base_url, headers, timeout
+            self.closed = False
+            clients.append(self)
+
+        async def request(self, method, path, *, json=None, params=None, headers=None):
+            # a snapshot, not the live object: `pages()` mutates its `params` dict between calls
+            calls.append(
+                {
+                    "method": method,
+                    "path": path,
+                    "json": dict(json) if isinstance(json, dict) else json,
+                    "params": dict(params) if isinstance(params, dict) else params,
+                    "headers": dict(headers) if headers else {},
+                }
+            )
+            item = queue.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+        async def aclose(self):
+            self.closed = True
+
+    mod = types.ModuleType("httpx")
+    mod.AsyncClient = AsyncClient
+    mod.TransportError = TransportError
+    monkeypatch.setitem(sys.modules, "httpx", mod)
+    return calls, clients, TransportError
+
+
+async def fast_sleep(_seconds: float) -> None:
+    return None
+
+
+class RecordingRuntime:
+    """A runtime double that only records what `exec` was handed and answers one scripted result,
+    after `delay` seconds of real (but tiny) waiting: for pinning the argv and the SDK timeout
+    `RuntaSandbox.exec` builds, and for landing its elapsed time on either side of a deadline,
+    without mocking the clock asyncio's own loop reads too."""
+
+    def __init__(self, *, exit_code: int = 0, stdout: bytes = b"", stderr: bytes = b"", delay: float = 0.0):
+        self.calls: list[dict] = []
+        self.exit_code, self.stdout, self.stderr, self.delay = exit_code, stdout, stderr, delay
+
+    async def exec(self, cmd, *, timeout, env, stdin):
+        self.calls.append({"cmd": cmd, "timeout": timeout, "env": env, "stdin": stdin})
+        if self.delay:
+            await asyncio.sleep(self.delay)
+        return types.SimpleNamespace(exit_code=self.exit_code, stdout=self.stdout, stderr=self.stderr)
+
+    async def status(self):
+        return types.SimpleNamespace(value="running")
+
+
+def _ready_box(
+    monkeypatch,
+    tmp_path,
+    *,
+    egress=None,
+    fail_wait=None,
+    post=None,
+    rt_id="rt-1",
+    from_checkpoint=None,
+    precreate_workdir=True,
+):
+    """A `RuntaSandbox` wired to `stub_runta` and a one-response `httpx` queue, ready for `start()`."""
+    monkeypatch.setenv("RUNTA_TOKEN", "tok")
+    monkeypatch.setenv("RUNTA_ENDPOINT", "http://api.test")
+    monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+    mod = stub_runta(tmp_path, fail_wait=fail_wait)
+    monkeypatch.setitem(sys.modules, "runta", mod)
+    queue = [post or Resp(200, {"data": {"id": rt_id}})]
+    calls, clients, _ = install_httpx(monkeypatch, queue)
+    work = tmp_path / "work"
+    if precreate_workdir:
+        work.mkdir(exist_ok=True)
+    box = RuntaSandbox(image="img", workdir=str(work), egress=egress, from_checkpoint=from_checkpoint)
+    return box, mod, calls, clients
+
+
+# --- 1. token() and endpoint() -------------------------------------------------------------------
+
+
+def test_token_and_endpoint_read_the_environment_then_the_config_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUNTA_TOKEN", raising=False)
+    monkeypatch.delenv("RUNTA_ENDPOINT", raising=False)
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setenv("RUNTA_CONFIG", str(cfg))
+    with pytest.raises(RuntimeError, match="RUNTA_TOKEN"):
+        runta_mod.token()
+    assert runta_mod.endpoint() == runta_mod.ENDPOINT  # neither set: the public default
+    cfg.write_text('token = "cfg-token"\nendpoint = "https://cfg.example/"\n')
+    assert runta_mod.token() == "cfg-token"
+    assert runta_mod.endpoint() == "https://cfg.example"  # a trailing slash is dropped
+    monkeypatch.setenv("RUNTA_TOKEN", "env-token")
+    assert runta_mod.token() == "env-token"  # the environment wins over the config file
+    monkeypatch.setenv("RUNTA_ENDPOINT", "https://env.example/")
+    assert runta_mod.endpoint() == "https://env.example"
+
+
+# --- 2. Egress ------------------------------------------------------------------------------------
+
+
+def test_egress_api_shape_and_from_api_roundtrip():
+    allow = Egress(mode="allowlist", hosts=("example.com", "a-b.example.co.uk"))
+    assert allow.api() == {
+        "mode": "allowlist",
+        "allowed_hosts": ["example.com", "a-b.example.co.uk"],
+        "denied_hosts": [],
+    }
+    deny = Egress(mode="denylist", hosts=("bad.com",))
+    assert deny.api() == {"mode": "denylist", "allowed_hosts": [], "denied_hosts": ["bad.com"]}
+    assert Egress.from_api(None) is None
+    assert Egress.from_api(allow.api()) == allow
+    assert Egress.from_api(deny.api()) == deny
+
+
+BAD_HOSTS = {
+    "a scheme": "https://example.com",
+    "a port": "example.com:8080",
+    "a path": "example.com/path",
+    "a wildcard": "*.example.com",
+    "uppercase": "EXAMPLE.com",
+    "an empty label": "",
+    "over 253 chars": ".".join(["ab"] * 100),
+}
+
+
+@pytest.mark.parametrize("host", list(BAD_HOSTS.values()), ids=list(BAD_HOSTS))
+def test_egress_refuses_anything_but_a_bare_lowercase_host_name(host):
+    with pytest.raises(ValidationError):
+        Egress(mode="allowlist", hosts=(host,))
+
+
+# --- 3. SecretInjection ----------------------------------------------------------------------------
+
+
+def test_secret_injection_sections_are_absent_when_empty_and_carry_no_bare_value_key():
+    bare = SecretInjection(secret_id="sec1")
+    assert bare.api() == {"secret_id": "sec1"}
+    full = SecretInjection(
+        secret_id="sec1",
+        env={"API_KEY": "{{secret}}"},
+        egress=(
+            EgressSecret(host="api.example.com", name="X-Key", template="{{secret}}"),
+            EgressSecret(
+                host="api2.example.com", name="k", template="{{secret}}", action="query", path="/v1/*"
+            ),
+        ),
+        files={"home/.netrc": "{{secret}}"},
+    )
+    api = full.api()
+    assert api["secret_id"] == "sec1"
+    assert api["environment"] == [{"name": "API_KEY", "value_template": "{{secret}}"}]
+    assert api["egress_rules"][0] == {
+        "host_pattern": "api.example.com",
+        "action": "header",
+        "name": "X-Key",
+        "value_template": "{{secret}}",
+    }
+    assert "path_pattern" not in api["egress_rules"][0]
+    assert api["egress_rules"][1]["path_pattern"] == "/v1/*"
+    assert api["files"] == [{"path": "home/.netrc", "value_template": "{{secret}}"}]
+
+    def no_bare_value_key(obj):
+        if isinstance(obj, dict):
+            assert "value" not in obj
+            for v in obj.values():
+                no_bare_value_key(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                no_bare_value_key(v)
+
+    no_bare_value_key(api)
+
+
+# --- 4. as_event -----------------------------------------------------------------------------------
+
+
+REC = {
+    "kind": "started",
+    "occurred_at_unix_millis": 1234567890123,
+    "id": "e1",
+    "runtime_id": "r1",
+    "payload": {"a": 1},
+}
+
+
+def test_as_event_shapes_kind_payload_and_at_and_refuses_a_bad_record():
+    ev = runta_mod.as_event(REC)
+    assert ev.kind == "runta.started"
+    assert ev.payload == {"id": "e1", "runtime_id": "r1", "payload": {"a": 1}}
+    assert ev.at == pytest.approx(1234567890.123)
+    for missing in ("kind", "occurred_at_unix_millis", "id", "runtime_id", "payload"):
+        bad = {k: v for k, v in REC.items() if k != missing}
+        with pytest.raises(ValueError, match=missing):
+            runta_mod.as_event(bad)
+    with pytest.raises(ValueError):
+        runta_mod.as_event({**REC, "kind": 123})
+    with pytest.raises(ValueError):
+        runta_mod.as_event({**REC, "occurred_at_unix_millis": "123"})
+
+
+# --- 5. RuntaApi.call --------------------------------------------------------------------------------
+
+
+def test_call_returns_the_data_member_whether_the_body_is_a_dict_or_not(monkeypatch):
+    # a fresh client per case: `RuntaApi` binds the `httpx` module's client once, at construction
+    install_httpx(monkeypatch, [Resp(200, {"data": {"ok": True}})])
+    assert asyncio.run(runta_mod.RuntaApi(tok="t", base="http://x").call("GET", "/v2/x")) == {"ok": True}
+    install_httpx(monkeypatch, [Resp(200, [1, 2, 3])])
+    assert asyncio.run(runta_mod.RuntaApi(tok="t", base="http://x").call("GET", "/v2/x")) == [1, 2, 3]
+    install_httpx(monkeypatch, [Resp(200, {"no_data_key": 1})])
+    got = asyncio.run(runta_mod.RuntaApi(tok="t", base="http://x").call("GET", "/v2/x"))
+    assert got == {"no_data_key": 1}
+
+
+def test_post_carries_an_idempotency_key_and_get_does_not(monkeypatch):
+    calls, _, _ = install_httpx(monkeypatch, [Resp(200, {"data": {}}), Resp(200, {"data": {}})])
+    api = runta_mod.RuntaApi(tok="t", base="http://x")
+    asyncio.run(api.call("POST", "/v2/x", json={"a": 1}))
+    asyncio.run(api.call("GET", "/v2/x"))
+    assert "idempotency-key" in calls[0]["headers"]
+    assert calls[1]["headers"] == {}
+
+
+def test_429_then_200_is_retried_with_the_same_idempotency_key(monkeypatch):
+    monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+    calls, _, _ = install_httpx(monkeypatch, [Resp(429, {"error": {}}), Resp(200, {"data": {"ok": True}})])
+    api = runta_mod.RuntaApi(tok="t", base="http://x")
+    assert asyncio.run(api.call("POST", "/v2/x", json={})) == {"ok": True}
+    assert len(calls) == 2
+    assert calls[0]["headers"]["idempotency-key"] == calls[1]["headers"]["idempotency-key"]
+
+
+def test_400_raises_at_once_with_status_code_and_message(monkeypatch):
+    calls, _, _ = install_httpx(
+        monkeypatch, [Resp(400, {"error": {"code": "bad_request", "message": "nope"}})]
+    )
+    api = runta_mod.RuntaApi(tok="t", base="http://x")
+    with pytest.raises(runta_mod.RuntaError) as e:
+        asyncio.run(api.call("POST", "/v2/x", json={}))
+    assert (e.value.status, e.value.code) == (400, "bad_request")
+    assert "nope" in str(e.value)
+    assert len(calls) == 1
+
+
+def test_5xx_on_every_attempt_raises_after_attempts_requests(monkeypatch):
+    monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+    calls, _, _ = install_httpx(monkeypatch, [Resp(503, {"error": {}})] * 3)
+    api = runta_mod.RuntaApi(tok="t", base="http://x", attempts=3)
+    with pytest.raises(runta_mod.RuntaError) as e:
+        asyncio.run(api.call("GET", "/v2/x"))
+    assert e.value.status == 503 and len(calls) == 3
+
+
+def test_a_transport_error_is_retried_and_raised_on_the_last_attempt(monkeypatch):
+    monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+    queue: list = []
+    calls, _, TransportError = install_httpx(monkeypatch, queue)
+    queue += [TransportError("boom"), TransportError("boom again")]
+    api = runta_mod.RuntaApi(tok="t", base="http://x", attempts=2)
+    with pytest.raises(TransportError, match="boom again"):
+        asyncio.run(api.call("GET", "/v2/x"))
+    assert len(calls) == 2
+
+
+def test_an_error_body_that_is_not_json_still_raises_runta_error(monkeypatch):
+    calls, _, _ = install_httpx(monkeypatch, [Resp(502, text="upstream exploded, not json")])
+    api = runta_mod.RuntaApi(tok="t", base="http://x", attempts=1)
+    with pytest.raises(runta_mod.RuntaError, match="upstream exploded"):
+        asyncio.run(api.call("GET", "/v2/x"))
+
+
+# --- 6. RuntaApi.pages -------------------------------------------------------------------------------
+
+
+def test_pages_follows_next_page_token_drops_none_params_and_merges_the_last_pages_rest(monkeypatch):
+    queue = [
+        Resp(200, {"data": {"events": [{"id": "a"}], "next_page_token": "p2", "summary": {"n": 1}}}),
+        Resp(200, {"data": {"events": [{"id": "b"}], "summary": {"n": 2}}}),
+    ]
+    calls, _, _ = install_httpx(monkeypatch, queue)
+    api = runta_mod.RuntaApi(tok="t", base="http://x")
+    rows, rest = asyncio.run(api.pages("/v2/events", "events", {"runtime_id": "r1", "kind": None}))
+    assert rows == [{"id": "a"}, {"id": "b"}]
+    assert rest == {"summary": {"n": 2}}
+    assert calls[0]["params"] == {"runtime_id": "r1"}
+    assert calls[1]["params"] == {"runtime_id": "r1", "page_token": "p2"}
+
+
+# --- 7. events / token_savings / tool_calls -----------------------------------------------------
+
+
+def test_events_returns_typed_bus_events_matching_as_event(monkeypatch):
+    queue = [Resp(200, {"data": {"events": [REC]}})]
+    install_httpx(monkeypatch, queue)
+    evs = asyncio.run(runta_mod.events("r1"))
+    assert evs == [runta_mod.as_event(REC)]
+
+
+def test_a_client_events_makes_itself_is_closed_a_client_passed_in_is_not(monkeypatch):
+    calls, clients, _ = install_httpx(monkeypatch, [Resp(200, {"data": {"events": [REC]}})])
+    asyncio.run(runta_mod.events("r1"))
+    assert len(clients) == 1 and clients[0].closed is True
+
+    calls2, clients2, _ = install_httpx(monkeypatch, [Resp(200, {"data": {"events": [REC]}})])
+    api = runta_mod.RuntaApi(tok="t", base="http://x")
+    asyncio.run(runta_mod.events("r1", api=api))
+    assert clients2[0].closed is False
+
+
+def _install_token_savings_response(monkeypatch) -> dict:
+    saving = {
+        "id": "s1",
+        "event_id": "e1",
+        "runtime_id": "r1",
+        "observed_at_unix_millis": 1,
+        "wire_bytes_before": 100,
+        "wire_bytes_after": 50,
+        "saved_wire_bytes": 50,
+        "estimated_tokens_before": 10,
+        "estimated_tokens_after": 5,
+        "saved_estimated_tokens": 5,
+    }
+    install_httpx(monkeypatch, [Resp(200, {"data": {"events": [saving], "summary": {"saved": 5}}})])
+    return saving
+
+
+def test_token_savings_returns_a_typed_summary_and_typed_events(monkeypatch):
+    saving = _install_token_savings_response(monkeypatch)
+    ts = asyncio.run(runta_mod.token_savings("r1"))
+    assert isinstance(ts, runta_mod.TokenSavings) and ts.summary == {"saved": 5}
+    assert isinstance(ts.events[0], runta_mod.TokenSaving) and ts.events[0].id == saving["id"]
+
+
+def test_tool_calls_returns_a_typed_summary_with_nested_findings(monkeypatch):
+    call_rec = {
+        "id": "c1",
+        "event_id": "e1",
+        "runtime_id": "r1",
+        "observed_at_unix_millis": 1,
+        "input_chars": 10,
+        "output_chars": 20,
+        "estimated_input_tokens": 1,
+        "estimated_output_tokens": 2,
+        "estimated_savings_tokens": 0,
+        "truncated": False,
+        "findings": [
+            {
+                "kind": "large_output",
+                "severity": "low",
+                "confidence": "high",
+                "title": "t",
+                "detail": "d",
+                "estimated_savings_tokens": 1,
+            }
+        ],
+    }
+    install_httpx(monkeypatch, [Resp(200, {"data": {"calls": [call_rec], "summary": {"n": 1}}})])
+    tc = asyncio.run(runta_mod.tool_calls("r1"))
+    assert isinstance(tc, runta_mod.ToolCalls) and tc.summary == {"n": 1}
+    assert isinstance(tc.calls[0], runta_mod.ToolCall)
+    assert isinstance(tc.calls[0].findings[0], runta_mod.ToolCallFinding)
+
+
+# --- 8. find_image -----------------------------------------------------------------------------------
+
+
+BUILDS = [
+    {"name": "img-a", "status": "succeeded", "updated_at": "2026-01-01", "runtime_image_id": "old"},
+    {"name": "img-a", "status": "succeeded", "updated_at": "2026-02-01", "runtime_image_id": "new"},
+    {"name": "img-a", "status": "failed", "updated_at": "2026-03-01", "runtime_image_id": "nope"},
+    {"name": "img-b", "status": "succeeded", "updated_at": "2026-04-01", "runtime_image_id": "other"},
+]
+
+
+def test_find_image_picks_the_newest_succeeded_build_of_that_name(monkeypatch):
+    install_httpx(monkeypatch, [Resp(200, {"data": BUILDS})])
+    assert asyncio.run(runta_mod.find_image("img-a")) == "new"
+    install_httpx(monkeypatch, [Resp(200, {"data": {"builds": BUILDS}})])
+    assert asyncio.run(runta_mod.find_image("img-a")) == "new"
+    install_httpx(monkeypatch, [Resp(200, {"data": []})])
+    assert asyncio.run(runta_mod.find_image("img-missing")) is None
+
+
+# --- 9. build_image ----------------------------------------------------------------------------------
+
+
+def _fast_clock(monkeypatch) -> list[float]:
+    """A monotonic clock a test drives by hand, and an `asyncio.sleep` that advances it instead of
+    waiting: `build_image`'s poll loop is timed without any real delay."""
+    now = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+    async def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    return now
+
+
+def test_build_image_polls_until_succeeded_and_returns_the_runtime_image_id(monkeypatch):
+    _fast_clock(monkeypatch)
+    queue = [
+        Resp(200, {"data": {"id": "b1", "status": "pending"}}),
+        Resp(200, {"data": {"id": "b1", "status": "building"}}),
+        Resp(200, {"data": {"id": "b1", "status": "succeeded", "runtime_image_id": "img-x"}}),
+    ]
+    calls, _, _ = install_httpx(monkeypatch, queue)
+    rid = asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=1000.0))
+    assert rid == "img-x"
+    assert calls[0]["method"] == "POST" and calls[0]["path"] == "/v2/images/builds"
+    assert calls[0]["json"] == {"name": "n", "dockerfile": "FROM x\n", "architecture": "x86_64"}
+
+
+def test_build_image_ending_failed_raises_runtime_error(monkeypatch):
+    _fast_clock(monkeypatch)
+    queue = [
+        Resp(200, {"data": {"id": "b2", "status": "pending"}}),
+        Resp(200, {"data": {"id": "b2", "status": "failed"}}),
+    ]
+    install_httpx(monkeypatch, queue)
+    with pytest.raises(RuntimeError, match="b2 ended failed"):
+        asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=1000.0))
+
+
+def test_build_image_past_the_timeout_raises_with_no_real_waiting(monkeypatch):
+    _fast_clock(monkeypatch)
+    queue = [
+        Resp(200, {"data": {"id": "b3", "status": "pending"}}),
+        Resp(200, {"data": {"id": "b3", "status": "building"}}),
+        Resp(200, {"data": {"id": "b3", "status": "building"}}),
+    ]
+    install_httpx(monkeypatch, queue)
+    t0 = time.perf_counter()
+    with pytest.raises(TimeoutError, match="b3"):
+        asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=20.0))
+    assert time.perf_counter() - t0 < 2  # the wait was simulated, never real
+
+
+# --- 10. RuntaSandbox.start ---------------------------------------------------------------------
+
+
+def test_the_create_body_shapes_resources_image_egress_secrets_and_capture():
+    box = RuntaSandbox(
+        image="img-1",
+        cpu=4,
+        memory=3,
+        name="n1",
+        egress=Egress(mode="allowlist", hosts=("a.com",)),
+        secrets=(SecretInjection(secret_id="s1"),),
+        capture=True,
+    )
+    body = box._body()
+    assert body["name"] == "n1" and body["llm_tool_io_capture_enabled"] is True
+    assert body["resources"] == {"requests": {"vcpus": 4, "memory_mib": 3 * 1024}}
+    assert body["image"] == {"id": "img-1"}
+    assert body["egress_policy"] == {"mode": "allowlist", "allowed_hosts": ["a.com"], "denied_hosts": []}
+    assert body["secret_configuration"] == [{"secret_id": "s1"}]
+    assert "checkpoint_id" not in body
+
+
+def test_from_checkpoint_sends_checkpoint_id_and_no_resources_or_image():
+    body = RuntaSandbox(from_checkpoint="ckpt1", name="n2", image="ignored")._body()
+    assert body["checkpoint_id"] == "ckpt1"
+    assert "resources" not in body and "image" not in body
+
+
+def test_a_read_back_egress_that_differs_calls_set_egress_an_equal_one_does_not(tmp_path, monkeypatch):
+    wanted = Egress(mode="allowlist", hosts=("a.com",))
+    box, mod, _, _ = _ready_box(monkeypatch, tmp_path, egress=wanted)
+    asyncio.run(box.start())
+    assert mod.runtimes_store["rt-1"].set_policy_calls == 1
+    asyncio.run(box.stop())
+
+    box2, mod2, _, _ = _ready_box(monkeypatch, tmp_path, egress=wanted)
+    mod2.preset_policy["rt-1"] = mod2.EgressPolicy(mode="allowlist", allowed_hosts=["a.com"], denied_hosts=[])
+    asyncio.run(box2.start())
+    assert mod2.runtimes_store["rt-1"].set_policy_calls == 0
+    asyncio.run(box2.stop())
+
+
+def test_a_failure_after_the_create_deletes_the_runtime_and_closes_both_clients(tmp_path, monkeypatch):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, fail_wait=RuntimeError("boom"))
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(box.start())
+    assert mod.runtimes_store["rt-1"].deleted is True
+    assert clients[0].closed is True
+    assert mod.async_runta_instances[-1].closed is True
+
+
+def test_a_refused_create_closes_both_clients_and_deletes_nothing(tmp_path, monkeypatch):
+    refusal = Resp(400, {"error": {"code": "bad", "message": "no"}})
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, post=refusal)
+    with pytest.raises(runta_mod.RuntaError):
+        asyncio.run(box.start())
+    assert mod.runtimes_store == {}  # `runtimes.get` was never reached
+    assert clients[0].closed is True
+    assert mod.async_runta_instances[-1].closed is True
+    assert len(calls) == 1  # the refused POST alone; no DELETE
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        'RuntaSandbox.exec always runs a command through `cd -- "$0" && exec "$@"` into '
+        "self.workdir first (hub/tools/runta.py, exec()), so start()'s own bootstrap "
+        "`mkdir -p {workdir}` (hub/tools/runta.py, start()) cannot create a workdir that does not "
+        "already exist on the runtime: the cd fails before the mkdir ever runs, and start() raises "
+        "SandboxDead instead of making the directory."
+    ),
+)
+def test_start_can_create_a_workdir_that_does_not_already_exist_on_the_runtime(tmp_path, monkeypatch):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, precreate_workdir=False)
+    assert not (tmp_path / "work").exists()
+    asyncio.run(box.start())
+    assert (tmp_path / "work").is_dir()
+    asyncio.run(box.stop())
+
+
+# --- 11. exec --------------------------------------------------------------------------------------
+
+
+def test_exec_wraps_a_finite_timeout_and_hands_the_sdk_timeout_plus_15(monkeypatch):
+    install_runta_minimal(monkeypatch)
+    rt = RecordingRuntime()
+    box = RuntaSandbox(workdir="/w")
+    box._rt = rt
+    asyncio.run(box.exec(["echo", "hi"], timeout=5.0))
+    call = rt.calls[-1]
+    assert call["timeout"] == 20.0
+    assert call["cmd"] == [
+        "sh",
+        "-c",
+        'cd -- "$0" && exec "$@"',
+        "/w",
+        "timeout",
+        "-s",
+        "KILL",
+        "5",
+        "echo",
+        "hi",
+    ]
+
+    asyncio.run(box.exec(["echo", "hi"], timeout=None))
+    call = rt.calls[-1]
+    assert call["timeout"] is None
+    assert call["cmd"] == ["sh", "-c", 'cd -- "$0" && exec "$@"', "/w", "echo", "hi"]
+
+
+def test_rc_137_is_timed_out_only_once_elapsed_reaches_the_deadline(monkeypatch):
+    install_runta_minimal(monkeypatch)
+    box = RuntaSandbox(workdir="/w")
+    box._rt = RecordingRuntime(exit_code=137, delay=0.0)  # a SIGKILL from elsewhere, well inside the deadline
+    r = asyncio.run(box.exec(["x"], timeout=5.0))
+    assert r["rc"] == 137 and r["stderr"] == "" and r["timed_out"] is False
+    box2 = RuntaSandbox(workdir="/w")
+    box2._rt = RecordingRuntime(exit_code=137, delay=0.05)  # elapsed reaches the (short) deadline
+    r = asyncio.run(box2.exec(["x"], timeout=0.03))
+    assert r["timed_out"] is True and r["stderr"] == "ended at the 0.03s timeout"
+
+
+def test_rc_124_is_timed_out_only_with_the_services_own_message_past_the_deadline(monkeypatch):
+    install_runta_minimal(monkeypatch)
+    box = RuntaSandbox(workdir="/w")
+    box._rt = RecordingRuntime(exit_code=124, stderr=b"own exit 124\n", delay=0.05)
+    r = asyncio.run(box.exec(["x"], timeout=0.03))  # past the deadline, but this is the command's own 124
+    assert r["timed_out"] is False and r["stderr"] == "own exit 124\n"
+
+    box2 = RuntaSandbox(workdir="/w")
+    box2._rt = RecordingRuntime(exit_code=124, stderr=b"Command timed out after 0.03s\n", delay=0.05)
+    r = asyncio.run(box2.exec(["x"], timeout=0.03))
+    assert r["timed_out"] is True
+    assert r["stderr"] == "Command timed out after 0.03s\n\nended at the 0.03s timeout"
+
+
+def test_an_exception_while_the_runtime_is_gone_raises_sandbox_dead_and_sets_dead(monkeypatch):
+    mod = install_runta_minimal(monkeypatch)
+
+    class Gone404:
+        async def exec(self, cmd, *, timeout, env, stdin):
+            raise RuntimeError("socket closed")
+
+        async def status(self):
+            raise mod.ApiError(status_code=404)
+
+    box = RuntaSandbox(workdir="/w")
+    box._rt = Gone404()
+    with pytest.raises(SandboxDead, match="socket closed"):
+        asyncio.run(box.exec(["x"]))
+    assert box.dead is not None and "socket closed" in box.dead
+
+    class Crashed:
+        async def exec(self, cmd, *, timeout, env, stdin):
+            raise RuntimeError("boom")
+
+        async def status(self):
+            return types.SimpleNamespace(value="crashed")
+
+    box2 = RuntaSandbox(workdir="/w")
+    box2._rt = Crashed()
+    with pytest.raises(SandboxDead, match="boom"):
+        asyncio.run(box2.exec(["x"]))
+    assert box2.dead is not None
+
+
+def test_an_exception_while_the_runtime_is_running_is_reraised_as_is(monkeypatch):
+    install_runta_minimal(monkeypatch)
+
+    class Running:
+        async def exec(self, cmd, *, timeout, env, stdin):
+            raise RuntimeError("transient")
+
+        async def status(self):
+            return types.SimpleNamespace(value="running")
+
+    box = RuntaSandbox(workdir="/w")
+    box._rt = Running()
+    with pytest.raises(RuntimeError, match="transient"):
+        asyncio.run(box.exec(["x"]))
+    assert box.dead is None
+
+
+def test_exec_runs_for_real_streams_apart_feeds_stdin_env_workdir_and_the_prelude_once(tmp_path, monkeypatch):
+    mod = stub_runta(tmp_path)
+    monkeypatch.setitem(sys.modules, "runta", mod)
+    work = tmp_path / "work"
+    work.mkdir()
+    box = RuntaSandbox(workdir=str(work), prelude="export LION_N=$((${LION_N:-0}+1))")
+    box._rt = asyncio.run(mod.AsyncRunta(token="t", endpoint="e").runtimes.get("r1"))
+
+    r = asyncio.run(box.exec(["bash", "-c", "echo out; echo bad >&2; printf tail; exit 3"]))
+    assert (r["rc"], r["stdout"], r["stderr"]) == (3, "out\ntail", "bad\n")
+    r = asyncio.run(box.exec(["cat"], stdin=b"fed\n"))
+    assert (r["rc"], r["stdout"]) == (0, "fed\n")
+    r = asyncio.run(box.exec(["pwd"]))
+    assert r["stdout"].strip() == str(work)
+    r = asyncio.run(box.exec(["sh", "-c", "echo $X"], env={"X": "v1"}))
+    assert r["stdout"] == "v1\n"
+    r = asyncio.run(box.exec(["sh", "-c", "echo $LION_N"]))
+    assert r["stdout"] == "1\n"  # the prelude runs exactly once
+    r = asyncio.run(box.exec(["sh", "-c", "echo $LION_N"], timeout=5))
+    assert r["stdout"] == "1\n"  # and once more under the timeout wrapper, not twice
+    r = asyncio.run(box.exec(["sleep", "2"], timeout=1))
+    assert r["rc"] == 137 and r["timed_out"] is True
+
+
+# --- 12. read / write -------------------------------------------------------------------------------
+
+
+def test_read_write_roundtrips_missing_and_non_utf8_files(tmp_path, monkeypatch):
+    mod = stub_runta(tmp_path)
+    monkeypatch.setitem(sys.modules, "runta", mod)
+    work = tmp_path / "work"
+    work.mkdir()
+    box = RuntaSandbox(workdir=str(work))
+    box._rt = asyncio.run(mod.AsyncRunta(token="t", endpoint="e").runtimes.get("r1"))
+
+    with pytest.raises(FileNotFoundError):
+        asyncio.run(box.read("missing.txt"))
+    asyncio.run(box.write("sub/dir/f.txt", "hi\n"))
+    assert asyncio.run(box.read("sub/dir/f.txt")) == "hi\n"
+    assert (work / "sub" / "dir" / "f.txt").read_text() == "hi\n"
+    (work / "latin.txt").write_bytes(b"caf\xe9\n")
+    with pytest.raises(ValueError, match="not UTF-8"):
+        asyncio.run(box.read("latin.txt"))
+
+
+# --- 13. push --------------------------------------------------------------------------------------
+
+
+def test_push_copies_only_what_git_sees_and_returns_those_names(tmp_path, monkeypatch):
+    mod = stub_runta(tmp_path)
+    monkeypatch.setitem(sys.modules, "runta", mod)
+    work = tmp_path / "work"
+    work.mkdir()
+    box = RuntaSandbox(workdir=str(work))
+    box._rt = asyncio.run(mod.AsyncRunta(token="t", endpoint="e").runtimes.get("r1"))
+
+    src = tmp_path / "src"
+    src.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=src, check=True)
+    (src / "keep.py").write_text("x = 1\n")
+    (src / ".gitignore").write_text("build/\n")
+    (src / "build").mkdir()
+    (src / "build" / "out.o").write_bytes(b"\0")
+    assert asyncio.run(box.push(src)) == [".gitignore", "keep.py"]
+    assert sorted(p.name for p in work.iterdir()) == [".gitignore", "keep.py"]
+
+
+# --- 14. set_egress / checkpoint / suspend / resume / events / stop -----------------------------
+
+
+def test_set_egress_checkpoint_suspend_resume_events_after_stop_and_stop_twice(tmp_path, monkeypatch):
+    mod = stub_runta(tmp_path)
+    monkeypatch.setitem(sys.modules, "runta", mod)
+    work = tmp_path / "work"
+    work.mkdir()
+    box = RuntaSandbox(workdir=str(work))
+    rt = asyncio.run(mod.AsyncRunta(token="t", endpoint="e").runtimes.get("r1"))
+    box._rt, box.runtime_id, box.started = rt, "r1", True
+
+    new_egress = Egress(mode="denylist", hosts=("bad.com",))
+    reported = asyncio.run(box.set_egress(new_egress))
+    assert reported == new_egress and box.egress == new_egress and rt.set_policy_calls == 1
+
+    ckpt = asyncio.run(box.checkpoint(name="snap1"))
+    assert isinstance(ckpt, runta_mod.Checkpoint)
+    assert ckpt.display_name == "snap1" and ckpt.state == "ready"
+
+    asyncio.run(box.suspend())
+    assert rt.paused is True
+    asyncio.run(box.resume())
+    assert rt.paused is False
+
+    assert box.box_id == "r1"
+
+    seen: list[str] = []
+
+    async def fake_events(rid, **filters):
+        seen.append(rid)
+        return []
+
+    monkeypatch.setattr(runta_mod, "events", fake_events)
+    asyncio.run(box.stop())
+    assert rt.deleted is True
+    assert box.box_id is None and box.runtime_id == "r1"  # the id outlives the runtime
+
+    asyncio.run(box.events())
+    assert seen == ["r1"]
+
+    asyncio.run(box.stop())  # a second stop is a no-op, not an error
+    assert rt.deleted is True
+
+
+def test_events_without_a_runtime_id_refuses():
+    box = RuntaSandbox(workdir="/w")
+    with pytest.raises(RuntimeError, match="no runtime"):
+        asyncio.run(box.events())
+
+
+# --- 15. the shell and code tools through the box -------------------------------------------------
+
+
+def test_the_shell_and_code_tools_run_in_the_runta_box_through_the_same_registrations(tmp_path, monkeypatch):
+    mod = stub_runta(tmp_path)
+    monkeypatch.setitem(sys.modules, "runta", mod)
+    work = tmp_path / "work"
+    work.mkdir()
+    box = RuntaSandbox(workdir=str(work))
+    box._rt = asyncio.run(mod.AsyncRunta(token="t", endpoint="e").runtimes.get("r1"))
+    box.runtime_id, box.started = "r1", True
+
+    (work / "pkg").mkdir()
+    (work / "pkg" / "m.py").write_text("def f():\n    return 1\n\n\ndef g():\n    return f()\n")
+    actor = Actor("d")
+    specs = shell(actor, box) | code(actor, BoxTree(box)) | {h.name for h in DEFAULT_HANDLERS}
+    profile = Profile(name="d", specs=frozenset(specs), system="x")
+    backend = scripted(
+        '<lact b1>bash(command="ls pkg")</lact><lact p1>python(code="print(6*7)")</lact>'
+        '<lact s1>search(pattern="return f", path="pkg")</lact>'
+        '<lact r1>read_lines(path="pkg/m.py", start=5, end=6)</lact>'
+        '<lact e1>edit(path="pkg/m.py", old="return f()", new="return f() + 1")</lact>',
+        "done",
+    )
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), backend))
+    r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
+    assert r["b1"].ok and r["b1"].value["stdout"] == "m.py\n" and r["b1"].value["rc"] == 0
+    assert r["p1"].ok and r["p1"].value["stdout"] == "42\n"
+    assert r["s1"].ok and r["s1"].value == "pkg/m.py:6:    return f()\n"
+    assert r["r1"].ok and r["r1"].value == "pkg/m.py lines 5-6 of 6\n5: def g():\n6:     return f()"
+    assert r["e1"].ok and (work / "pkg" / "m.py").read_text().endswith("return f() + 1\n")
+
+
+# --- 16. bench/swe/sandbox.py: testbed over Runta ---------------------------------------------
+
+
+def test_testbed_runta_gives_a_runta_box_with_the_testbed_shape():
+    box = swe_sandbox.testbed("img-1", "runta", cpu=4, memory=6, label="swe-x")
+    assert isinstance(box, RuntaSandbox)
+    assert (box.workdir, box.prelude) == (swe_sandbox.WORKDIR, swe_sandbox.PRELUDE)
+    assert (box.cpu, box.memory, box.name, box.image) == (4, 6, "swe-x", "img-1")
+
+
+def test_testbed_refuses_an_unknown_where():
+    with pytest.raises(ValueError, match="nowhere"):
+        swe_sandbox.testbed("img", "nowhere")
+
+
+def test_runta_name_is_swe_prefixed_lowercase_after_the_owner():
+    assert swe_sandbox.runta_name({"instance_id": "django__django-11951"}) == "swe-django-11951"
+
+
+def test_runta_image_returns_a_found_image_without_building(monkeypatch):
+    seen = []
+
+    async def fake_find_image(name, *, api=None):
+        seen.append(name)
+        return "img-existing"
+
+    async def fail_build_image(*a, **k):
+        raise AssertionError("build_image was called although an image was found")
+
+    monkeypatch.setattr(swe_sandbox, "find_image", fake_find_image)
+    monkeypatch.setattr(swe_sandbox, "build_image", fail_build_image)
+    row = {"instance_id": "org__has-image-1", "image": "base:1"}
+    assert asyncio.run(swe_sandbox.runta_image(row)) == "img-existing"
+    assert seen == ["swe-has-image-1"]
+
+
+def test_runta_image_builds_from_the_rows_image_when_none_is_found(monkeypatch):
+    async def fake_find_image(name, *, api=None):
+        return None
+
+    built = []
+
+    async def fake_build_image(name, dockerfile, *, architecture="x86_64", timeout=3600.0, api=None):
+        built.append((name, dockerfile, architecture))
+        return "img-built"
+
+    monkeypatch.setattr(swe_sandbox, "find_image", fake_find_image)
+    monkeypatch.setattr(swe_sandbox, "build_image", fake_build_image)
+    row = {"instance_id": "org__needs-build-1", "image": "base:2"}
+    assert asyncio.run(swe_sandbox.runta_image(row)) == "img-built"
+    assert built == [("swe-needs-build-1", "FROM base:2\n", "x86_64")]
+
+
+# --- 17. bench/swe/run_set.py: --where runta --------------------------------------------------
+
+
+def test_the_cli_parser_accepts_where_runta():
+    script = Path(__file__).resolve().parents[1] / "bench" / "swe" / "run_set.py"
+    out = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True)
+    assert out.returncode == 0
+    assert "{local,daytona,runta}" in out.stdout
+
+
+def test_where_runta_reaches_testbed_through_one(tmp_path, monkeypatch):
+    seen = []
+
+    def fake_testbed(image, where, *, cpu, memory, label):
+        seen.append((image, where, cpu, memory, label))
+        return Started()
+
+    async def fake_runta_image(row, *, timeout=3600.0):
+        return row["image"]  # the image build itself is sandbox.py's own concern, not one()'s
+
+    async def fake_solve(row, *a, **k):
+        return {"instance_id": row["instance_id"], "model_patch": ""}
+
+    monkeypatch.setattr(swe_run_set, "testbed", fake_testbed)
+    monkeypatch.setattr(swe_run_set, "runta_image", fake_runta_image)
+    monkeypatch.setattr(swe_run_set, "solve", fake_solve)
+    _one(_args(where="runta"), tmp_path)
+    assert seen == [("img", "runta", 2, 2, "lionagi-swe-r1")]
+
+
+# --- 18. a real Runta runtime, opted in -----------------------------------------------------------
+
+
+@pytest.mark.skipif(os.environ.get("LION_RUNTA_E2E") != "1", reason="LION_RUNTA_E2E=1 runs a real runtime")
+def test_a_real_runtime_runs_the_shell_and_code_tools_proves_egress_and_stops(tmp_path):
+    src = tmp_path / "proj"
+    src.mkdir()
+    (src / "calc.py").write_text("def add(a, b):\n    return a - b\n")
+    (src / "test_calc.py").write_text(
+        "from calc import add\n\n\ndef test_add():\n    assert add(2, 2) == 4\n"
+    )
+    box = RuntaSandbox(
+        workdir="/work",
+        name="lionagi-test",
+        cpu=1,
+        memory=1,
+        egress=Egress(mode="allowlist", hosts=("pypi.org", "files.pythonhosted.org")),
+    )
+    actor = Actor("e")
+    specs = shell(actor, box) | code(actor, BoxTree(box)) | {h.name for h in DEFAULT_HANDLERS}
+    profile = Profile(name="e", specs=frozenset(specs), system="x")
+
+    async def go():
+        await box.start()
+        try:
+            assert sorted(await box.push(src)) == ["calc.py", "test_calc.py"]
+            call = "python3 -c 'from calc import add; print(add(2, 2))'"
+            allowed = "curl -sS -m 8 -o /dev/null -w '%{http_code}' https://pypi.org/ || echo blocked"
+            blocked = "curl -sS -m 8 -o /dev/null -w '%{http_code}' https://example.com/ || echo blocked"
+            backend = scripted(
+                f'<lact b1>bash(command="{call}; ls *.py")</lact>'
+                '<lact s1>search(pattern="return a", path=".")</lact>'
+                f'<lact a1>bash(command="{allowed}")</lact>'
+                f'<lact d1>bash(command="{blocked}")</lact>',
+                '<lact e1>edit(path="calc.py", old="a - b", new="a + b")</lact>',
+                f'<lact b2>bash(command="{call}")</lact>',
+                "done",
+            )
+            return await actor.run(profile, RunRequest(inputs=("go",), max_rounds=4), backend)
+        finally:
+            await box.stop()
+
+    run = asyncio.run(go())
+    r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
+    assert r["b1"].value["stdout"] == "0\ncalc.py\ntest_calc.py\n" and r["b1"].value["rc"] == 0
+    assert r["s1"].value == "calc.py:2:    return a - b\n"
+    assert r["a1"].value["stdout"].strip() in ("200", "301", "302", "403")  # reachable: an HTTP answer
+    assert r["d1"].value["stdout"].strip() == "blocked"  # outside the allowlist: the connection itself fails
+    assert r["e1"].ok and r["b2"].value["stdout"] == "4\n"
+    assert box.started is False and box.box_id is None
