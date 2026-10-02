@@ -6,6 +6,7 @@ reads and the validator the system runs; there is no second schema.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import json
 import keyword
@@ -49,27 +50,47 @@ def field_key(spec: Spec, name: str) -> list[str | int]:
     spec reads names only, the first alternative that is one key, the name when the alias is a path
     and the spec reads names too; else the alias path whole, which only a nested value fills.
 
-    The keys are chosen for the whole spec at once, so that a value written at each field's key is
-    read back as that field (`_reads_back`). A field is offered its one key first unless another field
-    is read from in or around it, then its paths in the order validation tries them; earlier fields
-    are served first. When no choice reads every field back, each field is named by the first path
-    validation tries."""
+    The keys are chosen together for each group of fields whose paths overlap, so that a value written
+    at each field's key is read back as that field (`_reads_back`); a field's key bears on no field
+    outside its group. A field is offered its one key first unless another field is read from in or
+    around it, then its paths in the order validation tries them; earlier fields are served first.
+    When no choice among a group's first 1024 reads every field of it back, each field of the group is
+    named by the first path validation tries."""
     return list(_keys(spec)[name])
 
 
+@functools.lru_cache(maxsize=256)
 def _keys(spec: Spec) -> dict[str, list[str | int]]:
+    # once per class: guidance and the actor ask for every field's key in turn
     paths = {name: _paths(spec, name) for name in spec.model_fields}
-    offered = []
+    offered = {}
     for name, own in paths.items():
         key = _one_key(spec, name)
         shared = any(_overlap(key, q) for other, theirs in paths.items() if other != name for q in theirs)
-        offered.append(own if shared else [key, *(p for p in own if p != key)])
-    # in order of preference; past the first 1024 a spec keeps the first paths
-    for keys in itertools.islice(itertools.product(*offered), 1024):
-        chosen = dict(zip(paths, keys, strict=True))
-        if _reads_back(chosen, paths):
-            return chosen
-    return {name: own[0] for name, own in paths.items()}
+        offered[name] = own if shared else [key, *(p for p in own if p != key)]
+    keys: dict[str, list[str | int]] = {}
+    for group in _groups(paths):
+        # in order of preference; past the first 1024 the group keeps its first paths
+        for choice in itertools.islice(itertools.product(*(offered[n] for n in group)), 1024):
+            chosen = dict(zip(group, choice, strict=True))
+            if _reads_back(chosen, paths):
+                break
+        else:
+            chosen = {name: paths[name][0] for name in group}
+        keys.update(chosen)
+    return {name: keys[name] for name in paths}
+
+
+def _groups(paths: dict[str, list[list[str | int]]]) -> list[list[str]]:
+    """The fields joined wherever a path of one overlaps a path of another, each group in declaration
+    order."""
+    order = list(paths)
+    groups: list[list[str]] = []
+    for name, own in paths.items():
+        joined = [g for g in groups if any(_overlap(p, q) for m in g for p in own for q in paths[m])]
+        merged = sorted([n for g in joined for n in g] + [name], key=order.index)
+        groups = [g for g in groups if g not in joined] + [merged]
+    return groups
 
 
 def _reads_back(keys: dict[str, list[str | int]], paths: dict[str, list[list[str | int]]]) -> bool:

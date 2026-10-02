@@ -5,6 +5,7 @@ from typing import Generic, Literal, TypeVar
 import pytest
 from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, Field, create_model
 
+import lionagi.spec as spec_module
 from lionagi import Actor, Profile, RunRequest, Success
 from lionagi.actor import _fields
 from lionagi.spec import Operable, field_key, render_guidance, spec_name
@@ -340,6 +341,56 @@ def test_a_field_no_key_keeps_apart_is_named_by_the_first_path_validation_tries(
     assert {name: field_key(spec, name) for name in spec.model_fields} == keys
     original = spec.model_validate(data)
     assert spec.model_validate(_fields(original)) == original
+
+
+class Child(BaseModel):
+    child: str
+
+
+def many_choices(n: int) -> type[BaseModel]:
+    # first is read from inside blocker's x or from safe, which decoy reads around; each other field
+    # chooses between two keys no other field reads
+    fields = {
+        "first": (str, Field(validation_alias=AliasChoices(AliasPath("x", "child"), "safe"))),
+        "blocker": (Child, Field(validation_alias="x")),
+        "decoy": (str, Field(validation_alias=AliasChoices("d", AliasPath("safe", "child")))),
+    }
+    for i in range(n):
+        fields[f"f{i}"] = (str, Field(validation_alias=AliasChoices(f"p{i}", f"q{i}")))
+    return create_model("ManyChoices", **fields)
+
+
+def test_fields_that_share_no_path_with_others_do_not_crowd_out_the_choices_of_those_that_do():
+    # across the whole spec, decoy and ten fields of two choices each put 2048 choices ahead of the first
+    # that offers first safe
+    spec = many_choices(10)
+    assert field_key(spec, "first") == ["safe"]
+    original = spec.model_validate({"x": {"child": "C"}, "d": "D", **{f"p{i}": str(i) for i in range(10)}})
+    assert spec.model_validate(_fields(original)) == original
+
+
+def test_the_keys_of_a_spec_are_chosen_once(monkeypatch):
+    calls = 0
+    reads_back = spec_module._reads_back
+
+    def counted(keys, paths):
+        nonlocal calls
+        calls += 1
+        return reads_back(keys, paths)
+
+    monkeypatch.setattr(spec_module, "_reads_back", counted)
+    spec = many_choices(200)
+    render_guidance(spec)
+    render_guidance(spec)
+    assert calls < 2 * len(spec.model_fields)
+
+
+def test_a_key_handed_out_is_the_callers_own():
+    spec = many_choices(1)
+    key = field_key(spec, "first")
+    held = list(key)
+    key.append("y")
+    assert field_key(spec, "first") == held
 
 
 @pytest.mark.parametrize("spec, keys, data", COLLIDING, ids=COLLIDING_IDS)
