@@ -210,8 +210,9 @@ per key, a flag on the line over both.
 ### C9: A first Ctrl-C cuts the call; a failed directive leaves a session as it was _(enforced: mechanical)_ ^c9
 
 - **Subject**: `Interrupt`, `Run.interrupt` and the `claude_code` session.
-- **Violated when**: a Ctrl-C mid-call waits for the round, a cut ends the run, a failed directive
-  restarts the session, or the session's CLI is handed a tool of its own.
+- **Violated when**: a Ctrl-C mid-call waits for the round, a cut ends the run, a cancel arriving
+  with a cut is lost, a failed directive restarts the session, or the session's CLI is handed a tool
+  of its own.
 
 Mid-round a first Ctrl-C cuts the backend call in flight: the round ends with a notice and no turn,
 the run goes on, and a `claude_code` session resumes where it was; with no call in flight the round
@@ -398,12 +399,14 @@ as `--config`, over the cwd's (measured); missing, or naming no actor, it refuse
 ### D6: `Run.interrupt`, `run.cut`, and a result's `spec` ^d6
 
 Serves C9. `Run.interrupt` sets `pause` and cancels the call the loop holds in `run.call`; the loop
-reads `run.cut` to tell that cancellation from the run's own and continues. `ClaudeCodeSession`
-reads what changed off the view, which a failed result leaves as it was. `chat_main` calls
-`backend_for` with the model alone, so the session runs `--tools ""` and `--max-turns 1`. On `-c`,
-`chat_main` seeds the session's `base` from the log's last bill.
+continues when `run.cut` is set and the task's count of cancel requests did not rise during the
+call; otherwise the cancellation is the run's own. `ClaudeCodeSession` reads what changed off the
+view, which a failed result leaves as it was. `chat_main` calls `backend_for` with the model alone,
+so the session runs `--tools ""` and `--max-turns 1`. On `-c`, `chat_main` seeds the session's
+`base` from the log's last bill.
 
-- **Landing evidence**: `tests/test_chat.py`: the cut with its two controls;
+- **Landing evidence**: `tests/test_chat.py`: the cut with its two controls, and a cancel landing
+  with a cut in both orders;
   `test_a_continued_chat_seeds_its_sessions_first_figure_from_the_last_billed_call`;
   `apps/cli/tests/test_chat_command.py`: the Ctrl-C presses,
   `test_a_claude_code_model_gets_no_tools_of_its_own_one_turn_per_call_and_no_gate_hook`;
