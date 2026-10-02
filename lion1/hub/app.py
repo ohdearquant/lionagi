@@ -72,7 +72,9 @@ _JS = """
 'use strict';
 var state = {
   areas: [], mode: 'list', dir: null, detail: null, detailDir: null, gen: 0, view: 0, logs: {}, pending: {},
+  draft: null, typed: 0,  // the composer's words on this page, and a count of every edit to them
 };
+var LOG_LINES = 400;  // one resident's log lines kept: its buffer and its box hold no more
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -110,20 +112,25 @@ function setConn(live) {
 }
 
 // ---- live data: SSE, with a 5s polling fallback when it errors ----
-var pollTimer = null;
+var pollTimer = null, polling = false, streamed = 0;  // streamed: the `areas` events so far
 function startPoll() {
   setConn(false);
   if (pollTimer) return;
   pollTimer = setInterval(function () {
+    if (polling) return;  // one poll in flight at a time
+    polling = true;
+    var since = streamed;
     fetch('/api/areas').then(function (r) { return r.json(); }).then(function (rows) {
+      if (streamed !== since) return;  // the stream delivered the areas after this poll was sent
       state.areas = rows;
       if (state.mode === 'list') renderList();
-    }).catch(function () {});
+    }).catch(function () {}).then(function () { polling = false; });
   }, 5000);
 }
 function connect() {
   var es = new EventSource('/events');
   es.addEventListener('areas', function (ev) {
+    streamed++;
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     setConn(true);
     state.areas = JSON.parse(ev.data);
@@ -133,7 +140,7 @@ function connect() {
     var d = JSON.parse(ev.data);
     var buf = state.logs[d.dir] || (state.logs[d.dir] = []);
     buf.push(d.line);
-    if (buf.length > 400) buf.shift();
+    if (buf.length > LOG_LINES) buf.shift();
     if (state.mode === 'detail' && state.dir === d.dir && !d.history) appendLogLine(d.line);
   });
   es.onerror = function () { startPoll(); };
@@ -142,6 +149,7 @@ function connect() {
 // ---- routing ----
 function route() {
   state.view++;  // each navigation is a new page, a return to the same resident included
+  state.draft = null;  // a draft belongs to the page it was typed on
   var m = /^#r=(.+)$/.exec(location.hash);
   if (m) { state.mode = 'detail'; state.dir = decodeURIComponent(m[1]); loadDetail(); }
   else { state.mode = 'list'; state.dir = null; renderList(); }
@@ -218,7 +226,11 @@ function appendLogLine(line) {
   if (!box) return;
   var atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
   box.insertAdjacentHTML('beforeend', logLineHtml(line));
+  // the oldest lines go, and a reader scrolled up keeps the lines in view where they were
+  var top = box.scrollTop, height = box.scrollHeight;
+  while (box.childElementCount > LOG_LINES) box.removeChild(box.firstElementChild);
   if (atBottom) box.scrollTop = box.scrollHeight;
+  else if (box.scrollHeight < height) box.scrollTop = top - (height - box.scrollHeight);
 }
 
 function renderDetail() {
@@ -285,6 +297,10 @@ function renderDetail() {
     '</div>';
   var box = document.getElementById('log-box');
   if (box) box.scrollTop = box.scrollHeight;
+  if (state.draft) {  // a re-render keeps what was typed
+    document.getElementById('talk-subject').value = state.draft.subject;
+    document.getElementById('talk-content').value = state.draft.content;
+  }
 }
 
 function toggleInline(id, show, force) {
@@ -329,7 +345,7 @@ function sendTalk() {
   btn.disabled = true;
   // an unsent message keeps its token: the same words to the same resident replay it, never mail twice
   var dir = state.detailDir, view = state.view, key = JSON.stringify(['send', dir, subject, content]);
-  var once = token(key);
+  var once = token(key), rev = state.draft && state.draft.rev;
   var form = new URLSearchParams({ dir: dir, subject: subject, content: content, once: once });
   fetch('/send', {
     method: 'POST',
@@ -340,10 +356,21 @@ function sendTalk() {
     if (state.pending[key] === once) delete state.pending[key];  // never a newer ask's token
     toast('sent');
     if (state.view !== view) return;  // the page that asked is gone
-    document.getElementById('talk-content').value = '';
+    if (state.draft && state.draft.rev === rev) state.draft = null;  // nothing typed since: it was sent
     loadDetail();
   }).catch(function (e) { toast(String(e)); }).then(function () { btn.disabled = false; });
 }
+
+// every edit in the composer is the page's draft under a new revision: a send's answer clears the
+// draft only if it is still the revision that was sent
+document.getElementById('screen').addEventListener('input', function (e) {
+  if (e.target.id !== 'talk-subject' && e.target.id !== 'talk-content') return;
+  state.draft = {
+    subject: document.getElementById('talk-subject').value,
+    content: document.getElementById('talk-content').value,
+    rev: ++state.typed,
+  };
+});
 
 document.getElementById('screen').addEventListener('click', function (e) {
   var t = e.target;
