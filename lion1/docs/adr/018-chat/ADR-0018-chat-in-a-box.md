@@ -353,22 +353,27 @@ registers the tools over the `Tree`: `LocalTree` of the directory, or a `BoxTree
 `--box` is `vm` or `daytona`. Under `vm`, `chat_main` builds a `Sandbox` VM for `--shell` or
 `--code`; for a boxed chat, a `DaytonaSandbox` whose workdir is the directory's own path, `--image`
 defaulting to `python:3.12`, and as `about_box` the box guidance naming its kind and image.
-`--model` picks the backend ([[ADR-0009-backends|ADR-0009]]).
+`--model` picks the backend ([[ADR-0009-backends|ADR-0009]]). `--code` asks git for the branch
+within one `GIT_TIMEOUT`.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py` (khive only in an actor's directory,
   the root rules, the hooks);
   `test_the_console_reads_and_codes_over_a_given_tree_with_the_box_guidance`;
-  `test_the_local_tree_refuses_paths_that_leave_it`.
+  `test_the_local_tree_refuses_paths_that_leave_it`; `tests/test_chat.py`:
+  `test_a_resumed_coding_chat_whose_git_hangs_starts_with_the_branch_said_unknown_within_its_bound`.
 
 ### D3: `prepare_box` and `take_patch`, the patch before the stop ^d3
 
 Serves C3, C4 and C5. `prepare_box` starts the box, pushes, and commits the baseline, returning its
 hash. At the end `chat_main` takes the patch under `asyncio.shield`, then stops the box; a failure
-taking it keeps the box and names it. The default is print and save; `--apply` lands.
+taking it keeps the box and names it. The default is print and save; `--apply` lands. `take_patch`'s
+host git calls have `GIT_TIMEOUT` (30 s) each, the box's diff calls 120 s each; an apply stopped at
+it may have written part of the patch, so the directory is said to be unknown, and the box stops.
 
 - **Landing evidence**: `tests/test_daytona.py`: the chat in a box end to end, the subdirectory
   apply, committed edits, the ignored tracked file, the kept box named; `tests/test_chat.py`: failed
-  preparation and push stop the box.
+  preparation and push stop the box;
+  `test_a_patch_apply_that_hangs_is_stopped_and_what_it_changed_is_said_to_be_unknown`.
 
 ### D4: `resolve_chat`, `fresh_log` and `unsettled` for the resume ^d4
 
@@ -376,10 +381,13 @@ Serves C6. `fresh_log` creates the chat log exclusively, with `-02`, `-03` when 
 took that second's id; a start that fails before logging removes its empty log so `-c` keeps the old
 one; `--log` refuses an existing path. `unsettled` parses each logged turn and names the aliases
 with no RESULT. `load_log` hands back the `BOX` row, whose box and image stand in for a flag not
-given, else `vm` and `python:3.12`; `git apply --check -R` tests the continued session's patch.
+given, else `vm` and `python:3.12`; `git apply --check`, reversed then forward, tests the continued
+session's patch within one `GIT_TIMEOUT`.
 
 - **Landing evidence**: `tests/test_chat.py` (the exact id beside its sibling, the failed start,
-  `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch`);
+  `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch`,
+  `test_a_resumed_chat_tells_a_patch_git_could_not_check_as_unknown_with_gits_reason`,
+  `test_a_resumed_chat_whose_git_hangs_is_told_its_patch_could_not_be_checked_within_one_bound`);
   `apps/cli/tests/test_chat_command.py` (the whole record logged again, the unsettled commands, the
   missing log).
 
@@ -569,8 +577,8 @@ set.
 - **S9**: The chat log's first row, `BOX`, names where the chat ran, and a resume runs there unless
   its flags say otherwise; a log older than the row resumes under `vm`. An unapplied chat patch is
   told, not built on: the new copy is a fresh push (S2). When the continued session's saved patch
-  does not come off the directory, or cannot be checked without git, the resume notice says so to
-  the model and the person; only that session's patch is checked.
+  goes on but not off, or git cannot tell, the resume notice says so to the model and the person,
+  with git's reason; only that session's patch is checked.
   `test_a_continued_boxed_chat_runs_in_its_box_again_and_is_told_its_unapplied_patch` resumes a
   boxed chat.
 - **S11**: A cut round leaves no turn on the record, only a notice. A `claude_code` session killed
