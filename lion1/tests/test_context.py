@@ -16,6 +16,7 @@ import pytest
 from lion_cli.areas import context_api
 from lion_cli.context import checkpoint, restore, show, status
 from lion_cli.main import main
+from pydantic import BaseModel
 
 from hub.agent import Agent
 from hub.context import (
@@ -32,7 +33,7 @@ from hub.context import (
     watches,
 )
 from hub.khive import KhiveError
-from lionagi import Actor, Kind, Record, Reply, fold
+from lionagi import Actor, Kind, Record, Reply, Result, fold
 from lionagi.checkpoint import (
     DIRECTIVES,
     LAZY,
@@ -976,6 +977,26 @@ def test_the_resident_checkpoints_when_stop_ends_its_run(tmp_path):
     # taken by the stop, so it holds everything but the closure the run appends when it returns
     assert ckpt.why == "end" and ckpt.source["seq"] == run.record.seq - 1 and agent.errors == []
     assert len(backend.calls) == 1  # the second round's notification ended the run before the model
+
+
+class Book(BaseModel):
+    title: str
+    year: int
+
+
+def test_the_residents_record_and_vars_hold_a_model_value_as_its_fields_and_replay_them_as_a_dict(tmp_path):
+    khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
+    agent = resident(khive, Growing((REPLY, 1_000), ("answered", 1_000)))
+    serve_one(agent)
+    (run,) = agent.runs
+    book = Book(title="Dune", year=1965)
+    e = run.record.append(Kind.RESULT, Result("fetch", True, book), alias="b", round=run.round)
+    run.values["v"] = (e.seq, book)
+    agent._checkpoint(run, "manual")
+    ckpt, fields = load(tmp_path), {"title": "Dune", "year": 1965}
+    assert agent.errors == [] and {v.name: v.value for v in ckpt.vars}["value.v"] == fields
+    replayed = to_history(ckpt)[-1]
+    assert (replayed.alias, replayed.content.value) == ("b", fields)
 
 
 def test_a_restore_that_cannot_replay_is_said_and_the_run_starts_fresh(tmp_path):

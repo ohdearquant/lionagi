@@ -142,7 +142,7 @@ then a repository map, never the login.
 
 | command | gate, in code, before anything is sent |
 | ------- | -------------------------------------- |
-| `sweep()` | none of its own; lists at most a page (20) of pending messages, oldest first, and apart the deliveries unresolved the model may leave; leaves a clarify past `clarify_hours` (24) |
+| `sweep()` | none of its own; lists at most a page (20) of pending messages, oldest first, and apart the deliveries unresolved the model may leave; leaves a clarify past `clarify_hours` (24) with nothing pending on its thread, after a scan that fit one page |
 | `answer(msg, chore, args)` | an id this run's sweep listed, held by no other handler, with no recorded send or task; the chore's `senders` (`record`: `Record.senders` only); `answers_per_hour` (10), shared with `route`; a void outcome is left with the instrument's reason |
 | `leave(msg, why)` | a listed id; `why` one of six tests, else kept as other |
 | `clarify(msg, a, b)` | two different readings, each the message's own words or a chore or test name; `CLARIFY_SENDERS` only; once per thread; never a message that is itself a clarify |
@@ -314,9 +314,13 @@ the agent's `accept` and `watch`. No tick is scheduled: the watch wakes the desk
 come from `[desk]`. `build` gives a wake six rounds: sweep, route and `OUT{}` take three, and each
 slip one more; no test pins the six.
 
-- **Landing evidence**: `tests/test_desk.py` (89 tests), among them
+- **Landing evidence**: `tests/test_desk.py` (115 tests), among them
   `test_build_wires_the_desk_from_chores_toml_with_a_reader_that_only_reads` (the nine-command
-  profile, the watch) and `test_failed_selected_message_blocks_success_and_remains_pending`.
+  profile, the watch), `test_failed_selected_message_blocks_success_and_remains_pending`,
+  `test_a_clarify_whose_answer_is_pending_at_the_cap_is_resolved_by_it_and_never_left_unanswered`,
+  `test_a_message_pending_on_another_thread_does_not_hold_a_clarify_past_the_cap`,
+  `test_a_sweep_whose_read_paged_past_a_clarifys_answer_leaves_no_clarify` and
+  `test_a_clarify_past_the_cap_is_left_by_the_first_sweep_whose_read_fits_one_page`.
 
 ### D2: The reader is built from the owner's directory, beside the agent's own client ^d2
 
@@ -347,13 +351,17 @@ replay is neither capped nor charged again. `_file` keys its task write the same
 Serves C3. `Agent.admit` is a field, `None` admitting all; `build` sets it to the trusted-set test
 unless `[chair] admit = "all"`. The trusted set is fixed at build: the owner, the steward, the
 agent's actor and `trusted`. With `[desk] admit_replies`, `Desk` asks `Desk.admit` before that test
-(S8).
+(S8). A wake, a rerun and a continuous wait ask the gate once per message, and that one answer drops
+the message or lets it run.
 
 - **Landing evidence**:
   `test_mail_from_outside_the_trusted_set_is_dropped_at_the_gate_and_never_runs` in
   `tests/test_chores.py`;
-  `test_a_chair_admitting_all_runs_mail_from_any_sender_and_still_sends_only_to_the_trusted` in
-  `tests/test_agent.py`.
+  `test_a_chair_admitting_all_runs_mail_from_any_sender_and_still_sends_only_to_the_trusted`,
+  `test_the_gate_answers_once_per_message_and_that_answer_alone_drops_it_or_runs_it`,
+  `test_with_no_gate_every_message_runs_and_none_is_dropped` and
+  `test_a_gate_that_raises_runs_none_of_the_batch_records_none_dropped_and_leaves_it_taken` in
+  `tests/test_agent.py`; `test_a_wake_asks_the_desks_gate_once_per_message` in `tests/test_desk.py`.
 
 ### D5: Escalation and triage in `_discover`; `Verdicts` in `hub/agent/verdicts.py` ^d5
 
@@ -452,10 +460,11 @@ least two and at most all of them.
 - **S2**: The desk handles mail that arrives after it went live; the backlog is the owner's. A row
   the owner marks read before discovery reads it is never pending, since discovery lists unread
   rows.
-- **S3**: A clarify asks the sender to answer the owner on the thread. A reply mailed to the desk's
-  own actor meets C3's gate and is dropped unless its sender is trusted or S8's gate lets it
-  through. The next message handled on the thread resolves the clarify; otherwise `clarify_hours`
-  leaves it as unanswered.
+- **S3**: A clarify asks the sender to answer on the thread. A reply mailed to the desk's own actor
+  is dropped at C3's gate unless its sender is trusted or S8 admits it. An answer or a leave of a
+  later message there resolves it; a route, task or escalation does not. Otherwise `clarify_hours`,
+  judged at the sweep's read instant, leaves it unanswered, unless a message on its thread is
+  pending (a route or task of it leaves the cap to the next sweep) or the scan paged (C2).
 - **S4**: Nothing checks a desk's owner against its area's chair, and the registry's `desks` lists
   every resident's directory whatever its role; only a directory whose `chores.toml` has `[desk]`
   runs a desk.
@@ -496,3 +505,11 @@ least two and at most all of them.
 - **S14**: No test drives a second send inside one reply grant, an ADR finding past two headings or
   two Alternatives rows, a `Record` part that raises, or an unknown send that started before its
   cap's window.
+- **S15**: The listing wins over `[wake]` (S8): the gate runs before the rules, so `Desk.admit`
+  stages a clarify's answer whatever a rule does with the mail; `drop` does not keep it from the
+  desk and `batch` does not delay its listing. The batched mail still runs when its window opens;
+  its run finds the answer's row and resolves nothing twice. Pinned in `tests/test_desk.py` by
+  `test_a_clarifys_answer_is_listed_whatever_wake_does_and_its_later_run_resolves_nothing_twice` for
+  `Agent.wake` and
+  `test_a_continuous_chairs_wait_lists_a_clarifys_answer_whatever_wake_does_and_answers_it_once` for
+  a chair's in-run wait.

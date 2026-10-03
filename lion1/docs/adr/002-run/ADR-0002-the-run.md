@@ -144,13 +144,14 @@ with `reply_on_commands` so does one whose commands all landed;
 pins the three `wait` rows. The caller reads `run.outcome` after the loop returns.
 
 - **Landing evidence**: `tests/test_actor.py`, `tests/test_actor_edges.py`, `tests/test_program.py`;
-  tests compare `Exhausted`, `Refused` and `Stopped` by value and `Success` by type; the reap by
+  `Exhausted`, `Refused`, `Stopped` compared by value, `Success` by type; the reap by
   `test_out_waits_for_what_it_names_and_the_reap_lands_the_rest_cancelled_before_run_returns`; the
   closure by `test_a_run_that_ends_by_an_outcome_closes_its_record_with_the_outcome`; program `wait`
   rows by `test_a_program_that_runs_no_command_and_gives_no_out_is_a_reply_under_wait`,
   `test_a_program_is_a_reply_under_wait_unless_its_walk_launches_a_command_or_reaches_out` and
-  `test_reading_an_earlier_turns_value_that_runs_a_command_makes_the_turn_act_under_wait`. One
-  cancelled before it entered is recorded by `_never_started`.
+  `test_reading_an_earlier_turns_value_that_runs_a_command_makes_the_turn_act_under_wait`;
+  `_never_started` records one cancelled before entering; the clock after `wait` by
+  `test_a_wait_that_outlasts_the_time_budget_admits_no_further_call`.
 
 ### D2: A retry is no outcome, so `Retry` is removed ^d2
 

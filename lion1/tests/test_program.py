@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from hub.chat import entry_row
 from lionagi import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Stopped, Success, program
-from lionagi.actor import ProfileError, Result
+from lionagi.actor import ProfileError, Result, _Reader
 from lionagi.checkpoint import entry_of
 from lionagi.lndl import LNDLError
 from lionagi.notes import FileNoteStore, MemoryNoteStore
@@ -663,6 +663,42 @@ def test_a_write_that_reads_a_value_comes_after_the_value_so_a_later_reader_neve
     # bounded: a wait cycle between the write and the value fails here, never hangs the suite
     asyncio.run(asyncio.wait_for(actor.run(PROGRAM, request, scripted(*turns, "idle")), 5))
     assert calls == [("echo", "old")] and actor.notes_for(PROGRAM).get("k").value == written
+
+
+def _held(monkeypatch) -> list[int]:
+    """How many note writes each reader holds, in the order the readers are made."""
+    sizes: list[int] = []
+    made = _Reader.__init__
+
+    def counted(self, *args):
+        made(self, *args)
+        sizes.append(len(self.writes))
+
+    monkeypatch.setattr(_Reader, "__init__", counted)
+    return sizes
+
+
+def test_a_reader_holds_only_the_writes_of_the_notes_it_reads_however_many_the_program_makes(monkeypatch):
+    sizes = _held(monkeypatch)
+    n = 400
+    writes = [f'note.k{i} = "v{i}"' for i in range(n)]
+    lines = (*writes, 'a = echo(text=note["k7"])', 'if note["k9"] == "v9":', "    OUT{x: *a}")
+    run = _run(_actor("many-writes", []), fenced(*lines))
+    assert run.output == {"x": "v7"}
+    # a literal write reads no note; the command and the branch each wait for the one write they read
+    assert sizes == [0] * n + [1, 1, 0]
+
+
+def test_a_value_holds_only_the_writes_of_the_notes_it_reads_whatever_its_first_reader_holds(monkeypatch):
+    sizes = _held(monkeypatch)
+    n = 300
+    writes = [f'note.k{i} = "v{i}"' for i in range(n)]
+    values = [f'v{i} = note["k{i}"]' for i in range(n)]
+    out = "OUT{x: [" + ", ".join(f"*v{i}" for i in range(n)) + "]}"
+    run = _run(_actor("many-values", []), fenced(*writes, *values, out))
+    assert run.output == {"x": [f"v{i}" for i in range(n)]}
+    # the output reads every note through the values; each value, computed for it, holds its own one
+    assert sizes == [0] * n + [n] + [1] * n
 
 
 @pytest.mark.parametrize(
