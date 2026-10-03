@@ -201,6 +201,32 @@ def _echo_actor(name: str) -> Actor:
     return actor
 
 
+def test_a_program_the_reader_refuses_is_a_retry_that_runs_nothing_like_an_unreadable_call():
+    # two fenced blocks: a program profile's reader refuses the message whole (ADR-0002/C1, fourth row)
+    ran: list[str] = []
+    actor = Actor("t3p")
+
+    @actor.handler(Echo, effect="pure")
+    async def echo(req: Echo, ctx) -> str:
+        ran.append(req.text)
+        return req.text
+
+    two = '```\na = echo(text="one")\n```\n```\nb = echo(text="two")\n```'
+    done = '```\nOUT{done: {summary: "read", files: []}}\n```'
+    run = asyncio.run(
+        actor.run(
+            Profile("p", language="program"),
+            RunRequest(inputs=("go",), emits=(Done,), max_rounds=2),
+            scripted(two, done),
+        )
+    )
+    assert isinstance(run.outcome, Success) and run.output["done"].summary == "read"
+    assert ran == [] and not [e for e in run.record if e.kind is Kind.RESULT]
+    sys_entries = [e.content for e in run.record if e.name.startswith("_sys")]
+    told = "your last turn could not be read: 2 fenced blocks: a turn is one program in one block"
+    assert any(told in c for c in sys_entries)
+
+
 def test_a_reused_alias_is_refused_and_never_reads_as_still_running():
     actor = _echo_actor("t5")
     run = asyncio.run(

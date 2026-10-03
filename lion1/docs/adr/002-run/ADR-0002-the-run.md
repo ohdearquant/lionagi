@@ -59,7 +59,7 @@ Source: `Actor.run` in `lionagi/actor.py`.
 | a bound is spent at the turn's start                      | nothing                                             | `Exhausted(reason)`, unless `run.more` was granted in an earlier turn (ADR-0003) |
 | under `wait`, after a reply or a pause with no command pending, `wait` answers false at the turn's start | nothing, not even the notification | `Stopped(n)`                                     |
 | `stop()` is true after the notification                   | nothing                                             | `Stopped(n)`                                                     |
-| the message carries the loop's own `<system round=` frame, two `OUT{}`, an unreadable call or a backend's refusal | nothing | a retry; the error rides the next notification |
+| the message carries the loop's own `<system round=` frame, two `OUT{}`, an unreadable call or program (ADR-0008/C1) or a backend's refusal | nothing | a retry; the error rides the next notification |
 | under `wait`, the message has no command and no `OUT{}`   | no command; a value or note it declares is taken   | the run continues as a reply; `wait` is asked at the next turn's start |
 | the message has no LNDL, in a run without `wait`          | nothing                                             | the run continues, with an idle note                             |
 | the message has `OUT{}` and its fields do not assemble | every command; `OUT{}` waits, then fails to assemble; the turn settles | a retry; the error rides the next notification, a repeat counted (C3) |
