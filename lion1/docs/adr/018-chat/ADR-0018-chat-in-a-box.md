@@ -575,19 +575,21 @@ into the model again.
 ### D17: The push's git calls on this machine, each within the hub's `GIT_TIMEOUT` ^d17
 
 Serves C3. A push lists the directory with `git ls-files` and, when that fails, asks `git rev-parse`
-whether it is a repository, in `pack` of `hub/tools/box.py`, which the Daytona and Runta pushes
-share. Each call has that module's `GIT_TIMEOUT` (30 s); the hub does not import the command's. Past
-it the process group git leads is killed, with what git started in it, git is reaped, and
-`TimeoutError` says git did not answer within the bound, which a git that exits with an rc never
-says. Nothing is pushed.
+whether it is a repository, in `pack` of `hub/tools/box.py`, shared by the Daytona and Runta pushes.
+Each call has that module's `GIT_TIMEOUT` (30 s); the hub does not import the command's. Past it
+git's process group is killed and git reaped, and `TimeoutError` says git did not answer within the
+bound; a kill refused again after the reap raises `PermissionError`, as no member is one this
+process may signal. Nothing is pushed.
 
 - **Landing evidence**: `tests/test_daytona.py`:
   `test_a_push_whose_local_git_never_answers_is_stopped_at_the_bound_and_said_to_have_timed_out`,
   `ls-files` and `rev-parse` each stalled;
   `test_a_stalled_git_whose_group_kill_is_first_refused_with_eperm_is_still_stopped`;
-  `test_a_stalled_git_left_exited_and_unreaped_is_reaped_before_its_kill_is_tried_again`. Control:
-  either call unbounded fails its own case alone, and the kill retried without the reap fails the
-  last.
+  `test_a_stalled_git_left_exited_and_unreaped_is_reaped_before_its_kill_is_tried_again`;
+  `test_a_stalled_git_whose_kill_is_refused_again_after_the_reap_raises_permission_error`. Control:
+  either call unbounded fails its own case alone, the kill retried without the reap fails the
+  unreaped case, and a second refusal swallowed fails the
+last.
 
 ## Alternatives
 

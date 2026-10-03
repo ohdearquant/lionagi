@@ -407,6 +407,29 @@ def test_a_stalled_git_left_exited_and_unreaped_is_reaped_before_its_kill_is_tri
     gone(pids)
 
 
+def test_a_stalled_git_whose_kill_is_refused_again_after_the_reap_raises_permission_error(
+    tmp_path, monkeypatch
+):
+    # both kills refused: no member of the group is one this process may signal, which no timeout explains
+    from hub.tools import box as box_mod
+
+    pids = stalled_git(tmp_path, monkeypatch, "status")
+    monkeypatch.setattr(box_mod, "GIT_TIMEOUT", 1.0)
+    real, sent = os.killpg, []
+
+    def killpg(pid, sig):
+        sent.append(pid)
+        if len(sent) == 2:
+            real(pid, sig)  # the stub's group ends here so the call's wait returns; the answer is still EPERM
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", killpg)
+    with pytest.raises(PermissionError):
+        box_mod._git(tmp_path, "status")
+    assert len(sent) == 2
+    gone(pids)
+
+
 def test_chat_in_a_box_pushes_the_directory_lists_it_and_brings_the_patch_back(stubbed, tmp_path, capsys):
     """`lion chat --box daytona` end to end on the stub: the directory pushed at the same path, the
     file tools over the box's tree, a git baseline for the copy, the diff saved as the chat's patch
