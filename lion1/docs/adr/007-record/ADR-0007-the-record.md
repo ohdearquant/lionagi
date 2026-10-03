@@ -242,12 +242,12 @@ on writing, when decided, sits on those two.
 
 ### D4: The file store keeps the copy it checked and reads only standard JSON ^d4
 
-Serves C7. `FileNoteStore.put` renders the value with `json.dumps(allow_nan=False)`, encodes the
-text as UTF-8, reads it back with `json.loads`, and keeps and writes that copy: a change to the
-caller's object afterwards, or while `put` waits for the lock, reaches nothing stored. `_load`
-refuses a file holding NaN, Infinity, a number that overflows to a non-finite float, like `1e999`,
-or bytes that are not UTF-8, naming file and text or byte offset, repairing nothing. The write
-renders with `allow_nan=False` and as UTF-8, so every file is standard JSON.
+Serves C7. `FileNoteStore.put` renders the value with `json.dumps(allow_nan=False)`, encodes it as
+UTF-8, reads it back with `json.loads`, and stores that copy: a change to the caller's object
+afterwards, or while `put` waits for the lock, reaches nothing stored. `_load` refuses NaN,
+Infinity, an overflowing number, like `1e999`, and bytes that are not UTF-8, naming file and text or
+byte offset, repairing nothing. A number too small for a float is kept as 0.0, as JSON parses it.
+The write renders as UTF-8 with `allow_nan=False`, so every file is standard JSON.
 
 - **Landing evidence**:
   `test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal`,
@@ -302,7 +302,9 @@ only reads, says the store could not be read and goes on (C8). The model cannot 
 write over it would clobber what it holds.
 
 - **Landing evidence**:
-  `test_a_note_declared_into_a_store_the_loader_refuses_ends_the_run_with_the_loaders_error`; the
+  `test_a_note_declared_into_a_store_the_loader_refuses_ends_the_run_with_the_loaders_error`; a
+  program assignment:
+  `test_an_assignment_into_a_store_the_loader_refuses_is_told_not_written_and_the_run_goes_on`; the
   notification:
   `test_the_first_notice_names_ten_notes_counts_the_rest_and_says_an_unreadable_store`.
 

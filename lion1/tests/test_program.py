@@ -404,6 +404,24 @@ def test_a_store_that_refuses_keeps_the_result_and_claims_no_write(tmp_path):
     assert [e.content.ok for e in run.record if e.kind is Kind.RESULT] == [True]
 
 
+def test_an_assignment_into_a_store_the_loader_refuses_is_told_not_written_and_the_run_goes_on(tmp_path):
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    path = notes / "p.json"
+    row = '{"key": "k", "value": "Crème Brûlée", "run": "r", "seq": 1, "version": 1}'
+    encoded = f'{{"version": 1, "notes": {{"k": {row}}}}}'.encode("latin-1")
+    path.write_bytes(encoded)
+    offset = next(i for i, byte in enumerate(encoded) if byte >= 0x80)
+    run = _run(Actor("loader-refuses", notes_dir=notes), fenced('note.k = "new"'), "idle")
+    # the tag form ends the run on this file (ADR-0007/D7); a program's write is caught at settle
+    assert run.outcome is not None and run.round == 2 and run.notes_written == []
+    assert (
+        f"note.k: not written: ValueError: {path}: the file is not UTF-8 "
+        f"(the byte at offset {offset} cannot be decoded); re-encode it as UTF-8 by hand"
+    ) in _notices(run)
+    assert path.read_bytes() == encoded and not list(notes.glob("*.tmp"))
+
+
 def test_a_dotted_path_writes_into_a_json_note_and_creates_what_is_missing():
     actor = _actor("path", [])
     store = actor.notes_for(PROGRAM)
