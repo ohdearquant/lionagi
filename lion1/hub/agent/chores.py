@@ -1089,12 +1089,15 @@ _LABEL = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}")
 def _is_label(at: str) -> bool:
     """`at` as `_now` writes it, in that form only (the digest selects a day by its first ten characters)
     and naming a time that exists: it comes back from local time as itself, so the hour a clock change
-    skips names none, and a repeated hour names one."""
+    skips names none, and a repeated hour names one. A year the digest cannot count names none either,
+    the same on every platform: some C libraries raise for it, others return an instant before 1970."""
     try:
         named = time.strptime(at, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
+        t = time.mktime(named)
+        back = time.localtime(t)[:6]
+    except (ValueError, OverflowError, OSError):
         return False
-    return _LABEL.fullmatch(at) is not None and time.localtime(time.mktime(named))[:6] == named[:6]
+    return _LABEL.fullmatch(at) is not None and 0 <= t < _TIME_END and back == named[:6]
 
 
 def _is_number(v: Any) -> bool:

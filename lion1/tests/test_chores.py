@@ -12,6 +12,7 @@ import json
 import re
 import time
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -1136,6 +1137,21 @@ def test_a_monthly_chore_with_no_first_due_on_record_keeps_the_month_end_rule(tm
         time.tzset()
 
 
+@pytest.mark.parametrize("mktime", ["raises", "goes-before-1970"])
+def test_a_label_in_a_year_the_clock_cannot_count_is_no_label_whichever_way_mktime_fails(monkeypatch, mktime):
+    import hub.agent.chores as chores_module
+
+    def placed(named):  # macOS raises for year 1; glibc returns an instant before 1970
+        if mktime == "raises":
+            raise OverflowError("mktime argument out of range")
+        return -62135596800.0
+
+    year_one = time.strptime("0001-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")  # the round trip holds
+    clock = SimpleNamespace(strptime=time.strptime, mktime=placed, localtime=lambda t: year_one)
+    monkeypatch.setattr(chores_module, "time", clock)  # the module's clock only
+    assert chores_module._is_label("0001-01-01 00:00:00") is False
+
+
 @pytest.mark.parametrize(
     ("row", "error"),
     [
@@ -1149,9 +1165,9 @@ def test_a_monthly_chore_with_no_first_due_on_record_keeps_the_month_end_rule(tm
             '{"at": "yesterday", "chore": "w", "findings": [], "control": true, "escalate": false}',
             "ValueError",
         ),
-        (
+        (  # one error on every platform, whether mktime raises for year 1 or returns a negative instant
             '{"at": "0001-01-01 00:00:00", "chore": "w", "findings": [], "control": true, "escalate": false}',
-            "OverflowError",
+            "ValueError",
         ),
         ("[]", "ValueError"),
         ("null", "ValueError"),
