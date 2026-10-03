@@ -550,11 +550,15 @@ class Chores:
         except (OSError, ValueError, OverflowError) as e:
             ledger, unread = [], f"{type(e).__name__}: {e}"
         rows = [r for r in ledger if r["at"].startswith(day)]
-        firsts = {  # chore -> the instant its tick first came due; a value that is no instant is no record
-            k: float(v)
-            for k, v in _val(self.agent.state, "first_due", {}).items()
-            if isinstance(v, int | float) and not isinstance(v, bool)
-        }
+        firsts: dict[str, float] = {}  # chore -> the instant its tick first came due
+        for k, v in _val(self.agent.state, "first_due", {}).items():
+            if not _is_number(v):  # a value that is no instant is no record
+                continue
+            try:
+                datetime.fromtimestamp(v, UTC)  # nor is one the text and the month rule below cannot read
+            except (ValueError, OverflowError, OSError):
+                continue
+            firsts[k] = float(v)
         actor = self.owner
         lines = [
             f"[chores digest {day}] {self.agent.khive.actor}: "

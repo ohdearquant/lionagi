@@ -401,3 +401,9 @@ bypasses the handler: no refusals, no row, no send.
   label opens with, `2026-09-04` for `2026-9-4`, so either spelling selects the same rows and judges
   at the same moment. A text that is no date raises before anything is sent
   (`test_a_day_the_digest_is_asked_about_selects_the_same_rows_in_any_spelling_a_date_has`).
+- **S23**: The digest reads a chore's `first_due` as a record only where it is a finite number, no
+  bool, that a UTC date can name, the first two as S17 has it. Any other value is no record: the
+  digest still delivers, and a chore with no run reads `MISSING: <chore>, no run recorded`
+  (`test_a_first_due_the_digest_cannot_read_as_an_instant_is_no_record_and_the_digest_delivers`,
+  `test_a_first_due_a_clock_can_name_is_a_record_to_the_last_second_of_the_year_9999`,
+  `test_a_first_due_a_platform_cannot_convert_and_refuses_with_an_oserror_is_no_record`).

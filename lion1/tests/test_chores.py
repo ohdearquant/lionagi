@@ -940,6 +940,67 @@ def test_a_chore_with_no_run_and_no_first_due_on_record_is_missing_as_before(tmp
         assert "MISSING: w, no run recorded" in digest_at(chores, agent, t).splitlines()
 
 
+_END = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC).timestamp()  # the last second a UTC datetime names
+
+
+def a_chore_w(tmp_path, ran: bool):
+    """A weekly chore `w` that has never run, or a monthly one run the day before the moment `t`."""
+    khive = FakeKhive()
+    chores, agent = build(tmp_path, khive, [], w=Probe("w", full(), every="monthly" if ran else "weekly"))
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    ledger(chores, *([("w", t - 86400)] if ran else []))
+    return khive, chores, agent, t
+
+
+@pytest.mark.parametrize("ran", [False, True], ids=["never-run", "monthly-run"])
+@pytest.mark.parametrize(
+    "stored",
+    [float("nan"), float("inf"), float("-inf"), True, "x", 10**20, -(10**20), 10**400, _END + 1],
+    ids=["nan", "inf", "-inf", "bool", "text", "1e20", "-1e20", "huge-int", "year-10000"],
+)
+def test_a_first_due_the_digest_cannot_read_as_an_instant_is_no_record_and_the_digest_delivers(
+    tmp_path, stored, ran
+):
+    khive, chores, agent, t = a_chore_w(tmp_path, ran)
+    none = digest_at(chores, agent, t)  # the reading to match: no first due on record
+    agent.state.put("first_due", {"w": stored}, run="-", seq=0)
+    text = digest_at(chores, agent, t)
+    assert text == none
+    assert [m["content"] for m in khive.sent] == [none, text] and {m["to"] for m in khive.sent} == {OWNER}
+    if not ran:
+        assert "MISSING: w, no run recorded" in text.splitlines()
+
+
+@pytest.mark.parametrize("ran", [False, True], ids=["never-run", "monthly-run"])
+def test_a_first_due_a_clock_can_name_is_a_record_to_the_last_second_of_the_year_9999(tmp_path, ran):
+    _, chores, agent, t = a_chore_w(tmp_path, ran)
+    agent.state.put("first_due", {"w": _END}, run="-", seq=0)
+    text = digest_at(chores, agent, t)
+    if ran:  # the next month's anchor day, at the first due's time of day: Oct 31, 23:59:59 UTC
+        due = datetime(2026, 10, 31, 23, 59, 59, tzinfo=UTC).timestamp()
+        assert f"{OWNER} w not due: last run {label(t - 86400)}, due by {label(due)}" in text
+    else:
+        assert f"{OWNER} w no run yet, first due by {label(_END)}" in text
+
+
+@pytest.mark.parametrize("ran", [False, True], ids=["never-run", "monthly-run"])
+def test_a_first_due_a_platform_cannot_convert_and_refuses_with_an_oserror_is_no_record(
+    tmp_path, monkeypatch, ran
+):
+    class Refusing(datetime):  # as the C library does on a platform for an instant it cannot convert
+        @classmethod
+        def fromtimestamp(cls, t, tz=None):
+            if t == 12345.0:
+                raise OSError("Value too large for defined data type")
+            return super().fromtimestamp(t, tz)
+
+    _, chores, agent, t = a_chore_w(tmp_path, ran)
+    none = digest_at(chores, agent, t)
+    monkeypatch.setattr("hub.agent.chores.datetime", Refusing)
+    agent.state.put("first_due", {"w": 12345.0}, run="-", seq=0)
+    assert digest_at(chores, agent, t) == none
+
+
 def test_a_fresh_agent_with_no_ledger_file_reads_no_run_yet_until_its_first_due_and_the_grace(tmp_path):
     probes = {"w": Probe("w", full(), every="weekly"), "a": Probe("a", full(), every=None)}
     chores, agent = build(tmp_path, FakeKhive(), [], **probes)
