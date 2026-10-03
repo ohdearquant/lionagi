@@ -124,7 +124,15 @@ class FileNoteStore(MemoryNoteStore):
             # note in memory, readable at version 1, and the next write carried it to the file)
             self._version, self._notes = 0, {}
             return
-        data = json.loads(self.path.read_text())
+
+        # every file this store writes is standard JSON: one that holds NaN or Infinity is refused here,
+        # not loaded and written back by the next put
+        def refuse(constant: str):
+            raise ValueError(
+                f"{self.path}: the file holds {constant}, which is not standard JSON; repair it by hand"
+            )
+
+        data = json.loads(self.path.read_text(), parse_constant=refuse)
         self._version = int(data.get("version", 0))
         self._notes = {k: Note(**v) for k, v in data.get("notes", {}).items()}
 
@@ -164,12 +172,13 @@ class FileNoteStore(MemoryNoteStore):
             # is not a string comes back as text, and two keys can come back as one)
             text = json.dumps(value, ensure_ascii=False, allow_nan=False)
             text.encode("utf-8")
-            if json.loads(text) != value:
+            kept = json.loads(text)  # the copy this store keeps and writes, never the caller's object
+            if kept != value:
                 raise ValueError("JSON would read it back changed")
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError, RecursionError) as e:  # RecursionError: nested past what JSON walks
             raise ValueError(f"note {key!r}: {e}; the file store carries JSON values only") from None
         with self._locked():
-            note = super().put(key, value, run=run, seq=seq)
+            note = super().put(key, kept, run=run, seq=seq)
             self._flush()
         return note
 
@@ -186,7 +195,7 @@ class FileNoteStore(MemoryNoteStore):
         fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name, suffix=".tmp")
         try:
             with os.fdopen(fd, "w") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=1)
+                json.dump(payload, f, ensure_ascii=False, allow_nan=False, indent=1)
             os.replace(tmp, self.path)
         except BaseException:
             if os.path.exists(tmp):

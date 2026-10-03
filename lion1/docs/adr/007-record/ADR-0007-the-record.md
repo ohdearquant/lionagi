@@ -240,19 +240,24 @@ on writing, when decided, sits on those two.
   (`test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_names_the_version`);
   the cross-profile read: `test_note_read_reads_another_profiles_note_only_under_its_privilege`.
 
-### D4: The stores take a value as given, and `_note_find` cuts the preview ^d4
+### D4: The file store keeps the copy it checked and reads only standard JSON ^d4
 
-Serves C7. `put` on either store keeps the value it is handed; the file store first renders it with
-`json.dumps(allow_nan=False)` and reads that text back with `json.loads`, and a value that does not
-render or reads back unequal raises `ValueError` before the store takes its lock. `find` casefolds
-the query, each key and each value's text, so `STRASSE` finds `Straße`. `_note_find` slices the
-value's text at 120 characters, and `Actor.notes_for` returns `Profile.notes` before it looks for a
-store of its own.
+Serves C7. The file store's `put` renders the value with `json.dumps(allow_nan=False)`, encodes the
+text as UTF-8, reads it back with `json.loads`, and keeps and writes that copy: a change to the
+caller's object afterwards, or while `put` waits for the lock, reaches nothing stored. Any of
+`TypeError`, `ValueError` or `RecursionError` from a step, or a copy unequal to the value, raises
+`ValueError` before the lock. `_load` refuses a file holding NaN or Infinity, naming file and
+constant, and the write renders with `allow_nan=False`, so every file written is standard JSON.
 
 - **Landing evidence**: `test_a_file_note_store_refuses_a_value_the_file_cannot_carry`,
+  `test_a_value_the_file_cannot_carry_is_refused_before_the_store_takes_its_lock`,
   `test_a_value_json_cannot_carry_whole_is_refused_before_the_lock`,
-  `test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal` and
-  `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`.
+  `test_a_value_nested_past_the_recursion_limit_is_refused_as_a_value_error`,
+  `test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal`,
+  `test_a_value_changed_while_put_waits_for_the_lock_leaves_what_was_checked_in_the_file`,
+  `test_a_value_changed_after_put_returns_changes_nothing_stored`,
+  `test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_and_the_constant` and
+  `test_a_write_never_renders_a_non_finite_number_wherever_it_sits`.
 
 ### D5: `_notify` lists the store on the first turn ^d5
 
@@ -268,6 +273,17 @@ or said to be unprintable. A resumed chat is a new run and is told again.
   `test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_what_it_raises`.
   Controls: dropping the block, the catch, the sort, the plain string, the quoting, either cut, the
   escaping or the inner catch, or skipping a resumed run, fails a test.
+
+### D6: `find` folds case in the stores that ship, and `_note_find` cuts the preview ^d6
+
+Serves C7. `MemoryNoteStore.put` keeps the value it is handed. `MemoryNoteStore.find`, which
+`FileNoteStore` inherits, casefolds the query, each key and each value's text, so `STRASSE` finds
+`Straße`. `_note_find` calls `find` on the profile's store, and `Actor.notes_for` returns
+`Profile.notes` before it looks for a store of its own, so a store a profile brings answers for
+itself. `_note_find` slices each value's text at 120 characters.
+
+- **Landing evidence**:
+  `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`.
 
 ## Alternatives
 

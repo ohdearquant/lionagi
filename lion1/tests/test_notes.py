@@ -3,8 +3,12 @@ refused instead of matching everything; find hits carry size and version and a n
 through note.get; list prefixes are exact while find is case-insensitive."""
 
 import asyncio
+import copy
+import fcntl
 import json
 import os
+import re
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -318,6 +322,110 @@ def test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal(
     FileNoteStore(tmp_path / "n.json").put("k", value, run="r", seq=1)
     back = FileNoteStore(tmp_path / "n.json").get("k").value
     assert back == value and [type(x) for x in back["n"]] == [type(x) for x in value["n"]]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda v: v.__setitem__("at", (0, 1)),
+        lambda v: v.__setitem__("n", float("nan")),
+        lambda v: v.__setitem__("a", "changed"),
+    ],
+    ids=["tuple", "nan", "plain"],
+)
+def test_a_value_changed_while_put_waits_for_the_lock_leaves_what_was_checked_in_the_file(
+    tmp_path, monkeypatch, change
+):
+    path = tmp_path / "n.json"
+    value = {"a": [1, 2], "b": "text"}
+    checked = copy.deepcopy(value)
+    store, other = FileNoteStore(path), FileNoteStore(path)
+    waiting, errors = threading.Event(), []
+    real_flock = fcntl.flock
+
+    def announcing(lock, how):
+        if threading.current_thread() is not threading.main_thread():
+            waiting.set()
+        return real_flock(lock, how)
+
+    def writer():
+        try:
+            store.put("k", value, run="r", seq=1)
+        except BaseException as e:
+            errors.append(e)
+
+    monkeypatch.setattr("lionagi.notes.fcntl.flock", announcing)
+    with other._locked():  # another console holds the file while this put has passed its check
+        thread = threading.Thread(target=writer)
+        thread.start()
+        assert waiting.wait(10)
+        change(value)
+    thread.join(10)
+    assert not thread.is_alive() and errors == []
+    assert json.loads(path.read_text())["notes"]["k"]["value"] == checked
+    assert FileNoteStore(path).get("k").value == checked
+
+
+def test_a_value_changed_after_put_returns_changes_nothing_stored(tmp_path):
+    value = {"a": [1, 2], "b": "text"}
+    checked = copy.deepcopy(value)
+    store = FileNoteStore(tmp_path / "n.json")
+    note = store.put("k", value, run="r", seq=1)
+    value["a"].append(3)
+    value["c"] = (1,)
+    assert note.value == checked and note.value is not value
+    assert store.get("k").value == checked and FileNoteStore(tmp_path / "n.json").get("k").value == checked
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_and_the_constant(
+    tmp_path, constant
+):
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)  # built before the file holds anything
+    row = f'{{"key": "k", "value": {constant}, "run": "r", "seq": 1, "version": 1}}'
+    path.write_text(f'{{"version": 1, "notes": {{"k": {row}}}}}')
+    said = re.escape(f"{path}: the file holds {constant}, which is not standard JSON")
+    for read_or_write in (
+        lambda: FileNoteStore(path),
+        lambda: store.get("k"),
+        lambda: store.list(),
+        lambda: store.find("k"),
+        lambda: store.version,
+        lambda: store.put("other", "x", run="r", seq=2),  # an unrelated write is refused, not re-emitting it
+        lambda: store.delete("k"),
+    ):
+        with pytest.raises(ValueError, match=said):
+            read_or_write()
+    assert path.read_text() == f'{{"version": 1, "notes": {{"k": {row}}}}}'
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_a_write_never_renders_a_non_finite_number_wherever_it_sits(tmp_path):
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)
+    store.put("plan", "one", run="r", seq=1)
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="not JSON compliant"):  # the sequence is no value, but a number
+        store.put("other", "two", run="r", seq=float("nan"))
+    assert path.read_bytes() == before and not list(tmp_path.glob("*.tmp"))
+    assert [n.key for n in store.list()] == ["plan"] and store.version == 1
+    store.put("third", "three", run="r", seq=3)
+    on_disk = json.loads(path.read_text())
+    assert sorted(on_disk["notes"]) == ["plan", "third"] and "NaN" not in path.read_text()
+
+
+def test_a_value_nested_past_the_recursion_limit_is_refused_as_a_value_error(tmp_path, no_collection):
+    deep: list = []
+    for _ in range(100_000):
+        deep = [deep]
+    store = FileNoteStore(tmp_path / "n.json")
+    # the interpreter words the overflow itself ("maximum recursion depth exceeded" to 3.13, "Stack
+    # overflow" from 3.14); the preflight names it and says where it happened
+    said = "note 'k': .*while encoding a JSON object; the file store carries JSON values only"
+    with pytest.raises(ValueError, match=said):
+        store.put("k", deep, run="r", seq=1)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_find_reads_every_note_when_one_value_cannot_be_rendered_as_json():
