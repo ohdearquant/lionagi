@@ -41,7 +41,8 @@ Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Ha
 - **`RESULT`**: the record entry the result lands on, under the command's alias.
 - **execution**: the RESULT's mark of whether the handler was called: `not executed`, `started`, or
   `completion unknown` when cancelled after the call; set by the loop, never by a handler or a hook;
-  it says what the loop did, never what the world did.
+  it says what the loop did, never what the world did. The session gate writes `admitted`
+  ([[ADR-0009-backends#^c6|ADR-0009/C6]]).
 - **reason**: the closed set on a failed `RESULT`: `unknown`, `invalid`, `privilege`, `refused`,
   `failed`, `cancelled`.
 - **bus**: the in-process observer of events; it records and notifies, and decides nothing.
