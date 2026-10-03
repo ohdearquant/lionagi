@@ -11,7 +11,7 @@ import pytest
 from lion_cli.chat import Interrupt, _branch, chat_main, console, signer, unsettled
 from lion_cli.main import parser
 from lion_cli.view import RESULT_LINES, Console
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, RootModel, computed_field, model_serializer
 
 from hub.chat import chat, entry_row, load_log
 from lionagi import Actor, Profile
@@ -809,3 +809,143 @@ def test_a_logged_aliased_model_replays_under_its_field_names_which_only_a_by_na
     assert (by_alias(rows, "c")["ok"], by_alias(rows, "c")["value"]) == (True, "cataloged")
     assert [type(g) for g in got] == [Named] and got[0].title == "Dune"
     assert by_alias(rows, "d")["value"] == {"title": "Dune"}
+
+
+class Tags(RootModel[list[str]]):
+    pass
+
+
+class Mark(BaseModel):
+    title: str
+
+    @model_serializer
+    def as_title(self) -> str:
+        return self.title
+
+
+class Sealed(BaseModel):
+    title: str
+    key: str = Field(exclude=True)
+
+
+class Make(BaseModel):
+    kind: str
+
+
+class Filing(BaseModel):
+    tags: Tags
+
+
+class Cite(BaseModel):
+    mark: Mark
+
+
+class Unseal(BaseModel):
+    sealed: Sealed
+
+
+def vault(got: list) -> tuple[Actor, Profile]:
+    """A console of four commands: `make` returns a model by kind, a `Tags` root model, a `Mark` whose
+    serializer returns its title, or a `Sealed` whose key its dump leaves out; `filing`, `cite` and
+    `unseal` take one each and put what they were handed in `got`."""
+    actor = Actor("vault")
+
+    @actor.handler(Make)
+    async def make(req: Make, ctx) -> BaseModel:
+        return {
+            "tags": Tags(["Dune", "sf"]),
+            "mark": Mark(title="Dune"),
+            "sealed": Sealed(title="Dune", key="k"),
+        }[req.kind]
+
+    @actor.handler(Filing)
+    async def filing(req: Filing, ctx) -> str:
+        got.append(req.tags)
+        return "filed"
+
+    @actor.handler(Cite)
+    async def cite(req: Cite, ctx) -> str:
+        got.append(req.mark)
+        return "cited"
+
+    @actor.handler(Unseal)
+    async def unseal(req: Unseal, ctx) -> str:
+        got.append(req.sealed)
+        return "unsealed"
+
+    return actor, Profile("vault", specs=frozenset({"make", "filing", "cite", "unseal"}), language="core")
+
+
+def test_a_logged_root_model_resumes_as_its_root_and_a_command_typed_as_it_gets_the_model(
+    tmp_path, monkeypatch
+):
+    """A root model's dump is its root, here a list; `lion chat -r` replays that list and a command
+    whose argument is typed as the model is handed the model again, validated from it."""
+    got: list = []
+    first = tmp_path / "first.jsonl"
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: vault(got),
+        ('<lact t>make(kind="tags")</lact>', "Made."),
+        first,
+        "--say",
+        "make tags",
+    )
+    assert by_alias(rows, "t")["value"] == ["Dune", "sf"]
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: vault(got),
+        ("<lact f>filing(tags=*t)</lact>", "Filed."),
+        tmp_path / "second.jsonl",
+        "-r",
+        str(first),
+        "--say",
+        "file it",
+    )
+    assert [type(g) for g in got] == [Tags] and got == [Tags(["Dune", "sf"])]
+    assert (by_alias(rows, "f")["ok"], by_alias(rows, "f")["value"]) == (True, "filed")
+    assert by_alias(rows, "t")["value"] == ["Dune", "sf"]  # the replayed row is logged again as it was read
+
+
+def test_a_logged_model_its_own_validation_refuses_is_refused_at_replay_as_invalid_arguments(
+    tmp_path, monkeypatch
+):
+    """A serializer that returns a scalar the model does not validate, and a required field the dump
+    leaves out, are logged as that dump; the command typed as the model is handed the model live, and
+    refused after `lion chat -r` by its own validation, which names what it did not accept."""
+    got: list = []
+    first = tmp_path / "first.jsonl"
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: vault(got),
+        (
+            '<lact m>make(kind="mark")</lact><lact s>make(kind="sealed")</lact><lact l>cite(mark=*m)</lact>',
+            "Made.",
+        ),
+        first,
+        "--say",
+        "make them",
+    )
+    assert (by_alias(rows, "m")["value"], by_alias(rows, "s")["value"]) == ("Dune", {"title": "Dune"})
+    assert (by_alias(rows, "l")["ok"], got) == (True, [Mark(title="Dune")])  # live, the pointer is the model
+    rows = lion_chat(
+        monkeypatch,
+        tmp_path,
+        lambda: vault(got),
+        ("<lact c>cite(mark=*m)</lact><lact u>unseal(sealed=*s)</lact>", "Tried."),
+        tmp_path / "second.jsonl",
+        "-r",
+        str(first),
+        "--say",
+        "use them",
+    )
+    for alias, error in (
+        ("c", "invalid arguments: mark: Input should be a valid dictionary or instance of Mark"),
+        ("u", "invalid arguments: sealed.key: Field required"),
+    ):
+        refused = by_alias(rows, alias)
+        assert (refused["ok"], refused["reason"], refused["error"]) == (False, "invalid", error)
+    assert got == [Mark(title="Dune")]  # neither refused command ran

@@ -331,23 +331,36 @@ are: results are read only in the notice the loop writes. A turn that writes the
 The line lists the client's allow list by name, sorted, then the salience cap on `memory.remember`.
 It gave a count and a summary before, and a model learned a verb was allowed only by calling it.
 
-### C19: A model value in the chat log comes back as its fields _(enforced: mechanical)_ ^c19
+### C19: A model value in the chat log comes back as its JSON form _(enforced: mechanical)_ ^c19
 
 - **Subject**: `jsonable`, the `default=` of every chat log entry writer and of the checkpoint's
   file.
-- **Violated when**: a model value is logged as anything but its fields, a command typed with the
-  model is handed anything but the model, or a value an older log holds as a string resumes as
-  anything else.
+- **Violated when**: a model value is logged as anything but its `model_dump(mode="json")`, a
+  command typed as a model that accepts its own dump is handed anything but the model, or a value an
+  older log holds as a string resumes as anything else.
 
 A model value, a command's result or a program's value, is logged as `model_dump(mode="json")`,
-computed fields included, and a resume reads that dict back. A program reads its fields
-(`*b.title`), and a command typed as the model is handed the model, validated from the dict.
+whatever that is: an object of its fields, computed ones included, a list or a scalar. A `RootModel`
+dumps its root, and a serializer may return any JSON. A resume reads that JSON back. A program reads
+the fields of an object (`*b.title`), and a command typed as the model is handed the model,
+validated from the JSON.
+
+A model whose fields JSON cannot hold is logged as its string.
+
+### C20: A model replays when its own validation accepts its own dump _(enforced: mechanical)_ ^c20
+
+- **Subject**: a command typed as a model, in a chat resumed from a log that holds a value of it.
+- **Violated when**: a command typed as a model is refused for a dump its validation accepts, runs
+  on one it refuses, or is refused as anything but invalid arguments.
+
+A model round-trips when its own validation accepts its own dump, which a `RootModel` and a plain
+model do. One whose serializer and validation disagree, or whose dump leaves out a required field,
+is that model's defect: the command typed as it is refused in the resumed chat (C6) as invalid
+arguments, and the run goes on.
 
 On that validation a computed field's key is ignored, refused if the model forbids extra fields,
 kept as extra data if it allows them. A model with aliased fields replays under its field names,
 which a command typed as it accepts only if the model validates by name.
-
-A model whose fields JSON cannot hold is logged as its string.
 
 ## Decisions
 
@@ -534,16 +547,19 @@ set.
 
 ### D16: `jsonable` in `lionagi/checkpoint.py`, the writers' `default=` ^d16
 
-Serves C19. `jsonable` returns `model_dump(mode="json")` for a pydantic model and the `str` of
-anything else, or of a model whose dump raises pydantic's serialization error. `Console` writes each
-chat log entry row with it, the long-running agent its checkpointed record, and the checkpoint its
-file and each value its restore shows; a usage row is written with `str`. `entry_of` hands the dict
-back as written, and a Spec field typed as the model validates it into the model again.
+Serves C19 and C20. `jsonable` returns `model_dump(mode="json")` for a pydantic model, whatever form
+that takes, and the `str` of anything else, or of a model whose dump raises pydantic's serialization
+error. `Console` writes each chat log entry row with it, the long-running agent its checkpointed
+record, and the checkpoint its file and each value its restore shows; a usage row is written with
+`str`. `entry_of` hands the JSON back as written, and a Spec field typed as the model validates it
+into the model again.
 
 - **Landing evidence**: `apps/cli/tests/test_chat_command.py`:
   `test_a_logged_model_value_resumes_as_its_fields_and_a_command_typed_as_the_model_gets_the_model`,
   `test_a_logged_aliased_model_replays_under_its_field_names_which_only_a_by_name_command_accepts`,
   `test_a_resumed_program_reads_a_field_of_a_logged_model_value`,
+  `test_a_logged_root_model_resumes_as_its_root_and_a_command_typed_as_it_gets_the_model`,
+  `test_a_logged_model_its_own_validation_refuses_is_refused_at_replay_as_invalid_arguments`,
   `test_a_log_written_before_model_values_were_logged_as_fields_resumes_the_value_as_its_string`;
   the model value tests of `tests/test_checkpoint.py` and `tests/test_context.py`.
 

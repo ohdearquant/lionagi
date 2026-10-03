@@ -158,9 +158,10 @@ def entry_of(row: dict) -> Entry | None:
 
 
 def jsonable(value: Any) -> Any:
-    """The `default=` of every JSON write of a log row and of a checkpoint: a Spec instance as its
-    fields, computed ones included, so a replay reads it as a dict; anything else, or a model with a
-    field JSON cannot hold, as its str."""
+    """The `default=` of every JSON write of a log row and of a checkpoint: a pydantic model as its
+    `model_dump(mode="json")`, whatever that is (an object of its fields, computed ones included, a
+    list or a scalar), so a replay reads that JSON; anything else, or a model with a field JSON cannot
+    hold, as its str."""
     if isinstance(value, BaseModel):
         try:
             return value.model_dump(mode="json")

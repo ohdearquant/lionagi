@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from pydantic import BaseModel, ConfigDict, ValidationError, computed_field
+from pydantic import BaseModel, ConfigDict, RootModel, ValidationError, computed_field, model_serializer
 
 from lionagi import checkpoint as module
 from lionagi.actor import Result
@@ -936,3 +936,34 @@ class Open(Shut):
 def test_a_computed_field_is_written_as_a_key_that_a_model_allowing_extras_keeps_as_extra_data():
     back = Open.model_validate(jsonable(Open(title="dune")))
     assert back.model_extra == {"upper": "DUNE"} and back.title == "dune" and back.upper == "DUNE"
+
+
+class Tags(RootModel[list[str]]):
+    pass
+
+
+class Mark(BaseModel):
+    title: str
+
+    @model_serializer
+    def as_title(self) -> str:
+        return self.title
+
+
+def test_a_model_whose_dump_is_not_an_object_is_written_as_that_dump(plain):
+    # a root model dumps its root and a serializer may return a scalar: the file and the prompt hold
+    # that JSON, and a restore reads it back as it was written
+    tags, mark = Tags(["Dune", "sf"]), Mark(title="Dune")
+    assert (jsonable(tags), jsonable(mark)) == (["Dune", "sf"], "Dune")
+    c = take(
+        {},
+        [var("value.t", "fact", tags), var("value.m", "fact", mark)],
+        actor=ACTOR,
+        why="manual",
+        budget=100,
+        now=AT,
+    )
+    shown = render_prompt(c)
+    assert '- value.t: ["Dune", "sf"]' in shown and '- value.m: "Dune"' in shown
+    save(c, plain)
+    assert {v.name: v.value for v in load(plain).vars} == {"value.t": ["Dune", "sf"], "value.m": "Dune"}
