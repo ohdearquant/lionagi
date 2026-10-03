@@ -1,11 +1,12 @@
 """A SWE-bench instance as a box, and its grading in the same box.
 
 The boxes are the hub's (`hub.tools.box`): a docker container (`DockerSandbox`, amd64 under
-emulation on an arm64 host, one at a time is what it can bear) or a Daytona sandbox
-(`DaytonaSandbox`, native x86_64, many in parallel, the provider's memory quota is the cap).
-`testbed` makes either from the instance's eval image, which already holds the repository at the
-base commit under /testbed with its environment installed: the box is the privilege boundary and the
-host only reads the diff out.
+emulation on an arm64 host, one at a time is what it can bear), a Daytona sandbox
+(`DaytonaSandbox`, native x86_64, many in parallel, the provider's memory quota is the cap) or a
+Runta runtime (`RuntaSandbox`, native x86_64, from a Runta image built once per instance over the
+eval image: `runta_image`). `testbed` makes one from the instance's eval image, which already holds
+the repository at the base commit under /testbed with its environment installed: the box is the
+privilege boundary and the host only reads the diff out.
 
 `grade` scores a patch the official way inside the same box: clean tree, apply the patch with the
 harness's three attempts, run the instance's own eval script, parse the log with the harness's
@@ -14,24 +15,59 @@ parser. No second container, no image round trip.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shlex
+import time
 from pathlib import Path
 
-from hub.tools import Box, DaytonaSandbox, DockerSandbox
+from hub.tools import Box, DaytonaSandbox, DockerSandbox, Egress, RuntaSandbox
+from hub.tools.runta import build_image, find_image
 
 WORKDIR = "/testbed"
 PRELUDE = "source /opt/miniconda3/bin/activate testbed 2>/dev/null"  # the eval image's environment
 
 
 def testbed(
-    image: str, where: str = "local", *, cpu: int = 2, memory: int = 2, label: str = "lionagi-swe"
+    image: str,
+    where: str = "local",
+    *,
+    cpu: int = 2,
+    memory: int = 2,
+    label: str = "lionagi-swe",
+    unaided: bool = False,
 ) -> Box:
-    """A box over the instance's eval image, not yet started: docker for `local`, else Daytona."""
+    """A box over the instance's eval image, not yet started: docker for `local`, Daytona for
+    `daytona`, and for `runta` a runtime from `image`, the Runta image `runta_image` returned. An
+    `unaided` Runta runtime is made under the code hosts as its egress policy: the service enforces
+    it outside the guest, where the `/etc/hosts` closure (`close_code_hosts`) can be undone."""
     if where == "local":
         return DockerSandbox(image, workdir=WORKDIR, prelude=PRELUDE)
-    return DaytonaSandbox(image, workdir=WORKDIR, prelude=PRELUDE, cpu=cpu, memory=memory, label=label)
+    if where == "runta":
+        egress = Egress(mode="denylist", hosts=CODE_HOSTS) if unaided else None
+        return RuntaSandbox(
+            image, workdir=WORKDIR, prelude=PRELUDE, cpu=cpu, memory=memory, name=label, egress=egress
+        )
+    if where == "daytona":
+        return DaytonaSandbox(image, workdir=WORKDIR, prelude=PRELUDE, cpu=cpu, memory=memory, label=label)
+    raise ValueError(f"no box is called {where!r}")
+
+
+def runta_name(row: dict) -> str:
+    """The Runta image name for an instance: `swe-` and the id after its owner, `swe-django-11951`.
+    SWE-bench ids are `owner__repo-number` and no two of its repositories share a name."""
+    return "swe-" + row["instance_id"].split("__", 1)[-1].lower()
+
+
+async def runta_image(row: dict, *, timeout: float = 3600.0) -> str:
+    """The Runta image id for the instance: the newest successful build of `runta_name(row)`, else a
+    build from the eval image, waited for (the first one takes minutes)."""
+    name = runta_name(row)
+    found = await find_image(name)
+    if found is not None:
+        return found
+    return await build_image(name, f"FROM {row['image']}\n", architecture="x86_64", timeout=timeout)
 
 
 # --- grading in the box ---------------------------------------------------------------------------
@@ -127,12 +163,15 @@ PROBED = ("github.com", "pypi.org")  # one code host and one index, proved from 
 LOOPBACK = ("127.0.0.1", "::1")
 
 
-async def _probe(box: Box, host: str) -> tuple[list[str], str, str]:
+async def _probe(box: Box, host: str, timeout: float | None = None) -> tuple[list[str], str, str]:
     """(every address the name resolves to, the HTTP code, curl's rc) for `host`, read from inside
     the box. `getent ahosts` lists both families: `getent hosts` preferred the AAAA answer from DNS
-    over the v4 line in /etc/hosts, so pypi.org read as open under a v4-only closure."""
+    over the v4 line in /etc/hosts, so pypi.org read as open under a v4-only closure. `timeout`, when
+    given, ends the probe there; the box's own default holds otherwise."""
     probe = f"curl -sS -m 8 -o /dev/null -w '%{{http_code}}' https://{host}/ 2>/dev/null; echo \" curl=$?\""
-    _, out = await box.run(f"getent ahosts {host}; echo; {probe}")
+    _, out = await box.run(
+        f"getent ahosts {host}; echo; {probe}", **({} if timeout is None else {"timeout": timeout})
+    )
     head, _, fetch = out.strip().rpartition("\n")
     addresses = [ln.split()[0] for ln in head.splitlines() if ln.strip()]
     # no curl in the box prints ` curl=127` alone: the code is empty, never the rc read as one
@@ -167,9 +206,12 @@ async def close_code_hosts(box: Box) -> str:
     return "code hosts and package indexes closed; " + ", ".join(said)
 
 
-async def open_code_hosts(box: Box) -> None:
+async def open_code_hosts(box: Box, *, within: float = 120.0) -> None:
     """Remove the closure's lines from /etc/hosts: the grader's eval script runs after the model and
-    may install from an index; what the model could not reach is already on the record."""
+    may install from an index; what the model could not reach is already on the record. A Runta box
+    under a policy has it emptied too, and waits for the probed hosts to answer from inside: the
+    service can read a change back before it holds. The wait is `within` seconds plus the 15 s of
+    request grace `RuntaSandbox.exec` adds for the probe in flight when `within` fell."""
     # rewritten in place: /etc/hosts is a bind mount in the box, so `sed -i` (rename over it) fails
     # with "Device or resource busy", and finished runs lost their grading to it
     mark = shlex.quote(_MARK)
@@ -179,3 +221,21 @@ async def open_code_hosts(box: Box) -> None:
     )
     if rc != 0:
         raise RuntimeError(f"could not reopen the code hosts (rc {rc}): {out[-300:]}")
+    if not (isinstance(box, RuntaSandbox) and box.egress is not None):
+        return
+    await box.set_egress(Egress(mode="denylist"))
+    deadline = time.monotonic() + within
+    while True:
+        shut = []
+        for i, host in enumerate(PROBED):
+            left = deadline - time.monotonic()
+            if left <= 0:  # no probe may start with nothing left; the hosts not yet answered are named
+                shut_hosts = ", ".join([*shut, *PROBED[i:]])
+                raise RuntimeError(
+                    f"the policy was emptied and {shut_hosts} still did not answer in {within:g}s"
+                )
+            if (await _probe(box, host, left))[2] != "0":
+                shut.append(host)
+        if not shut:
+            return
+        await asyncio.sleep(max(0.0, min(3, deadline - time.monotonic())))
