@@ -484,6 +484,17 @@ def tree_call(tmp_path: Path, run: str, round_: int) -> str:
     return os.fsdecode(done.stdout).strip()  # the hook's bytes: text mode reads a carriage return as \n
 
 
+def tree_notice(tmp_path: Path, run: str, round_: int) -> str | None:
+    """What the actor adds to its notice for this round: the tree hook run by `run_hook`, its stdout
+    decoded and stripped by the round section `install` registers."""
+    import types
+
+    from hub.hooks.shell import Hook, _round
+
+    hook = Hook("round", f"{sys.executable} -m {TREE_HOOK}", "tree-changed", "*", 30)
+    return asyncio.run(_round(hook, tmp_path)(types.SimpleNamespace(id=run, round=round_)))
+
+
 def git(tmp_path: Path, *args: str) -> str:
     done = subprocess.run(
         ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", *args],
@@ -678,7 +689,8 @@ def test_the_tree_hook_keeps_a_carriage_return_in_a_file_name(tmp_path):
     assert sorted(kept) == ["a\nb.txt", "a\rb.txt", "c.txt", "new\r.txt"]
     (tmp_path / "a\rb.txt").write_text("two\n")
     (tmp_path / "new\r.txt").write_text("two\n")
-    assert tree_call(tmp_path, "r", 2) == "tree: 2 file(s) changed since round 1: a\rb.txt, new\r.txt"
+    # a name that holds a carriage return is printed quoted and escaped
+    assert tree_call(tmp_path, "r", 2) == "tree: 2 file(s) changed since round 1: 'a\\rb.txt', 'new\\r.txt'"
 
 
 def test_the_tree_hook_reads_a_tracked_name_that_is_not_utf8(tmp_path):
@@ -702,7 +714,7 @@ def test_the_tree_hook_reads_a_tracked_name_that_is_not_utf8(tmp_path):
 
 
 def test_the_tree_hook_names_a_changed_file_whose_name_is_not_utf8(tmp_path):
-    # the name goes out as git's bytes; printed as text it raised UnicodeEncodeError
+    # the name goes out escaped, byte by byte; printed as text it raised UnicodeEncodeError
     from hub.hooks.scripts.tree_changed import state_path
 
     name = os.fsdecode(b"bad\xff.txt")
@@ -716,7 +728,7 @@ def test_the_tree_hook_names_a_changed_file_whose_name_is_not_utf8(tmp_path):
     assert tree_call(tmp_path, "r", 1) == ""
     assert list(json.loads((tmp_path / state_path("r")).read_text())["files"]) == [name]
     (tmp_path / name).write_bytes(b"two\n")
-    assert tree_call(tmp_path, "r", 2) == f"tree: 1 file(s) changed since round 1: {name}"
+    assert tree_call(tmp_path, "r", 2) == "tree: 1 file(s) changed since round 1: 'bad\\xff.txt'"
 
 
 def test_the_tree_hook_reads_a_conflicted_file_once(tmp_path, monkeypatch):
@@ -755,6 +767,86 @@ def test_the_tree_hook_reads_a_conflicted_file_once(tmp_path, monkeypatch):
     assert reads == {"c.txt": 1, "same.txt": 1}
     digest = {n: hashlib.blake2b((tmp_path / n).read_bytes(), digest_size=16).hexdigest() for n in reads}
     assert kept == digest
+
+
+SHOWN = [  # (a file name, how the notice prints it; None: as it is); some characters are built, not typed
+    pytest.param("plain.txt", None, id="plain"),
+    pytest.param("caf" + chr(0xE9) + chr(0x65E5) + ".txt", None, id="text"),
+    pytest.param("a" + chr(0xA0) + "b.txt", None, id="no-break-space"),
+    pytest.param("it's.txt", None, id="single-quote-alone"),
+    pytest.param('say "x".txt', None, id="double-quote-alone"),
+    pytest.param("a\\rb.txt", None, id="backslash-r-alone"),
+    pytest.param("name\r", "'name\\r'", id="carriage-return"),
+    pytest.param("a\tb", "'a\\tb'", id="tab"),
+    pytest.param("a\nb", "'a\\nb'", id="line-feed"),
+    pytest.param("esc\x1b[0m", "'esc\\x1b[0m'", id="escape"),
+    pytest.param("del\x7f", "'del\\x7f'", id="delete"),
+    pytest.param("zw" + chr(0x200B) + "sp", "'zw\\u200bsp'", id="format-character"),
+    pytest.param("rtl" + chr(0x202E) + "txt", "'rtl\\u202etxt'", id="bidi-override"),
+    pytest.param("line" + chr(0x2028) + "sep", "'line\\u2028sep'", id="line-separator"),
+    pytest.param("para" + chr(0x2029) + "sep", "'para\\u2029sep'", id="paragraph-separator"),
+    pytest.param(os.fsdecode(b"bad\xff"), "'bad\\xff'", id="byte-not-utf8"),
+    pytest.param(os.fsdecode(b"\xc3("), "'\\xc3('", id="cut-sequence"),
+    pytest.param("it's\r", "'it\\'s\\r'", id="quote-in-a-quoted-name"),
+    pytest.param("back\\slash\r", "'back\\\\slash\\r'", id="backslash-in-a-quoted-name"),
+    pytest.param("caf" + chr(0xE9) + "\r", "'caf" + chr(0xE9) + "\\r'", id="text-in-a-quoted-name"),
+    pytest.param("a\r" + os.fsdecode(b"\xff"), "'a\\r\\xff'", id="both"),
+]
+
+
+@pytest.mark.parametrize(("name", "shown"), SHOWN)
+def test_the_tree_hook_shows_a_name_as_it_is_or_quoted_and_escaped(name, shown):
+    # the round's output is decoded and stripped on its way to the model, so a name that holds a control
+    # character (Cc, Cf, Zl, Zp) or a byte that is not UTF-8 is quoted with those escaped; others stay
+    from hub.hooks.scripts.tree_changed import notice
+
+    assert notice({"round": 1, "head": "h", "files": {}}, "h", {name: "d"}) == [
+        f"tree: 1 file(s) changed since round 1: {name if shown is None else shown}"
+    ]
+
+
+def test_the_notice_the_actor_gets_keeps_a_carriage_return_ending_a_file_name(tmp_path):
+    # the round section strips what the hook prints, so a sole changed file `name\r` lost its last
+    # character there; the name now reaches the notice quoted and escaped
+    git(tmp_path, "init", "-q")
+    (tmp_path / "name\r").write_text("one\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "one")
+    assert tree_notice(tmp_path, "r", 1) is None
+    (tmp_path / "name\r").write_text("two\n")
+    assert tree_notice(tmp_path, "r", 2) == "tree: 1 file(s) changed since round 1: 'name\\r'"
+
+
+def test_the_notice_the_actor_gets_shows_a_changed_file_name_that_is_not_utf8_escaped(tmp_path):
+    # run_hook decodes the hook's stdout with errors="replace": the byte reached the notice as U+FFFD
+    name = os.fsdecode(b"bad\xff.txt")
+    try:
+        (tmp_path / name).write_bytes(b"one\n")
+    except OSError as e:  # APFS, for one: no file can carry the name
+        pytest.skip(f"this file system refuses a name that is not UTF-8: {e}")
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "one")
+    assert tree_notice(tmp_path, "r", 1) is None
+    (tmp_path / name).write_bytes(b"two\n")
+    assert tree_notice(tmp_path, "r", 2) == "tree: 1 file(s) changed since round 1: 'bad\\xff.txt'"
+
+
+def test_the_notice_the_actor_gets_shows_a_removed_file_name_that_is_not_utf8_escaped(tmp_path):
+    # the same notice on a file system that refuses the name: the last round's map, as a file system
+    # that keeps it wrote it, holds a file that is gone now
+    from hub.hooks.scripts.tree_changed import state_path
+
+    git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("one\n")
+    git(tmp_path, "add", "a.txt")
+    git(tmp_path, "commit", "-qm", "one")
+    assert tree_notice(tmp_path, "r", 1) is None
+    state = tmp_path / state_path("r")
+    kept = json.loads(state.read_text())
+    kept["files"][os.fsdecode(b"bad\xff.txt")] = "0" * 32
+    state.write_text(json.dumps(kept))
+    assert tree_notice(tmp_path, "r", 2) == "tree: 1 file(s) changed since round 1: 'bad\\xff.txt'"
 
 
 def plant_hub(proj: Path, escaped: Path) -> None:

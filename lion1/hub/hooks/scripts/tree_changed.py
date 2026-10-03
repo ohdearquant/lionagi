@@ -15,12 +15,15 @@ import json
 import os
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 __all__ = ("STATE", "IGNORED", "state_path", "snapshot", "notice", "main")
 
 STATE = Path(".lion/tree_state")
 IGNORED = (".lion/",)
+_CONTROL = ("Cc", "Cf", "Zl", "Zp")  # control and format characters, line and paragraph separators
+_RAW = range(0xDC80, 0xDD00)  # what os.fsdecode makes of a byte that is not UTF-8
 
 
 def state_path(run: str) -> Path:
@@ -58,6 +61,23 @@ def snapshot(cwd: Path) -> tuple[str, dict[str, str] | None] | None:
     return head, files
 
 
+def _shown(name: str) -> str:
+    """A file name as the notice prints it: as it is, or, when it holds a control character or a byte
+    that is not UTF-8, quoted with those escaped (`'name\\r'`, `'bad\\xff'`). The hook's output is decoded
+    and stripped on its way to the model; an escaped name is plain text that neither can change."""
+    if not any(unicodedata.category(c) in _CONTROL or ord(c) in _RAW for c in name):
+        return name
+    out = []
+    for c in name:
+        if ord(c) in _RAW:
+            out.append(f"\\x{ord(c) - 0xDC00:02x}")
+        elif unicodedata.category(c) in _CONTROL:
+            out.append(repr(c)[1:-1])
+        else:
+            out.append("\\" + c if c in "\\'" else c)
+    return "'" + "".join(out) + "'"
+
+
 def notice(prev: dict, head: str, files: dict[str, str]) -> list[str]:
     """The lines this round adds: the files whose content differs from the last round, then HEAD when
     it moved. A run with no previous round is compared against nothing."""
@@ -65,7 +85,7 @@ def notice(prev: dict, head: str, files: dict[str, str]) -> list[str]:
     changed = sorted(p for p in set(was) | set(files) if was.get(p) != files.get(p))
     lines: list[str] = []
     if changed:
-        named = ", ".join(changed)
+        named = ", ".join(map(_shown, changed))
         lines.append(f"tree: {len(changed)} file(s) changed since round {prev.get('round')}: {named}")
     old = str(prev.get("head", ""))
     if old != head:
@@ -94,7 +114,6 @@ def main() -> int:
                 f"tree: could not be read (git ls-files failed); round {prev.get('round')} stays the baseline"
             )
         return 0
-    sys.stdout.reconfigure(errors="surrogateescape")  # a name not UTF-8 goes out as git's bytes
     for line in notice(prev, head, files) if isinstance(prev, dict) else []:
         print(line)
     path.parent.mkdir(parents=True, exist_ok=True)
