@@ -5,6 +5,7 @@ import asyncio
 import json
 import re
 import time
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -1221,6 +1222,59 @@ def test_the_fields_of_out_are_held_together_to_the_size_limit_as_a_dict_literal
         assert run.retry_error == f"line 1: the OUT{{}} fields together are past the size limit of {LIMIT}"
 
 
+class Rows(BaseModel):
+    n: int
+
+
+class Grow(BaseModel):
+    rows: Any
+    n: int
+
+
+def _growing_actor(name: str) -> Actor:
+    actor = Actor(name)
+
+    @actor.handler(Rows)
+    async def rows(req: Rows, ctx) -> list[str]:
+        return ["r"] * req.n
+
+    @actor.handler(Grow)
+    async def grow(req: Grow, ctx) -> str:
+        req.rows.append("x" * req.n)  # the list the earlier field holds, reached through the pointer
+        return "grown"
+
+    return actor
+
+
+def test_a_field_of_out_a_command_grew_after_it_was_counted_is_caught_as_the_output_is_emitted():
+    run = _run(
+        _growing_actor("out-grown"),
+        fenced("rows = rows(n=3)", f"OUT{{a: *rows, b: DO grow(rows=*rows, n={LIMIT})}}"),
+    )
+    # field a was counted at three items; the command b runs grew that list past the limit, so the running
+    # size reads fit while the dict does not: the whole is measured once more as it is emitted
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert run.retry_error == f"line 2: the OUT{{}} fields together are past the size limit of {LIMIT}"
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [
+        f"[*rows, DO grow(rows=*rows, n={LIMIT})]",
+        f"{{a: *rows, b: DO grow(rows=*rows, n={LIMIT})}}",
+        # the second item grows the list the first holds past the limit and is itself left out
+        f"(*rows for x in [1, 2] if DO grow(rows=*rows, n={LIMIT // 2}) and x == 1)",
+    ],
+    ids=["list", "dict", "comprehension"],
+)
+def test_a_part_of_a_literal_a_command_grew_after_it_was_counted_is_caught_as_it_is_built(literal):
+    # a binding is read where it is used: the literal is built under OUT{} and refused as itself, before
+    # the fields are measured together
+    run = _run(_growing_actor("literal-grown"), fenced("rows = rows(n=3)", f"OUT{{c: {literal}}}"))
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert run.retry_error == f"line 2: the value built here is past the size limit of {LIMIT}"
+
+
 def test_the_fields_of_out_are_each_sized_once_as_they_land_and_never_all_again_after_each(monkeypatch):
     sized: list[int] = []
     real = program._size
@@ -1233,10 +1287,11 @@ def test_the_fields_of_out_are_each_sized_once_as_they_land_and_never_all_again_
     monkeypatch.setattr(actor_module, "_size", counted)
     n = 2000
     run = _run(_actor("out-many", []), fenced("OUT{" + ", ".join(f'k{i}: "a"' for i in range(n)) + "}"))
-    # what the sizing visits, summed: a field once, so a few per field. Sizing the whole dict after every
-    # field visits every field before it again, some 12,000,000 visits for these
+    # what the sizing visits, summed: a field once as it lands and the whole once more as it is emitted,
+    # so a few per field twice over. Sizing the whole dict after every field visits every field before it
+    # again, some 12,000,000 visits for these
     assert isinstance(run.outcome, Success) and len(run.output) == n
-    assert sum(sized) < 4 * n
+    assert sum(sized) < 8 * n
 
 
 @pytest.mark.parametrize(

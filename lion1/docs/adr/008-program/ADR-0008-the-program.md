@@ -362,7 +362,17 @@ computation binds its failure.
   `test_a_write_on_a_spent_budget_and_the_walks_cut_in_a_comprehension_refuse_the_turn_once` pin it.
 - **S12**: A write the settlement's own deadline cuts while it waits for its command is the budget
   spent too: the turn says so once, naming the budget the settlement ran under. A cut command no
-  write waits for is a cancelled result and no refusal.
+  write waits for is a cancelled result and no refusal. A grant landing after the cut, or as the
+  deadline fires, changes nothing the turn says.
   `test_a_write_the_settlement_cut_while_it_waited_for_its_command_is_refused_as_spent_once`,
-  `test_a_write_the_settlement_cut_after_a_grant_names_the_budget_the_settlement_ran_under` and
-  `test_a_command_the_settlement_cut_is_a_cancelled_result_and_not_a_refusal_of_the_turn` pin it.
+  `test_a_write_the_settlement_cut_after_a_grant_names_the_budget_the_settlement_ran_under`,
+  `test_a_write_the_settlement_cut_names_the_budget_it_ran_under_when_a_grant_lands_after_the_cut`,
+  `test_a_grant_landing_as_the_settlements_deadline_fires_is_named_beside_the_budget_it_ran_under`
+  and `test_a_command_the_settlement_cut_is_a_cancelled_result_and_not_a_refusal_of_the_turn` pin
+  it.
+- **S13**: A pointer hands a command the stored value itself, so a command can grow a list or dict
+  an earlier part of the same literal, or an earlier field of `OUT{}`, already counted. The running
+  size does not see it: the whole is measured once more as the literal is returned or the output
+  emitted, and one past the limit is refused there.
+  `test_a_field_of_out_a_command_grew_after_it_was_counted_is_caught_as_the_output_is_emitted` and
+  `test_a_part_of_a_literal_a_command_grew_after_it_was_counted_is_caught_as_it_is_built` pin it.

@@ -2226,7 +2226,10 @@ class _Walk:
                 reader = _Reader(self)
                 self.named |= node.named
                 fields: dict[str, Any] = {}
-                size = 0  # what `_size(fields)` counts, kept as the fields land, never scanned again whole
+                size = (
+                    0  # what `_size(fields)` counts, kept as the fields land, scanned whole once at the end
+                )
+                past = f"line {node.line}: the OUT{{}} fields together are past the size limit of {LIMIT}"
                 for key, v in node.fields:
                     if key in fields:  # a key written again holds only its last value
                         size -= 1 + len(key) + _size(fields[key])
@@ -2234,10 +2237,11 @@ class _Walk:
                     size += 1 + len(key) + _size(fields[key])
                     # counted as a dict literal is: no field after the one that takes it past the limit runs
                     if size > LIMIT:
-                        raise EvalError(
-                            f"line {node.line}: the OUT{{}} fields together are "
-                            f"past the size limit of {LIMIT}"
-                        )
+                        raise EvalError(past)
+                # a value a command grew after its field was counted, through the pointer both hold: the
+                # whole is measured once more as it is emitted
+                if _size(fields) > LIMIT:
+                    raise EvalError(past)
                 self.consume(reader.reads, len(self.run.record))
                 return fields
             elif isinstance(node, Command):

@@ -581,6 +581,10 @@ async def evaluate(node: ast.expr, env: Env, bound: dict[str, Any] | None = None
                 size += 1 + _size(items[-1])
                 if size > LIMIT:
                     raise _past(node)
+            # a part a command grew after it was counted, through the pointer both hold: the whole is
+            # measured once more as it is returned
+            if _size(items) > LIMIT:
+                raise _past(node)
             return items
         case ast.Dict(keys=keys, values=values):
             fields, size = {}, 0
@@ -592,6 +596,8 @@ async def evaluate(node: ast.expr, env: Env, bound: dict[str, Any] | None = None
                 size += 1 + len(key) + _size(fields[key])
                 if size > LIMIT:
                     raise _past(node)
+            if _size(fields) > LIMIT:  # as a list is
+                raise _past(node)
             return fields
         case ast.Call(keywords=keywords):
             args = {kw.arg: await evaluate(kw.value, env, bound) for kw in keywords}
@@ -617,6 +623,8 @@ async def evaluate(node: ast.expr, env: Env, bound: dict[str, Any] | None = None
                     size += 1 + _size(out[-1])  # the item and what it holds
                     if size > LIMIT:
                         raise _past(node)
+            if _size(out) > LIMIT:  # as a list is
+                raise _past(node)
             return out
 
 
