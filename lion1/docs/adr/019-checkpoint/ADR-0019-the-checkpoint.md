@@ -194,7 +194,8 @@ aside.
   `test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands`,
   `test_a_record_whose_rows_were_rewritten_is_refused_though_it_folds_to_the_same_view`,
   `test_save_refuses_an_id_that_is_not_a_name_and_writes_nothing`,
-  `test_save_load_and_the_restore_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value`, the
+  `test_save_load_and_the_restore_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value`,
+  `test_a_row_cut_inside_a_character_past_the_take_is_never_decoded_and_one_inside_it_is_named`, the
   long-value test; `tests/test_chat.py`:
   `test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed`.
 
