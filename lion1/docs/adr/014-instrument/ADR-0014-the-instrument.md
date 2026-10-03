@@ -184,14 +184,14 @@ direction, cadence and question.
   open past it, or a failure reads as a timeout.
 
 Each command starts in its own process group. Its deadline is taken at the call, before the start,
-so a stall in fork and exec on the loop counts against the timeout, and an expired deadline is due
-once the loop resumes. Past the deadline or on a cancel, the group is killed, then its pipes drained
-and closed within a five-second grace of the signal.
+so a stall in fork and exec counts against the timeout, due once the loop resumes. Past the deadline
+or on a cancel, the group is killed, its pipes drained and closed within five seconds of the signal.
 
 An unlanded start gets three graces, cancelled after the first and the second; one landing in the
 last adds a drain grace, twenty seconds past the timeout or cancel in all. A start that fails
-raises, unless a cancel is in flight. A descendant outside the group is not killed, and holds an
-unlanded start's pipe ends until it exits.
+raises, unless a cancel is in flight. An unlanded start is killed by pid; asyncio closes its pipe
+ends when its connection task next runs, and an escaped descendant, unkilled, holds them until it
+exits.
 
 ## Decisions
 
