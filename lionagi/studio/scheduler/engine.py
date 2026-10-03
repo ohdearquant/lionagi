@@ -398,16 +398,39 @@ class SchedulerEngine:
         # scheduler, and the process staying up says nothing about whether it still is.
         self._tick_loop_restarts = 0
         self._last_tick_loop_failure: tuple[float, str] | None = None
+        # When the loop last completed a pass, and when it was asked to start. Whether the
+        # scheduler is advancing is a different question from whether the store answers, and
+        # only this side of the process can answer it.
+        self._last_tick_completed_at: float | None = None
+        self._started_at: float | None = None
 
     async def start(self) -> None:
         _log.info("Scheduler engine starting")
         self._stopping = False
+        self._started_at = time.time()
         self._log_scheduler_timezone()
         await self._backfill_action_cwd()
         await self._stamp_effective_timezones()
         await self._recompute_armed_cron_schedules()
         self._tick_loop_restarts = 0
         self._task = self._spawn_tick_loop()
+
+    def liveness(self) -> dict[str, Any]:
+        """Report what the loop has done, with no verdict attached.
+
+        The threshold for calling this stalled belongs to whoever is asking, so this
+        returns only facts: when a pass last completed, when the engine was asked to
+        start, how often it is supposed to run, and what has gone wrong.
+        """
+        failure = self._last_tick_loop_failure
+        return {
+            "started_at": self._started_at,
+            "last_tick_completed_at": self._last_tick_completed_at,
+            "tick_interval_s": _TICK_INTERVAL,
+            "restarts": self._tick_loop_restarts,
+            "last_failure_at": failure[0] if failure else None,
+            "last_failure": failure[1] if failure else None,
+        }
 
     def _spawn_tick_loop(self) -> asyncio.Task:
         task = asyncio.create_task(self._tick_loop())
@@ -419,17 +442,20 @@ class SchedulerEngine:
         if self._stopping or task is not self._task:
             return
         if task.cancelled():
-            reason = "cancelled"
+            reason = detail = "cancelled"
         elif (exc := task.exception()) is not None:
-            reason = f"{type(exc).__name__}: {exc}"
+            # The class is what a caller needs to tell one failure from another. The message can
+            # carry paths, connection strings and configuration, and readiness serves it to
+            # anyone who can reach the port, so only the log gets the whole thing.
+            reason, detail = type(exc).__name__, f"{type(exc).__name__}: {exc}"
         else:
-            reason = "returned while still running"
+            reason = detail = "returned while still running"
         self._tick_loop_restarts += 1
         self._last_tick_loop_failure = (time.time(), reason)
         delay = _TICK_RESTART_BACKOFF[min(self._tick_loop_restarts, len(_TICK_RESTART_BACKOFF)) - 1]
         _log.error(
             "Scheduler tick loop ended (%s); restart %d in %.0fs",
-            reason,
+            detail,
             self._tick_loop_restarts,
             delay,
         )
@@ -758,6 +784,7 @@ class SchedulerEngine:
         while not self._stopping:
             try:
                 await self._tick()
+                self._last_tick_completed_at = time.time()
             except asyncio.CancelledError:
                 # stop() cancels this task, so a cancel while stopping IS the shutdown. A cancel
                 # at any other time escaped from something the tick awaited, and ending the loop

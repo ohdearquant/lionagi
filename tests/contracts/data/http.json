@@ -5798,7 +5798,7 @@
         "admin"
       ],
       "summary": null,
-      "description": "Whether a query against the store will actually return.\n\nDistinct from ``/health``, which answers only whether the process is up:\nthat stays true while every database-backed endpoint is unresponsive, which\nis exactly the failure this reports. Never 5xx -- the verdict is in the\nbody, so a caller can tell \"store unreachable\" from \"store slow\" from\n\"healthy\" instead of getting one boolean for all three.",
+      "description": "Whether a query against the store will actually return.\n\nDistinct from ``/health``, which answers only whether the process is up:\nthat stays true while every database-backed endpoint is unresponsive, which\nis exactly the failure this reports. Never 5xx -- the verdict is in the\nbody, so a caller can tell \"store unreachable\" from \"store slow\" from\n\"healthy\" instead of getting one boolean for all three.\n\n``status`` describes the store alone and keeps its existing meaning. Whether\nthe scheduler is advancing is a separate subject reported under ``scheduler``,\nbecause a store that answers reads says nothing about whether anything fires.\n``ready`` is true only when both are true, so a caller that reads one field\nis not told the daemon is fine while its scheduler has stopped.",
       "include_in_schema": true,
       "handler_identity": {
         "module": "lionagi.studio.services.admin",
@@ -6733,7 +6733,7 @@
             "admin"
           ],
           "summary": "Readiness",
-          "description": "Whether a query against the store will actually return.\n\nDistinct from ``/health``, which answers only whether the process is up:\nthat stays true while every database-backed endpoint is unresponsive, which\nis exactly the failure this reports. Never 5xx -- the verdict is in the\nbody, so a caller can tell \"store unreachable\" from \"store slow\" from\n\"healthy\" instead of getting one boolean for all three.",
+          "description": "Whether a query against the store will actually return.\n\nDistinct from ``/health``, which answers only whether the process is up:\nthat stays true while every database-backed endpoint is unresponsive, which\nis exactly the failure this reports. Never 5xx -- the verdict is in the\nbody, so a caller can tell \"store unreachable\" from \"store slow\" from\n\"healthy\" instead of getting one boolean for all three.\n\n``status`` describes the store alone and keeps its existing meaning. Whether\nthe scheduler is advancing is a separate subject reported under ``scheduler``,\nbecause a store that answers reads says nothing about whether anything fires.\n``ready`` is true only when both are true, so a caller that reads one field\nis not told the daemon is fine while its scheduler has stopped.",
           "parameters": [
             {
               "name": "timeout_ms",
