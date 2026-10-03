@@ -154,9 +154,9 @@ _CATALOG_S = 60.0  # how long the CLI has to print its catalogue: it reads a fil
 # to write. A subscription bills neither; the ratio only weighs a restart. Assumed, not measured
 # (ADR-0009/A4)
 _FRESH_OVER_CACHED = 10
-_CACHE_TTL_S = (
-    300.0  # the provider's cache life from its last read, by its documentation (5 to 10 minutes idle)
-)
+# the provider's cache life from its last read: 5 to 10 minutes idle by its documentation, the low
+# end taken (ADR-0009/A4)
+_CACHE_TTL_S = 300.0
 _TAIL = 65536  # the most of a thread's session file read for its last token count
 _THREAD = re.compile(r"[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}")  # a thread id as the CLI prints it
 _clock = time.monotonic
@@ -733,7 +733,8 @@ class CodexSession(Codex):
             except (ValueError, KeyError, TypeError):
                 continue
             out = {}
-            window = (payload.get("info") or {}).get("model_context_window")
+            info = payload.get("info")
+            window = info.get("model_context_window") if isinstance(info, dict) else None
             if isinstance(window, int) and not isinstance(window, bool):
                 out["context_window"] = window
             if isinstance(payload.get("rate_limits"), dict):
