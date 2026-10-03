@@ -1232,6 +1232,19 @@ class Grow(BaseModel):
     after: float = 0  # seconds the handler waits before it grows the list
 
 
+class Shrink(BaseModel):
+    rows: Any
+
+
+class Blob(BaseModel):
+    text: str
+
+
+class Poke(BaseModel):
+    blob: Any
+    after: float = 0
+
+
 def _growing_actor(name: str) -> Actor:
     actor = Actor(name)
 
@@ -1246,7 +1259,47 @@ def _growing_actor(name: str) -> Actor:
         req.rows.append("x" * req.n)  # the list the earlier field holds, reached through the pointer
         return "grown"
 
+    @actor.handler(Shrink)
+    async def shrink(req: Shrink, ctx) -> str:
+        req.rows.clear()
+        return "shrunk"
+
+    @actor.handler(Blob)
+    async def blob(req: Blob, ctx) -> bytearray:
+        return bytearray(req.text.encode())
+
+    @actor.handler(Poke)
+    async def poke(req: Poke, ctx) -> str:
+        if req.after:
+            await asyncio.sleep(req.after)
+        req.blob.extend(b"!")
+        return "poked"
+
     return actor
+
+
+def test_a_part_a_command_shrank_after_it_was_counted_still_counts_at_the_size_it_landed_with():
+    # a is counted as it lands, near the limit; b empties the list a holds; c would fit beside the emptied
+    # list, but the running size counts a as it landed and the pair with c passes the limit: refused, as
+    # a dict literal built of those parts is (S6)
+    n = (LIMIT - 50) // 2
+    run = _run(
+        _growing_actor("out-shrunk"),
+        fenced(f"rows = rows(n={n})", 'OUT{a: *rows, b: DO shrink(rows=*rows), c: "y" * 100}'),
+    )
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert run.retry_error == f"line 2: the OUT{{}} fields together are past the size limit of {LIMIT}"
+
+
+def test_a_value_of_a_kind_a_capture_shares_is_shared_in_the_output():
+    # the output is a copy as a capture is (ADR-0007/C1): a list, dict, set, tuple, model or result is
+    # copied, a value of another kind is shared, and the size limit counts it as one whatever it holds
+    run = _run(
+        _growing_actor("out-blob"),
+        fenced('blob = blob(text="ab")', "late = poke(blob=*blob, after=0.05)", "OUT{a: *blob}"),
+    )
+    assert isinstance(run.outcome, Success)
+    assert run.output["a"] is run.record.get("blob").content.value and run.output["a"] == bytearray(b"ab!")
 
 
 def test_a_field_of_out_a_command_grew_after_it_was_counted_is_caught_as_the_output_is_emitted():
@@ -1261,8 +1314,8 @@ def test_a_field_of_out_a_command_grew_after_it_was_counted_is_caught_as_the_out
 
 
 def test_a_command_settling_after_the_output_was_emitted_grows_the_stored_value_not_the_output():
-    # the command is launched before OUT{} and settles after the walk: at HEAD before this the emitted
-    # output held the stored list, which the settling command then grew
+    # the command is launched before OUT{} and settles after the walk: the output emitted is a copy of the
+    # list, and the settling command grows the stored one
     run = _run(
         _growing_actor("out-settled"),
         fenced("rows = rows(n=3)", f"late = grow(rows=*rows, n={LIMIT}, after=0.05)", "OUT{a: *rows}"),
