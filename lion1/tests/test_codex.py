@@ -179,7 +179,16 @@ def test_each_call_hands_the_cli_its_catalogue_with_the_acting_fields_cleared(fa
     assert (Path(fake_cli).parent / "catalogue-asked").read_text() == "x"  # once for both calls
 
 
-@pytest.mark.parametrize("printed", ["not json", '{"models": 3}', '{"catalogue": []}', '{"models": ["x"]}'])
+@pytest.mark.parametrize(
+    "printed",
+    [
+        "not json",
+        '{"models": 3}',
+        '{"catalogue": []}',
+        '{"models": ["x"]}',
+        '{"models": [{"slug": "m"}]}',  # a catalogue, from a command that failed: not taken
+    ],
+)
 def test_a_cli_that_prints_no_catalogue_fails_the_call_before_any_prompt_goes_out(
     fake_cli, observed, monkeypatch, printed
 ):

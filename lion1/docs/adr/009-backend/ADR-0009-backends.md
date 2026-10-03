@@ -346,8 +346,8 @@ swallowed too: a spin.
   tools and started a sub-agent when asked; the event stream showed neither call.
   `agents.max_depth=0` still removes the first sub-agent version's spawn tool, which its feature
   flag alone does not.
-- **S20**: So each call hands the subscription CLI its own catalogue (`codex debug models`, asked
-  once) with those fields cleared in every entry; the goal tools and the bundled skill list are
+- **S20**: Each call hands the subscription CLI its own catalogue (`codex debug models`, its answer
+  kept) with those fields cleared in every entry; the goal tools and the bundled skill list are
   switched off, and two settings the release refuses are dropped. Measured after, on gpt-6-luna and
   gpt-6-sol: no tool listed, none run when asked, a one-line prompt at 191 input tokens against
   4,795. A later release that gives a model tools by another route shows only when the model is

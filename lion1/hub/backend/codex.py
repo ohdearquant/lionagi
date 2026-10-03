@@ -13,7 +13,7 @@ The flags are not the whole of it. The CLI's model catalogue gives each model a 
 sub-agent version, and for a model whose entry names them no flag removes those tools: measured on
 0.156.1 with gpt-6-luna, every flag here left the model a code-execution tool and six sub-agent
 tools, and it started a sub-agent when asked; the stream showed neither call. So each call hands
-the CLI its own catalogue back (`codex debug models`, asked once) with those fields cleared in
+the CLI its own catalogue back (`codex debug models`, its answer kept) with those fields cleared in
 every entry (`CHAT`). With that and the flags the model lists no tool and can run no command,
 search or spawn, and the prompt of a one-line question fell from 4,795 input tokens to 191.
 
@@ -271,9 +271,10 @@ class Codex:
         return env
 
     async def _catalog(self) -> str:
-        """The CLI's model catalogue with `CHAT` in every entry, asked of the CLI once. A CLI that
-        cannot print it fails the call before any prompt is sent: without it the flags leave a
-        model its catalogue's tools."""
+        """The CLI's model catalogue with `CHAT` in every entry: asked of the CLI, and kept once it
+        has answered (calls that start together before that each ask). A CLI that cannot print it,
+        or exits non-zero whatever it printed, fails the call before any prompt is sent: without
+        it the flags leave a model its catalogue's tools."""
         if self._chat_catalog is None:
             proc = await asyncio.create_subprocess_exec(
                 self.cli,
@@ -290,6 +291,8 @@ class Codex:
             except TimeoutError:
                 raise CodexError(f"codex debug models did not answer within {_CATALOG_S:.0f}s") from None
             try:
+                if proc.returncode != 0:
+                    raise ValueError("the command failed")
                 models = json.loads(out)["models"]
                 entries = [{**entry, **CHAT} for entry in models]
             except (ValueError, KeyError, TypeError):
