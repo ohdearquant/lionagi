@@ -1697,6 +1697,50 @@ def test_a_grant_of_time_landing_after_a_walks_deadline_fired_raises_the_bound_a
     assert told == ["time_budget raised from 100 to 100.5"] and run.bounds["time_budget"] == 100.5
 
 
+def test_a_walk_a_grant_missed_names_the_budget_it_ran_under_and_the_late_grant():
+    async def extend(run, bound, amount, reason) -> bool:
+        while not any(limit.expired() for limit in run.timeouts):
+            await asyncio.sleep(0)  # the walk's deadline has not fired
+        return True  # it has, and the walk has not yet left its limit: the grant lands here
+
+    turn = '```\nOUT{granted: DO run.more(bound="time_budget", amount=5, reason="late")}\n```'
+    run = asyncio.run(
+        Actor("b-late").run(
+            Profile("p", language="program"),
+            RunRequest(inputs=("go",), time_budget=0.2, max_rounds=1, extend=extend),
+            scripted(turn),
+        )
+    )
+    # the budget the walk ran under is spent, whatever the grant raised the bound to meanwhile: the
+    # refusal named 5.2, a budget that elapsed time was nowhere near
+    late = "the time_budget of 0.2 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.2 and run.elapsed < 5.2
+    assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
+def test_a_walk_a_grant_reached_in_time_names_the_raised_budget_when_it_runs_out():
+    actor = _echo_actor("b-in-time")
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> str:
+        await asyncio.sleep(req.seconds)
+        return "rested"
+
+    grant = 'granted: DO run.more(bound="time_budget", amount=0.3, reason="more")'
+    turn = f"```\nOUT{{{grant}, after: DO nap(seconds=5)}}\n```"
+    run = asyncio.run(
+        actor.run(
+            Profile("p", language="program"),
+            RunRequest(inputs=("go",), time_budget=0.2, max_rounds=1),
+            scripted(turn),
+        )
+    )
+    # the grant moved the walk's deadline before it fired, so the budget the walk ran under is the raised
+    # one and no grant came after the deadline
+    assert run.bounds["time_budget"] == 0.5
+    assert run.refused == [("turn", "the time_budget of 0.5 is spent; nothing after it ran")]
+
+
 def test_a_grant_of_time_moves_the_deadline_of_every_limit_a_run_has_registered():
     more = next(h for h in actor_module.DEFAULT_HANDLERS if h.name == "run.more")
     ask = actor_module.RunMore(bound="time_budget", amount=0.5, reason="r")

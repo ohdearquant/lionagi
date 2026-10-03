@@ -2100,6 +2100,19 @@ class _Failed(Exception):
     """A block finished Failed: nothing after it runs, in it or around it (ADR-0008/C7)."""
 
 
+class _Limit(asyncio.Timeout):
+    """The walk's time limit and the time budget its deadline comes from: a grant of time that moves
+    the deadline moves the budget with it, and one that lands after the limit fired moves neither."""
+
+    def __init__(self, run: Run):
+        super().__init__(_deadline(run))
+        self.run, self.budget = run, run.bounds["time_budget"]
+
+    def reschedule(self, when: float | None) -> None:
+        super().reschedule(when)
+        self.budget = self.run.bounds["time_budget"]
+
+
 class _Walk:
     """One program over the dispatcher (ADR-0008/D1, D3): a command runs as its own task when its block
     reaches it, a value is computed when first read, a note is written when its assignment is reached,
@@ -2122,11 +2135,25 @@ class _Walk:
         # results read by a reader that settled ok, or taken by a note: the seq each was first consumed at
         self.used: dict[str, int] = {}
         self.named: set[str] = set()  # what OUT{} points at: never consumed
+        self.told = False  # the turn's refusal for a spent time budget is on the run's list
+
+    def out_of_time(self, budget: float) -> None:
+        """The turn's refusal for a spent time budget, told once however many ways the walk finds it
+        spent. `budget` is the one the walk's deadline came from; a grant that landed after the
+        deadline is named beside it, never folded into it. Kept on the run's list: the spent budget
+        ends the run before a notification tells it."""
+        if self.told:
+            return
+        self.told = True
+        raised = self.run.bounds["time_budget"] - budget
+        late = f", and a grant of {raised:g} landed after the deadline" if raised > 0 else ""
+        spent = f"the time_budget of {budget:g} is spent{late}"
+        self.run.refused.append(("turn", f"{spent}; nothing after it ran"))
 
     async def execute(self, script: Script) -> dict[str, Any] | None:
         # what the walk computes itself, a branch's test and OUT{}'s fields, the time budget bounds
         # as it bounds a command's arguments: one still computing at the deadline stops there
-        limit = asyncio.timeout_at(_deadline(self.run))
+        limit = self.limit = _Limit(self.run)
         try:
             async with limit:
                 self.run.timeouts.add(limit)  # while the walk runs, a grant of time moves its deadline
@@ -2139,9 +2166,7 @@ class _Walk:
         except TimeoutError:
             if not limit.expired():  # raised by what the walk read, not by this deadline
                 raise
-            # kept on the run's list: the spent budget ends the run before a notification tells it
-            spent = f"the time_budget of {self.run.bounds['time_budget']:g} is spent"
-            self.run.refused.append(("turn", f"{spent}; nothing after it ran"))
+            self.out_of_time(limit.budget)
             return None
         except (
             asyncio.CancelledError
@@ -2306,6 +2331,11 @@ class _Walk:
                 )
             except lndl.LNDLError as e:  # what it writes failed: the note keeps its value
                 self.run.refused.append((target, f"not written: {e}"))
+                return
+            # the deadline cuts the walk at its next yield, and a write that reached the store with none
+            # in between is past it: once the budget is spent nothing is committed, the store as it was
+            if _left(self.run) == 0.0:
+                self.out_of_time(self.limit.budget)
                 return
             try:
                 old = self.run.notes.get(node.key)

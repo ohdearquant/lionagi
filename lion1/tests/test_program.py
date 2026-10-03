@@ -4,6 +4,7 @@ import ast
 import asyncio
 import json
 import re
+import time
 
 import pytest
 from pydantic import BaseModel
@@ -1314,6 +1315,48 @@ def test_a_value_whose_reader_the_deadline_cancelled_stops_computing_before_the_
     # thirty LIMITs of items: the deadline cancels the command reading *v, and the value, computed in
     # a task of its own, went on computing for nobody after the run returned
     assert run.record.get("n").content.reason == "cancelled" and alive == []
+
+
+SPENT = ("turn", "the time_budget of 0.2 is spent; nothing after it ran")
+
+
+@pytest.mark.parametrize("keys", [("k",), ("a", "b")], ids=["one write", "two writes"])
+def test_a_write_reached_past_the_deadline_with_nothing_yielding_commits_nothing(keys):
+    actor = _actor("late-write", [])
+    turn = fenced(*(f'note.{key} = "v"' for key in keys))
+    run = asyncio.run(actor.run(PROGRAM, *_spent(turn)))
+    # the backend answered after the budget and nothing in the program yields: the deadline lands at
+    # the walk's next yield, which these writes never wait for, so they were committed past it
+    notes = actor.notes_for(PROGRAM)
+    assert [notes.get(key) for key in keys] == [None] * len(keys) and run.notes_written == []
+    assert run.refused == [SPENT]
+
+
+def test_a_write_queued_before_the_walk_was_cut_commits_nothing_and_the_turn_is_refused_once():
+    actor = _actor("cut-write", [])
+    run = asyncio.run(actor.run(PROGRAM, *_spent(fenced('note.k = "v"', f"OUT{{n: {LONG}}}"))))
+    # the walk is cut inside its comprehension and says so; the write, a task of its own, is settled
+    # after the budget is spent and says nothing more
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [SPENT]
+
+
+def test_a_write_refused_for_the_spent_budget_consumes_none_of_the_results_it_read():
+    actor = _actor("late-read", [])
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> float:
+        time.sleep(req.seconds)  # holds the loop past the 0.2 s budget, then settles ok
+        return req.seconds
+
+    turn = fenced("n = nap(seconds=0.3)", "note.k = *n")
+    run = asyncio.run(
+        actor.run(PROGRAM, RunRequest(inputs=("go",), time_budget=0.2, max_rounds=1), scripted(turn))
+    )
+    # the result is ok and the write that read it is reached after the budget: nothing is written, and the
+    # result stays in view for the next notification, which only a note that took it would have hidden
+    assert run.record.get("n").content.ok and actor.notes_for(PROGRAM).get("k") is None
+    assert run.notes_written == [] and run.intermediates == {} and run.refused == [SPENT]
 
 
 class Faulty(MemoryNoteStore):

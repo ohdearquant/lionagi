@@ -334,9 +334,17 @@ computation binds its failure.
   `test_a_grant_of_time_landing_after_a_walks_deadline_fired_raises_the_bound_and_moves_nothing` pin
   it.
 - **S10**: A `TimeoutError` raised by what the walk reads is that error: only the walk's own
-  deadline reads as the budget spent. That refusal stays on the run's `refused` list; the spent
+  deadline reads as the budget spent. That refusal names the budget the walk ran under, and a grant
+  that landed after the deadline fired beside it. It stays on the run's `refused` list; the spent
   budget ends the run before a notification tells it, and the closure names the outcome and the
   cancelled commands, no refusal.
-  `test_a_timeout_error_from_a_store_read_is_that_error_not_the_time_budget_spent` and
-  `test_the_runs_deadline_stops_a_branch_test_or_an_output_field_still_in_a_long_comprehension` pin
-  it.
+  `test_a_timeout_error_from_a_store_read_is_that_error_not_the_time_budget_spent`,
+  `test_the_runs_deadline_stops_a_branch_test_or_an_output_field_still_in_a_long_comprehension`,
+  `test_a_walk_a_grant_missed_names_the_budget_it_ran_under_and_the_late_grant` and
+  `test_a_walk_a_grant_reached_in_time_names_the_raised_budget_when_it_runs_out` pin it.
+- **S11**: The deadline lands at the walk's next yield. A write reached after the budget is spent
+  commits nothing, consumes no result it read and leaves the store as it was; the turn is refused as
+  the budget spent, once however many writes were cut.
+  `test_a_write_reached_past_the_deadline_with_nothing_yielding_commits_nothing`,
+  `test_a_write_refused_for_the_spent_budget_consumes_none_of_the_results_it_read` and
+  `test_a_write_queued_before_the_walk_was_cut_commits_nothing_and_the_turn_is_refused_once` pin it.
