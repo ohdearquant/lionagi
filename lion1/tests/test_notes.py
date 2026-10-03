@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import sys
 import threading
 from datetime import date
 from pathlib import Path
@@ -335,15 +336,40 @@ def test_put_refuses_a_lone_surrogate_in_its_key_its_run_or_its_value_before_the
     assert re.fullmatch(said, str(refused.value)), refused.value
 
 
+@pytest.fixture
+def int_digit_limit():
+    # the limit on an integer's decimal text belongs to the interpreter, and an environment can lift it
+    # (`PYTHONINTMAXSTRDIGITS=0`): the case below needs the default, so it sets it and puts back what it found
+    before = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(4300)
+    yield
+    sys.set_int_max_str_digits(before)
+
+
+@pytest.mark.usefixtures("int_digit_limit")
 @pytest.mark.parametrize(
-    "seq",
-    [float("nan"), float("inf"), True, 2.0, "2", None],
-    ids=["nan", "infinity", "true", "float", "text", "none"],
+    "seq, said",
+    [
+        (float("nan"), "the seq is not an integer: nan"),
+        (float("inf"), "the seq is not an integer: inf"),
+        (True, "the seq is not an integer: True"),
+        (2.0, "the seq is not an integer: 2.0"),
+        ("2", "the seq is not an integer: '2'"),
+        (None, "the seq is not an integer: None"),
+        (
+            10**5000,
+            "Exceeds the limit (4300 digits) for integer string conversion; "
+            "use sys.set_int_max_str_digits() to increase the limit",
+        ),
+    ],
+    ids=["nan", "infinity", "true", "float", "text", "none", "past-the-digit-limit"],
 )
-def test_put_refuses_a_seq_that_is_not_an_integer_before_the_store_changes(tmp_path, seq):
-    # the sequence is written with the row: a float that is NaN failed the flush after the store had changed
-    # (memory held the refused note until the next write reloaded the file), and a bool or a float that
-    # passed it was written as `true` or `2.0` and read back as the sequence
+def test_put_refuses_a_seq_the_file_cannot_carry_before_the_store_changes(tmp_path, seq, said):
+    # the sequence is written with the row, so it is checked with the rest. A bool or a float was written
+    # as `true` or `2.0` and read back as the sequence; a NaN was written as `NaN` and read back until the
+    # write refused non-finite numbers, and then failed the flush after the store had changed (memory held
+    # the refused note until the next write reloaded the file); an integer past the interpreter's digit
+    # limit fails the flush the same way. The preflight refuses all of them before anything changes
     path = tmp_path / "n.json"
     store = FileNoteStore(path)
     store.put("plan", "one", run="r", seq=1)
@@ -356,9 +382,7 @@ def test_put_refuses_a_seq_that_is_not_an_integer_before_the_store_changes(tmp_p
     assert MemoryNoteStore.get(store, "plan") == plan and MemoryNoteStore.get(store, "other") is None
     assert path.read_bytes() == file_before and sorted(p.name for p in tmp_path.iterdir()) == names
     assert store.get("other") is None and [n.key for n in store.list()] == ["plan"] and store.version == 1
-    assert str(refused.value) == (
-        f"note 'other': the seq is not an integer: {seq!r}; the file store carries JSON values only"
-    )
+    assert str(refused.value) == f"note 'other': {said}; the file store carries JSON values only"
     store.put("third", "three", run="r", seq=3)  # a later write carries nothing of it
     assert sorted(json.loads(path.read_text())["notes"]) == ["plan", "third"]
 

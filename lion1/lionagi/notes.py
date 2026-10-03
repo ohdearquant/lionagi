@@ -242,6 +242,9 @@ class FileNoteStore(MemoryNoteStore):
             # through is written as `true` or `2.0` and read back as the sequence
             if not isinstance(seq, int) or isinstance(seq, bool):
                 raise ValueError(f"the seq is not an integer: {seq!r}")
+            # an integer the serializer refuses (past the interpreter's digit limit) fails the flush
+            # as well, so it is rendered here as the flush renders it
+            json.dumps(seq, ensure_ascii=False, allow_nan=False)
             kept = json.loads(text)  # the copy this store keeps and writes, never the caller's object
             if kept != value:
                 raise ValueError("JSON would read it back changed")
