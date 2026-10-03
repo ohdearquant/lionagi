@@ -359,12 +359,12 @@ again and sleeps on it.
 
 ### D6: `interrupt`, `stop` and `cancel` ^d6
 
-Serves C6. `interrupt(id)` calls `Run.interrupt` and answers the state with `cut`, whether an
-awaited call was cancelled now. `stop(id)` sets the flag read by the `stop` callback the service
-hands `Actor.run`, and the wake event with no await between, then calls `Run.interrupt`.
-`cancel(id)` cancels the task and awaits it; on a run still starting that is the reserved task, and
-the run is aborted with no runtime id. Each answers the state. One on an ended run is refused, and
-so is every one but `cancel` on a starting run.
+Serves C6. `interrupt(id)` calls `Run.interrupt`; `cut` in its answer says whether a pending call
+was found and its cancellation requested, which a backend may absorb: the run's rows say what it
+did. `stop(id)` sets the flag the service's `stop` callback reads and the wake event, with no await
+between, then calls `Run.interrupt`. `cancel(id)` cancels the task and awaits it; on a starting run
+that is the reserved task, aborted with no runtime id. Each answers the state. An ended run refuses
+all three, a starting run all but `cancel`.
 
 - **Landing evidence**: owed: stop while waiting, mid-call, during a command and after an accepted
   output; cancel before the commit and during it; cancel with an interrupt in both orders.
@@ -384,9 +384,10 @@ makes the log unreadable. The listing after a restart reads each log's first and
 ### D8: The HTTP transport on `asyncio.start_server` ^d8
 
 Serves C9 and C10. `Service.serve(host="127.0.0.1", port=8710, grace=10.0)` runs until cancelled and
-reports the address it bound; a port of 0 takes a free one. The head is read to its blank line under
-the cap, checked against the second table, and only then parsed by `http.client.parse_headers`; a
-parsed message with a defect is refused.
+reports the address it bound; a port of 0 takes a free one, and a `host` outside loopback is refused
+with `ValueError` before any bind (C9). The head is read to its blank line under the cap, checked
+against the second table, and only then parsed by `http.client.parse_headers`; a parsed message with
+a defect is refused.
 
 | method and path | does | answers |
 | --------------- | ---- | ------- |
@@ -412,16 +413,16 @@ parsed message with a defect is refused.
 | head | at most 16 KiB |
 
 - **Landing evidence**: owed: each row of the second table and each refusal of C9 over real loopback
-  sockets, with raw requests sent whole and in pieces; the off-loopback peer with its address
-  substituted at the check.
+  sockets, raw requests sent whole and in pieces; the off-loopback peer with its address substituted
+  at the check; an off-loopback `host` refused before any bind.
 
 ### D9: Shapes, frames and errors ^d9
 
-Serves C4, C10 and C14. Every answer is one JSON object in a shape below; a key holds null where it
-has no value, and a null `pending` means unknown, never empty. Values become JSON through
-`pydantic_core.to_jsonable_python`; one it cannot project is carried as an object with the single
-key `repr`, so what a client reads is a projection and never the object. A change that breaks a
-client raises the card's protocol version.
+Serves C4, C10 and C14. Every answer but a stream (D12) is one JSON object in a shape below; a key
+holds null where it has no value, and a null `pending` means unknown, never empty. Values become
+JSON through `pydantic_core.to_jsonable_python`; one it cannot project is carried as an object with
+the single key `repr`, so what a client reads is a projection and never the object. A change that
+breaks a client raises the card's protocol version.
 
 | shape | keys |
 | ----- | ---- |
@@ -430,7 +431,7 @@ client raises the card's protocol version.
 | `card` | `actor`; `protocol`; `offers`, a list of `offer` |
 | `offer` | `name`; `language`; `commands`, each with `name`, `doc`, `schema`, `effect` (`write`, `read` or `pure`) and `privileges`, a list; `outputs`, each with `name` and `schema`; `bounds`, each bound's name to a number or null; `converse`, a boolean |
 | `outcome` | `kind`, one of `Success`, `Exhausted`, `Refused` and `Stopped`, beside that outcome's own fields but `output`: `rounds` and `reason`, `why` and `times`, or `round` |
-| `rows` | `id`; `start`; `rows`, each in the log's row form; `more`, on a record read |
+| `rows` | `id`; `start`, the first row's sequence number; `rows`, each in the log's row form; `more`, true on a record read with rows past the page, false on a stream frame |
 | `bus` | `id`; `kind`; `payload` |
 | `handle` | `id`; `handle` |
 | `error` | `error`, a code below; `reason`, a sentence |
@@ -446,7 +447,7 @@ client raises the card's protocol version.
 | `closed` | true once an `end` was accepted, after which input is refused; else false; null on a cut-short log |
 | `outcome`, `output` | an `outcome` and a `Success`'s output; null until ended, after an abort and on a cut-short log |
 | `error` | the log's failure; on a run an exception aborted, its type and message; else null |
-| `cut` | on an interrupt's answer only: whether an awaited call was cancelled now |
+| `cut` | on an interrupt's answer only: whether a pending awaited call was found and its cancellation requested |
 
 | request | body |
 | ------- | ---- |
@@ -461,7 +462,7 @@ client raises the card's protocol version.
 | `unknown_offer`, `unknown_run`, `not_found` | 404 | no such offer, run or route |
 | `method_not_allowed` | 405 | a route asked with the other method |
 | `timeout` | 408 | the request's deadline |
-| `ended` | 409 | input after the run's `end` or on an ended run; a control on an ended run |
+| `ended` | 409 | input after the run's `end` or on an ended run; a control on an ended run; either on a cut-short log |
 | `starting` | 409 | input, or a control other than `cancel`, on a run still starting |
 | `not_conversation` | 409 | `end` on a run that is no conversation |
 | `no_resume`, `unreadable_log` | 409 | a resume with no directory, no such log or a live run; a resume whose log cannot be read or whose history does not replay; a record read of a log the loader refuses |
@@ -553,8 +554,9 @@ the key unchanged; only the refusal of the act that took a key releases it.
   remote bind; a remote bind and TLS are a later record.
 - **S4**: Inputs are text. An input with an image waits for the record to carry one.
 - **S5**: An actor's shared inbox is still taken by whichever of its runs starts a round first
-  ([[ADR-0010-delegation#^c1|ADR-0010/C1]]). The service never uses it; with several live runs the
-  limit stands for a peer's `queue`.
+  ([[ADR-0010-delegation#^c1|ADR-0010/C1]]), a served run included: `Actor.run` drains it with the
+  run's own. The service writes nothing to it; with several live runs the limit stands for a peer's
+  `queue`.
 - **S6**: A handler that blocks the loop stalls every run and every stream (A2), and so does an
   offer's synchronous backend for the whole of its call; a log append is a file write on the loop.
   `serve` returns only once every handler has yielded to its cancellation. An experience store's
