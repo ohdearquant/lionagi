@@ -99,6 +99,7 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
     runtimes_store: dict[str, Any] = {}
     preset_policy: dict[str, Any] = {}
     delete_fails: dict[str, BaseException] = {}  # a runtime whose `delete` raises this
+    refresh_fails: dict[str, BaseException] = {}  # a runtime whose `refresh_info` raises this
     async_runta_instances: list[Any] = []
 
     class Files:
@@ -160,6 +161,8 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
             return types.SimpleNamespace(value=self._status)
 
         async def refresh_info(self):
+            if self.id in refresh_fails:
+                raise refresh_fails[self.id]
             return types.SimpleNamespace(egress_policy=self.policy)
 
         async def pause(self):
@@ -196,6 +199,7 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
     mod.runtimes_store = runtimes_store
     mod.preset_policy = preset_policy
     mod.delete_fails = delete_fails
+    mod.refresh_fails = refresh_fails
     mod.async_runta_instances = async_runta_instances
     return mod
 
@@ -766,6 +770,63 @@ def test_a_deletion_that_fails_does_not_replace_the_refusal(tmp_path, monkeypatc
     for part in ("denylist", "bad.com", "a.com", "runtime rt-1 was not deleted", "OSError('gone away')"):
         assert part in said
     assert box.started is False and clients[0].closed is True  # the clients still close
+
+
+def test_a_client_that_fails_to_close_after_a_deletion_is_told_apart_from_a_runtime_left(
+    tmp_path, monkeypatch
+):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=WANTED, precreate_workdir=False)
+    mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="denylist", allowed_hosts=[], denied_hosts=["bad.com"])
+
+    async def close_fails():
+        raise OSError("socket")
+
+    with pytest.raises(SandboxDead) as e:
+        asyncio.run(_start_with_client_close_failing(box, mod, close_fails))
+    assert "runtime rt-1 was deleted, then a client did not close: OSError('socket')" in str(e.value)
+    assert mod.runtimes_store["rt-1"].deleted is True
+
+
+async def _start_with_client_close_failing(box, mod, close_fails):
+    """`start` with the SDK client's `close` failing: patched once the client exists, before the refusal."""
+    original = box.__class__._own_policy
+
+    async def own_policy_then_patch(self, when):
+        mod.async_runta_instances[-1].close = close_fails
+        await original(self, when)
+
+    box.__class__._own_policy = own_policy_then_patch
+    try:
+        await box.start()
+    finally:
+        box.__class__._own_policy = original
+
+
+def test_resume_whose_policy_cannot_be_read_deletes_the_runtime_and_raises_that_error(tmp_path, monkeypatch):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=WANTED)
+    mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="allowlist", allowed_hosts=["a.com"], denied_hosts=[])
+    asyncio.run(box.start())
+    rt = mod.runtimes_store["rt-1"]
+    asyncio.run(box.suspend())
+    mod.refresh_fails["rt-1"] = OSError("no read")
+    with pytest.raises(OSError, match="no read"):
+        asyncio.run(box.resume())
+    assert rt.paused is False and rt.deleted is True and box.started is False and box.box_id is None
+
+
+def test_resume_refused_with_a_deletion_that_fails_keeps_the_refusal(tmp_path, monkeypatch):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=WANTED)
+    mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="allowlist", allowed_hosts=["a.com"], denied_hosts=[])
+    asyncio.run(box.start())
+    rt = mod.runtimes_store["rt-1"]
+    asyncio.run(box.suspend())
+    rt.policy = _EgressPolicySDK(mode="denylist", allowed_hosts=[], denied_hosts=["bad.com"])
+    mod.delete_fails["rt-1"] = OSError("gone away")
+    with pytest.raises(SandboxDead) as e:
+        asyncio.run(box.resume())
+    for part in ("resumed", "denylist", "runtime rt-1 was not deleted", "OSError('gone away')"):
+        assert part in str(e.value)
+    assert rt.deleted is False and box.started is False
 
 
 def test_resume_refuses_a_runtime_that_comes_back_under_another_policy_and_deletes_it(tmp_path, monkeypatch):

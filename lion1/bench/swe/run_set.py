@@ -6,7 +6,8 @@
 `--where local` runs the eval image under docker on this machine (amd64 emulation: one at a time is
 what it can bear) and streams images: pull, solve, grade, remove. `--where daytona` creates one
 Daytona sandbox per instance from the same image, natively x86_64, `--parallel` wide; nothing lands
-on this machine but the records. `--where runta` does the same on Runta, from a Runta image built
+on this machine but the records. `--where runta` (the `runta` extra: `--with runta-sdk`) does the
+same on Runta, from a Runta image built
 over the eval image the first time an instance runs there
 (`sandbox.runta_image`). Grading happens inside the instance's own box either way (sandbox.grade
 mirrors the official harness), so there is no second container and no oracle pass.

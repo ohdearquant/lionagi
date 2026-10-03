@@ -522,11 +522,13 @@ class RuntaSandbox(BoxBase):
     async def _stop_for(self, e: BaseException) -> None:
         """Delete the runtime behind a failed start or resume. A deletion that fails does not replace the
         failure: the error names both, and the runtime left behind."""
+        self._deleted = False
         try:
             await self.stop()
         except Exception as left:
+            what = "was deleted, then a client did not close" if self._deleted else "was not deleted"
             if isinstance(e, Exception):
-                raise SandboxDead(f"{e}; and runtime {self.runtime_id} was not deleted: {left!r}") from e
+                raise SandboxDead(f"{e}; and runtime {self.runtime_id} {what}: {left!r}") from e
             raise e from left
 
     async def _gone(self, error: BaseException) -> bool:
@@ -647,7 +649,7 @@ class RuntaSandbox(BoxBase):
         await self._rt.resume(timeout=timeout)
         try:
             await self._own_policy("resumed")
-        except SandboxDead as e:
+        except BaseException as e:  # another policy, or no read of it: a runtime not shown to be a box
             await self._stop_for(e)
             raise
 
@@ -662,9 +664,11 @@ class RuntaSandbox(BoxBase):
         try:
             if self._rt is not None:
                 await self._rt.delete()
+                self._deleted = True
             elif self.runtime_id is not None and self._api is not None and not self.started:
                 # made but never resolved: the id is all there is to delete it by
                 await self._api.call("DELETE", f"/v2/runtimes/{self.runtime_id}")
+                self._deleted = True
         finally:
             self._rt = None
             self.started = False
