@@ -2537,6 +2537,32 @@ def test_a_pending_tick_row_naming_no_instant_is_not_judged_and_gives_no_first_d
     assert f"{OWNER} w not judged: a pending tick row names no first due" in digest_at(chores, agent, base)
 
 
+def test_a_first_due_on_record_is_dropped_by_ensure_ticks_when_a_pending_tick_row_names_no_instant(
+    tmp_path,
+):
+    base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
+    khive = FakeKhive(
+        agenda=[
+            pending("disk", base + 60, "every:30m", base),
+            # the tick on record was made again, by a row naming no instant: the record is stale
+            ("tick: w", SELF, "pending", "soon"),
+        ]
+    )
+    chores, agent = build(
+        tmp_path, khive, [], disk=Probe("disk", full()), w=Probe("w", full(), every="weekly")
+    )
+    agent.state.put("first_due", {"disk": base + 60, "w": base - 7200}, run="-", seq=0)
+    # the record stands until `ensure_ticks` reads the rows
+    assert f"MISSING: w, no run recorded, first due by {label(base - 7200)}" in digest_at(chores, agent, base)
+    for _ in range(2):  # and is not recorded again while the row stands
+        assert asyncio.run(chores.ensure_ticks()) == ["tick: digest", "tick: aged"]
+        assert agent.state.get("first_due").value == {"disk": base + 60}  # w's record dropped, disk's kept
+    lines = digest_at(chores, agent, base).splitlines()
+    assert f"{OWNER} w not judged: a pending tick row names no first due" in lines
+    assert f"{OWNER} disk no run yet, first due by {label(base + 60)}" in lines
+    assert "MISSING: " not in "\n".join(lines)
+
+
 @pytest.mark.parametrize("answer", [{}, None, {"events": "x"}, []], ids=["empty", "none", "text", "list"])
 def test_an_agenda_answer_that_is_no_page_is_a_failed_read_not_an_empty_one(tmp_path, answer):
     base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()

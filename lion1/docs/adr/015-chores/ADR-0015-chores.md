@@ -190,11 +190,11 @@ and the steward did not, left unanswered on its thread past `aged_after` periods
 ### D1: `Chores` in `hub/agent/chores.py` ^d1
 
 Serves C1, C3 and C7. `Chores` registers `check`, `digest` and `aged` on the agent's actor, each
-requiring `comm.send`, and offers them as the `chores` profile. `check` runs the missed ticks first,
-then the instrument, the refusals, the sends, the row, the commit of what the run consumed, and the
-dead-instrument check. The defaults: aged after 2 periods, dead after 3 runs, the digest daily, the
-aged pass hourly. The digest's line per chore names the last ending and counts the day's runs,
-answered, quiet, report, escalate and instrument-failed.
+requiring `comm.send`, as the `chores` profile. `check` runs the missed ticks first, then the
+instrument, refusals, sends, row, commit of what the run consumed, and dead-instrument check. The
+defaults: aged after 2 periods, dead after 3 runs, the digest daily, the aged pass hourly. A chore's
+digest line names its last ending and the day's counts (answered, quiet, report, escalate,
+instrument-failed); with no run that day, its due, why it is unjudged, or `MISSING`.
 
 - **Landing evidence**: `tests/test_chores.py`: the three endings, each refusal, the standing state
   per recipient, the dead instrument, the digest per period
@@ -412,9 +412,9 @@ bypasses the handler: no refusals, no row, no send.
   (`test_a_day_the_digest_is_asked_about_selects_the_same_rows_in_any_spelling_a_date_has`).
 - **S23**: A stored `first_due` is a record only where it is a finite number, no bool, that a UTC
   date can name, in the digest and in `ensure_ticks` alike. Any other value is no record:
-  `ensure_ticks` replaces it with the pending row's firing, and the digest reads that row as for
-  none (S26), a chore with no tick pending reading `MISSING: <chore>, no run recorded, no tick
-  pending`
+  `ensure_ticks` replaces it with the pending rows' firing, or drops it where a row names no instant
+  (S26). The digest reads those rows as for none, a chore with no tick pending reading `MISSING:
+  <chore>, no run recorded, no tick pending`
   (`test_a_first_due_the_digest_cannot_read_as_an_instant_is_no_record_and_the_digest_delivers`,
   `test_a_first_due_a_clock_can_name_is_a_record_to_the_last_second_of_the_year_9999`,
   `test_a_first_due_a_platform_cannot_convert_and_refuses_with_an_oserror_is_no_record`,
@@ -432,16 +432,16 @@ bypasses the handler: no refusals, no row, no send.
   `stamped-a-period-late` and `a-longer-lead` rows of
   `test_a_pending_fixed_tick_gives_its_latest_firing_not_after_the_ceiling_its_creation_carries`,
   `test_a_second_start_keeps_the_first_due_of_a_tick_made_with_a_longer_lead`).
-- **S26**: A chore with no run or first due on record reads one from its pending tick row (S17). It
-  makes no tick. The agenda is read when a chore needs it, 200 rows a page from the last
-  `trigger_at`, merged by id, to 25 pages. A row naming no instant may be the earliest: `not judged:
-  a pending tick row names no first due`; its tick records no first due. With no tick: `MISSING:
-  <chore>, no run recorded, no tick pending`
+- **S26**: A chore with no run or first due on record reads one from its pending tick row (S17),
+  making no tick. The agenda is read when needed, 200 rows a page from the last `trigger_at`, merged
+  by id, to 25 pages. A row naming no instant may be earliest: `not judged: a pending tick row names
+  no first due`; its tick keeps no first due on record: `ensure_ticks` drops one. With no tick:
+  `MISSING: <chore>, no run recorded, no tick pending`
   (`test_a_python_digest_wake_reads_a_pending_tick_row_for_a_chore_with_no_first_due`,
   `test_a_pending_tick_row_naming_no_instant_is_not_judged_and_gives_no_first_due`,
+  `test_a_first_due_on_record_is_dropped_by_ensure_ticks_when_a_pending_tick_row_names_no_instant`,
   `test_ensure_ticks_records_a_first_due_for_a_tick_it_finds_pending_from_its_own_row`,
   `test_the_digest_reads_the_agenda_once_and_only_for_a_chore_with_no_run_and_no_first_due`,
-  `test_a_chore_with_no_run_no_first_due_on_record_and_no_tick_pending_is_missing_and_says_so`,
   `test_the_agenda_is_read_in_pages_of_200_each_from_the_last_row_of_the_page_before`,
   `test_an_agenda_read_that_ends_short_on_its_25th_page_is_not_capped`).
 - **S27**: A read ending on a full 25th page is capped. A row past it may give an earlier first due:

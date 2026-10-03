@@ -741,7 +741,7 @@ class Chores:
         stalled) it creates and records nothing and names each tick it left. A chore's first firing is kept
         in the agent's state (`first_due`) for the digest: one on record stands, and where there is none the
         tick's own firing is recorded when it was just made, else what its pending rows give
-        (`_first_firing`)."""
+        (`_first_firing`); a tick with a row naming no instant has none, and one on record is dropped."""
         pending, short = await self._pending_firsts(self.agent.clock())
         wanted = {f"tick: {name}": inst.every for name, inst in self.instruments.items() if inst.every}
         wanted["tick: digest"] = self.digest_every
@@ -763,15 +763,16 @@ class Chores:
                 created.append(content)
                 fires = [_iso_epoch(at)]
             chore, firsts = content.removeprefix("tick: "), _val(self.agent.state, "first_due", {})
+            if chore not in self.instruments:
+                continue
+            if None in fires:  # a row naming no instant may be the earliest: a tick with one has no first
+                if chore in firsts:  # due on record, and one it had is dropped: the digest reads the rows
+                    rest = {k: v for k, v in firsts.items() if k != chore}
+                    self.agent.state.put("first_due", rest, run="-", seq=0)
+                continue
             # a first due on record stands: a row cannot say what lead its tick was made with, so what it
             # gives is no reason to lower one
-            # a row naming no instant may be the earliest: a tick with one records no first due at all
-            if (
-                fires
-                and None not in fires
-                and chore in self.instruments
-                and _instant(firsts.get(chore)) is None
-            ):
+            if _instant(firsts.get(chore)) is None:
                 self.agent.state.put("first_due", {**firsts, chore: min(fires)}, run="-", seq=0)
         return created
 
