@@ -12,12 +12,22 @@ from pydantic import BaseModel
 
 import lion1.actor as actor_module
 from hub.chat import entry_row
-from lion1 import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Stopped, Success, program
+from lion1 import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Stopped, Success, lndl
 from lion1.actor import ProfileError, Result, _Reader
 from lion1.checkpoint import entry_of
-from lion1.lndl import LNDLError
+from lion1.lndl import (
+    LIMIT,
+    Command,
+    EvalError,
+    LNDLError,
+    Script,
+    Value,
+    Write,
+    evaluate,
+    program_guidance,
+    read,
+)
 from lion1.notes import FileNoteStore, MemoryNoteStore
-from lion1.program import LIMIT, Command, EvalError, Script, Value, Write, evaluate, guidance, read
 
 PROGRAM = Profile("p", language="program")
 
@@ -897,11 +907,11 @@ def test_a_profile_sees_only_its_languages_guidance():
 
 
 def test_the_guidance_names_the_outputs_and_context_show_only_when_the_profile_has_it():
-    text = guidance(("done",), commands=["echo", "context.show"])
+    text = program_guidance(("done",), commands=["echo", "context.show"])
     assert "return {done: *t1}" in text and "outputs: done" in text and "*name or context.show" in text
-    bare = guidance(commands=["echo"])
+    bare = program_guidance(commands=["echo"])
     assert "outputs: listed below" in bare and "context.show" not in bare
-    assert "*name or context.show" in guidance()
+    assert "*name or context.show" in program_guidance()
 
 
 def test_a_core_profile_runs_nothing_from_a_fenced_program():
@@ -1163,9 +1173,9 @@ def test_the_evaluator_computes_over_data(expr, want):
 )
 def test_the_evaluator_names_what_it_could_not_compute(expr, said, monkeypatch):
     # a product past the limit is refused before it is built: the multiplication itself never runs
-    sign, mul = program._ARITH[ast.Mult]
+    sign, mul = lndl._ARITH[ast.Mult]
     monkeypatch.setitem(
-        program._ARITH,
+        lndl._ARITH,
         ast.Mult,
         (sign, lambda a, b: pytest.fail("built") if tuple in (type(a), type(b)) else mul(a, b)),
     )
@@ -1557,13 +1567,13 @@ def test_a_part_of_a_literal_a_command_grew_after_it_was_counted_is_caught_as_it
 
 def test_the_fields_of_out_are_each_sized_once_as_they_land_and_never_all_again_after_each(monkeypatch):
     sized: list[int] = []
-    real = program._size
+    real = lndl._size
 
     def counted(value):
         sized.append(real(value))
         return sized[-1]
 
-    monkeypatch.setattr(program, "_size", counted)
+    monkeypatch.setattr(lndl, "_size", counted)
     monkeypatch.setattr(actor_module, "_size", counted)
     n = 2000
     run = _run(_actor("out-many", []), fenced("OUT{" + ", ".join(f'k{i}: "a"' for i in range(n)) + "}"))
