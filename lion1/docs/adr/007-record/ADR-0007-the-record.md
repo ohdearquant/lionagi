@@ -242,12 +242,12 @@ on writing, when decided, sits on those two.
 
 ### D4: The file store keeps the copy it checked and reads only standard JSON ^d4
 
-Serves C7. `FileNoteStore.put` renders the value with `json.dumps(allow_nan=False)`, encodes it as
-UTF-8, reads it back with `json.loads`, and stores that copy: a later change to the caller's object,
-even during the lock wait, reaches nothing stored. `_load` refuses NaN, Infinity, an overflowing
-number (like `1e999`), non-UTF-8 bytes and a lone surrogate, naming file and text, byte offset or
-key path, repairing nothing. An underflowing number is kept as a zero of its sign, as JSON parses
-it. The write renders as UTF-8 with `allow_nan=False`, so every file is standard JSON.
+Serves C7. `FileNoteStore.put` renders the value with `json.dumps(allow_nan=False)`, encodes key,
+run and text as UTF-8, reads it back with `json.loads`, and stores that copy: a later change to the
+value, even during the lock wait, reaches nothing stored. `_load` refuses NaN, Infinity, an
+overflowing number, non-UTF-8 bytes and a lone surrogate, naming file and text, byte offset or key
+path, repairing nothing. An underflowing number is kept as a zero of its sign, as JSON parses it.
+The write renders as UTF-8 with `allow_nan=False`, so every file is standard JSON.
 
 - **Landing evidence**:
   `test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal`,
@@ -259,8 +259,9 @@ it. The write renders as UTF-8 with `allow_nan=False`, so every file is standard
   `test_a_write_never_renders_a_non_finite_number_wherever_it_sits`,
   `test_the_file_is_written_as_utf_8_whatever_the_locale_encoding_is`,
   `test_the_file_is_read_as_utf_8_whatever_the_locale_encoding_is`,
-  `test_a_file_that_is_not_utf_8_is_refused_on_load_naming_the_file_and_the_byte_offset` and
-  `test_a_file_holding_a_lone_surrogate_is_refused_on_load_naming_where_and_the_file_stays`.
+  `test_a_file_that_is_not_utf_8_is_refused_on_load_naming_the_file_and_the_byte_offset`,
+  `test_a_file_holding_a_lone_surrogate_is_refused_on_load_naming_where_and_the_file_stays` and
+  `test_put_refuses_a_lone_surrogate_in_its_key_its_run_or_its_value_before_the_store_changes`.
 
 ### D5: `_notify` lists the store on the first turn ^d5
 

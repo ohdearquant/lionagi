@@ -111,8 +111,8 @@ def _text(value: Any) -> str:
 
 def _utf8(text: str) -> None:
     """The one rule for a string the file cannot hold: UTF-8 cannot encode it. A lone surrogate passes
-    `json.dumps` escaped and fails at the file, so a value is refused by it before the write (`put`) and a
-    loaded document by it before the next one (`_lone_surrogate`)."""
+    `json.dumps` escaped and fails at the file, so `put` refuses a key, a run or a value by it before the
+    store changes, and the loader a document by it before the next write (`_lone_surrogate`)."""
     text.encode("utf-8")
 
 
@@ -229,7 +229,13 @@ class FileNoteStore(MemoryNoteStore):
             # escaped and fails at the file), and read back equal (a tuple comes back a list, a key that
             # is not a string comes back as text, and two keys can come back as one)
             text = json.dumps(value, ensure_ascii=False, allow_nan=False)
-            _utf8(text)
+            # every string the row persists, the key and the run beside the value's text: the flush fails
+            # on any of them, and by then the store has changed
+            for what, string in (("key", key), ("run", run), ("value", text)):
+                try:
+                    _utf8(string)
+                except UnicodeEncodeError as e:
+                    raise ValueError(f"the {what} is not UTF-8 text: {e}") from None
             kept = json.loads(text)  # the copy this store keeps and writes, never the caller's object
             if kept != value:
                 raise ValueError("JSON would read it back changed")

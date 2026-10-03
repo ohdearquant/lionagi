@@ -299,6 +299,42 @@ def test_a_value_the_file_cannot_carry_is_refused_before_the_store_takes_its_loc
 
 
 @pytest.mark.parametrize(
+    "key, run, value, what",
+    [
+        ("a" + chr(0xD800), "r", "x", "key"),
+        ("k", "r" + chr(0xDC00), "x", "run"),
+        ("k", "r", "x" + chr(0xD800), "value"),
+        ("k", "r", ["x", {"y": "z" + chr(0xD800)}], "value"),
+    ],
+    ids=["key", "run", "value", "nested-value"],
+)
+def test_put_refuses_a_lone_surrogate_in_its_key_its_run_or_its_value_before_the_store_changes(
+    tmp_path, key, run, value, what
+):
+    # the flush cannot encode a lone surrogate anywhere in the row, and a key or a run reached it after the
+    # store had changed: the refused put left its note in memory, and the next write carried it on
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)
+    store.put("plan", "one", run="r", seq=1)
+    file_before, plan = path.read_bytes(), MemoryNoteStore.get(store, "plan")
+    with pytest.raises(ValueError) as refused:
+        store.put(key, value, run=run, seq=2)
+    # the store as the refused put found it, read without the reload every read of the file store makes
+    assert [n.key for n in MemoryNoteStore.list(store)] == ["plan"] and store._version == 1
+    assert MemoryNoteStore.get(store, "plan") == plan
+    assert path.read_bytes() == file_before and not list(tmp_path.glob("*.tmp"))
+    assert store.get("plan").value == "one" and store.version == 1  # a later read of another key
+    assert store.delete(key) is None and path.read_bytes() == file_before  # a delete writes no key
+    # one refusal form for the three, naming which string
+    said = (
+        re.escape(f"note {key!r}: the {what} is not UTF-8 text: ")
+        + ".*surrogates not allowed"
+        + re.escape("; the file store carries JSON values only")
+    )
+    assert re.fullmatch(said, str(refused.value)), refused.value
+
+
+@pytest.mark.parametrize(
     "value, said",
     [
         ((1, 2), "JSON would read it back changed"),  # as a list
