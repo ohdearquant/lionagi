@@ -101,6 +101,8 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
     delete_fails: dict[str, BaseException] = {}  # a runtime whose `delete` raises this
     refresh_fails: dict[str, BaseException] = {}  # a runtime whose `refresh_info` raises this
     async_runta_instances: list[Any] = []
+    get_fails: list[BaseException] = []  # raised, one per call, by `runtimes.get`
+    delete_revisions: list[int] = []  # the revision each SDK `delete` read before it deleted
 
     class Files:
         async def read(self, path):
@@ -144,6 +146,7 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
             self.egress = EgressApi(self)
             self.checkpoints = Checkpoints(self)
             self._status = "running"
+            self.revision = 7
 
         async def exec(self, cmd, *, timeout=None, env=None, stdin=None):
             # `push`'s archive lives at a literal /tmp path, outside the box's own workdir tree;
@@ -173,12 +176,15 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
             self.paused = False
 
         async def delete(self):
+            delete_revisions.append(self.revision)  # the SDK's delete reads it, then sends it
             if self.id in delete_fails:
                 raise delete_fails[self.id]
             self.deleted = True
 
     class Runtimes:
         async def get(self, rt_id):
+            if get_fails:
+                raise get_fails.pop(0)
             if rt_id not in runtimes_store:
                 runtimes_store[rt_id] = Runtime(rt_id)
             return runtimes_store[rt_id]
@@ -202,6 +208,8 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
     mod.delete_fails = delete_fails
     mod.refresh_fails = refresh_fails
     mod.async_runta_instances = async_runta_instances
+    mod.get_fails = get_fails
+    mod.delete_revisions = delete_revisions
     return mod
 
 
@@ -292,6 +300,7 @@ def _ready_box(
     egress=None,
     fail_wait=None,
     post=None,
+    after_post=(),
     rt_id="rt-1",
     from_checkpoint=None,
     precreate_workdir=True,
@@ -302,7 +311,7 @@ def _ready_box(
     monkeypatch.setattr(asyncio, "sleep", fast_sleep)
     mod = stub_runta(tmp_path, fail_wait=fail_wait)
     monkeypatch.setitem(sys.modules, "runta", mod)
-    queue = [post or Resp(200, {"data": {"id": rt_id}})]
+    queue = [post or Resp(200, {"data": {"id": rt_id}}), *after_post]
     calls, clients, _ = install_httpx(monkeypatch, queue)
     work = tmp_path / "work"
     if precreate_workdir:
@@ -637,8 +646,8 @@ def test_find_image_picks_the_newest_succeeded_build_of_that_name(monkeypatch):
 
 
 def _install_build_listing(monkeypatch, builds: list[dict]) -> list[Any]:
-    """`GET /v2/images/builds` as the SDK declares it: a `limit` (default 50) and nothing else, no name
-    filter, no cursor. Returns the limits asked, in order."""
+    """`GET /v2/images/builds` as the service documents it: a `limit` (default 50, at most 100: a larger
+    one is a validation error) and nothing else, no name filter, no cursor. Returns the limits asked."""
     asked: list[Any] = []
     install_httpx(monkeypatch, [])
 
@@ -646,32 +655,53 @@ def _install_build_listing(monkeypatch, builds: list[dict]) -> list[Any]:
         assert (method, path) == ("GET", "/v2/images/builds")
         limit = (params or {}).get("limit", 50)
         asked.append(limit)
+        if limit > 100:
+            return Resp(422, {"error": {"code": "validation_error", "message": "limit must be at most 100"}})
         return Resp(200, {"data": builds[:limit]})
 
     monkeypatch.setattr(sys.modules["httpx"].AsyncClient, "request", request)
     return asked
 
 
+_FILLER = {"name": "img-z", "status": "succeeded", "updated_at": "2026-03-01", "runtime_image_id": "z"}
+
+
 def _listing(n: int) -> list[dict]:
     """n builds: a stale one of img-a first, filler of img-z, and the newest img-a last."""
     old = {"name": "img-a", "status": "succeeded", "updated_at": "2026-01-01", "runtime_image_id": "old"}
-    filler = {"name": "img-z", "status": "succeeded", "updated_at": "2026-03-01", "runtime_image_id": "z"}
     last = {"name": "img-a", "status": "succeeded", "updated_at": "2026-06-01", "runtime_image_id": "last"}
-    return [old, *[filler] * (n - 2), last]
+    return [old, *[_FILLER] * (n - 2), last]
 
 
-@pytest.mark.parametrize("n", [49, 50, 51, 120, 200, 1200])
-def test_find_image_reads_every_build_the_service_lists(monkeypatch, n):
-    asked = _install_build_listing(monkeypatch, _listing(n))
+@pytest.mark.parametrize("n", [49, 100, 250])
+def test_find_image_asks_the_documented_maximum_once_and_finds_the_match_on_the_last_row(monkeypatch, n):
+    builds = [*_listing(min(n, 100)), *[_FILLER] * (n - min(n, 100))]  # the match is row 100 at most
+    asked = _install_build_listing(monkeypatch, builds)
     assert asyncio.run(runta_mod.find_image("img-a")) == "last"
-    assert n < asked[-1]  # it ended on an answer shorter than its limit, so the list had ended
+    assert asked == [100]
 
 
-def test_find_image_says_none_only_after_an_answer_shorter_than_its_limit(monkeypatch):
-    filler = {"name": "img-z", "status": "succeeded", "updated_at": "2026-03-01", "runtime_image_id": "z"}
-    asked = _install_build_listing(monkeypatch, [filler] * 120)
-    assert asyncio.run(runta_mod.find_image("img-a")) is None
-    assert 120 < asked[-1]
+def test_find_image_finds_none_past_the_newest_100(monkeypatch):
+    past = {"name": "img-a", "status": "succeeded", "updated_at": "2026-06-01", "runtime_image_id": "past"}
+    asked = _install_build_listing(monkeypatch, [*[_FILLER] * 100, past])
+    assert asyncio.run(runta_mod.find_image("img-a")) is None  # an older build is built again
+    assert asked == [100]
+
+
+def test_the_build_listing_refuses_a_limit_above_100(monkeypatch):
+    _install_build_listing(monkeypatch, [])  # the instrument the two tests above ask through
+
+    async def ask(limit):
+        api = runta_mod.RuntaApi(tok="t", base="http://x")
+        try:
+            return await api.call("GET", "/v2/images/builds", params={"limit": limit})
+        finally:
+            await api.close()
+
+    assert asyncio.run(ask(100)) == []
+    with pytest.raises(runta_mod.RuntaError, match="limit must be at most 100") as e:
+        asyncio.run(ask(101))
+    assert e.value.status == 422
 
 
 # --- 9. build_image ----------------------------------------------------------------------------------
@@ -727,6 +757,18 @@ def test_build_image_past_the_timeout_raises_with_no_real_waiting(monkeypatch):
     with pytest.raises(TimeoutError, match="b3"):
         asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=20.0))
     assert time.perf_counter() - t0 < 2  # the wait was simulated, never real
+
+
+def test_build_image_returns_a_success_read_one_poll_past_the_deadline(monkeypatch):
+    now = _fast_clock(monkeypatch)
+    queue = [
+        Resp(200, {"data": {"id": "b4", "status": "pending"}}),
+        Resp(200, {"data": {"id": "b4", "status": "building"}}),
+        Resp(200, {"data": {"id": "b4", "status": "succeeded", "runtime_image_id": "img-late"}}),
+    ]
+    install_httpx(monkeypatch, queue)
+    assert asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=20.0)) == "img-late"
+    assert now[0] == 30.0  # two 15 s polls: the last read landed 10 s past the 20 s deadline
 
 
 # --- 10. RuntaSandbox.start ---------------------------------------------------------------------
@@ -1012,6 +1054,35 @@ def test_a_refused_create_closes_both_clients_and_deletes_nothing(tmp_path, monk
     assert clients[0].closed is True
     assert mod.async_runta_instances[-1].closed is True
     assert len(calls) == 1  # the refused POST alone; no DELETE
+
+
+_NO_REVISION = Resp(422, {"error": {"code": "validation_error", "message": "expected_revision is required"}})
+
+
+def test_a_runtime_made_but_never_resolved_is_deleted_through_the_sdk_with_its_revision(
+    tmp_path, monkeypatch
+):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, after_post=[_NO_REVISION])  # a bare DELETE
+    mod.get_fails.append(ConnectionError("lookup failed"))  # the first `runtimes.get`, right after the create
+    with pytest.raises(ConnectionError, match="lookup failed"):
+        asyncio.run(box.start())
+    assert mod.runtimes_store["rt-1"].deleted is True
+    assert mod.delete_revisions == [7]  # the SDK's delete read the revision before it deleted
+    assert [c["method"] for c in calls] == ["POST"]  # no bare DELETE went out
+    assert clients[0].closed is True and mod.async_runta_instances[-1].closed is True
+
+
+def test_a_runtime_made_but_never_resolved_whose_deletion_fails_is_named_beside_the_start_error(
+    tmp_path, monkeypatch
+):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, after_post=[_NO_REVISION])
+    mod.get_fails.extend([ConnectionError("lookup failed"), ConnectionError("still down")])
+    with pytest.raises(SandboxDead) as e:
+        asyncio.run(box.start())
+    said = str(e.value)
+    assert said.startswith("lookup failed")
+    assert "runtime rt-1 was not deleted: ConnectionError('still down')" in said
+    assert mod.delete_revisions == [] and [c["method"] for c in calls] == ["POST"]
 
 
 def test_start_can_create_a_workdir_that_does_not_already_exist_on_the_runtime(tmp_path, monkeypatch):

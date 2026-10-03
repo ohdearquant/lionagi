@@ -125,8 +125,9 @@ loopback and an HTTPS fetch of each must fail. Otherwise the instance's row reco
 work starts.
 
 Both arms' prompt says the run is unaided and the published fix out of bounds. The CLI arm installs
-its binary before the closure. The lines are removed before grading, since an eval script may
-install. `--aided` leaves the hosts open; every row carries `aided`. Only the named hosts close.
+its binary before the closure, except on Runta under `--unaided`, where it is refused (D2). The
+lines are removed before grading, since an eval script may install. `--aided` leaves the hosts open;
+every row carries `aided`. Only the named hosts close.
 
 ### C5: Unaided is the number; an aided number measures access to the answer _(enforced: process)_ ^c5
 

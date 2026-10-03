@@ -387,18 +387,14 @@ async def tool_calls(runtime_id: str, *, api: RuntaApi | None = None) -> ToolCal
 
 
 async def find_image(name: str, *, api: RuntaApi | None = None) -> str | None:
-    """The runtime-image id of the newest successful build named `name`, None when there is none. The
-    listing takes a `limit` (default 50) and no name filter or cursor, so the limit doubles until an
-    answer comes back shorter than it: that answer is every build."""
+    """The runtime-image id of the newest successful build named `name` among the newest 100 builds the
+    service lists, None when there is none: an older build is built again. The listing takes a `limit`
+    (default 50, at most 100, a larger one refused) and no name filter or cursor; the SDK states neither
+    the cap nor the order, so the answer is sorted by `updated_at` here."""
 
     async def find(api: RuntaApi) -> str | None:
-        limit = 50
-        while True:
-            data = await api.call("GET", "/v2/images/builds", params={"limit": limit})
-            builds = data.get("builds", data) if isinstance(data, dict) else data
-            if len(builds) < limit:
-                break
-            limit *= 2
+        data = await api.call("GET", "/v2/images/builds", params={"limit": 100})
+        builds = data.get("builds", data) if isinstance(data, dict) else data
         done = [b for b in builds if b.get("name") == name and b.get("status") == "succeeded"]
         done.sort(key=lambda b: b.get("updated_at") or "")
         return done[-1]["runtime_image_id"] if done else None
@@ -415,7 +411,9 @@ async def build_image(
     api: RuntaApi | None = None,
 ) -> str:
     """Build a Runta image from `dockerfile` and wait for it: its runtime-image id. A build that ends
-    any other way than `succeeded`, or outlives `timeout`, raises with its last state."""
+    any other way than `succeeded`, or outlives `timeout`, raises with its last state. `timeout` bounds
+    the wait: it is checked before each 15 s poll, so the last poll can land one interval past it, and a
+    success that poll reads is success; a build still running then is the timeout."""
 
     async def build(api: RuntaApi) -> str:
         made = await api.call(
@@ -679,9 +677,9 @@ class RuntaSandbox(BoxBase):
             if self._rt is not None:
                 await self._rt.delete()
                 self._deleted = True
-            elif self.runtime_id is not None and self._api is not None and not self.started:
-                # made but never resolved: the id is all there is to delete it by
-                await self._api.call("DELETE", f"/v2/runtimes/{self.runtime_id}")
+            elif self.runtime_id is not None and self._client is not None and not self.started:
+                # made but never resolved: resolve it by id, so the SDK's delete reads the revision it needs
+                await (await self._client.runtimes.get(self.runtime_id)).delete()
                 self._deleted = True
         except BaseException as e:
             deleting = e

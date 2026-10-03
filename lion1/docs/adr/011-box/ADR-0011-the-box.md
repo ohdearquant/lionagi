@@ -206,12 +206,12 @@ to; the person picks `--offline` when the directory holds what the network must 
 
 ### D5: `hub/tools/runta.py`, a box under an egress policy ^d5
 
-Serves C1 and C2. `RuntaSandbox` starts a runtime from a Runta image or a checkpoint under an egress
-policy the service enforces outside the guest; a box given a policy starts only one that reports it
-(S16). The image is built the first time, then found by name; two concurrent first builds may both
-build. `exec` keeps the remote box's timeout seam, files use the runtime's file API, and the
-`workdir` command raises `SandboxDead` for an ended runtime. Its records come back as bus events and
-need `capture` set.
+Serves C1 and C2. `RuntaSandbox` starts a runtime from a Runta image or checkpoint under an egress
+policy the service enforces outside the guest; a box with a policy starts only one reporting it
+(S16). The image is built the first time (S18), then found by name among the newest 100 builds the
+service lists, else built again. `exec` keeps the remote box's timeout seam, files use the runtime's
+file API, and `workdir` raises `SandboxDead` for an ended runtime. Its records come back as bus
+events and need `capture` set.
 
 - **Landing evidence**: `tests/test_runta.py` (the SDK and the HTTP client stubbed; the real service
   under an opt-in flag, listed in `tests/test_shell.py`'s opt-in test), among them
@@ -225,7 +225,9 @@ need `capture` set.
   `test_a_refused_start_whose_deletion_and_a_client_close_both_fail_names_the_deletion`,
   `test_a_close_that_is_cancelled_is_raised_not_noted_on_a_failed_deletion`,
   `test_close_errors_ride_a_cancelled_close_as_notes`,
-  `test_find_image_reads_every_build_the_service_lists` and
+  `test_find_image_asks_the_documented_maximum_once_and_finds_the_match_on_the_last_row`,
+  `test_a_runtime_made_but_never_resolved_is_deleted_through_the_sdk_with_its_revision`,
+  `test_build_image_returns_a_success_read_one_poll_past_the_deadline` and
   `test_a_runtime_that_ends_before_its_workdir_is_made_raises_sandbox_dead`.
 
 ## Alternatives
@@ -298,12 +300,15 @@ need `capture` set.
 - **S15**: A process the model runs in the box reads anywhere already (S6), so the tree's bound is
   no boundary against one: a link it swaps between the resolve and the read reaches what that
   process could read itself.
-- **S16**: A box sends its policy with the create, starts only a runtime that reports it, and with
-  none sends and checks none. A resume reads the policy first, so a mismatch is deleted unwoken, and
-  again after (S17). A runtime that reports another policy, cannot be read, or fails to resume is
-  deleted, raising `SandboxDead` naming both policies, else the error, and any failed deletion.
-  `stop()` tries both clients and the deletion; a cancellation from any propagates after all were
-  tried, the failures beside it riding as notes.
+- **S16**: A box sends its policy with the create, starts only a runtime reporting it, and with none
+  sends and checks none. A resume reads the policy first, so a mismatch is deleted unwoken, then
+  again (S17). A runtime that reports another policy, cannot be read, or fails to resume is deleted,
+  raising `SandboxDead` naming both policies, else the error, and any failed deletion. `stop()`
+  tries both clients and the deletion, raising a cancellation, else a failed deletion, else the
+  first close error, the rest riding it as notes.
 - **S17**: A policy set on a running runtime, as after a restore, leaves its processes a window
   under the old one, and the change can read back before it holds. A resume that changes the policy
   itself is caught only by the read after it. A closure that matters is proven from inside the box.
+- **S18**: An image build is awaited to its timeout, checked before each 15 s poll, so the last poll
+  can land one interval past it, and a success it reads is success; a build still running then is
+  the timeout. Two concurrent first builds may both build.
