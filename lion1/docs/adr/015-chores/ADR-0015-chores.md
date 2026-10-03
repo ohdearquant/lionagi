@@ -395,12 +395,14 @@ bypasses the handler: no refusals, no row, no send.
   `test_a_pending_tick_with_no_instant_to_step_back_to_gives_its_firing_or_now_if_earlier`).
 - **S21**: A monthly row gives its `repeat_anchor`. Without one the first due is the trigger less
   whole calendar months, in UTC, each day clamped to its month's last, and not before the row's
-  `created_at`. A firing on the last day of a month under 31 days may be a clamped later day: if its
-  step-back falls before the creation, the creation is the first due. A row with no creation gives
-  the firing or now, if earlier
+  `created_at`. A firing on a month's last day, under 31, may be a clamped later one: if its
+  step-back precedes the creation, the creation plus a tick's lead, a lower bound on the firing, is
+  the first due. With no creation it is the firing or now, if earlier
   (`test_a_pending_monthly_tick_gives_its_anchor_not_its_next_clamped_firing`,
   `test_a_pending_monthly_tick_with_no_anchor_gives_the_month_its_history_admits`,
-  `test_a_clamped_monthly_row_reads_missing_a_month_and_the_grace_after_its_creation`).
+  `test_a_clamped_monthly_row_reads_missing_a_month_and_the_grace_after_its_creation`,
+  `test_a_clamped_monthly_row_is_missing_a_tick_lead_and_the_grace_after_its_creation`,
+  `test_the_stand_in_and_the_tick_a_start_makes_share_one_lead`).
 - **S22**: A day the digest is asked about is read as a date and named in the padded form a ledger
   label opens with, `2026-09-04` for `2026-9-4`, so either spelling selects the same rows and judges
   at the same moment. A text that is no date raises before anything is sent
@@ -412,3 +414,6 @@ bypasses the handler: no refusals, no row, no send.
   (`test_a_first_due_the_digest_cannot_read_as_an_instant_is_no_record_and_the_digest_delivers`,
   `test_a_first_due_a_clock_can_name_is_a_record_to_the_last_second_of_the_year_9999`,
   `test_a_first_due_a_platform_cannot_convert_and_refuses_with_an_oserror_is_no_record`).
+- **S24**: A row's `ts` and `at` come from one read of the clock, `at` being that instant's local
+  label, so a check across local midnight writes a row whose two name one day
+  (`test_a_row_written_across_local_midnight_names_one_day_by_both_its_label_and_its_instant`).

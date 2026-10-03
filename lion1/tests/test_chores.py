@@ -428,7 +428,7 @@ def test_a_chore_that_never_answers_is_escalated_once_as_a_dead_instrument_and_a
     ticks, start = itertools.count(), datetime(2026, 9, 22)
     monkeypatch.setattr(
         "hub.agent.chores._now",
-        lambda: (start + timedelta(seconds=next(ticks))).strftime("%Y-%m-%d %H:%M:%S"),
+        lambda t=None: (start + timedelta(seconds=next(ticks))).strftime("%Y-%m-%d %H:%M:%S"),
     )
     khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"m{i}000000") for i in range(6)))
     dead = Outcome(findings=("NOT-MEASURED",), evidence="rc 1", control=False)
@@ -467,7 +467,7 @@ def test_a_dead_instrument_notice_a_recipient_refused_is_sent_to_that_recipient_
     ticks, start = itertools.count(), datetime(2026, 9, 22)
     monkeypatch.setattr(
         "hub.agent.chores._now",
-        lambda: (start + timedelta(seconds=next(ticks))).strftime("%Y-%m-%d %H:%M:%S"),
+        lambda t=None: (start + timedelta(seconds=next(ticks))).strftime("%Y-%m-%d %H:%M:%S"),
     )
     khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"m{i}000000") for i in range(5)))
     khive.refuse = {STEWARD}  # the steward's copies are refused, as a hop cap would
@@ -495,7 +495,7 @@ def test_a_dead_instrument_notice_that_reached_nobody_leaves_the_crossing_untold
     ticks, start = itertools.count(), datetime(2026, 9, 22)
     monkeypatch.setattr(
         "hub.agent.chores._now",
-        lambda: (start + timedelta(seconds=next(ticks))).strftime("%Y-%m-%d %H:%M:%S"),
+        lambda t=None: (start + timedelta(seconds=next(ticks))).strftime("%Y-%m-%d %H:%M:%S"),
     )
     khive = FakeKhive(*(mail(SELF, "tick: disk", mid=f"m{i}000000") for i in range(6)))
     khive.refuse = {OWNER, STEWARD}  # neither copy is delivered
@@ -1208,6 +1208,52 @@ def test_a_row_the_digest_cannot_select_by_its_label_is_not_a_chore_that_never_r
     assert lines == [f"{OWNER} a not judged: ledger unreadable"]  # not `on ask: no run`
 
 
+class Straddle:
+    """`time` as the ledger writer sees it across local midnight: once armed, its first read is a second
+    before midnight and every later one a second after."""
+
+    def __init__(self, midnight: float):
+        self.midnight, self.armed, self.reads = midnight, False, 0
+
+    def _read(self) -> float:
+        if not self.armed:
+            return time.time()
+        self.reads += 1
+        return self.midnight - 1 if self.reads == 1 else self.midnight + 1
+
+    def time(self) -> float:
+        return self._read()
+
+    def localtime(self, t: float | None = None):
+        return time.localtime(self._read() if t is None else t)
+
+    def __getattr__(self, name: str):
+        return getattr(time, name)
+
+
+def test_a_row_written_across_local_midnight_names_one_day_by_both_its_label_and_its_instant(
+    tmp_path, monkeypatch
+):
+    chores, agent = build(
+        tmp_path, FakeKhive(mail(SELF, "tick: disk")), [CHECK, DONE], disk=Probe("disk", full())
+    )
+    midnight = datetime(2026, 9, 15).timestamp()  # local
+    clock, text = Straddle(midnight), Chores._text
+
+    def armed(self, *args, **kwargs):
+        clock.armed = True  # the row is built next
+        return text(self, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr("hub.agent.chores.time", clock)
+        patch.setattr(Chores, "_text", armed)
+        asyncio.run(agent.wake())
+    (row,) = chores.rows()
+    head, *_ = digest_at(chores, agent, midnight + 3600, day="2026-09-14").splitlines()
+    assert head.endswith(": 1 check(s); a MISSING line is the finding")  # a later digest reads the ledger
+    assert row["ts"] == midnight - 1 and row["at"] == label(row["ts"]) == "2026-09-14 23:59:59"
+
+
 def test_a_label_and_an_instant_on_different_days_make_the_ledger_unreadable_naming_both(tmp_path):
     chores, agent = build(tmp_path, FakeKhive(), [], w=Probe("w", full(), every="weekly"))
     t = datetime(2026, 9, 14, 9, 0).timestamp()
@@ -1839,22 +1885,22 @@ _MONTHS = {
         "2028-06-01T00:00:00Z",
     ),
     # a firing on a short month's last day may be a clamped later day: the true first lies anywhere from the
-    # creation on, so the creation stands in
+    # creation on, so the creation plus the lead a tick is made with (a minute) stands in
     "clamped-into-a-leap-february": (
         "2028-02-29T09:31:00+00:00",
         "2028-01-30T09:30:00Z",
-        "2028-01-30T09:30:00Z",
+        "2028-01-30T09:31:00Z",
     ),
-    "clamped-into-february": ("2027-02-28T09:31:00+00:00", "2027-01-30T09:30:00Z", "2027-01-30T09:30:00Z"),
+    "clamped-into-february": ("2027-02-28T09:31:00+00:00", "2027-01-30T09:30:00Z", "2027-01-30T09:31:00Z"),
     "clamped-into-a-30-day-month": (
         "2027-04-30T09:31:00+00:00",
         "2027-03-31T09:30:00Z",
-        "2027-03-31T09:30:00Z",
+        "2027-03-31T09:31:00Z",
     ),
     "two-months-back-lands-before-creation": (
         "2027-02-28T09:00:00+00:00",
         "2026-12-30T12:00:00Z",
-        "2026-12-30T12:00:00Z",
+        "2026-12-30T12:01:00Z",
     ),
     # no clamp: the day is not its month's last, or no later day than the 31st exists, so the firing stands
     "day-29-created-after-its-day": (
@@ -1894,10 +1940,40 @@ def test_a_clamped_monthly_row_reads_missing_a_month_and_the_grace_after_its_cre
     chores, agent = build(tmp_path, FakeKhive(agenda=[row]), [], m=Probe("m", full(), every="monthly"))
     agent.clock = lambda: datetime(2028, 6, 1, tzinfo=UTC).timestamp()
     asyncio.run(chores.ensure_ticks())
-    assert agent.state.get("first_due").value == {"m": born.timestamp()}
+    assert agent.state.get("first_due").value == {"m": born.timestamp() + 60}
     month_on = datetime(2028, 2, 29, 9, 30, tzinfo=UTC).timestamp() + 300  # a calendar month, and the grace
-    line = f"MISSING: m, no run recorded, first due by {label(born.timestamp())}"
+    line = f"MISSING: m, no run recorded, first due by {label(born.timestamp() + 60)}"
     assert line in digest_at(chores, agent, month_on).splitlines()
+
+
+def test_a_clamped_monthly_row_is_missing_a_tick_lead_and_the_grace_after_its_creation(tmp_path):
+    born = datetime(2028, 1, 30, 9, 30, tzinfo=UTC).timestamp()
+    row = ("tick: m", SELF, "pending", "2028-02-29T09:31:00+00:00", None, "monthly", iso(born))
+    chores, agent = build(tmp_path, FakeKhive(agenda=[row]), [], m=Probe("m", full(), every="monthly"))
+    agent.clock = lambda: datetime(2028, 6, 1, tzinfo=UTC).timestamp()
+    asyncio.run(chores.ensure_ticks())
+    first = born + 60  # a tick is made a minute after its creation: the earliest its first firing can be
+    inside = digest_at(chores, agent, first + 300 - 1).splitlines()  # the grace runs a second more
+    assert f"{OWNER} m no run yet, first due by {label(first)}" in inside
+    past = digest_at(chores, agent, first + 300 + 1).splitlines()
+    assert f"MISSING: m, no run recorded, first due by {label(first)}" in past
+    assert agent.state.get("first_due").value == {"m": first}
+
+
+def test_the_stand_in_and_the_tick_a_start_makes_share_one_lead(tmp_path, monkeypatch):
+    monkeypatch.setattr("hub.agent.chores._TICK_LEAD_S", 120)
+    born = datetime(2028, 1, 30, 9, 30, tzinfo=UTC).timestamp()
+    row = ("tick: m", SELF, "pending", "2028-02-29T09:32:00+00:00", None, "monthly", iso(born))
+    khive = FakeKhive(agenda=[row])
+    chores, agent = build(
+        tmp_path, khive, [], m=Probe("m", full(), every="monthly"), disk=Probe("disk", full())
+    )
+    agent.clock = lambda: datetime(2028, 6, 1, tzinfo=UTC).timestamp()
+    asyncio.run(chores.ensure_ticks())  # no lead is passed: the constant gives it
+    assert agent.state.get("first_due").value["m"] == born + 120
+    (remind,) = [op for op in khive.ops if op.startswith("schedule.remind") and 'content="tick: disk"' in op]
+    made = datetime.fromisoformat(re.search(r'at="([^"]+)"', remind).group(1)).timestamp()
+    assert 110 <= made - time.time() <= 125  # two minutes ahead, not the usual one
 
 
 def test_a_first_due_on_record_is_never_overwritten_by_a_pending_tick(tmp_path):

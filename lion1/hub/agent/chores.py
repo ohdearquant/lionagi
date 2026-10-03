@@ -391,10 +391,11 @@ class Chores:
                         msg, thread = str(sent.get("id")), str(sent.get("thread_id") or sent.get("id"))
                 except AgentError as e:
                     undelivered.append(f"{to}: {e}")
+            ts = time.time()  # one read: the row's label is that instant's, so the two name one day
             self._append(
                 {
-                    "at": _now(),
-                    "ts": time.time(),  # the instant; `at` is the local label, twice in a repeated hour
+                    "at": _now(ts),
+                    "ts": ts,  # the instant; `at` is its local label, twice in a repeated hour
                     "chore": req.chore,
                     "args": req.args,
                     "findings": list(out.findings),
@@ -707,7 +708,7 @@ class Chores:
 
     # ticks
 
-    async def ensure_ticks(self, *, first_in_s: int = 60) -> list[str]:
+    async def ensure_ticks(self, *, first_in_s: int | None = None) -> list[str]:
         """Every instrument with a cadence has a pending reminder saying `tick: <chore>`; the digest
         has one (`digest_every`: daily, or a front desk's brief); the aged pass has its own when there is
         a steward. Creates what is missing, returns what it created. A chore's first firing is kept in
@@ -730,7 +731,8 @@ class Chores:
             wanted["tick: aged"] = self.aged_every
         wanted.update(self.extra_ticks)
         created = []
-        at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + first_in_s))
+        lead = _TICK_LEAD_S if first_in_s is None else first_in_s
+        at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + lead))
         for content, every in wanted.items():
             fires = pending.get(content)
             if fires is None:
@@ -968,6 +970,7 @@ def sender_of(m: dict) -> str:
 _EVERY = re.compile(r"every:(\d+)([smhd])")
 _NAMED = {"daily": 86400.0, "weekly": 7 * 86400.0, "monthly": 30 * 86400.0}
 _FIRE_GRACE_S = 300.0  # the store fires a reminder up to this late before it marks the reminder missed
+_TICK_LEAD_S = 60  # a tick is made to first fire this long after its creation (`ensure_ticks`, the stand-in)
 _TIME_END = datetime(9999, 1, 1, tzinfo=UTC).timestamp()  # a monthly chore steps a month past its last run
 
 
@@ -1053,8 +1056,9 @@ def _first_firing(row: dict, now: float) -> float | None:
     the first is the earliest firing not before the row's own creation (`created_at`, beside `properties`):
     a fixed period's firings lie a period apart, a monthly row's a calendar month in UTC. A monthly firing
     on the last day of a month of fewer than 31 days may be a clamped later day, so when its step-back falls
-    before the creation the creation stands in. A row naming no creation instant, or a period that is not
-    fixed (a cron), gives its firing or now, if that is earlier."""
+    before the creation the creation plus a tick's lead stands in, a lower bound on that firing. A row
+    naming no creation instant, or a period that is not fixed (a cron), gives its firing or now, if that
+    is earlier."""
     p = row.get("properties") or {}
     repeat = p.get("repeat")
     anchor = p.get("repeat_anchor") if repeat == "monthly" else None
@@ -1081,7 +1085,7 @@ def _first_firing(row: dict, now: float) -> float | None:
         early = n > 0 and _months_before(t, n) < b  # that month's firing is before its creation
         last = calendar.monthrange(t.year, t.month)[1]
         if early and t.day == last and last < 31:
-            return born  # a clamp is possible: the row's day may be later, so none lies before its creation
+            return born + _TICK_LEAD_S  # a clamp is possible: the row's day may be later, none lies before it
         if early:  # no clamp: one month less
             n -= 1
         return _months_before(t, n).timestamp() if n > 0 else first
