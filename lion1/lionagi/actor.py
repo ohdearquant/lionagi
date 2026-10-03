@@ -2172,6 +2172,7 @@ class _Walk:
         self.used: dict[str, int] = {}
         self.named: set[str] = set()  # what OUT{} points at: never consumed
         self.told = False  # the turn's refusal for a spent time budget is on the run's list
+        self.settling: _Limit | None = None  # the settlement's limit, once the walk's commands are settled
         # the walk launched a command, from any node or value, or reached OUT{}: the turn acted
         self.acted = False
 
@@ -2192,9 +2193,12 @@ class _Walk:
         """Whether nothing the walk still holds may commit: its own limit has expired, or the time
         budget is spent. A grant that landed after the limit expired raised the bound for what follows
         the walk and leaves the walk expired. The refusal is told, once."""
-        if not (self.limit.expired() or _left(self.run) == 0.0):
+        # the settlement's limit counts as the walk's own: a write it fired under, queued behind the grant
+        # that held the loop past it, runs before the cut lands and must find the walk spent
+        fired = next((t for t in (self.limit, self.settling) if t is not None and t.expired()), None)
+        if fired is None and _left(self.run) != 0.0:
             return False
-        self.out_of_time(self.limit.budget)
+        self.out_of_time((fired or self.limit).budget)
         return True
 
     async def execute(self, script: Script) -> dict[str, Any] | None:
@@ -2226,11 +2230,13 @@ class _Walk:
             try:
                 # the time budget bounds it as any turn's; a write it cuts while the write waited for its
                 # command is cut by the budget as the walk's own cut is, and is told as that is, once
-                cut, budget = await _settle(self.run, self.tasks)
+                self.settling = _Limit(self.run)
+                cut, budget = await _settle(self.run, self.tasks, limit=self.settling)
                 if any(task in self.write_reads for task in cut):
                     self.out_of_time(budget)
-                    # the output built before the cut goes with the write: nothing the walk held commits,
-                    # whatever bound a grant landing after the cut raised
+                # a turn told spent, by a write the settlement cut or one refused as its deadline fired,
+                # commits nothing the walk held: the output goes too, whatever bound a late grant raised
+                if self.told:
                     found = None
             finally:
                 # a value still computing now has no reader left (each was cancelled): it stops with
@@ -2629,19 +2635,21 @@ def _output_guidance(emits: tuple[Spec, ...]) -> str:
 
 
 async def _settle(
-    run: Run, tasks: list[asyncio.Task], by_deadline: bool = True
+    run: Run, tasks: list[asyncio.Task], by_deadline: bool = True, limit: _Limit | None = None
 ) -> tuple[list[asyncio.Task], float | None]:
     """Wait for the turn's commands, under the run's deadline unless `by_deadline` is False: one still
     running when it passes is cancelled, and a grant of time while it waits moves it, as it moves a
     walk's. A cancelled command has settled itself as a RESULT; any other way out of a command task
     is the runtime's own defect and is raised, never dropped. Each task is seen through once: what a
     settle did not wait for (a command `OUT{}` did not name) is seen through by the reap. The tasks its
-    own deadline cancelled are returned, with the time budget that deadline came from."""
+    own deadline cancelled are returned, with the time budget that deadline came from. A walk hands in
+    the `_Limit` it settles under, so its writes can ask whether that deadline fired."""
     cut: list[asyncio.Task] = []
     budget = None
     if tasks:
         waited = set(tasks)
-        limit = _Limit(run) if by_deadline else asyncio.timeout_at(None)
+        if limit is None:
+            limit = _Limit(run) if by_deadline else asyncio.timeout_at(None)
         try:
             async with limit:
                 if by_deadline:

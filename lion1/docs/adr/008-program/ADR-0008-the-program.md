@@ -363,22 +363,24 @@ computation binds its failure.
   `test_a_write_waiting_when_the_walk_expired_commits_nothing_whatever_a_late_grant_did`,
   `test_a_write_refused_for_the_spent_budget_consumes_none_of_the_results_it_read` and
   `test_a_write_on_a_spent_budget_and_the_walks_cut_in_a_comprehension_refuse_the_turn_once` pin it.
-- **S12**: A write the settlement's own deadline cuts while it waits for its command is the budget
-  spent too: the turn says so once, naming the settlement's budget. A cut command no write waits for
-  is a cancelled result. A grant landing after the cut, or as the deadline fires, moves no deadline;
-  the refusal names the budget the walk ran under and the late grant. One whose synchronous callback
-  held the loop past the deadline fires the limit.
+- **S12**: A write the settlement's deadline cuts while waiting for its command is the budget spent,
+  told once with the settlement's budget. A cut command no write waits for is a cancelled result. A
+  grant landing after the cut, or as it fires, moves no deadline; the refusal names the walk's
+  budget and the late grant. A synchronous grant holding the loop past the deadline fires the limit;
+  a write queued behind it finds the walk spent.
   `test_a_write_the_settlement_cut_while_it_waited_for_its_command_is_refused_as_spent_once`,
   `test_a_write_the_settlement_cut_after_a_grant_names_the_budget_the_settlement_ran_under`,
   `test_a_write_the_settlement_cut_names_the_budget_it_ran_under_when_a_grant_lands_after_the_cut`,
   `test_a_grant_landing_as_the_settlements_deadline_fires_is_named_beside_the_budget_it_ran_under`,
-  `test_a_grant_whose_callback_held_the_loop_past_the_deadline_lands_late_and_cuts_the_walk` and
-  `test_a_command_the_settlement_cut_is_a_cancelled_result_and_not_a_refusal_of_the_turn` pin it.
-- **S13**: A pointer hands a command the stored value itself, so a command can grow or shrink a
-  counted part of a list, dict, comprehension or `OUT{}` unseen; a shrunk part counts as it landed.
-  The whole is measured once more as the literal is returned or the output emitted, and refused
-  there; a later part has run. The output emitted is a copy as a capture is (ADR-0007/C1); a value
-  of another kind is shared, counted as one.
+  `test_a_grant_whose_callback_held_the_loop_past_the_deadline_lands_late_and_cuts_the_walk`,
+  `test_a_write_queued_behind_a_grant_that_held_the_settlement_past_its_deadline_commits_nothing`
+  and `test_a_command_the_settlement_cut_is_a_cancelled_result_and_not_a_refusal_of_the_turn` pin
+  it.
+- **S13**: A command a pointer hands the stored value can grow or shrink a counted part of a list,
+  dict, comprehension or `OUT{}` unseen; a shrunk part counts as landed. The whole is measured again
+  as the literal returns or the output is emitted, refused there after a later part ran. The output
+  is a copy as a capture is (ADR-0007/C1); anything but a string, list, tuple or dict counts as one,
+  however copied.
   `test_a_field_of_out_a_command_grew_after_it_was_counted_is_caught_as_the_output_is_emitted`,
   `test_a_part_of_a_literal_a_command_grew_after_it_was_counted_is_caught_as_it_is_built` and
   `test_a_command_settling_after_the_output_was_emitted_grows_the_stored_value_not_the_output`,
@@ -387,8 +389,8 @@ computation binds its failure.
 - **S14**: A key written again gives back what it landed as, whatever a command made of it since:
   the count is each field as it landed. The copy is the program's candidate; hooks and `accept` may
   rewrite it after. A copy that fails (a serializer raising, too deep a nesting) refuses the turn;
-  the run goes on. An output built before a late grant commits under the raised bound only with no
-  write cut: a cut write drops it (S9).
+  the run goes on. An output built before a late grant commits under the raised bound only if no
+  write was cut or refused as spent (S9, S12).
   `test_a_key_written_again_gives_back_what_it_landed_as_whatever_a_command_made_of_it_since`,
   `test_an_output_built_before_a_late_grant_commits_under_the_raised_bound_when_no_write_was_cut`,
   `test_an_output_built_before_a_late_grant_commits_nothing_when_the_settlement_cut_a_write`,

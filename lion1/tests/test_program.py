@@ -1973,6 +1973,26 @@ def test_an_output_built_before_a_late_grant_commits_nothing_when_the_settlement
     assert run.refused == [("turn", f"{late}; nothing after it ran")]
 
 
+def test_a_write_queued_behind_a_grant_that_held_the_settlement_past_its_deadline_commits_nothing():
+    def extend(run, bound, amount, reason) -> bool:
+        time.sleep(0.7)  # a synchronous grant: the settlement's deadline passes under it, unfired
+        return True
+
+    turn = fenced('g = run.more(bound="time_budget", amount=5, reason="held")', 'note.k = "v"', 'OUT{k: "v"}')
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=extend)
+    actor = _nap_actor("settle-held-grant-write")
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the walk ends in time and the settlement runs the grant first: it holds the loop past the settlement's
+    # deadline, raises the bound and fires the limit, and the write queued behind it runs before the cut
+    # lands. The fired deadline spends the walk whatever the grant raised: the write commits nothing, the
+    # output goes with it, and the turn names the budget the settlement ran under and the late grant
+    late = "the time_budget of 0.5 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.5
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.output is None and not isinstance(run.outcome, Success)
+    assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
 def test_a_grant_landing_as_the_settlements_deadline_fires_is_named_beside_the_budget_it_ran_under():
     async def extend(run, bound, amount, reason) -> bool:
         while not any(limit.expired() for limit in run.timeouts):
