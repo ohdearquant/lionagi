@@ -202,19 +202,23 @@ def test_a_box_that_never_comes_up_is_replaced_and_three_in_a_row_are_refused(tm
 
 
 def test_push_counts_what_was_actually_uploaded_not_what_git_listed(stubbed, tmp_path):
-    # a dangling symlink is git-tracked but `is_file()` skips it when building
-    # the tar, so `len(names)` reported one more file than the box actually received
+    # a tracked file deleted from the work tree is still listed by git but has nothing to archive,
+    # so `len(names)` would report one more file than the box actually received; a dangling symlink
+    # is archived as the link it is
     box, work, _, _ = stubbed
     src = tmp_path / "src2"
     src.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=src, check=True)
     (src / "keep.py").write_text("x = 1\n")
+    (src / "gone.py").write_text("y = 2\n")
     os.symlink("nowhere.py", src / "dangling.py")
     subprocess.run(
         ["git", "-c", "user.email=t@example.com", "-c", "user.name=t", "add", "-A"], cwd=src, check=True
     )
-    assert asyncio.run(box.push(src, dest=str(work / "src2"))) == ["keep.py"]
-    assert sorted(p.name for p in (work / "src2").iterdir()) == ["keep.py"]
+    (src / "gone.py").unlink()
+    assert asyncio.run(box.push(src, dest=str(work / "src2"))) == ["dangling.py", "keep.py"]
+    assert sorted(p.name for p in (work / "src2").iterdir()) == ["dangling.py", "keep.py"]
+    assert os.readlink(work / "src2" / "dangling.py") == "nowhere.py"
 
 
 @pytest.mark.skipif(os.environ.get("LION_DAYTONA_E2E") != "1", reason="LION_DAYTONA_E2E=1 runs a real box")

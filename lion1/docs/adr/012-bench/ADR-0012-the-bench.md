@@ -199,11 +199,11 @@ is cited with its bench run.
 
 ### D1: The set runner in `bench/swe/run_set.py` ^d1
 
-Serves C1 to C5. One box per instance from its evaluation image, local or remote, `--parallel` wide.
-The hosts close unless `--aided`; the arm runs; the hosts reopen; the box grades the patch and the
-row is appended under a lock. A dead box gets one fresh box. A head not a full commit id (40 or 64
-hex digits) is a failed git read. Defaults: unaided, settle 0, criteria off, a 1200 s time budget,
-100 turns as a backstop, a cost cap on a metered arm only.
+Serves C1 to C5. One box per instance from its evaluation image (S11), local or remote, `--parallel`
+wide. The hosts close unless `--aided`; the arm runs; the hosts reopen; the box grades the patch and
+the row is appended under a lock. A dead box gets one fresh box. A head not a full commit id (40 or
+64 hex digits) is a failed git read. Defaults: unaided, settle 0, criteria off, a 1200 s time
+budget, 100 turns as a backstop, a cost cap on a metered arm only.
 
 - **Landing evidence**: `tests/test_swe_run_set.py`: the retried spend kept, an unmetered arm's cap
   refused before any box, an unconfirmed stop not graded, a disagreeing resume refused, a matching
@@ -230,6 +230,7 @@ hosts, else refuses the grade. The codex arm is refused there.
   `test_an_unaided_runta_runtime_with_another_policy_is_refused_before_the_model_runs`,
   `test_reopening_a_runta_box_empties_its_policy_and_waits_until_the_hosts_answer`,
   `test_a_runta_policy_that_does_not_lift_in_time_refuses_the_grade`,
+  `test_the_runner_does_not_grade_a_run_whose_hosts_did_not_reopen_and_names_the_refusal`,
   `test_a_probe_that_outlasts_the_wait_refuses_the_grade_within_it`,
   `test_the_wait_between_passes_never_runs_past_the_bound`,
   `test_reopening_a_runta_box_without_a_policy_only_rewrites_the_hosts_file`.
@@ -307,3 +308,9 @@ model has no cost.
 - **S10**: Only on Runta is the unaided closure enforced outside the box. An unaided Daytona or
   Docker run carries the `/etc/hosts` closure alone, which a root shell in the box can undo: the
   closure is written through that shell, and the Daytona box runs as root.
+- **S11**: On Runta the instance's image is named `swe-` and the id after its owner, built from the
+  row's image as x86_64 when no successful build of that name is found, and reused by that name for
+  the next run ([[ADR-0011-the-box#^d5|ADR-0011/D5]]). Pinned in `tests/test_swe_runta.py`:
+  `test_runta_name_is_swe_prefixed_lowercase_after_the_owner`,
+  `test_runta_image_builds_from_the_rows_image_when_none_is_found`,
+  `test_runta_image_returns_a_found_image_without_building`.

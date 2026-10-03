@@ -21,6 +21,7 @@ import tomllib
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -57,6 +58,7 @@ __all__ = (
 ENDPOINT = "https://api.runta.com"
 _CONFIG = Path.home() / ".config" / "runta" / "config.toml"
 _AGENT = "lionagi-hub (runta box)"  # the service's edge refuses urllib's default agent; this one is ours
+_REQUEST_TIMEOUT = 60.0  # seconds one request may take
 
 
 def _config() -> dict[str, Any]:
@@ -287,11 +289,23 @@ class RuntaApi:
         self._http = httpx.AsyncClient(
             base_url=base or endpoint(),
             headers={"authorization": f"Bearer {tok or token()}", "user-agent": _AGENT},
-            timeout=60.0,
+            timeout=_REQUEST_TIMEOUT,
         )
         self.attempts = attempts
 
-    async def call(self, method: str, path: str, *, json: Any = None, params: Any = None) -> Any:
+    async def call(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+        params: Any = None,
+        deadline: float | None = None,
+    ) -> Any:
+        """One request, retried as the class says. A `deadline` (a `time.monotonic()` instant) bounds it:
+        each request gets the time left to it as its timeout, at most the usual 60 s, a backoff wait ends
+        there at the latest, and nothing is retried past it: the failure at the deadline is raised, or a
+        `TimeoutError` when the deadline had passed before a request could begin."""
         import httpx
 
         # one key for every attempt of this call: a retried create is the same create
@@ -300,23 +314,43 @@ class RuntaApi:
         while True:
             attempt += 1
             last = attempt >= self.attempts
+            options: dict[str, float] = {}
+            if deadline is not None:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError(f"{method} {path}: its deadline had passed before the request began")
+                options["timeout"] = min(_REQUEST_TIMEOUT, left)
             try:
-                resp = await self._http.request(method, path, json=json, params=params, headers=headers)
+                resp = await self._http.request(
+                    method, path, json=json, params=params, headers=headers, **options
+                )
             except httpx.TransportError:
-                if last:
+                if last or not await self._backoff(attempt, deadline):
                     raise
-                await asyncio.sleep(2**attempt)
                 continue
             if resp.status_code < 400:
                 body = resp.json() if resp.content else {}
                 return body.get("data", body) if isinstance(body, dict) else body
-            if last or not (resp.status_code == 429 or resp.status_code >= 500):
-                try:
-                    err = resp.json().get("error") or {}
-                except ValueError:
-                    err = {}
-                raise RuntaError(resp.status_code, err.get("code"), err.get("message") or resp.text[:300])
-            await asyncio.sleep(2**attempt)
+            retry = not last and (resp.status_code == 429 or resp.status_code >= 500)
+            if retry and await self._backoff(attempt, deadline):
+                continue
+            try:
+                err = resp.json().get("error") or {}
+            except ValueError:
+                err = {}
+            raise RuntaError(resp.status_code, err.get("code"), err.get("message") or resp.text[:300])
+
+    @staticmethod
+    async def _backoff(attempt: int, deadline: float | None) -> bool:
+        """The wait before another attempt; False when `deadline` comes first, the wait ending there."""
+        delay = 2**attempt
+        if deadline is not None:
+            left = deadline - time.monotonic()
+            if delay >= left:
+                await asyncio.sleep(max(left, 0))
+                return False
+        await asyncio.sleep(delay)
+        return True
 
     async def pages(self, path: str, key: str, params: Mapping[str, Any]) -> tuple[list[Any], dict]:
         """Every row of a paged list, and the last page's other fields (a summary, say)."""
@@ -386,17 +420,31 @@ async def tool_calls(runtime_id: str, *, api: RuntaApi | None = None) -> ToolCal
     return await _with_api(read, api)
 
 
+_OLDEST = datetime.min.replace(tzinfo=UTC)
+
+
+def _updated(build: Mapping[str, Any]) -> datetime:
+    """When a build was updated, as an aware time; a row whose `updated_at` is missing, does not parse
+    or carries no offset (a date alone, say) is the oldest."""
+    try:
+        at = datetime.fromisoformat(build.get("updated_at") or "")
+    except (TypeError, ValueError):
+        return _OLDEST
+    return at if at.tzinfo is not None else _OLDEST
+
+
 async def find_image(name: str, *, api: RuntaApi | None = None) -> str | None:
-    """The runtime-image id of the newest successful build named `name` among the newest 100 builds the
-    service lists, None when there is none: an older build is built again. The listing takes a `limit`
-    (default 50, at most 100, a larger one refused) and no name filter or cursor; the SDK states neither
-    the cap nor the order, so the answer is sorted by `updated_at` here."""
+    """The runtime-image id of the newest successful build named `name` in the one page of at most 100
+    builds the service returns, None when it holds none: the image is built again. The listing takes a
+    `limit` (default 50, at most 100, a larger one refused) and no name filter or cursor, so a matching
+    build the page omits is not found. Its order is not stated: the page is sorted by `updated_at`,
+    compared as instants."""
 
     async def find(api: RuntaApi) -> str | None:
         data = await api.call("GET", "/v2/images/builds", params={"limit": 100})
         builds = data.get("builds", data) if isinstance(data, dict) else data
         done = [b for b in builds if b.get("name") == name and b.get("status") == "succeeded"]
-        done.sort(key=lambda b: b.get("updated_at") or "")
+        done.sort(key=_updated)
         return done[-1]["runtime_image_id"] if done else None
 
     return await _with_api(find, api)
@@ -411,9 +459,11 @@ async def build_image(
     api: RuntaApi | None = None,
 ) -> str:
     """Build a Runta image from `dockerfile` and wait for it: its runtime-image id. A build that ends
-    any other way than `succeeded`, or outlives `timeout`, raises with its last state. `timeout` bounds
-    the wait: it is checked before each 15 s poll, so the last poll can land one interval past it, and a
-    success that poll reads is success; a build still running then is the timeout."""
+    any other way than `succeeded`, or outlives `timeout`, raises with its last state. `timeout` is
+    counted from the build's creation: each 15 s wait ends at the deadline at the latest, each poll's
+    request gets the time left as its timeout (at most 60 s), and a failed poll is retried only while
+    time is left. So a build is reported timed out no later than the deadline plus the one request in
+    flight when it fell, whose timeout was the time left; a failure at the deadline is that timeout."""
 
     async def build(api: RuntaApi) -> str:
         made = await api.call(
@@ -424,10 +474,17 @@ async def build_image(
         deadline = time.monotonic() + timeout
         state = made
         while state.get("status") in ("pending", "building", "queued", "running"):
-            if time.monotonic() > deadline:
-                raise TimeoutError(f"image build {made['id']} still {state.get('status')} after {timeout:g}s")
-            await asyncio.sleep(15)
-            state = await api.call("GET", f"/v2/images/builds/{made['id']}")
+            late = f"image build {made['id']} still {state.get('status')} after {timeout:g}s"
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError(late)
+            await asyncio.sleep(min(15, left))
+            try:
+                state = await api.call("GET", f"/v2/images/builds/{made['id']}", deadline=deadline)
+            except Exception as exc:
+                if time.monotonic() < deadline:
+                    raise
+                raise TimeoutError(late) from exc  # a failure at the deadline is the build's timeout
         if state.get("status") != "succeeded":
             raise RuntimeError(f"image build {made['id']} ended {state.get('status')}: {str(state)[:400]}")
         return state["runtime_image_id"]

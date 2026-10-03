@@ -11,7 +11,7 @@ import pytest
 
 from hub import RuntaSandbox
 from hub.tools import Egress
-from tests._swe import Started
+from tests._swe import DIFF, Started
 from tests._swe import run_set as swe_run_set
 from tests._swe import sandbox as swe_sandbox
 from tests.test_runta import Resp, install_httpx, stub_runta
@@ -253,6 +253,50 @@ def test_the_wait_between_passes_never_runs_past_the_bound():
         asyncio.run(swe_sandbox.open_code_hosts(box, within=0.2))
     assert time.monotonic() - t0 < 1.0  # the 3 s wait between passes is cut to what is left
     assert len(timeouts) == 2 and all(0 < x <= 0.2 for x in timeouts)  # one pass, each probe within the bound
+
+
+def _graded_run(monkeypatch, tmp_path, *, reopens: bool):
+    """`one` for an unaided Runta run whose model left a patch, with the hosts' reopen succeeding or
+    raising what `open_code_hosts` raises when they never answer, and a `grade` that records its calls."""
+    graded = []
+
+    async def fake_runta_image(row, *, timeout=3600.0):
+        return "img-runta"
+
+    async def fake_solve(row, *a, **k):
+        return {"instance_id": row["instance_id"], "model_patch": DIFF}
+
+    async def hosts(box):
+        return "closed"
+
+    async def reopen(box):
+        if not reopens:
+            raise RuntimeError("github.com, pypi.org still did not answer in 90s")
+
+    async def fake_grade(box, row, patch, model_name, log_path, **kw):
+        graded.append(patch)
+        return {"resolved": True, "status": "RESOLVED_FULL"}
+
+    monkeypatch.setattr(swe_run_set, "testbed", lambda *a, **k: Started())
+    monkeypatch.setattr(swe_run_set, "runta_image", fake_runta_image)
+    monkeypatch.setattr(swe_run_set, "solve", fake_solve)
+    monkeypatch.setattr(swe_run_set, "close_code_hosts", hosts)
+    monkeypatch.setattr(swe_run_set, "open_code_hosts", reopen)
+    monkeypatch.setattr(swe_run_set, "grade", fake_grade)
+    return _one(_args(where="runta", unaided=True), tmp_path), graded
+
+
+def test_the_runner_does_not_grade_a_run_whose_hosts_did_not_reopen_and_names_the_refusal(
+    tmp_path, monkeypatch
+):
+    rec, graded = _graded_run(monkeypatch, tmp_path, reopens=False)
+    assert graded == [] and "grade" not in rec and rec["resolved"] is False
+    assert rec["error"] == "RuntimeError: github.com, pypi.org still did not answer in 90s"
+
+
+def test_the_runner_grades_a_run_whose_hosts_reopened_once(tmp_path, monkeypatch):
+    rec, graded = _graded_run(monkeypatch, tmp_path, reopens=True)  # the control of the test above
+    assert graded == [DIFF] and rec["resolved"] is True and "error" not in rec
 
 
 def test_reopening_a_runta_box_without_a_policy_only_rewrites_the_hosts_file():

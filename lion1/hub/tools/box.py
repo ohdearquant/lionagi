@@ -119,8 +119,9 @@ def _in_repository(directory: Path) -> bool:
 
 
 def pack(directory: Path) -> tuple[bytes, list[str]]:
-    """`directory` as a gzipped tar for a remote box's `push`, and the names in it: the files git sees
-    when it is a repository (tracked and untracked, ignored ones left out), else every file."""
+    """`directory` as a gzipped tar for a remote box's `push`, and the names in it: the files and symlinks
+    git sees when it is a repository (tracked and untracked, ignored ones left out), else every one. A
+    symlink goes in as a link, not followed, whether it points at a file, a directory or nothing."""
     directory = Path(directory).resolve()
     done = subprocess.run(
         ["git", "-C", str(directory), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
@@ -134,13 +135,14 @@ def pack(directory: Path) -> tuple[bytes, list[str]]:
         said = done.stderr.decode(errors="replace").strip()[-300:]
         raise OSError(f"git ls-files in {directory} exited {done.returncode}: {said}")
     else:
-        names = [str(p.relative_to(directory)) for p in directory.rglob("*") if p.is_file()]
+        names = [str(p.relative_to(directory)) for p in directory.rglob("*")]
     buf = io.BytesIO()
     packed: list[str] = []
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for name in names:
-            if (directory / name).is_file():
-                tar.add(directory / name, arcname=name, recursive=False)
+            path = directory / name
+            if path.is_symlink() or path.is_file():  # a directory is no entry: its files are
+                tar.add(path, arcname=name, recursive=False)
                 packed.append(name)
     return buf.getvalue(), packed
 

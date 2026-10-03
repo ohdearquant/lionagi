@@ -243,7 +243,7 @@ def install_httpx(monkeypatch, queue: list) -> tuple[list[dict], list[Any], type
             self.closed = False
             clients.append(self)
 
-        async def request(self, method, path, *, json=None, params=None, headers=None):
+        async def request(self, method, path, *, json=None, params=None, headers=None, timeout=None):
             # a snapshot, not the live object: `pages()` mutates its `params` dict between calls
             calls.append(
                 {
@@ -252,6 +252,7 @@ def install_httpx(monkeypatch, queue: list) -> tuple[list[dict], list[Any], type
                     "json": dict(json) if isinstance(json, dict) else json,
                     "params": dict(params) if isinstance(params, dict) else params,
                     "headers": dict(headers) if headers else {},
+                    "timeout": timeout,
                 }
             )
             item = queue.pop(0)
@@ -629,10 +630,15 @@ def test_tool_calls_returns_a_typed_summary_with_nested_findings(monkeypatch):
 
 
 BUILDS = [
-    {"name": "img-a", "status": "succeeded", "updated_at": "2026-01-01", "runtime_image_id": "old"},
-    {"name": "img-a", "status": "succeeded", "updated_at": "2026-02-01", "runtime_image_id": "new"},
-    {"name": "img-a", "status": "failed", "updated_at": "2026-03-01", "runtime_image_id": "nope"},
-    {"name": "img-b", "status": "succeeded", "updated_at": "2026-04-01", "runtime_image_id": "other"},
+    {"name": "img-a", "status": "succeeded", "updated_at": "2026-01-01T00:00:00Z", "runtime_image_id": "old"},
+    {"name": "img-a", "status": "succeeded", "updated_at": "2026-02-01T00:00:00Z", "runtime_image_id": "new"},
+    {"name": "img-a", "status": "failed", "updated_at": "2026-03-01T00:00:00Z", "runtime_image_id": "nope"},
+    {
+        "name": "img-b",
+        "status": "succeeded",
+        "updated_at": "2026-04-01T00:00:00Z",
+        "runtime_image_id": "other",
+    },
 ]
 
 
@@ -663,13 +669,28 @@ def _install_build_listing(monkeypatch, builds: list[dict]) -> list[Any]:
     return asked
 
 
-_FILLER = {"name": "img-z", "status": "succeeded", "updated_at": "2026-03-01", "runtime_image_id": "z"}
+_FILLER = {
+    "name": "img-z",
+    "status": "succeeded",
+    "updated_at": "2026-03-01T00:00:00Z",
+    "runtime_image_id": "z",
+}
 
 
 def _listing(n: int) -> list[dict]:
     """n builds: a stale one of img-a first, filler of img-z, and the newest img-a last."""
-    old = {"name": "img-a", "status": "succeeded", "updated_at": "2026-01-01", "runtime_image_id": "old"}
-    last = {"name": "img-a", "status": "succeeded", "updated_at": "2026-06-01", "runtime_image_id": "last"}
+    old = {
+        "name": "img-a",
+        "status": "succeeded",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "runtime_image_id": "old",
+    }
+    last = {
+        "name": "img-a",
+        "status": "succeeded",
+        "updated_at": "2026-06-01T00:00:00Z",
+        "runtime_image_id": "last",
+    }
     return [old, *[_FILLER] * (n - 2), last]
 
 
@@ -681,11 +702,37 @@ def test_find_image_asks_the_documented_maximum_once_and_finds_the_match_on_the_
     assert asked == [100]
 
 
-def test_find_image_finds_none_past_the_newest_100(monkeypatch):
-    past = {"name": "img-a", "status": "succeeded", "updated_at": "2026-06-01", "runtime_image_id": "past"}
+def test_find_image_does_not_find_a_build_the_page_leaves_out(monkeypatch):
+    past = {
+        "name": "img-a",
+        "status": "succeeded",
+        "updated_at": "2026-06-01T00:00:00Z",
+        "runtime_image_id": "past",
+    }
     asked = _install_build_listing(monkeypatch, [*[_FILLER] * 100, past])
-    assert asyncio.run(runta_mod.find_image("img-a")) is None  # an older build is built again
+    assert asyncio.run(runta_mod.find_image("img-a")) is None  # the listing has no cursor: built again
     assert asked == [100]
+
+
+def _succeeded(image_id: str, updated_at) -> dict:
+    return {"name": "img-a", "status": "succeeded", "updated_at": updated_at, "runtime_image_id": image_id}
+
+
+@pytest.mark.parametrize(
+    "loser",
+    ["2026-06-01T00:00:00+02:00", "2026-09-01", "2026-09-01T00:00:00", "zzz", None, 20260901],
+    ids=["a later string, an earlier instant", "date only", "no offset", "unparsable", "none", "a number"],
+)
+def test_find_image_orders_builds_by_the_instant_and_a_row_without_one_is_the_oldest(monkeypatch, loser):
+    rows = [_succeeded("win", "2026-05-31T23:30:00Z"), _succeeded("lose", loser)]
+    for listed in (rows, rows[::-1]):  # in either listing order
+        install_httpx(monkeypatch, [Resp(200, {"data": listed})])
+        assert asyncio.run(runta_mod.find_image("img-a")) == "win"
+
+
+def test_find_image_returns_the_last_listed_build_when_none_has_a_time(monkeypatch):
+    install_httpx(monkeypatch, [Resp(200, {"data": [_succeeded("a", "zzz"), _succeeded("b", None)]})])
+    assert asyncio.run(runta_mod.find_image("img-a")) == "b"
 
 
 def test_the_build_listing_refuses_a_limit_above_100(monkeypatch):
@@ -746,7 +793,7 @@ def test_build_image_ending_failed_raises_runtime_error(monkeypatch):
 
 
 def test_build_image_past_the_timeout_raises_with_no_real_waiting(monkeypatch):
-    _fast_clock(monkeypatch)
+    now = _fast_clock(monkeypatch)
     queue = [
         Resp(200, {"data": {"id": "b3", "status": "pending"}}),
         Resp(200, {"data": {"id": "b3", "status": "building"}}),
@@ -757,18 +804,68 @@ def test_build_image_past_the_timeout_raises_with_no_real_waiting(monkeypatch):
     with pytest.raises(TimeoutError, match="b3"):
         asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=20.0))
     assert time.perf_counter() - t0 < 2  # the wait was simulated, never real
+    assert now[0] == 20.0  # the last wait is cut at the deadline, not a whole poll interval past it
 
 
-def test_build_image_returns_a_success_read_one_poll_past_the_deadline(monkeypatch):
+def test_a_build_that_would_succeed_only_after_the_deadline_is_the_timeout(monkeypatch):
     now = _fast_clock(monkeypatch)
-    queue = [
-        Resp(200, {"data": {"id": "b4", "status": "pending"}}),
-        Resp(200, {"data": {"id": "b4", "status": "building"}}),
-        Resp(200, {"data": {"id": "b4", "status": "succeeded", "runtime_image_id": "img-late"}}),
-    ]
-    install_httpx(monkeypatch, queue)
+    pending = Resp(200, {"data": {"id": "b4", "status": "pending"}})
+    building = Resp(200, {"data": {"id": "b4", "status": "building"}})
+    done = Resp(200, {"data": {"id": "b4", "status": "succeeded", "runtime_image_id": "img-late"}})
+    install_httpx(monkeypatch, [pending, done])  # the control: a success read inside the deadline is returned
     assert asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=20.0)) == "img-late"
-    assert now[0] == 30.0  # two 15 s polls: the last read landed 10 s past the 20 s deadline
+    assert now[0] == 15.0
+    now[0] = 0.0
+    queue = [pending, building, done]
+    calls, _, _ = install_httpx(monkeypatch, queue)
+    with pytest.raises(TimeoutError, match="b4"):
+        asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=20.0))
+    assert now[0] == 20.0 and [c["method"] for c in calls] == ["POST", "GET"]
+    assert queue == [done]  # the poll that would have read it fell at the deadline and was never made
+
+
+def test_a_poll_that_hangs_past_the_deadline_is_cut_there_and_the_build_times_out(monkeypatch):
+    now = _fast_clock(monkeypatch)
+    install_httpx(monkeypatch, [])
+    polls: list[tuple[float, float]] = []  # when each poll began, and the timeout it was handed
+
+    async def request(self, method, path, *, json=None, params=None, headers=None, timeout=None):
+        if method == "POST":
+            return Resp(200, {"data": {"id": "b5", "status": "pending"}})
+        # a service that never answers: the client gives up at its timeout, as httpx does
+        allowed = self.timeout if timeout is None else timeout
+        polls.append((now[0], allowed))
+        now[0] += allowed
+        raise sys.modules["httpx"].TransportError("timed out")
+
+    monkeypatch.setattr(sys.modules["httpx"].AsyncClient, "request", request)
+    with pytest.raises(TimeoutError, match="b5"):
+        asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=100.0))
+    # the first poll waited the usual 60 s, the retry only what was left: nothing began at the deadline
+    assert polls == [(15.0, 60.0), (77.0, 23.0)]
+    assert now[0] == 100.0
+
+
+def test_a_poll_answered_with_a_server_error_at_the_deadline_is_not_retried_past_it(monkeypatch):
+    now = _fast_clock(monkeypatch)
+
+    def queue() -> list[Resp]:
+        return [
+            Resp(200, {"data": {"id": "b6", "status": "pending"}}),
+            Resp(503, {"error": {"code": "unavailable", "message": "try later"}}),
+            Resp(200, {"data": {"id": "b6", "status": "succeeded", "runtime_image_id": "img-late"}}),
+        ]
+
+    install_httpx(monkeypatch, queue())  # the control: with time left the poll is retried and read
+    assert asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=100.0)) == "img-late"
+    assert now[0] == 17.0  # the 15 s wait, then the 2 s backoff
+    now[0] = 0.0
+    left = queue()
+    calls, _, _ = install_httpx(monkeypatch, left)
+    with pytest.raises(TimeoutError, match="b6"):
+        asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=17.0))  # the backoff would end at 17 s
+    assert now[0] == 17.0 and [c["method"] for c in calls] == ["POST", "GET"]
+    assert len(left) == 1  # the answer a retry would have read was never asked for
 
 
 # --- 10. RuntaSandbox.start ---------------------------------------------------------------------
@@ -1314,6 +1411,25 @@ def test_push_copies_only_what_git_sees_and_returns_those_names(tmp_path, monkey
     (src / "build" / "out.o").write_bytes(b"\0")
     assert asyncio.run(box.push(src)) == [".gitignore", "keep.py"]
     assert sorted(p.name for p in work.iterdir()) == [".gitignore", "keep.py"]
+
+
+def test_push_puts_symlinks_into_the_box_as_links(tmp_path, monkeypatch):
+    mod = stub_runta(tmp_path)
+    monkeypatch.setitem(sys.modules, "runta", mod)
+    work = tmp_path / "work"
+    work.mkdir()
+    box = RuntaSandbox(workdir=str(work))
+    box._rt = asyncio.run(mod.AsyncRunta(token="t", endpoint="e").runtimes.get("r1"))
+
+    src = tmp_path / "src"
+    (src / "adir").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=src, check=True)
+    (src / "adir" / "inner.py").write_text("x = 1\n")
+    (src / "to-dir").symlink_to("adir")
+    (src / "gone").symlink_to("missing")
+    assert asyncio.run(box.push(src)) == ["adir/inner.py", "gone", "to-dir"]
+    assert os.readlink(work / "to-dir") == "adir" and os.readlink(work / "gone") == "missing"
+    assert (work / "to-dir" / "inner.py").read_text() == "x = 1\n"  # the link reaches the pushed directory
 
 
 # --- 14. set_egress / checkpoint / suspend / resume / events / stop -----------------------------

@@ -208,8 +208,8 @@ to; the person picks `--offline` when the directory holds what the network must 
 
 Serves C1 and C2. `RuntaSandbox` starts a runtime from a Runta image or checkpoint under an egress
 policy the service enforces outside the guest; a box with a policy starts only one reporting it
-(S16). The image is built the first time (S18), then found by name among the newest 100 builds the
-service lists, else built again. `exec` keeps the remote box's timeout seam, files use the runtime's
+(S16). The image is built the first time (S18), then found by name in the service's one-page build
+listing (S19), else built again. `exec` keeps the remote box's timeout seam, files use the runtime's
 file API, and `workdir` raises `SandboxDead` for an ended runtime. Its records come back as bus
 events and need `capture` set.
 
@@ -227,7 +227,7 @@ events and need `capture` set.
   `test_close_errors_ride_a_cancelled_close_as_notes`,
   `test_find_image_asks_the_documented_maximum_once_and_finds_the_match_on_the_last_row`,
   `test_a_runtime_made_but_never_resolved_is_deleted_through_the_sdk_with_its_revision`,
-  `test_build_image_returns_a_success_read_one_poll_past_the_deadline` and
+  `test_a_poll_that_hangs_past_the_deadline_is_cut_there_and_the_build_times_out` and
   `test_a_runtime_that_ends_before_its_workdir_is_made_raises_sandbox_dead`.
 
 ## Alternatives
@@ -309,6 +309,12 @@ events and need `capture` set.
 - **S17**: A policy set on a running runtime, as after a restore, leaves its processes a window
   under the old one, and the change can read back before it holds. A resume that changes the policy
   itself is caught only by the read after it. A closure that matters is proven from inside the box.
-- **S18**: An image build is awaited to its timeout, checked before each 15 s poll, so the last poll
-  can land one interval past it, and a success it reads is success; a build still running then is
-  the timeout. Two concurrent first builds may both build.
+- **S18**: An image build is awaited to its timeout, counted from its creation. Each 15 s wait ends
+  at it at the latest, each poll's request gets the time left as its timeout (at most 60 s), and a
+  failed poll is retried only while time is left. The build is reported timed out no later than the
+  deadline plus the one request in flight when it fell. Two concurrent first builds may both build.
+- **S19**: The service lists at most 100 builds per request, with no cursor. The lookup sorts the
+  page it returns by `updated_at`, read as instants, a row without a time carrying an offset the
+  oldest, and reuses the newest matching build; a matching build the page omits is not found and the
+  image is built again (`test_find_image_does_not_find_a_build_the_page_leaves_out`,
+  `test_find_image_orders_builds_by_the_instant_and_a_row_without_one_is_the_oldest`).

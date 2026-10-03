@@ -2,16 +2,19 @@
 argv, through a `docker` shim on PATH that runs the container command on this machine."""
 
 import asyncio
+import io
 import os
 import stat
 import subprocess
 import sys
+import tarfile
 import types
 from pathlib import Path
 
 import pytest
 
 from hub.tools import BoxTree, DaytonaSandbox, DockerSandbox, LocalTree, Sandbox, git_diff
+from hub.tools.box import pack
 
 SHIM = """#!{python}
 import os, subprocess, sys
@@ -347,3 +350,23 @@ def test_the_vm_box_refuses_a_missing_deadline_before_any_command_runs(tmp_path,
     with pytest.raises(TypeError):
         asyncio.run(box.run("echo ok", timeout=None))
     assert spawned == []
+
+
+@pytest.mark.parametrize(
+    "target", ["target.txt", "adir", "missing"], ids=["to a file", "to a directory", "to nothing"]
+)
+@pytest.mark.parametrize("repository", [True, False], ids=["in a repository", "in no repository"])
+def test_pack_adds_a_symlink_as_a_link_not_followed_whatever_it_points_at(tmp_path, repository, target):
+    (tmp_path / "target.txt").write_text("t\n")
+    (tmp_path / "adir").mkdir()
+    (tmp_path / "adir" / "inner.txt").write_text("i\n")
+    (tmp_path / "link").symlink_to(target)
+    if repository:
+        git(tmp_path, "init", "-q")
+        git(tmp_path, "add", "-A")  # the link is tracked, as a tracked one is in a checkout
+    data, names = pack(tmp_path)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        members = {m.name: m for m in tar.getmembers()}
+    assert sorted(names) == sorted(members) == ["adir/inner.txt", "link", "target.txt"]
+    assert members["link"].issym() and members["link"].linkname == target  # a link, whatever is behind it
+    assert members["target.txt"].isreg() and members["adir/inner.txt"].isreg()
