@@ -1,8 +1,9 @@
-"""The checkpoint's sources in `hub/context.py` (ADR-0019/D2): the actor's reader works on a synthetic
-transcript holding one row of every kind a live one carries, placeholder text throughout; each source
-harvests its kind, and an absent source is a value."""
+"""The checkpoint's sources in `hub/backend/claude_code/checkpoint.py` (ADR-0019/D2): the actor's
+reader works on a synthetic transcript holding one row of every kind a live one carries, placeholder
+text throughout; each source harvests its kind, and an absent source is a value."""
 
 import asyncio
+import functools
 import io
 import json
 import os
@@ -19,36 +20,33 @@ from lion_cli.main import main
 from pydantic import BaseModel
 
 from hub.agent import Agent
-from hub.context import (
+from hub.backend.claude_code.checkpoint import (
+    DIRECTIVES,
     INBOX_MONITOR,
+    SESSION_KINDS,
+    SESSION_WHYS,
     context_figure,
     cursor,
     directives,
     lanes,
     posture,
     pulls,
+    render_prompt,
     spawns,
+    take_session,
     topic,
     transcript_turns,
     watches,
 )
 from hub.khive import KhiveError
 from lion1 import Actor, Kind, Record, Reply, Result, fold
-from lion1.checkpoint import (
-    DIRECTIVES,
-    LAZY,
-    CheckpointError,
-    NotIgnored,
-    Var,
-    load,
-    render_prompt,
-    save,
-    take,
-    to_history,
-)
+from lion1 import checkpoint as core
+from lion1.checkpoint import LAZY, CheckpointError, NotIgnored, Var, take, to_history
 from tests.test_agent import REPLY, FakeKhive, mail, profile_for
 from tests.test_areas import call, registry, serve_on
 
+load = functools.partial(core.load, kinds=SESSION_KINDS, whys=SESSION_WHYS)
+save = functools.partial(core.save, kinds=SESSION_KINDS, whys=SESSION_WHYS)
 FIXTURE = Path(__file__).parent / "fixtures" / "session_transcript.jsonl"
 AT_TAKE = datetime(2026, 9, 24, 10, 5, tzinfo=UTC)  # the fixture's timed Monitor has not timed out yet
 ACTOR = "lambda:x"
@@ -167,7 +165,7 @@ def gh_says(monkeypatch, rc: int = 0, out: str = "[]", err: str = "") -> list:
         calls.append((argv, kw.get("cwd")))
         return rc, out, err
 
-    monkeypatch.setattr("hub.context.sh", run)
+    monkeypatch.setattr("hub.backend.claude_code.checkpoint.sh", run)
     return calls
 
 
@@ -203,7 +201,9 @@ def test_the_reader_keeps_each_prompt_with_its_final_text_and_no_dropped_kind_su
     first = next(r for r in rows() if r.get("promptSource") == "typed")
     assert (person[0]["turn"], person[0]["at"]) == (first["uuid"], first["timestamp"])
     vars_ = harvest(tmp_path)
-    ckpt = take({"transcript": str(FIXTURE)}, vars_, actor=ACTOR, why="manual", budget=10**6, view=view)
+    ckpt = take_session(
+        {"transcript": str(FIXTURE)}, vars_, actor=ACTOR, why="manual", budget=10**6, view=view
+    )
     kept, held = json.dumps(ckpt.view["kept"]), json.dumps([asdict(v) for v in ckpt.vars])
     assert [m for m in MARKS if m in kept or m in held] == []
     # the posture is the last text block without its LNDL, its lines kept
@@ -405,8 +405,8 @@ def test_a_row_of_the_wrong_shape_is_counted_invalid_and_never_aborts_the_take(t
 
 def test_the_inbox_line_quotes_a_monitor_path_with_a_space(monkeypatch):
     script = "/opt/my tools/inbox-monitor.sh"
-    monkeypatch.setattr("hub.context.INBOX_MONITOR", script)
-    monkeypatch.setattr("hub.context.INBOX_PRIORITY", ())
+    monkeypatch.setattr("hub.backend.claude_code.checkpoint.INBOX_MONITOR", script)
+    monkeypatch.setattr("hub.backend.claude_code.checkpoint.INBOX_PRIORITY", ())
     (inbox,) = watches(FIXTURE, ACTOR, AT_TAKE + timedelta(days=1))
     assert shlex.split(inbox.value["command"]) == ["bash", script, ACTOR]
 
@@ -475,7 +475,7 @@ def test_watches_are_the_monitors_still_running_verbatim_and_the_inbox_line_is_a
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
-        "hub.context.INBOX_PRIORITY", ("lambda:owner", ACTOR)
+        "hub.backend.claude_code.checkpoint.INBOX_PRIORITY", ("lambda:owner", ACTOR)
     )  # the actor itself is not repeated
     ws = watches(FIXTURE, ACTOR, AT_TAKE)
     cmds = monitor_commands()
@@ -544,7 +544,8 @@ def test_concurrent_saves_each_land_and_latest_names_one_of_them(tmp_path):
     source = {"transcript": str(FIXTURE), "context": {"used": 1, "window": 10, "pct": 10}}
     view = transcript_turns(FIXTURE, 400)
     ckpts = [
-        take(source, harvest(tmp_path), actor=ACTOR, why="manual", budget=400, view=view) for _ in range(12)
+        take_session(source, harvest(tmp_path), actor=ACTOR, why="manual", budget=400, view=view)
+        for _ in range(12)
     ]
     errors: list[BaseException] = []
 
@@ -584,7 +585,7 @@ def test_the_loop_cursor_header_and_posture_are_read_and_an_event_turn_renders_a
     long_header = "# lambda:x loop cursor\n\n> " + "HEADER-LONG-MARK " * 40
     (loop / "x_loop.md").write_text(long_header + "\n\n## Posture\nPOSTURE-MARK holding\n")
     assert len(long_header) > LAZY
-    ckpt_long = take({}, cursor(d), actor=ACTOR, why="manual", budget=400)
+    ckpt_long = take_session({}, cursor(d), actor=ACTOR, why="manual", budget=400)
     long_prompt = render_prompt(ckpt_long)
     assert "HEADER-LONG-MARK HEADER-LONG-MARK" not in long_prompt and "cursor.header" in long_prompt
     save(ckpt_long, d)
@@ -596,7 +597,7 @@ def test_the_loop_cursor_header_and_posture_are_read_and_an_event_turn_renders_a
     assert "LOG-MARK" not in json.dumps({k: v.value for k, v in got.items()})
     assert cursor(tmp_path / "nowhere") == []
     view = transcript_turns(FIXTURE, 10**6)
-    ckpt = take(
+    ckpt = take_session(
         {"transcript": str(FIXTURE)},
         [*harvest(tmp_path), *cursor(d)],
         actor=ACTOR,
@@ -618,7 +619,7 @@ def test_the_loop_cursor_header_and_posture_are_read_and_an_event_turn_renders_a
 def test_the_first_line_re_arms_each_watch_verbatim_before_any_work(tmp_path):
     view = transcript_turns(FIXTURE, 400)
     source = {"transcript": str(FIXTURE), "context": {"used": 900, "window": 1000, "pct": 90}}
-    ckpt = take(source, harvest(tmp_path), actor=ACTOR, why="threshold", budget=400, view=view)
+    ckpt = take_session(source, harvest(tmp_path), actor=ACTOR, why="threshold", budget=400, view=view)
     prompt = render_prompt(ckpt)
     first = prompt.splitlines()[0]
     assert ckpt.id in first and ACTOR in first and "(90%)" in first and "threshold" in first
@@ -659,7 +660,7 @@ def test_the_ceiling_eight_directives_half_the_budget_and_the_watch_list(tmp_pat
     assert typed == [p for p in PROMPTS if p != PROMPTS[8]][-8:]
     # render carries the newest eight however many it is handed
     nine = [Var(f"directive.{i}", "directive", f"placeholder word {i}", "hook", "") for i in range(9)]
-    prompt = render_prompt(take({}, nine, actor=ACTOR, why="manual", budget=100))
+    prompt = render_prompt(take_session({}, nine, actor=ACTOR, why="manual", budget=100))
     assert "placeholder word 0" not in prompt and all(f"placeholder word {i}" in prompt for i in range(1, 9))
     # the kept view is half the budget, the latest turn always kept
     for budget in (40, 400, 4000):
@@ -736,7 +737,7 @@ def test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
     d = actor_dir(repo)
-    ckpt = take({}, [], actor=ACTOR, why="manual", budget=100)
+    ckpt = take_session({}, [], actor=ACTOR, why="manual", budget=100)
     with pytest.raises(NotIgnored, match="does not ignore it"):
         save(ckpt, d)
     assert not (d / ".khive" / "context").exists()
@@ -851,7 +852,7 @@ def test_a_long_var_is_its_name_size_and_loader_while_a_persons_words_and_watche
         Var("lanes", "lane", lanes_, "khive", ""),
         Var("short", "fact", "s" * LAZY, "declared", ""),
     ]
-    c = take({}, given, actor=ACTOR, why="manual", budget=100)
+    c = take_session({}, given, actor=ACTOR, why="manual", budget=100)
     by = {v.name: v for v in c.vars}
     # a ref names the store that keeps the value; without one the checkpoint file keeps it
     assert (by["posture"].value, by["posture"].size) == (None, LAZY + 1)
@@ -1019,7 +1020,7 @@ def test_a_restore_that_cannot_replay_is_said_and_the_run_starts_fresh(tmp_path)
 def test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli(tmp_path, monkeypatch, capsys):
     import lion_cli.context as cli
 
-    monkeypatch.setattr("hub.context.INBOX_PRIORITY", ("lambda:owner",))
+    monkeypatch.setattr("hub.backend.claude_code.checkpoint.INBOX_PRIORITY", ("lambda:owner",))
 
     def down(*a, **k):
         raise KhiveError("kkernel not found on PATH or under ~/.cargo/bin")
@@ -1223,7 +1224,10 @@ def test_a_claude_code_checkpoint_in_a_residents_directory_is_refused_by_its_nex
         Growing((REPLY, 1_000), ("answered", 1_000)),
     )
     lines = serve_one(again)
-    refused = f"{doc['id']} is a claude-code checkpoint: its restore is the first prompt"
+    # the resident loads on the run's kinds: the session's directive is off them, so the file is refused
+    refused = (
+        f"{doc['id']}: var 'directive.1' has kind 'directive', not one of fact, posture; nothing was loaded"
+    )
     assert again.errors == [f"restore: CheckpointError: {refused}"]
     assert lines[0] == f"restore failed, the run starts fresh: restore: CheckpointError: {refused}"
     (run,) = again.runs
@@ -1233,7 +1237,7 @@ def test_a_claude_code_checkpoint_in_a_residents_directory_is_refused_by_its_nex
 
 
 def test_only_the_first_invalid_row_is_spelled_out():
-    from hub.context import _valid
+    from hub.backend.claude_code.checkpoint import _valid
 
     class Counted:
         calls = 0

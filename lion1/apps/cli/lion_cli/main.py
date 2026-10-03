@@ -6,7 +6,7 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from lion1.checkpoint import KINDS, WHYS
+from hub.backend.claude_code.checkpoint import SESSION_KINDS, SESSION_WHYS
 
 from .agent import agent_main
 from .areas import areas_main
@@ -144,10 +144,10 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     verbs = cx.add_subparsers(dest="verb", required=True)
     cs = verbs.add_parser("set", parents=[here], help="declare a var; the next checkpoint takes it")
     cs.add_argument("--name", required=True)
-    cs.add_argument("--kind", required=True, choices=KINDS)
+    cs.add_argument("--kind", required=True, choices=SESSION_KINDS)
     cs.add_argument("--value", required=True, help="text, or JSON when it opens with { or [")
     cc = verbs.add_parser("checkpoint", parents=[here], help="take the checkpoint, no model call")
-    cc.add_argument("--why", choices=WHYS, default="manual")
+    cc.add_argument("--why", choices=SESSION_WHYS, default="manual")
     cc.add_argument("--session", default=None, help="default: the newest transcript's session")
     cc.add_argument(
         "--transcript",
