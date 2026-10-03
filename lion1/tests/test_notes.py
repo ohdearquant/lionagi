@@ -7,6 +7,7 @@ import copy
 import fcntl
 import io
 import json
+import math
 import os
 import re
 import threading
@@ -442,16 +443,22 @@ def test_a_number_too_large_for_a_float_is_refused_on_load_naming_the_file_and_t
 
 
 def test_a_file_holding_the_largest_finite_floats_loads_and_a_later_write_keeps_them(tmp_path):
-    # `1e-999` underflows to 0.0: that is a float, not a non-finite one, so it loads and is kept as 0.0
+    # `1e-999` underflows to 0.0 and `-1e-999` to -0.0: floats, not non-finite ones, so they load and are
+    # kept as the zero of their sign (0.0 == -0.0, so the sign is read apart)
     path = tmp_path / "n.json"
     path.write_text(
-        _notes_file(value="[1.7976931348623157e308, -1.7976931348623157e308, 1e-999, 5e-324, -0.0]")
+        _notes_file(value="[1.7976931348623157e308, -1.7976931348623157e308, 1e-999, -1e-999, 5e-324, -0.0]")
     )
     store = FileNoteStore(path)
-    kept = [1.7976931348623157e308, -1.7976931348623157e308, 0.0, 5e-324, -0.0]
-    assert store.get("k").value == kept
+    kept = [1.7976931348623157e308, -1.7976931348623157e308, 0.0, -0.0, 5e-324, -0.0]
+
+    def zero_signs(value: list) -> list:
+        return [math.copysign(1.0, x) for x in value if x == 0]
+
+    assert store.get("k").value == kept and zero_signs(store.get("k").value) == [1.0, -1.0, -1.0]
     store.put("other", "y", run="r", seq=2)
     assert FileNoteStore(path).get("k").value == kept
+    assert zero_signs(FileNoteStore(path).get("k").value) == [1.0, -1.0, -1.0]
 
 
 _NARROW = pytest.mark.parametrize(
@@ -509,6 +516,59 @@ def test_a_file_that_is_not_utf_8_is_refused_on_load_naming_the_file_and_the_byt
     assert store.get("k").value == json.loads(repaired)["notes"]["k"]["value"]
     store.put("other", "y", run="r", seq=2)
     assert sorted(json.loads(path.read_text(encoding="utf-8"))["notes"]) == ["k", "other"]
+
+
+# the JSON escapes of two lone surrogates, six ASCII characters each, built here because a typed
+# backslash-u is decoded on its way into a file
+_LONE = chr(92) + "ud800"
+_LOW = chr(92) + "udc00"
+_ROW = '{"key": "k", "value": "x", "run": "r", "seq": 1, "version": 1}'
+
+
+@pytest.mark.parametrize(
+    "text, where",
+    [
+        (_notes_file(value=f'"{_LONE}"'), "document['notes']['k']['value']"),
+        # the first in the file's order, not the last, through a list and a dict
+        (
+            _notes_file(value=f'["fine", {{"b": ["x{_LONE}"]}}, "{_LOW}"]'),
+            "document['notes']['k']['value'][1]['b'][0]",
+        ),
+        (_notes_file(value=f'{{"ok": 1, "{_LONE}": 2}}'), f"document['notes']['k']['value']['{_LONE}']"),
+        (f'{{"version": 1, "notes": {{"{_LONE}": {_ROW}}}}}', f"document['notes']['{_LONE}']"),
+        (_notes_file().replace('"run": "r"', f'"run": "{_LONE}"'), "document['notes']['k']['run']"),
+    ],
+    ids=["value", "first-in-a-nested-list-and-dict", "key-in-a-value", "note-key", "run"],
+)
+def test_a_file_holding_a_lone_surrogate_is_refused_on_load_naming_where_and_the_file_stays(
+    tmp_path, text, where
+):
+    # valid UTF-8 that parses to a string the flush cannot encode: loaded, it made every later write fail
+    # at the flush, after the store had changed in memory
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)  # built before the file holds anything
+    path.write_text(text, encoding="utf-8")
+    said = re.escape(
+        f"{path}: the file holds a lone surrogate in {where}, which UTF-8 cannot carry; repair it by hand"
+    )
+    _refused_on_every_path(path, store, said, text)
+    # repaired by hand: the store reads it and a write goes through
+    path.write_text(_notes_file(), encoding="utf-8")
+    assert store.get("k").value == "x"
+    store.put("other", "y", run="r", seq=2)
+    assert sorted(json.loads(path.read_text(encoding="utf-8"))["notes"]) == ["k", "other"]
+
+
+def test_a_file_holding_an_escaped_surrogate_pair_loads_as_the_one_character_it_spells(tmp_path):
+    # only a lone half is refused: a high and a low escape together parse to U+1F600, which UTF-8 carries
+    pair = chr(92) + "ud83d" + chr(92) + "ude00"
+    spelled = chr(0x1F600) + " " + chr(0xE9)
+    path = tmp_path / "n.json"
+    path.write_text(_notes_file(value=f'"{pair} {chr(92)}u00e9"'), encoding="utf-8")
+    store = FileNoteStore(path)
+    assert store.get("k").value == spelled
+    store.put("other", "y", run="r", seq=2)
+    assert FileNoteStore(path).get("k").value == spelled
 
 
 def test_a_write_never_renders_a_non_finite_number_wherever_it_sits(tmp_path):

@@ -109,6 +109,37 @@ def _text(value: Any) -> str:
         return str(value)
 
 
+def _utf8(text: str) -> None:
+    """The one rule for a string the file cannot hold: UTF-8 cannot encode it. A lone surrogate passes
+    `json.dumps` escaped and fails at the file, so a value is refused by it before the write (`put`) and a
+    loaded document by it before the next one (`_lone_surrogate`)."""
+    text.encode("utf-8")
+
+
+def _lone_surrogate(document: Any) -> str | None:
+    """Where the first string `_utf8` refuses sits in a parsed file, as the subscripts that reach it
+    (`document['notes']['k']['value'][2]`), else None. A dict's key is read before its value."""
+    stack: list[tuple[Any, Any]] = [(document, None)]  # a path is a chain of (parent, part)
+    while stack:
+        node, path = stack.pop()
+        if isinstance(node, str):
+            try:
+                _utf8(node)
+            except UnicodeEncodeError:
+                parts = []
+                while path is not None:
+                    path, part = path
+                    parts.append(f"[{part!r}]")
+                return "document" + "".join(reversed(parts))
+        elif isinstance(node, dict):
+            for key, value in reversed(node.items()):
+                stack += [(value, (path, key)), (key, (path, key))]
+        elif isinstance(node, list):
+            for i, value in reversed(list(enumerate(node))):
+                stack.append((value, (path, i)))
+    return None
+
+
 class FileNoteStore(MemoryNoteStore):
     """One JSON file per profile: the file is the store. Every read loads it and every write is a
     locked read-modify-write, so two consoles over one directory keep each other's notes (a store
@@ -152,6 +183,14 @@ class FileNoteStore(MemoryNoteStore):
                 "re-encode it as UTF-8 by hand"
             ) from None
         data = json.loads(text, parse_constant=refuse, parse_float=finite)
+        # valid UTF-8 can still spell a lone surrogate (`\ud800`), which parses to a string the flush
+        # cannot encode: every later write would fail there, so the file is refused here
+        where = _lone_surrogate(data)
+        if where is not None:
+            raise ValueError(
+                f"{self.path}: the file holds a lone surrogate in {where}, which UTF-8 cannot carry; "
+                "repair it by hand"
+            )
         self._version = int(data.get("version", 0))
         self._notes = {k: Note(**v) for k, v in data.get("notes", {}).items()}
 
@@ -190,7 +229,7 @@ class FileNoteStore(MemoryNoteStore):
             # escaped and fails at the file), and read back equal (a tuple comes back a list, a key that
             # is not a string comes back as text, and two keys can come back as one)
             text = json.dumps(value, ensure_ascii=False, allow_nan=False)
-            text.encode("utf-8")
+            _utf8(text)
             kept = json.loads(text)  # the copy this store keeps and writes, never the caller's object
             if kept != value:
                 raise ValueError("JSON would read it back changed")
