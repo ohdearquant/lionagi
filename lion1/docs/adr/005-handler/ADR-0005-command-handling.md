@@ -202,6 +202,22 @@ A hook runs in its own process group; a timeout, a cancel or an exception kills 
 tries five seconds each to drain and reap it, filled pipe included; a descendant that left is
 abandoned.
 
+### C10: The tree hook keeps a file name whole from git to the notice _(enforced: mechanical)_ ^c10
+
+- **Subject**: the file names `tree-changed` reads from git and prints.
+- **Violated when**: a name git lists is altered or refused on the way in, a conflicted path is read
+  twice, or the notice shows a name with a control character, a byte that is not UTF-8 or edge
+  whitespace other than quoted and escaped.
+
+`tree-changed` reads `git ls-files -z` as bytes, splits on NUL alone and decodes each name as the
+file system does, keeping a carriage return or a byte that is not UTF-8. A conflicted path, which
+git lists once per index stage, is read once.
+
+The notice shows a name as it is. One that holds a control character (Unicode category Cc, Cf, Zl or
+Zp) or a byte that is not UTF-8, or starts or ends in whitespace, is quoted and escaped: `'name\r'`,
+`'bad\xff'`, `'name '`. The hook's output is decoded and stripped on its way to the notice; a quoted
+name survives both.
+
 ## Decisions
 
 ### D1: Dispatch as one task per command; `Actor.before` and `Actor.after` beside `Actor.section` ^d1
@@ -242,7 +258,7 @@ Serves C2. One class, three operations: `subscribe`, `emit`, `drain`; a bounded 
 
 ### D3: `hub/hooks/`: `hooks.toml`, shell commands, JSON on stdin, the exit code as the verdict ^d3
 
-Serves C4, C5, C7 to C9 for a person. Three array tables, `before`, `after` and `round`, each row
+Serves C4, C5, C7 to C10 for a person. Three array tables, `before`, `after` and `round`, each row
 with `run`, optional `name`, `match` (fnmatch over the command name) and `timeout`. Exit 0 lets a
 command run, a JSON object on stdout replacing its arguments and other stdout a log line; exit 2
 refuses with stdout as the reason; a turn hook's stdout is a notification line. `lion chat` reads
@@ -259,8 +275,17 @@ runs under `-I` with lion's own interpreter (C7).
   `test_git_global_options_cannot_hide_push_or_destructive_subcommand`,
   `test_the_tree_hook_names_the_files_that_changed_and_the_head_that_moved`,
   `test_the_tree_hook_keeps_its_baseline_when_git_cannot_list_the_files` and
-  `test_the_tree_hooks_state_is_one_file_per_run_under_lion_tree_state` (C8); the console test that
-  installs a directory's hooks.
+  `test_the_tree_hooks_state_is_one_file_per_run_under_lion_tree_state` (C8),
+  `test_the_tree_hook_keeps_a_carriage_return_in_a_file_name`,
+  `test_the_tree_hook_reads_a_tracked_name_that_is_not_utf8`,
+  `test_the_tree_hook_names_a_changed_file_whose_name_is_not_utf8`,
+  `test_the_tree_hook_reads_a_conflicted_file_once`,
+  `test_the_tree_hook_shows_a_name_as_it_is_or_quoted_and_escaped`,
+  `test_the_notice_the_actor_gets_keeps_a_carriage_return_ending_a_file_name`,
+  `test_the_notice_the_actor_gets_keeps_a_file_name_whole_where_whitespace_edges_it`,
+  `test_the_notice_the_actor_gets_shows_a_changed_file_name_that_is_not_utf8_escaped` and
+  `test_the_notice_the_actor_gets_shows_a_removed_file_name_that_is_not_utf8_escaped` (C10); the
+  console test that installs a directory's hooks.
 
 ## Alternatives
 
