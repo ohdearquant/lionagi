@@ -223,7 +223,9 @@ need `capture` set.
   `test_stop_closes_both_clients_when_one_fails_to_close_and_raises_the_first_error`,
   `test_a_failed_deletion_is_the_error_stop_raises_with_a_failed_client_close_attached`,
   `test_a_refused_start_whose_deletion_and_a_client_close_both_fail_names_the_deletion`,
-  `test_a_close_that_is_cancelled_is_raised_not_noted_on_a_failed_deletion` and
+  `test_a_close_that_is_cancelled_is_raised_not_noted_on_a_failed_deletion`,
+  `test_close_errors_ride_a_cancelled_close_as_notes`,
+  `test_find_image_reads_every_build_the_service_lists` and
   `test_a_runtime_that_ends_before_its_workdir_is_made_raises_sandbox_dead`.
 
 ## Alternatives
@@ -296,12 +298,12 @@ need `capture` set.
 - **S15**: A process the model runs in the box reads anywhere already (S6), so the tree's bound is
   no boundary against one: a link it swaps between the resolve and the read reaches what that
   process could read itself.
-- **S16**: A box given a policy sends it with the create and starts only a runtime that reports it.
-  A resume reads a suspended runtime's policy first, so a mismatch is deleted with nothing woken,
-  and again after, the read that holds (S17). A runtime that reports another policy, whose policy
-  cannot be read, or that fails to resume is deleted, and the call raises `SandboxDead` naming both
-  policies, else the error; a failed deletion is named in it. A box with no policy sends none and
-  checks none.
+- **S16**: A box sends its policy with the create, starts only a runtime that reports it, and with
+  none sends and checks none. A resume reads the policy first, so a mismatch is deleted unwoken, and
+  again after (S17). A runtime that reports another policy, cannot be read, or fails to resume is
+  deleted, raising `SandboxDead` naming both policies, else the error, and any failed deletion.
+  `stop()` tries both clients and the deletion; a cancellation from any propagates after all were
+  tried, the failures beside it riding as notes.
 - **S17**: A policy set on a running runtime, as after a restore, leaves its processes a window
   under the old one, and the change can read back before it holds. A resume that changes the policy
   itself is caught only by the read after it. A closure that matters is proven from inside the box.

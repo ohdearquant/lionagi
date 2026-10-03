@@ -636,6 +636,44 @@ def test_find_image_picks_the_newest_succeeded_build_of_that_name(monkeypatch):
     assert asyncio.run(runta_mod.find_image("img-missing")) is None
 
 
+def _install_build_listing(monkeypatch, builds: list[dict]) -> list[Any]:
+    """`GET /v2/images/builds` as the SDK declares it: a `limit` (default 50) and nothing else, no name
+    filter, no cursor. Returns the limits asked, in order."""
+    asked: list[Any] = []
+    install_httpx(monkeypatch, [])
+
+    async def request(self, method, path, *, json=None, params=None, headers=None):
+        assert (method, path) == ("GET", "/v2/images/builds")
+        limit = (params or {}).get("limit", 50)
+        asked.append(limit)
+        return Resp(200, {"data": builds[:limit]})
+
+    monkeypatch.setattr(sys.modules["httpx"].AsyncClient, "request", request)
+    return asked
+
+
+def _listing(n: int) -> list[dict]:
+    """n builds: a stale one of img-a first, filler of img-z, and the newest img-a last."""
+    old = {"name": "img-a", "status": "succeeded", "updated_at": "2026-01-01", "runtime_image_id": "old"}
+    filler = {"name": "img-z", "status": "succeeded", "updated_at": "2026-03-01", "runtime_image_id": "z"}
+    last = {"name": "img-a", "status": "succeeded", "updated_at": "2026-06-01", "runtime_image_id": "last"}
+    return [old, *[filler] * (n - 2), last]
+
+
+@pytest.mark.parametrize("n", [49, 50, 51, 120, 200, 1200])
+def test_find_image_reads_every_build_the_service_lists(monkeypatch, n):
+    asked = _install_build_listing(monkeypatch, _listing(n))
+    assert asyncio.run(runta_mod.find_image("img-a")) == "last"
+    assert n < asked[-1]  # it ended on an answer shorter than its limit, so the list had ended
+
+
+def test_find_image_says_none_only_after_an_answer_shorter_than_its_limit(monkeypatch):
+    filler = {"name": "img-z", "status": "succeeded", "updated_at": "2026-03-01", "runtime_image_id": "z"}
+    asked = _install_build_listing(monkeypatch, [filler] * 120)
+    assert asyncio.run(runta_mod.find_image("img-a")) is None
+    assert 120 < asked[-1]
+
+
 # --- 9. build_image ----------------------------------------------------------------------------------
 
 
@@ -802,7 +840,7 @@ def test_a_refused_start_whose_deletion_and_a_client_close_both_fail_names_the_d
         asyncio.run(_start_with_client_close_failing(box, mod, close_fails))
     said = str(e.value)
     assert "runtime rt-1 was not deleted: OSError('gone away')" in said  # the close error is not the reason
-    assert "closing a client also failed: OSError('socket')" in said  # and it is not lost either
+    assert "closing the SDK client also failed: OSError('socket')" in said  # and it is not lost either
 
 
 async def _start_with_client_close_failing(box, mod, close_fails):
@@ -1253,14 +1291,16 @@ def test_set_egress_checkpoint_suspend_resume_events_after_stop_and_stop_twice(t
 
 
 def _failing_closes(box, mod, failing, error=OSError):
-    """Both clients' `close` recording its call in the list returned; a named one raises `error(name)`."""
+    """Both clients' `close` recording its call in the list returned; a named one raises `error(name)`
+    (`failing` may instead map each name to its own error type)."""
+    errors = failing if isinstance(failing, dict) else dict.fromkeys(failing, error)
     sdk, api, closed = mod.async_runta_instances[-1], box._api, []
 
     def closing(name, real):
         async def close():
             closed.append(name)
-            if name in failing:
-                raise error(name)
+            if name in errors:
+                raise errors[name](name)
             await real()
 
         return close
@@ -1269,6 +1309,7 @@ def _failing_closes(box, mod, failing, error=OSError):
     return closed
 
 
+_CLIENT = {"sdk": "SDK client", "api": "API client"}  # how a close note names each client
 _FAILING_CLOSES = pytest.mark.parametrize(
     "failing",
     [("sdk",), ("api",), ("sdk", "api")],
@@ -1286,6 +1327,8 @@ def test_stop_closes_both_clients_when_one_fails_to_close_and_raises_the_first_e
     with pytest.raises(OSError) as e:
         asyncio.run(box.stop())
     assert str(e.value) == failing[0]  # the first of the errors, raised once both had been tried
+    later = [f"closing the {_CLIENT[n]} also failed: OSError({n!r})" for n in failing[1:]]
+    assert getattr(e.value, "__notes__", []) == later  # and each later one rides it, none lost
     assert closed == ["sdk", "api"] and mod.runtimes_store["rt-1"].deleted is True
 
 
@@ -1300,7 +1343,7 @@ def test_a_failed_deletion_is_the_error_stop_raises_with_a_failed_client_close_a
     with pytest.raises(OSError) as e:
         asyncio.run(box.stop())
     assert str(e.value) == "gone away"  # the runtime left behind is the news, whichever close failed
-    assert e.value.__notes__ == [f"closing a client also failed: OSError({name!r})" for name in failing]
+    assert e.value.__notes__ == [f"closing the {_CLIENT[n]} also failed: OSError({n!r})" for n in failing]
     assert closed == ["sdk", "api"] and mod.runtimes_store["rt-1"].deleted is False
     assert box.started is False and box.box_id is None
 
@@ -1318,6 +1361,44 @@ def test_a_close_that_is_cancelled_is_raised_not_noted_on_a_failed_deletion(tmp_
     ]  # the cancel is raised; what the deletion said rides as its note
     assert closed == ["sdk", "api"]  # the other client was still closed
     assert mod.runtimes_store["rt-1"].deleted is False and box.started is False and box.box_id is None
+
+
+_CANCEL = asyncio.CancelledError
+
+
+@pytest.mark.parametrize(
+    "errors, deletion_fails, notes",
+    [
+        ({"sdk": _CANCEL, "api": OSError}, False, ["closing the API client also failed: OSError('api')"]),
+        ({"sdk": OSError, "api": _CANCEL}, False, ["closing the SDK client also failed: OSError('sdk')"]),
+        (
+            {"sdk": _CANCEL, "api": _CANCEL},
+            False,
+            ["closing the API client also failed: CancelledError('api')"],
+        ),
+        (
+            {"sdk": OSError, "api": _CANCEL},
+            True,
+            [
+                "the deletion also failed: OSError('gone away')",
+                "closing the SDK client also failed: OSError('sdk')",
+            ],
+        ),
+    ],
+    ids=["sdk cancelled", "api cancelled", "both cancelled", "api cancelled, deletion failed"],
+)
+def test_close_errors_ride_a_cancelled_close_as_notes(tmp_path, monkeypatch, errors, deletion_fails, notes):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path)
+    asyncio.run(box.start())
+    closed = _failing_closes(box, mod, errors)
+    if deletion_fails:
+        mod.delete_fails["rt-1"] = OSError("gone away")
+    with pytest.raises(asyncio.CancelledError) as e:
+        asyncio.run(box.stop())
+    assert e.value.args == (next(name for name, kind in errors.items() if kind is _CANCEL),)  # the first one
+    assert getattr(e.value, "__notes__", []) == notes  # every other failure rides it, none lost
+    assert closed == ["sdk", "api"]  # both clients were tried
+    assert mod.runtimes_store["rt-1"].deleted is not deletion_fails
 
 
 def test_events_without_a_runtime_id_refuses():

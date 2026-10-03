@@ -387,11 +387,18 @@ async def tool_calls(runtime_id: str, *, api: RuntaApi | None = None) -> ToolCal
 
 
 async def find_image(name: str, *, api: RuntaApi | None = None) -> str | None:
-    """The runtime-image id of the newest successful build named `name`, None when there is none."""
+    """The runtime-image id of the newest successful build named `name`, None when there is none. The
+    listing takes a `limit` (default 50) and no name filter or cursor, so the limit doubles until an
+    answer comes back shorter than it: that answer is every build."""
 
     async def find(api: RuntaApi) -> str | None:
-        data = await api.call("GET", "/v2/images/builds")
-        builds = data.get("builds", data) if isinstance(data, dict) else data
+        limit = 50
+        while True:
+            data = await api.call("GET", "/v2/images/builds", params={"limit": limit})
+            builds = data.get("builds", data) if isinstance(data, dict) else data
+            if len(builds) < limit:
+                break
+            limit *= 2
         done = [b for b in builds if b.get("name") == name and b.get("status") == "succeeded"]
         done.sort(key=lambda b: b.get("updated_at") or "")
         return done[-1]["runtime_image_id"] if done else None
@@ -664,9 +671,9 @@ class RuntaSandbox(BoxBase):
         return await events(self.runtime_id, **filters)
 
     async def stop(self) -> None:
-        """Delete the runtime (Runta's `rm`) and close the clients. Both clients are closed whatever
-        happens; a close that is cancelled is raised, else a failed deletion is, with each close failure
-        noted on it, else the first close failure."""
+        """Delete the runtime (Runta's `rm`) and close the clients. The deletion and both closes are
+        tried whatever happens. A cancellation from a close is raised, else a failed deletion, else the
+        first close failure; the failures beside the one raised ride it as notes, each naming its client."""
         deleting: BaseException | None = None
         try:
             if self._rt is not None:
@@ -682,28 +689,30 @@ class RuntaSandbox(BoxBase):
         self.started = False
         client, self._client = self._client, None
         api, self._api = self._api, None
-        closing: list[Exception] = []
-        cancelled: BaseException | None = None  # a cancellation is raised, never noted on another error
-        for held in (client, api):
+        closing: list[tuple[str, BaseException]] = []
+        cancelled: BaseException | None = None  # the first cancellation is raised; the rest ride it as notes
+        for name, held in (("SDK client", client), ("API client", api)):
             if held is None:
                 continue
             try:
                 await held.close()
             except Exception as e:
-                closing.append(e)
+                closing.append((name, e))
             except BaseException as e:
                 if cancelled is None:
                     cancelled = e
-        if cancelled is not None:
-            if deleting is not None:  # the cancel outranks it; what the deletion said rides along
-                cancelled.add_note(f"the deletion also failed: {deleting!r}")
-            raise cancelled
-        if deleting is not None:
-            for failure in closing:
-                deleting.add_note(f"closing a client also failed: {failure!r}")
-            raise deleting
-        if closing:
-            raise closing[0]
+                else:
+                    closing.append((name, e))
+        raised, rest = (deleting if cancelled is None else cancelled), closing
+        if raised is None:
+            if not closing:
+                return
+            raised, rest = closing[0][1], closing[1:]
+        if deleting is not None and cancelled is not None:  # the cancel outranks it; what it said rides along
+            raised.add_note(f"the deletion also failed: {deleting!r}")
+        for name, failure in rest:
+            raised.add_note(f"closing the {name} also failed: {failure!r}")
+        raise raised
 
 
 def _policy_json(policy: Any) -> dict[str, Any] | None:
