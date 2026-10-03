@@ -1672,6 +1672,31 @@ def test_an_ask_on_an_unbounded_bound_raises_nothing_and_only_a_count_is_rounded
     assert run.bounds["time_budget"] == 100.5 and run.bounds["max_refusals"] == 4
 
 
+def test_a_grant_of_time_landing_after_a_walks_deadline_fired_raises_the_bound_and_moves_nothing():
+    more = next(h for h in actor_module.DEFAULT_HANDLERS if h.name == "run.more")
+    ask = actor_module.RunMore(bound="time_budget", amount=0.5, reason="r")
+    told: list[str] = []
+
+    async def main():
+        run = actor_module.Run(_echo_actor("b-fired"), Profile("p"), RunRequest(time_budget=100))
+        ctx = actor_module.Context(run, "m1", more)
+        fired = asyncio.timeout(0)  # a walk's limit: its deadline has passed
+        try:
+            async with fired:
+                try:
+                    await asyncio.sleep(1)
+                except asyncio.CancelledError:  # fired, and the walk has not yet left its limit
+                    run.timeouts.add(fired)
+                    told.append(await more.fn(ask, ctx))
+                    raise
+        except TimeoutError:
+            pass
+        return run
+
+    run = asyncio.run(main())
+    assert told == ["time_budget raised from 100 to 100.5"] and run.bounds["time_budget"] == 100.5
+
+
 def test_a_before_hook_sees_out_and_its_rewrite_is_what_accept_judges():
     actor = Actor("b-out-before")
     order: list[tuple[str, ...]] = []

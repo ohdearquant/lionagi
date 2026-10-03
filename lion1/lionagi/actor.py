@@ -393,6 +393,8 @@ class Run:
         self.fields: dict[str, str] = {}  # alias -> the output field it was declared for, for the whole run
         self.pending: dict[str, asyncio.Task] = {}
         self.tasks: set[asyncio.Task] = set()  # every command task not yet seen through by a settle
+        # the time limits of the walks computing now, which a grant of time by `run.more` moves
+        self.timeouts: set[asyncio.Timeout] = set()
         self.entered: set[str] = set()  # pending aliases whose handler has been called
         # pending alias -> the notes its command read from the store, each read once (None: absent)
         self.reads: dict[str, dict[str, Note | None]] = {}
@@ -667,6 +669,10 @@ async def _more(req: RunMore, ctx: Context) -> str:
         if not granted:
             raise PermissionError(f"{req.bound} stays at {now}: the job did not grant {amount} more")
         run.bounds[req.bound] = now + amount
+        if req.bound == "time_budget":  # a walk computing its own expressions runs to the new deadline
+            for limit in run.timeouts:
+                if not limit.expired():  # one that fired has cancelled its walk already
+                    limit.reschedule(_deadline(run))
     return f"{req.bound} raised from {now} to {now + amount}"
 
 
@@ -2118,14 +2124,22 @@ class _Walk:
         self.named: set[str] = set()  # what OUT{} points at: never consumed
 
     async def execute(self, script: Script) -> dict[str, Any] | None:
+        # what the walk computes itself, a branch's test and OUT{}'s fields, the time budget bounds
+        # as it bounds a command's arguments: one still computing at the deadline stops there
+        limit = asyncio.timeout_at(_deadline(self.run))
         try:
-            # what the walk computes itself, a branch's test and OUT{}'s fields, the time budget bounds
-            # as it bounds a command's arguments: one still computing at the deadline stops there
-            async with asyncio.timeout(_left(self.run)):
-                return await self.block(script.body)
+            async with limit:
+                self.run.timeouts.add(limit)  # while the walk runs, a grant of time moves its deadline
+                try:
+                    return await self.block(script.body)
+                finally:
+                    self.run.timeouts.discard(limit)
         except _Failed:
             return None
         except TimeoutError:
+            if not limit.expired():  # raised by what the walk read, not by this deadline
+                raise
+            # kept on the run's list: the spent budget ends the run before a notification tells it
             spent = f"the time_budget of {self.run.bounds['time_budget']:g} is spent"
             self.run.refused.append(("turn", f"{spent}; nothing after it ran"))
             return None
@@ -2136,12 +2150,16 @@ class _Walk:
                 task.cancel()
             raise
         finally:
-            await _settle(self.run, self.tasks, _left(self.run))  # the time budget bounds it as any turn's
-            # a value still computing now has no reader left (each was cancelled): it stops with them
-            computing = [c for c in self.computed.values() if not c.done()]
-            for c in computing:
-                c.cancel()
-            await asyncio.gather(*computing, return_exceptions=True)
+            try:
+                # the time budget bounds it as any turn's
+                await _settle(self.run, self.tasks, _left(self.run))
+            finally:
+                # a value still computing now has no reader left (each was cancelled): it stops with
+                # them, whether the settle returned or raised
+                computing = [c for c in self.computed.values() if not c.done()]
+                for c in computing:
+                    c.cancel()
+                await asyncio.gather(*computing, return_exceptions=True)
             for alias, reads in self.reads.items():
                 entry = self.run.record.get(alias)
                 if entry.content.ok:
@@ -2500,6 +2518,12 @@ def _left(run: Run) -> float | None:
     if run.bounds["time_budget"] is None:
         return None
     return max(0.0, run.bounds["time_budget"] - run.elapsed)
+
+
+def _deadline(run: Run) -> float | None:
+    """Where the time budget ends on the event loop's clock; None without one."""
+    left = _left(run)
+    return None if left is None else asyncio.get_running_loop().time() + left
 
 
 async def _reap(run: Run) -> None:

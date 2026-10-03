@@ -1197,6 +1197,10 @@ def test_a_list_at_exactly_the_size_limit_is_built_and_one_character_more_is_not
 def test_a_key_a_dict_writes_twice_counts_once_toward_the_size_limit():
     s = "a" * (LIMIT // 2 + 1)  # either value fits alone, the two together would not
     assert value('{k: *s, k: *s + "b"}', s=s) == {"k": s + "b"}
+    # counted by its value at the time: one that passes the limit on the way is refused, though the value
+    # the key ends with would fit
+    with pytest.raises(EvalError, match="past the size limit"):
+        value('{k: *s, k: "b"}', s="a" * LIMIT)
 
 
 class Reads(Env):
@@ -1294,6 +1298,9 @@ def test_the_runs_deadline_stops_a_branch_test_or_an_output_field_still_in_a_lon
     # deadline and the command after it was launched; the deadline stops it there now
     assert ("turn", "the time_budget of 0.2 is spent; nothing after it ran") in run.refused
     assert [e.alias for e in run.record if e.kind is Kind.RESULT] == ["outer", "inner"] and calls == []
+    # the refusal is on the run's list only: the spent budget ends the run before a notification tells it,
+    # and the closure names the outcome and the cancelled commands, never a refusal
+    assert "nothing after it ran" not in _notices(run)
 
 
 def test_a_value_whose_reader_the_deadline_cancelled_stops_computing_before_the_run_returns():
@@ -1307,6 +1314,81 @@ def test_a_value_whose_reader_the_deadline_cancelled_stops_computing_before_the_
     # thirty LIMITs of items: the deadline cancels the command reading *v, and the value, computed in
     # a task of its own, went on computing for nobody after the run returned
     assert run.record.get("n").content.reason == "cancelled" and alive == []
+
+
+class Faulty(MemoryNoteStore):
+    """A store whose reads raise `error`."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    def get(self, key):
+        raise self.error
+
+
+class Nap(BaseModel):
+    seconds: float
+
+
+def test_a_walk_whose_settle_raises_still_stops_the_value_it_was_computing():
+    profile = Profile("p", language="program", notes=Faulty(RuntimeError("the store is down")))
+    turn = fenced(f"v = {LONG}", "n = echo(text=*v)", 'note.k = note["j"]')
+
+    async def main():
+        actor = _actor("settle-raises", [])
+        with pytest.raises(RuntimeError, match="the store is down"):
+            await actor.run(profile, *_spent(turn, inner=LIMIT // 10))
+        return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+
+    # the write reads the store and fails in its own task, which the settle raises after waiting for the
+    # turn's commands; the value *v, computed in a task of its own for the command reading it, was
+    # left computing for nobody once the walk raised
+    assert asyncio.run(main()) == []
+
+
+@pytest.mark.parametrize("budget", [60.0, None])
+def test_a_timeout_error_from_a_store_read_is_that_error_not_the_time_budget_spent(budget):
+    profile = Profile("p", language="program", notes=Faulty(TimeoutError("the store did not answer")))
+    request = RunRequest(inputs=("go",), time_budget=budget, max_rounds=1)
+    # the deadline is far off or there is none: nothing here expired, so the walk's error is the error
+    # raised, never a refusal telling the budget is spent and never a format of a budget that is None
+    with pytest.raises(TimeoutError, match="the store did not answer"):
+        asyncio.run(_actor("store-timeout", []).run(profile, request, scripted(fenced('OUT{n: note["k"]}'))))
+
+
+def test_a_time_extension_granted_inside_the_walk_moves_the_deadline_the_walk_runs_under():
+    actor = _actor("extended", [])
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> float:
+        await asyncio.sleep(req.seconds)
+        return req.seconds
+
+    grant = 'DO run.more(bound="time_budget", amount=5, reason="one more step")'
+    turn = fenced(f"OUT{{granted: {grant}, after: DO nap(seconds=0.8)}}")
+    request = RunRequest(inputs=("go",), time_budget=0.4, max_rounds=1)
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the nap after the grant ends 0.8 s in, past the 0.4 s the run began with: the walk's deadline moved
+    # with the bound, so the output is built where the old deadline would have cut it
+    assert run.elapsed > 0.4
+    assert isinstance(run.outcome, Success)
+    assert run.output == {"granted": "time_budget raised from 0.4 to 5.4", "after": 0.8}
+
+
+@pytest.mark.parametrize(
+    "first", [('a = echo(text="x")',), ("if 1 / 0:", '    a = echo(text="x")')], ids=["settled", "refused"]
+)
+def test_a_walk_leaves_no_time_limit_behind_however_it_ends_so_a_later_grant_of_time_lands(first):
+    grant = 'DO run.more(bound="time_budget", amount=5, reason="one more step")'
+    request = RunRequest(inputs=("go",), time_budget=60.0, max_rounds=2)
+    turns = scripted(fenced(*first), fenced(f"OUT{{granted: {grant}}}"))
+    run = asyncio.run(_actor("limits", []).run(PROGRAM, request, turns))
+    # a limit left over from the first turn cannot be moved, and the grant would fail on it
+    assert isinstance(run.outcome, Success) and run.output == {
+        "granted": "time_budget raised from 60.0 to 65.0"
+    }
+    assert run.timeouts == set()
 
 
 class Grid(BaseModel):
