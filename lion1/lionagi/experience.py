@@ -138,7 +138,7 @@ class ExperienceLesson(BaseModel):
     run is cancelled. The guidance shows this first line and each field's description."""
 
     __spec_name__ = "experience.lesson"
-    text: str = Field(description="what to do or avoid, in your own words, 1 to 1,024 characters")
+    text: str = Field(description="what to do or avoid, in your own words: not blank, 1 to 1,024 characters")
     used_ids: list[str] = Field(
         default_factory=list,
         description="ids of the experience records your first notification showed that you used; "

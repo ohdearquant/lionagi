@@ -712,9 +712,9 @@ def test_the_lesson_guidance_shows_a_whole_first_sentence_and_the_limits_the_han
     from lionagi.spec import render_guidance
 
     # the guidance shows a spec's first docstring line and each field's description, nothing more of the
-    # docstring: the length, the ids rule and the turn to send it in must all be in what it shows
+    # docstring: the length, not blank, the ids rule and the turn to send it in must all be in what it shows
     head, text, used = render_guidance(ExperienceLesson).splitlines()
     assert head.startswith("experience.lesson: ") and head.endswith(" before the one with OUT{}.")
-    assert text == "  text: str  # what to do or avoid, in your own words, 1 to 1,024 characters"
+    assert text == "  text: str  # what to do or avoid, in your own words: not blank, 1 to 1,024 characters"
     assert used.startswith("  used_ids: list[str] = []  # ids of the experience records your first")
     assert used.endswith("any other id refuses the lesson")
