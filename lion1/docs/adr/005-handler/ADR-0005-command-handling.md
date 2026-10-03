@@ -1,7 +1,7 @@
 ---
 adr: ADR-0005
 status: draft
-liveness: operating (the replacement rebuilt from its fields, the three captures and the effect wait are pinned by tests; no handler in `hub/` declares a class, so each runs as a `write`)
+liveness: operating (the replacement rebuilt from its fields, the three captures and the effect wait are pinned by tests; under `hub/` only the web commands declare a class, `read`, and every other handler runs as a `write`)
 date: "2026-09-23"
 area: handler
 kind: new
@@ -334,5 +334,6 @@ runs under `-I` with lion's own interpreter (C7).
 
 - **S9**: Owed with D1, landed with it: the effect wait of C6, with the class on `Handler`. Before
   it landed, every command waited on its pointers only, as C6 says a `pure` one does. A write that
-  points at a later write of its turn now closes a circle and is refused `invalid`, and no handler
-  in `hub/` declares a class, so every command of a hub turn waits for the one before it.
+  points at a later write of its turn now closes a circle and is refused `invalid`. Under `hub/`
+  only the web commands declare a class, `read` ([[ADR-0023-the-web-tools#^c1|ADR-0023/C1]]); every
+  other command of a hub turn waits for the one before it.
