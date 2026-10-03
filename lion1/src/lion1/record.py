@@ -177,16 +177,11 @@ def fold(
     hidden: set[int] = set()
     spans: list[tuple[str, set[int]]] = []  # each summary's text and the entries it still replaces
 
-    def resolve(refs: Iterable[str]) -> list[int]:
-        seqs = []
-        for r in refs:
-            e = record.get(r)
-            if e is not None:
-                seqs.append(e.seq)
-        return seqs
-
     for d in directives(record, consumed):
-        targets = [s for s in (d.seqs if d.seqs is not None else resolve(d.refs)) if 0 <= s < d.at]
+        seqs = d.seqs
+        if seqs is None:
+            seqs = [e.seq for ref in d.refs if (e := record.get(ref)) is not None]
+        targets = [s for s in seqs if 0 <= s < d.at]
         if protect_input:
             targets = [s for s in targets if entries[s].kind is not Kind.INPUT]
         if d.op == "hide":
