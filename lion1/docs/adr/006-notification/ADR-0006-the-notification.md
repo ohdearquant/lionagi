@@ -65,8 +65,8 @@ that writes the frame itself is refused whole ([[ADR-0004-the-language#^c4|ADR-0
 
 A run that ends by an outcome appends the closure after its last turn and the reap: it carries the
 outcome, the cancelled aliases and the directives no notification follows
-([[ADR-0008-the-program#^d3|ADR-0008/D3]]). It is not a turn and calls no backend; an abort before
-the terminal commit appends none.
+([[ADR-0008-the-program#^d3|ADR-0008/D3]]). It is not a turn and calls no backend; an abort appends
+none.
 
 ### C2: The contents are what the runtime knows and the model does not _(enforced: mechanical)_ ^c2
 
@@ -84,11 +84,11 @@ In order:
 - the idle and identical-turn notes;
 - `settled:` with alias, record name, Spec, type and preview;
 - `failed after starting:` and `completion unknown:`, by `execution` mark (ADR-0005/C1);
-- `out of view now`;
+- `out of view now`, what left the view;
 - `not executed:` with alias and reason, a repair's note among them
   ([[ADR-0004-the-language#^c3|ADR-0004/C3]]);
 - `notes written:`;
-- turn one's `notes kept:` (ADR-0007/C8) and `experience:` block (ADR-0020/C3);
+- turn one's `notes kept:` (ADR-0007/C8);
 - `hooks failed` (ADR-0005/C5);
 - `inbound:` with origin and handle;
 - each section's text, or `section failed:` with the exception.

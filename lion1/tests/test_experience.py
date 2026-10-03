@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import lion1
-from lion1.experience import (
+from hub.experience import (
     Experience,
     ExperienceRecord,
     FileExperienceStore,

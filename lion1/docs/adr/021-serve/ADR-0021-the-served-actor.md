@@ -14,7 +14,6 @@ depends_on:
   - "[[ADR-0010-delegation|ADR-0010]]"
   - "[[ADR-0017-the-desk|ADR-0017]]"
   - "[[ADR-0018-chat-in-a-box|ADR-0018]]"
-  - "[[ADR-0020-the-experience|ADR-0020]]"
 tags:
   - adr
   - runtime
@@ -155,10 +154,8 @@ A conversation then waits for input once no command is pending (C15); another go
 Stop wakes a waiting run, whose wait answers false, and cancels an awaited call; pending commands
 settle, and the run ends `Stopped` at its next round unless it ended first.
 
-Cancel cancels the task: before the terminal commit an abort with no outcome
-([[ADR-0002-the-run#^c4|ADR-0002/C4]]), during it the outcome stands and the closure is written
-([[ADR-0020-the-experience#^c5|ADR-0020/C5]]). A cancel with an interrupt is the cancel
-([[ADR-0018-chat-in-a-box#^c9|ADR-0018/C9]]).
+Cancel cancels the task: an abort with no outcome ([[ADR-0002-the-run#^c4|ADR-0002/C4]]). A cancel
+with an interrupt is the cancel ([[ADR-0018-chat-in-a-box#^c9|ADR-0018/C9]]).
 
 ### C7: With a directory, a run's log holds what was published and says how the run ended _(enforced: mechanical; owed, S1)_ ^c7
 
@@ -235,8 +232,7 @@ are stopped together (C6) and awaited under one grace deadline, then cancelled a
 unlatched log gets its `END` row, and the bus subscriptions are removed last.
 
 Cancellation is cooperative. A handler that will not yield holds the return, and the service does
-not kill it (S6). The core does not wait for a slow experience store
-([[ADR-0020-the-experience|ADR-0020]] S3), which may still be finishing when `serve` returns.
+not kill it (S6).
 
 ### C12: The core gains no dependency and imports no provider _(enforced: mechanical; owed, S1)_ ^c12
 
@@ -539,7 +535,6 @@ the key unchanged; only the refusal of the act that took a key releases it.
 | Replay of missed events by id | a second ordered store beside the record; the state frame and the record read recover the rows and the end (A4) |
 | A failed append that only marks the state | rows would stream that no log holds, and a resume would replay less than the client saw (C8) |
 | Appending the `END` row, or retrying, after a failed append | the new row either joins the torn bytes into one last line the loader drops, or follows them past a line feed, where the loader refuses the whole file; neither keeps the row, and the cursor cannot repair bytes already written (C8) |
-| Waiting at shutdown for experience stores | the core does not wait for a slow store, so the service has nothing to await ([[ADR-0020-the-experience\|ADR-0020]] S3) |
 | Trusting the parsed headers | the parser accepts a folded line, a space before the colon and a repeated Origin; the raw checks of D8 run first (C10) |
 | Calling a handler with no run | a `Context` belongs to a run ([[ADR-0005-command-handling#^c3\|ADR-0005/C3]]); its bounds and its request's gates are the run's, and the actor's `before` hooks apply to every run it serves |
 | An error code on `Service.offer`'s refusal | it is owner-side Python, a `ValueError` naming the field; D9's codes are the transport's |
@@ -563,8 +558,7 @@ the key unchanged; only the refusal of the act that took a key releases it.
   `queue`.
 - **S6**: A handler that blocks the loop stalls every run and every stream (A2), and so does an
   offer's synchronous backend for the whole of its call; a log append is a file write on the loop.
-  `serve` returns only once every handler has yielded to its cancellation. An experience store's
-  task may outlive it (C11).
+  `serve` returns only once every handler has yielded to its cancellation.
 - **S7**: A tool-protocol transport over the same service, and a `lion serve` command, are later
   changes; the command amends [[ADR-0016-the-lion-command|ADR-0016]].
 - **S8**: A restart loses live runs: their logs remain and a resume is the client's ask (C7). The
