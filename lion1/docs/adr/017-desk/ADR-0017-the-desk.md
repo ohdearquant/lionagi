@@ -303,6 +303,40 @@ not to do.
 lookup given no `args.query` raises, `Record` counts a part that raises as a failed control, and the
 desk leaves the message.
 
+### C15: The phone page keeps its newest log lines and its draft _(enforced: mechanical)_ ^c15
+
+- **Subject**: the script `/app` serves, run by a browser.
+- **Violated when**: a log box holds over 400 lines or shifts lines a scrolled-up reader still has,
+  a re-render included. Typed words are lost, outlive their send or show on another page.
+
+A resident's log buffer and box each hold 400 lines. A reader at the bottom follows the newest line;
+one scrolled up keeps the lines in view, except those the oldest-first eviction removes. A re-render
+of the same page, after a control or a send, restores the reader's place the same way; a navigation
+starts at the bottom.
+
+A `history` batch, the server's tail when the stream connects, replaces that resident's buffer and
+dropped-line count; a box on show is rebuilt from it, so a reconnect repeats no line.
+
+The composer's text is the page's draft: a re-render restores it, a send's accepted answer clears it
+unless an edit followed the send, and a navigation clears it.
+
+### C16: The phone page shows the newest rows, whichever of the poll and the stream brings them _(enforced: mechanical)_ ^c16
+
+- **Subject**: `/api/areas`, the `areas` events of `/events` and the script `/app` serves.
+- **Violated when**: older rows replace newer ones shown, or later rows are refused.
+
+A read whose rows differ from the last takes as its revision the microsecond wall clock, or the last
+plus one if larger, the event `id` and the `X-Areas-Revision` header. An unchanged read keeps the
+revision; a read after a failed one is changed. Other pages carry none. `/api/areas` reads for
+itself; `/events` sends the last read when its revision exceeds the last sent.
+
+Each stream `open` starts the comparison over: its first rows are shown whatever their revision, and
+after them a read not above the last shown is refused. Stream down, a poll's answer is shown as it
+arrives.
+
+Polls run one at a time from a stream error until a connection's first rows; `open` or ten seconds
+aborts the one out, and an aborted or failed poll frees the next.
+
 ## Decisions
 
 ### D1: `Desk` in `hub/agent/desk.py`: six handlers, the gate on `OUT{}`, the watch ^d1
@@ -398,16 +432,45 @@ tick.
 
 ### D8: `hub/areas.py` and `lion areas` ^d8
 
-Serves C10 and C11. `load_areas`, `resident`, `status`, `table` and `page` read files and one lock;
-`controls_info` adds a process check, which a restart reads before it acts. The server in
+Serves C10, C11, C15 and C16. `load_areas`, `resident`, `status`, `table` and `page` read files and
+one lock; `controls_info` adds a process check, which a restart reads before it acts. The server in
 `apps/cli/lion_cli/areas.py` is a stdlib `ThreadingHTTPServer` on `127.0.0.1` by default, `--allow`
 adding a name it answers to; the phone shell is `hub/app.py`. The registry defaults to
 `.lionagi/areas.toml` under the home directory. `--file` names the registry, `--host` the address,
 `--refresh` the pages' reload in seconds (5), and `--json` prints the areas and rows as JSON.
 
-- **Landing evidence**: `tests/test_areas.py` (22 tests), among them
-  `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file` and
-  `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`.
+- **Landing evidence**: `tests/test_areas.py`:
+  `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file`,
+  `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`,
+  `test_a_stream_opened_after_a_poll_carries_rows_no_older_than_the_poll`,
+  `test_the_api_and_the_stream_stamp_their_rows_with_one_rising_revision`,
+  `test_the_stream_sends_a_read_above_the_last_it_sent_though_its_rows_are_those_it_sent`,
+  `test_a_read_whose_rows_are_unchanged_keeps_the_revision_and_the_stream_stays_quiet` and
+  `test_the_revision_continues_above_the_last_when_the_clock_stands_still_or_steps_back`;
+  `tests/app_page_harness.js` runs the served script under node:
+  `test_the_app_log_box_holds_400_nodes_after_405_lines_and_a_reader_scrolled_up_stays_put`,
+  `test_the_app_re_render_of_the_page_a_reader_is_on_keeps_a_scrolled_up_readers_lines_in_view`,
+  `test_the_app_re_render_follows_a_reader_at_the_bottom_and_a_new_page_starts_there`,
+  `test_the_app_shows_a_history_batch_in_the_box_of_the_page_already_open`,
+  `test_the_app_replaces_a_residents_log_with_the_tail_a_reconnect_replays`,
+  `test_the_app_restarts_the_dropped_line_count_of_a_log_a_history_batch_replaces`,
+  `test_the_app_takes_an_event_or_a_live_poll_answer_only_above_the_revision_shown`,
+  `test_the_app_refuses_an_event_under_a_poll_answer_shown_and_shows_one_above_it`,
+  `test_the_app_shows_an_event_above_a_restarted_servers_poll_though_below_the_old_rows`,
+  `test_the_app_takes_a_poll_answer_whatever_its_revision_so_a_restarted_server_is_shown`,
+  `test_the_app_takes_a_poll_answer_above_the_stream_rows_shown_while_it_was_out`,
+  `test_the_app_refuses_a_poll_answer_not_above_the_revision_shown_while_the_stream_is_live`,
+  `test_the_app_takes_a_poll_answer_whatever_its_revision_while_the_stream_is_down`,
+  `test_the_app_shows_the_streams_rows_again_above_a_poll_answer_that_showed_others`,
+  `test_the_app_takes_the_first_rows_after_the_stream_opens_whatever_their_revision`,
+  `test_the_app_still_drops_rows_older_than_those_shown_while_no_stream_opens_between`,
+  `test_the_app_log_box_drops_the_oldest_lines_under_a_reader_at_its_top`,
+  `test_the_app_composer_keeps_words_typed_while_a_send_is_out_through_its_answer_and_the_reload`,
+  `test_the_app_composer_clears_what_a_send_took_and_a_new_page_starts_empty`,
+  `test_the_app_composer_keeps_the_words_of_a_refused_send_and_clears_them_once_one_is_accepted`,
+  `test_the_app_drops_a_poll_answer_the_stream_overtook_and_applies_the_next_poll`,
+  `test_the_app_starts_no_poll_while_one_is_out_and_a_failed_poll_frees_the_next` and
+  `test_the_app_gives_up_a_poll_that_never_settles_and_the_next_tick_polls_again`.
 
 ### D9: `Bounded.reply` grants a reply; `_spent` counts every cap ^d9
 
