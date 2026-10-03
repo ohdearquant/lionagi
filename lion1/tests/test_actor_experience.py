@@ -705,3 +705,16 @@ def test_an_unnamed_model_and_version_stay_none():
     unnamed, named = store.persisted
     assert (unnamed.model, unnamed.version, unnamed.scope) == (None, None, ("x-model", "solver", None))
     assert (named.model, named.version, named.scope) == ("declared", "v3", ("x-model", "solver", "v3"))
+
+
+def test_the_lesson_guidance_shows_a_whole_first_sentence_and_the_limits_the_handler_holds_it_to():
+    from lionagi.experience import ExperienceLesson
+    from lionagi.spec import render_guidance
+
+    # the guidance shows a spec's first docstring line and each field's description, nothing more of the
+    # docstring: the length, not blank, the ids rule and the turn to send it in must all be in what it shows
+    head, text, used = render_guidance(ExperienceLesson).splitlines()
+    assert head.startswith("experience.lesson: ") and head.endswith(" before the one with OUT{}.")
+    assert text == "  text: str  # what to do or avoid, in your own words: not blank, 1 to 1,024 characters"
+    assert used.startswith("  used_ids: list[str] = []  # ids of the experience records your first")
+    assert used.endswith("any other id refuses the lesson")
