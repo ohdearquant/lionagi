@@ -712,8 +712,10 @@ class Agent:
             self.state.put("taking", {"mail": [m.get("id") for m in mail]}, run="-", seq=0)
             await self.khive.mark_read([m.get("full_id") or m["id"] for m in mail])
         if self.admit is not None:  # refused mail is read, recorded on the cursor, and never run
-            self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m in mail if not self.admit(m)]
-            mail = [m for m in mail if self.admit(m)]
+            # one answer per message: a gate may do work per call, and a second call may answer otherwise
+            verdicts = [(m, self.admit(m)) for m in mail]
+            self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m, ok in verdicts if not ok]
+            mail = [m for m, ok in verdicts if ok]
         mail = self._triage(mail, woken=bool(notices))
         # `taking` names only what runs: deferred mail sits under its own note, dropped mail on the cursor
         self.state.put("taking", {"mail": [m.get("id") for m in mail]} if mail else {}, run="-", seq=0)
@@ -761,8 +763,9 @@ class Agent:
             raise AgentError(f"not in the read box: {sorted(wanted)}")
         self._dropped = []
         if self.admit is not None:  # the gate stands on this path as on `wake`: a rerun is a wake
-            self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m in found if not self.admit(m)]
-            found = [m for m in found if self.admit(m)]
+            verdicts = [(m, self.admit(m)) for m in found]  # asked once per message, as on `wake`
+            self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m, ok in verdicts if not ok]
+            found = [m for m, ok in verdicts if ok]
             if not found:
                 prior = _value(self.state, "cursor", {})
                 facts = {**prior, "dropped": self._dropped, "dropped_at": _stamp(self.clock())}
@@ -1111,10 +1114,9 @@ class Agent:
                     self.state.put("taking", {"mail": [m.get("id") for m in mail]}, run="-", seq=0)
                     await self.khive.mark_read([m.get("full_id") or m["id"] for m in mail])
                 if self.admit is not None:
-                    self._dropped = [
-                        {"id": m.get("id"), "from": _sender(m)} for m in mail if not self.admit(m)
-                    ]
-                    mail = [m for m in mail if self.admit(m)]
+                    verdicts = [(m, self.admit(m)) for m in mail]  # asked once per message, as on `wake`
+                    self._dropped = [{"id": m.get("id"), "from": _sender(m)} for m, ok in verdicts if not ok]
+                    mail = [m for m, ok in verdicts if ok]
                 mail = self._triage(mail, woken=bool(notices))
                 self.state.put(
                     "taking", {"mail": [m.get("id") for m in mail]} if mail else {}, run="-", seq=0
