@@ -130,6 +130,7 @@ async def one(row: dict, args: argparse.Namespace, out_dir: Path, ledger: Path, 
                     cpu=args.cpu,
                     memory=args.memory,
                     label=f"lionagi-swe-{args.run_id}",
+                    unaided=args.unaided,
                 )
                 eval_timeout = 1800.0
             await box.start()
@@ -317,6 +318,9 @@ async def main(args: argparse.Namespace) -> None:
             f"--cost-budget {args.cost_budget}: this arm has no cost meter to cap against (the codex "
             "CLI and the codex backend report tokens, not dollars); run it with no --cost-budget"
         )
+    if args.where == "runta" and args.harness == "codex-cli" and args.unaided:
+        # its binary is downloaded from github.com, which an unaided Runta box's policy denies
+        raise SystemExit("--harness codex-cli on --where runta installs from github.com: run it with --aided")
     if args.cost_budget is None and not unmetered:
         args.cost_budget = 1.0
     data = SETS[args.set].read_bytes()  # one read: the manifest digests the bytes these rows came from

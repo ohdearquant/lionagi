@@ -217,10 +217,19 @@ hex digits) is a failed git read. Defaults: unaided, settle 0, criteria off, a 1
 Serves C1 and C4. `grade` mirrors the harness's `run_instance` in the box: reset, three apply
 attempts, the eval script under a timeout, the harness's report function, a status on every early
 stop. `close_code_hosts` writes marked `/etc/hosts` lines and probes from inside; `open_code_hosts`
-rewrites the file in place, since it is a bind mount, and proves no marked line is left.
+rewrites the file in place, since it is a bind mount, and proves no marked line is left. An unaided
+Runta runtime carries the code hosts as its policy, which `open_code_hosts` empties and proves open.
+The codex arm installs from `github.com`: unaided on Runta it is refused.
 
 - **Landing evidence**: `tests/test_swe_sandbox.py`: `test_failed_reset_is_not_graded`, the probe
-  test refusing a reachable or elsewhere-resolving host.
+  test refusing a reachable or elsewhere-resolving host. `tests/test_swe_runta.py`:
+  `test_the_codex_arm_on_an_unaided_runta_launch_is_refused_before_any_box`,
+  `test_testbed_runta_carries_the_code_hosts_as_its_policy_only_when_unaided`,
+  `test_a_runta_run_sends_the_code_host_denylist_with_the_create_only_when_unaided`,
+  `test_an_unaided_runta_runtime_with_another_policy_is_refused_before_the_model_runs`,
+  `test_reopening_a_runta_box_empties_its_policy_and_waits_until_the_hosts_answer`,
+  `test_a_runta_policy_that_does_not_lift_in_time_refuses_the_grade`,
+  `test_reopening_a_runta_box_without_a_policy_only_rewrites_the_hosts_file`.
 
 ### D3: The loop arm in `bench/swe/run_swe.py` ^d3
 

@@ -814,6 +814,23 @@ def test_resume_whose_policy_cannot_be_read_deletes_the_runtime_and_raises_that_
     assert rt.paused is False and rt.deleted is True and box.started is False and box.box_id is None
 
 
+def test_resume_whose_sdk_call_fails_deletes_the_runtime_and_raises_that_error(tmp_path, monkeypatch):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=WANTED)
+    mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="allowlist", allowed_hosts=["a.com"], denied_hosts=[])
+    asyncio.run(box.start())
+    rt = mod.runtimes_store["rt-1"]
+    asyncio.run(box.suspend())
+
+    async def lost_response(timeout=300.0):
+        raise OSError("lost response")  # the service may have resumed the runtime; nothing says which
+
+    rt.resume = lost_response
+    with pytest.raises(OSError, match="lost response"):
+        asyncio.run(box.resume())
+    assert rt.deleted is True and box.started is False and box.box_id is None
+    assert clients[0].closed is True and mod.async_runta_instances[-1].closed is True
+
+
 def test_resume_refused_with_a_deletion_that_fails_keeps_the_refusal(tmp_path, monkeypatch):
     box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=WANTED)
     mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="allowlist", allowed_hosts=["a.com"], denied_hosts=[])
@@ -982,6 +999,24 @@ def test_rc_137_is_timed_out_only_once_elapsed_reaches_the_deadline(monkeypatch)
     box2._rt = RecordingRuntime(exit_code=137, delay=0.05)  # elapsed reaches the (short) deadline
     r = asyncio.run(box2.exec(["x"], timeout=0.03))
     assert r["timed_out"] is True and r["stderr"] == "ended at the 0.03s timeout"
+
+
+@pytest.mark.parametrize(
+    ("rc", "stderr"),
+    [(137, b""), (124, b"Command timed out after 0.034s\n")],
+    ids=["a kill", "the service's own 124"],
+)
+def test_a_run_past_a_fractional_deadline_is_timed_out_though_its_rounded_time_is_under_it(
+    monkeypatch, rc, stderr
+):
+    install_runta_minimal(monkeypatch)
+    clock = iter([100.0, 100.0344])  # 0.0344 s elapsed, reported as 0.03: under a 0.034 s deadline
+    monkeypatch.setattr(runta_mod, "time", types.SimpleNamespace(monotonic=lambda: next(clock)))
+    box = RuntaSandbox(workdir="/w")
+    box._rt = RecordingRuntime(exit_code=rc, stderr=stderr)
+    r = asyncio.run(box.exec(["x"], timeout=0.034))
+    assert r["timed_out"] is True and r["elapsed"] == 0.03
+    assert r["stderr"].endswith("ended at the 0.034s timeout")
 
 
 def test_rc_124_is_timed_out_only_with_the_services_own_message_past_the_deadline(monkeypatch):
@@ -1155,6 +1190,34 @@ def test_set_egress_checkpoint_suspend_resume_events_after_stop_and_stop_twice(t
 
     asyncio.run(box.stop())  # a second stop is a no-op, not an error
     assert rt.deleted is True
+
+
+@pytest.mark.parametrize(
+    "failing",
+    [("sdk",), ("api",), ("sdk", "api")],
+    ids=["the SDK client", "the API client", "both"],
+)
+def test_stop_closes_both_clients_when_one_fails_to_close_and_raises_the_first_error(
+    tmp_path, monkeypatch, failing
+):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path)
+    asyncio.run(box.start())
+    sdk, api, closed = mod.async_runta_instances[-1], box._api, []
+
+    def closing(name, real):
+        async def close():
+            closed.append(name)
+            if name in failing:
+                raise OSError(name)
+            await real()
+
+        return close
+
+    sdk.close, api.close = closing("sdk", sdk.close), closing("api", api.close)
+    with pytest.raises(OSError) as e:
+        asyncio.run(box.stop())
+    assert str(e.value) == failing[0]  # the first of the errors, raised once both had been tried
+    assert closed == ["sdk", "api"] and mod.runtimes_store["rt-1"].deleted is True
 
 
 def test_events_without_a_runtime_id_refuses():

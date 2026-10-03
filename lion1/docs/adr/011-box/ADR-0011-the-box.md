@@ -215,7 +215,10 @@ need `capture` set.
 
 - **Landing evidence**: `tests/test_runta.py` (the SDK and the HTTP client stubbed; the real service
   under an opt-in flag, listed in `tests/test_shell.py`'s opt-in test), among them
-  `test_start_refuses_a_runtime_that_reports_another_policy_naming_both_and_deletes_it` and
+  `test_start_refuses_a_runtime_that_reports_another_policy_naming_both_and_deletes_it`,
+  `test_resume_whose_sdk_call_fails_deletes_the_runtime_and_raises_that_error`,
+  `test_a_run_past_a_fractional_deadline_is_timed_out_though_its_rounded_time_is_under_it`,
+  `test_stop_closes_both_clients_when_one_fails_to_close_and_raises_the_first_error` and
   `test_a_runtime_that_ends_before_its_workdir_is_made_raises_sandbox_dead`.
 
 ## Alternatives
@@ -289,9 +292,10 @@ need `capture` set.
   no boundary against one: a link it swaps between the resolve and the read reaches what that
   process could read itself.
 - **S16**: A box given a policy sends it with the create and starts, or resumes, only a runtime that
-  reports it. A restored runtime's processes run from the restore, so a policy set after leaves them
-  a window under another (S17); what ran before the read is the service's to have gated. One that
-  reports another policy is deleted and the call raises `SandboxDead` naming both; a deletion that
-  fails is named in that error. A box with no policy sends none and checks none.
+  reports it. A policy set after a restore leaves its processes a window under another (S17); the
+  service gates what ran before the read. A runtime that reports another policy, whose policy is
+  unreadable, or that fails to resume is deleted and the call raises `SandboxDead` naming both
+  policies, else the error itself; a failed deletion is named in it. A box with no policy sends none
+  and checks none.
 - **S17**: A policy change on a running runtime can read back before it holds. A closure that
   matters is proven from inside the box.

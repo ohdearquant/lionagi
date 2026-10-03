@@ -573,7 +573,7 @@ class RuntaSandbox(BoxBase):
         r = await self._on_runtime(
             cmd, timeout=None if timeout is None else timeout + 15, env=env or None, stdin=stdin
         )
-        elapsed = round(time.monotonic() - t0, 2)
+        elapsed = time.monotonic() - t0
         rc, stderr = r.exit_code, r.stderr.decode(errors="replace")
         # 137 alone is any SIGKILL and 124 a command's own; the clock and the service's line say which
         timed_out = (
@@ -587,7 +587,7 @@ class RuntaSandbox(BoxBase):
             "rc": rc,
             "stdout": r.stdout.decode(errors="replace"),
             "stderr": stderr,
-            "elapsed": elapsed,
+            "elapsed": round(elapsed, 2),
             "timed_out": timed_out,
         }
 
@@ -645,11 +645,12 @@ class RuntaSandbox(BoxBase):
         await self._rt.pause()
 
     async def resume(self, *, timeout: float = 300.0) -> None:
-        """Resume a suspended runtime; one that comes back reporting another policy is deleted."""
-        await self._rt.resume(timeout=timeout)
+        """Resume a suspended runtime; one that fails to resume or comes back reporting another policy
+        is deleted."""
         try:
+            await self._rt.resume(timeout=timeout)
             await self._own_policy("resumed")
-        except BaseException as e:  # another policy, or no read of it: a runtime not shown to be a box
+        except BaseException as e:  # no resume, another policy or no read of it: not shown to be a box
             await self._stop_for(e)
             raise
 
@@ -672,12 +673,19 @@ class RuntaSandbox(BoxBase):
         finally:
             self._rt = None
             self.started = False
-            if self._client is not None:
-                client, self._client = self._client, None
-                await client.close()
-            if self._api is not None:
-                api, self._api = self._api, None
-                await api.close()
+            client, self._client = self._client, None
+            api, self._api = self._api, None
+            first: BaseException | None = None  # both clients are closed; the first failure is raised
+            for held in (client, api):
+                if held is None:
+                    continue
+                try:
+                    await held.close()
+                except BaseException as e:
+                    if first is None:
+                        first = e
+            if first is not None:
+                raise first
 
 
 def _policy_json(policy: Any) -> dict[str, Any] | None:

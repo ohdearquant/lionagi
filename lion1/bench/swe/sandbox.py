@@ -15,12 +15,14 @@ parser. No second container, no image round trip.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shlex
+import time
 from pathlib import Path
 
-from hub.tools import Box, DaytonaSandbox, DockerSandbox, RuntaSandbox
+from hub.tools import Box, DaytonaSandbox, DockerSandbox, Egress, RuntaSandbox
 from hub.tools.runta import build_image, find_image
 
 WORKDIR = "/testbed"
@@ -28,14 +30,25 @@ PRELUDE = "source /opt/miniconda3/bin/activate testbed 2>/dev/null"  # the eval 
 
 
 def testbed(
-    image: str, where: str = "local", *, cpu: int = 2, memory: int = 2, label: str = "lionagi-swe"
+    image: str,
+    where: str = "local",
+    *,
+    cpu: int = 2,
+    memory: int = 2,
+    label: str = "lionagi-swe",
+    unaided: bool = False,
 ) -> Box:
     """A box over the instance's eval image, not yet started: docker for `local`, Daytona for
-    `daytona`, and for `runta` a runtime from `image`, the Runta image `runta_image` returned."""
+    `daytona`, and for `runta` a runtime from `image`, the Runta image `runta_image` returned. An
+    `unaided` Runta runtime is made under the code hosts as its egress policy: the service enforces
+    it outside the guest, where the `/etc/hosts` closure (`close_code_hosts`) can be undone."""
     if where == "local":
         return DockerSandbox(image, workdir=WORKDIR, prelude=PRELUDE)
     if where == "runta":
-        return RuntaSandbox(image, workdir=WORKDIR, prelude=PRELUDE, cpu=cpu, memory=memory, name=label)
+        egress = Egress(mode="denylist", hosts=CODE_HOSTS) if unaided else None
+        return RuntaSandbox(
+            image, workdir=WORKDIR, prelude=PRELUDE, cpu=cpu, memory=memory, name=label, egress=egress
+        )
     if where == "daytona":
         return DaytonaSandbox(image, workdir=WORKDIR, prelude=PRELUDE, cpu=cpu, memory=memory, label=label)
     raise ValueError(f"no box is called {where!r}")
@@ -190,9 +203,11 @@ async def close_code_hosts(box: Box) -> str:
     return "code hosts and package indexes closed; " + ", ".join(said)
 
 
-async def open_code_hosts(box: Box) -> None:
+async def open_code_hosts(box: Box, *, within: float = 120.0) -> None:
     """Remove the closure's lines from /etc/hosts: the grader's eval script runs after the model and
-    may install from an index; what the model could not reach is already on the record."""
+    may install from an index; what the model could not reach is already on the record. A Runta box
+    under a policy has it emptied too, and waits up to `within` seconds for the probed hosts to answer
+    from inside: the service can read a change back before it holds."""
     # rewritten in place: /etc/hosts is a bind mount in the box, so `sed -i` (rename over it) fails
     # with "Device or resource busy", and finished runs lost their grading to it
     mark = shlex.quote(_MARK)
@@ -202,3 +217,15 @@ async def open_code_hosts(box: Box) -> None:
     )
     if rc != 0:
         raise RuntimeError(f"could not reopen the code hosts (rc {rc}): {out[-300:]}")
+    if not (isinstance(box, RuntaSandbox) and box.egress is not None):
+        return
+    await box.set_egress(Egress(mode="denylist"))
+    deadline = time.monotonic() + within
+    while True:
+        shut = [host for host in PROBED if (await _probe(box, host))[2] != "0"]
+        if not shut:
+            return
+        if time.monotonic() >= deadline:
+            shut_hosts = ", ".join(shut)
+            raise RuntimeError(f"the policy was emptied and {shut_hosts} still did not answer in {within:g}s")
+        await asyncio.sleep(3)
