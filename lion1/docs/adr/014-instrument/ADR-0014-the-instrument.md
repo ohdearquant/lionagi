@@ -130,8 +130,8 @@ stale or parked, is told once and again only after it cleared.
 
 A list is one page. A pull request absent from a full page is read on its own with `gh pr view`
 before `pr-state` calls it closed, and only `CLOSED` or `MERGED` closes it; a failed view or another
-state fails the control and keeps its row. `required-contexts` and `ci-red` keep its last row
-unread. A short page needs no verify.
+state fails the control and keeps its row. `required-contexts`, `verdict-freshness` and `ci-red`
+keep its last row unread. A short page needs no verify.
 
 ### C6: A floor is read by name, once per device, with its own budget, in GiB base-1024 _(enforced: mechanical)_ ^c6
 
@@ -223,8 +223,8 @@ every named row and leaves the `required-contexts` and `ci-red` snapshots untouc
 
 A pull request list that is not a JSON list (empty output, `null` included), or holds an integer
 past the conversion limit, is unread by every instrument: the control fails and the last rows stay.
-`worktrees` reads `git worktree list --porcelain -z`, so a path holding a line break stays whole,
-and strips only a leading `refs/heads/`.
+`worktrees` reads `git worktree list --porcelain -z`, keeping line breaks in paths; any branch,
+`detached` included, loses only a leading `refs/heads/`.
 
 - **Landing evidence**: in `tests/test_instruments.py`,
   `test_pr_state_first_sight_is_the_full_row_then_transitions_and_the_stale_crossing_once`,
@@ -235,8 +235,14 @@ and strips only a leading `refs/heads/`.
   `test_worktrees_a_path_holding_a_line_break_is_read_whole`,
   `test_worktrees_strips_only_the_leading_refs_heads_from_a_branch`,
   `test_worktrees_a_pr_number_past_the_integer_conversion_limit_is_unread`,
+  `test_worktrees_a_branch_named_detached_is_queried_and_parks_beside_a_detached_head`,
+  `test_worktrees_a_row_stored_under_the_old_detached_label_is_compared_on_its_pr_alone`,
+  `test_worktrees_a_branch_named_detached_whose_origin_or_pr_read_fails_is_unread` (S12),
   `test_a_pr_list_that_is_not_a_json_list_is_unread_by_every_instrument_reading_through_it`,
-  `test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed`.
+  `test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed`,
+  `test_verdict_freshness_a_pr_absent_from_a_full_page_keeps_its_last_row_until_a_short_page`,
+  `test_verdict_freshness_an_enumerator_total_beside_fewer_prs_retires_only_a_pr_read_closed`,
+  `test_verdict_freshness_a_pr_listed_twice_beside_an_equal_total_closes_no_unseen_pr`.
 
 ### D5: The `disk` instrument ^d5
 
@@ -313,8 +319,10 @@ refused at build.
   nothing was sent, no ledger row was written. A missing known-positive prints as "(none)" and
   nothing refuses it; the tests in D6 drive the check, `render` and `land`.
 - **S4**: A full page of 100 open pull requests costs one `gh pr view` per pull request the last
-  snapshot held and the page lacks, on every `pr-state` run. `verdict-freshness` has no full-page
-  check and calls a pull request beyond the page no longer open.
+  snapshot held and the page lacks, on every `pr-state` run. With `repos`, `verdict-freshness` reads
+  no view of a pull request beyond a full page, so one closed there keeps its last row until a page
+  is short. An enumerator whose lines repeat a pull request or disagree with its `TOTAL` fails the
+  control and retires a prior row only when that pull request's own read gives any state but `OPEN`.
 - **S5**: `mechanism` is declared by every instrument and read by no code; the structured rows (a
   check inventory per pull request, red lines per run, verdict rows) are read by no code either.
 - **S6**: The model can narrow or replace the population through `args`: `pr-state` takes `repos`
@@ -339,3 +347,40 @@ refused at build.
   crossing refused is owed at the next run, and the chore's own mark waits for every copy. A notice
   that reached nobody leaves the chore untold:
   `test_a_dead_instrument_notice_that_reached_nobody_leaves_the_crossing_untold_until_a_send_lands`.
+- **S12**: A worktree record with no `branch` attribute is a detached HEAD: `worktrees` keeps it as
+  no branch (`None`), shows it as `(detached HEAD)`, asks no pull request about it and never parks
+  it. A branch named `detached` is a branch and is asked like any other. An older row, `detached`
+  with PR `?`, stands for either and the current writer never stores that pair: only its PR is
+  compared, and a transition names its branch `detached or (detached HEAD)`.
+- **S13**: A `verdict-freshness` row is one per pull request, its repo case-blind and its number
+  unpadded, however any source spells it. A stored key keeps its prior spelling: the identity is
+  normalized, the key is not rewritten. Of an older snapshot's rows for one pull request, the one
+  recording the head it has now stays, else the one spelled as this run reads it, else the smaller
+  key; the others are retired silently. A full page keeps a row however it is spelled
+  (`test_verdict_freshness_a_prs_own_read_meets_its_row_however_the_enumerator_spells_it`,
+  `test_verdict_freshness_two_rows_for_one_pr_become_one_without_a_closure`,
+  `test_verdict_freshness_of_two_conflicting_rows_for_one_pr_the_one_at_its_head_now_is_the_row`,
+  `test_verdict_freshness_two_rows_at_one_head_keep_the_spelling_read_now_then_the_smaller_key`,
+  `test_verdict_freshness_a_short_page_meets_a_row_its_snapshot_spelled_in_another_case`,
+  `test_verdict_freshness_a_full_page_keeps_a_row_the_last_snapshot_spelled_another_way`).
+- **S14**: A verdict file counts for a pull request by the repo and number its name spells,
+  case-blind and unpadded, when its content names that pull request. A file that cannot be read
+  stays a candidate; if it is the newest, it is reported unreadable and fails the control. Each
+  verdict is its own candidate, so two that differ only in the repo's case are both read; the newest
+  by mtime, then round, then the greatest path is the verdict, in any listing order
+  (`test_verdict_freshness_two_verdicts_that_differ_only_in_the_repos_case_are_both_candidates`,
+  `test_verdict_freshness_verdicts_of_one_mtime_and_round_are_chosen_by_path_not_by_listing_order`,
+  `test_verdict_freshness_a_verdict_is_found_whether_its_file_pads_the_number`,
+  `test_verdict_freshness_an_unreadable_verdict_is_a_candidate_that_fails_the_control_when_newest`).
+- **S15**: A candidate is a file stem: its JSON, or its Markdown header only when the stem has no
+  JSON; a JSON that does not parse is the candidate's error, never a fallback to the Markdown beside
+  it (`test_verdict_freshness_a_prs_malformed_json_is_never_hidden_behind_its_md_copy`). The
+  case-blind, unpadded identity of S13 and S14 is this instrument's; the desk's triage of a verdict
+  notice still compares the repo spelling exactly and escalates a mismatch, so it fails closed.
+- **S16**: The runs of one `verdict-freshness` instrument on one event loop go one at a time, each
+  from the snapshot the one before it put, so a list taken before another run wrote never retires a
+  pull request that run listed. The guarantee is per event loop: the agent runs one loop, and its
+  pid lock leaves one process acting as its identity. It covers every path that reaches the put; the
+  early returns (unreadable directory, invalid newest verdict, failed or untrusted enumeration)
+  write nothing. Pinned by
+  `test_a_complete_but_older_list_does_not_retire_a_pr_a_later_overlapping_run_listed`.

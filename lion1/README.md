@@ -14,5 +14,6 @@ Work on it with [uv](https://docs.astral.sh/uv/):
 The tests of the phone page (`lion areas`, served at `/app`) run its script under
 [node](https://nodejs.org/), so `node` must be on the `PATH`; without it they fail, naming node.
 
-CI runs the suite on Linux (x86-64 and ARM) and macOS with Python 3.11, 3.12, 3.13 and 3.14, then again at
-the lowest declared dependency versions and against the built wheel.
+A pull request's hosted check lints and runs the suite with coverage on Linux with Python 3.11. The suite
+also runs with Python 3.12, 3.13 and 3.14, at the lowest declared dependency versions and against the
+built wheel before a change is merged.

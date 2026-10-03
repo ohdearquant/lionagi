@@ -6,7 +6,7 @@
 | [ADR-0002](002-run/ADR-0002-the-run.md) | 002-run | draft | operating (two OUT{} refusing the message whole, a repeated accept refusal told with its count and a generated alias freed past a value are pinned by tests; the code still says round, S3; the opt-in wait for the whole turn is not built, S4) | ADR-0001 |
 | [ADR-0003](003-bounds/ADR-0003-the-bounds.md) | 003-bounds | draft | operating (every bound resolves once at run start and is checked at the turn's start, time and cost again before each handler; the context check and its job error, run.more, extend, the profile's defaults, out as a command and accept as its last hook are under tests; the notification does not name idle turns, cost or refusals, and no backend hands back a cost yet, S4) | ADR-0001, ADR-0002 |
 | [ADR-0004](004-language/ADR-0004-the-language.md) | 004-language | draft | operating (the refusal of a mixed response and the DeepSeek markup read in the backend are pinned by tests) | ADR-0001, ADR-0002 |
-| [ADR-0005](005-handler/ADR-0005-command-handling.md) | 005-handler | draft | operating (the replacement rebuilt from its fields, the three captures and the effect wait are pinned by tests; no handler in `hub/` declares a class, so each runs as a `write`) | ADR-0003, ADR-0001, ADR-0002, ADR-0004 |
+| [ADR-0005](005-handler/ADR-0005-command-handling.md) | 005-handler | draft | operating (the replacement rebuilt from its fields, the three captures and the effect wait are pinned by tests; under `hub/` only the web commands declare a class, `read`, and every other handler runs as a `write`) | ADR-0003, ADR-0001, ADR-0002, ADR-0004 |
 | [ADR-0006](006-notification/ADR-0006-the-notification.md) | 006-notification | draft | operating (the closure carries no directive until the consumed mark lands, ADR-0008/D3) | ADR-0003, ADR-0002, ADR-0005 |
 | [ADR-0007](007-record/ADR-0007-the-record.md) | 007-record | draft | operating (the freeze of a captured list or dict and the consumed directive on the closure are owed) | ADR-0002, ADR-0006 |
 | [ADR-0008](008-program/ADR-0008-the-program.md) | 008-program | draft | operating (the consumed marks and computed values of a last turn on the closure, a replay of values nothing read, the normalised program on the TEXT entry, the tag form lowered to the same nodes and the name repairs with their bench measurement are owed) | ADR-0004, ADR-0005, ADR-0007 |
@@ -22,6 +22,8 @@
 | [ADR-0018](018-chat/ADR-0018-chat-in-a-box.md) | 018-chat | draft | operating (the chat, its resume and the boxed chat, a resumed boxed chat included, are pinned by tests against scripted backends and a stubbed box; the one real-box test runs only when enabled; no test interrupts a boxed chat) | ADR-0002, ADR-0003, ADR-0005, ADR-0007 |
 | [ADR-0019](019-checkpoint/ADR-0019-the-checkpoint.md) | 019-checkpoint | draft | operating (the take and its refusals, the transcript scan, the lanes from tasks, threads and pull requests with the shape of each row they read, the restore, the files, both transports, the status's staleness to the take's fraction of a second and the PreCompact hook that starts a Claude Code session's checkpoint are pinned by tests) | ADR-0006, ADR-0007, ADR-0009, ADR-0013, ADR-0016, ADR-0017 |
 | [ADR-0020](020-experience/ADR-0020-the-experience.md) | 020-experience | proposed | operating (the two stores, the recall and its block, the lesson command, the terminal phase and its cancel shape, the spend and model fields, and the example with its two removal arms are pinned by tests, S1) | ADR-0002, ADR-0005, ADR-0006, ADR-0007, ADR-0012 |
+| [ADR-0021](021-serve/ADR-0021-the-served-actor.md) | 021-serve | proposed | unimplemented | ADR-0001, ADR-0002, ADR-0003, ADR-0005, ADR-0007, ADR-0010, ADR-0017, ADR-0018, ADR-0020 |
+| [ADR-0023](023-web/ADR-0023-the-web-tools.md) | 023-web | proposed | operating (two commands, four provider adapters, the address check, the checked dial, and every request's bounds and deadline, save the steps S9 leaves out of it, are pinned by tests; the live provider tests are opt-in, S1) | ADR-0003, ADR-0005, ADR-0007 |
 
 ## By topic
 
@@ -45,3 +47,5 @@
 - **018-chat**, ADR-0018: Chat in a box
 - **019-checkpoint**, ADR-0019: The checkpoint and the restore
 - **020-experience**, ADR-0020: Experience across runs
+- **021-serve**, ADR-0021: The served actor
+- **023-web**, ADR-0023: The web tools

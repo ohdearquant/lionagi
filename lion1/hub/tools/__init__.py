@@ -9,6 +9,19 @@ from .fs import ListDir, Read, files
 from .khive import KhiveOps, khive_ops
 from .shell import Bash, Python, Sandbox, shell
 from .watch import Criteria, Watch, criteria
+from .web import (
+    Brave,
+    Hit,
+    Jina,
+    SearchProvider,
+    SearXNG,
+    Tavily,
+    WebError,
+    WebFetch,
+    WebSearch,
+    provider_from_env,
+    web,
+)
 
 __all__ = (
     "Box",
@@ -37,4 +50,15 @@ __all__ = (
     "Criteria",
     "Watch",
     "criteria",
+    "Brave",
+    "Hit",
+    "Jina",
+    "SearchProvider",
+    "SearXNG",
+    "Tavily",
+    "WebError",
+    "WebFetch",
+    "WebSearch",
+    "provider_from_env",
+    "web",
 )

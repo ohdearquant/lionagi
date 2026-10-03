@@ -34,7 +34,7 @@ from .bus import Bus
 from .experience import Experience, ExperienceLesson, ExperienceRecord
 from .lndl import Lact, Lvar, Pointer, Program
 from .notes import FileNoteStore, MemoryNoteStore, Note, NoteStore, key_of
-from .program import Branch, Command, EvalError, Script, Value, evaluate, pointers
+from .program import Branch, Command, EvalError, Script, Value, evaluate, note_keys, pointers
 from .program import (
     Output as ProgramOutput,  # OUT{} inside a fenced program; `Output` below is the out command's request
 )
@@ -647,7 +647,13 @@ async def _note_delete(req: NoteDelete, ctx: Context) -> str:
 
 
 async def _note_read(req: NoteRead, ctx: Context) -> dict:
-    n = ctx.actor.notes_for(Profile(req.profile)).get(req.key)
+    name, actor = Profile(req.profile).name, ctx.actor
+    # the store kept under that name, or its file; a read makes none, so a name with neither stays
+    # without one (a file store loads its file on every read, so the one made here is not kept)
+    store = actor._notes.get(name)
+    if store is None and actor.notes_dir is not None:
+        store = FileNoteStore(actor.notes_dir / f"{name}.json")
+    n = store.get(req.key) if store is not None else None
     if n is None:
         raise KeyError(f"no note {req.key!r} in the notes of {req.profile}")
     return {"profile": req.profile, "key": n.key, "value": n.value, "run": n.run, "version": n.version}
@@ -928,6 +934,10 @@ class Actor:
                         run.round = round_no - 1
                         run.outcome = Stopped(round_no)
                         break
+                    if (over := _over(run)) is not None:  # the wait may have outlasted the time left
+                        run.round = round_no - 1
+                        run.outcome = Exhausted(run.round, over)
+                        break
                 self._take_inbox(run)
                 if round_no == 1 and profile.experience is not None:
                     await self._recall(run)
@@ -1001,6 +1011,8 @@ class Actor:
                 metered = isinstance(cost, int | float) and not isinstance(cost, bool)
                 if metered:
                     run.cost += cost
+                elif cost is not None:  # a cost that is not a number reads as spent, never as room
+                    run.cost = math.nan
                 if metered and math.isfinite(cost) and cost >= 0:
                     run.spend += cost
                     run.costed += 1
@@ -2144,7 +2156,7 @@ class _Walk:
     async def block(self, nodes: tuple) -> dict[str, Any] | None:
         for node in nodes:
             if isinstance(node, Branch):
-                reader = _Reader(self)
+                reader = _Reader(self, self._snapshot(node.test))
                 try:
                     taken = await evaluate(node.test, reader)
                 except lndl.LNDLError as e:
@@ -2155,7 +2167,7 @@ class _Walk:
                 if ended is not None:
                     return ended
             elif isinstance(node, ProgramOutput):
-                reader = _Reader(self)
+                reader = _Reader(self, self._snapshot(*(v for _, v in node.fields)))
                 self.named |= node.named
                 fields = {key: await evaluate(v, reader) for key, v in node.fields}
                 self.consume(reader.reads, len(self.run.record))
@@ -2190,7 +2202,7 @@ class _Walk:
 
     def command(self, node: Command) -> str:
         alias = node.alias or self.auto()
-        reader = _Reader(self)
+        reader = _Reader(self, self._snapshot(*(v for _, v in node.args)))
 
         async def args() -> dict[str, Any]:
             return {key: await evaluate(v, reader) for key, v in node.args}
@@ -2209,11 +2221,12 @@ class _Walk:
         return await asyncio.shield(self.computed[name])
 
     def _before(self, name: str, writes: dict[str, asyncio.Task]) -> dict[str, asyncio.Task]:
-        """The writes a value reads after. A write that reads the value comes after the value, not
-        before it (waiting for it would wait for itself), and so does every write queued behind it: the
-        value reads after the last write before that."""
+        """The writes a value reads after, of the notes it reads. A write that reads the value comes
+        after the value, not before it (waiting for it would wait for itself), and so does every write
+        queued behind it: the value reads after the last write before that."""
         out: dict[str, asyncio.Task] = {}
-        for key, task in writes.items():
+        for key in self._keys(self.values[name][1]):
+            task = writes.get(key)
             while task is not None and name in self.write_reads[task][0]:
                 task = self.write_reads[task][1]
             if task is not None:
@@ -2229,6 +2242,15 @@ class _Walk:
                 names.add(n)
                 todo += pointers(self.values[n][1])
         return frozenset(names)
+
+    def _keys(self, *exprs: ast.expr) -> frozenset[str]:
+        """The notes the expressions read, and those the values they read read."""
+        return note_keys(*exprs, *(self.values[n][1] for n in self._reads(*exprs)))
+
+    def _snapshot(self, *exprs: ast.expr) -> dict[str, asyncio.Task]:
+        """The latest writes reached of the notes the expressions read: what their reader waits for,
+        and no write it never reads, so a reader costs its reads, not the program's writes."""
+        return {key: self.writes[key] for key in self._keys(*exprs) if key in self.writes}
 
     async def _compute(self, name: str, seq: int, expr: ast.expr, reader: _Reader) -> Any:
         try:
@@ -2247,21 +2269,20 @@ class _Walk:
 
     def write(self, node: Any) -> None:
         prior = self.writes.get(node.key)
-        reader = _Reader(self)
         target = ".".join(("note", node.key, *node.path))
         producer = self.command(node.value) if isinstance(node.value, Command) else None
+        exprs = tuple(v for _, v in node.value.args) if producer is not None else (node.value,)
+        # the writes before this one, of the notes it reads: what it and a value it names read after
+        reader = _Reader(self, self._snapshot(*exprs))
         # what this write reads, and what the write it waits for reads: a value read by any write in
         # the chain is read before the whole chain
-        reads = (
-            self._reads(*(v for _, v in node.value.args)) if producer is not None else self._reads(node.value)
-        )
+        reads = self._reads(*exprs)
         if prior is not None:
             reads |= self.write_reads[prior][0]
         # the values the expression itself names: computing one reaches what its branches reach and
         # nothing more, so a command in a branch not taken never runs for a write (C3)
-        named = pointers(*(v for _, v in node.value.args)) if producer is not None else pointers(node.value)
+        named = pointers(*exprs)
         named &= self.values.keys()
-        before = dict(self.writes)  # the writes before this one: what a value it names reads after
 
         async def put() -> None:
             if prior is not None:  # two assignments to one note are two writes, in the order written
@@ -2270,7 +2291,7 @@ class _Walk:
                 # a write that names a value comes after it, whether or not evaluating reaches the
                 # pointer (`false and *v`): the value reads the note before this write lands
                 for name in sorted(named):
-                    await self.value(name, before)
+                    await self.value(name, reader.writes)
                 value = await (
                     reader.point(producer) if producer is not None else evaluate(node.value, reader)
                 )
@@ -2297,9 +2318,9 @@ class _Reader:
     """One node's reads while its expressions are computed: each note read once, so one expression
     sees one version (ADR-0008/C3), and the program's results it read."""
 
-    def __init__(self, walk: _Walk, writes: dict[str, asyncio.Task] | None = None):
+    def __init__(self, walk: _Walk, writes: dict[str, asyncio.Task]):
         self.walk = walk
-        self.writes = dict(walk.writes if writes is None else writes)
+        self.writes = writes  # its own: the writes of the notes it reads (`_Walk._snapshot`, `_before`)
         self.reads: set[str] = set()
         self.notes: dict[str, Any] = {}
 
