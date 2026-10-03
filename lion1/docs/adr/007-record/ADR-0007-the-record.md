@@ -292,6 +292,19 @@ slices each value's text at 120 characters.
   `test_a_value_nested_past_the_recursion_limit_is_refused_as_a_value_error` and
   `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`.
 
+### D7: A note declared into a store the loader refuses ends the run ^d7
+
+Serves C5 and C8. A `note.` declaration is written by `_declare` through `put`, which loads the file
+under its lock, so a file `_load` refuses (D4) raises the loader's error out of the declare: the run
+ends with no outcome and the caller is told. The first notification only reads, loses nothing, says
+the store could not be read and goes on (C8). The model cannot repair the file, and a write over a
+file that would not load would clobber what it holds.
+
+- **Landing evidence**:
+  `test_a_note_declared_into_a_store_the_loader_refuses_ends_the_run_with_the_loaders_error`; the
+  notification:
+  `test_the_first_notice_names_ten_notes_counts_the_rest_and_says_an_unreadable_store`.
+
 ## Alternatives
 
 | approach                                          | rejected because                                                                                  |

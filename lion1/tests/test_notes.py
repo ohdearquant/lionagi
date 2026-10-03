@@ -531,10 +531,12 @@ def test_a_value_nested_past_the_recursion_limit_is_refused_as_a_value_error(tmp
         deep = [deep]
     store = FileNoteStore(tmp_path / "n.json")
     # the interpreter words the overflow itself ("maximum recursion depth exceeded" to 3.13, "Stack
-    # overflow" from 3.14); the preflight names it and says where it happened
-    said = "note 'k': .*while encoding a JSON object; the file store carries JSON values only"
-    with pytest.raises(ValueError, match=said):
+    # overflow" from 3.14), so only the store's words are pinned: the prefix naming the note and the
+    # suffix naming the file store, with whatever the interpreter said between them
+    with pytest.raises(ValueError) as refused:
         store.put("k", deep, run="r", seq=1)
+    said = str(refused.value)
+    assert said.startswith("note 'k': ") and said.endswith("; the file store carries JSON values only"), said
     assert list(tmp_path.iterdir()) == []
 
 
@@ -656,6 +658,38 @@ def test_the_first_notice_names_ten_notes_counts_the_rest_and_says_an_unreadable
     notice = run.record.of_kind(Kind.SYSTEM)[0].content
     said = "\nnotes kept: unknown, the store could not be read: JSONDecodeError: "
     assert said in notice and run.record.of_kind(Kind.TEXT)
+
+
+def test_a_note_declared_into_a_store_the_loader_refuses_ends_the_run_with_the_loaders_error(tmp_path):
+    # the notification reads and loses nothing, so it says the store could not be read and the run goes
+    # on (C8); a declared note is a write over a file that would not load, and the model cannot repair
+    # that file, so the run ends with the loader's own error, delivered to the caller
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    path = notes / "p.json"
+    encoded = _notes_file(value='"Crème Brûlée"').encode("latin-1")
+    path.write_bytes(encoded)
+    offset = next(i for i, byte in enumerate(encoded) if byte >= 0x80)
+    said = re.escape(
+        f"{path}: the file is not UTF-8 (the byte at offset {offset} cannot be decoded); "
+        "re-encode it as UTF-8 by hand"
+    )
+    actor = Actor("t", notes_dir=notes)
+    turn = scripted("<lvar note.plan>kept</lvar>")
+    started = []
+
+    async def backend(messages):
+        started.extend(actor.runs.values())  # the run, held to be read after it has ended
+        return await turn(messages)
+
+    with pytest.raises(ValueError, match=said):
+        asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend))
+    (run,) = started
+    told = "\nnotes kept: unknown, the store could not be read: ValueError: "
+    assert told in run.record.of_kind(Kind.SYSTEM)[0].content  # the same file, read for the first notice
+    assert run.outcome is None and run.notes_written == [] and run.refused == []
+    assert actor.runs == {} and "run.completed" not in [e.kind for e in actor.bus.log]
+    assert path.read_bytes() == encoded and not list(notes.glob("*.tmp"))  # no note written over the file
 
 
 def test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_what_it_raises():
