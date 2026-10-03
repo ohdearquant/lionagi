@@ -225,8 +225,9 @@ Serves C1, C4, C6 and C7. `apps/cli/lion_cli/context.py` holds `set`, `checkpoin
 `status` and `show`, run from the session's directory; a refusal prints its reason on standard error
 and exits 1. `checkpoint --hook` is the PreCompact hook's entry (S1). The areas server's
 `context_api` routes all but `show` to the same functions for a directory its registry names, 404
-for any other and 409 on a refusal, behind the server's Host and Origin gates. `status` says stale
-when no checkpoint exists or the file it points at changed after it.
+for any other and 409 on a refusal, behind the server's guards
+([[ADR-0017-the-desk#^c11|ADR-0017/C11]]). `status` says stale when no checkpoint exists or the file
+it points at changed after it.
 
 - **Landing evidence**: `tests/test_context.py`:
   `test_lion_context_set_checkpoint_show_restore_and_status_through_the_cli`,
