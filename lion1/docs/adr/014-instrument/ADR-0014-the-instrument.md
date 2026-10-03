@@ -153,9 +153,9 @@ one default floor of 300 GiB; an empty list declines every floor.
 
 An instrument reads: `gh` reads, `git` reads, `ps`, `lsof`, `launchctl print`, `df`, `find` and
 `du`. It reads files directly: an agent's pid and note files, the bench's note file and result
-ledgers, verdict files, local CI logs and a scheduled job's artifact. It reads the store through the
-agent's bounded client, which admits only the verbs on its list ([[ADR-0015-chores|ADR-0015]],
-chores).
+ledgers, verdict files, local CI logs, a scheduled job's artifact and the ADR files under the record
+instrument's `adr_dirs`. It reads the store through the agent's bounded client, which admits only
+the verbs on its list ([[ADR-0015-chores|ADR-0015]], chores).
 
 It writes only its snapshot or cursor to the agent's note store
 ([[ADR-0007-the-record#^d3|ADR-0007/D3]]) and sends nothing; the report is the handler's. A remedy,
@@ -183,15 +183,15 @@ direction, cadence and question.
 - **Violated when**: a call outlives its bounds, a command or its group survives it, a pipe stays
   open past it, or a failure reads as a timeout.
 
-Each command starts in its own process group; the timeout counts from the call, start included. Past
-it, or on a cancel, the runner kills the group, drains its pipes for up to five seconds, the grace,
-and closes them. A start unlanded by then is cancelled after a grace and its group killed; one that
-lands is stopped as above.
+Each command starts in its own process group, timed from the call, start included. Past it or on a
+cancel, the group is killed, its pipes drained and closed within a five-second grace. A start
+unlanded is given a grace to land, cancelled, given another to take it, cancelled again and given as
+long; the group of any process it began is killed by its pid.
 
-A group the runner may not signal and a drain that fails raise. A start that fails raises, unless a
-cancel is in flight. A descendant outside the group is not killed, and its pipe is abandoned at the
-grace. A start that never landed leaves its pipe ends to asyncio's connection task, and one that
-produced no process has nothing to signal.
+A start that fails raises, unless a cancel is in flight. A descendant outside the group is not
+killed, and holds an unlanded start's pipe ends, which asyncio's connection task closes when the
+loop runs it, until it exits. A start blocked in fork and exec on the loop is not interrupted; the
+deadline runs from when the loop returns.
 
 ## Decisions
 
@@ -308,12 +308,12 @@ refused at build.
 
 ### D8: `sh` starts a command as a task of its own and stops it by one path ^d8
 
-Serves C9. The start is a task whose `extra` dict asyncio fills with the Popen at the fork. One
-unlanded at the timeout is cancelled after a grace, again after another, and abandoned after a
-third; its Popen's pid has its group killed. `_stop` takes what landed: `killpg`, a drain of up to
-the grace, then the pipes closed in a `finally`, which first retries an `EPERM`, whatever ended the
-drain; only a second refusal raises. An unlanded start's pipe ends stay asyncio's: closing them from
-outside races its reader.
+Serves C9. The start is a task whose `extra` dict holds the Popen from the fork. One unlanded at the
+timeout takes C9's graces, and its Popen's pid has its group killed. `_stop` takes what landed:
+`killpg`, a drain within the grace, then the pipes closed in a `finally`, which first retries a
+refused signal (`EPERM`), whatever ended the drain. A second refusal, another signal error and a
+failed drain raise; the pipes close whichever raised. An unlanded start's pipe ends stay asyncio's:
+closing them from outside races its reader.
 
 - **Landing evidence**: in `tests/test_instruments.py`,
   `test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation`,
