@@ -1457,7 +1457,7 @@ def test_a_command_written_inside_an_out_string_is_a_string_and_never_runs():
     assert run.output["reply"].answer == literal
 
 
-@pytest.mark.parametrize("name", ["./reviewer", "../reviewer", "a/b", ""])
+@pytest.mark.parametrize("name", ["./reviewer", "../reviewer", "a/b", "", "reviewer\n"])
 def test_a_profile_name_is_a_file_name(name):
     with pytest.raises(ProfileError, match="names a file"):
         Profile(name)

@@ -360,6 +360,64 @@ def test_a_cancelled_run_cancels_the_commands_its_program_launched_and_returns()
     assert not a.ok and a.reason == "cancelled" and run.outcome is None
 
 
+@pytest.mark.parametrize(
+    "lines, cancels",
+    [
+        # the walk is past its block and settling its command when the cancel lands
+        (("a = hang()",), 1),
+        # the walk cancels the command it waits on; a second cancel lands while the walk settles it
+        (("a = hang()", "OUT{x: *a}"), 2),
+        # each write is a task of its own, waiting on the one before: the last outlives the command
+        (("note.k = hang()", *(f'note.k = "w{i}"' for i in range(8))), 1),
+    ],
+)
+def test_a_cancelled_program_returns_only_once_every_task_it_launched_is_through(lines, cancels):
+    actor = _actor("cancel-settles", [])
+    entered, cleaning, release, cleaned = (asyncio.Event() for _ in range(4))
+
+    class Hang(BaseModel):
+        pass
+
+    @actor.handler(Hang)
+    async def hang(req: Hang, ctx) -> str:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:  # a cleanup that sees itself through, whatever cancels it meanwhile
+            cleaning.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    pass
+            cleaned.set()
+        return "never"
+
+    async def main():
+        before = asyncio.all_tasks()
+        task = asyncio.create_task(actor.run(PROGRAM, RunRequest(inputs=("go",)), scripted(fenced(*lines))))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            (run,) = actor.runs.values()
+            task.cancel()
+            if cancels == 2:
+                await asyncio.wait_for(cleaning.wait(), 2)
+                task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=0.05)
+            assert not done  # the run waits for the command still cleaning up
+        finally:
+            release.set()  # a failed assert must not leave the cleanup waiting out the loop's close
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        assert cleaned.is_set() and asyncio.all_tasks() - before == set()
+        return run
+
+    run = asyncio.run(main())
+    (result,) = run.record.of_kind(Kind.RESULT)
+    assert result.content.reason == "cancelled" and run.pending == {} and run.outcome is None
+    assert run.notes.get("k") is None
+
+
 def test_a_value_whose_input_failed_fails_every_reader():
     calls: list = []
     actor = _actor("value-fails", calls)
