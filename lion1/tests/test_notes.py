@@ -312,7 +312,8 @@ def test_put_refuses_a_lone_surrogate_in_its_key_its_run_or_its_value_before_the
     tmp_path, key, run, value, what
 ):
     # the flush cannot encode a lone surrogate anywhere in the row, and a key or a run reached it after the
-    # store had changed: the refused put left its note in memory, and the next write carried it on
+    # store had changed: memory held the refused note until the next write reloaded the file and dropped it,
+    # so a reader that had reloaded the file and not yet looked in memory could be handed a note never written
     path = tmp_path / "n.json"
     store = FileNoteStore(path)
     store.put("plan", "one", run="r", seq=1)
@@ -332,6 +333,34 @@ def test_put_refuses_a_lone_surrogate_in_its_key_its_run_or_its_value_before_the
         + re.escape("; the file store carries JSON values only")
     )
     assert re.fullmatch(said, str(refused.value)), refused.value
+
+
+@pytest.mark.parametrize(
+    "seq",
+    [float("nan"), float("inf"), True, 2.0, "2", None],
+    ids=["nan", "infinity", "true", "float", "text", "none"],
+)
+def test_put_refuses_a_seq_that_is_not_an_integer_before_the_store_changes(tmp_path, seq):
+    # the sequence is written with the row: a float that is NaN failed the flush after the store had changed
+    # (memory held the refused note until the next write reloaded the file), and a bool or a float that
+    # passed it was written as `true` or `2.0` and read back as the sequence
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)
+    store.put("plan", "one", run="r", seq=1)
+    file_before, plan = path.read_bytes(), MemoryNoteStore.get(store, "plan")
+    names = sorted(p.name for p in tmp_path.iterdir())
+    with pytest.raises(ValueError) as refused:
+        store.put("other", "two", run="r", seq=seq)
+    # the store as the refused put found it, read without the reload every read of the file store makes
+    assert [n.key for n in MemoryNoteStore.list(store)] == ["plan"] and store._version == 1
+    assert MemoryNoteStore.get(store, "plan") == plan and MemoryNoteStore.get(store, "other") is None
+    assert path.read_bytes() == file_before and sorted(p.name for p in tmp_path.iterdir()) == names
+    assert store.get("other") is None and [n.key for n in store.list()] == ["plan"] and store.version == 1
+    assert str(refused.value) == (
+        f"note 'other': the seq is not an integer: {seq!r}; the file store carries JSON values only"
+    )
+    store.put("third", "three", run="r", seq=3)  # a later write carries nothing of it
+    assert sorted(json.loads(path.read_text())["notes"]) == ["plan", "third"]
 
 
 @pytest.mark.parametrize(
@@ -612,7 +641,8 @@ def test_a_write_never_renders_a_non_finite_number_wherever_it_sits(tmp_path):
     store = FileNoteStore(path)
     store.put("plan", "one", run="r", seq=1)
     before = path.read_bytes()
-    with pytest.raises(ValueError, match="not JSON compliant"):  # the sequence is no value, but a number
+    # the sequence is no value, but a number: refused with the other fields, before the flush that refuses NaN
+    with pytest.raises(ValueError, match="the seq is not an integer: nan"):
         store.put("other", "two", run="r", seq=float("nan"))
     assert path.read_bytes() == before and not list(tmp_path.glob("*.tmp"))
     assert [n.key for n in store.list()] == ["plan"] and store.version == 1

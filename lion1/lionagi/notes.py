@@ -74,6 +74,8 @@ class MemoryNoteStore:
         return self._notes.get(key)
 
     def put(self, key: str, value: Any, *, run: str, seq: int) -> Note:
+        # `seq` is held as given: every caller passes the record's integer sequence, and only the file store
+        # renders it, so its `put` is where a non-integer is refused, before it changes anything
         prior = self._notes.get(key)
         note = Note(key=key, value=value, run=run, seq=seq, version=(prior.version + 1) if prior else 1)
         self._notes[key] = note
@@ -236,6 +238,10 @@ class FileNoteStore(MemoryNoteStore):
                     _utf8(string)
                 except UnicodeEncodeError as e:
                     raise ValueError(f"the {what} is not UTF-8 text: {e}") from None
+            # the sequence is written with them: NaN fails the flush, and a bool or a float that gets
+            # through is written as `true` or `2.0` and read back as the sequence
+            if not isinstance(seq, int) or isinstance(seq, bool):
+                raise ValueError(f"the seq is not an integer: {seq!r}")
             kept = json.loads(text)  # the copy this store keeps and writes, never the caller's object
             if kept != value:
                 raise ValueError("JSON would read it back changed")
