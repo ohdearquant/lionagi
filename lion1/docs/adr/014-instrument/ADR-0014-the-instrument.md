@@ -369,10 +369,10 @@ refused at build.
   it (`test_verdict_freshness_a_prs_malformed_json_is_never_hidden_behind_its_md_copy`). The
   case-blind, unpadded identity of S12 and S13 is this instrument's; the desk's triage of a verdict
   notice still compares the repo spelling exactly and escalates a mismatch, so it fails closed.
-- **S15**: The runs of one `verdict-freshness` instrument in one process go one at a time, each from
-  the snapshot the one before it put, so a list taken before another run wrote never retires a pull
-  request that run listed. The guarantee is per process, and the agent's pid lock leaves one process
-  acting as its identity. It covers every path that reaches the put: the early returns for an
-  unreadable directory, an invalid newest verdict, or a failed or untrusted enumeration write
-  nothing. Pinned by
+- **S15**: The runs of one `verdict-freshness` instrument on one event loop go one at a time, each
+  from the snapshot the one before it put, so a list taken before another run wrote never retires a
+  pull request that run listed. The guarantee is per event loop: the agent runs one loop, and its
+  pid lock leaves one process acting as its identity. It covers every path that reaches the put; the
+  early returns (unreadable directory, invalid newest verdict, failed or untrusted enumeration)
+  write nothing. Pinned by
   `test_a_complete_but_older_list_does_not_retire_a_pr_a_later_overlapping_run_listed`.
