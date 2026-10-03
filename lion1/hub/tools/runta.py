@@ -302,10 +302,12 @@ class RuntaApi:
         params: Any = None,
         deadline: float | None = None,
     ) -> Any:
-        """One request, retried as the class says. A `deadline` (a `time.monotonic()` instant) bounds it:
-        each request gets the time left to it as its timeout, at most the usual 60 s, a backoff wait ends
-        there at the latest, and nothing is retried past it: the failure at the deadline is raised, or a
-        `TimeoutError` when the deadline had passed before a request could begin."""
+        """One request, retried as the class says. A `deadline` (a `time.monotonic()` instant) bounds it
+        by wall clock: each request ends there at the latest, however its body arrives (its timeout, the
+        time left to it and at most the usual 60 s, bounds only one socket operation at a time), a backoff
+        wait ends there at the latest, and nothing is retried past it. What ends at the deadline is raised:
+        the request's failure, or a `TimeoutError` when the deadline fell during a request or had passed
+        before one could begin."""
         import httpx
 
         # one key for every attempt of this call: a retried create is the same create
@@ -314,20 +316,27 @@ class RuntaApi:
         while True:
             attempt += 1
             last = attempt >= self.attempts
+            left: float | None = None
             options: dict[str, float] = {}
             if deadline is not None:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise TimeoutError(f"{method} {path}: its deadline had passed before the request began")
                 options["timeout"] = min(_REQUEST_TIMEOUT, left)
+            wall = asyncio.timeout(left)  # no limit without a deadline
             try:
-                resp = await self._http.request(
-                    method, path, json=json, params=params, headers=headers, **options
-                )
+                async with wall:
+                    resp = await self._http.request(
+                        method, path, json=json, params=params, headers=headers, **options
+                    )
             except httpx.TransportError:
                 if last or not await self._backoff(attempt, deadline):
                     raise
                 continue
+            except TimeoutError as exc:
+                if not wall.expired():
+                    raise
+                raise TimeoutError(f"{method} {path}: its deadline fell during the request") from exc
             if resp.status_code < 400:
                 body = resp.json() if resp.content else {}
                 return body.get("data", body) if isinstance(body, dict) else body
@@ -460,18 +469,28 @@ async def build_image(
 ) -> str:
     """Build a Runta image from `dockerfile` and wait for it: its runtime-image id. A build that ends
     any other way than `succeeded`, or outlives `timeout`, raises with its last state. `timeout` is
-    counted from the build's creation: each 15 s wait ends at the deadline at the latest, each poll's
-    request gets the time left as its timeout (at most 60 s), and a failed poll is retried only while
-    time is left. So a build is reported timed out no later than the deadline plus the one request in
-    flight when it fell, whose timeout was the time left; a failure at the deadline is that timeout."""
+    counted from before the create request: each request and each 15 s wait ends at the deadline at the
+    latest, by wall clock, and a failed request is retried only while time is left. So a build is
+    reported timed out at the deadline plus scheduling latency, a failure at the deadline is that
+    timeout, and a build that succeeded is reported as such."""
 
     async def build(api: RuntaApi) -> str:
-        made = await api.call(
+        deadline = time.monotonic() + timeout
+
+        async def request(late: str, method: str, path: str, **kwargs: Any) -> Any:
+            try:
+                return await api.call(method, path, deadline=deadline, **kwargs)
+            except Exception as exc:
+                if time.monotonic() < deadline:
+                    raise
+                raise TimeoutError(late) from exc  # a failure at the deadline is the build's timeout
+
+        made = await request(
+            f"image build {name!r} was not created within {timeout:g}s",
             "POST",
             "/v2/images/builds",
             json={"name": name, "dockerfile": dockerfile, "architecture": architecture},
         )
-        deadline = time.monotonic() + timeout
         state = made
         while state.get("status") in ("pending", "building", "queued", "running"):
             late = f"image build {made['id']} still {state.get('status')} after {timeout:g}s"
@@ -479,12 +498,7 @@ async def build_image(
             if left <= 0:
                 raise TimeoutError(late)
             await asyncio.sleep(min(15, left))
-            try:
-                state = await api.call("GET", f"/v2/images/builds/{made['id']}", deadline=deadline)
-            except Exception as exc:
-                if time.monotonic() < deadline:
-                    raise
-                raise TimeoutError(late) from exc  # a failure at the deadline is the build's timeout
+            state = await request(late, "GET", f"/v2/images/builds/{made['id']}")
         if state.get("status") != "succeeded":
             raise RuntimeError(f"image build {made['id']} ended {state.get('status')}: {str(state)[:400]}")
         return state["runtime_image_id"]

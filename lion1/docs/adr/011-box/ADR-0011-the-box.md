@@ -227,7 +227,9 @@ events and need `capture` set.
   `test_close_errors_ride_a_cancelled_close_as_notes`,
   `test_find_image_asks_the_documented_maximum_once_and_finds_the_match_on_the_last_row`,
   `test_a_runtime_made_but_never_resolved_is_deleted_through_the_sdk_with_its_revision`,
-  `test_a_poll_that_hangs_past_the_deadline_is_cut_there_and_the_build_times_out` and
+  `test_a_poll_that_hangs_past_the_deadline_is_cut_there_and_the_build_times_out`,
+  `test_a_request_that_keeps_arriving_is_ended_at_the_deadline_by_the_wall_clock`,
+  `test_a_create_that_outlives_the_timeout_is_the_builds_timeout_and_no_poll_follows` and
   `test_a_runtime_that_ends_before_its_workdir_is_made_raises_sandbox_dead`.
 
 ## Alternatives
@@ -309,10 +311,11 @@ events and need `capture` set.
 - **S17**: A policy set on a running runtime, as after a restore, leaves its processes a window
   under the old one, and the change can read back before it holds. A resume that changes the policy
   itself is caught only by the read after it. A closure that matters is proven from inside the box.
-- **S18**: An image build is awaited to its timeout, counted from its creation. Each 15 s wait ends
-  at it at the latest, each poll's request gets the time left as its timeout (at most 60 s), and a
-  failed poll is retried only while time is left. The build is reported timed out no later than the
-  deadline plus the one request in flight when it fell. Two concurrent first builds may both build.
+- **S18**: An image build is awaited to its timeout, counted from before the create request. Each
+  request ends at it at the latest, by wall clock, as does each 15 s wait, and a failed request is
+  retried only while time is left. The build is reported timed out at the deadline plus scheduling
+  latency, and a build that succeeded is reported as such. Two concurrent first builds may both
+  build.
 - **S19**: The service lists at most 100 builds per request, with no cursor. The lookup sorts the
   page it returns by `updated_at`, read as instants, a row without a time carrying an offset the
   oldest, and reuses the newest matching build; a matching build the page omits is not found and the

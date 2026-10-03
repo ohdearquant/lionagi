@@ -534,6 +534,52 @@ def test_an_error_body_that_is_not_json_still_raises_runta_error(monkeypatch):
         asyncio.run(api.call("GET", "/v2/x"))
 
 
+def _install_open_request(monkeypatch, lasts: list[float], seen: list[tuple[str, str]]) -> None:
+    """A `request` that keeps the response open for `lasts[0]` s of real time and ignores the timeout it is
+    handed, as a body does whose chunks each arrive inside the read timeout: httpx bounds one socket
+    operation at a time, so the request as a whole is as long as the body."""
+    install_httpx(monkeypatch, [])
+
+    async def request(self, method, path, *, json=None, params=None, headers=None, timeout=None):
+        seen.append((method, path))
+        await asyncio.sleep(lasts[0])
+        return Resp(200, {"data": {"id": "b8", "status": "pending"}})
+
+    monkeypatch.setattr(sys.modules["httpx"].AsyncClient, "request", request)
+
+
+def test_a_request_that_keeps_arriving_is_ended_at_the_deadline_by_the_wall_clock(monkeypatch):
+    seen: list[tuple[str, str]] = []
+    lasts = [0.1]
+    _install_open_request(monkeypatch, lasts, seen)
+    api = runta_mod.RuntaApi(tok="t", base="http://x")
+    got = asyncio.run(api.call("GET", "/v2/slow", deadline=time.monotonic() + 5))
+    assert got == {"id": "b8", "status": "pending"}  # the control: a request inside its deadline is returned
+    seen.clear()
+    lasts[0] = 1.0
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError, match=r"GET /v2/slow: its deadline fell during the request"):
+        asyncio.run(api.call("GET", "/v2/slow", deadline=t0 + 0.2))
+    assert time.monotonic() - t0 < 1.0  # the body lasts 1 s, the deadline fell at 0.2 s
+    assert seen == [("GET", "/v2/slow")]  # and nothing was tried again
+
+
+def test_a_timeout_error_the_request_raises_is_not_taken_for_the_deadline(monkeypatch):
+    install_httpx(monkeypatch, [])
+    seen: list[str] = []
+
+    async def request(self, method, path, *, json=None, params=None, headers=None, timeout=None):
+        seen.append(path)
+        raise TimeoutError("the transport's own")
+
+    monkeypatch.setattr(sys.modules["httpx"].AsyncClient, "request", request)
+    api = runta_mod.RuntaApi(tok="t", base="http://x")
+    for deadline in (None, time.monotonic() + 5):  # with a deadline far off and with none at all
+        with pytest.raises(TimeoutError, match="^the transport's own$"):
+            asyncio.run(api.call("GET", "/v2/x", deadline=deadline))
+    assert seen == ["/v2/x", "/v2/x"]  # one request each: it is not a transport error, so not retried
+
+
 # --- 6. RuntaApi.pages -------------------------------------------------------------------------------
 
 
@@ -866,6 +912,31 @@ def test_a_poll_answered_with_a_server_error_at_the_deadline_is_not_retried_past
         asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=17.0))  # the backoff would end at 17 s
     assert now[0] == 17.0 and [c["method"] for c in calls] == ["POST", "GET"]
     assert len(left) == 1  # the answer a retry would have read was never asked for
+
+
+def test_a_create_that_outlives_the_timeout_is_the_builds_timeout_and_no_poll_follows(monkeypatch):
+    seen: list[tuple[str, str]] = []
+    lasts = [0.0]
+    _install_open_request(monkeypatch, lasts, seen)
+    open_request = sys.modules["httpx"].AsyncClient.request
+
+    async def request(self, method, path, *, json=None, **kwargs):
+        if json and json.get("name") == "refused":
+            return Resp(400, {"error": {"code": "bad_request", "message": "no such architecture"}})
+        return await open_request(self, method, path, json=json, **kwargs)
+
+    monkeypatch.setattr(sys.modules["httpx"].AsyncClient, "request", request)
+    api = runta_mod.RuntaApi(tok="t", base="http://x")
+    # the control: a create refused with time left is raised as it is, not taken for a timeout
+    with pytest.raises(runta_mod.RuntaError, match="no such architecture"):
+        asyncio.run(runta_mod.build_image("refused", "FROM x\n", timeout=5.0, api=api))
+    lasts[0] = 1.0  # the create takes 1 s; the build's timeout is 0.2 s, counted from before it
+    seen.clear()
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError, match=r"image build 'n' was not created within 0\.2s"):
+        asyncio.run(runta_mod.build_image("n", "FROM x\n", timeout=0.2, api=api))
+    assert time.monotonic() - t0 < 1.0
+    assert seen == [("POST", "/v2/images/builds")]  # no poll followed it
 
 
 # --- 10. RuntaSandbox.start ---------------------------------------------------------------------

@@ -209,8 +209,9 @@ async def close_code_hosts(box: Box) -> str:
 async def open_code_hosts(box: Box, *, within: float = 120.0) -> None:
     """Remove the closure's lines from /etc/hosts: the grader's eval script runs after the model and
     may install from an index; what the model could not reach is already on the record. A Runta box
-    under a policy has it emptied too, and waits up to `within` seconds for the probed hosts to answer
-    from inside: the service can read a change back before it holds."""
+    under a policy has it emptied too, and waits for the probed hosts to answer from inside: the
+    service can read a change back before it holds. The wait is `within` seconds plus the 15 s of
+    request grace `RuntaSandbox.exec` adds for the probe in flight when `within` fell."""
     # rewritten in place: /etc/hosts is a bind mount in the box, so `sed -i` (rename over it) fails
     # with "Device or resource busy", and finished runs lost their grading to it
     mark = shlex.quote(_MARK)

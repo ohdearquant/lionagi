@@ -219,8 +219,8 @@ Serves C1 and C4. `grade` mirrors the harness's `run_instance` in the box: reset
 attempts, the eval script under a timeout, the harness's report function, a status on every early
 stop. `close_code_hosts` writes marked `/etc/hosts` lines and probes from inside; `open_code_hosts`
 rewrites the file in place, since it is a bind mount, and proves no marked line is left. An unaided
-Runta runtime carries the code-host policy; reopening empties it, waits up to 120 s for the probed
-hosts, else refuses the grade. The codex arm is refused there.
+Runta runtime carries the code-host policy; reopening empties it, waits for the probed hosts (S12),
+else refuses the grade. The codex arm is refused there.
 
 - **Landing evidence**: `tests/test_swe_sandbox.py`: `test_failed_reset_is_not_graded`, the probe
   test refusing a reachable or elsewhere-resolving host. `tests/test_swe_runta.py`:
@@ -314,3 +314,8 @@ model has no cost.
   `test_runta_name_is_swe_prefixed_lowercase_after_the_owner`,
   `test_runta_image_builds_from_the_rows_image_when_none_is_found`,
   `test_runta_image_returns_a_found_image_without_building`.
+- **S12**: The reopen wait on Runta is 120 s, then the probe in flight when it fell ends within the
+  15 s of request grace `RuntaSandbox.exec` adds to a command's own timeout; no later probe starts.
+  Pinned in `tests/test_swe_runta.py`:
+  `test_a_probe_that_outlasts_the_wait_refuses_the_grade_within_it`; and in `tests/test_runta.py`:
+  `test_exec_wraps_a_finite_timeout_and_hands_the_sdk_timeout_plus_15`.
