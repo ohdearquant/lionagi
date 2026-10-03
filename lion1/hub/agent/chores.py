@@ -558,7 +558,7 @@ class Chores:
         actor = self.owner
         # the pending ticks' firings: read once, and only if a chore needs one (`ensure_ticks` reads the same)
         pending: dict[Any, list[float]] | None = None
-        capped, agenda_error = False, ""
+        short, agenda_error = None, ""
         lines = [
             f"[chores digest {day}] {self.agent.khive.actor}: "
             + (f"ledger unreadable ({unread})" if unread else f"{len(rows)} check(s)")
@@ -589,13 +589,16 @@ class Chores:
                     if first is None:  # none on record: the tick's pending row gives it, read and not kept
                         if pending is None and not agenda_error:
                             try:  # a failed read judges each chore that needs it, and the digest goes out
-                                pending, capped = await self._pending_firsts(now)
+                                pending, short = await self._pending_firsts(now)
                             except Exception as e:
                                 agenda_error = f"{type(e).__name__}: {e}"
                         fires = (pending or {}).get(f"tick: {name}")
-                        if agenda_error or capped:  # a row past the cap may give an earlier first due
-                            reason = f"agenda unreadable: {agenda_error}" if agenda_error else _CAPPED
+                        if agenda_error or short:  # a row past the read's reach may give an earlier first due
+                            reason = f"agenda unreadable: {agenda_error}" if agenda_error else short
                             lines.append(f"{actor} {name} not judged: {reason}")
+                            continue
+                        if fires and None in fires:  # a row naming no instant may be the earliest firing
+                            lines.append(f"{actor} {name} not judged: a pending tick row names no first due")
                             continue
                         first, ticked = (min(fires) if fires else None), fires is not None
                     if first is not None and moment <= first + _FIRE_GRACE_S:
@@ -734,18 +737,19 @@ class Chores:
     async def ensure_ticks(self, *, first_in_s: int | None = None) -> list[str]:
         """Every instrument with a cadence has a pending reminder saying `tick: <chore>`; the digest
         has one (`digest_every`: daily, or a front desk's brief); the aged pass has its own when there is
-        a steward. Creates what is missing and returns what it created; after a capped agenda read it creates
-        and records nothing and names each tick it left. A chore's first firing is kept in the agent's state
-        (`first_due`) for the digest: one on record stands, and where there is none the tick's own firing is
-        recorded when it was just made, else what its pending rows give (`_first_firing`)."""
-        pending, capped = await self._pending_firsts(self.agent.clock())
+        a steward. Creates what is missing and returns what it created; after a short agenda read (capped or
+        stalled) it creates and records nothing and names each tick it left. A chore's first firing is kept
+        in the agent's state (`first_due`) for the digest: one on record stands, and where there is none the
+        tick's own firing is recorded when it was just made, else what its pending rows give
+        (`_first_firing`)."""
+        pending, short = await self._pending_firsts(self.agent.clock())
         wanted = {f"tick: {name}": inst.every for name, inst in self.instruments.items() if inst.every}
         wanted["tick: digest"] = self.digest_every
         if self.steward:
             wanted["tick: aged"] = self.aged_every
         wanted.update(self.extra_ticks)
-        if capped:  # a read that did not see every row says neither that a tick is absent nor its first due
-            return [f"{content}: not created, {_CAPPED}" for content in wanted]
+        if short:  # a read that did not see every row says neither that a tick is absent nor its first due
+            return [f"{content}: not created, {short}" for content in wanted]
         created = []
         lead = _TICK_LEAD_S if first_in_s is None else first_in_s
         for content, every in wanted.items():
@@ -761,18 +765,22 @@ class Chores:
             chore, firsts = content.removeprefix("tick: "), _val(self.agent.state, "first_due", {})
             # a first due on record stands: a row cannot say what lead its tick was made with, so what it
             # gives is no reason to lower one
-            if fires and chore in self.instruments and _instant(firsts.get(chore)) is None:
-                self.agent.state.put("first_due", {**firsts, chore: min(fires)}, run="-", seq=0)
+            known = [f for f in fires if f is not None]  # a row naming no instant gives no first due
+            if known and chore in self.instruments and _instant(firsts.get(chore)) is None:
+                self.agent.state.put("first_due", {**firsts, chore: min(known)}, run="-", seq=0)
         return created
 
-    async def _pending_firsts(self, now: float) -> tuple[dict[Any, list[float]], bool]:
-        """content -> the first firing each of this actor's pending reminders' rows gives (`_first_firing`),
-        and whether the read was capped. The agenda answers at most 200 rows, earliest first, so while a
-        page is full it is read again from its last row's `trigger_at`, rows merged by id, up to 25 pages;
-        a read that ends on a full 25th page did not see every row. A read: it makes no reminder and
-        records nothing, for `ensure_ticks` and the digest alike."""
+    async def _pending_firsts(self, now: float) -> tuple[dict[Any, list[float | None]], str | None]:
+        """content -> the first firing each of this actor's pending reminders' rows gives (`_first_firing`,
+        None for a row naming no instant), and why the read is short, if it is. The agenda answers at most
+        200 rows, earliest first, so while a page is full it is read again from its last row's `trigger_at`,
+        rows merged by id, up to 25 pages: a read ending on a full 25th page did not see every row
+        (`_CAPPED`). `from` is inclusive, so a full page of rows at one instant comes back whole on the
+        read after it: a full page that brings no new row is a stall, the read ends there, and the rows
+        past that instant are out of its reach. A read: it makes no reminder and records nothing, for
+        `ensure_ticks` and the digest alike."""
         me = self.agent.khive.actor  # the agenda is the namespace's: another agent's tick is not this one's
-        pending: dict[Any, list[float]] = {}
+        pending: dict[Any, list[float | None]] = {}
         seen: set[Any] = set()
         after = ""
         for _ in range(_AGENDA_PAGES):
@@ -780,24 +788,26 @@ class Chores:
                 f"schedule.agenda(limit={_AGENDA_PAGE}" + (f", from={lit(after)})" if after else ")")
             )
             events = (agenda or {}).get("events", [])
+            new = 0
             for e in events:
                 if e["id"] in seen:  # the row a page ends on is the first of the next
                     continue
                 seen.add(e["id"])
+                new += 1
                 p = e.get("properties") or {}
                 if p.get("status", "pending") != "pending" or p.get("created_by_actor") != me:
                     continue
-                fires = pending.setdefault(e.get("content"), [])
-                if (first := _first_firing(e, now)) is not None:
-                    fires.append(first)
+                pending.setdefault(e.get("content"), []).append(_first_firing(e, now))
             if len(events) < _AGENDA_PAGE:
-                return pending, False
+                return pending, None
+            if not new:
+                return pending, f"the agenda read stalled at {after}: a full page of rows share that instant"
             after = (events[-1].get("properties") or {}).get("trigger_at")
             if not isinstance(after, str) or not after:
                 raise ValueError(
                     f"a full agenda page ends at a row with no trigger_at: {str(events[-1])[:80]}"
                 )
-        return pending, True
+        return pending, _CAPPED
 
     async def _catch_up(self, run: Run, *, skip: str | None) -> list[str]:
         """Once per run: the actor's own reminders khive marked missed (never fired) or failed, not

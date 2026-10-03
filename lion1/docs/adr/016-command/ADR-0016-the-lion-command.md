@@ -62,7 +62,7 @@ neither `hub` nor `lion_cli`, and `hub` does not import `lion_cli`.
 | form | what it runs | what it writes |
 | ---- | ------------ | -------------- |
 | `lion agent --dir D` | the agent built from `D`, serving until interrupted | the lock, the missing reminders at start, the agent's notes, ledgers and sends; a line per wake, failure and change of hold on standard output |
-| `lion agent --dir D --once [--wait S]`, `--rerun ID...` | one wake on mail that arrives, or on read mail named by id | the missing reminders first, none for a chair; what a wake writes; the record printed |
+| `lion agent --dir D --once [--wait S]`, `--rerun ID...` | one wake on mail that arrives, or on read mail named by id | the missing reminders first, none for a chair, and a failed agenda read raises there, before the wake (`test_a_failed_agenda_read_raises_before_the_wake_once_or_rerun_asked_for`); what a wake writes; the record printed |
 | `lion agent --dir D --check NAME` | one instrument, outside its chore | a landing file; no ledger row, nothing sent |
 | `lion agent --dir D --ticks` | the chores' missing reminders | the reminders on the khive schedule; none for a chair |
 | `lion agent --dir D --arm` | the identity read and the boundary probes (D2) | a landing file; exit 0 only when every probe holds |

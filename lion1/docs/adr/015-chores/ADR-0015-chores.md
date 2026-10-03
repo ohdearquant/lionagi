@@ -432,12 +432,14 @@ bypasses the handler: no refusals, no row, no send.
   `stamped-a-period-late` and `a-longer-lead` rows of
   `test_a_pending_fixed_tick_gives_its_latest_firing_not_after_the_ceiling_its_creation_carries`,
   `test_a_second_start_keeps_the_first_due_of_a_tick_made_with_a_longer_lead`).
-- **S26**: A chore with no run or first due on record reads one from its pending tick row, as
-  `ensure_ticks` does (S17). The read makes no tick and records nothing, so a wake without
-  `ensure_ticks` judges alike. The agenda is read once, only when a chore needs it, 200 rows a page
-  from the last row's `trigger_at`, merged by id, to 25 pages. A row naming no instant gives none:
-  `MISSING: <chore>, no run recorded`, ending `, no tick pending` with no tick
+- **S26**: A chore with no run or first due on record reads one from its pending tick row (S17). It
+  makes no tick and records nothing. The agenda is read once, when a chore needs it, 200 rows a page
+  from the last row's `trigger_at`, merged by id, to 25 pages. A row naming no instant may be the
+  earliest: `not judged: a pending tick row names no first due`, unrecorded. With no tick: `MISSING:
+  <chore>, no run recorded, no tick pending`
   (`test_a_python_digest_wake_reads_a_pending_tick_row_for_a_chore_with_no_first_due`,
+  `test_a_pending_tick_row_naming_no_instant_is_not_judged_and_gives_no_first_due`,
+  `test_ensure_ticks_records_a_first_due_for_a_tick_it_finds_pending_from_its_own_row`,
   `test_the_digest_reads_the_agenda_once_and_only_for_a_chore_with_no_run_and_no_first_due`,
   `test_a_chore_with_no_run_no_first_due_on_record_and_no_tick_pending_is_missing_and_says_so`,
   `test_the_agenda_is_read_in_pages_of_200_each_from_the_last_row_of_the_page_before`,
@@ -448,5 +450,11 @@ bypasses the handler: no refusals, no row, no send.
   naming each tick it left. A read that fails reads each chore that needed it `not judged: agenda
   unreadable: <error>`, and the digest is still sent; `ensure_ticks` raises
   (`test_a_read_ending_on_a_full_25th_page_is_capped_and_judges_and_makes_no_tick`,
-  `test_a_capped_read_that_shows_one_of_a_ticks_rows_judges_records_and_makes_nothing`,
   `test_a_digest_whose_agenda_read_fails_says_so_for_each_chore_that_needed_it_and_is_sent`).
+- **S28**: `from` is inclusive: a full page of rows at one instant comes back whole on the read
+  after it. A full page bringing no new row stalls the read, which ends there, two pages not 25, the
+  rows past that instant out of its reach. The chore reads `not judged: the agenda read stalled at
+  <instant>: a full page of rows share that instant`; `ensure_ticks` makes and records nothing, as
+  after a capped read
+  (`test_a_full_page_of_rows_at_one_instant_stalls_the_read_which_ends_there_and_judges_nothing`,
+  `test_a_stalled_read_that_shows_one_of_a_ticks_rows_judges_records_and_makes_nothing`).

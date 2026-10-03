@@ -1869,7 +1869,10 @@ def test_ensure_ticks_records_a_first_due_for_a_tick_it_finds_pending_from_its_o
     ledger(chores, ("old", nine.timestamp() - 3600))
     text = digest_at(chores, agent, nine.timestamp() - 600)
     assert f"{OWNER} disk no run yet, first due by {label(nine.timestamp())}" in text.splitlines()
-    assert "MISSING: disk" not in text and "MISSING: w, no run recorded" in text.splitlines()
+    assert "MISSING: disk" not in text and "MISSING: w" not in text and "MISSING: m" not in text
+    # a row naming no firing, or no instant, may be the earliest: the chore is not judged, not missing
+    for chore in ("w", "m"):
+        assert f"{OWNER} {chore} not judged: a pending tick row names no first due" in text.splitlines()
     assert f"MISSING: disk, no run recorded, first due by {label(nine.timestamp())}" in digest_at(
         chores, agent, nine.timestamp() + 301
     )
@@ -2416,7 +2419,7 @@ def test_the_agenda_is_read_in_pages_of_200_each_from_the_last_row_of_the_page_b
     assert agent.state.get("first_due").value == {"a": base + 199, "disk": base + 348}
     # the row both pages carry is merged by its id: one firing
     found = asyncio.run(chores._pending_firsts(base))
-    assert found == ({"tick: a": [base + 199], "tick: disk": [base + 348]}, False)
+    assert found == ({"tick: a": [base + 199], "tick: disk": [base + 348]}, None)
 
 
 def test_an_agenda_read_that_ends_short_on_its_25th_page_is_not_capped(tmp_path):
@@ -2435,9 +2438,9 @@ def test_a_read_ending_on_a_full_25th_page_is_capped_and_judges_and_makes_no_tic
     tmp_path,
 ):
     base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
-    # 300 rows at one instant: each read answers the same 200 and the tick behind them is never reached
-    rows = [(f"other: {i}", "lambda:other:agent", "pending", iso(base)) for i in range(300)]
-    khive = FakeKhive(agenda=[*rows, pending("disk", base + 600, "every:30m", base + 540)])
+    # 5001 rows a second apart: 25 pages overlapping by their last row see 4976, the 25th full, and the
+    # tick behind them is never reached
+    khive = FakeKhive(agenda=agenda_rows(5001, base, {5000: ("disk", "every:30m")}))
     khive.paged = True
     chores, agent = build(
         tmp_path, khive, [], disk=Probe("disk", full()), w=Probe("w", full(), every="weekly")
@@ -2455,23 +2458,73 @@ def test_a_read_ending_on_a_full_25th_page_is_capped_and_judges_and_makes_no_tic
     assert agent.state.get("first_due") is None
 
 
-def test_a_capped_read_that_shows_one_of_a_ticks_rows_judges_records_and_makes_nothing(tmp_path):
+def test_a_full_page_of_rows_at_one_instant_stalls_the_read_which_ends_there_and_judges_nothing(tmp_path):
+    base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
+    # `from` is inclusive: 300 rows at one instant answer the same 200 to the read from their instant, so
+    # the second page brings no new row, the read ends there, two pages not 25, and the tick behind them
+    # is out of its reach
+    rows = [(f"other: {i}", "lambda:other:agent", "pending", iso(base)) for i in range(300)]
+    khive = FakeKhive(agenda=[*rows, pending("disk", base + 600, "every:30m", base + 540)])
+    khive.paged = True
+    chores, agent = build(
+        tmp_path, khive, [], disk=Probe("disk", full()), w=Probe("w", full(), every="weekly")
+    )
+    text = digest_at(chores, agent, base)
+    stalled = f"the agenda read stalled at {iso(base)}: a full page of rows share that instant"
+    assert text.splitlines()[1:] == [
+        f"{OWNER} disk not judged: {stalled}",
+        f"{OWNER} w not judged: {stalled}",
+    ]
+    assert "MISSING: " not in text
+    assert agenda_reads(khive) == [
+        "schedule.agenda(limit=200)",
+        f'schedule.agenda(limit=200, from="{iso(base)}")',
+    ]
+    khive.ops.clear()
+    assert asyncio.run(chores.ensure_ticks()) == [
+        f"tick: {name}: not created, {stalled}" for name in ("disk", "w", "digest", "aged")
+    ]
+    assert len(agenda_reads(khive)) == 2 and not [op for op in khive.ops if op.startswith("schedule.remind")]
+    assert agent.state.get("first_due") is None
+
+
+def test_a_stalled_read_that_shows_one_of_a_ticks_rows_judges_records_and_makes_nothing(tmp_path):
     base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
     # the tick's row read first gives base; a second row of it, whose history admits base less an hour,
-    # sits past 300 rows at one instant that each read answers again, so no read reaches it
+    # sits past 300 rows at the first row's instant, which the read from that instant answers again
     rows = [pending("disk", base, "every:30m", base - 60)]
     rows += [(f"other: {i}", "lambda:other:agent", "pending", iso(base)) for i in range(300)]
     khive = FakeKhive(agenda=[*rows, pending("disk", base + 3600, "every:30m", base - 3660)])
     khive.paged = True
     chores, agent = build(tmp_path, khive, [], disk=Probe("disk", full()))
-    text = digest_at(chores, agent, base - 1800)  # overdue by the row past the cap, not by the one read
-    assert text.splitlines()[1:] == [f"{OWNER} disk not judged: the agenda read was capped at 5000 rows"]
+    text = digest_at(chores, agent, base - 1800)  # overdue by the row out of reach, not by the one read
+    stalled = f"the agenda read stalled at {iso(base)}: a full page of rows share that instant"
+    assert text.splitlines()[1:] == [f"{OWNER} disk not judged: {stalled}"]
     khive.ops.clear()
     left = asyncio.run(chores.ensure_ticks())
     assert agent.state.get("first_due") is None  # the row read is no first due either
-    capped = "not created, the agenda read was capped at 5000 rows"
-    assert left == [f"tick: {n}: {capped}" for n in ("disk", "digest", "aged")]
-    assert len(agenda_reads(khive)) == 25 and not [op for op in khive.ops if op.startswith("schedule.remind")]
+    assert left == [f"tick: {n}: not created, {stalled}" for n in ("disk", "digest", "aged")]
+    assert len(agenda_reads(khive)) == 2 and not [op for op in khive.ops if op.startswith("schedule.remind")]
+
+
+def test_a_pending_tick_row_naming_no_instant_is_not_judged_and_gives_no_first_due(tmp_path):
+    base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
+    khive = FakeKhive(
+        agenda=[
+            # a monthly row whose anchor is no instant: its firing is the next, not the first
+            ("tick: m", SELF, "pending", "2027-02-28T09:30:00Z", "soon", "monthly"),
+            pending("disk", base + 60, "every:30m", base),
+        ]
+    )
+    chores, agent = build(
+        tmp_path, khive, [], disk=Probe("disk", full()), m=Probe("m", full(), every="monthly")
+    )
+    lines = digest_at(chores, agent, base).splitlines()
+    assert f"{OWNER} m not judged: a pending tick row names no first due" in lines
+    assert f"{OWNER} disk no run yet, first due by {label(base + 60)}" in lines
+    assert "MISSING: " not in "\n".join(lines)
+    assert asyncio.run(chores.ensure_ticks()) == ["tick: digest", "tick: aged"]  # the row stands
+    assert agent.state.get("first_due").value == {"disk": base + 60}  # and records no first due
 
 
 @pytest.mark.parametrize(

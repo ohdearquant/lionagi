@@ -938,6 +938,45 @@ def test_the_rerun_flag_takes_read_mail_through_one_wake_by_id(tmp_path, monkeyp
     assert seen == {"ids": ["12345678", "0ff1ce00"], "released": True, "order": order}
 
 
+@pytest.mark.parametrize("flag", ["once", "rerun"])
+def test_a_failed_agenda_read_raises_before_the_wake_once_or_rerun_asked_for(tmp_path, monkeypatch, flag):
+    """--once and --rerun make the missing ticks first, as a start does: an agenda read that fails
+    raises there, before any wake, and the identity is released."""
+    from types import SimpleNamespace
+
+    seen: dict = {"order": []}
+
+    class Ticks:
+        async def ensure_ticks(self):
+            seen["order"].append("ticks")
+            raise RuntimeError("agenda: boom")
+
+    class Held:
+        khive = SimpleNamespace(actor="lambda:x")
+
+        def _claim(self):
+            return None
+
+        def _release(self, pid):
+            seen["released"] = True
+
+        async def rerun(self, ids):
+            seen["order"].append("rerun")
+
+        async def wake(self, wait_ms):
+            seen["order"].append("wake")
+
+    (tmp_path / "chores.toml").write_text('model = "deepseek/deepseek-v4.1-flash"\n')
+    monkeypatch.setattr("lion_cli.agent.build", lambda directory, backend: (Ticks(), Held()))
+    a = argparse.Namespace(
+        dir=str(tmp_path), stats=False, model=None, check=None, ticks=False, arm=False, once=False, wait=0
+    )
+    asked = {"once": True} if flag == "once" else {"rerun": ["12345678"]}
+    with pytest.raises(RuntimeError, match="agenda: boom"):
+        asyncio.run(agent_main(argparse.Namespace(**{**vars(a), "rerun": [], **asked})))
+    assert seen == {"order": ["ticks"], "released": True}
+
+
 def test_once_refuses_served_identity(tmp_path, kkernel_stub, monkeypatch):
     """While a live process holds the identity, --check, --ticks, --arm, --once and a normal start each
     refuse before any act: no kkernel call, no landing, nothing written. --stats reads and stays
