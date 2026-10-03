@@ -934,6 +934,98 @@ def test_worktrees_a_pr_number_past_the_integer_conversion_limit_is_unread(tmp_p
     assert store.get(f"worktrees:{tmp_path}/main").value == kept
 
 
+def _named_and_loose(tmp_path, named: str = "named", loose: str = "loose") -> str:
+    """The main checkout, a tree on a branch named `detached`, and a tree whose HEAD is detached."""
+    return (
+        f"worktree {tmp_path}/main\0HEAD abc\0branch refs/heads/main\0\0"
+        f"worktree {tmp_path}/{named}\0HEAD d\0branch refs/heads/detached\0\0"
+        f"worktree {tmp_path}/{loose}\0HEAD e\0detached\0\0"
+    )
+
+
+def _old_dirty_answers(tmp_path) -> dict:
+    return {
+        "worktree list --porcelain -z": _named_and_loose(tmp_path),
+        "remote get-url origin": "https://github.com/o/r.git\n",
+        "status --porcelain": " M a.py\n",
+        "log -1": f"{int(time.time()) - 10 * 86400}\n",
+        "pr list -R o/r --head detached": "[]",
+    }
+
+
+def test_worktrees_a_branch_named_detached_is_queried_and_parks_beside_a_detached_head(tmp_path):
+    sh = FakeSh(**_old_dirty_answers(tmp_path))
+    store = MemoryNoteStore()
+    out = asyncio.run(Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=sh).run({}))
+    assert out.control and out.count == 2
+    assert [c[1:] for c in sh.calls if "pr" in c] == [
+        ["pr", "list", "-R", "o/r", "--head", "detached", "--state", "open", "--json", "number"]
+    ]  # one query, for the branch; the detached HEAD has no branch to ask about
+    assert out.findings == (
+        f"{tmp_path}/main: first snapshot, 2 worktree(s)",
+        f"{tmp_path}/named (detached): parked: dirty, HEAD older than 3 days, no open PR",
+    )
+    assert out.predicate == "dirty, HEAD older than 3 days, no open PR (1 match)"
+    lines = out.evidence.splitlines()
+    assert f"{tmp_path}/named | detached | dirty 1 | HEAD 10.0d | PR none | PARKED" in lines
+    assert f"{tmp_path}/loose | (detached HEAD) | dirty 1 | HEAD 10.0d | PR ?" in lines
+    assert store.get(f"worktrees:{tmp_path}/main").value == {
+        f"{tmp_path}/named": {"branch": "detached", "dirty": 1, "pr": "none", "parked": True},
+        f"{tmp_path}/loose": {"branch": None, "dirty": 1, "pr": "?", "parked": False},
+    }
+
+
+def test_worktrees_a_row_stored_under_the_old_detached_label_is_compared_on_its_pr_alone(tmp_path):
+    # rows stored before a detached HEAD was kept as no branch hold `detached` with PR `?` for both a
+    # detached HEAD and a branch of that name: such a row is guessed into neither
+    sh = FakeSh(**_old_dirty_answers(tmp_path))
+    store = MemoryNoteStore()
+    old = {"branch": "detached", "dirty": 1, "pr": "?", "parked": False}
+    rows = {f"{tmp_path}/named": old, f"{tmp_path}/loose": old}
+    store.put(f"worktrees:{tmp_path}/main", rows, run="-", seq=0)
+    inst = Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"{tmp_path}/named: detached or (detached HEAD)/? -> detached/none",
+        f"{tmp_path}/named (detached): parked: dirty, HEAD older than 3 days, no open PR",
+    )
+    sh.set("worktree list --porcelain -z", _named_and_loose(tmp_path, named="loose", loose="named"))
+    out = asyncio.run(inst.run({}))  # the two trees swap states, and a row stored now tells which
+    assert out.control and out.findings == (
+        f"{tmp_path}/loose: (detached HEAD)/? -> detached/none",
+        f"{tmp_path}/loose (detached): parked: dirty, HEAD older than 3 days, no open PR",
+        f"{tmp_path}/named: detached/none -> (detached HEAD)/?",
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "answer"),
+    [
+        ("remote get-url origin", (1, "", "No such remote 'origin'")),
+        ("pr list -R o/r --head detached", (1, "", "HTTP 502")),
+        ("pr list -R o/r --head detached", "not json"),
+        ("pr list -R o/r --head detached", "null"),
+    ],
+)
+def test_worktrees_a_branch_named_detached_whose_origin_or_pr_read_fails_is_unread(tmp_path, key, answer):
+    good = _old_dirty_answers(tmp_path)
+    store = MemoryNoteStore()
+    inst = Worktrees([str(tmp_path / "main")], store, every=None, parked_days=3, run=FakeSh(**good))
+    assert asyncio.run(inst.run({})).control
+    kept = store.get(f"worktrees:{tmp_path}/main").value
+    inst.sh = FakeSh(**good)
+    inst.sh.set(key, answer)
+    out = asyncio.run(inst.run({}))
+    origin = (f"{tmp_path}/main: origin failed: No such remote 'origin'",) if key.startswith("remote") else ()
+    assert not out.control and out.findings == (
+        *origin,
+        f"{tmp_path}/named: the PR read failed; the tree is unread",
+    )  # never confirmed PR-less, so never parked; the detached HEAD beside it is read
+    heads = [c[c.index("--head") + 1] for c in inst.sh.calls if "--head" in c]
+    assert heads == ([] if origin else ["detached"])
+    assert store.get(f"worktrees:{tmp_path}/main").value == kept
+
+
 def test_bench_jobs_reports_an_unreported_job_whose_process_is_gone(tmp_path):
     d = tmp_path / "bench"
     (d / "notes").mkdir(parents=True)

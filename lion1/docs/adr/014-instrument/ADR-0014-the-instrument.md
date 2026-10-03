@@ -223,8 +223,8 @@ every named row and leaves the `required-contexts` and `ci-red` snapshots untouc
 
 A pull request list that is not a JSON list (empty output, `null` included), or holds an integer
 past the conversion limit, is unread by every instrument: the control fails and the last rows stay.
-`worktrees` reads `git worktree list --porcelain -z`, so a path holding a line break stays whole,
-and strips only a leading `refs/heads/`.
+`worktrees` reads `git worktree list --porcelain -z`, keeping line breaks in paths; any branch,
+`detached` included, loses only a leading `refs/heads/`.
 
 - **Landing evidence**: in `tests/test_instruments.py`,
   `test_pr_state_first_sight_is_the_full_row_then_transitions_and_the_stale_crossing_once`,
@@ -235,6 +235,9 @@ and strips only a leading `refs/heads/`.
   `test_worktrees_a_path_holding_a_line_break_is_read_whole`,
   `test_worktrees_strips_only_the_leading_refs_heads_from_a_branch`,
   `test_worktrees_a_pr_number_past_the_integer_conversion_limit_is_unread`,
+  `test_worktrees_a_branch_named_detached_is_queried_and_parks_beside_a_detached_head`,
+  `test_worktrees_a_row_stored_under_the_old_detached_label_is_compared_on_its_pr_alone`,
+  `test_worktrees_a_branch_named_detached_whose_origin_or_pr_read_fails_is_unread` (S12),
   `test_a_pr_list_that_is_not_a_json_list_is_unread_by_every_instrument_reading_through_it`,
   `test_ci_red_first_sight_then_only_new_red_then_no_red_then_closed`.
 
@@ -339,3 +342,8 @@ refused at build.
   crossing refused is owed at the next run, and the chore's own mark waits for every copy. A notice
   that reached nobody leaves the chore untold:
   `test_a_dead_instrument_notice_that_reached_nobody_leaves_the_crossing_untold_until_a_send_lands`.
+- **S12**: A worktree record with no `branch` attribute is a detached HEAD: `worktrees` keeps it as
+  no branch (`None`), shows it as `(detached HEAD)`, asks no pull request about it and never parks
+  it. A branch named `detached` is a branch and is asked like any other. An older row, `detached`
+  with PR `?`, stands for either and the current writer never stores that pair: only its PR is
+  compared, and a transition names its branch `detached or (detached HEAD)`.
