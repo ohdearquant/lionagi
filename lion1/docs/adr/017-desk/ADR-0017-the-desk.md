@@ -314,8 +314,8 @@ one scrolled up keeps the lines in view, except those the oldest-first eviction 
 of the same page, after a control or a send, restores the reader's place the same way; a navigation
 starts at the bottom.
 
-The composer's text is the page's draft: a re-render restores it, a send's answer clears it unless
-an edit followed the send, and a navigation clears it.
+The composer's text is the page's draft: a re-render restores it, a send's accepted answer clears it
+unless an edit followed the send, and a navigation clears it.
 
 ### C16: The phone page shows the newest rows, whichever of the poll and the stream brings them _(enforced: mechanical)_ ^c16
 
@@ -323,7 +323,7 @@ an edit followed the send, and a navigation clears it.
 - **Violated when**: older rows replace newer ones shown, from the poll or the stream. Two polls run
   at once, or one that never settles stops the next.
 
-Every read of the registry and the residents takes a revision under one lock: the wall clock in
+Every areas read, the poll's and the stream's, takes a revision under one lock: the wall clock in
 microseconds, or one above the last where the clock has not passed it. A restarted server starts
 from the clock, so above its last unless the clock stepped back. `/events` serves the last read;
 `/api/areas` makes a read of its own, which becomes the last. An `areas` event carries its revision
