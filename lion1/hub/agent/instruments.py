@@ -29,6 +29,7 @@ from urllib.parse import quote
 from lionagi.notes import NoteStore
 
 from ..khive import Khive, lit
+from .agent import LoopLock
 from .chores import Outcome
 
 __all__ = (
@@ -1617,6 +1618,7 @@ class VerdictFreshness:
         self.state, self.every, self.dir, self.sh = state, every, Path(verdict_dir), run
         self.repos, self.enumerator = list(repos or []), list(enumerator or [])
         self.empty_expected = empty_expected
+        self._running = LoopLock()
 
     @staticmethod
     def _read(files: dict[str, tuple[str, float]]) -> dict[str, Any]:
@@ -1680,6 +1682,12 @@ class VerdictFreshness:
         return max(recs, key=lambda r: (r["mtime"], r["round_no"], r["path"]), default=None)
 
     async def run(self, args: dict[str, Any]) -> Outcome:
+        """One run at a time: the chore tick and a desk answer share this object, and a run that took its
+        list before another run wrote its snapshot would retire what that run listed."""
+        async with self._running:
+            return await self._run(args)
+
+    async def _run(self, args: dict[str, Any]) -> Outcome:
         try:
             entries = [(e.name, e.path, e.stat().st_mtime) for e in os.scandir(self.dir)]
         except OSError as e:
@@ -1783,8 +1791,7 @@ class VerdictFreshness:
                 if len(rows) >= PR_PAGE:  # absent from a full page is not closed: its last row is kept
                     unread.add(repo.lower())
         # The snapshot is read here, after the last awaited call, and put below with no await between the
-        # two: a run that overlapped this one has written whole before this read, or writes whole after
-        # the put. Read earlier, the rows kept for an unread repo would be the ones this run began with.
+        # two: the rows kept for an unread repo are the current ones, not the ones this run began with.
         prev = _snapshot(self.state, "verdict-freshness") or {}
         if incomplete:  # an incomplete list closes nothing it did not read closed
             unread.update(_pr_id(k) for k in prev if _pr_id(k) not in closed)
