@@ -303,6 +303,22 @@ not to do.
 lookup given no `args.query` raises, `Record` counts a part that raises as a failed control, and the
 desk leaves the message.
 
+### C15: The phone page keeps its newest log lines, its draft and its newest rows _(enforced: mechanical)_ ^c15
+
+- **Subject**: the script `/app` serves, run by a browser.
+- **Violated when**: a log box holds over 400 lines or moves a scrolled-up reader's lines. Words
+  typed during a send are lost, outlive the send, or show on another page. Two polls run at once, or
+  a poll replaces rows the stream delivered after it went out.
+
+A resident's log buffer and box each hold 400 lines; a reader at the box's bottom follows the newest
+line, one scrolled up keeps the lines in view.
+
+The composer's text is the page's draft, each edit a new revision. A re-render restores it, a send's
+answer clears it only if no edit followed the send, and a navigation starts a page with none.
+
+With the stream down the page polls every five seconds, one poll at a time; a failed poll frees the
+next, and a poll's answer is dropped when the stream delivered rows after it was sent.
+
 ## Decisions
 
 ### D1: `Desk` in `hub/agent/desk.py`: six handlers, the gate on `OUT{}`, the watch ^d1
@@ -390,16 +406,22 @@ tick.
 
 ### D8: `hub/areas.py` and `lion areas` ^d8
 
-Serves C10 and C11. `load_areas`, `resident`, `status`, `table` and `page` read files and one lock;
-`controls_info` adds a process check, which a restart reads before it acts. The server in
+Serves C10, C11 and C15. `load_areas`, `resident`, `status`, `table` and `page` read files and one
+lock; `controls_info` adds a process check, which a restart reads before it acts. The server in
 `apps/cli/lion_cli/areas.py` is a stdlib `ThreadingHTTPServer` on `127.0.0.1` by default, `--allow`
 adding a name it answers to; the phone shell is `hub/app.py`. The registry defaults to
 `.lionagi/areas.toml` under the home directory. `--file` names the registry, `--host` the address,
 `--refresh` the pages' reload in seconds (5), and `--json` prints the areas and rows as JSON.
 
-- **Landing evidence**: `tests/test_areas.py` (22 tests), among them
+- **Landing evidence**: `tests/test_areas.py` (37 tests), among them
   `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file` and
-  `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`.
+  `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`;
+  `tests/app_page_harness.js` runs the served script under node for C15's five `test_the_app_`
+  tests: `test_the_app_log_box_holds_400_nodes_after_405_lines_and_a_reader_scrolled_up_stays_put`,
+  `test_the_app_composer_keeps_words_typed_while_a_send_is_out_through_its_answer_and_the_reload`,
+  `test_the_app_composer_clears_what_a_send_took_and_a_new_page_starts_empty`,
+  `test_the_app_drops_a_poll_answer_the_stream_overtook_and_applies_the_next_poll` and
+  `test_the_app_starts_no_poll_while_one_is_out_and_a_failed_poll_frees_the_next`.
 
 ### D9: `Bounded.reply` grants a reply; `_spent` counts every cap ^d9
 

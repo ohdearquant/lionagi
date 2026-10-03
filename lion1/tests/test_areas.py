@@ -9,6 +9,7 @@ import http.client
 import json
 import os
 import plistlib
+import shutil
 import signal
 import subprocess
 import sys
@@ -1147,50 +1148,57 @@ def test_a_plist_whose_root_is_not_a_dict_or_whose_label_is_not_a_name_is_no_lab
     assert controls_info(str(d))["launchd_label"] == "com.example.x"
 
 
-# ---- the phone page's script: nothing in this suite runs it, so these pin its statements ----
+# ---- the phone page's script, run by node against a stand-in for the browser ----
+
+APP_PAGE = Path(__file__).with_name("app_page_harness.js")
 
 
-def app_script(tmp_path: Path) -> str:
-    """The script `/app` serves, as a browser receives it."""
-    port = serve_on(registry(tmp_path))
-    html = fetch(f"http://127.0.0.1:{port}/app").decode()
-    return html.split("<script>", 1)[1].split("</script>", 1)[0]
+def app_session(tmp_path: Path, scenario: str) -> dict:
+    """What one scripted session left behind: the page `/app` serves, its script run by node in
+    `app_page_harness.js` over a document, an EventSource and a fetch the scenario of that name drives."""
+    node = shutil.which("node")
+    assert node, "node is not on PATH: the phone page's script is run under node"
+    html = fetch(f"http://127.0.0.1:{serve_on(registry(tmp_path))}/app").decode()
+    done = subprocess.run(
+        [node, str(APP_PAGE), scenario], input=html, capture_output=True, encoding="utf-8", timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
 
 
-def js_function(js: str, name: str) -> str:
-    """One top-level function of the script, from its `function` line to its closing brace."""
-    start = js.index(f"\nfunction {name}(")
-    return js[start : js.index("\n}\n", start) + 3]
+def test_the_app_log_box_holds_400_nodes_after_405_lines_and_a_reader_scrolled_up_stays_put(tmp_path):
+    seen = app_session(tmp_path, "log")
+    # the oldest five lines left the box, and a box read at its bottom follows the newest
+    assert seen["full"] == {"nodes": 400, "first": "line 5", "last": "line 404", "following": True}
+    # three more lines arrive with the reader 50 lines up: the oldest three go and the window keeps its line
+    assert seen["scrolled"] == {"nodes": 400, "before": "line 55", "after": "line 55"}
+    # the box built again from the buffer holds the same 400 lines
+    assert seen["rebuilt"] == {"nodes": 400, "first": "line 8", "last": "line 407"}
 
 
-def test_the_app_log_box_holds_no_more_lines_than_the_buffer_and_a_reader_scrolled_up_stays_put(tmp_path):
-    js = app_script(tmp_path)
-    assert js.count("var LOG_LINES = 400;") == 1  # one cap, for the buffer and the box
-    assert "if (buf.length > LOG_LINES) buf.shift();" in js_function(js, "connect")
-    append = js_function(js, "appendLogLine")
-    assert "while (box.childElementCount > LOG_LINES) box.removeChild(box.firstElementChild);" in append
-    # the oldest line leaving shifts what a reader scrolled up sees by its height: shift it back
-    assert "else if (box.scrollHeight < height) box.scrollTop = top - (height - box.scrollHeight);" in append
+def test_the_app_composer_keeps_words_typed_while_a_send_is_out_through_its_answer_and_the_reload(tmp_path):
+    seen = app_session(tmp_path, "sending")
+    assert (seen["sent"]["subject"], seen["sent"]["content"]) == ("hello", "first")  # what was typed before
+    assert (seen["subject"], seen["content"]) == ("hello", "first more")  # and what was typed after it
+    assert seen["toast"] == "sent"
 
 
-def test_the_app_composer_keeps_what_was_typed_after_a_send_and_an_answer_clears_only_what_it_sent(tmp_path):
-    js = app_script(tmp_path)
-    # every edit to the composer is the page's draft under a new revision; a navigation is a new page
-    assert "addEventListener('input'" in js and "rev: ++state.typed" in js
-    assert "state.draft = null;" in js_function(js, "route")
-    # a send's or a control's answer reloads the page, and the re-render puts the draft back
-    render = js_function(js, "renderDetail")
-    assert "document.getElementById('talk-subject').value = state.draft.subject;" in render
-    assert "document.getElementById('talk-content').value = state.draft.content;" in render
-    send = js_function(js, "sendTalk")
-    assert "if (state.draft && state.draft.rev === rev) state.draft = null;" in send  # nothing typed since
-    assert ".value = ''" not in send
+def test_the_app_composer_clears_what_a_send_took_and_a_new_page_starts_empty(tmp_path):
+    # a send's answer clears the draft it sent; a control's answer reloads the page and leaves the draft
+    # where it is; a navigation, even back to the same resident, is a new page with no draft
+    seen = app_session(tmp_path, "clearing")
+    assert seen == {"answered": "", "reloaded": "half a thought", "returned": ""}
 
 
-def test_the_app_polls_one_at_a_time_and_drops_a_poll_the_stream_answered_after(tmp_path):
-    js = app_script(tmp_path)
-    poll = js_function(js, "startPoll")
-    assert "if (polling) return;" in poll and "polling = true;" in poll
-    assert "var since = streamed;" in poll and "if (streamed !== since) return;" in poll
-    assert ".catch(function () {}).then(function () { polling = false; });" in poll
-    assert "streamed++;" in js_function(js, "connect")
+def test_the_app_drops_a_poll_answer_the_stream_overtook_and_applies_the_next_poll(tmp_path):
+    seen = app_session(tmp_path, "pollStale")
+    # the rows the stream delivered while a slow poll was out are not replaced by that poll's answer
+    assert seen["afterStale"] == {"actors": ["streamed"], "conn": "live"}
+    # a poll with no stream event after it is applied, and the answer that was dropped freed the latch
+    assert seen["afterPoll"] == {"actors": ["polled"], "polls": 2}
+
+
+def test_the_app_starts_no_poll_while_one_is_out_and_a_failed_poll_frees_the_next(tmp_path):
+    # three ticks over one slow poll start one request; its failure is swallowed and the next tick polls
+    seen = app_session(tmp_path, "pollSerial")
+    assert seen == {"out": 1, "after": 2, "actors": ["later"]}
