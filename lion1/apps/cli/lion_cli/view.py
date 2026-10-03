@@ -33,7 +33,16 @@ from lionagi.record import Entry, Kind
 from .clipboard import to_clipboard
 from .voice import Voice
 
-__all__ = ("RESULT_LINES", "Console", "linked", "mermaid_blocks", "diagram_page", "Editor", "stdin_ask")
+__all__ = (
+    "RESULT_LINES",
+    "Console",
+    "cost_whole",
+    "linked",
+    "mermaid_blocks",
+    "diagram_page",
+    "Editor",
+    "stdin_ask",
+)
 
 _SYSTEM_TAGS = re.compile(r"</?system[^>]*>")
 _COPY = re.compile(r"/copy(?:\s+(.*))?", re.S)  # the console's own command: never sent to the model
@@ -296,6 +305,7 @@ class Console:
             row.update(
                 {k: c[k] for k in ("usage", "total_cost_usd", "attempt_usage", "prompt_chars") if k in c}
             )
+            row["cost_complete"] = cost_whole(c)  # a CLI's call has no such key; a row without it is older
             fh.write(json.dumps(row, default=str) + "\n")
             self.billed += 1
 
@@ -418,6 +428,15 @@ class Console:
             out += [escape(run), f"[link={target}]{escape(shown)}[/link]"]
             run = ""
         return "".join(out) + escape(run)
+
+
+def cost_whole(call: dict) -> bool:
+    """Whether a call's cost is wholly known: it has a figure (its total, else its usage's own cost)
+    and, where the backend says, every attempt is in it (`cost_complete`)."""
+    figure = call.get("total_cost_usd")
+    if figure is None:
+        figure = (call.get("usage") or {}).get("cost")
+    return figure is not None and call.get("cost_complete") is not False
 
 
 def _prose(text: str) -> str:

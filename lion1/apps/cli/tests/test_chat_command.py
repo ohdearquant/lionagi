@@ -472,6 +472,120 @@ def test_a_backend_that_fails_ends_the_chat_with_one_line_the_closing_line_and_e
     assert [r["content"] for r in rows if r.get("kind") == "TEXT"] == ["Hello."]
 
 
+def test_the_logs_usage_rows_read_back_to_the_sum_and_the_count_of_calls_it_misses(
+    tmp_path, monkeypatch, capsys
+):
+    """A router call whose known subtotal misses an attempt is partial live and on its USAGE row
+    alike: the row keeps `cost_complete`, the failed last call's row too, which the close writes."""
+    import lion_cli.chat as cli
+    from lion_cli.chat import spent
+
+    from hub.backend import OpenRouter, OpenRouterError
+    from hub.backend import openrouter as router
+    from tests.test_openrouter import _answers, _NoSleep
+
+    answer = {
+        "choices": [{"message": {"content": "Hello."}, "finish_reason": "stop"}],
+        "usage": {"cost": 0.1},
+    }
+    blank = {"choices": [{"message": {"content": None}, "finish_reason": "stop"}], "usage": {"cost": 0.25}}
+    # the second call is billed for a blank attempt, then its retry goes out and nothing readable
+    # comes back: its known subtotal misses that attempt, and the call fails
+    cut = OpenRouterError("request failed: ConnectionResetError")
+    monkeypatch.setattr(router, "asyncio", _NoSleep)
+    monkeypatch.setattr(router, "_post", _answers(answer, blank, cut))
+    backend = OpenRouter(model="m", retries=1)
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: backend)
+    typed = iter(["again"])
+
+    async def ask(prompt: str = "", out=None) -> str | None:
+        return next(typed, None)
+
+    monkeypatch.setattr("lion_cli.view.stdin_ask", ask)
+    log = tmp_path / "chat.jsonl"
+    args = ["chat", "--dir", str(tmp_path), "--log", str(log), "--say", "hi"]
+    with pytest.raises(SystemExit):
+        asyncio.run(chat_main(parser().parse_args(args)))
+    live = spent(backend.calls)
+    assert live == (pytest.approx(0.35), 1)
+    assert "$0.3500 (partial: 1 call(s) of unknown cost)" in capsys.readouterr().out
+    rows: list[dict] = []
+    load_log(log, usage=rows)
+    assert [(r["round"], r["total_cost_usd"], r.get("cost_complete")) for r in rows] == [
+        (1, 0.1, True),
+        (0, 0.25, False),  # written by the close: no entry landed after the failed call
+    ]
+    assert spent(rows) == live
+
+
+def test_a_row_from_before_cost_complete_counts_among_the_calls_the_sum_may_miss(
+    tmp_path,
+):
+    """A log from before the key holds rows with a known subtotal and no word on whether every
+    attempt is in it. Read back, each counts as a call the sum may miss, beside the calls the newer
+    rows say are incomplete or priced at nothing, and none reads as complete. The log is only read."""
+    from lion_cli.chat import spent
+
+    def row(n: int, cost, **more) -> dict:
+        return {"kind": "USAGE", "round": n, "model": "m", "total_cost_usd": cost, **more}
+
+    rows = [
+        row(1, 0.1),  # from before the key: a subtotal, no word on whether it is whole
+        row(2, 0.3),
+        row(3, None),  # no figure at all, whenever it was written
+        row(4, 0.2, cost_complete=True),
+        row(5, 0.25, cost_complete=False),
+    ]
+    log = tmp_path / "old.jsonl"
+    log.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    before = log.read_bytes()
+    read: list[dict] = []
+    load_log(log, usage=read)
+    assert read == rows
+    assert spent(read) == (pytest.approx(0.85), 4)  # two of unknown completeness, one unpriced, one cut
+    assert spent(read[3:4]) == (pytest.approx(0.2), 0)  # a row that says it is whole still is
+    assert log.read_bytes() == before
+
+
+def test_a_row_says_cost_complete_by_its_figure_when_the_backend_does_not(tmp_path, monkeypatch):
+    """A CLI's call has a figure or none and no `cost_complete`: its row says which, so the sum read
+    back from the log is the live one, and a row without the key is only ever one from before it."""
+    import lion_cli.chat as cli
+    from lion_cli.chat import spent
+
+    class Metered:
+        def __init__(self, envelopes: list[dict]) -> None:
+            self.envelopes, self.calls = iter(envelopes), []
+
+        async def __call__(self, messages) -> str:
+            self.calls.append(next(self.envelopes))
+            return "Hello."
+
+    backend = Metered(
+        [
+            {"model": "m", "total_cost_usd": 0.02, "usage": {"input_tokens": 5}},
+            {"model": "m", "total_cost_usd": None},  # a subscription's call: no figure
+            {"model": "m", "total_cost_usd": None, "usage": {"cost": 0.05}},  # only the usage's own
+        ]
+    )
+    monkeypatch.setattr(cli, "backend_for", lambda *a, **k: backend)
+    typed = iter(["two", "three"])
+
+    async def ask(prompt: str = "", out=None) -> str | None:
+        return next(typed, None)
+
+    monkeypatch.setattr("lion_cli.view.stdin_ask", ask)
+    log = tmp_path / "chat.jsonl"
+    asyncio.run(
+        chat_main(parser().parse_args(["chat", "--dir", str(tmp_path), "--log", str(log), "--say", "hi"]))
+    )
+    rows: list[dict] = []
+    load_log(log, usage=rows)
+    assert [r["cost_complete"] for r in rows] == [True, False, True]
+    assert spent(backend.calls) == (pytest.approx(0.07), 1)
+    assert spent(rows) == spent(backend.calls)
+
+
 def test_a_claude_code_model_gets_no_tools_of_its_own_one_turn_per_call_and_no_gate_hook(
     tmp_path, monkeypatch, capsys
 ):
