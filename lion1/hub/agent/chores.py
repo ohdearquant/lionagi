@@ -583,6 +583,17 @@ class Chores:
                     if r["chore"] == name and (_epoch(r) < moment if ended else _epoch(r) <= moment)
                 ]
                 latest = max(ran, key=_epoch, default=None)
+                # a run without `ts` in the hour a clock change repeats names two instants: while one of them
+                # may be the last run, or fall either side of the moment, the period is unknown
+                if any(
+                    two[0] <= moment and (two[1] >= moment or two[1] >= _epoch(latest))
+                    for r in ledger
+                    if r["chore"] == name and (two := _readings(r)) is not None
+                ):
+                    lines.append(
+                        f"{actor} {name} not judged: a run without `ts` names an hour the clock repeats"
+                    )
+                    continue
                 first = firsts.get(name)
                 if latest is None:  # no run is missing only once its first due and the grace are past
                     ticked = True
@@ -738,7 +749,8 @@ class Chores:
         """Every instrument with a cadence has a pending reminder saying `tick: <chore>`; the digest
         has one (`digest_every`: daily, or a front desk's brief); the aged pass has its own when there is
         a steward. Creates what is missing and returns what it created; after a short agenda read (capped or
-        stalled) it creates and records nothing and names each tick it left. A chore's first firing is kept
+        stalled) it creates and records nothing, drops a record beside a row naming no instant, and names
+        each tick it left. A chore's first firing is kept
         in the agent's state (`first_due`) for the digest: one on record stands, and where there is none the
         tick's own firing is recorded when it was just made, else what its pending rows give
         (`_first_firing`); a tick with a row naming no instant has none, and one on record is dropped."""
@@ -748,6 +760,15 @@ class Chores:
         if self.steward:
             wanted["tick: aged"] = self.aged_every
         wanted.update(self.extra_ticks)
+        # a row naming no instant may be the earliest firing: a tick with one has no first due on record,
+        # and one it had is dropped, from a short read too, since the row it saw stands; the digest reads
+        # the rows
+        blind = {c for c in self.instruments if None in pending.get(f"tick: {c}", ())}
+        firsts = _val(self.agent.state, "first_due", {})
+        if blind & firsts.keys():
+            self.agent.state.put(
+                "first_due", {k: v for k, v in firsts.items() if k not in blind}, run="-", seq=0
+            )
         if short:  # a read that did not see every row says neither that a tick is absent nor its first due
             return [f"{content}: not created, {short}" for content in wanted]
         created = []
@@ -765,10 +786,7 @@ class Chores:
             chore, firsts = content.removeprefix("tick: "), _val(self.agent.state, "first_due", {})
             if chore not in self.instruments:
                 continue
-            if None in fires:  # a row naming no instant may be the earliest: a tick with one has no first
-                if chore in firsts:  # due on record, and one it had is dropped: the digest reads the rows
-                    rest = {k: v for k, v in firsts.items() if k != chore}
-                    self.agent.state.put("first_due", rest, run="-", seq=0)
+            if None in fires:  # its record was dropped above
                 continue
             # a first due on record stands: a row cannot say what lead its tick was made with, so what it
             # gives is no reason to lower one
@@ -1103,6 +1121,18 @@ def _epoch(row: dict) -> float:
     if isinstance(ts, int | float) and not isinstance(ts, bool):
         return float(ts)
     return time.mktime(time.strptime(row["at"], "%Y-%m-%d %H:%M:%S"))
+
+
+def _readings(row: dict) -> tuple[float, float] | None:
+    """The two instants a row without `ts` names when its local `at` is in the hour a clock change repeats,
+    earlier first; None for any other row."""
+    ts = row.get("ts")
+    if isinstance(ts, int | float) and not isinstance(ts, bool):
+        return None
+    named = time.strptime(row["at"], "%Y-%m-%d %H:%M:%S")
+    both = {time.mktime((*named[:8], dst)) for dst in (0, 1)}
+    both = {t for t in both if time.localtime(t)[:6] == named[:6]}
+    return (min(both), max(both)) if len(both) == 2 else None
 
 
 def _iso_epoch(iso: str | None) -> float:

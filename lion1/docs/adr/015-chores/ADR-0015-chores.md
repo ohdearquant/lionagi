@@ -459,3 +459,11 @@ bypasses the handler: no refusals, no row, no send.
   after a capped read
   (`test_a_full_page_of_rows_at_one_instant_stalls_the_read_which_ends_there_and_judges_nothing`,
   `test_a_stalled_read_that_shows_one_of_a_ticks_rows_judges_records_and_makes_nothing`).
+- **S29**: A capped or stalled read still drops a first due on record beside a row it saw naming no
+  instant (S26): that row may be the earliest firing whatever the rows past the read say
+  (`test_a_short_read_seeing_a_tick_row_naming_no_instant_drops_the_first_due_on_record`).
+- **S30**: A row without `ts` whose `at` is in the hour a clock change repeats names two instants.
+  While either may be a periodic chore's last run, or they fall either side of the moment, the chore
+  reads ``not judged: a run without `ts` names an hour the clock repeats``; a later run both precede
+  leaves it out
+  (`test_a_run_without_ts_in_a_repeated_hour_is_not_judged_from_while_it_may_be_the_last`).

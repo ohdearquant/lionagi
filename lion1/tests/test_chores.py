@@ -1265,6 +1265,43 @@ def test_a_label_in_a_skipped_hour_names_no_time_and_one_in_a_repeated_hour_name
         time.tzset()
 
 
+@pytest.mark.parametrize(
+    ("rows", "line"),
+    [
+        # 01:30 names 05:30Z and 06:30Z: a 30-minute chore run at either is due by 06:05Z or 07:05Z
+        ([("2026-11-01 01:30:00", None)], "h not judged: a run without `ts` names an hour the clock repeats"),
+        # the same run with its `ts` is judged: its instant is one
+        ([("2026-11-01 01:30:00", "06:30")], "h 01:30 quiet"),
+        # a later run that either reading precedes leaves the repeated hour out of the judgement
+        ([("2026-11-01 01:30:00", None), ("2026-11-01 01:31:00", "06:31")], "h 01:31 quiet"),
+        # a run without `ts` outside the repeated hour is judged as it was
+        ([("2026-11-01 00:50:00", None)], "MISSING: h"),
+    ],
+    ids=["repeated-hour", "repeated-hour-with-ts", "later-run-with-ts", "outside-the-hour"],
+)
+def test_a_run_without_ts_in_a_repeated_hour_is_not_judged_from_while_it_may_be_the_last(
+    tmp_path, monkeypatch, rows, line
+):
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        chores, agent = build(tmp_path, FakeKhive(), [], h=Probe("h", full(), every="every:30m"))
+        written = []
+        for at, utc in rows:
+            row = {"at": at, "chore": "h", "findings": [], "control": True, "escalate": False}
+            if utc is not None:
+                hh, mm = map(int, utc.split(":"))
+                row["ts"] = datetime(2026, 11, 1, hh, mm, tzinfo=UTC).timestamp()
+            written.append(json.dumps(row) + "\n")
+        chores.ledger.write_text("".join(written))
+        t = datetime(2026, 11, 1, 6, 35, tzinfo=UTC).timestamp()  # 01:35 EST
+        _, *lines = digest_at(chores, agent, t, day="2026-11-01").splitlines()
+        assert len(lines) == 1 and (lines[0].startswith(line) or lines[0].startswith(f"{OWNER} {line}"))
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
 def test_a_row_the_digest_cannot_select_by_its_label_is_not_a_chore_that_never_ran(tmp_path):
     chores, agent = build(tmp_path, FakeKhive(), [], a=Probe("a", full(), every=None))
     t = datetime(2026, 9, 14, 9, 0).timestamp()
@@ -2561,6 +2598,27 @@ def test_a_first_due_on_record_is_dropped_by_ensure_ticks_when_a_pending_tick_ro
     assert f"{OWNER} w not judged: a pending tick row names no first due" in lines
     assert f"{OWNER} disk no run yet, first due by {label(base + 60)}" in lines
     assert "MISSING: " not in "\n".join(lines)
+
+
+def test_a_short_read_seeing_a_tick_row_naming_no_instant_drops_the_first_due_on_record(
+    tmp_path,
+):
+    base = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
+    # the row naming no instant sorts first and is read; 300 rows at one instant behind it stall the read
+    rows = [("tick: w", SELF, "pending", "1 hour")]
+    rows += [(f"other: {i}", "lambda:other:agent", "pending", iso(base)) for i in range(300)]
+    khive = FakeKhive(agenda=rows)
+    khive.paged = True
+    chores, agent = build(tmp_path, khive, [], w=Probe("w", full(), every="weekly"))
+    agent.state.put("first_due", {"w": base - 7200}, run="-", seq=0)
+    stalled = f"the agenda read stalled at {iso(base)}: a full page of rows share that instant"
+    left = asyncio.run(chores.ensure_ticks())
+    # the read is short, so nothing is made and nothing recorded, but the row it did see may be the earliest
+    # firing: the stale record goes, and the digest reads the rows, which cannot judge it either
+    assert left == [f"tick: {n}: not created, {stalled}" for n in ("w", "digest", "aged")]
+    assert agent.state.get("first_due").value == {}
+    lines = digest_at(chores, agent, base).splitlines()
+    assert lines[1:] == [f"{OWNER} w not judged: {stalled}"]
 
 
 @pytest.mark.parametrize("answer", [{}, None, {"events": "x"}, []], ids=["empty", "none", "text", "list"])
