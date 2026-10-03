@@ -104,20 +104,27 @@ class FakeKhive:
 
     async def exec(self, ops: str):
         self.ops.append(ops)
-        # a str is this actor's reminder; (content, actor[, status[, trigger_at[, repeat_anchor]]])
+        # a str is this actor's reminder; (content, actor[, status[, trigger_at[, repeat_anchor[, repeat[,
+        # created_at]]]]]), None leaving a field out; the creation instant sits beside `properties`
         if ops.startswith("schedule.agenda"):
-            events = [
-                {
-                    "content": c if isinstance(c, str) else c[0],
-                    "properties": {  # the agenda keeps a row's status here, none beside properties
-                        "status": "pending" if isinstance(c, str) or len(c) < 3 else c[2],
-                        "created_by_actor": self.actor if isinstance(c, str) else c[1],
-                        **({} if isinstance(c, str) or len(c) < 4 else {"trigger_at": c[3]}),
-                        **({} if isinstance(c, str) or len(c) < 5 else {"repeat_anchor": c[4]}),
-                    },
-                }
-                for c in self.agenda
-            ]
+            events = []
+            for c in self.agenda:
+                content, actor, status, trigger, anchor, repeat, born = (
+                    *((c, self.actor) if isinstance(c, str) else c),
+                    *[None] * 5,
+                )[:7]
+                given = {"trigger_at": trigger, "repeat_anchor": anchor, "repeat": repeat}
+                events.append(
+                    {
+                        "content": content,
+                        **({} if born is None else {"created_at": born}),
+                        "properties": {  # the agenda keeps a row's status here, none beside properties
+                            "status": status or "pending",
+                            "created_by_actor": actor,
+                            **{k: v for k, v in given.items() if v is not None},
+                        },
+                    }
+                )
             return [{"events": events}]
         if ops.startswith(
             '[list(kind="scheduled_event"'
@@ -1035,6 +1042,21 @@ _DROP = object()
         {"escalate": "no"},
         {"escalate": None},
         {"escalate": 0},
+        # the digest selects a row's day by its label and reads its instant from `ts`: the label is the
+        # `YYYY-MM-DD HH:MM:SS` a check writes, a time that exists, on the day of `ts`
+        {"at": "yesterday"},
+        {"at": "2026-09-13 09:00:00"},  # a label, of the day before `ts`
+        {"at": "2026-09-14 99:99:99"},  # the day's characters, no time
+        {"at": "2026-09-14T09:00:00"},
+        {"at": "2026-09-14 09:00:00 "},
+        {"at": "2026-09-14  09:00:00"},
+        {"at": "2026-9-14 9:00:00"},  # not zero-padded: its first ten characters are not the day
+        # `answered`, where a row has it, is read by truthiness, so only a boolean is a value it can use
+        {"answered": "false"},
+        {"answered": "yes"},
+        {"answered": None},
+        {"answered": 0},
+        {"answered": 1},
     ],
     ids=lambda c: ", ".join(f"{k}={'missing' if v is _DROP else v!r}" for k, v in c.items()) or "intact",
 )
@@ -1055,6 +1077,41 @@ def test_a_ledger_row_the_digest_cannot_judge_from_makes_the_ledger_unreadable(t
         return
     assert ": ledger unreadable (ValueError: " in head and head.endswith("; a MISSING line is the finding")
     assert lines == [f"{OWNER} w not judged: ledger unreadable"]
+
+
+def test_a_row_the_digest_cannot_select_by_its_label_is_not_a_chore_that_never_ran(tmp_path):
+    chores, agent = build(tmp_path, FakeKhive(), [], a=Probe("a", full(), every=None))
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    row = {"at": "yesterday", "ts": t, "chore": "a", "findings": [], "control": True, "escalate": False}
+    chores.ledger.write_text(json.dumps(row) + "\n")  # an on-ask chore that ran, its row on no day
+    head, *lines = digest_at(chores, agent, t).splitlines()
+    assert ": ledger unreadable (ValueError: a ledger row has no usable at: " in head
+    assert lines == [f"{OWNER} a not judged: ledger unreadable"]  # not `on ask: no run`
+
+
+def test_a_label_and_an_instant_on_different_days_make_the_ledger_unreadable_naming_both(tmp_path):
+    chores, agent = build(tmp_path, FakeKhive(), [], w=Probe("w", full(), every="weekly"))
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    row = {"at": label(t - 86400), "ts": t, "chore": "w", "findings": [], "control": True, "escalate": False}
+    chores.ledger.write_text(json.dumps(row) + "\n")
+    head, *lines = digest_at(chores, agent, t).splitlines()
+    assert ": ledger unreadable (ValueError: a ledger row's `at` and `ts` name different days: " in head
+    assert lines == [f"{OWNER} w not judged: ledger unreadable"]
+
+
+def test_a_row_counts_as_answered_by_its_answered_field_and_by_its_control_where_it_has_none(tmp_path):
+    chores, agent = build(tmp_path, FakeKhive(), [], w=Probe("w", full(), every="weekly"))
+    t = datetime(2026, 9, 14, 9, 0).timestamp()
+    base = {"at": label(t), "ts": t, "chore": "w", "findings": [], "control": True, "escalate": False}
+    rows = [  # an instrument that failed has no answer unless the row says otherwise; one that passed has
+        {**base, "findings": ["x"], "control": False},
+        {**base, "answered": False},
+        {**base, "answered": True},
+        base,  # a row from before the field: its control says
+    ]
+    chores.ledger.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    line = f"{OWNER} w 09:00 quiet 4 run(s), 2 answered, 3 quiet, 0 report, 0 escalate, 1 instrument-failed"
+    assert line in digest_at(chores, agent, t).splitlines()
 
 
 def test_aged_tells_the_steward_once_what_the_owner_left_unanswered_and_nothing_acknowledged(tmp_path):
@@ -1511,7 +1568,8 @@ def test_ensure_ticks_records_a_first_due_for_a_tick_it_finds_pending_from_its_o
     khive = FakeKhive(
         agenda=[
             ("tick: disk", SELF, "pending", "2026-09-14T09:00:00+00:00"),  # the store's own spelling
-            ("tick: pr", SELF, "pending", "2026-09-14T09:15:00Z"),  # as a reminder was first set
+            # no creation instant to step back to: the firing, or now if that is earlier (the firing is past)
+            ("tick: pr", SELF, "pending", "2026-09-14T09:15:00Z"),
             ("tick: w", SELF, "pending"),  # names no firing
             ("tick: m", SELF, "pending", "soon"),  # names no instant
             ("tick: old", SELF, "cancelled", "2026-09-01T00:00:00Z"),  # not pending: its firing is not coming
@@ -1557,9 +1615,9 @@ def test_a_pending_monthly_tick_gives_its_anchor_not_its_next_clamped_firing(tmp
         # anchored Jan 31: its next firing is Feb 28, a month's last day, and the one after is Mar 31
         khive = FakeKhive(
             agenda=[
-                ("tick: m", SELF, "pending", "2027-02-28T09:30:00Z", "2027-01-31T09:30:00Z"),
+                ("tick: m", SELF, "pending", "2027-02-28T09:30:00Z", "2027-01-31T09:30:00Z", "monthly"),
                 # a row with no anchor counts its months from its own firing, as the store does for one
-                ("tick: legacy", SELF, "pending", "2027-02-28T09:30:00Z"),
+                ("tick: legacy", SELF, "pending", "2027-02-28T09:30:00Z", None, "monthly"),
             ]
         )
         chores, agent = build(
@@ -1602,6 +1660,98 @@ def test_a_first_due_on_record_is_never_overwritten_by_a_pending_tick(tmp_path):
     assert first == {"disk": june.timestamp(), "pr": (nine + timedelta(minutes=15)).timestamp()}
     asyncio.run(chores.ensure_ticks())  # once: a second start with the same agenda changes nothing
     assert agent.state.get("first_due").value == first
+
+
+def iso(t: float, micros: bool = False) -> str:
+    """An instant as the store spells it: a firing to the second, a row's creation to the microsecond."""
+    return datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%dT%H:%M:%S" + (".%fZ" if micros else "Z"))
+
+
+def pending(chore: str, firing: float, repeat: str, born: float | str | None = None) -> tuple:
+    """A pending tick as `schedule.agenda` returns it: its firing and repeat inside `properties`, its
+    creation beside them (an instant, or text that is none, or nothing)."""
+    made = iso(born, micros=True) if isinstance(born, float | int) else born
+    return (f"tick: {chore}", SELF, "pending", iso(firing), None, repeat, made)
+
+
+@pytest.mark.parametrize(
+    ("repeat", "period", "delivered"),
+    [
+        ("every:30m", 1800, 0),  # not delivered yet: its trigger is its first firing, ahead of now
+        ("every:30m", 1800, 1),
+        ("every:30m", 1800, 5),
+        ("every:90m", 5400, 2),
+        ("daily", 86400, 3),
+        ("weekly", 7 * 86400, 2),
+    ],
+)
+def test_a_pending_repeating_tick_gives_the_firing_its_history_admits_not_the_next_one(
+    tmp_path, repeat, period, delivered
+):
+    first = datetime(2026, 9, 14, 9, 0, tzinfo=UTC).timestamp()
+    born = first - 60  # a tick is made a minute before its first firing
+    # the store moves a delivered repeat's `trigger_at` on to its next firing and keeps the row pending
+    row = pending("disk", first + delivered * period, repeat, born)
+    chores, agent = build(tmp_path, FakeKhive(agenda=[row]), [], disk=Probe("disk", full(), every=repeat))
+    agent.clock = lambda: first - 30 if not delivered else first + (delivered - 1) * period + 100
+    asyncio.run(chores.ensure_ticks())  # an agent restarted after its tick was delivered, before a row
+    text = digest_at(chores, agent, first + 301)  # a second past the first firing and the grace
+    assert f"MISSING: disk, no run recorded, first due by {label(first)}" in text.splitlines()
+    line = f"{OWNER} disk no run yet, first due by {label(first)}"
+    assert line in digest_at(chores, agent, first + 300).splitlines()
+    assert agent.state.get("first_due").value == {"disk": first}
+
+
+def test_a_row_created_a_period_ago_and_next_due_in_one_gives_the_firing_on_its_creation_instant(tmp_path):
+    now, period = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp(), 1800
+    row = pending("disk", now + period, "every:30m", now - period)
+    chores, agent = build(tmp_path, FakeKhive(agenda=[row]), [], disk=Probe("disk", full()))
+    agent.clock = lambda: now
+    asyncio.run(chores.ensure_ticks())
+    assert agent.state.get("first_due").value == {"disk": now - period}
+    text = digest_at(chores, agent, now)
+    assert f"MISSING: disk, no run recorded, first due by {label(now - period)}" in text.splitlines()
+
+
+def test_a_pending_tick_with_no_instant_to_step_back_to_gives_its_firing_or_now_if_earlier(tmp_path):
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
+    khive = FakeKhive(
+        agenda=[
+            pending("ahead", now + 1800, "every:30m"),  # no creation instant
+            pending("behind", now - 600, "every:30m"),  # its firing is past: its own
+            pending("stamp", now + 1800, "every:30m", "yesterday"),  # a creation that is no instant
+            pending("cron", now + 1800, "0 9 * * 1", now - 86400),  # no fixed period to step by
+            pending("zero", now + 1800, "every:0m", now - 60),  # a period that steps nowhere
+        ]
+    )
+    probes = {
+        n: Probe(n, full(), every=e)
+        for n, e in (("ahead", "every:30m"), ("behind", "every:30m"), ("stamp", "every:30m"))
+    }
+    chores, agent = build(
+        tmp_path,
+        khive,
+        [],
+        cron=Probe("cron", full(), every="0 9 * * 1"),
+        zero=Probe("zero", full(), every="every:0m"),
+        **probes,
+    )
+    agent.clock = lambda: now
+    asyncio.run(chores.ensure_ticks())
+    first = agent.state.get("first_due").value
+    assert first == {"ahead": now, "behind": now - 600, "stamp": now, "cron": now, "zero": now}
+    text = digest_at(chores, agent, now + 301).splitlines()  # past the grace: the next firing is no wait
+    assert f"MISSING: ahead, no run recorded, first due by {label(now)}" in text
+    assert f"MISSING: stamp, no run recorded, first due by {label(now)}" in text
+
+
+def test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_stepped_forward(tmp_path):
+    now = datetime(2026, 9, 14, 12, 0, tzinfo=UTC).timestamp()
+    row = pending("disk", now - 7200, "every:30m", now - 60)
+    chores, agent = build(tmp_path, FakeKhive(agenda=[row]), [], disk=Probe("disk", full()))
+    agent.clock = lambda: now
+    asyncio.run(chores.ensure_ticks())
+    assert agent.state.get("first_due").value == {"disk": now - 7200}
 
 
 def test_the_tick_check_reads_a_reminders_status_inside_properties_where_the_agenda_keeps_it(tmp_path):

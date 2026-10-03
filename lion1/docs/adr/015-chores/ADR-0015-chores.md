@@ -243,6 +243,7 @@ pages each list to its end, rechecks both in code and runs each row once. An id 
 - **Landing evidence**: `test_ensure_ticks_creates_the_reminders_that_are_missing_and_only_those`,
   `test_ensure_ticks_keeps_a_chores_first_firing_once_and_never_overwrites_an_earlier_one`,
   `test_ensure_ticks_records_a_first_due_for_a_tick_it_finds_pending_from_its_own_row`,
+  `test_a_pending_repeating_tick_gives_the_firing_its_history_admits_not_the_next_one`,
   `test_a_missed_tick_of_the_actors_own_is_run_at_the_next_check_and_only_once`,
   `test_the_missed_tick_read_asks_the_store_for_the_actors_missed_and_failed_rows_before_the_page`,
   `test_missed_ticks_past_the_first_page_of_the_store_are_each_run_once` (201 rows, two passes),
@@ -359,14 +360,28 @@ bypasses the handler: no refusals, no row, no send.
   (`test_a_ledger_the_digest_cannot_read_reads_no_chore_missing_and_says_so`,
   `test_a_fresh_agent_with_no_ledger_file_reads_no_run_yet_until_its_first_due_and_the_grace`).
 - **S17**: A tick `ensure_ticks` finds pending gives its chore a first due too, when none is kept,
-  from the reminder's own row: its next firing, or for a monthly one its anchor, which the store
-  counts months from. Of several reminders of one tick the earliest counts. A start that stopped
-  between its reminder and the record is healed at the next. A row naming no instant gives none
-  (`test_ensure_ticks_records_a_first_due_for_a_tick_it_finds_pending_from_its_own_row`,
+  from the reminder's own row. The store moves `trigger_at` on after each delivery, so a fixed
+  period's first due is the trigger less whole periods, while not before the row's `created_at`.
+  With no creation instant, or no fixed period, it is the firing or now, whichever is earlier; a
+  monthly row gives its anchor. The earliest of a tick's rows counts; a row naming no instant gives
+  none (`test_a_pending_repeating_tick_gives_the_firing_its_history_admits_not_the_next_one`,
   `test_a_pending_monthly_tick_gives_its_anchor_not_its_next_clamped_firing`,
   `test_a_first_due_on_record_is_never_overwritten_by_a_pending_tick`).
-- **S18**: A row the digest can judge from has a non-blank `chore`, an `at` string, a `findings`
-  list of strings, and boolean `control` and `escalate`. Its time, `ts` or else `at`, is from 1970
-  and before the year 9999, so a monthly chore can step a month from it
+- **S18**: A row the digest can judge from has a non-blank `chore`, an `at` in the form a check
+  writes, `YYYY-MM-DD HH:MM:SS` naming a time that exists, a `findings` list of strings, and boolean
+  `control` and `escalate`. Its time, `ts` or else `at`, is from 1970 to before the year 9999, and
+  falls on the day `at` names, the day the digest selects the row by
   (`test_a_ledger_row_that_parses_but_names_no_chore_or_time_makes_the_ledger_unreadable`,
-  `test_a_ledger_row_the_digest_cannot_judge_from_makes_the_ledger_unreadable`).
+  `test_a_ledger_row_the_digest_cannot_judge_from_makes_the_ledger_unreadable`,
+  `test_a_row_the_digest_cannot_select_by_its_label_is_not_a_chore_that_never_ran`,
+  `test_a_label_and_an_instant_on_different_days_make_the_ledger_unreadable_naming_both`).
+- **S19**: A row's `answered`, which the digest counts a run by, is a boolean where the row has one;
+  a row from before the field has none, and its `control` says
+  (`test_a_row_counts_as_answered_by_its_answered_field_and_by_its_control_where_it_has_none`).
+- **S20**: A start that stopped between its reminder and the record is healed at the next. At the
+  edges of S17, a row created a period ago and next due in one gives the firing on its creation
+  instant; a firing before the creation is its own, never stepped forward. A creation that is no
+  instant, a cron and a zero period take the fallback
+  (`test_a_row_created_a_period_ago_and_next_due_in_one_gives_the_firing_on_its_creation_instant`,
+  `test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_stepped_forward`,
+  `test_a_pending_tick_with_no_instant_to_step_back_to_gives_its_firing_or_now_if_earlier`).

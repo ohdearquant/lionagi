@@ -40,7 +40,7 @@ import json
 import re
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -525,18 +525,23 @@ class Chores:
                 row = r if isinstance(r, dict) else {}
                 usable = {  # each field the digest reads from a row, and whether it is one it can use
                     "chore": isinstance(row.get("chore"), str) and bool(row["chore"].strip()),
-                    "at": isinstance(row.get("at"), str),
+                    "at": isinstance(row.get("at"), str) and _is_label(row["at"]),
                     "findings": isinstance(row.get("findings"), list)
                     and all(isinstance(f, str) for f in row["findings"]),
                     "control": isinstance(row.get("control"), bool),
                     "escalate": isinstance(row.get("escalate"), bool),
+                    # a row from before the field has none, and its control says
+                    "answered": "answered" not in row or isinstance(row["answered"], bool),
                 }
                 if not all(usable.values()):
                     bad = ", ".join(k for k, ok in usable.items() if not ok)
                     raise ValueError(f"a ledger row has no usable {bad}: {str(r)[:80]}")
-                # a label that is no time raises in `_epoch`; a count must be a time the digest can step from
-                if not 0 <= _epoch(r) < _TIME_END:
+                # a count must be a time the digest can step from, on the day the label it selects by names
+                t = _epoch(r)
+                if not 0 <= t < _TIME_END:
                     raise ValueError(f"a ledger row's time is no instant the digest counts: {str(r)[:80]}")
+                if time.strftime("%Y-%m-%d", time.localtime(t)) != row["at"][:10]:
+                    raise ValueError(f"a ledger row's `at` and `ts` name different days: {str(r)[:80]}")
         except (OSError, ValueError, OverflowError) as e:
             ledger, unread = [], f"{type(e).__name__}: {e}"
         rows = [r for r in ledger if r["at"].startswith(day)]
@@ -704,21 +709,18 @@ class Chores:
         has one (`digest_every`: daily, or a front desk's brief); the aged pass has its own when there is
         a steward. Creates what is missing, returns what it created. A chore's first firing is kept in
         the agent's state (`first_due`) for the digest, once: from the tick when created, from the
-        pending reminder's own row when the tick was already there and none is kept."""
+        pending reminder's own row (`_first_firing`) when the tick was already there and none is kept."""
         (agenda,) = await self.agent.khive.exec("schedule.agenda(limit=200)")
         me = self.agent.khive.actor  # the agenda is the namespace's: another agent's tick is not this one's
-        pending: dict[Any, list[float]] = {}  # content -> the firing each pending reminder's row names
+        now = self.agent.clock()
+        pending: dict[Any, list[float]] = {}  # content -> the first firing each pending reminder's row gives
         for e in (agenda or {}).get("events", []):
             p = e.get("properties") or {}
             if p.get("status", "pending") != "pending" or p.get("created_by_actor") != me:
                 continue
             fires = pending.setdefault(e.get("content"), [])
-            # a monthly row keeps its first firing as the anchor its months count from, the others
-            # only their next one; a row naming no instant names no firing
-            when = p.get("repeat_anchor") or p.get("trigger_at")
-            if isinstance(when, str) and when:
-                with suppress(ValueError, OverflowError):
-                    fires.append(_iso_epoch(when))
+            if (first := _first_firing(e, now)) is not None:
+                fires.append(first)
         wanted = {f"tick: {name}": inst.every for name, inst in self.instruments.items() if inst.every}
         wanted["tick: digest"] = self.digest_every
         if self.steward:
@@ -984,6 +986,19 @@ def _aged_key(row: dict) -> str:
     return f"{key}|{ts:.6f}" if isinstance(ts, int | float) and not isinstance(ts, bool) else key
 
 
+_LABEL = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}")
+
+
+def _is_label(at: str) -> bool:
+    """`at` as `_now` writes it, in that form only (the digest selects a day by its first ten characters)
+    and naming a time that exists."""
+    try:
+        time.strptime(at, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return False
+    return _LABEL.fullmatch(at) is not None
+
+
 def _epoch(row: dict) -> float:
     """The row's instant: its `ts`; a row written before rows carried one reads its local `at`, which
     names two instants in the hour a clock change repeats."""
@@ -997,6 +1012,36 @@ def _iso_epoch(iso: str | None) -> float:
     if not iso:
         return 0.0
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+
+
+def _first_firing(row: dict, now: float) -> float | None:
+    """The first firing a pending reminder's row implies, or None when it names no instant. The store moves
+    `trigger_at` on to the next firing after each delivery and keeps the row pending, so it is no first
+    due. A monthly row keeps its first firing as `repeat_anchor`, the instant its months count from. A
+    fixed period's firings lie a period apart, so the first is the earliest not before the row's own
+    creation (`created_at`, beside `properties`); a row naming no creation instant, or a period that is
+    not fixed (a cron), gives its firing or now, whichever is earlier."""
+    p = row.get("properties") or {}
+    repeat = p.get("repeat")
+    when = (p.get("repeat_anchor") if repeat == "monthly" else None) or p.get("trigger_at")
+    if not isinstance(when, str) or not when:
+        return None
+    try:
+        first = _iso_epoch(when)
+    except (ValueError, OverflowError):
+        return None
+    if repeat == "monthly":
+        return first
+    made = row.get("created_at")
+    try:
+        born = _iso_epoch(made) if isinstance(made, str) and made else None
+    except (ValueError, OverflowError):
+        born = None
+    fixed = isinstance(repeat, str) and (repeat in _NAMED or _EVERY.fullmatch(repeat) is not None)
+    period = period_s(repeat) if fixed else 0.0
+    if born is None or period <= 0:
+        return min(first, now)
+    return first - max(0.0, (first - born) // period) * period
 
 
 def _val(store: Any, key: str, default: Any) -> Any:
