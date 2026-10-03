@@ -234,7 +234,7 @@ with the expected actor asserted (C4).
 
 Serves C3. `ensure_ticks` reads the actor's pending reminders from `schedule.agenda` and creates
 each missing one with `schedule.remind`, first firing a minute out (S13, S17). The CLI creates ticks
-at serve start and on `--ticks`, never for a chair.
+in the forms [[ADR-0016-the-lion-command#^c1|ADR-0016/C1]] lists, never for a chair.
 
 `_catch_up` asks the store for the actor's missed and failed rows, filtered before each page of 200,
 pages each list to its end, rechecks both in code and runs each row once. An id stays under
@@ -255,7 +255,8 @@ pages each list to its end, rechecks both in code and runs each row once. An id 
   `test_a_page_that_is_not_a_page_fails_the_missed_tick_read_and_lets_no_id_go`,
   `test_the_seen_ids_are_matched_by_set_so_a_long_list_costs_each_row_one_look`;
   `test_a_chair_wakes_on_the_owners_mail_reads_its_directory_and_answers_on_the_thread` asserts
-  `--ticks` creates nothing for a chair.
+  `--ticks` creates nothing for a chair;
+  `test_a_once_wake_reads_the_pending_ticks_so_a_digest_inside_the_first_grace_is_not_missing`.
 
 ### D5: `lion agent --check` prints and saves ^d5
 
@@ -352,9 +353,10 @@ bypasses the handler: no refusals, no row, no send.
   28th to the 30th reads `MISSING` up to three days late, never falsely
   (`test_a_monthly_chore_with_no_first_due_on_record_keeps_the_month_end_rule`,
   `test_a_monthly_chore_is_due_a_calendar_month_in_utc_after_its_last_run`).
-- **S15**: A cron reads `not judged: cron`
-  (`test_a_cron_chore_is_not_judged_whether_or_not_it_ran_that_day`); a daily chore's line is as it
-  was (`test_a_daily_chore_reads_its_days_line_as_before_and_missing_a_day_after_its_last_run`). The
+- **S15**: A cron with no run that day reads `not judged: cron`; one that ran shows its run counts
+  and then `; not judged: cron` (`test_a_cron_chore_is_not_judged_whether_or_not_it_ran_that_day`
+  pins both forms); a daily chore's line is as it was
+  (`test_a_daily_chore_reads_its_days_line_as_before_and_missing_a_day_after_its_last_run`). The
   aged pass counts a period by `period_s`: a monthly one as 30 days, a cron's as a day.
 - **S16**: A ledger the digest cannot read judges no chore and says so: torn, undecodable,
   unreadable, or holding a row it cannot judge from (S18). Such a row is never skipped, as its run
@@ -365,8 +367,8 @@ bypasses the handler: no refusals, no row, no send.
 - **S17**: A tick `ensure_ticks` finds pending gives its chore a first due from its own row, and the
   earlier of that and any first due on record is kept; a record that is no instant (S23) is none.
   The store moves `trigger_at` on after each delivery, so a fixed period's first due is the trigger
-  less whole periods, while not before the row's `created_at`. The earliest of a tick's rows counts;
-  a row naming no instant gives none
+  less whole periods, while not before the floor (S25). The earliest of a tick's rows counts; a row
+  naming no instant gives none
   (`test_a_pending_repeating_tick_gives_the_firing_its_history_admits_not_the_next_one`,
   `test_a_first_due_on_record_is_never_overwritten_by_a_pending_tick`,
   `test_a_first_due_on_record_stands_unless_the_pending_rows_history_admits_an_earlier_firing`,
@@ -387,17 +389,17 @@ bypasses the handler: no refusals, no row, no send.
   a row from before the field has none, and its `control` says
   (`test_a_row_counts_as_answered_by_its_answered_field_and_by_its_control_where_it_has_none`).
 - **S20**: A start that stopped between its reminder and the record is healed at the next. At the
-  edges of S17, a row created a period ago and next due in one gives the firing on its creation
-  instant; a firing before the creation is its own, never stepped forward. A creation that is no
-  instant, a cron and a zero period give the firing, or now if that is earlier
-  (`test_a_row_created_a_period_ago_and_next_due_in_one_gives_the_firing_on_its_creation_instant`,
+  edges of S17, a row created a period (a minute or more) ago and next due in one gives the firing a
+  period after its creation; a firing before the floor is its own, never stepped forward. A creation
+  that is no instant, a cron and a zero period give the firing, or now if that is earlier
+  (`test_a_row_created_a_period_ago_and_next_due_in_one_gives_the_firing_a_period_after_creation`,
   `test_a_pending_tick_whose_firing_precedes_its_creation_is_its_own_first_not_stepped_forward`,
   `test_a_pending_tick_with_no_instant_to_step_back_to_gives_its_firing_or_now_if_earlier`).
 - **S21**: A monthly row gives its `repeat_anchor`. Without one the first due is the trigger less
   whole calendar months, in UTC, each day clamped to its month's last, and not before the row's
   `created_at`. A firing on a month's last day, under 31, may be a clamped later one: if its
-  step-back precedes the creation, the creation plus a tick's lead, a lower bound on the firing, is
-  the first due. With no creation it is the firing or now, if earlier
+  step-back precedes the creation, the floor (S17), a lower bound on the firing, is the first due.
+  With no creation it is the firing or now, if earlier
   (`test_a_pending_monthly_tick_gives_its_anchor_not_its_next_clamped_firing`,
   `test_a_pending_monthly_tick_with_no_anchor_gives_the_month_its_history_admits`,
   `test_a_clamped_monthly_row_reads_missing_a_month_and_the_grace_after_its_creation`,
@@ -417,3 +419,9 @@ bypasses the handler: no refusals, no row, no send.
 - **S24**: A row's `ts` and `at` come from one read of the clock, `at` being that instant's local
   label, so a check across local midnight writes a row whose two name one day
   (`test_a_row_written_across_local_midnight_names_one_day_by_both_its_label_and_its_instant`).
+- **S25**: A tick's first firing is a minute after its creation, so a first due recovered from a
+  pending row steps back no further than the floor: the second of `created_at` plus that minute,
+  less a second for the store's stamp. A monthly stand-in is that floor, and a one-second period may
+  read a second early
+  (`test_a_pending_fixed_tick_gives_no_firing_before_the_lead_its_creation_carries`,
+  `test_the_stand_in_and_the_tick_a_start_makes_share_one_lead`).

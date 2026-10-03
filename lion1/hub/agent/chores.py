@@ -970,7 +970,7 @@ def sender_of(m: dict) -> str:
 _EVERY = re.compile(r"every:(\d+)([smhd])")
 _NAMED = {"daily": 86400.0, "weekly": 7 * 86400.0, "monthly": 30 * 86400.0}
 _FIRE_GRACE_S = 300.0  # the store fires a reminder up to this late before it marks the reminder missed
-_TICK_LEAD_S = 60  # a tick is made to first fire this long after its creation (`ensure_ticks`, the stand-in)
+_TICK_LEAD_S = 60  # a tick is made to first fire this long after its creation (`ensure_ticks`, the floor)
 _TIME_END = datetime(9999, 1, 1, tzinfo=UTC).timestamp()  # a monthly chore steps a month past its last run
 
 
@@ -1053,12 +1053,12 @@ def _first_firing(row: dict, now: float) -> float | None:
     """The first firing a pending reminder's row implies, or None when it names no instant. The store moves
     `trigger_at` on to the next firing after each delivery and keeps the row pending, so it is no first
     due. A monthly row keeps its first firing as `repeat_anchor`, the instant its months count from. Else
-    the first is the earliest firing not before the row's own creation (`created_at`, beside `properties`):
-    a fixed period's firings lie a period apart, a monthly row's a calendar month in UTC. A monthly firing
-    on the last day of a month of fewer than 31 days may be a clamped later day, so when its step-back falls
-    before the creation the creation plus a tick's lead stands in, a lower bound on that firing. A row
-    naming no creation instant, or a period that is not fixed (a cron), gives its firing or now, if that
-    is earlier."""
+    the first is the earliest firing not before the floor of the row's creation (`created_at`, beside
+    `properties`): a fixed period's firings lie a period apart, a monthly row's a calendar month in UTC. A
+    monthly firing on the last day of a month of fewer than 31 days may be a clamped later day, so when its
+    step-back falls before the floor the floor stands in, a lower bound on that firing. A row naming no
+    creation instant, or a period that is not fixed (a cron), gives its firing or now, if that is
+    earlier."""
     p = row.get("properties") or {}
     repeat = p.get("repeat")
     anchor = p.get("repeat_anchor") if repeat == "monthly" else None
@@ -1076,6 +1076,10 @@ def _first_firing(row: dict, now: float) -> float | None:
         born = _iso_epoch(made) if isinstance(made, str) and made else None
     except (ValueError, OverflowError):
         born = None
+    # no tick fires before this: `ensure_ticks` fixes a first firing the lead after its own clock read, to the
+    # whole second, and the store stamps the row after that read, so the firing may fall up to a second short
+    # of the creation plus the lead. A one-second period may therefore recover a second early.
+    floor = None if born is None else float(math.floor(born) + _TICK_LEAD_S - 1)
     if repeat == "monthly" and born is not None:
         try:
             t, b = datetime.fromtimestamp(first, UTC), datetime.fromtimestamp(born, UTC)
@@ -1085,15 +1089,15 @@ def _first_firing(row: dict, now: float) -> float | None:
         early = n > 0 and _months_before(t, n) < b  # that month's firing is before its creation
         last = calendar.monthrange(t.year, t.month)[1]
         if early and t.day == last and last < 31:
-            return born + _TICK_LEAD_S  # a clamp is possible: the row's day may be later, none lies before it
+            return floor  # a clamp is possible: the row's day may be later, none lies before the floor
         if early:  # no clamp: one month less
             n -= 1
         return _months_before(t, n).timestamp() if n > 0 else first
     fixed = isinstance(repeat, str) and (repeat in _NAMED or _EVERY.fullmatch(repeat) is not None)
     period = period_s(repeat) if fixed else 0.0
-    if born is None or period <= 0:
+    if floor is None or period <= 0:
         return min(first, now)
-    return first - max(0.0, (first - born) // period) * period
+    return first - max(0.0, (first - floor) // period) * period
 
 
 def _val(store: Any, key: str, default: Any) -> Any:
