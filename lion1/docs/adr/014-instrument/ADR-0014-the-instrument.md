@@ -316,9 +316,9 @@ refused at build.
   nothing was sent, no ledger row was written. A missing known-positive prints as "(none)" and
   nothing refuses it; the tests in D6 drive the check, `render` and `land`.
 - **S4**: A full page of 100 open pull requests costs one `gh pr view` per pull request the last
-  snapshot held and the page lacks, on every `pr-state` run. `verdict-freshness` reads no view of a
-  pull request beyond a full page, so one closed there keeps its last row until a page comes back
-  short. An enumerator whose lines repeat a pull request or disagree with its `TOTAL` fails the
+  snapshot held and the page lacks, on every `pr-state` run. With `repos`, `verdict-freshness` reads
+  no view of a pull request beyond a full page, so one closed there keeps its last row until a page
+  is short. An enumerator whose lines repeat a pull request or disagree with its `TOTAL` fails the
   control and retires a prior row only when that pull request's own read gives any state but `OPEN`.
 - **S5**: `mechanism` is declared by every instrument and read by no code; the structured rows (a
   check inventory per pull request, red lines per run, verdict rows) are read by no code either.

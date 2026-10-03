@@ -1858,10 +1858,11 @@ def verdict(d, n: int, evaluated: str, *, head8: str, mtime: float, round_no=1, 
         f"- degraded: {body['degraded']} ()\n- evaluated head: {evaluated}\n- evaluated base: main\n\n"
         "## Blocking\n" + "".join(f"- {b}\n" for b in blocking or ["none"]) + "\n## Issues (0)\n"
     )
-    paths = [d / f"o-r-{n}-{head8}.md"]
+    slug = kw.get("named", body["repo"]).replace("/", "-")  # the daemon names the file as the repo is spelled
+    paths = [d / f"{slug}-{n}-{head8}.md"]
     paths[0].write_text(md)
     if json_file:
-        paths.append(d / f"o-r-{n}-{head8}.json")
+        paths.append(d / f"{slug}-{n}-{head8}.json")
         paths[1].write_text(json.dumps(body))
     for p in paths:
         os.utime(p, (mtime, mtime))
@@ -1891,7 +1892,8 @@ def test_verdict_freshness_at_head_stale_never_reviewed_newest_by_mtime_then_rou
     )  # same mtime as round 3: the later round is the newest
     verdict(tmp_path, 8, HEAD8, head8="88888888", mtime=900)
     verdict(tmp_path, 8, OLD, head8="0000aaaa", mtime=950, decision="APPROVE", blocking=[])
-    verdict(tmp_path, 7, HEAD7, head8="7777beef", mtime=2000, repo="o/other")  # its own repo is not o/r
+    # named as o/r's, its own repo is not o/r
+    verdict(tmp_path, 7, HEAD7, head8="7777beef", mtime=2000, repo="o/other", named="o/r")
     inst = VerdictFreshness(
         MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
     )
@@ -2232,7 +2234,7 @@ def test_verdict_freshness_a_prs_own_read_meets_its_row_however_the_enumerator_s
         "TOTAL {n} open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
     )
     shown = listed.split("#")[1]
-    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, repo="O/R")  # the file spelled another way
 
     def inst_with(prior, lines, n, view):
         store = MemoryNoteStore()
@@ -2267,6 +2269,33 @@ def test_verdict_freshness_a_prs_own_read_meets_its_row_however_the_enumerator_s
     )
     out = asyncio.run(inst.run({}))
     assert set(store.get("verdict-freshness").value) == {"o/r#7"}
+    assert not any("no longer open" in f for f in out.findings) and out.control
+    # and its verdict is found however the PR is spelled, in the file name and in the verdict's own say
+    assert store.get("verdict-freshness").value["o/r#7"].startswith("o/r#7 77777777: AT-HEAD")
+
+
+def test_verdict_freshness_two_rows_for_one_pr_become_one_without_a_closure(tmp_path):
+    """An older snapshot that held a PR under two spellings keeps one row; the other is retired
+    silently, since the PR is still open."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    seven = "o/r#7 77777777: NEVER-REVIEWED"
+    store.put(
+        "verdict-freshness", {"o/r#7": seven, "O/R#07": seven.replace("o/r#7", "O/R#07")}, run="-", seq=0
+    )
+    total = "TOTAL 1 open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    sh = FakeSh(
+        **{
+            "/x/my_open_prs.sh": "o/r#7 draft=false  a title\n" + total,
+            "pr view 7 -R": json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+        }
+    )
+    inst = VerdictFreshness(
+        store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    out = asyncio.run(inst.run({}))
+    rows = store.get("verdict-freshness").value
+    assert len(rows) == 1 and " 77777777: AT-HEAD, " in next(iter(rows.values()))
     assert not any("no longer open" in f for f in out.findings) and out.control
 
 
