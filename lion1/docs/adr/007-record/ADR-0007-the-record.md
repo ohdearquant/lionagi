@@ -246,7 +246,7 @@ Serves C7. `FileNoteStore.put` renders the value with `json.dumps(allow_nan=Fals
 text as UTF-8, reads it back with `json.loads`, and keeps and writes that copy: a change to the
 caller's object afterwards, or while `put` waits for the lock, reaches nothing stored. `_load`
 refuses a file holding NaN, Infinity, a number that overflows to a non-finite float, like `1e999`,
-or bytes that are not UTF-8, naming file and text or byte offset, and converts nothing. The write
+or bytes that are not UTF-8, naming file and text or byte offset, repairing nothing. The write
 renders with `allow_nan=False` and as UTF-8, so every file is standard JSON.
 
 - **Landing evidence**:
@@ -294,11 +294,12 @@ slices each value's text at 120 characters.
 
 ### D7: A note declared into a store the loader refuses ends the run ^d7
 
-Serves C5 and C8. A `note.` declaration is written by `_declare` through `put`, which loads the file
-under its lock, so a file `_load` refuses (D4) raises the loader's error out of the declare: the run
-ends with no outcome and the caller is told. The first notification only reads, loses nothing, says
-the store could not be read and goes on (C8). The model cannot repair the file, and a write over a
-file that would not load would clobber what it holds.
+Serves C5 and C8. A tag-form `note.` declaration is written by `_declare` through `put`; the store
+loads its file at construction and under `put`'s lock, so a file `_load` refuses (D4) raises the
+loader's error out of the declare. The run ends with no outcome. A program assignment is caught at
+settle and recorded not written ([[ADR-0008-the-program#^d3|ADR-0008/D3]]); the first notification
+only reads, says the store could not be read and goes on (C8). The model cannot repair the file; a
+write over it would clobber what it holds.
 
 - **Landing evidence**:
   `test_a_note_declared_into_a_store_the_loader_refuses_ends_the_run_with_the_loaders_error`; the
