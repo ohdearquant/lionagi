@@ -120,11 +120,8 @@ def pointers_in(value: Any) -> list[Pointer]:
     def walk(v: Any) -> None:
         if isinstance(v, Pointer):
             found.append(v)
-        elif isinstance(v, dict):
-            for x in v.values():
-                walk(x)
-        elif isinstance(v, list | tuple):
-            for x in v:
+        elif isinstance(v, dict | list | tuple):
+            for x in v.values() if isinstance(v, dict) else v:
                 walk(x)
 
     walk(value)
@@ -610,13 +607,11 @@ def _quote_bare_keys(value: str) -> str:
     out, start, prev = [], 0, -1
     for i, _ch in _outside(value):
         if i != prev + 1:  # a string literal sits between prev and i: keep it verbatim
-            out.append(
-                _BARE_KEY.sub(lambda m: f'{m.group(1)}"{m.group(2)}"{m.group(3)}', value[start : prev + 1])
-            )
+            out.append(_BARE_KEY.sub(r'\1"\2"\3', value[start : prev + 1]))
             out.append(value[prev + 1 : i])
             start = i
         prev = i
-    out.append(_BARE_KEY.sub(lambda m: f'{m.group(1)}"{m.group(2)}"{m.group(3)}', value[start : prev + 1]))
+    out.append(_BARE_KEY.sub(r'\1"\2"\3', value[start : prev + 1]))
     out.append(value[prev + 1 :])
     return "".join(out)
 
@@ -1310,7 +1305,7 @@ def _expr(node: ast.expr, bound: frozenset[str]) -> None:
                 raise _refuse(node, "DO names a command call: DO name(field=value, ...)")
             if not (name.startswith(_PTR) or name in bound or name in _WORDS):
                 raise _refuse(node, f"{name}: a name is read by pointing at it, *{name}")
-        case ast.Attribute(value=value):
+        case ast.Attribute(value=value) | ast.UnaryOp(op=ast.Not() | ast.USub(), operand=value):
             _expr(value, bound)
         case ast.Subscript(value=value, slice=index):
             _expr(value, bound)
@@ -1318,9 +1313,7 @@ def _expr(node: ast.expr, bound: frozenset[str]) -> None:
         case ast.BinOp(left=left, op=op, right=right) if type(op) in _ARITH:
             _expr(left, bound)
             _expr(right, bound)
-        case ast.UnaryOp(op=ast.Not() | ast.USub(), operand=operand):
-            _expr(operand, bound)
-        case ast.BoolOp(values=values):
+        case ast.BoolOp(values=values) | ast.List(elts=values):
             for v in values:
                 _expr(v, bound)
         case ast.Compare(left=left, ops=ops, comparators=rights) if all(type(o) in _CMP for o in ops):
@@ -1328,9 +1321,6 @@ def _expr(node: ast.expr, bound: frozenset[str]) -> None:
                 _expr(v, bound)
         case ast.IfExp(test=test, body=body, orelse=orelse):
             for v in (test, body, orelse):
-                _expr(v, bound)
-        case ast.List(elts=elts):
-            for v in elts:
                 _expr(v, bound)
         case ast.Dict(keys=keys, values=values):
             for k, v in zip(keys, values, strict=True):
@@ -1368,10 +1358,6 @@ def check(script: Script, commands: Iterable[str], known: Callable[[str], bool])
     taken: set[str] = set()
     unknown: list[tuple[int, str]] = []  # every unknown command, so the refusal names them all (D2)
     first: list[LNDLError] = []  # the first pointer or alias refusal, said once the commands are measured
-
-    def refused() -> UnknownCommand:
-        lines = "; ".join(f"line {line}: unknown command {name!r}" for line, name in unknown)
-        return UnknownCommand(f"{lines}; the program was not run", tuple(name for _, name in unknown))
 
     def expr(node: ast.expr, visible: set[str]) -> None:
         for n in ast.walk(node):
@@ -1422,7 +1408,8 @@ def check(script: Script, commands: Iterable[str], known: Callable[[str], bool])
 
     block(script.body, set())
     if unknown:  # the unknown commands come first, all of them; then the first of the rest
-        raise refused()
+        lines = "; ".join(f"line {line}: unknown command {name!r}" for line, name in unknown)
+        raise UnknownCommand(f"{lines}; the program was not run", tuple(name for _, name in unknown))
     if first:
         raise first[0]
 
@@ -1500,9 +1487,7 @@ async def evaluate(node: ast.expr, env: Env, bound: dict[str, Any] | None = None
                     raise _past(node)
             # a part a command grew after it was counted, through the pointer both hold: the whole is
             # measured once more as it is returned
-            if _size(items) > LIMIT:
-                raise _past(node)
-            return items
+            return _built(node, items)
         case ast.Dict(keys=keys, values=values):
             fields, sizes, size = {}, {}, 0
             for k, v in zip(keys, values, strict=True):
@@ -1514,9 +1499,7 @@ async def evaluate(node: ast.expr, env: Env, bound: dict[str, Any] | None = None
                 size += sizes[key]
                 if size > LIMIT:
                     raise _past(node)
-            if _size(fields) > LIMIT:  # as a list is
-                raise _past(node)
-            return fields
+            return _built(node, fields)
         case ast.Call(keywords=keywords):
             args = {kw.arg: await evaluate(kw.value, env, bound) for kw in keywords}
             return await env.do(_command(node).removeprefix(_DO), args, node.lineno)
@@ -1541,9 +1524,7 @@ async def evaluate(node: ast.expr, env: Env, bound: dict[str, Any] | None = None
                     size += 1 + _size(out[-1])  # the item and what it holds
                     if size > LIMIT:
                         raise _past(node)
-            if _size(out) > LIMIT:  # as a list is
-                raise _past(node)
-            return out
+            return _built(node, out)
 
 
 def _index(node: ast.expr, value: Any, key: Any) -> Any:
