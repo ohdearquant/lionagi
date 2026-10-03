@@ -29,6 +29,7 @@ from urllib.parse import quote
 from lionagi.notes import NoteStore
 
 from ..khive import Khive, lit
+from .agent import LoopLock
 from .chores import Outcome
 
 __all__ = (
@@ -1579,11 +1580,17 @@ class RequiredContexts:
         )
 
 
-_VERDICT_FILE = re.compile(r"^(.+-\d+)-([0-9a-f]{8})\.(json|md)$")
+_VERDICT_FILE = re.compile(r"^((.+)-(\d+)-[0-9a-f]{8})\.(json|md)$")
 _TOTAL = re.compile(
     r"^TOTAL (\d+) open PRs authored by (\S+) \(control: closed-PR search returned (\d+)", re.M
 )
 _LISTED = re.compile(r"^([\w.-]+/[\w.-]+)#(\d+)\b", re.M)
+
+
+def _pr_id(key: str) -> str:
+    """A PR row's key as rows are matched: its repo case-blind, its number unpadded."""
+    repo, _, n = key.rpartition("#")
+    return f"{repo.lower()}#{n.lstrip('0') or '0'}"
 
 
 class VerdictFreshness:
@@ -1624,6 +1631,7 @@ class VerdictFreshness:
         self.state, self.every, self.dir, self.sh = state, every, Path(verdict_dir), run
         self.repos, self.enumerator = list(repos or []), list(enumerator or [])
         self.empty_expected = empty_expected
+        self._running = LoopLock()
 
     @staticmethod
     def _read(files: dict[str, tuple[str, float]]) -> dict[str, Any]:
@@ -1677,26 +1685,36 @@ class VerdictFreshness:
             rec["error"] = f"{type(e).__name__}: {e}"
         return rec
 
-    def _newest(self, heads: dict[str, dict[str, tuple[str, float]]], repo: str, n: int) -> dict | None:
-        """The newest of a PR's verdicts by mtime, then round; a file whose own repo and number are
+    def _newest(self, stems: dict[str, dict[str, tuple[str, float]]], repo: str, n: int) -> dict | None:
+        """The newest of a PR's verdicts, one per file stem however the stem spells the repo or the
+        number, by mtime, then round, then the greatest path; a file whose own repo and number are
         another PR's is not a candidate, an unreadable one stays one (it may be the newest)."""
-        recs = [self._read(files) for files in heads.values()]
-        recs = [r for r in recs if "error" in r or (r["repo"] == repo and r["number"] == n)]
-        return max(recs, key=lambda r: (r["mtime"], r["round_no"]), default=None)
+        recs = [self._read(files) for files in stems.values()]
+        own = _pr_id(f"{repo}#{n}")
+        recs = [r for r in recs if "error" in r or _pr_id(f"{r['repo']}#{r['number']}") == own]
+        return max(recs, key=lambda r: (r["mtime"], r["round_no"], r["path"]), default=None)
 
     async def run(self, args: dict[str, Any]) -> Outcome:
+        """One run at a time: the chore tick and a desk answer share this object, and a run that took its
+        list before another run wrote its snapshot would retire what that run listed."""
+        async with self._running:
+            return await self._run(args)
+
+    async def _run(self, args: dict[str, Any]) -> Outcome:
         try:
             entries = [(e.name, e.path, e.stat().st_mtime) for e in os.scandir(self.dir)]
         except OSError as e:
             return Outcome(
                 findings=(f"{self.dir}: unreadable ({e}); no PR is judged",), evidence=str(e), control=False
             )
-        index: dict[str, dict[str, dict[str, tuple[str, float]]]] = {}
+        index: dict[tuple[str, int], dict[str, dict[str, tuple[str, float]]]] = {}  # (slug, n) -> stem -> ext
         for name, p, m in entries:
-            if v := _VERDICT_FILE.match(name):
-                index.setdefault(v.group(1), {}).setdefault(v.group(2), {})[v.group(3)] = (p, m)
+            if v := _VERDICT_FILE.match(name):  # a file is kept under its own stem, however it is spelled
+                index.setdefault((v.group(2).lower(), int(v.group(3))), {}).setdefault(v.group(1), {})[
+                    v.group(4)
+                ] = (p, m)
         # the known-positive from the world: the daemon's newest verdict parses, read as a PR's is read
-        pairs = [files for heads in index.values() for files in heads.values()]
+        pairs = [files for stems in index.values() for files in stems.values()]
         newest = self._read(max(pairs, key=lambda f: (f.get("json") or f["md"])[::-1])) if pairs else None
         name = Path(newest["path"]).name if newest else ""
         if newest is None or "error" in newest or not isinstance(newest["evaluated_head"], str):
@@ -1712,7 +1730,11 @@ class VerdictFreshness:
         positives = [f"{self.dir}: newest verdict {name} parses{md}; {len(entries)} entries"]
         findings, table, control = [], [f"control: {positives[0]}"], True
         prs: list[tuple[str, int, str]] = []
-        unread: set[str] = set()  # PRs or repos whose last row is kept: this run could not read them
+        unread: set[str] = (
+            set()
+        )  # repos, and PRs as `_pr_id`, whose last row is kept: this run did not read them
+        incomplete = False  # an enumerated list that does not reach its TOTAL
+        closed: set[str] = set()  # PRs, as `_pr_id`, whose own read says they are no longer open
         if self.enumerator:
             rc, out, err = await self.sh(list(self.enumerator), timeout=180)
             last = next((ln for ln in reversed(out.splitlines()) if ln.strip()), "")
@@ -1740,10 +1762,18 @@ class VerdictFreshness:
                     evidence=m.group(0),
                     control=False,
                 )
-            listed = _LISTED.findall(out)
-            if len(listed) != int(m.group(1)):
+            parsed = _LISTED.findall(out)
+            ids: dict[str, tuple[str, str]] = {}  # a PR is counted once, however often or spelled
+            for repo, n in parsed:
+                ids.setdefault(_pr_id(f"{repo}#{n}"), (repo, n))
+            listed = list(ids.values())
+            if len(parsed) != int(m.group(1)) or len(listed) != len(parsed):
                 control = False
-                findings.append(f"enumerator: TOTAL {m.group(1)} beside {len(listed)} PR line(s) parsed")
+                findings.append(
+                    f"enumerator: TOTAL {m.group(1)} beside {len(parsed)} PR line(s) parsed"
+                    + (f", {len(listed)} distinct" if len(listed) != len(parsed) else "")
+                )
+                incomplete = True
             positives.append(
                 f"enumerator TOTAL {m.group(1)} open PR(s) by {m.group(2)}; closed-PR control {m.group(3)}"
             )
@@ -1752,10 +1782,11 @@ class VerdictFreshness:
                 pr = json.loads(out) if rc == 0 else {}
                 if pr.get("state") not in (None, "OPEN"):  # closed since the search indexed it
                     table.append(f"{repo}#{n}: listed open, {pr['state']} now; not judged")
+                    closed.add(_pr_id(f"{repo}#{n}"))
                     continue
                 if not re.fullmatch(r"[0-9a-f]{40}", pr.get("headRefOid") or ""):
                     control = False
-                    unread.add(f"{repo}#{n}")
+                    unread.add(_pr_id(f"{repo}#{n}"))
                     findings.append(f"{repo}#{n}: head not read: {err.strip()[:120] or out[:120]}")
                     continue
                 prs.append((repo, int(n), pr["headRefOid"]))
@@ -1765,17 +1796,36 @@ class VerdictFreshness:
                 rows, err = await _open_prs(self.sh, repo, "number,headRefOid") if info else (None, err)
                 if rows is None:
                     control = False
-                    unread.add(repo)
+                    unread.add(repo.lower())
                     findings.append(f"{repo}: {err if info else 'gh does not resolve it as itself: ' + err}")
                     continue
                 positives.append(f"{repo} resolved as itself; pr list answered {len(rows)} row(s)")
                 prs += [(repo, p["number"], p["headRefOid"]) for p in rows]
+                if len(rows) >= PR_PAGE:  # absent from a full page is not closed: its last row is kept
+                    unread.add(repo.lower())
+        # The snapshot is read here, after the last awaited call, and put below with no await between the
+        # two: the rows kept for an unread repo are the current ones, not the ones this run began with.
         prev = _snapshot(self.state, "verdict-freshness") or {}
-        snap = {k: v for k, v in prev.items() if k in unread or k.split("#")[0] in unread}
+        if incomplete:  # an incomplete list closes nothing it did not read closed
+            unread.update(_pr_id(k) for k in prev if _pr_id(k) not in closed)
+        now = {_pr_id(f"{repo}#{n}"): (f"{repo}#{n}", head[:8]) for repo, n, head in prs}
+
+        def rank(k: str) -> tuple[bool, bool, str]:
+            """Of the rows one PR holds, the one recording the head it has now comes first, then the
+            spelling read now, then the smaller key: a row carries no clock and snapshot order is no
+            evidence."""
+            spelled, head8 = now.get(_pr_id(k), ("", ""))
+            return (not str(prev[k]).startswith(f"{k} {head8}:"), k != spelled, k)
+
+        keys: dict[str, str] = {}  # a PR keeps its row's key however it is spelled now
+        for k in sorted(prev, key=rank):
+            keys.setdefault(_pr_id(k), k)
+        prev = {k: v for k, v in prev.items() if keys[_pr_id(k)] == k}  # one row per PR; an alias is retired
+        snap = {k: v for k, v in prev.items() if _pr_id(k) in unread or k.split("#")[0].lower() in unread}
         data, stale_n = [], 0
         for repo, n, head in prs:
-            key = f"{repo}#{n}"
-            rec = self._newest(index.get(f"{repo.replace('/', '-')}-{n}", {}), repo, n)
+            key = keys.get(_pr_id(f"{repo}#{n}"), f"{repo}#{n}")
+            rec = self._newest(index.get((repo.replace("/", "-").lower(), n), {}), repo, n)
             if rec is None:
                 state, line = "NEVER-REVIEWED", f"{key} {head[:8]}: NEVER-REVIEWED"
             elif "error" in rec:

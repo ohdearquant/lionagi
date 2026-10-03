@@ -1950,13 +1950,35 @@ def verdict(d, n: int, evaluated: str, *, head8: str, mtime: float, round_no=1, 
         f"- degraded: {body['degraded']} ()\n- evaluated head: {evaluated}\n- evaluated base: main\n\n"
         "## Blocking\n" + "".join(f"- {b}\n" for b in blocking or ["none"]) + "\n## Issues (0)\n"
     )
-    paths = [d / f"o-r-{n}-{head8}.md"]
+    slug = kw.get("named", body["repo"]).replace("/", "-")  # the daemon names the file as the repo is spelled
+    num = kw.get("filed_as", n)  # and as the number is spelled
+    paths = [d / f"{slug}-{num}-{head8}.md"]
     paths[0].write_text(md)
     if json_file:
-        paths.append(d / f"o-r-{n}-{head8}.json")
+        paths.append(d / f"{slug}-{num}-{head8}.json")
         paths[1].write_text(json.dumps(body))
     for p in paths:
         os.utime(p, (mtime, mtime))
+
+
+def listed_as(monkeypatch, d, spell, *, reverse=False):
+    """List d's files under spell(name), in name order or reversed: a case-sensitive directory holds two
+    files that differ only in case, and the filesystems a run may sit on do not all."""
+    real = os.scandir
+
+    class Entry:
+        def __init__(self, entry):
+            self._entry, self.name, self.path = entry, spell(entry.name), entry.path
+
+        def stat(self):
+            return self._entry.stat()
+
+    def scandir(path):
+        if os.fspath(path) != os.fspath(d):
+            return real(path)
+        return iter([Entry(e) for e in sorted(real(path), key=lambda e: e.name, reverse=reverse)])
+
+    monkeypatch.setattr(os, "scandir", scandir)
 
 
 def freshness_sh(prs=((7, HEAD7), (8, HEAD8), (9, HEAD9))) -> FakeSh:
@@ -1983,7 +2005,8 @@ def test_verdict_freshness_at_head_stale_never_reviewed_newest_by_mtime_then_rou
     )  # same mtime as round 3: the later round is the newest
     verdict(tmp_path, 8, HEAD8, head8="88888888", mtime=900)
     verdict(tmp_path, 8, OLD, head8="0000aaaa", mtime=950, decision="APPROVE", blocking=[])
-    verdict(tmp_path, 7, HEAD7, head8="7777beef", mtime=2000, repo="o/other")  # its own repo is not o/r
+    # named as o/r's, its own repo is not o/r
+    verdict(tmp_path, 7, HEAD7, head8="7777beef", mtime=2000, repo="o/other", named="o/r")
     inst = VerdictFreshness(
         MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh()
     )
@@ -2023,6 +2046,49 @@ def test_verdict_freshness_first_sight_then_transitions(tmp_path):
     )
     sh.set("pr list -R o/r", json.dumps([{"number": 9, "headRefOid": HEAD9}]))
     assert asyncio.run(inst.run({})).findings == ("o/r#7: no longer open",)
+
+
+def test_verdict_freshness_a_pr_absent_from_a_full_page_keeps_its_last_row_until_a_short_page(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(instr, "PR_PAGE", 2)
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    sh = freshness_sh(prs=((7, HEAD7), (8, HEAD8)))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    asyncio.run(inst.run({}))
+    kept = inst.state.get("verdict-freshness").value["o/r#7"]
+    sh.set(
+        "pr list -R o/r",
+        json.dumps([{"number": 8, "headRefOid": HEAD8}, {"number": 9, "headRefOid": HEAD9}]),
+    )  # #7 fell off a full page
+    told = []
+    for _ in range(2):  # twice: a kept row is neither closed nor told again
+        out = asyncio.run(inst.run({}))
+        assert out.control and inst.state.get("verdict-freshness").value["o/r#7"] == kept
+        assert kept not in out.evidence and [d["number"] for d in out.data] == [8, 9]  # not a fresh read
+        told.append(out.findings)
+    assert told == [("o/r#9 99999999: NEVER-REVIEWED",), ()]
+    sh.set("pr list -R o/r", json.dumps([{"number": 9, "headRefOid": HEAD9}]))  # a short page is the list
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r#7: no longer open", "o/r#8: no longer open")
+    assert set(inst.state.get("verdict-freshness").value) == {"o/r#9"}
+
+
+def test_verdict_freshness_a_full_page_keeps_a_row_the_last_snapshot_spelled_another_way(
+    monkeypatch, tmp_path
+):
+    """The repo is configured as `o/r`; an older snapshot holds `O/R#7`. A full page without #7 keeps
+    that row, as it keeps one spelled as configured."""
+    monkeypatch.setattr(instr, "PR_PAGE", 2)
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    kept = "O/R#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: x"
+    store.put("verdict-freshness", {"O/R#7": kept}, run="-", seq=0)
+    sh = freshness_sh(prs=((8, HEAD8), (9, HEAD9)))
+    inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and store.get("verdict-freshness").value["O/R#7"] == kept
+    assert not any("no longer open" in f for f in out.findings)
 
 
 def test_verdict_freshness_an_empty_verdict_dir_fails_the_instrument_and_judges_no_pr(tmp_path):
@@ -2127,6 +2193,37 @@ def test_verdict_freshness_a_prs_malformed_json_is_never_hidden_behind_its_md_co
     )
 
 
+@pytest.mark.parametrize("newer", [True, False])
+def test_verdict_freshness_an_unreadable_verdict_is_a_candidate_that_fails_the_control_when_newest(
+    tmp_path, newer
+):
+    """A file that cannot be read cannot name its PR, so it stays a candidate by its file name: when it is
+    the PR's newest, the run reports it unreadable rather than reading the older verdict beside it."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    bad = tmp_path / "o-r-7-12345678.json"
+    bad.write_text("{not json")
+    os.utime(bad, (1500, 1500) if newer else (500, 500))
+    verdict(tmp_path, 8, OLD, head8="88888888", mtime=2000)  # the directory's newest parses
+    inst = VerdictFreshness(
+        MemoryNoteStore(),
+        every=None,
+        verdict_dir=str(tmp_path),
+        repos=["o/r"],
+        run=freshness_sh(prs=((7, HEAD7),)),
+    )
+    out = asyncio.run(inst.run({}))
+    if newer:
+        assert not out.control and [d["state"] for d in out.data] == ["UNREADABLE"]
+        assert out.findings[0].startswith(
+            f"o/r#7 77777777: newest verdict unreadable: {bad}: JSONDecodeError"
+        )
+    else:
+        assert out.control and out.findings == (
+            f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
+            f"{tmp_path}/o-r-7-77777777.json",
+        )
+
+
 def test_verdict_freshness_an_enumerator_without_a_total_line_failed(tmp_path):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     sh = FakeSh(**{"/x/my_open_prs.sh": (2, "", "ENUMERATION FAILED rc=1: HTTP 403 rate limit\n")})
@@ -2205,6 +2302,275 @@ def test_verdict_freshness_reads_each_enumerated_prs_head_on_its_own(tmp_path):
     assert sh.calls[0] == ["/x/my_open_prs.sh"]  # run as the chores.toml names it, nothing added
 
 
+def test_verdict_freshness_an_enumerator_total_beside_fewer_prs_retires_only_a_pr_read_closed(tmp_path):
+    """A TOTAL the listed PRs do not reach is an incomplete list: a prior row it lacks is kept, a PR it
+    lists is read and merged, and a PR read MERGED retires its own row."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    prior = {"o/r#8": "o/r#8 88888888: NEVER-REVIEWED", "o/r#9": "o/r#9 99999999: NEVER-REVIEWED"}
+    store.put("verdict-freshness", prior, run="-", seq=0)
+    total = (
+        "TOTAL {n} open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    )
+    listed = "o/r#7 draft=false  a title\no/r#9 draft=false  merged\n"
+    sh = FakeSh(
+        **{
+            "/x/my_open_prs.sh": listed + total.format(n=3),
+            "pr view 7 -R o/r": json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+            "pr view 9 -R o/r": json.dumps({"headRefOid": HEAD9, "state": "MERGED"}),
+        }
+    )
+    inst = VerdictFreshness(
+        store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    told = []
+    for _ in range(2):  # twice: the kept row is neither closed nor told again
+        out = asyncio.run(inst.run({}))
+        snap = store.get("verdict-freshness").value
+        assert not out.control and snap["o/r#8"] == prior["o/r#8"] and "o/r#9" not in snap
+        assert snap["o/r#7"].startswith("o/r#7 77777777: AT-HEAD")
+        told.append(out.findings)
+    assert told == [
+        (
+            "enumerator: TOTAL 3 beside 2 PR line(s) parsed",
+            f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
+            f"{tmp_path}/o-r-7-77777777.json",
+            "o/r#9: no longer open",
+        ),
+        ("enumerator: TOTAL 3 beside 2 PR line(s) parsed",),
+    ]
+    sh.set("/x/my_open_prs.sh", "o/r#7 draft=false  a title\n" + total.format(n=1))  # the count agrees
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r#8: no longer open",)
+    assert set(store.get("verdict-freshness").value) == {"o/r#7"}
+
+
+@pytest.mark.parametrize("again", ["o/r#7", "o/r#07", "O/R#7"])
+def test_verdict_freshness_a_pr_listed_twice_beside_an_equal_total_closes_no_unseen_pr(tmp_path, again):
+    """Lines that reach the TOTAL by listing one PR twice, however its repo or number is spelled, are an
+    incomplete list: the PR they omit keeps its row, and the PR they repeat is read once."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    prior = {"o/r#8": "o/r#8 88888888: NEVER-REVIEWED"}
+    store.put("verdict-freshness", prior, run="-", seq=0)
+    total = (
+        "TOTAL {n} open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    )
+    sh = FakeSh(
+        **{
+            "/x/my_open_prs.sh": f"o/r#7 draft=false  a title\n{again} draft=false  a title\n"
+            + total.format(n=2),
+            "pr view 7 -R o/r": json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+        }
+    )
+    inst = VerdictFreshness(
+        store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    told = []
+    for _ in range(2):  # twice: the kept row is neither closed nor told again
+        out = asyncio.run(inst.run({}))
+        assert not out.control and store.get("verdict-freshness").value["o/r#8"] == prior["o/r#8"]
+        assert out.count == 1 and [d["number"] for d in out.data] == [7]
+        told.append(out.findings)
+    assert told == [
+        (
+            "enumerator: TOTAL 2 beside 2 PR line(s) parsed, 1 distinct",
+            f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
+            f"{tmp_path}/o-r-7-77777777.json",
+        ),
+        ("enumerator: TOTAL 2 beside 2 PR line(s) parsed, 1 distinct",),
+    ]
+    assert [c[2:6] for c in sh.calls if "view" in c] == [["view", "7", "-R", "o/r"]] * 2  # once a run
+    sh.set("/x/my_open_prs.sh", "o/r#7 draft=false  a title\n" + total.format(n=1))  # a complete list
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == ("o/r#8: no longer open",)
+    assert set(store.get("verdict-freshness").value) == {"o/r#7"}
+
+
+@pytest.mark.parametrize("listed", ["O/R#07", "o/r#007"])
+def test_verdict_freshness_a_prs_own_read_meets_its_row_however_the_enumerator_spells_it(tmp_path, listed):
+    """A PR's row is matched by its repo case-blind and its number unpadded: a closed read retires it
+    from an incomplete list, an unread head keeps it, and an open read keeps its key."""
+    total = (
+        "TOTAL {n} open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    )
+    shown = listed.split("#")[1]
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, repo="O/R")  # the file spelled another way
+
+    def inst_with(prior, lines, n, view):
+        store = MemoryNoteStore()
+        store.put("verdict-freshness", prior, run="-", seq=0)
+        sh = FakeSh(**{"/x/my_open_prs.sh": lines + total.format(n=n), f"pr view {shown} -R": view})
+        return store, VerdictFreshness(
+            store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+        )
+
+    seven, eight = "o/r#7 77777777: NEVER-REVIEWED", "o/r#8 88888888: NEVER-REVIEWED"
+    # closed, in a list that repeats it: its own read retires its row; the unseen #8 keeps its row
+    store, inst = inst_with(
+        {"o/r#7": seven, "o/r#8": eight},
+        f"{listed} draft=false  a title\no/r#7 draft=false  a title\n",
+        2,
+        json.dumps({"headRefOid": HEAD7, "state": "CLOSED"}),
+    )
+    out = asyncio.run(inst.run({}))
+    assert store.get("verdict-freshness").value == {"o/r#8": eight}
+    assert "o/r#7: no longer open" in out.findings and not out.control
+    # its head not read, in a complete list: the row is kept and nothing says it closed
+    store, inst = inst_with({"o/r#7": seven}, f"{listed} draft=false  a title\n", 1, (1, "", "boom"))
+    out = asyncio.run(inst.run({}))
+    assert store.get("verdict-freshness").value == {"o/r#7": seven}
+    assert not any("no longer open" in f for f in out.findings) and not out.control
+    # open and read: the row keeps its key, so the PR is neither closed nor new
+    store, inst = inst_with(
+        {"o/r#7": seven},
+        f"{listed} draft=false  a title\n",
+        1,
+        json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+    )
+    out = asyncio.run(inst.run({}))
+    assert set(store.get("verdict-freshness").value) == {"o/r#7"}
+    assert not any("no longer open" in f for f in out.findings) and out.control
+    # and its verdict is found however the PR is spelled, in the file name and in the verdict's own say
+    assert store.get("verdict-freshness").value["o/r#7"].startswith("o/r#7 77777777: AT-HEAD")
+
+
+def test_verdict_freshness_two_rows_for_one_pr_become_one_without_a_closure(tmp_path):
+    """An older snapshot that held a PR under two spellings keeps one row; the other is retired
+    silently, since the PR is still open."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    seven = "o/r#7 77777777: NEVER-REVIEWED"
+    store.put(
+        "verdict-freshness", {"o/r#7": seven, "O/R#07": seven.replace("o/r#7", "O/R#07")}, run="-", seq=0
+    )
+    total = "TOTAL 1 open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    sh = FakeSh(
+        **{
+            "/x/my_open_prs.sh": "o/r#7 draft=false  a title\n" + total,
+            "pr view 7 -R": json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+        }
+    )
+    inst = VerdictFreshness(
+        store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=sh
+    )
+    out = asyncio.run(inst.run({}))
+    rows = store.get("verdict-freshness").value
+    assert len(rows) == 1 and " 77777777: AT-HEAD, " in next(iter(rows.values()))
+    assert not any("no longer open" in f for f in out.findings) and out.control
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_verdict_freshness_two_verdicts_that_differ_only_in_the_repos_case_are_both_candidates(
+    monkeypatch, tmp_path, reverse
+):
+    """One PR's verdicts can be filed as `o-r-7-<head8>` and `O-R-7-<head8>`: the newer is the verdict
+    however the directory lists them, so an older approval filed as the lookup spells the repo never hides
+    a newer request for changes filed in another case."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, decision="APPROVE", blocking=[], named="old/r")
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=2000, named="new/r")
+    listed_as(
+        monkeypatch,
+        tmp_path,
+        lambda name: name.replace("old-r", "o-r").replace("new-r", "O-R"),
+        reverse=reverse,
+    )
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: {tmp_path}/new-r-7-77777777.json",
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_verdict_freshness_verdicts_of_one_mtime_and_round_are_chosen_by_path_not_by_listing_order(
+    monkeypatch, tmp_path, reverse
+):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, decision="APPROVE", blocking=[], named="old/r")
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, named="new/r")
+    listed_as(
+        monkeypatch,
+        tmp_path,
+        lambda name: name.replace("old-r", "O-R").replace("new-r", "o-r"),
+        reverse=reverse,
+    )
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 77777777: AT-HEAD, APPROVE, blocking 0; read json: {tmp_path}/old-r-7-77777777.json",
+    )
+
+
+@pytest.mark.parametrize("filed_as", ["007", "07"])
+def test_verdict_freshness_a_verdict_is_found_whether_its_file_pads_the_number(tmp_path, filed_as):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000, filed_as=filed_as)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(MemoryNoteStore(), every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert out.control and out.findings == (
+        f"o/r#7 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: "
+        f"{tmp_path}/o-r-{filed_as}-77777777.json",
+    )
+
+
+@pytest.mark.parametrize("first", ["o/r#7", "O/R#07"])
+def test_verdict_freshness_of_two_conflicting_rows_for_one_pr_the_one_at_its_head_now_is_the_row(
+    tmp_path, first
+):
+    """An older snapshot's rows for one PR disagree: the one that read the head the PR has now is the
+    later observation, whichever the snapshot lists first."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    path = f"{tmp_path}/o-r-7-77777777.json"
+    rows = {
+        "o/r#7": "o/r#7 00000000: STALE (verdict at 00000000), APPROVE, blocking 0; read json: x",
+        "O/R#07": f"O/R#07 77777777: AT-HEAD, REQUEST-CHANGES, blocking 1; read json: {path}",
+    }
+    store = MemoryNoteStore()
+    snapshot = {k: rows[k] for k in sorted(rows, key=lambda k: k != first)}  # `first` is listed first
+    store.put("verdict-freshness", snapshot, run="-", seq=0)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert store.get("verdict-freshness").value == {"O/R#07": rows["O/R#07"]}
+    assert out.control and out.findings == ()  # the row it was told is the row it reads again
+
+
+@pytest.mark.parametrize("flip", [False, True])
+@pytest.mark.parametrize(
+    ("aliases", "winner"),
+    [(("O/R#07", "o/r#7"), "o/r#7"), (("o/R#07", "O/R#7"), "O/R#7")],
+    ids=["the-spelling-read-now", "the-smaller-key"],
+)
+def test_verdict_freshness_two_rows_at_one_head_keep_the_spelling_read_now_then_the_smaller_key(
+    tmp_path, aliases, winner, flip
+):
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    rows = {k: f"{k} 00000000: NEVER-REVIEWED" for k in (reversed(aliases) if flip else aliases)}
+    store.put("verdict-freshness", rows, run="-", seq=0)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    assert set(store.get("verdict-freshness").value) == {winner}
+    assert out.control and not any("no longer open" in f for f in out.findings)
+
+
+def test_verdict_freshness_a_short_page_meets_a_row_its_snapshot_spelled_in_another_case(tmp_path):
+    """The page is short, so nothing retains the row: the PR's own read finds it, its repo case-blind."""
+    assert instr.PR_PAGE > 1
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    store.put("verdict-freshness", {"O/R#7": "O/R#7 77777777: NEVER-REVIEWED"}, run="-", seq=0)
+    sh = freshness_sh(prs=((7, HEAD7),))
+    inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=sh)
+    out = asyncio.run(inst.run({}))
+    rows = store.get("verdict-freshness").value
+    assert out.control and set(rows) == {"O/R#7"} and rows["O/R#7"].startswith("O/R#7 77777777: AT-HEAD")
+    assert not any("no longer open" in f for f in out.findings)
+
+
 def test_verdict_freshness_control_fails_when_a_repo_does_not_resolve_as_itself(tmp_path):
     verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
     sh = FakeSh(**{"api repos/o/r --jq": json.dumps({"full_name": "o/elsewhere", "id": 1, "admin": True})})
@@ -2213,6 +2579,68 @@ def test_verdict_freshness_control_fails_when_a_repo_does_not_resolve_as_itself(
     assert not out.control and out.findings[0].startswith("o/r: gh does not resolve it as itself")
     with pytest.raises(ValueError, match="exactly one of them"):
         VerdictFreshness(MemoryNoteStore(), every=None, repos=["o/r"], enumerator=["x"])
+
+
+class LateList(FakeSh):
+    """A runner whose first call to `gated` takes its answer when it is made and delivers it only once
+    released: a list that is complete when read and old by the time its run goes on."""
+
+    def __init__(self, gated: str, **answers: tuple[int, str, str] | str):
+        super().__init__(**answers)
+        self.gated, self.began, self.release = gated, asyncio.Event(), asyncio.Event()
+
+    async def __call__(self, argv: list[str], *, timeout: float = 60, cwd: str | None = None):
+        answer = await super().__call__(argv, timeout=timeout, cwd=cwd)
+        if self.gated in " ".join(argv) and not self.began.is_set():
+            self.began.set()
+            await self.release.wait()
+        return answer
+
+
+@pytest.mark.parametrize("channel", ["repos", "enumerator"])
+def test_a_complete_but_older_list_does_not_retire_a_pr_a_later_overlapping_run_listed(tmp_path, channel):
+    """Run A takes its list before #9 opens and waits; run B starts and lists #9. Left to overlap, B writes
+    first and A, finding #9 absent from its complete list, reports it closed and drops it. The runs of one
+    instrument go one at a time, so B runs on the snapshot A put: #9 is B's first sight, never A's closure."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    heads = {7: HEAD7, 8: HEAD8, 9: HEAD9}
+    total = (
+        "TOTAL {n} open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+    )
+
+    def listing(prs):
+        if channel == "repos":
+            return json.dumps([{"number": n, "headRefOid": heads[n]} for n in prs])
+        return "".join(f"o/r#{n} draft=false  a title\n" for n in prs) + total.format(n=len(prs))
+
+    key = "pr list -R o/r" if channel == "repos" else "/x/my_open_prs.sh"
+    answers = {key: listing((7, 8))}
+    if channel == "repos":
+        answers["api repos/o/r --jq"] = json.dumps({"full_name": "o/r", "id": 42, "admin": True})
+        where = {"repos": ["o/r"]}
+    else:
+        answers |= {
+            f"pr view {n} -R o/r": json.dumps({"headRefOid": h, "state": "OPEN"}) for n, h in heads.items()
+        }
+        where = {"enumerator": ["/x/my_open_prs.sh"]}
+    store = MemoryNoteStore()
+
+    async def both():
+        sh = LateList(key, **answers)
+        inst = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), run=sh, **where)
+        first = asyncio.create_task(inst.run({}))
+        await sh.began.wait()  # A holds the list it took
+        sh.set(key, listing((7, 8, 9)))  # #9 opens
+        second = asyncio.create_task(inst.run({}))
+        await asyncio.wait({second}, timeout=0)  # B goes as far as nothing holds it: to its end, unserialized
+        sh.release.set()
+        return await first, await second
+
+    out_a, out_b = asyncio.run(both())
+    assert [f for o in (out_a, out_b) for f in o.findings if "no longer open" in f] == []
+    assert set(store.get("verdict-freshness").value) == {"o/r#7", "o/r#8", "o/r#9"}
+    assert out_a.control and out_b.control
+    assert len(out_b.findings) == 1 and out_b.findings[0].startswith("o/r#9 99999999: NEVER-REVIEWED")
 
 
 WORKFLOW_IDS = {"ci": 501, "lint": 502, "docs": 503, "bench": 504}
