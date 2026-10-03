@@ -31,7 +31,7 @@ sandboxed executor are the published side of that boundary; the rest is named by
 | ADR-0006 | The notification, and the closure | operating; closure owed | context assembly: the runtime's typed section |
 | ADR-0007 | The record, the view, the fold, context commands, notes | operating; frozen captures, dated directives, the consumed mark on the closure, cross-profile note read owed | the durable record, visibility directives, the store families |
 | ADR-0008 | The program: compile then run, control results, curated view | operating; the closure's consumed marks, the normalised program on the TEXT entry, the tag form on the same nodes, the name repairs owed | the request program |
-| ADR-0009 | Backends and the context figure: three shapes, the `Reply` count, the floor, the session restart | draft (2026-09-25); the subscription CLI's count and the mixed-response refusal owed | the inference driver: a binding row, the served model read from the response; here the envelope keeps the response's model and compares nothing |
+| ADR-0009 | Backends and the context figure: three shapes, the `Reply` count, the floor, the session restart | draft (2026-09-25); the acting session's gate pinned with a scripted CLI, its hook contracts measured once against the installed one | the inference driver: a binding row, the served model read from the response; here the envelope keeps the response's model and compares nothing |
 | ADR-0010 | Delegation between actors: `queue`, the handle, the answer as a settled command, the reply, no graph object | draft (2026-09-25); no bench exercises the path | principals and mail; in-process peers are one layer, the long-running agent another |
 | ADR-0011 | The box: one shape for three boxes, the coding tools over a tree, the watch and its gate, the patch | draft (2026-09-25); the real-box tests opt-in; resolving a boxed path in the box owed | the sandboxed executor: content-addressed trees, declared write paths, receipts |
 | ADR-0013 | The long-running agent: the wake, the send gate and the hop count, the caps, the cursor and posture, the lock, the continuous run and its checkpoint | draft (2026-09-25) | the process: one identity per process, lease by turn activity, one supervisor |
@@ -57,9 +57,9 @@ holds them, with the executor over content-addressed trees named as the boundary
 checkpoint is built and replays as history). 0014 landed 2026-09-25 and amended nothing; eleven
 instruments build from one config. 0018 landed 2026-09-25 and amended 0007 C4 (a changed renderer is not
 detected) and 0008 S4 (the continuous run's checkpoint exists). 0012, 0015 and 0016 landed 2026-09-25;
-0016 amended 0009 (S10: the session CLI lands no envelope on a failed call, owed). 0017 landed
-2026-09-25 and corrected the desk fact below: the reader is bound to the owner's identity, as the
-code binds it.
+0016 amended 0009 (S10: the session CLI landed no envelope on a failed call; it lands one since).
+0017 landed 2026-09-25 and corrected the desk fact below: the reader is bound to the owner's
+identity, as the code binds it.
 
 A comparison against the earlier records (2026-09-25) found sentences the code contradicts, now
 corrected to the code of 2026-09-24: `Stopped(n)` names the turn that did not run (0002 C3);
@@ -67,9 +67,9 @@ corrected to the code of 2026-09-24: `Stopped(n)` names the turn that did not ru
 commands is owed (0003); `run.more` is not yet a default handler (0001 C2); `Context.get` never
 waits, a pending alias raises (0005 C3, S6); a repair's note rides `not executed:` (0004 C3); the
 notification's order and wording (0006 C2); the fold applies directives in record order today
-(0007 C3); a session CLI given its own tools acts outside every gate, its gate owed (0009 C6, S11;
-0001 C5); the serve wrapper decides whether to start (0013 S11); the owner-bound reader stands in
-until the store lets an actor read a namespace it can see (0017 D2).
+(0007 C3); a session CLI given its own tools acted outside every gate, and its gate has since landed
+(0009 C6, S11; 0001 C5); the serve wrapper decides whether to start (0013 S11); the owner-bound
+reader stands in until the store lets an actor read a namespace it can see (0017 D2).
 
 The same comparison found mechanisms the code enforces that no record stated, and items the earlier
 records owed that the new ones had dropped; both are now in their records (0001 to 0003, 0005 to
