@@ -169,6 +169,44 @@ def test_note_read_reads_another_profiles_note_only_under_its_privilege(monkeypa
     assert reads == ["plan", "absent"]
 
 
+@pytest.mark.parametrize("on_disk", [False, True])
+def test_reading_profiles_that_have_no_notes_leaves_the_actors_stores_and_files_as_they_were(
+    tmp_path, on_disk
+):
+    actor = Actor("n-absent", privileges={"note.read"}, notes_dir=tmp_path if on_disk else None)
+    reader = Profile("reader", privileges=frozenset({"note.read"}))
+    turn = "".join(f'<lact r{i}>note.read(profile="ghost{i}", key="plan")</lact>' for i in range(50))
+    run = asyncio.run(actor.run(reader, RunRequest(max_rounds=1), scripted(turn)))
+    for i in range(50):
+        assert f"no note 'plan' in the notes of ghost{i}" in run.record.get(f"r{i}").content.error
+    assert sorted(actor._notes) == ["reader"]  # the reader's own; none made for a name only read
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_note_read_reads_a_profiles_file_this_actor_never_opened_and_keeps_no_store_for_it(tmp_path):
+    FileNoteStore(tmp_path / "keeper.json").put("plan", "kept", run="earlier", seq=3)
+    (tmp_path / "broken.json").write_text("{not json")
+    actor = Actor("n-file", privileges={"note.read"}, notes_dir=tmp_path)
+    reader = Profile("reader", privileges=frozenset({"note.read"}))
+    turn = (
+        '<lact r1>note.read(profile="keeper", key="plan")</lact>'
+        '<lact r2>note.read(profile="keeper", key="absent")</lact>'
+        '<lact r3>note.read(profile="broken", key="plan")</lact>'
+    )
+    run = asyncio.run(actor.run(reader, RunRequest(max_rounds=1), scripted(turn)))
+    assert run.record.get("r1").content.value == {
+        "profile": "keeper",
+        "key": "plan",
+        "value": "kept",
+        "run": "earlier",
+        "version": 1,
+    }
+    assert "no note 'absent' in the notes of keeper" in run.record.get("r2").content.error
+    unreadable = run.record.get("r3").content.error
+    assert "JSONDecodeError" in unreadable and "no note" not in unreadable  # a file it cannot read is no miss
+    assert sorted(actor._notes) == ["reader"]
+
+
 def test_a_dotted_alias_without_the_note_prefix_is_named_as_a_missed_note_in_the_next_notice(tmp_path):
     actor = Actor("n", notes_dir=tmp_path)
     seen = []

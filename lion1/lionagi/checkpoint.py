@@ -22,6 +22,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel
+
 from .actor import Result
 from .record import Directive, Entry, Kind, Record, fold
 
@@ -35,6 +37,7 @@ __all__ = (
     "Var",
     "Checkpoint",
     "entry_of",
+    "jsonable",
     "fold_turns",
     "take",
     "render_prompt",
@@ -152,6 +155,19 @@ def entry_of(row: dict) -> Entry | None:
         round=row.get("round", 0),
         meta=meta,
     )
+
+
+def jsonable(value: Any) -> Any:
+    """The `default=` of every JSON write of a log row and of a checkpoint: a pydantic model as its
+    `model_dump(mode="json")`, whatever that is (an object of its fields, computed ones included, a
+    list or a scalar), so a replay reads that JSON; anything else, or a model with a field JSON cannot
+    hold, as its str."""
+    if isinstance(value, BaseModel):
+        try:
+            return value.model_dump(mode="json")
+        except ValueError:  # pydantic's serialization error: a field of a type it cannot write
+            pass
+    return str(value)
 
 
 def fold_turns(turns: Sequence[dict], budget: int) -> dict:
@@ -277,7 +293,7 @@ def _fenced(text: str) -> str:
 
 
 def _one(value: Any) -> str:
-    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=jsonable)
 
 
 def _shown(c: Checkpoint, v: Var) -> str:
@@ -468,7 +484,9 @@ def save(checkpoint: Checkpoint, directory: str | Path) -> Path:
         except FileExistsError:
             n += 1
             cid = f"{checkpoint.id}-{n:02d}"
-            data = _bytes({**doc, "id": cid})
+    if cid != checkpoint.id:  # encoded once: the id is the first field and a name JSON writes as it is,
+        # so a taken name changes those bytes alone
+        data = f'{{\n "id": "{cid}"'.encode() + data[len(f'{{\n "id": "{checkpoint.id}"') :]
     with os.fdopen(fd, "wb") as f:
         f.write(data)
     _replace_text(ctx / "latest.json", json.dumps({"id": cid}) + "\n")
@@ -476,7 +494,7 @@ def save(checkpoint: Checkpoint, directory: str | Path) -> Path:
 
 
 def _bytes(doc: dict) -> bytes:
-    return json.dumps(doc, ensure_ascii=False, indent=1, default=str).encode("utf-8")
+    return json.dumps(doc, ensure_ascii=False, indent=1, default=jsonable).encode("utf-8")
 
 
 def load(directory: str | Path, id: str | None = None) -> Checkpoint:
@@ -513,8 +531,9 @@ def to_history(checkpoint: Checkpoint) -> tuple[Entry, ...]:
     path, n = Path(str(src.get("record"))), int(src.get("seq", 0))
     try:
         # a row ends at a line feed: a JSON string may carry U+2028 or U+0085 unescaped, where
-        # str.splitlines would break the row in two
-        rows = path.read_text().split("\n")
+        # str.splitlines would break the row in two; a row is decoded when admitted, so a write cut
+        # inside a multi-byte character past the take is never read
+        rows = path.read_bytes().split(b"\n")
     except OSError as e:
         raise CheckpointError(f"{checkpoint.id}: its record {path} cannot be read: {e}") from None
     entries: list[Entry] = []
@@ -524,8 +543,8 @@ def to_history(checkpoint: Checkpoint) -> tuple[Entry, ...]:
         if not raw.strip():
             continue
         try:
-            e = entry_of(json.loads(raw))
-        except (ValueError, KeyError, TypeError) as err:
+            e = entry_of(json.loads(raw.decode()))
+        except (ValueError, KeyError, TypeError) as err:  # UnicodeDecodeError is a ValueError
             raise CheckpointError(
                 f"{path} line {i} is not a record row ({err}); nothing was replayed"
             ) from None
