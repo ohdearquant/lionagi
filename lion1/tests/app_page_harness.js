@@ -14,6 +14,7 @@ const vm = require('node:vm');
 const LINE = 20;  // px of one log line
 const VIEW = 200;  // px the log box shows
 const DIR = '/x/desk';
+const OTHER = '/x/other';
 
 // ---- a document ----
 const VOID = new Set(['input', 'meta', 'link', 'br', 'hr', 'img']);
@@ -95,6 +96,7 @@ class El {
     return this.className.split(/\s+/).includes('logbox') ? Math.max(VIEW, this.children.length * LINE) : 0;
   }
   maxTop() { return Math.max(0, this.scrollHeight - this.clientHeight); }
+  get offsetHeight() { return this.className.split(/\s+/).includes('logline') ? LINE : 0; }
   get scrollTop() { return this.top; }
   set scrollTop(v) { this.top = Math.max(0, Math.min(v, this.maxTop())); }
 }
@@ -210,11 +212,16 @@ function boot(html) {
     type(id, text) { const el = byId(id); el.value = text; fire(el, 'input'); },
     click(el) { if (!el.disabled) fire(el, 'click'); },
     act: (name) => find(body, (e) => e.attrs['data-act'] === name)[0],
-    emit(type, data) {
-      for (const fn of streams.at(-1).handlers[type] || []) fn({ data: JSON.stringify(data) });
+    emit(type, data, rev) {  // an `areas` event carries its revision as the event's id
+      const ev = { data: JSON.stringify(data), lastEventId: rev === undefined ? '' : String(rev) };
+      for (const fn of streams.at(-1).handlers[type] || []) fn(ev);
     },
     streamError() { streams.at(-1).onerror(); },
-    async answer(req, data) { req.resolve({ ok: true, json: () => Promise.resolve(data) }); await settle(); },
+    async answer(req, data, rev) {  // `/api/areas` states its revision in a header
+      const headers = { get: (name) => (name.toLowerCase() === 'x-areas-revision' && rev !== undefined ? String(rev) : null) };
+      req.resolve({ ok: true, json: () => Promise.resolve(data), headers });
+      await settle();
+    },
     async fail(req, error) { req.reject(error); await settle(); },
     async advance(ms) {
       const end = clock + ms;
@@ -302,6 +309,61 @@ const scenarios = {
     return { atTop, nearTop };
   },
 
+  // a reader scrolled up keeps their lines when the page they are on is rendered again: after a control's
+  // answer, after a send's answer, and when the oldest lines went while the page loaded
+  async logRefresh(page) {
+    await page.open(DIR);
+    for (let i = 0; i < 100; i++) page.emit('log', { dir: DIR, line: 'line ' + i });
+    let box = page.byId('log-box');
+    box.scrollTop = 30 * LINE;
+    const before = inView(box);
+    page.click(page.act('wake'));
+    await page.answer(page.requests('/control')[0], { ok: true, detail: 'woken' });
+    await page.answer(page.requests('/api/resident').at(-1), detail(DIR));
+    box = page.byId('log-box');
+    const control = { nodes: box.children.length, view: inView(box) };
+    box.scrollTop = 12 * LINE;
+    page.type('talk-content', 'hi');
+    page.click(page.byId('talk-send'));
+    await page.answer(page.requests('/send')[0], { ok: true });
+    await page.answer(page.requests('/api/resident').at(-1), detail(DIR));
+    const send = { view: inView(page.byId('log-box')) };
+    for (let i = 100; i < 405; i++) page.emit('log', { dir: DIR, line: 'line ' + i });  // lines 5 to 404 remain
+    box = page.byId('log-box');
+    box.scrollTop = 50 * LINE;
+    const full = { before: inView(box) };
+    page.click(page.act('wake'));
+    await page.answer(page.requests('/control')[1], { ok: true, detail: 'woken' });
+    for (let i = 405; i < 408; i++) page.emit('log', { dir: DIR, line: 'line ' + i });  // lines 5 to 7 leave
+    await page.answer(page.requests('/api/resident').at(-1), detail(DIR));
+    box = page.byId('log-box');
+    Object.assign(full, { after: inView(box), scrollTop: box.scrollTop, nodes: box.children.length });
+    return { before, control, send, full };
+  },
+
+  // a reader at the bottom is at the bottom of the rebuilt box, the line that came while it loaded included;
+  // a page the reader comes to anew, straight from another page that was left scrolled up, starts at the bottom
+  async logFollow(page) {
+    await page.open(DIR);
+    for (let i = 0; i < 100; i++) page.emit('log', { dir: DIR, line: 'line ' + i });
+    let box = page.byId('log-box');
+    box.scrollTop = box.scrollHeight;
+    page.click(page.act('wake'));
+    await page.answer(page.requests('/control')[0], { ok: true, detail: 'woken' });
+    page.emit('log', { dir: DIR, line: 'line 100' });
+    await page.answer(page.requests('/api/resident').at(-1), detail(DIR));
+    box = page.byId('log-box');
+    const refreshed = { last: lines(box).at(-1), following: box.scrollTop + VIEW === box.scrollHeight };
+    for (let i = 0; i < 100; i++) page.emit('log', { dir: OTHER, line: 'other ' + i });  // kept for its page
+    box.scrollTop = 30 * LINE;
+    await page.open(OTHER);
+    page.byId('log-box').scrollTop = 20 * LINE;
+    await page.open(DIR);
+    box = page.byId('log-box');
+    const renewed = { view: inView(box), following: box.scrollTop + VIEW === box.scrollHeight };
+    return { refreshed, renewed };
+  },
+
   // words typed while a send is out are in the composer after the send's answer and the reload
   async sending(page) {
     await page.open(DIR);
@@ -338,19 +400,44 @@ const scenarios = {
     return { answered, reloaded, returned: page.byId('talk-content').value };
   },
 
-  // a poll's answer after the stream has delivered is dropped, and the next poll still goes out
+  // a poll's answer older than the rows the stream delivered is dropped, and the next poll still goes out
   async pollStale(page) {
     page.streamError();
     await page.advance(5000);
     const slow = page.requests('/api/areas')[0];
-    page.emit('areas', [row('streamed')]);
-    await page.answer(slow, [row('stale')]);
+    page.emit('areas', [row('streamed')], 12);
+    await page.answer(slow, [row('stale')], 10);
     const afterStale = { actors: page.actors(), conn: page.byId('conn-label').textContent };
     page.streamError();
     await page.advance(5000);
     const next = page.requests('/api/areas')[1];  // a poll that never went out is a count, not a crash
-    if (next) await page.answer(next, [row('polled')]);
+    if (next) await page.answer(next, [row('polled')], 14);
     return { afterStale, afterPoll: { actors: page.actors(), polls: page.requests('/api/areas').length } };
+  },
+
+  // of the rows the poll and the stream deliver the page keeps the newer revision, whichever arrives first:
+  // 1 the stream's newer rows beat a poll answer that comes after them, 2 a poll answer newer than the stream's
+  // rows replaces them, 3 a stream event of older rows after a poll answer is dropped, 4 a newer one is kept
+  async pollOrder(page) {
+    const seen = {};
+    const poll = async (name, answerRev, during) => {
+      page.streamError();
+      await page.advance(5000);
+      const out = page.requests('/api/areas').at(-1);
+      if (during) during();
+      await page.answer(out, [row(name)], answerRev);
+    };
+    await poll('poll10', 10, () => page.emit('areas', [row('stream12')], 12));
+    seen.streamNewer = page.actors();
+    await poll('poll15', 15, () => page.emit('areas', [row('stream13')], 13));
+    seen.pollNewer = page.actors();
+    await poll('poll20', 20);
+    page.emit('areas', [row('stream18')], 18);
+    seen.olderStreamAfter = page.actors();
+    await poll('poll21', 21);
+    page.emit('areas', [row('stream22')], 22);
+    seen.newerStreamAfter = page.actors();
+    return seen;
   },
 
   // a tick while a poll is out starts no poll, a poll that fails frees the next, and one that has settled
@@ -363,7 +450,7 @@ const scenarios = {
     await page.advance(5000);
     const after = page.requests('/api/areas').length;
     const next = page.requests('/api/areas')[1];
-    if (next) await page.answer(next, [row('later')]);
+    if (next) await page.answer(next, [row('later')], 3);
     await page.advance(10000);
     return { out, after, actors: page.actors(), aborted: Boolean(next) && abandoned(next) };
   },
@@ -378,12 +465,12 @@ const scenarios = {
     const waiting = { polls: page.requests('/api/areas').length, abandoned: abandoned(hung) };
     await page.advance(7000);
     const givenUp = { polls: page.requests('/api/areas').length, abandoned: abandoned(hung) };
-    await page.answer(hung, [row('late')]);
+    await page.answer(hung, [row('late')], 50);  // newer than any rows shown: only the give-up drops it
     const afterLate = page.actors();
     await page.advance(5000);
     const whileOut = page.requests('/api/areas').length;
     const next = page.requests('/api/areas')[1];
-    if (next) await page.answer(next, [row('next')]);
+    if (next) await page.answer(next, [row('next')], 5);
     return { waiting, givenUp, afterLate, whileOut, actors: page.actors() };
   },
 };

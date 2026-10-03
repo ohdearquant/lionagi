@@ -73,6 +73,7 @@ _JS = """
 var state = {
   areas: [], mode: 'list', dir: null, detail: null, detailDir: null, gen: 0, view: 0, logs: {}, pending: {},
   draft: null, typed: 0,  // the composer's words on this page, and a count of every edit to them
+  place: null, shed: {},  // the reader's place in a log box to be rebuilt; the lines each buffer dropped
 };
 var LOG_LINES = 400;  // one resident's log lines kept: its buffer and its box hold no more
 
@@ -113,37 +114,45 @@ function setConn(live) {
 
 // ---- live data: SSE, with a 5s polling fallback when it errors ----
 var POLL_MS = 5000;
-var pollTimer = null, polling = null, streamed = 0;  // polling: the abort controller of the poll in flight
+var pollTimer = null, polling = null;  // polling: the abort controller of the poll in flight
+var shown = 0;  // the revision of the rows on the page
+// the server stamps each areas payload, stream or poll, with the revision of the read it came from: of two
+// payloads the newer stays, whichever arrived first
+function takeAreas(rows, rev) {
+  if (!(rev > shown)) return;
+  shown = rev;
+  state.areas = rows;
+  if (state.mode === 'list') renderList();
+}
 function startPoll() {
   setConn(false);
   if (pollTimer) return;
   pollTimer = setInterval(function () {
     if (polling) return;  // one poll in flight at a time
-    var ctl = polling = new AbortController(), since = streamed;
+    var ctl = polling = new AbortController();
     function free() { if (polling === ctl) polling = null; }  // a poll given up frees no later poll's latch
     var cut = setTimeout(function () { ctl.abort(); free(); }, 2 * POLL_MS);  // never settles: give up
-    fetch('/api/areas', { signal: ctl.signal }).then(function (r) { return r.json(); }).then(function (rows) {
-      if (ctl.signal.aborted) return;  // given up
-      if (streamed !== since) return;  // the stream delivered the areas after this poll was sent
-      state.areas = rows;
-      if (state.mode === 'list') renderList();
+    fetch('/api/areas', { signal: ctl.signal }).then(function (r) {
+      var rev = Number(r.headers.get('X-Areas-Revision'));
+      return r.json().then(function (rows) {
+        if (ctl.signal.aborted) return;  // given up
+        takeAreas(rows, rev);
+      });
     }).catch(function () {}).then(function () { clearTimeout(cut); free(); });
   }, POLL_MS);
 }
 function connect() {
   var es = new EventSource('/events');
   es.addEventListener('areas', function (ev) {
-    streamed++;
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
     setConn(true);
-    state.areas = JSON.parse(ev.data);
-    if (state.mode === 'list') renderList();
+    takeAreas(JSON.parse(ev.data), Number(ev.lastEventId));
   });
   es.addEventListener('log', function (ev) {
     var d = JSON.parse(ev.data);
     var buf = state.logs[d.dir] || (state.logs[d.dir] = []);
     buf.push(d.line);
-    if (buf.length > LOG_LINES) buf.shift();
+    if (buf.length > LOG_LINES) { buf.shift(); state.shed[d.dir] = (state.shed[d.dir] || 0) + 1; }
     if (state.mode === 'detail' && state.dir === d.dir && !d.history) appendLogLine(d.line);
   });
   es.onerror = function () { startPoll(); };
@@ -186,9 +195,12 @@ function renderList() {
 }
 
 // ---- screen 2: one resident ----
-function loadDetail() {
+// `same` is a re-render of the page the reader is on, which puts them back where they were in the log box;
+// a page reached by navigation starts at the bottom
+function loadDetail(same) {
   // a response lands only on the route that asked for it: a later navigation makes it stale
   var dir = state.dir, gen = ++state.gen;
+  state.place = same ? logPlace() || state.place : null;  // the box is gone once the page is cleared below
   function current() { return gen === state.gen && state.mode === 'detail' && state.dir === dir; }
   state.detailDir = null;  // no action targets a resident until its own page is shown
   document.getElementById('screen').innerHTML = '<p class="meta">loading\\u2026</p>';
@@ -224,15 +236,24 @@ function logLineHtml(line) {
     (w.ctx ? ' \\u00b7 ctx ' + w.ctx : '') + (w.rst > 0 ? ' \\u00b7 ' + w.rst + ' restart(s)' : '') +
     '</div>';
 }
+function atBottom(box) { return box.scrollTop + box.clientHeight >= box.scrollHeight - 8; }
+// where the reader is in the log box: how far down, whether at the bottom, how many lines the buffer had
+// dropped and how tall each line stood, or null when the page has no box
+function logPlace() {
+  var box = document.getElementById('log-box');
+  if (!box) return null;
+  return { top: box.scrollTop, bottom: atBottom(box), shed: state.shed[state.dir] || 0,
+    heights: Array.prototype.map.call(box.children, function (c) { return c.offsetHeight; }) };
+}
 function appendLogLine(line) {
   var box = document.getElementById('log-box');
   if (!box) return;
-  var atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
+  var bottom = atBottom(box);
   box.insertAdjacentHTML('beforeend', logLineHtml(line));
   // the oldest lines go, and a reader scrolled up keeps the lines in view where they were
   var top = box.scrollTop, height = box.scrollHeight;
   while (box.childElementCount > LOG_LINES) box.removeChild(box.firstElementChild);
-  if (atBottom) box.scrollTop = box.scrollHeight;
+  if (bottom) box.scrollTop = box.scrollHeight;
   else if (box.scrollHeight < height) box.scrollTop = top - (height - box.scrollHeight);
 }
 
@@ -298,8 +319,14 @@ function renderDetail() {
     '<div class="row"><textarea id="talk-content" rows="3" placeholder="message"></textarea></div>' +
     '<div class="row"><button id="talk-send">send</button></div>' +
     '</div>';
-  var box = document.getElementById('log-box');
-  if (box) box.scrollTop = box.scrollHeight;
+  var box = document.getElementById('log-box'), at = state.place;
+  state.place = null;
+  if (at && !at.bottom) {
+    // a reader scrolled up keeps their lines: the oldest ones the buffer dropped since were above them
+    var top = at.top, gone = (state.shed[state.dir] || 0) - at.shed;
+    for (var i = 0; i < gone && i < at.heights.length; i++) top -= at.heights[i];
+    box.scrollTop = Math.max(0, top);
+  } else box.scrollTop = box.scrollHeight;
   if (state.draft) {  // a re-render keeps what was typed
     document.getElementById('talk-subject').value = state.draft.subject;
     document.getElementById('talk-content').value = state.draft.content;
@@ -336,7 +363,7 @@ function sendControl(action, extra) {
     if (state.view !== view) return;  // the page that asked is gone
     toggleInline('hold-inline', false);
     toggleInline('restart-inline', false);
-    loadDetail();
+    loadDetail(true);
   }).catch(function (e) { toast(String(e)); });
 }
 
@@ -360,7 +387,7 @@ function sendTalk() {
     toast('sent');
     if (state.view !== view) return;  // the page that asked is gone
     if (state.draft && state.draft.rev === rev) state.draft = null;  // nothing typed since: it was sent
-    loadDetail();
+    loadDetail(true);
   }).catch(function (e) { toast(String(e)); }).then(function () { btn.disabled = false; });
 }
 

@@ -303,22 +303,34 @@ not to do.
 lookup given no `args.query` raises, `Record` counts a part that raises as a failed control, and the
 desk leaves the message.
 
-### C15: The phone page keeps its newest log lines, its draft and its newest rows _(enforced: mechanical)_ ^c15
+### C15: The phone page keeps its newest log lines and its draft _(enforced: mechanical)_ ^c15
 
 - **Subject**: the script `/app` serves, run by a browser.
-- **Violated when**: a log box holds over 400 lines or shifts lines a scrolled-up reader still has.
-  Typed words are lost, outlive their send or show on another page. Two polls run at once, one that
-  never settles stops the next, or one replaces newer rows.
+- **Violated when**: a log box holds over 400 lines or shifts lines a scrolled-up reader still has,
+  a re-render included. Typed words are lost, outlive their send or show on another page.
 
 A resident's log buffer and box each hold 400 lines. A reader at the bottom follows the newest line;
-one scrolled up keeps the lines in view, except those the oldest-first eviction removes.
+one scrolled up keeps the lines in view, except those the oldest-first eviction removes. A re-render
+of the same page, after a control or a send, restores the reader's place the same way; a navigation
+starts at the bottom.
 
 The composer's text is the page's draft: a re-render restores it, a send's answer clears it unless
 an edit followed the send, and a navigation clears it.
 
+### C16: The phone page shows the newest rows, whichever of the poll and the stream brings them _(enforced: mechanical)_ ^c16
+
+- **Subject**: `/api/areas`, the `areas` events of `/events` and the script `/app` serves.
+- **Violated when**: older rows replace newer ones shown, from the poll or the stream. Two polls run
+  at once, or one that never settles stops the next.
+
+Every read of the registry and the residents takes a revision under one lock: the wall clock in
+microseconds, or one above the last where the clock has not passed it. A restarted server starts
+from the clock, so above its last unless the clock stepped back. `/events` serves the last read;
+`/api/areas` makes a read of its own, which becomes the last. An `areas` event carries its revision
+as its `id`, an `/api/areas` answer in `X-Areas-Revision`; the page keeps the higher.
+
 With the stream down the page polls every five seconds, one at a time. A poll out for ten seconds is
-aborted and frees the next, as a failed one does; an aborted poll's answer, or one the stream
-overtook, is dropped.
+aborted and frees the next, as a failed one does; an aborted poll's answer is dropped.
 
 ## Decisions
 
@@ -407,18 +419,25 @@ tick.
 
 ### D8: `hub/areas.py` and `lion areas` ^d8
 
-Serves C10, C11 and C15. `load_areas`, `resident`, `status`, `table` and `page` read files and one
-lock; `controls_info` adds a process check, which a restart reads before it acts. The server in
+Serves C10, C11, C15 and C16. `load_areas`, `resident`, `status`, `table` and `page` read files and
+one lock; `controls_info` adds a process check, which a restart reads before it acts. The server in
 `apps/cli/lion_cli/areas.py` is a stdlib `ThreadingHTTPServer` on `127.0.0.1` by default, `--allow`
 adding a name it answers to; the phone shell is `hub/app.py`. The registry defaults to
 `.lionagi/areas.toml` under the home directory. `--file` names the registry, `--host` the address,
 `--refresh` the pages' reload in seconds (5), and `--json` prints the areas and rows as JSON.
 
-- **Landing evidence**: `tests/test_areas.py` (39 tests), among them
-  `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file` and
-  `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`;
-  `tests/app_page_harness.js` runs the served script under node for C15's seven `test_the_app_`
-  tests: `test_the_app_log_box_holds_400_nodes_after_405_lines_and_a_reader_scrolled_up_stays_put`,
+- **Landing evidence**: `tests/test_areas.py` (45 tests), among them
+  `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file`,
+  `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`,
+  `test_a_stream_opened_after_a_poll_carries_rows_no_older_than_the_poll`,
+  `test_the_api_and_the_stream_stamp_their_rows_with_one_rising_revision` and
+  `test_the_revision_continues_above_the_last_when_the_clock_stands_still_or_steps_back`;
+  `tests/app_page_harness.js` runs the served script under node for ten `test_the_app_` tests of C15
+  and C16:
+  `test_the_app_log_box_holds_400_nodes_after_405_lines_and_a_reader_scrolled_up_stays_put`,
+  `test_the_app_re_render_of_the_page_a_reader_is_on_keeps_a_scrolled_up_readers_lines_in_view`,
+  `test_the_app_re_render_follows_a_reader_at_the_bottom_and_a_new_page_starts_there`,
+  `test_the_app_keeps_the_newer_revision_whichever_of_poll_and_stream_arrives_first`,
   `test_the_app_log_box_drops_the_oldest_lines_under_a_reader_at_its_top`,
   `test_the_app_composer_keeps_words_typed_while_a_send_is_out_through_its_answer_and_the_reload`,
   `test_the_app_composer_clears_what_a_send_took_and_a_new_page_starts_empty`,

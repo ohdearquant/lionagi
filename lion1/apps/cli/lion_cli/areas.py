@@ -216,28 +216,41 @@ def make_server(
     once_cache: OrderedDict[str, tuple[int, dict]] = OrderedDict()  # /control's idempotency, last 100
     # one control at a time: a replayed `once` racing its first request must find the first answer
     control_lock = threading.Lock()
-    # `/events`: the registry and the residents are read once per `_POLL_S` for every connection,
-    # not once per connection (each read runs a pgrep per serving resident)
-    snapshot: dict[str, Any] = {"at": float("-inf"), "areas": [], "rows": None}
+    # the registry and the residents are read through one source, under one lock: `/events` serves the
+    # snapshot of the last read for every connection (each read runs a pgrep per serving resident) and
+    # `/api/areas` makes a read of its own, which becomes the snapshot. Every read takes the next
+    # revision, so of two payloads the one with the higher revision is the later read
+    snapshot: dict[str, Any] = {"at": float("-inf"), "areas": [], "rows": None, "rev": 0}
     snapshot_lock = threading.Lock()
 
-    def poll_rows() -> tuple[list[Area], list[dict] | None]:
+    def read_rows() -> None:  # with `snapshot_lock` held
+        areas = load_areas(registry)
+        rows = area_rows(status(areas))
+        # the wall clock in microseconds, above the last revision given: a restarted server's revisions
+        # continue above the last of the one before it
+        rev = max(snapshot["rev"] + 1, time.time_ns() // 1000)
+        snapshot.update(at=time.monotonic(), areas=areas, rows=rows, rev=rev)
+
+    def poll_rows() -> tuple[list[Area], list[dict] | None, int]:
         with snapshot_lock:
             if time.monotonic() - snapshot["at"] >= _POLL_S:
                 try:
-                    areas = load_areas(registry)
-                    rows: list[dict] | None = area_rows(status(areas))
-                except (OSError, ValueError):
-                    areas, rows = [], None  # a registry mid-write: the next poll reads it whole
-                snapshot.update(at=time.monotonic(), areas=areas, rows=rows)
-            return snapshot["areas"], snapshot["rows"]
+                    read_rows()
+                except (OSError, ValueError):  # a registry mid-write: the next poll reads it whole
+                    snapshot.update(at=time.monotonic(), areas=[], rows=None)
+            return snapshot["areas"], snapshot["rows"], snapshot["rev"]
 
     def desk(want: str) -> tuple[Area, str] | None:
         return _desk(registry, want)
 
     class Handler(BaseHTTPRequestHandler):
         def answer(
-            self, code: int, body: str, ctype: str = "text/plain; charset=utf-8", location: str = ""
+            self,
+            code: int,
+            body: str,
+            ctype: str = "text/plain; charset=utf-8",
+            location: str = "",
+            revision: int = 0,
         ) -> None:
             data = body.encode()
             self.send_response(code)
@@ -245,6 +258,8 @@ def make_server(
             self.send_header("Content-Length", str(len(data)))
             if location:
                 self.send_header("Location", location)
+            if revision:
+                self.send_header("X-Areas-Revision", str(revision))
             self.end_headers()
             self.wfile.write(data)
 
@@ -332,7 +347,10 @@ def make_server(
                 self._events()
                 return
             if url.path == "/api/areas":
-                self.answer(200, rows_json(status(load_areas(registry))), "application/json")
+                with snapshot_lock:
+                    read_rows()
+                    rows, revision = snapshot["rows"], snapshot["rev"]
+                self.answer(200, json.dumps(rows, indent=1), "application/json", revision=revision)
                 return
             if url.path == "/":
                 areas = load_areas(registry)
@@ -371,9 +389,10 @@ def make_server(
 
         def _events(self) -> None:
             """SSE, one thread per connection (ThreadingHTTPServer's). Every `_POLL_S` re-read the
-            registry and the residents: `areas` on connect and whenever a row changed; per desk the
-            last `_HISTORY` serve.log lines as history on first sight, then each new line; `ping`
-            every `_PING_S`. A write the client is gone for, or stalled on, ends the thread."""
+            registry and the residents: `areas` on connect and whenever a row changed, its `id` the
+            revision of the read; per desk the last `_HISTORY` serve.log lines as history on first
+            sight, then each new line; `ping` every `_PING_S`. A write the client is gone for, or
+            stalled on, ends the thread."""
             try:
                 self.connection.settimeout(_WRITE_S)
                 self.send_response(200)
@@ -383,9 +402,10 @@ def make_server(
             except OSError:
                 return
 
-            def emit(event: str, data: Any) -> bool:
+            def emit(event: str, data: Any, revision: int = 0) -> bool:
                 try:
-                    self.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode())
+                    stamp = f"id: {revision}\n" if revision else ""
+                    self.wfile.write(f"{stamp}event: {event}\ndata: {json.dumps(data)}\n\n".encode())
                     self.wfile.flush()
                     return True
                 except OSError:  # BrokenPipe, ConnectionReset: the client went away
@@ -395,9 +415,9 @@ def make_server(
             said: str | None = None
             next_ping = time.monotonic() + _PING_S
             while True:
-                areas, rows = poll_rows()
+                areas, rows, revision = poll_rows()
                 if rows is not None and (sig := json.dumps(rows)) != said:
-                    if not emit("areas", rows):
+                    if not emit("areas", rows, revision):
                         return
                     said = sig
                 for a in areas:
