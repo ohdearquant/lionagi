@@ -142,7 +142,16 @@ class FileNoteStore(MemoryNoteStore):
                 )
             return value
 
-        data = json.loads(self.path.read_text(encoding="utf-8"), parse_constant=refuse, parse_float=finite)
+        # a file another locale wrote cannot be told from a damaged UTF-8 one by its bytes, so it is
+        # refused whole, never converted by a guess
+        try:
+            text = self.path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as e:
+            raise ValueError(
+                f"{self.path}: the file is not UTF-8 (the byte at offset {e.start} cannot be decoded); "
+                "re-encode it as UTF-8 by hand"
+            ) from None
+        data = json.loads(text, parse_constant=refuse, parse_float=finite)
         self._version = int(data.get("version", 0))
         self._notes = {k: Note(**v) for k, v in data.get("notes", {}).items()}
 

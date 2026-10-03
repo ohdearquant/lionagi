@@ -383,7 +383,7 @@ def _notes_file(value: str = '"x"', seq: str = "1", version: str = "1") -> str:
     return f'{{"version": {version}, "notes": {{"k": {row}}}}}'
 
 
-def _refused_on_every_path(path: Path, store: FileNoteStore, said: str, text: str) -> None:
+def _refused_on_every_path(path: Path, store: FileNoteStore, said: str, text: str | bytes) -> None:
     for read_or_write in (
         lambda: FileNoteStore(path),
         lambda: store.get("k"),
@@ -395,7 +395,7 @@ def _refused_on_every_path(path: Path, store: FileNoteStore, said: str, text: st
     ):
         with pytest.raises(ValueError, match=said):
             read_or_write()
-    assert path.read_text() == text
+    assert path.read_bytes() == (text if isinstance(text, bytes) else text.encode("utf-8"))
     assert not list(path.parent.glob("*.tmp"))
 
 
@@ -427,8 +427,9 @@ def test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_a
 def test_a_number_too_large_for_a_float_is_refused_on_load_naming_the_file_and_the_number(
     tmp_path, number, text
 ):
-    # valid JSON that Python reads as infinity: a read would hand the value out and the next unrelated
-    # write would stop at the flush
+    # valid JSON that Python reads as infinity: loaded as it stands, a read hands the value out and the next
+    # write carries it back (written as `Infinity` before the flush refused it; a version of it overflows
+    # `int()`); the load refuses it before either
     path = tmp_path / "n.json"
     store = FileNoteStore(path)  # built before the file holds anything
     path.write_text(text)
@@ -441,6 +442,7 @@ def test_a_number_too_large_for_a_float_is_refused_on_load_naming_the_file_and_t
 
 
 def test_a_file_holding_the_largest_finite_floats_loads_and_a_later_write_keeps_them(tmp_path):
+    # `1e-999` underflows to 0.0: that is a float, not a non-finite one, so it loads and is kept as 0.0
     path = tmp_path / "n.json"
     path.write_text(
         _notes_file(value="[1.7976931348623157e308, -1.7976931348623157e308, 1e-999, 5e-324, -0.0]")
@@ -475,6 +477,38 @@ def test_the_file_is_read_as_utf_8_whatever_the_locale_encoding_is(tmp_path, mon
     path = tmp_path / "n.json"
     path.write_bytes(_notes_file(value=json.dumps(value, ensure_ascii=False)).encode("utf-8"))
     assert FileNoteStore(path).get("k").value == value
+
+
+@pytest.mark.parametrize(
+    "encoded, repaired",
+    [
+        (_notes_file(value='"Crème Brûlée"').encode("latin-1"), _notes_file(value='"Crème Brûlée"')),
+        # past the first 8 KiB: the offset named is the file's, not a read chunk's
+        (_notes_file(value=f'"{"a" * 10_000}è"').encode("latin-1"), _notes_file(value=f'"{"a" * 10_000}è"')),
+        (_notes_file(value='"“Bon”"').encode("cp1252"), _notes_file(value='"“Bon”"')),
+        (_notes_file().encode("utf-8") + b"\xe6\x9d", _notes_file()),  # a cut multi-byte sequence
+    ],
+    ids=["latin-1", "latin-1-past-8-kib", "cp1252-quotes", "cut-sequence"],
+)
+def test_a_file_that_is_not_utf_8_is_refused_on_load_naming_the_file_and_the_byte_offset(
+    tmp_path, encoded, repaired
+):
+    # a file written under another locale cannot be told from a damaged UTF-8 one by its bytes, so it is
+    # refused, never converted by a guess
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)  # built before the file holds anything
+    path.write_bytes(encoded)
+    offset = next(i for i, byte in enumerate(encoded) if byte >= 0x80)
+    said = re.escape(
+        f"{path}: the file is not UTF-8 (the byte at offset {offset} cannot be decoded); "
+        "re-encode it as UTF-8 by hand"
+    )
+    _refused_on_every_path(path, store, said, encoded)
+    # re-encoded by hand: the store reads it and a write goes through
+    path.write_text(repaired, encoding="utf-8")
+    assert store.get("k").value == json.loads(repaired)["notes"]["k"]["value"]
+    store.put("other", "y", run="r", seq=2)
+    assert sorted(json.loads(path.read_text(encoding="utf-8"))["notes"]) == ["k", "other"]
 
 
 def test_a_write_never_renders_a_non_finite_number_wherever_it_sits(tmp_path):

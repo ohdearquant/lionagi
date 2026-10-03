@@ -242,12 +242,12 @@ on writing, when decided, sits on those two.
 
 ### D4: The file store keeps the copy it checked and reads only standard JSON ^d4
 
-Serves C7. The file store's `put` renders the value with `json.dumps(allow_nan=False)`, encodes the
+Serves C7. `FileNoteStore.put` renders the value with `json.dumps(allow_nan=False)`, encodes the
 text as UTF-8, reads it back with `json.loads`, and keeps and writes that copy: a change to the
 caller's object afterwards, or while `put` waits for the lock, reaches nothing stored. `_load`
-refuses a file holding NaN, Infinity or a number a float cannot hold, like `1e999`, naming file and
-text, and the write renders with `allow_nan=False`. The file is read and written as UTF-8, so every
-file is standard JSON.
+refuses a file holding NaN, Infinity, a number that overflows to a non-finite float, like `1e999`,
+or bytes that are not UTF-8, naming file and text or byte offset, and converts nothing. The write
+renders with `allow_nan=False` and as UTF-8, so every file is standard JSON.
 
 - **Landing evidence**:
   `test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal`,
@@ -257,8 +257,9 @@ file is standard JSON.
   `test_a_number_too_large_for_a_float_is_refused_on_load_naming_the_file_and_the_number`,
   `test_a_file_holding_the_largest_finite_floats_loads_and_a_later_write_keeps_them`,
   `test_a_write_never_renders_a_non_finite_number_wherever_it_sits`,
-  `test_the_file_is_written_as_utf_8_whatever_the_locale_encoding_is` and
-  `test_the_file_is_read_as_utf_8_whatever_the_locale_encoding_is`.
+  `test_the_file_is_written_as_utf_8_whatever_the_locale_encoding_is`,
+  `test_the_file_is_read_as_utf_8_whatever_the_locale_encoding_is` and
+  `test_a_file_that_is_not_utf_8_is_refused_on_load_naming_the_file_and_the_byte_offset`.
 
 ### D5: `_notify` lists the store on the first turn ^d5
 
