@@ -312,10 +312,12 @@ computation binds its failure.
   `test_a_key_a_dict_writes_twice_counts_once_toward_the_size_limit` and
   `test_the_fields_of_out_are_held_together_to_the_size_limit_as_a_dict_literal_is` pin it.
 - **S7**: Comprehensions let other tasks run every 100,000 items they examine, kept or rejected,
-  counted once per task across nesting. So the deadline cancels one wherever it is computed: in a
-  command's arguments, in a branch's test or an `OUT{}` field, where nothing after it runs, and in a
-  value still computing once its turn's commands settle, whether the settle returns or raises.
+  counted once per task across nesting. So the deadline cancels one at its next yield wherever it is
+  computed: in a command's arguments, in a branch's test or an `OUT{}` field, and in a value still
+  computing once its turn's commands settle, whether the settle returns or raises. A test or a field
+  runs on to that yield and commits nothing (S11).
   `test_a_long_comprehension_lets_other_tasks_run_every_limit_items_it_examines_rejected_ones_too`,
+  `test_an_output_field_that_runs_past_the_deadline_between_two_yields_commits_nothing`,
   `test_the_runs_deadline_cancels_a_command_whose_argument_is_still_a_long_comprehension`,
   `test_the_runs_deadline_stops_a_branch_test_or_an_output_field_still_in_a_long_comprehension`,
   `test_a_value_whose_reader_the_deadline_cancelled_stops_computing_before_the_run_returns`,
@@ -388,11 +390,17 @@ computation binds its failure.
   `test_a_value_of_a_kind_a_capture_shares_is_shared_in_the_output` pin it.
 - **S14**: A key written again gives back what it landed as, whatever a command made of it since:
   the count is each field as it landed. The copy is the program's candidate; hooks and `accept` may
-  rewrite it after. A copy that fails (a serializer raising, too deep a nesting) refuses the turn;
-  the run goes on. An output built before a late grant commits under the raised bound only if no
-  write was cut or refused as spent (S9, S12).
+  rewrite it after. A failed copy (a model's copy raising, too deep a nesting) refuses the turn; the
+  run goes on. An output built before a late grant commits under the raised bound only if no write
+  was cut or refused as spent (S9, S12).
   `test_a_key_written_again_gives_back_what_it_landed_as_whatever_a_command_made_of_it_since`,
   `test_an_output_built_before_a_late_grant_commits_under_the_raised_bound_when_no_write_was_cut`,
   `test_an_output_built_before_a_late_grant_commits_nothing_when_the_settlement_cut_a_write`,
   `test_a_key_written_again_after_its_list_grew_lets_no_part_past_the_limit_run` and
   `test_an_output_that_cannot_be_copied_refuses_the_turn_and_the_run_goes_on` pin it.
+- **S15**: A command the walk launched is refused at its handler once the walk's or the settlement's
+  deadline fired, whatever bound a later grant raised. One queued behind a synchronous grant that
+  held the loop past the deadline runs no handler, though the run's bound reads unspent by then. The
+  refusal is the command's own result; a write waiting on it is refused as spent (S11).
+  `test_a_command_a_write_queued_behind_a_held_grant_names_never_enters_its_handler` and
+  `test_a_command_queued_behind_a_held_grant_is_refused_alone_and_the_output_commits` pin it.

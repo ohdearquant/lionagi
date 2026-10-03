@@ -445,6 +445,8 @@ class Run:
         # what a name repair would have done, measured while it is off (ADR-0008/D2)
         self.misnamed: list[tuple[str, str | None, int | None]] = []
         self.thunks: dict[str, Callable[[], Awaitable[dict[str, Any]]]] = {}  # a program command's arguments
+        # a program command's walk, asked as its handler is about to start: spent once its deadline fired
+        self.halts: dict[str, Callable[[], bool]] = {}
         # results a program consumed, each with the seq it was consumed at, hidden by the next notification
         self.intermediates: dict[str, int] = {}
         # a program's values not computed yet, for the whole run: the seq of the TEXT that bound it and
@@ -1535,6 +1537,7 @@ class Actor:
     async def _execute(
         self, run: Run, la: Lact, subset: Operable, provenance: dict[str, Any]
     ) -> tuple[Result, Directive | None]:
+        halt = run.halts.pop(la.alias, None)
         if la.name not in subset:
             run.misnamed.append(_nearest(la.name, subset.names()))
             return Result(la.name, False, error=f"unknown command {la.name!r}", reason="unknown"), None
@@ -1556,7 +1559,7 @@ class Actor:
         except Exception as e:  # a validator's own exception: the arguments were not accepted
             error = f"invalid arguments: {type(e).__name__}: {e}"
             return Result(la.name, False, error=error, reason="invalid"), None
-        return await self._handle(run, la, handler, request, self.befores, provenance)
+        return await self._handle(run, la, handler, request, self.befores, provenance, halt)
 
     async def _handle(
         self,
@@ -1566,6 +1569,7 @@ class Actor:
         request: BaseModel,
         befores: list[BeforeFn],
         provenance: dict[str, Any],
+        halt: Callable[[], bool] | None = None,
     ) -> tuple[Result, Directive | None]:
         """A validated request, from the privilege check on: every command's path, `out`'s too.
         `provenance` takes the request the handler entered and its return, once reached."""
@@ -1583,6 +1587,10 @@ class Actor:
         if spent is not None:
             bound = f"{spent}_budget"
             why = f"refused: the {bound} of {run.bounds[bound]:g} is spent"
+            return Result(la.name, False, error=why, reason="refused"), None
+        # a program's command: its walk's fired deadline refuses it whatever bound a later grant raised
+        if halt is not None and halt():
+            why = "refused: the time budget its program ran under is spent; a later grant does not reach it"
             return Result(la.name, False, error=why, reason="refused"), None
         ctx = Context(run, la.alias, handler)
         run.entered.add(la.alias)  # from here the handler may have acted on the world
@@ -2189,6 +2197,11 @@ class _Walk:
         spent = f"the time_budget of {budget:g} is spent{late}"
         self.run.refused.append(("turn", f"{spent}; nothing after it ran"))
 
+    def expired(self) -> bool:
+        """Whether the walk's own limit or its settlement's has fired, whatever a later grant raised;
+        a refusal on this alone tells nothing of the turn."""
+        return any(t is not None and t.expired() for t in (self.limit, self.settling))
+
     def spent(self) -> bool:
         """Whether nothing the walk still holds may commit: its own limit has expired, or the time
         budget is spent. A grant that landed after the limit expired raised the bound for what follows
@@ -2297,9 +2310,7 @@ class _Walk:
                 # holds the stored value, and grows that, not the output
                 try:
                     fields = _captured(fields)
-                except (
-                    Exception
-                ) as e:  # a model's serializer raised, or a nesting past the interpreter's depth
+                except Exception as e:  # a model's copy raised, or a nesting past the interpreter's depth
                     raise EvalError(
                         f"line {node.line}: the OUT{{}} fields cannot be copied, {type(e).__name__}: {e}"
                     ) from e
@@ -2325,6 +2336,7 @@ class _Walk:
         self.acted = True
         admitted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         run.thunks[la.alias] = args
+        run.halts[la.alias] = self.expired
         task = asyncio.create_task(self.actor._perform(run, la, self.subset, admitted))
         task.add_done_callback(functools.partial(self.actor._never_started, run, la))
         run.pending[la.alias] = task

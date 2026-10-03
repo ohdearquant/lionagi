@@ -1507,6 +1507,25 @@ def test_an_output_that_cannot_be_copied_refuses_the_turn_and_the_run_goes_on(mo
     )
 
 
+def test_an_output_field_that_runs_past_the_deadline_between_two_yields_commits_nothing(monkeypatch):
+    real = actor_module._size
+
+    def size(value):
+        if value == "slow":
+            time.sleep(0.3)  # sized synchronously: the deadline passes with no yield after it
+        return real(value)
+
+    monkeypatch.setattr(actor_module, "_size", size)
+    request = RunRequest(inputs=("go",), time_budget=0.1, max_rounds=1)
+    actor = _actor("out-past-deadline-unyielded", [])
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(fenced('note.k = "w"', 'OUT{a: "slow"}'))))
+    # the field's evaluation runs on to its end with no yield to cut it, and what it built commits nothing:
+    # the write queued before it finds the budget spent and the output is refused at its handler
+    assert run.elapsed >= 0.3 and run.output is None and not isinstance(run.outcome, Success)
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [("turn", "the time_budget of 0.1 is spent; nothing after it ran")]
+
+
 def test_a_command_settling_after_the_output_was_emitted_grows_the_stored_value_not_the_output():
     # the command is launched before OUT{} and settles after the walk: the output emitted is a copy of the
     # list, and the settling command grows the stored one
@@ -1991,6 +2010,59 @@ def test_a_write_queued_behind_a_grant_that_held_the_settlement_past_its_deadlin
     assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
     assert run.output is None and not isinstance(run.outcome, Success)
     assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
+def test_a_command_a_write_queued_behind_a_held_grant_names_never_enters_its_handler():
+    def extend(run, bound, amount, reason) -> bool:
+        time.sleep(0.7)  # a synchronous grant: the settlement's deadline passes under it, unfired
+        return True
+
+    ran: list[float] = []
+    actor = _actor("settle-held-grant-command", [])
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> float:
+        ran.append(req.seconds)  # the effect a command on a write's right side has on the world
+        return req.seconds
+
+    turn = fenced('g = run.more(bound="time_budget", amount=5, reason="held")', "note.k = nap(seconds=0)")
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=extend)
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # the write launched its command before the grant held the loop past the settlement's deadline: the
+    # command reaches its handler after the grant raised the bound, and the walk's fired deadline, not the
+    # raised bound, decides it, so the handler never runs and the note is never written
+    late = "the time_budget of 0.5 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.5
+    assert ran == [] and actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [("r2.1", HALTED), ("turn", f"{late}; nothing after it ran")]
+
+
+HALTED = "refused: the time budget its program ran under is spent; a later grant does not reach it"
+
+
+def test_a_command_queued_behind_a_held_grant_is_refused_alone_and_the_output_commits():
+    def extend(run, bound, amount, reason) -> bool:
+        time.sleep(0.7)  # a synchronous grant: the settlement's deadline passes under it, unfired
+        return True
+
+    ran: list[float] = []
+    actor = _actor("settle-held-grant-bare-command", [])
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> float:
+        ran.append(req.seconds)
+        return req.seconds
+
+    turn = fenced(
+        'g = run.more(bound="time_budget", amount=5, reason="held")', "n = nap(seconds=0)", 'OUT{k: "v"}'
+    )
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=extend)
+    run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
+    # no write waits on the command: its refusal is its own result, as a cut command's cancellation is,
+    # and the output the walk built commits under the raised bound
+    assert ran == [] and run.record.get("n").content.reason == "refused"
+    assert run.output == {"k": "v"} and isinstance(run.outcome, Success)
+    assert run.refused == [("n", HALTED)]
 
 
 def test_a_grant_landing_as_the_settlements_deadline_fires_is_named_beside_the_budget_it_ran_under():
