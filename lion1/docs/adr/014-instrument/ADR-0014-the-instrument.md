@@ -445,9 +445,11 @@ leader alone; a second `EPERM` and any other error raise. A drain whose grace ex
   `test_worktrees_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote`,
   `test_required_contexts_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote` and
   `test_ci_red_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote`.
-- **S18**: The runs of each of the four instruments of S17 on one event loop go one at a time, as
-  S16 says of `verdict-freshness`, so a list taken before another run wrote never reports gone what
-  that run listed (`test_the_runs_of_one_snapshot_instrument_go_one_at_a_time`).
+- **S18**: The runs of one object of each of the four instruments of S17, on one event loop, go one
+  at a time, as S16 says of `verdict-freshness`, so a list taken before another run wrote never
+  reports gone what that run listed (`test_the_runs_of_one_snapshot_instrument_go_one_at_a_time`).
+  An agent builds one object per instrument, which its chores and its desk share; two objects over
+  one store are not serialized, and S17 alone bounds what they do to each other.
 - **S19**: A verdict candidate is a regular file, and a link counts as what it points to, as
   `scheduled-job` reads its artifact. A link to a regular file is a candidate, and a directory or a
   link to one is none, however it is named
