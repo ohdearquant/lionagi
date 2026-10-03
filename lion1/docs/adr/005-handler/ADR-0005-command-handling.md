@@ -205,16 +205,17 @@ abandoned.
 
 - **Subject**: the file names `tree-changed` reads from git and prints.
 - **Violated when**: a name git lists is altered or refused on the way in, a conflicted path is read
-  twice, or the notice shows a name that holds a control character or a byte that is not UTF-8 other
-  than quoted and escaped.
+  twice, or the notice shows a name with a control character, a byte that is not UTF-8 or edge
+  whitespace other than quoted and escaped.
 
-`tree-changed` reads `git ls-files -z` as bytes, splits it on NUL alone and decodes each name as the
-file system does, so a carriage return in a name, or a byte that is not UTF-8, is kept. Git lists a
-conflicted path once per index stage; it is read once.
+`tree-changed` reads `git ls-files -z` as bytes, splits on NUL alone and decodes each name as the
+file system does, keeping a carriage return or a byte that is not UTF-8. A conflicted path, which
+git lists once per index stage, is read once.
 
-The notice shows a name as it is. A name that holds a control character (Unicode category Cc, Cf, Zl
-or Zp) or a byte that is not UTF-8 is shown quoted with those escaped, `'name\r'` and `'bad\xff'`.
-The hook's output is decoded and stripped on its way to the notice; escaped text survives both.
+The notice shows a name as it is. One that holds a control character (Unicode category Cc, Cf, Zl or
+Zp) or a byte that is not UTF-8, or starts or ends in whitespace, is quoted and escaped: `'name\r'`,
+`'bad\xff'`, `'name '`. The hook's output is decoded and stripped on its way to the notice; a quoted
+name survives both.
 
 ## Decisions
 
@@ -280,6 +281,7 @@ runs under `-I` with lion's own interpreter (C7).
   `test_the_tree_hook_reads_a_conflicted_file_once`,
   `test_the_tree_hook_shows_a_name_as_it_is_or_quoted_and_escaped`,
   `test_the_notice_the_actor_gets_keeps_a_carriage_return_ending_a_file_name`,
+  `test_the_notice_the_actor_gets_keeps_a_file_name_whole_where_whitespace_edges_it`,
   `test_the_notice_the_actor_gets_shows_a_changed_file_name_that_is_not_utf8_escaped` and
   `test_the_notice_the_actor_gets_shows_a_removed_file_name_that_is_not_utf8_escaped` (C10); the
   console test that installs a directory's hooks.

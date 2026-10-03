@@ -791,6 +791,9 @@ SHOWN = [  # (a file name, how the notice prints it; None: as it is); some chara
     pytest.param("back\\slash\r", "'back\\\\slash\\r'", id="backslash-in-a-quoted-name"),
     pytest.param("caf" + chr(0xE9) + "\r", "'caf" + chr(0xE9) + "\\r'", id="text-in-a-quoted-name"),
     pytest.param("a\r" + os.fsdecode(b"\xff"), "'a\\r\\xff'", id="both"),
+    pytest.param("name ", "'name '", id="trailing-space"),
+    pytest.param(chr(0xA0) + "name", "'\\xa0name'", id="leading-no-break-space"),
+    pytest.param(chr(0x3000), "'\\u3000'", id="ideographic-space-alone"),
 ]
 
 
@@ -815,6 +818,28 @@ def test_the_notice_the_actor_gets_keeps_a_carriage_return_ending_a_file_name(tm
     assert tree_notice(tmp_path, "r", 1) is None
     (tmp_path / "name\r").write_text("two\n")
     assert tree_notice(tmp_path, "r", 2) == "tree: 1 file(s) changed since round 1: 'name\\r'"
+
+
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        pytest.param("name ", "'name '", id="trailing-space"),
+        pytest.param(chr(0xA0) + "name", "'\\xa0name'", id="leading-no-break-space"),
+        pytest.param(chr(0x3000), "'\\u3000'", id="ideographic-space-alone"),
+        pytest.param("a" + chr(0xA0) + "b", "a" + chr(0xA0) + "b", id="interior-no-break-space-stays-plain"),
+    ],
+)
+def test_the_notice_the_actor_gets_keeps_a_file_name_whole_where_whitespace_edges_it(tmp_path, name, shown):
+    # the round section strips what the hook prints, so a sole changed file `name ` lost its last
+    # character there, and one that is a single ideographic space left nothing after the colon; a name
+    # with whitespace at either edge is quoted, one with it only inside stays as it is
+    git(tmp_path, "init", "-q")
+    (tmp_path / name).write_text("one\n")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-qm", "one")
+    assert tree_notice(tmp_path, "r", 1) is None
+    (tmp_path / name).write_text("two\n")
+    assert tree_notice(tmp_path, "r", 2) == f"tree: 1 file(s) changed since round 1: {shown}"
 
 
 def test_the_notice_the_actor_gets_shows_a_changed_file_name_that_is_not_utf8_escaped(tmp_path):

@@ -63,15 +63,23 @@ def snapshot(cwd: Path) -> tuple[str, dict[str, str] | None] | None:
 
 def _shown(name: str) -> str:
     """A file name as the notice prints it: as it is, or, when it holds a control character or a byte
-    that is not UTF-8, quoted with those escaped (`'name\\r'`, `'bad\\xff'`). The hook's output is decoded
-    and stripped on its way to the model; an escaped name is plain text that neither can change."""
-    if not any(unicodedata.category(c) in _CONTROL or ord(c) in _RAW for c in name):
+    that is not UTF-8, or starts or ends in whitespace, quoted with those escaped (`'name\\r'`,
+    `'bad\\xff'`, `'name '`, `'\\xa0name'`). The hook's output is decoded and stripped on its way to the
+    model; an escaped name is plain text that neither can change. The edges matter because the strip
+    removes whatever `str.strip` does (a space, a no-break space, an ideographic space) from the end of
+    the notice, so a last name loses its own end, a name that is one such character vanishes, and at a
+    name's start the whitespace runs into the list's `, `. Inside a name it changes nothing and stays."""
+    if not (
+        any(unicodedata.category(c) in _CONTROL or ord(c) in _RAW for c in name)
+        or name[:1].isspace()
+        or name[-1:].isspace()
+    ):
         return name
     out = []
     for c in name:
         if ord(c) in _RAW:
             out.append(f"\\x{ord(c) - 0xDC00:02x}")
-        elif unicodedata.category(c) in _CONTROL:
+        elif unicodedata.category(c) in _CONTROL or (c.isspace() and c != " "):
             out.append(repr(c)[1:-1])
         else:
             out.append("\\" + c if c in "\\'" else c)
