@@ -150,8 +150,9 @@ an agent id and it started within 12 hours (A4). A timestamp with no zone is rea
 
 ### C6: A checkpoint lands only where git ignores it, and no take overwrites another _(enforced: mechanical)_ ^c6
 
-- **Subject**: `save` and `assert_ignored` in `src/lion1/checkpoint.py`, `set_var` and `checkpoint`
-  in `apps/cli/lion_cli/context.py`, the resident's `_checkpoint`.
+- **Subject**: `save` in `src/lion1/checkpoint.py`, `context_dir` and `assert_ignored` in
+  `hub/khive.py`, `set_var` and `checkpoint` in `apps/cli/lion_cli/context.py`, the resident's
+  `_checkpoint`.
 - **Violated when**: a file lands under a `.khive/context/` a git work tree does not ignore, a git
   that cannot answer reads as ignored, a take replaces another, `latest.json` names no file, or a
   declared value is lost.
@@ -159,7 +160,8 @@ an agent id and it started within 12 hours (A4). A timestamp with no zone is rea
 A checkpoint is `<dir>/.khive/context/<id>.json`, the id `ckpt-` with the date, the time and the
 actor. It is created only when absent and readable by its owner alone; an id already there gains
 `-02`, `-03`. `latest.json` is then replaced whole, naming it. Inside a work tree `git check-ignore`
-must say ignored; outside a repository the take proceeds; a refusal writes nothing.
+must say ignored; outside a repository the take proceeds; a refusal writes nothing. Core's `save`
+writes where it is told; each caller runs the hub's check first.
 
 Declared values wait in `pending.jsonl` under a lock. A checkpoint drains the text it read, and a
 value declared since stays; no test pins that second half.
@@ -185,21 +187,22 @@ naming no actor and a `pending.jsonl` line that is not a declared value refuse t
 ### D1: `src/lion1/checkpoint.py`: `Var`, `Checkpoint`, `take`, `listed`, `save`, `load`, `to_history` ^d1
 
 Serves C1 and C6. `take`, `save` and `load` check the caller's kinds and reasons, a run's by
-default. `save` writes and `load` reads by id, the latest by default, refusing an id that is not a
-plain name. `to_history` is a run's restore: its record read back to the seq taken, each row through
-`entry_of`, refused unless it folds to the view taken. One holding no run's record, a Claude Code
-session's, is refused. The replay checks content: a row's text and a result's fields, its value
-aside.
+default. `save` and `load` work in the directory handed them, by id, the latest by default, refusing
+an id that is not a plain name. `to_history` is a run's restore: its record read back to the seq
+taken, each row through `entry_of`, refused unless it folds to the view taken. One holding no run's
+record is refused. The replay checks content: a row's text and a result's fields, its value aside.
 
 - **Landing evidence**: `tests/test_checkpoint.py`:
   `test_concurrent_saves_each_land_and_latest_names_one_of_them`,
-  `test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands`,
   `test_a_record_whose_rows_were_rewritten_is_refused_though_it_folds_to_the_same_view`,
   `test_save_refuses_an_id_that_is_not_a_name_and_writes_nothing`,
   `test_save_and_load_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value`,
   `test_a_row_cut_inside_a_character_past_the_take_is_never_decoded_and_one_inside_it_is_named`, the
   long-value test; `tests/test_chat.py`:
-  `test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed`.
+  `test_a_checkpoint_of_the_record_resumes_the_view_the_run_last_showed`;
+  `tests/test_khive_context.py`:
+  `test_assert_ignored_reads_gits_two_answers_and_refuses_when_git_cannot_answer`,
+  `test_the_guard_refuses_a_folder_git_would_commit_and_a_checkpoint_saved_past_it_stays_untracked`.
 
 ### D2: `hub/backend/claude_code/checkpoint.py`: the session's take and restore, one function per place it keeps state ^d2
 
@@ -240,7 +243,8 @@ when no checkpoint exists or the file it points at changed after it.
   `test_no_model_is_called_by_the_checkpoint_the_restore_or_the_status`; `tests/test_context.py`:
   `test_the_status_is_stale_when_the_file_changed_after_the_take_within_its_second_too`,
   `test_a_prompt_landing_while_the_take_reads_the_transcript_is_after_the_take`,
-  `test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_hands_it`.
+  `test_a_precompact_hook_takes_the_sessions_checkpoint_from_what_claude_code_hands_it`,
+  `test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands`.
 
 ### D4: The resident's arm in `hub/agent/agent.py` ^d4
 
@@ -253,7 +257,8 @@ take that fails is kept among the agent's errors and the run goes on.
 - **Landing evidence**: `tests/test_context.py`:
   `test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_same_view`,
   `test_the_resident_checkpoints_when_stop_ends_its_run`,
-  `test_a_restore_that_cannot_replay_is_said_and_the_run_starts_fresh`.
+  `test_a_restore_that_cannot_replay_is_said_and_the_run_starts_fresh`,
+  `test_a_resident_whose_repository_would_commit_its_checkpoint_takes_none_and_says_so`.
 
 ## Alternatives
 

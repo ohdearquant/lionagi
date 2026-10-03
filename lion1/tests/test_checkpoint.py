@@ -1,13 +1,12 @@
 """The checkpoint (ADR-0019): named state plus a folded view, taken with no model call, and its restore:
 a run's record replayed as the next run's history. The take is pure and checks the kinds and whys it is
-handed; `save` refuses a directory whose git would commit the checkpoint; `to_history` refuses a record
+handed; `save` writes in the directory it is handed, never over a file; `to_history` refuses a record
 that no longer folds to the view the checkpoint carries. The Claude Code session's take and restore are
 in `tests/test_claude_code_checkpoint.py`."""
 
 import dataclasses
 import json
 import re
-import subprocess
 import threading
 import types
 from datetime import UTC, datetime
@@ -23,9 +22,7 @@ from lion1.checkpoint import (
     LAZY,
     WHYS,
     CheckpointError,
-    NotIgnored,
     Var,
-    assert_ignored,
     entry_of,
     jsonable,
     listed,
@@ -93,19 +90,9 @@ def a_record(op: str | None = "hide", text: str = "looked for a note") -> Record
     return r
 
 
-def isolated_git(monkeypatch, root: Path) -> None:
-    """No global or system git config: a global excludes file would answer the ignore question."""
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(root / "no-global-gitconfig"))
-    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(root / "xdg"))
-
-
 @pytest.fixture
-def plain(tmp_path, monkeypatch) -> Path:
-    """A directory outside any repository; the control runs in the same test."""
-    isolated_git(monkeypatch, tmp_path)
-    probe = subprocess.run(["git", "-C", str(tmp_path), "rev-parse"], capture_output=True, text=True)
-    assert "not a git repository" in probe.stderr, probe
+def plain(tmp_path) -> Path:
+    """A test's own directory; its checkpoints go in `ckpt/`, which `save` makes."""
     return tmp_path
 
 
@@ -113,7 +100,6 @@ def test_the_lists_the_adr_names_and_the_two_ceilings():
     assert KINDS == ("fact", "posture")
     assert WHYS == ("threshold", "end", "manual")
     assert LAZY == 400
-    assert issubclass(NotIgnored, CheckpointError)
     c = take({}, [var("a", "fact", 1)], actor=ACTOR, why="manual", budget=1, now=AT)
     with pytest.raises(dataclasses.FrozenInstanceError):
         c.why = "end"
@@ -303,8 +289,8 @@ def test_to_history_replays_the_record_to_the_seq_of_the_take_each_row_back_as_i
     assert history[4].meta["directive"] == rec.by_seq(4).meta["directive"] and history[0].meta == {
         "inbound": "actor:two"
     }
-    save(c, plain)
-    assert to_history(load(plain)) == history
+    save(c, plain / "ckpt")
+    assert to_history(load(plain / "ckpt")) == history
 
 
 def test_to_history_refuses_a_first_prompt_checkpoint_a_missing_record_and_a_record_that_changed(plain):
@@ -410,8 +396,8 @@ def test_a_row_whose_text_carries_a_separator_is_one_row_and_a_var_with_one_roun
     )
     history = to_history(c)
     assert history == tuple(rec) and history[0].content == odd
-    save(c, plain)
-    again = load(plain)
+    save(c, plain / "ckpt")
+    again = load(plain / "ckpt")
     assert again.id == c.id and again.vars[0].value == odd
     assert to_history(again) == history
 
@@ -426,105 +412,13 @@ def test_a_row_cut_inside_a_character_past_the_take_is_never_decoded_and_one_ins
     path = plain / "r0.jsonl"
     path.write_bytes(b"\n".join(rows) + b"\n\xff not text\n" + "☃".encode()[:2])
     c = take({"record": str(path)}, [], actor=ACTOR, why="end", budget=100, record=rec, now=AT)
-    save(c, plain)
-    assert to_history(load(plain)) == tuple(rec)
+    save(c, plain / "ckpt")
+    assert to_history(load(plain / "ckpt")) == tuple(rec)
     path.write_bytes(rows[0] + b"\n" + rows[1][:-5] + b"\xe2\x98")
     with pytest.raises(
         CheckpointError, match=r"r0\.jsonl line 2 is not a record row \(.*utf-8.*\); nothing was replayed"
     ):
         to_history(c)
-
-
-def scripted_git(monkeypatch, *outcomes) -> list:
-    """A git that answers each call from `outcomes`: (rc, stdout, stderr), or an exception to raise."""
-    calls: list = []
-
-    def run(argv, **kw):
-        calls.append(argv)
-        outcome = outcomes[len(calls) - 1]
-        if isinstance(outcome, BaseException):
-            raise outcome
-        rc, out, err = outcome
-        return subprocess.CompletedProcess(argv, rc, out, err)
-
-    fake = types.SimpleNamespace(run=run, TimeoutExpired=subprocess.TimeoutExpired)
-    monkeypatch.setattr(module, "subprocess", fake)
-    return calls
-
-
-TRUE = (0, "true\n", "")
-
-
-@pytest.mark.parametrize(
-    ("outcomes", "raises", "said"),
-    [
-        (
-            (OSError("no git here"),),
-            CheckpointError,
-            "git could not be asked about .*: no git here; nothing was written",
-        ),
-        ((subprocess.TimeoutExpired("git", 30),), CheckpointError, "git could not be asked about"),
-        (((128, "", "fatal: not a git repository (or any of the parent directories): .git\n"),), None, ""),
-        (((1, "", ""),), CheckpointError, "git could not say whether .* is in a repository: rc 1; nothing"),
-        (((1, "", "fatal: odd\n"),), CheckpointError, "is in a repository: fatal: odd; nothing was written"),
-        (((0, "false\n", ""),), None, ""),
-        (
-            (TRUE, OSError("gone")),
-            CheckpointError,
-            "git check-ignore could not be asked about .*: gone; nothing",
-        ),
-        ((TRUE, (0, "", "")), None, ""),
-        ((TRUE, (1, "", "")), NotIgnored, "does not ignore it, so a checkpoint could be committed"),
-        (
-            (TRUE, (128, "", "fatal: bad pattern\n")),
-            CheckpointError,
-            "could not answer for .*: fatal: bad pattern",
-        ),
-        ((TRUE, (2, "", "")), CheckpointError, "could not answer for .*: rc 2; nothing was written"),
-    ],
-)
-def test_assert_ignored_reads_gits_two_answers_and_refuses_when_git_cannot_answer(
-    tmp_path, monkeypatch, outcomes, raises, said
-):
-    calls = scripted_git(monkeypatch, *outcomes)
-    if raises is None:
-        assert assert_ignored(tmp_path) is None
-    else:
-        with pytest.raises(raises, match=said):
-            assert_ignored(tmp_path)
-    assert len(calls) == len(outcomes)
-    assert calls[0][1:] == ["-C", str(tmp_path), "rev-parse", "--is-inside-work-tree"]
-    if len(calls) == 2:
-        assert calls[1][1:] == ["-C", str(tmp_path), "check-ignore", "-q", ".khive/context/"]
-
-
-def test_a_take_refused_by_the_gitignore_writes_nothing_and_an_ignored_one_lands(tmp_path, monkeypatch):
-    isolated_git(monkeypatch, tmp_path)
-    repo = tmp_path / "repo"
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
-    below = repo / "sub" / "x"
-    below.mkdir(parents=True)
-    c = take({}, [], actor=ACTOR, why="manual", budget=100, now=AT)
-    for d in (repo, below):
-        with pytest.raises(NotIgnored, match="does not ignore it"):
-            save(c, d)
-        assert not (d / ".khive").exists()
-    # the root form reaches the root only; a directory below needs the `**/` form the refusal names
-    (repo / ".gitignore").write_text(".khive/context/\n")
-    assert save(c, repo) == repo / ".khive" / "context" / f"{ID}.json"
-    with pytest.raises(NotIgnored, match=r"`\*\*/.khive/context/` when it sits below it"):
-        save(c, below)
-    (repo / ".gitignore").write_text("**/.khive/context/\n")
-    assert save(c, below).is_file()
-    # the .git directory is in the repository but not its work tree; outside any repository the take proceeds
-    assert assert_ignored(repo / ".git") is None
-    probe = subprocess.run(["git", "-C", str(tmp_path), "rev-parse"], capture_output=True, text=True)
-    assert "not a git repository" in probe.stderr
-    (tmp_path / "plain").mkdir()
-    assert save(c, tmp_path / "plain").is_file()
-    # a directory that does not exist is not "outside a repository": git cannot answer, so the take refuses
-    with pytest.raises(CheckpointError, match="git could not say whether .* is in a repository"):
-        save(c, tmp_path / "absent")
 
 
 def test_save_lands_the_file_names_it_latest_and_never_overwrites(plain):
@@ -538,10 +432,10 @@ def test_save_lands_the_file_names_it_latest_and_never_overwrites(plain):
         view=view,
         now=AT,
     )
-    ctx = plain / ".khive" / "context"
-    first = save(c, plain)
+    ctx = plain / "ckpt"
+    first = save(c, plain / "ckpt")
     assert first == ctx / f"{ID}.json" and json.loads((ctx / "latest.json").read_text()) == {"id": ID}
-    assert load(plain) == c and load(plain, ID) == c
+    assert load(plain / "ckpt") == c and load(plain / "ckpt", ID) == c
     doc = json.loads(first.read_text())
     assert doc["id"] == ID and doc["actor"] == ACTOR and doc["view"] == view
     assert doc["vars"] == [
@@ -555,11 +449,11 @@ def test_save_lands_the_file_names_it_latest_and_never_overwrites(plain):
             "ref": None,
         }
     ]
-    second, third = save(c, plain), save(c, plain)
+    second, third = save(c, plain / "ckpt"), save(c, plain / "ckpt")
     assert [p.stem for p in (second, third)] == [f"{ID}-02", f"{ID}-03"]
     assert json.loads(first.read_text()) == doc and json.loads(third.read_text())["id"] == f"{ID}-03"
-    assert load(plain).id == f"{ID}-03" and load(plain, f"{ID}-02").id == f"{ID}-02"
-    assert dataclasses.replace(load(plain), id=ID) == c
+    assert load(plain / "ckpt").id == f"{ID}-03" and load(plain / "ckpt", f"{ID}-02").id == f"{ID}-02"
+    assert dataclasses.replace(load(plain / "ckpt"), id=ID) == c
     assert sorted(p.name for p in ctx.iterdir()) == [
         f"{ID}-02.json",
         f"{ID}-03.json",
@@ -578,33 +472,33 @@ def test_a_taken_name_costs_a_probe_and_never_another_encoding_of_the_document(p
     counts, paths = [], []
     for _ in range(8):
         before = len(encoded)
-        paths.append(save(c, plain))
+        paths.append(save(c, plain / "ckpt"))
         counts.append(len(encoded) - before)
     assert counts == [1] * 8 and encoded == [ID] * 8
     assert [p.stem for p in paths] == [ID, *(f"{ID}-{n:02d}" for n in range(2, 9))]
     for p in paths:  # each file the bytes an encoding under its own name gives, its id that name
         assert p.read_bytes() == real({**dataclasses.asdict(c), "id": p.stem})
-        assert load(plain, p.stem) == dataclasses.replace(c, id=p.stem)
-    assert load(plain).id == f"{ID}-08"
+        assert load(plain / "ckpt", p.stem) == dataclasses.replace(c, id=p.stem)
+    assert load(plain / "ckpt").id == f"{ID}-08"
 
 
 def test_load_says_what_is_missing_or_malformed_and_takes_only_a_name(plain):
     with pytest.raises(CheckpointError, match="latest.json is absent"):
-        load(plain)
-    ctx = plain / ".khive" / "context"
+        load(plain / "ckpt")
+    ctx = plain / "ckpt"
     ctx.mkdir(parents=True)
     for latest in ("not json", '{"nope": 1}', "[1]"):
         (ctx / "latest.json").write_text(latest)
         with pytest.raises(CheckpointError, match="latest.json does not name a checkpoint"):
-            load(plain)
+            load(plain / "ckpt")
     (ctx / "latest.json").write_text('{"id": "../../etc/passwd"}')
     with pytest.raises(CheckpointError, match="checkpoint id '../../etc/passwd' is not a name in"):
-        load(plain)
+        load(plain / "ckpt")
     for bad in (7, "", ".hidden", "a/b", f"{ID}\n"):
         with pytest.raises(CheckpointError, match="is not a name in"):
-            load(plain, bad)
+            load(plain / "ckpt", bad)
     with pytest.raises(CheckpointError, match="no checkpoint 'ckpt-absent' in"):
-        load(plain, "ckpt-absent")
+        load(plain / "ckpt", "ckpt-absent")
 
 
 def test_save_and_load_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value(plain):
@@ -620,7 +514,7 @@ def test_save_and_load_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value(p
     )
     whys, kinds = ", ".join(WHYS), ", ".join(KINDS)
     blob = var("v", "blob", {"id": "a1"})
-    ctx = plain / ".khive" / "context"
+    ctx = plain / "ckpt"
     for bad, said in (
         (dataclasses.replace(c, why="later"), f"{ID}: why 'later' is not one of {whys}; nothing was written"),
         (
@@ -629,10 +523,10 @@ def test_save_and_load_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value(p
         ),
     ):
         with pytest.raises(CheckpointError, match=re.escape(said)):
-            save(bad, plain)
+            save(bad, plain / "ckpt")
     assert not ctx.exists()
-    path = save(c, plain)
-    assert load(plain) == c  # the control: the file as written loads
+    path = save(c, plain / "ckpt")
+    assert load(plain / "ckpt") == c  # the control: the file as written loads
     doc = json.loads(path.read_text())
     for edit, said in (
         ({"why": "later"}, f"{ID}: why 'later' is not one of {whys}; nothing was loaded"),
@@ -643,16 +537,16 @@ def test_save_and_load_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value(p
     ):
         path.write_text(json.dumps({**doc, **edit}))
         with pytest.raises(CheckpointError, match=re.escape(said)):
-            load(plain)
+            load(plain / "ckpt")
     # the taker's own lists: a file of another vocabulary saves and loads under it, and only under it
     other = dataclasses.replace(c, why="later", vars=(*c.vars, blob))
     mine = {"kinds": (*KINDS, "blob"), "whys": (*WHYS, "later")}
-    save(other, plain, **mine)
-    assert load(plain, **mine) == dataclasses.replace(other, id=f"{ID}-02")  # the name was taken
+    save(other, plain / "ckpt", **mine)
+    assert load(plain / "ckpt", **mine) == dataclasses.replace(other, id=f"{ID}-02")  # the name was taken
     with pytest.raises(
         CheckpointError, match=re.escape(f"why 'later' is not one of {whys}; nothing was loaded")
     ):
-        load(plain)
+        load(plain / "ckpt")
     assert listed(other, "then", **mine) is other
     with pytest.raises(
         CheckpointError, match=re.escape(f"var 'v' has kind 'blob', not one of {kinds}; then")
@@ -663,17 +557,17 @@ def test_save_and_load_refuse_a_why_or_a_kind_off_the_lists_and_name_the_value(p
 def test_concurrent_saves_each_land_and_latest_names_one_of_them(plain):
     c = take({}, [], actor=ACTOR, why="manual", budget=100, now=AT)
     written: list[Path] = []
-    threads = [threading.Thread(target=lambda: written.append(save(c, plain))) for _ in range(12)]
+    threads = [threading.Thread(target=lambda: written.append(save(c, plain / "ckpt"))) for _ in range(12)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
-    ctx = plain / ".khive" / "context"
+    ctx = plain / "ckpt"
     assert sorted(p.name for p in written) == sorted(p.name for p in ctx.glob("ckpt-*.json"))
     assert sorted(p.name for p in written) == sorted(
         [f"{ID}.json", *(f"{ID}-{n:02d}.json" for n in range(2, 13))]
     )
-    assert not list(ctx.glob(".latest.json.*")) and (ctx / f"{load(plain).id}.json").exists()
+    assert not list(ctx.glob(".latest.json.*")) and (ctx / f"{load(plain / 'ckpt').id}.json").exists()
 
 
 def test_a_take_keeps_its_own_copy_of_what_it_was_handed():
@@ -694,28 +588,28 @@ def test_save_refuses_an_id_that_is_not_a_name_and_writes_nothing(plain):
     # `save` wrote `<id>.json` from whatever the id held: '../escaped' landed outside the context
     # directory and 'latest' took the pointer's own file, while `load` takes only a name
     c = take({}, [], actor=ACTOR, why="manual", budget=100, now=AT)
-    ctx = plain / ".khive" / "context"
+    ctx = plain / "ckpt"
     for bad in ("../escaped", "latest", "", ".hidden", "a/b", f"{ID}\n"):
         with pytest.raises(CheckpointError, match="is not a name; nothing was written"):
             save(dataclasses.replace(c, id=bad), plain)
-    assert not ctx.exists() and not (plain / ".khive" / "escaped.json").exists()
-    assert save(c, plain) == ctx / f"{ID}.json" and load(plain).id == ID
+    assert not ctx.exists() and not (plain / "escaped.json").exists()
+    assert save(c, plain / "ckpt") == ctx / f"{ID}.json" and load(plain / "ckpt").id == ID
 
 
 def test_a_value_the_file_cannot_carry_is_refused_before_anything_is_written(plain):
     # a lone surrogate passes `json.dumps` escaped and fails at the file: the exclusive create had
     # already landed, so an empty `<id>.json` stayed behind
     first = take({}, [var("ok", "fact", "snowman: ☃")], actor=ACTOR, why="manual", budget=100, now=AT)
-    save(first, plain)
-    ctx = plain / ".khive" / "context"
+    save(first, plain / "ckpt")
+    ctx = plain / "ckpt"
     before = sorted(p.name for p in ctx.iterdir()), (ctx / "latest.json").read_text()
     lone = take(
         {}, [var("bad", "fact", "lone \ud800 surrogate")], actor=ACTOR, why="manual", budget=100, now=AT
     )
     with pytest.raises(CheckpointError, match="a value the file cannot carry .*; nothing was written"):
-        save(lone, plain)
+        save(lone, plain / "ckpt")
     assert (sorted(p.name for p in ctx.iterdir()), (ctx / "latest.json").read_text()) == before
-    assert load(plain).vars[0].value == "snowman: ☃"
+    assert load(plain / "ckpt").vars[0].value == "snowman: ☃"
 
 
 class Book(BaseModel):
@@ -735,8 +629,8 @@ def test_a_model_value_is_written_as_its_fields_and_one_json_cannot_hold_as_its_
     assert jsonable(book) == {"title": "Dune", "year": 1965}
     assert jsonable(odd) == str(odd) == "v=namespace(x=1)" and jsonable(AT) == str(AT)
     c = take({}, [var("value.b", "fact", book)], actor=ACTOR, why="manual", budget=100, now=AT)
-    save(c, plain)
-    assert load(plain).vars[0].value == {"title": "Dune", "year": 1965}
+    save(c, plain / "ckpt")
+    assert load(plain / "ckpt").vars[0].value == {"title": "Dune", "year": 1965}
 
 
 class Shut(BaseModel):
@@ -792,5 +686,8 @@ def test_a_model_whose_dump_is_not_an_object_is_written_as_that_dump(plain):
         budget=100,
         now=AT,
     )
-    save(c, plain)
-    assert {v.name: v.value for v in load(plain).vars} == {"value.t": ["Dune", "sf"], "value.m": "Dune"}
+    save(c, plain / "ckpt")
+    assert {v.name: v.value for v in load(plain / "ckpt").vars} == {
+        "value.t": ["Dune", "sf"],
+        "value.m": "Dune",
+    }

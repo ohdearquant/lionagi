@@ -18,9 +18,9 @@ from hub.agent import Agent, AgentError, Budget, Wake, WakeRule
 from hub.agent.chores import ALLOWED_VERBS
 from hub.backend import claude_code
 from hub.backend.claude_code import ClaudeCodeSession
-from hub.khive import Khive
+from hub.khive import Khive, context_dir
 from lion1 import Actor, FileNoteStore, Kind, MemoryNoteStore, Message, Profile, Success
-from lion1.checkpoint import load
+from lion1.checkpoint import load as load_from
 
 THREAD = "0a0a0a0a-0000-4000-8000-0a0a0a0a0a0a"
 HOLD = (  # a process that takes the pid file's lock and keeps it until its stdin closes
@@ -198,7 +198,9 @@ def test_a_continuous_chairs_out_is_its_stop_its_posture_as_written_and_its_end_
     asyncio.run(agent.serve(until=until, log=lines.append))
     first, second = agent.runs  # the stop ended the conversation; the next mail runs fresh
     assert isinstance(first.outcome, Success) and khive.sent == [SENT, SENT]
-    held = load(tmp_path)  # the end is checkpointed as the cap's is, the stop's posture among its vars
+    held = load_from(
+        context_dir(tmp_path)
+    )  # the end is checkpointed as the cap's is, the stop's posture among its vars
     assert lines[0] == f"checkpoint {held.id} (end) at seq {first.record.seq}"
     assert held.why == "end" and held.source["run"] == first.id and held.source["seq"] == first.record.seq
     assert {v.name: v.value for v in held.vars}.get("posture", "") == posture  # an empty note is not held
@@ -296,7 +298,7 @@ def test_mail_for_another_profile_ends_the_conversation_and_runs_fresh(tmp_path)
     assert first.profile is ACTING and second.profile is READER and khive.sent == [SENT]
     assert "read this" not in "".join(str(e.content) for e in first.record)
     # the second run's OUT{} is the model's stop: its end is checkpointed before the wake's line
-    assert lines[1] == f"checkpoint {load(tmp_path).id} (end) at seq {second.record.seq}"
+    assert lines[1] == f"checkpoint {load_from(context_dir(tmp_path)).id} (end) at seq {second.record.seq}"
     assert lines[2].startswith("wake 2: Success after 1 rounds, 1 mail, 0 sent")
 
 

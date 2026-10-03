@@ -3,7 +3,8 @@ run. A take makes no model call. A run's view is its record after `fold`, by nam
 staying on disk where `source.record` points; the restore replays that record as the next run's
 history, so any run can be resumed. A harness that is not a run of this runtime hands its own view and
 its own vocabulary of kinds and whys; the Claude Code session's is in
-`hub.backend.claude_code.checkpoint`.
+`hub.backend.claude_code.checkpoint`. The files land in the directory the caller names; which
+directory, and what guards it, is the caller's.
 """
 
 from __future__ import annotations
@@ -13,8 +14,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
-import subprocess
 import threading
 import uuid
 from collections.abc import Iterable
@@ -33,14 +32,12 @@ __all__ = (
     "WHYS",
     "LAZY",
     "CheckpointError",
-    "NotIgnored",
     "Var",
     "Checkpoint",
     "entry_of",
     "jsonable",
     "take",
     "listed",
-    "assert_ignored",
     "save",
     "load",
     "to_history",
@@ -59,10 +56,6 @@ _KEEP = ("inbound", "origin", "reply", "execution", "request", "returned", "unre
 
 class CheckpointError(Exception):
     """A take or a restore that cannot stand; the message says why and what was not written."""
-
-
-class NotIgnored(CheckpointError):
-    """`<dir>/.khive/context/` sits in a git work tree that does not ignore it."""
 
 
 @dataclass(frozen=True)
@@ -271,54 +264,6 @@ def listed(
     return c
 
 
-def assert_ignored(directory: str | Path) -> None:
-    """A checkpoint lands under `<dir>/.khive/context/`; inside a git work tree that path must be
-    ignored (`git check-ignore`) or the take refuses with NotIgnored. Outside a repository it passes;
-    a git that cannot answer refuses too, never passes."""
-    d = Path(directory)
-    git = shutil.which("git") or "/usr/bin/git"
-    try:
-        inside = subprocess.run(
-            [git, "-C", str(d), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        raise CheckpointError(f"git could not be asked about {d}: {e}; nothing was written") from None
-    if inside.returncode != 0:
-        if "not a git repository" in inside.stderr:
-            return
-        said = inside.stderr.strip() or f"rc {inside.returncode}"
-        raise CheckpointError(
-            f"git could not say whether {d} is in a repository: {said}; nothing was written"
-        )
-    if inside.stdout.strip() != "true":
-        return
-    try:
-        ignored = subprocess.run(
-            [git, "-C", str(d), "check-ignore", "-q", ".khive/context/"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        raise CheckpointError(
-            f"git check-ignore could not be asked about {d}: {e}; nothing was written"
-        ) from None
-    if ignored.returncode == 0:
-        return
-    if ignored.returncode == 1:
-        raise NotIgnored(
-            f"{d / '.khive' / 'context'} is inside a git work tree that does not ignore it, so a "
-            "checkpoint could be committed; add `.khive/context/` to the repository's .gitignore when "
-            "the directory is the repository root, `**/.khive/context/` when it sits below it. "
-            "Nothing was written"
-        )
-    said = ignored.stderr.strip() or f"rc {ignored.returncode}"
-    raise CheckpointError(f"git check-ignore could not answer for {d}: {said}; nothing was written")
-
-
 def _replace_text(path: Path, text: str) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex[:8]}.tmp")
     tmp.write_text(text)
@@ -328,10 +273,10 @@ def _replace_text(path: Path, text: str) -> None:
 def save(
     checkpoint: Checkpoint, directory: str | Path, *, kinds: Iterable[str] = KINDS, whys: Iterable[str] = WHYS
 ) -> Path:
-    """`<dir>/.khive/context/<id>.json`, then `latest.json` pointing at it; the path written. An id
-    already on disk (two takes in one second) gets `-02`, `-03`: nothing is overwritten. An id that is
-    not a name (`load` takes only a name; `latest` is the pointer's), a why or a kind off the lists and
-    a value the file cannot carry are refused before anything is written."""
+    """`<directory>/<id>.json`, then `latest.json` pointing at it; the path written. An id already on
+    disk (two takes in one second) gets `-02`, `-03`: nothing is overwritten. An id that is not a name
+    (`load` takes only a name; `latest` is the pointer's), a why or a kind off the lists and a value the
+    file cannot carry are refused before anything is written."""
     if not _ID.fullmatch(checkpoint.id) or checkpoint.id == "latest":
         raise CheckpointError(f"checkpoint id {checkpoint.id!r} is not a name; nothing was written")
     doc = asdict(listed(checkpoint, "nothing was written", kinds=kinds, whys=whys))
@@ -341,9 +286,7 @@ def save(
         raise CheckpointError(
             f"{checkpoint.id}: a value the file cannot carry ({e}); nothing was written"
         ) from None
-    d = Path(directory)
-    assert_ignored(d)
-    ctx = d / ".khive" / "context"
+    ctx = Path(directory)
     ctx.mkdir(parents=True, exist_ok=True)
     cid, n = checkpoint.id, 1
     while True:
@@ -374,9 +317,9 @@ def load(
     kinds: Iterable[str] = KINDS,
     whys: Iterable[str] = WHYS,
 ) -> Checkpoint:
-    """The checkpoint `id` under `<dir>/.khive/context/`, the latest when None; a file whose why or a
-    var's kind is off the lists is refused, never read as another checkpoint."""
-    ctx = Path(directory) / ".khive" / "context"
+    """The checkpoint `id` in `directory`, the latest when None; a file whose why or a var's kind is off
+    the lists is refused, never read as another checkpoint."""
+    ctx = Path(directory)
     if id is None:
         try:
             id = json.loads((ctx / "latest.json").read_text())["id"]
