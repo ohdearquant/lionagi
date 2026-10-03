@@ -337,6 +337,7 @@ swallowed too: a spin.
 - **S18**: The hook answers `allow` only for a tool `--allowedTools` names exactly; any other
   admitted call goes back with its input and no decision, for the CLI's own rules
   (`test_the_hook_allows_only_a_tool_the_clis_allowed_list_names`). The rule is needed: in this
-  backend's `-p` call, with no settings source, no deny or ask rule and no permission-prompt tool,
-  Claude Code 2.1.288 runs a tool outside `--allowedTools` that the hook allows, built-in or MCP,
-  and denies it given no decision. The tests pin the hook's answers, not the CLI's handling of them.
+  backend's `-p` call (no settings source, deny or ask rule, or permission-prompt tool), Claude Code
+  2.1.288 runs a tool outside `--allowedTools` when a hook answers `allow` for it, and denies it
+  given no decision. A probe hook measured this for built-in and MCP tools. The tests pin the hook's
+  answers only.
