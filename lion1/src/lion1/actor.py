@@ -1,10 +1,10 @@
-"""The actor, its profiles, its handlers, and the round loop (ADR-0001, ADR-0002, ADR-0005,
+"""The actor, its profiles, its handlers, and the turn loop (ADR-0001, ADR-0002, ADR-0005,
 ADR-0006, ADR-0010).
 
 An actor is one addressable principal: its handlers are its Operable, and it has the inbox, the
 privileges and the notes. A profile is how the model is configured when the actor runs. A run is
-rounds: one SYSTEM notification, one model call, extract, gate, dispatch, settle.
-Nothing a handler does is awaited by the loop inline; the next round starts when what the model
+turns: one SYSTEM notification, one model call, extract, gate, dispatch, settle.
+Nothing a handler does is awaited by the loop inline; the next turn starts when what the model
 asked for has settled.
 """
 
@@ -258,11 +258,11 @@ class Continue:
 
 @dataclass(frozen=True)
 class Exhausted:
-    """A bound was spent at a round's start, `rounds` rounds in: `reason` names it, rounds (max_rounds),
+    """A bound was spent at a turn's start, `turns` turns in: `reason` names it, turns (max_turns),
     idle (max_idle), time (time_budget), cost (cost_budget) or context (context_budget)."""
 
-    rounds: int
-    reason: str = "rounds"
+    turns: int
+    reason: str = "turns"
 
 
 @dataclass(frozen=True)
@@ -275,20 +275,20 @@ class Refused:
 
 @dataclass(frozen=True)
 class Stopped:
-    round: int
+    turn: int
 
 
 Outcome = Success | Continue | Exhausted | Refused | Stopped
 
 _CALL_SHAPED = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*\(.*\)\s*$", re.DOTALL)  # `name(...)` as a whole value
 # the notification's own opening tag, in any case or spacing after `system`, its `<` as itself or `&lt;`
-_SYSTEM_FRAME = re.compile(r"(?:<|&lt;)system\s+round\s*=", re.IGNORECASE)
+_SYSTEM_FRAME = re.compile(r"(?:<|&lt;)system\s+turn\s*=", re.IGNORECASE)
 _BREAK = re.compile(r"\r\n|\r|\n")
 
 
 # the runtime's value for each bound a job and its profile leave unset (ADR-0003/C1); None: unbounded
 _BOUNDS: dict[str, float | None] = {
-    "max_rounds": 100,
+    "max_turns": 100,
     "max_idle": 3,
     "time_budget": None,
     "cost_budget": None,
@@ -318,7 +318,7 @@ class RunRequest:
     inputs: tuple[str, ...] = ()
     emits: tuple[Spec, ...] = ()  # what OUT{} fills; empty: OUT{} ends the run with its dereferenced fields
     # the bounds; one left None takes the profile's `defaults`, then the runtime's (`_BOUNDS`)
-    max_rounds: int | None = None
+    max_turns: int | None = None
     max_idle: int | None = None  # consecutive turns without LNDL
     time_budget: float | None = None  # seconds of wall clock for the whole run
     cost_budget: float | None = None  # what the backend's replies report the calls cost, summed
@@ -332,8 +332,8 @@ class RunRequest:
     # the view folds once, to about half, when it measures past this (tokens, estimated); until then
     # and after, nothing leaves it but by the model's own hides
     view_budget: int = 60_000
-    # a conversation: called at the start of a round after a turn that ran nothing, so the model's
-    # plain text was its reply and the next round takes what the other side says. It queues the next
+    # a conversation: called at the start of a turn after one that ran nothing, so the model's
+    # plain text was its reply and the next turn takes what the other side says. It queues the next
     # input on the actor and returns True, or returns False and the run ends Stopped. With it set, a
     # turn without LNDL is a reply, not idleness.
     wait: Callable[[Run], Awaitable[bool]] | None = None
@@ -387,7 +387,7 @@ class Run:
         self.cost = 0.0  # what the backend's replies reported, summed
         self.context_figure = 0  # the `context:` figure the last notification told
         self.started = time.monotonic()
-        self.round = 0
+        self.turn = 0
         self.values: dict[str, tuple[int, Any]] = {}  # alias -> (seq of the TEXT that declared it, value)
         self.fields: dict[str, str] = {}  # alias -> the output field it was declared for, for the whole run
         self.pending: dict[str, asyncio.Task] = {}
@@ -404,23 +404,23 @@ class Run:
         self.failed: list[tuple[str, str]] = []  # (alias, why) whose handler started, not succeeding
         self.unknown: list[tuple[str, str]] = []  # (alias, why) cancelled while their handler ran
         self.notes_written: list[str] = []
-        self.hook_errors: list[tuple[str, str]] = []  # (alias, what) an after hook raised, this round
+        self.hook_errors: list[tuple[str, str]] = []  # (alias, what) an after hook raised, this turn
         self.consumed: list[Inbound] = []  # inbound items this run took as INPUT
-        self.inbox: list[Inbound] = []  # answers addressed to this run, taken at its next round
+        self.inbox: list[Inbound] = []  # answers addressed to this run, taken at its next turn
         self.asked: dict[str, tuple[str, asyncio.Future]] = {}  # handle id -> (alias, the answer)
         self.retry_error: str | None = None
         self.idle_note: str | None = None  # the last turn carried no LNDL; told once
-        self.idle_rounds = 0  # consecutive turns without LNDL
+        self.idle_turns = 0  # consecutive turns without LNDL
         self.replied = (
             False  # under a conversation (request.wait), the last turn was the reply: plain text, or
             # commands that all landed (the work was done on the model's own tools; the turn carried
             # what goes through the runtime: sends, notes, context operations)
         )
-        self.pause = False  # hand the turn back at the next round boundary (a person's interrupt)
+        self.pause = False  # hand the conversation back at the next turn boundary (a person's interrupt)
         self.call: asyncio.Future | None = None  # the backend call in flight, what `interrupt` cuts
-        self.cut = False  # `interrupt` cancelled the call: the round ends with no turn, not the run
+        self.cut = False  # `interrupt` cancelled the call: the turn ends with no message, not the run
         self.same_turns = 0  # consecutive turns byte-identical to the one before
-        self.same_errors = 0  # consecutive rounds ending in the same retry error
+        self.same_errors = 0  # consecutive turns ending in the same retry error
         self.viewed: set[int] = set()  # RESULT seqs in view at the last render
         self.view_est = 0  # the view the last notification measured, post-fold (tokens, estimated)
         self.anchor: tuple[int, int] | None = None  # (prompt tokens a backend reported, the view_est sent)
@@ -453,8 +453,8 @@ class Run:
         self.output: Any = None
 
     def interrupt(self) -> bool:
-        """A person's interrupt. A backend call in flight is cut now and the turn is theirs (True);
-        otherwise the round in flight finishes and the turn is theirs at its end (False)."""
+        """A person's interrupt. A backend call in flight is cut now and the conversation is theirs
+        (True); otherwise the turn in flight finishes and it is theirs at its end (False)."""
         self.pause = True
         if self.call is not None and not self.call.done():
             self.cut = True
@@ -596,7 +596,7 @@ class RunMore(BaseModel):
     next check on; a refusal leaves it as it was, and the run ends when it is spent."""
 
     __spec_name__ = "run.more"
-    bound: Literal["max_rounds", "max_idle", "time_budget", "cost_budget", "context_budget", "max_refusals"]
+    bound: Literal["max_turns", "max_idle", "time_budget", "cost_budget", "context_budget", "max_refusals"]
     amount: float = Field(gt=0)
     reason: str
 
@@ -770,7 +770,7 @@ class Actor:
         self.notes_dir = Path(notes_dir) if notes_dir is not None else None
         self.handlers: dict[str, Handler] = {}
         self.operable = Operable()
-        self.inbox: list[Inbound] = []  # unaddressed inbound, taken by the next run that starts a round
+        self.inbox: list[Inbound] = []  # unaddressed inbound, taken by the next run that starts a turn
         self.runs: dict[str, Run] = {}  # live runs by id, so an answer reaches the run that asked
         self.sections: list[Callable[[Run], Awaitable[str | None] | str | None]] = []
         self.befores: list[BeforeFn] = []
@@ -812,7 +812,7 @@ class Actor:
     def section(
         self, fn: Callable[[Run], Awaitable[str | None] | str | None]
     ) -> Callable[[Run], Awaitable[str | None] | str | None]:
-        """A contributor to the notification: called every round, awaited if it must look somewhere,
+        """A contributor to the notification: called every turn, awaited if it must look somewhere,
         its text (if any) is appended. This is where the system says what the model cannot hold: the
         state of the thing being worked on, not only the state of the conversation."""
         self.sections.append(fn)
@@ -867,7 +867,7 @@ class Actor:
 
         It lands as INPUT in this actor's next run, or in a run already going. A handler that returns
         the Handle is settled by the answer: its alias resolves to what the other actor emitted, and
-        the asking run's next round starts when the answer is in. Running the other actor is not this
+        the asking run's next turn starts when the answer is in. Running the other actor is not this
         method's business; something has to run it."""
         handle = Handle(uuid.uuid4().hex[:8])
         self.inbox.append(
@@ -898,7 +898,7 @@ class Actor:
         run.plan = getattr(backend, "plan", None)
         subset = self.subset(profile)
         for e in request.history:
-            replayed = run.record.append(e.kind, e.content, alias=e.alias, round=e.round, **e.meta)
+            replayed = run.record.append(e.kind, e.content, alias=e.alias, turn=e.turn, **e.meta)
             if e.kind is Kind.TEXT and profile.language == "core":  # the values that turn declared, admitted
                 # against the record so far; a program's prose is scratch and its turn is folded, not rerun
                 if replayed.meta.get("unread"):  # the live loop refused it: nothing of it was admitted
@@ -927,29 +927,29 @@ class Actor:
 
         try:
             while True:
-                spent = _spent(run)  # the round's first act: every bound, as resolved or raised
+                spent = _spent(run)  # the turn's first act: every bound, as resolved or raised
                 if spent is not None:
-                    run.outcome = Exhausted(run.round, spent)
+                    run.outcome = Exhausted(run.turn, spent)
                     break
-                round_no = run.round = run.round + 1
+                turn_no = run.turn = run.turn + 1
                 if request.wait is not None and (run.replied or run.pause) and not run.pending:
                     run.replied = run.pause = False
                     if not await request.wait(run):
-                        run.round = round_no - 1
-                        run.outcome = Stopped(round_no)
+                        run.turn = turn_no - 1
+                        run.outcome = Stopped(turn_no)
                         break
                     if (over := _over(run)) is not None:  # the wait may have outlasted the time left
-                        run.round = round_no - 1
-                        run.outcome = Exhausted(run.round, over)
+                        run.turn = turn_no - 1
+                        run.outcome = Exhausted(run.turn, over)
                         break
                 self._take_inbox(run)
                 text, folded = await self._notify(run)
-                notice = run.record.append(Kind.SYSTEM, text, round=round_no)
+                notice = run.record.append(Kind.SYSTEM, text, turn=turn_no)
                 if folded is not None:  # the fold event rides its own notification, at its seq
                     notice.meta["directive"] = Directive(
                         folded.op, folded.refs, folded.text, at=notice.seq, seqs=folded.seqs
                     )
-                if round_no == 1 and run.context_figure > run.bounds["context_budget"]:
+                if turn_no == 1 and run.context_figure > run.bounds["context_budget"]:
                     # over before any backend call: the job is the caller's error, not a run that ended
                     raise JobError(
                         f"the job's view is ~{run.context_figure} tokens before any call, over its "
@@ -974,10 +974,10 @@ class Actor:
                     # the world, and what they saw (acceptance checks passing, a fix that has stood
                     # still) is what a stop decides on. Asked before, the model got one more turn
                     # after every notice that said the run was over.
-                    run.round = round_no - 1
-                    run.outcome = Stopped(round_no)
+                    run.turn = turn_no - 1
+                    run.outcome = Stopped(turn_no)
                     break
-                self.bus.emit("round.started", run=run.id, round=round_no)
+                self.bus.emit("turn.started", run=run.id, turn=turn_no)
                 messages = self._render(run, subset)
                 text = backend(messages)
                 if inspect.isawaitable(text):
@@ -995,8 +995,8 @@ class Actor:
                         run.cut = False
                         run.record.append(
                             Kind.SYSTEM,
-                            "the person cut this round short: its call was abandoned and no turn came of it",
-                            round=round_no,
+                            "the person cut this turn short: its call was abandoned, no message came of it",
+                            turn=turn_no,
                         )
                         continue
                     finally:
@@ -1021,7 +1021,7 @@ class Actor:
                     run.floor = beyond if run.floor is None else min(run.floor, beyond)
                 previous = run.record.latest(Kind.TEXT)
                 m = run.record.append(
-                    Kind.TEXT, text, round=round_no, **({"refused": refused} if refused else {})
+                    Kind.TEXT, text, turn=turn_no, **({"refused": refused} if refused else {})
                 )
                 run.same_turns = (
                     run.same_turns + 1 if previous is not None and previous.content == text else 0
@@ -1033,11 +1033,11 @@ class Actor:
                         check_script(program, subset.names(), run.known)
                 except lndl.LNDLError as e:
                     m.meta["unread"] = True  # a resumed log reads the refusal, not the turn again
-                    run.idle_rounds = 0  # a turn refused whole held something: it was not idle
+                    run.idle_turns = 0  # a turn refused whole held something: it was not idle
                     run.repairs.update(getattr(e, "repairs", ()))  # the readings before the one that failed
                     run.misnamed += [_nearest(name, subset.names()) for name in getattr(e, "names", ())]
                     self._retry(run, str(e))
-                    self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
+                    self.bus.emit("turn.retry", run=run.id, turn=turn_no, error=str(e))
                     continue
                 run.idle_note = None
                 for var in () if isinstance(program, Script) else program.lvars:
@@ -1075,23 +1075,23 @@ class Actor:
                 if request.wait is not None and not acted:
                     run.replied = True  # the reply; the other side speaks next
                 elif not spoke:
-                    run.idle_rounds += 1
+                    run.idle_turns += 1
                     stray = lndl.stray_tags(text, subset.names())
                     run.idle_note = "your last turn contained no LNDL, so nothing was executed" + (
                         f"; <{stray[0]}> is not a command call, write <lact a1>{stray[0]}(...)</lact>"
                         if stray
                         else ""
                     )
-                    if run.idle_rounds >= 2:
+                    if run.idle_turns >= 2:
                         run.idle_note += (
                             "; there is no tool-call API in this conversation, the tags are literal text "
                             'in your reply, for example <lact a1>list_dir(path=".")</lact>'
                         )
                 else:
-                    run.idle_rounds = 0
+                    run.idle_turns = 0
                 if failed is not None:
                     self._retry(run, failed)
-                    self.bus.emit("round.retry", run=run.id, round=round_no, error=failed)
+                    self.bus.emit("turn.retry", run=run.id, turn=turn_no, error=failed)
                     continue
                 if program.out is None:
                     await _settle(run, tasks)
@@ -1119,9 +1119,9 @@ class Actor:
                 except lndl.LNDLError as e:
                     await _settle(run, tasks)
                     # the error clears only once the whole turn, assembly included, read: a finish
-                    # that fails the same way every round is counted as the same error (ADR-0002/C3)
+                    # that fails the same way every turn is counted as the same error (ADR-0002/C3)
                     self._retry(run, str(e))
-                    self.bus.emit("round.retry", run=run.id, round=round_no, error=str(e))
+                    self.bus.emit("turn.retry", run=run.id, turn=turn_no, error=str(e))
                     continue
                 # OUT{} is the `out` command: the actor's before hooks see the assembled output, and
                 # the job's `accept` is the last of them, so it judges what they left (ADR-0003/C4)
@@ -1155,14 +1155,14 @@ class Actor:
                         run.outcome = Refused(why, run.refusals)
                         break
                     self._retry(run, f"OUT{{}} {result.error}")
-                    self.bus.emit("round.retry", run=run.id, round=round_no, error=why)
+                    self.bus.emit("turn.retry", run=run.id, turn=turn_no, error=why)
                     continue
                 run.output = result.value
                 run.retry_error, run.same_errors = None, 0
                 run.outcome = Success(run.output)
                 break
             await _reap(run)
-            run.record.append(Kind.SYSTEM, _closure(run), round=run.round)
+            run.record.append(Kind.SYSTEM, _closure(run), turn=run.turn)
         except BaseException as e:
             # a backend that raised ends this run; whoever queued work here and is waiting on the
             # answer hears that, with the error, or its own command waits forever. The run has no
@@ -1183,10 +1183,10 @@ class Actor:
 
         self.runs.pop(run.id, None)
         self._deliver(run)
-        self.bus.emit("run.completed", run=run.id, outcome=type(run.outcome).__name__, rounds=run.round)
+        self.bus.emit("run.completed", run=run.id, outcome=type(run.outcome).__name__, turns=run.turn)
         return run
 
-    # pieces of a round
+    # pieces of a turn
 
     def _retry(self, run: Run, error: str) -> None:
         """The error the next notification carries; repeats are counted so the next turn differs."""
@@ -1200,7 +1200,7 @@ class Actor:
             run.record.append(
                 Kind.INPUT,
                 item.content,
-                round=run.round,
+                turn=run.turn,
                 inbound=item.handle.id,
                 origin=item.origin_actor,
                 reply=item.reply,
@@ -1242,7 +1242,7 @@ class Actor:
             for la in program.lacts:
                 if la.alias.startswith("auto_"):
                     # a generated alias (native tool-call syntax, no name given) may recur verbatim in a
-                    # later round; the model never chose it, so it is not held to uniqueness
+                    # later turn; the model never chose it, so it is not held to uniqueness
                     alias, n = la.alias, run.record.seq
                     while run.record.has_alias(alias) or alias in run.pending or alias in run.values:
                         alias, n = f"{la.alias}_{n}", n + 1
@@ -1291,7 +1291,7 @@ class Actor:
         run.waits.pop(la.alias, None)
         run.halts.pop(la.alias, None)
         result = Result(la.name, False, error="cancelled before it started", reason="cancelled")
-        run.record.append(Kind.RESULT, result, alias=la.alias, round=run.round, execution="not executed")
+        run.record.append(Kind.RESULT, result, alias=la.alias, turn=run.turn, execution="not executed")
         run.refused.append((la.alias, result.error))
         self.bus.emit(
             "command.settled",
@@ -1332,7 +1332,7 @@ class Actor:
                         la.name,
                         False,
                         error=f"{directive.op}: nothing on the record is named {', '.join(missing)}; "
-                        "a result of this turn is addressable next round",
+                        "a result of this turn is addressable next turn",
                         reason="failed",
                     )
                     directive = None
@@ -1341,7 +1341,7 @@ class Actor:
                     Kind.RESULT,
                     result,
                     alias=la.alias,
-                    round=run.round,
+                    turn=run.turn,
                     execution=execution,
                     **provenance,
                 )
@@ -1665,12 +1665,12 @@ class Actor:
     # what the model sees
 
     async def _notify(self, run: Run) -> tuple[str, Directive | None]:
-        """The round's notification, and the fold event when the view has outgrown its budget."""
+        """The turn's notification, and the fold event when the view has outgrown its budget."""
         r = run.record
         clock = _clock(run.elapsed)
         if run.bounds["time_budget"] is not None:
             clock += f"/{_clock(run.bounds['time_budget'])}"
-        lines = [f"<system round={run.round}/{run.bounds['max_rounds']} time={clock} seq={r.seq}>"]
+        lines = [f"<system turn={run.turn}/{run.bounds['max_turns']} time={clock} seq={r.seq}>"]
         # consumed since the last notification: hidden before the model sees them, folded with the hides
         # this notification will carry, so a show the program made after a consumption stands over it
         # here as it will on the record (ADR-0008/D3) and the figure counts what the backend receives
@@ -1682,7 +1682,7 @@ class Actor:
         # the figure the fold decides on: the view's estimate plus what the backend's last reported
         # count stood above the view beyond its floor for this run, history the record never saw
         # (ADR-0009/A3). The floor itself, the backend's fixed context, is never counted: a fold
-        # cannot take it off, and counting it would fold every round past a budget it exceeds.
+        # cannot take it off, and counting it would fold every turn past a budget it exceeds.
         excess = 0
         if run.anchor is not None and run.floor is not None:
             excess = max(0, run.anchor[0] - run.anchor[1] - run.floor)
@@ -1691,7 +1691,7 @@ class Actor:
         if measured > run.request.view_budget:
             # one fold event, to about half the budget, oldest entries first (results; under
             # fold_inputs the inputs and replies of earlier exchanges too, the latest input stays); the
-            # results of the round just run are new to the model and stay. It rides this notification
+            # results of the turn just run are new to the model and stay. It rides this notification
             # as a directive, so it happens once and the view is append-only again until the next one,
             # and a session-keeping backend starts its session over from the folded view on it.
             latest = r.latest(Kind.SYSTEM)
@@ -1771,10 +1771,10 @@ class Actor:
                     "in a new session"
                 )
                 run.frees_told = plan.frees
-        run.context_figure = shown  # what the next round's start checks against the budget
+        run.context_figure = shown  # what the next turn's start checks against the budget
         lines[context_line] = f"context: ~{shown} / {run.bounds['context_budget']} tokens"
         if run.retry_error:
-            again = f" (the same error {run.same_errors + 1} rounds running)" if run.same_errors else ""
+            again = f" (the same error {run.same_errors + 1} turns running)" if run.same_errors else ""
             lines.append(f"your last turn could not be read{again}: {run.retry_error}")
         if run.idle_note:
             lines.append(run.idle_note)
@@ -1808,7 +1808,7 @@ class Actor:
                 lines.append(f"  {alias}: {why}")
         if run.notes_written:
             lines.append("notes written: " + ", ".join(run.notes_written))
-        if run.round == 1:  # the notes this profile already keeps, from earlier runs, so none goes unread
+        if run.turn == 1:  # the notes this profile already keeps, from earlier runs, so none goes unread
             try:
                 kept = sorted(run.notes.list(), key=lambda n: n.key)  # a store need not list in order
                 told = []
@@ -1829,7 +1829,7 @@ class Actor:
             lines.append("hooks failed (the commands ran; their results stand):")
             for alias, what in run.hook_errors:
                 lines.append(f"  {alias}: {what}")
-        inbound = [e for e in r.of_kind(Kind.INPUT) if e.round == run.round and e.meta.get("inbound")]
+        inbound = [e for e in r.of_kind(Kind.INPUT) if e.turn == run.turn and e.meta.get("inbound")]
         if inbound:
             lines.append("inbound:")
             for e in inbound:
@@ -1899,20 +1899,20 @@ def _clock(seconds: float) -> str:
 
 
 def _spent(run: Run) -> str | None:
-    """The bound spent at a round's start, in the order the record names them (ADR-0003/C2): time,
-    cost, rounds, idle rounds, and the context figure the last notification told; a deadline that
+    """The bound spent at a turn's start, in the order the record names them (ADR-0003/C2): time,
+    cost, turns, idle turns, and the context figure the last notification told; a deadline that
     falls on the last turn reads time."""
     if over := _over(run):
         return over
-    if run.round >= run.bounds["max_rounds"]:
-        return "rounds"
-    if run.idle_rounds >= run.bounds["max_idle"]:
+    if run.turn >= run.bounds["max_turns"]:
+        return "turns"
+    if run.idle_turns >= run.bounds["max_idle"]:
         return "idle"
     return "context" if run.context_figure > run.bounds["context_budget"] else None
 
 
 def _over(run: Run) -> str | None:
-    """Time or cost spent: read at a round's start and again before each handler starts."""
+    """Time or cost spent: read at a turn's start and again before each handler starts."""
     if run.bounds["time_budget"] is not None and run.elapsed >= run.bounds["time_budget"]:
         return "time"
     # written as "not under" so a cost that is not a number (nan) reads as spent, never as room
@@ -1938,7 +1938,7 @@ def _read(text: str, language: str = "core", refused: str | None = None) -> Prog
         shown = _BREAK.split(seen[frame.start() :], 1)[0].strip()
         shown = shown if len(shown) <= 80 else shown[:77] + "..."
         raise lndl.LNDLError(
-            f"the turn carries a <system round=...> frame, at line {line}: {shown}; only the loop "
+            f"the turn carries a <system turn=...> frame, at line {line}: {shown}; only the loop "
             "writes those and the results inside it were never observed, so nothing in the turn was "
             "executed: write one program, end the turn, and read the real results in the next "
             "notification. To speak of it, call it the notice; never write its tag"

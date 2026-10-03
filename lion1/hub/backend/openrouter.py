@@ -1,7 +1,7 @@
 """OpenRouter as a chat-completion backend (ADR-0009): the view in as a real message array, text out.
 
 Unlike the CLI shapes, this one sends the view as separate messages with their roles, so the
-provider's prefix cache can hit on everything that did not change since the last round. Usage and
+provider's prefix cache can hit on everything that did not change since the last turn. Usage and
 cost come back on the response (`usage.cost` when `usage: {include: true}` is asked for), so the
 bench reads them off the envelope like the CLI's.
 

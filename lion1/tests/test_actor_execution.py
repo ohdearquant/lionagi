@@ -68,7 +68,7 @@ def _exec_actor(name: str, entered: list[str], parked: list[str]) -> Actor:
 
 def _exec_run(actor: Actor, turn: str):
     run = asyncio.run(
-        actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), scripted(turn, "done"))
+        actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), scripted(turn, "done"))
     )
     notices = [e.content for e in run.record if e.kind is Kind.SYSTEM]
     return run, notices[1]
@@ -194,7 +194,7 @@ def test_a_command_that_ran_and_failed_is_not_told_as_not_executed():
     run = asyncio.run(
         actor.run(
             Profile("p"),
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact t1>touch(path="a")</lact>', "x"),
         )
     )
@@ -216,7 +216,7 @@ def test_execution_fact_survives_log_round_trip(tmp_path):
     log.write_text("".join(json.dumps(entry_row(e), default=str) + "\n" for e in run.record))
     assert _exec_facts(load_log(log)) == facts
     # a log written before the fact existed still loads, and its absence claims nothing either way
-    old = {"seq": 0, "kind": "RESULT", "name": "_r0", "round": 1, "alias": "x", "meta": {}}
+    old = {"seq": 0, "kind": "RESULT", "name": "_r0", "turn": 1, "alias": "x", "meta": {}}
     old["content"] = {"spec": "touch", "ok": False, "value": None, "error": "boom", "reason": "failed"}
     (tmp_path / "old.jsonl").write_text(json.dumps(old) + "\n")
     assert _exec_facts(load_log(tmp_path / "old.jsonl")) == {"x": None}

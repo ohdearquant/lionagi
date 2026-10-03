@@ -552,7 +552,7 @@ def test_the_actor_fills_a_path_field_through_the_keys_its_guidance_says(key, fo
         return turn
 
     run = asyncio.run(
-        Actor("t").run(profile, RunRequest(inputs=("go",), emits=(spec,), max_rounds=1), backend)
+        Actor("t").run(profile, RunRequest(inputs=("go",), emits=(spec,), max_turns=1), backend)
     )
     assert isinstance(run.outcome, Success), run.refused
     assert run.output["path_spec"].value == "done"

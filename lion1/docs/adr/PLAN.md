@@ -63,7 +63,7 @@ code binds it.
 
 A comparison against the earlier records (2026-09-25) found sentences the code contradicts, now
 corrected to the code of 2026-09-24: `Stopped(n)` names the turn that did not run (0002 C3);
-`Exhausted` carries its rounds and a reason of rounds or time (0002 C4); the re-check between
+`Exhausted` carries its turns and a reason of turns or time (0002 C4); the re-check between
 commands is owed (0003); `run.more` is not yet a default handler (0001 C2); `Context.get` never
 waits, a pending alias raises (0005 C3, S6); a repair's note rides `not executed:` (0004 C3); the
 notification's order and wording (0006 C2); the fold applies directives in record order today
@@ -211,8 +211,8 @@ hard-set pair as code-host-closed, not unaided (0012 C8).
 
 ## Vocabulary, fixed in the Context of 0002 and used everywhere
 
-run (one `Actor.run`) · round (one loop iteration; the code still says round where the corpus says turn,
-the rename owed with the first change that touches it) · turn (one backend response) · backend (messages
+run (one `Actor.run`) · turn (one loop iteration: the notification, one message from the model, its commands settled) ·
+message (what the model wrote in a turn) · backend (messages
 to text; an agentic harness is a different shape and is named so) · outcome (the run's terminal value
 only; an instrument returns a measurement, a cursor holds a state) · message (a provider message; mail
 becomes one INPUT entry) · record (the run's append-only history; the desk's knowledge lookup is the

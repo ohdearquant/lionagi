@@ -1689,7 +1689,7 @@ def test_the_shell_and_code_tools_run_in_the_runta_box_through_the_same_registra
         '<lact e1>edit(path="pkg/m.py", old="return f()", new="return f() + 1")</lact>',
         "done",
     )
-    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), backend))
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=2), backend))
     r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
     assert r["b1"].ok and r["b1"].value["stdout"] == "m.py\n" and r["b1"].value["rc"] == 0
     assert r["p1"].ok and r["p1"].value["stdout"] == "42\n"
@@ -1737,7 +1737,7 @@ def test_a_real_runtime_runs_the_shell_and_code_tools_proves_egress_and_stops(tm
                 f'<lact b2>bash(command="{call}")</lact>',
                 "done",
             )
-            return await actor.run(profile, RunRequest(inputs=("go",), max_rounds=4), backend)
+            return await actor.run(profile, RunRequest(inputs=("go",), max_turns=4), backend)
         finally:
             await box.stop()
 

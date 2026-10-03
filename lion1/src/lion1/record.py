@@ -41,7 +41,7 @@ class Entry:
     kind: Kind
     content: Any
     alias: str | None = None  # the model's own name for it, when it gave one
-    round: int = 0
+    turn: int = 0
     meta: dict = field(default_factory=dict)
 
     @property
@@ -85,14 +85,14 @@ class Record:
         """The sequence the next append will take; a checkpoint is this number."""
         return len(self._entries)
 
-    def append(self, kind: Kind, content: Any, *, alias: str | None = None, round: int = 0, **meta) -> Entry:
+    def append(self, kind: Kind, content: Any, *, alias: str | None = None, turn: int = 0, **meta) -> Entry:
         if alias is not None and alias.startswith("_"):  # the record's namespace, present and future names
             raise ValueError(f"alias {alias!r} starts with _, which the record keeps for its own names")
         if alias is not None and alias in self._aliases:
             raise ValueError(f"alias {alias!r} already names {self.by_seq(self._aliases[alias]).name}")
         if alias is not None and self.get(alias) is not None:  # not an alias, so a runtime name in use
             raise ValueError(f"alias {alias!r} is the name of an entry on the record")
-        entry = Entry(seq=len(self._entries), kind=kind, content=content, alias=alias, round=round, meta=meta)
+        entry = Entry(seq=len(self._entries), kind=kind, content=content, alias=alias, turn=turn, meta=meta)
         self._entries.append(entry)
         if alias is not None:
             self._aliases[alias] = entry.seq

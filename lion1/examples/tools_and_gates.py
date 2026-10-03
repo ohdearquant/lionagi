@@ -111,7 +111,7 @@ async def main() -> None:
     print("\n=== reader asks for write_file: not in its subset, so unknown at dispatch")
     run = await actor.run(
         READER,
-        RunRequest(inputs=("go",), max_rounds=2),
+        RunRequest(inputs=("go",), max_turns=2),
         scripted(
             '<lact r1>read_file(path="a.txt")</lact>\n<lact w1>write_file(path="b.txt", text="x")</lact>',
             "done",
@@ -122,14 +122,14 @@ async def main() -> None:
     print("\n=== editor sees every command but holds only fs.read: write_file is refused by privilege")
     run = await actor.run(
         EDITOR,
-        RunRequest(inputs=("go",), max_rounds=2),
+        RunRequest(inputs=("go",), max_turns=2),
         scripted(
             '<lact w1>write_file(path="b.txt", text="x")</lact>\n<lact s1>shell(cmd="ls")</lact>', "done"
         ),
     )
     print([e.content for e in run.record if e.kind is Kind.SYSTEM][1])
 
-    print("\n=== a profile asking for what the actor lacks is refused before the first round")
+    print("\n=== a profile asking for what the actor lacks is refused before the first turn")
     try:
         await actor.run(Profile("root", privileges=frozenset({"sudo"})), RunRequest(), scripted("x"))
     except ProfileError as e:

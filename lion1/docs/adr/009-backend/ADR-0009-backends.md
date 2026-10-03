@@ -243,7 +243,7 @@ swallowed too: a spin.
 | One backend                                                     | the bench needs the same model through two harnesses, and a served run works on a subscription CLI                                    |
 | Counting the prompt in the runtime with a tokenizer             | a dependency per provider; the provider's count is exact for the prompt it saw, and free (ADR-0006)                                   |
 | Anchoring on the envelope's summed usage                        | a retried call bills two prompts; the sum is the size of neither                                                                       |
-| Resending the whole transcript to the CLI each turn             | the prefix never caches: 160k tokens in for one five-round exchange, measured 2026-09-23                                               |
+| Resending the whole transcript to the CLI each turn             | the prefix never caches: 160k tokens in for one five-turn exchange, measured 2026-09-23                                               |
 | Scaling a shrunk count by the view's ratio                      | it scales the fixed context too, which never shrinks: up to 96% off at a fold in simulation, 5% by the run's rate                      |
 | Folding by editing the CLI's history                            | the conversation is the CLI's; a fork from a point before the change applies the fold and reads that point from the cache              |
 | Starting over on every context directive                        | a hide of about 730 estimated tokens wrote 25.7k again; one chat's four restarts added about 29% of its whole cost over going on, re-derived from its bills |

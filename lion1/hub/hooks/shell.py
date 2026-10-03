@@ -10,15 +10,15 @@ or shown needs no Python. `hooks.toml` beside the thing being run:
     [[after]]                       # sees a command that ran, ok or not
     run = "scripts/audit.sh"
 
-    [[round]]                       # adds its stdout to the round's notice
+    [[turn]]                       # adds its stdout to the turn's notice
     run = "date"
 
-Every hook gets one JSON object on stdin: `event`, `run`, `round`, and for a command `alias`,
+Every hook gets one JSON object on stdin: `event`, `run`, `turn`, and for a command `alias`,
 `command`, `args` (the validated request), and for `after` the `result` (ok, value, error, reason).
 A `before` hook exits 0 to let the command run (a JSON object on stdout replaces its arguments), 2
 to refuse it (stdout, else stderr, is the reason the model reads), anything else or a timeout refuses
 it too: a gate that fails admits nothing. An `after` hook that exits non-zero is told in the next
-notice; the result stands. A `round` hook's stdout is the notice line; a failure is said there.
+notice; the result stands. A `turn` hook's stdout is the notice line; a failure is said there.
 
 A bundled script's row, `python -m hub.hooks.scripts.<name>`, runs with this interpreter under `-I`, so
 neither the directory nor PYTHONPATH supplies its code; `install` refuses it when that interpreter or
@@ -52,7 +52,7 @@ __all__ = ("HERE", "REFUSE", "EVENTS", "Hook", "load", "run_hook", "install")
 
 HERE = Path(__file__).resolve().parent  # the reference hooks.toml and scripts/ live here
 REFUSE = 2  # a before hook's exit code that refuses the command; its stdout is the reason
-EVENTS = ("before", "after", "round")
+EVENTS = ("before", "after", "turn")
 # a reference row, as hooks.toml writes it
 _BUNDLED = re.compile(r"python[0-9.]*\s+-m\s+(hub\.hooks\.scripts\.\w+)")
 _PROBE = """import importlib.util as u, json, sys
@@ -63,7 +63,7 @@ print(json.dumps(where + [["an import path", p] for p in sys.path]))"""  # finds
 
 @dataclass(frozen=True)
 class Hook:
-    event: str  # before | after | round
+    event: str  # before | after | turn
     run: str  # the shell line
     name: str = ""
     match: str = "*"  # fnmatch over the command name; before and after only
@@ -75,6 +75,8 @@ def load(path: Path) -> list[Hook]:
     """The hooks a `hooks.toml` declares, in file order per event."""
     path = Path(path)
     cfg = tomllib.loads(path.read_text())
+    if extra := sorted(set(cfg) - set(EVENTS)):  # a table no event names would run nothing, silently
+        raise ValueError(f"{path}: no event {extra[0]!r}; the events are {', '.join(EVENTS)}")
     hooks: list[Hook] = []
     for event in EVENTS:
         for i, t in enumerate(cfg.get(event, []), 1):
@@ -180,8 +182,8 @@ def install(actor: Actor, hooks: Iterable[Hook], cwd: Path) -> int:
             actor.before(_before(h, cwd))
         elif h.event == "after":
             actor.after(_after(h, cwd))
-        elif h.event == "round":
-            actor.section(_round(h, cwd))
+        elif h.event == "turn":
+            actor.section(_turn(h, cwd))
         else:
             raise ValueError(f"hook {h.name!r}: event {h.event!r} is not one of {', '.join(EVENTS)}")
         n += 1
@@ -195,7 +197,7 @@ def _payload(
     request: BaseModel | None = None,
     result: Result | None = None,
 ) -> dict[str, Any]:
-    d: dict[str, Any] = {"event": event, "run": run.id, "round": run.round}
+    d: dict[str, Any] = {"event": event, "run": run.id, "turn": run.turn}
     if la is not None and request is not None:
         d |= {"alias": la.alias, "command": la.name, "args": request.model_dump(mode="json")}
     if result is not None:
@@ -239,9 +241,9 @@ def _after(h: Hook, cwd: Path):
     return after
 
 
-def _round(h: Hook, cwd: Path):
+def _turn(h: Hook, cwd: Path):
     async def section(run: Run) -> str | None:
-        rc, out, err = await run_hook(h, _payload("round", run), cwd)
+        rc, out, err = await run_hook(h, _payload("turn", run), cwd)
         if rc == 0:
             return out.strip() or None
         if rc is None:

@@ -50,8 +50,8 @@ Source: `Actor._dispatch`, `Actor._perform`, `Actor._execute`, `Context` and `Ha
   run, refuses it with a reason, or replaces its arguments.
 - **after hook**: a function or a shell command shown what ran and its result; it may replace the
   result, never undo the command.
-- **turn hook**: a shell command run once per turn whose stdout is a notification line; the `round`
-  table in `hooks.toml` until that name is changed.
+- **turn hook**: a shell command run once per turn whose stdout is a notification line; the `turn`
+  table in `hooks.toml`.
 
 ## Assumptions
 
@@ -94,7 +94,7 @@ that blocks holds the emitter, so a subscriber returns at once or hands back a c
 bounded, and a tracked task leaves the set when it finishes; `drain` awaits the rest.
 
 Patterns match exactly, by prefix (`command.`), or everything (`*`). Events: `run.started`,
-`round.started`, `round.retry`, `command.requested`, `command.settled`, `inbox.queued`,
+`turn.started`, `turn.retry`, `command.requested`, `command.settled`, `inbox.queued`,
 `inbox.answered`, `run.completed`.
 
 ### C3: A handler reaches run state only through its `Context` _(enforced: mechanical)_ ^c3
@@ -258,7 +258,7 @@ Serves C2. One class, three operations: `subscribe`, `emit`, `drain`; a bounded 
 
 ### D3: `hub/hooks/`: `hooks.toml`, shell commands, JSON on stdin, the exit code as the verdict ^d3
 
-Serves C4, C5, C7 to C10 for a person. Three array tables, `before`, `after` and `round`, each row
+Serves C4, C5, C7 to C10 for a person. Three array tables, `before`, `after` and `turn`, each row
 with `run`, optional `name`, `match` (fnmatch over the command name) and `timeout`. Exit 0 lets a
 command run, a JSON object on stdout replacing its arguments and other stdout a log line; exit 2
 refuses with stdout as the reason; a turn hook's stdout is a notification line. `lion chat` reads
@@ -315,7 +315,8 @@ runs under `-I` with lion's own interpreter (C7).
   `-c`, `--git-dir`, `--work-tree` and `--` before the subcommand (C8).
 - **S5**: A directory's `hooks.toml` is executable configuration: `lion chat` runs what the
   directory holds, so opening a directory is trusting its hooks, as with any tool that reads a local
-  config.
+  config. A table that names no event is refused by name, so a misspelled one never loads as nothing
+  (`test_a_slow_before_hook_refuses_at_its_timeout_and_a_bad_file_says_which_table`).
 - **S6**: `Context.get` reads only what is settled: an alias's value, a record name or a note. A
   pending alias raises `KeyError` at once, as an unknown name does, so no handler waits on another
   through `get`; a value a handler needs from a pending command reaches it as a pointer in its call,

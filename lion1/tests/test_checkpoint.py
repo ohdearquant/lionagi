@@ -63,7 +63,7 @@ def row_of(e: Entry) -> dict:
         "seq": e.seq,
         "kind": e.kind.name,
         "name": e.name,
-        "round": e.round,
+        "turn": e.turn,
         "alias": e.alias,
         "meta": meta,
         "content": content,
@@ -79,9 +79,9 @@ def a_record(op: str | None = "hide", text: str = "looked for a note") -> Record
     """Five entries; the last, a SYSTEM entry, carries a directive over the middle two (or none)."""
     r = Record("r0")
     r.append(Kind.INPUT, "say hi back", inbound="actor:two")
-    r.append(Kind.TEXT, '<lact g1>note.get(key="absent")</lact>', round=1)
+    r.append(Kind.TEXT, '<lact g1>note.get(key="absent")</lact>', turn=1)
     r.append(Kind.RESULT, FAILED, alias="g1", execution=True)
-    r.append(Kind.TEXT, "hi back", round=2)
+    r.append(Kind.TEXT, "hi back", turn=2)
     if op is None:
         r.append(Kind.SYSTEM, "the view past its budget: nothing folded")
     else:
@@ -183,21 +183,22 @@ def test_entry_of_reads_a_log_row_back_as_its_entry_and_skips_a_row_of_another_k
         "seq": 2,
         "kind": "RESULT",
         "name": "_r2",
-        "round": 1,
+        "turn": 1,
         "alias": "g1",
         "meta": {"execution": True, "inbound": "actor:two", "origin": "o", "reply": "r", "cost": 3},
         "content": dataclasses.asdict(FAILED),
     }
     e = entry_of(row)
     kept = {"execution": True, "inbound": "actor:two", "origin": "o", "reply": "r"}
-    assert e == Entry(2, Kind.RESULT, FAILED, alias="g1", round=1, meta=kept) and isinstance(
-        e.content, Result
-    )
+    assert e == Entry(2, Kind.RESULT, FAILED, alias="g1", turn=1, meta=kept) and isinstance(e.content, Result)
     # a result's content that has no spec is not a Result, and the defaults stand for what a row lacks
     assert entry_of({"seq": 0, "kind": "RESULT", "content": "plain"}).content == "plain"
     assert entry_of({"seq": 0, "kind": "RESULT", "content": {"value": 1}}).content == {"value": 1}
     e = entry_of({"seq": 0, "kind": "INPUT", "content": "hi", "meta": None})
-    assert (e.alias, e.round, e.meta) == (None, 0, {})
+    assert (e.alias, e.turn, e.meta) == (None, 0, {})
+    # a log written before the rename says `round`: it is the entry's turn, and a row's own `turn` wins
+    assert entry_of({"seq": 0, "kind": "TEXT", "content": "hi", "round": 3}).turn == 3
+    assert entry_of({"seq": 0, "kind": "TEXT", "content": "hi", "round": 3, "turn": 4}).turn == 4
     # a directive as data: pinned, or from a log written before pins existed
     pinned = {"op": "hide", "refs": ["_m1", "g1"], "text": "", "at": 4, "seqs": [1, 2]}
     d = entry_of({"seq": 4, "kind": "SYSTEM", "content": "folded", "meta": {"directive": pinned}})
@@ -380,7 +381,7 @@ def test_a_row_whose_text_carries_a_separator_is_one_row_and_a_var_with_one_roun
     odd = "one\u2028two\x85three\u2029four"  # legal unescaped in a JSON string; str.splitlines breaks at each
     rec = Record("r0")
     rec.append(Kind.INPUT, odd, inbound="actor:two")
-    rec.append(Kind.TEXT, "hi back", round=1)
+    rec.append(Kind.TEXT, "hi back", turn=1)
     path = plain / "r0.jsonl"
     path.write_text("".join(json.dumps(row_of(e), ensure_ascii=False) + "\n" for e in rec))
     text = path.read_text()
@@ -407,7 +408,7 @@ def test_a_row_cut_inside_a_character_past_the_take_is_never_decoded_and_one_ins
     # the take raised UnicodeDecodeError, which is not the CheckpointError a restore's caller reads
     rec = Record("r0")
     rec.append(Kind.INPUT, "say hi back", inbound="actor:two")
-    rec.append(Kind.TEXT, "hi back ☃", round=1)
+    rec.append(Kind.TEXT, "hi back ☃", turn=1)
     rows = [json.dumps(row_of(e), ensure_ascii=False).encode() for e in rec]
     path = plain / "r0.jsonl"
     path.write_bytes(b"\n".join(rows) + b"\n\xff not text\n" + "☃".encode()[:2])

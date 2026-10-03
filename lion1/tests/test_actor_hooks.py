@@ -108,7 +108,7 @@ def make() -> tuple[Actor, Profile]:
 
 
 def run(actor: Actor, profile: Profile, *turns: str):
-    request = RunRequest(inputs=("go",), max_rounds=len(turns) + 1)
+    request = RunRequest(inputs=("go",), max_turns=len(turns) + 1)
     return asyncio.run(actor.run(profile, request, scripted(*turns, "still here")))
 
 
@@ -362,7 +362,7 @@ def test_the_request_entered_and_the_return_before_the_after_hooks_ride_the_entr
         views.append(messages)
         return await inner(messages)
 
-    out = asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), backend))
+    out = asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), backend))
     kept[0].append("the handler kept its return")
     entry = out.record.get("g1")
     assert seen == [("scribble", ["a"], ["a", "found"]), ("replace", ["a"], ["a", "found"])]

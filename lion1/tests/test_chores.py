@@ -213,7 +213,7 @@ def build(
         Scripted(*turns, usage=usage),
         lambda mail: chores_profile,
         admit=lambda m: chores.admit(m),
-        max_rounds=4,
+        max_turns=4,
         batch=batch,
         budget=Budget(hops_per_thread=2),
     )

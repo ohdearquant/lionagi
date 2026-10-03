@@ -45,7 +45,7 @@ def parser(chat: dict | None = None) -> argparse.ArgumentParser:
     )
     ch.add_argument("--model", default="deepseek/deepseek-v4.1-flash")
     ch.add_argument("--say", default=None, help="the first message; otherwise asked for")
-    ch.add_argument("--rounds", type=int, default=200, help="the run's round budget; the model is told")
+    ch.add_argument("--turns", type=int, default=200, help="the run's turn budget; the model is told")
     ch.add_argument(
         "--shell",
         action="store_true",

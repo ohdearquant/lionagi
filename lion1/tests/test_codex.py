@@ -419,7 +419,7 @@ def test_the_input_count_of_turn_completed_is_handed_back_and_the_next_figure_st
         return await backend(messages)
 
     run = asyncio.run(
-        Actor("codex-count").run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), watched)
+        Actor("codex-count").run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), watched)
     )
     (f1, v1), (f2, v2) = seen
     assert f1 == v1 and v2 > v1  # nothing reported yet: the view estimate

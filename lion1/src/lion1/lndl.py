@@ -83,7 +83,7 @@ __all__ = (
 
 
 class LNDLError(ValueError):
-    """The turn's LNDL could not be read. The message is what the model is told next round."""
+    """The turn's LNDL could not be read. The message is what the model is told next turn."""
 
 
 @dataclass(frozen=True)
@@ -861,7 +861,7 @@ def _parse_constructs(text: str, repairs: list[str]) -> Program:
             lvars.append(Lvar(alias=alias, value=body.strip(), spec=spec, field=fld))
         elif not _CALLISH.match(body.strip()):
             # a shell line, a script, a note's prose, written in <lact>: it is a value, not a request,
-            # kept under the alias rather than lost to a wasted round, so a later turn can point at the
+            # kept under the alias rather than lost to a wasted turn, so a later turn can point at the
             # alias it used (ADR-0004/A1)
             lvars.append(Lvar(alias=alias, value=body.strip(), spec=spec, field=fld))
             problems.append(
@@ -931,10 +931,10 @@ def guidance(outputs: tuple[str, ...] = (), commands: Iterable[str] | None = Non
         # the concrete example names commands only when the profile has them (ADR-0001/C5: a command
         # outside the subset is never presented); otherwise the shape is shown with placeholder names
         + (
-            'Example: <lact f1>read_file(path="src/x.py")</lact> then, next round, '
+            'Example: <lact f1>read_file(path="src/x.py")</lact> then, next turn, '
             '<lact g1>grep(pattern="def ", text=*f1)</lact>. '
             if has("read_file") and has("grep")
-            else 'Example: <lact f1>first(field="value")</lact> then, next round, '
+            else 'Example: <lact f1>first(field="value")</lact> then, next turn, '
             "<lact g1>second(text=*f1)</lact>, `first` and `second` standing for commands listed below. "
         )
         + "A multi-line value, or one with quotes in it "
@@ -950,7 +950,7 @@ def guidance(outputs: tuple[str, ...] = (), commands: Iterable[str] | None = Non
         # a note is for, how to write one, and that it outlives the run
         "Notes outlive this run: <lvar note.key>text</lvar> writes one under `key`, *note.key reads it, "
         f"{finding}the next run of this profile starts with "
-        "them in reach. Write a note when you have established something a later round or a later run "
+        "them in reach. Write a note when you have established something a later turn or a later run "
         "should not have to rediscover: a fact about the material, the plan, what is still unverified. "
         "A few lines each; write the same key again as it changes.\n"
         "Your view is the record: everything stays in it where it landed, addressable by name, until "

@@ -282,9 +282,9 @@ to `start`. `exec` keeps the remote box's timeout seam, files use the runtime's 
   `python:3.12-slim` with git, ripgrep, jq, curl and `uv`, whose project environment is `/opt/venv`
   on the `/opt` volume, never the directory's own `.venv`.
 - **S11**: No console path installs the watch. A chat over its own directory whose hooks carry the
-  `tree-changed` round hook ([[ADR-0005-command-handling|ADR-0005]] S4) hears the files changed
-  since the last turn and a moved HEAD; in a boxed chat that hook reads this machine's tree, which
-  the model's tools do not change.
+  `tree-changed` turn hook ([[ADR-0005-command-handling|ADR-0005]] S4) hears the files changed since
+  the last turn and a moved HEAD; in a boxed chat that hook reads this machine's tree, which the
+  model's tools do not change.
 - **S12**: The derived `read` carries a file out of the box as base64. `git_diff` lists the new
   files NUL-separated, so a name git would quote reaches the diff as it is; no test pins such a
   name.

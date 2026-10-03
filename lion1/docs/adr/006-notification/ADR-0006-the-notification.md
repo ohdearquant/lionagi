@@ -36,7 +36,7 @@ reports are [[ADR-0003-the-bounds|ADR-0003]]; the hook failures it lists come fr
 - **notification**: the one SYSTEM entry the runtime appends each turn, before the backend call.
 - **closure**: the one SYSTEM entry the runtime appends when the run ends by an outcome, after the
   cleanup; no backend in this run reads it.
-- **frame**: the notification's envelope, `<system round=n/N time=elapsed[/budget] seq=k>` to
+- **frame**: the notification's envelope, `<system turn=n/N time=elapsed[/budget] seq=k>` to
   `</system>`.
 - **section**: a function registered with `actor.section`; a contributor to the notification.
 - **view estimate**: the view's size at four characters per token.
@@ -59,7 +59,7 @@ reports are [[ADR-0003-the-bounds|ADR-0003]]; the hook failures it lists come fr
 - **Violated when**: a turn starts without a fresh notification, two are appended in one turn, or a
   run ends by an outcome without its closure.
 
-The frame is `<system round=n/N time=elapsed[/budget] seq=k>`, closed by `</system>`. The entry's
+The frame is `<system turn=n/N time=elapsed[/budget] seq=k>`, closed by `</system>`. The entry's
 record name (`_sys12`) lets an old notification be pointed at after it has left the view. A model
 that writes the frame itself is refused whole ([[ADR-0004-the-language#^c4|ADR-0004/C4]]).
 
@@ -76,7 +76,7 @@ none.
 
 In order:
 
-- the header: turn against `max_rounds`, time against `time_budget`, sequence;
+- the header: turn against `max_turns`, time against `time_budget`, sequence;
 - `context:`, C4's figure against `context_budget`;
 - `folded:`, the fold event against `view_budget` (ADR-0007);
 - `session:`, a restart or excess (ADR-0009/C4);

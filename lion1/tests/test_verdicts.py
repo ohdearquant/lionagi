@@ -715,7 +715,7 @@ def test_two_discoveries_at_once_settle_a_code_filed_task_once_and_spend_one_slo
         # one turn orders two writes (ADR-0005/C6); declared read, two sweeps overlap as two runs' would
         agent.actor.handlers["sweep"] = dataclasses.replace(agent.actor.handlers["sweep"], effect="read")
         profile, _ = desk.chores.profiles()
-        req = RunRequest(inputs=("tick: sweep",), emits=(Posture,), max_rounds=3, accept=desk._accept)
+        req = RunRequest(inputs=("tick: sweep",), emits=(Posture,), max_turns=3, accept=desk._accept)
         running = asyncio.create_task(agent.actor.run(profile, req, Scripted(TWO_SWEEPS, DONE)))
         try:
             await asyncio.wait_for(entered.wait(), 2)
@@ -796,7 +796,7 @@ def test_a_code_filed_and_a_model_task_share_the_last_slot_of_the_day(tmp_path, 
         return await script(messages)
 
     profile, _ = desk.chores.profiles()
-    req = RunRequest(inputs=("tick: sweep",), emits=(Posture,), max_rounds=3, accept=desk._accept)
+    req = RunRequest(inputs=("tick: sweep",), emits=(Posture,), max_turns=3, accept=desk._accept)
     asyncio.run(agent.actor.run(profile, req, backend))
     assert len(inner.tasks) == 1 and len(assigns(inner)) == 1
     got = sorted((r["class"], r.get("why")) for r in desk.rows())
