@@ -113,8 +113,9 @@ def _text(value: Any) -> str:
 
 def _utf8(text: str) -> None:
     """The one rule for a string the file cannot hold: UTF-8 cannot encode it. A lone surrogate passes
-    `json.dumps` escaped and fails at the file, so `put` refuses a key, a run or a value by it before the
-    store changes, and the loader a document by it before the next write (`_lone_surrogate`)."""
+    `json.dumps` raw (`ensure_ascii=False`) and would fail at the file's encode, so `put` refuses a key, a
+    run or a value by it before the store changes, and the loader a document by it before the next write
+    (`_lone_surrogate`)."""
     text.encode("utf-8")
 
 
@@ -179,9 +180,10 @@ class FileNoteStore(MemoryNoteStore):
             try:
                 return int(digits)
             except ValueError:  # past the interpreter's digit limit: int() names no file
+                n = len(digits.lstrip("-"))
                 raise ValueError(
-                    f"{self.path}: the file holds an integer of {len(digits)} digits, past the limit int() "
-                    "converts; repair it by hand"
+                    f"{self.path}: the file holds an integer of {n} digits, past the limit int() converts; "
+                    "repair it by hand"
                 ) from None
 
         # a file another locale wrote cannot be told from a damaged UTF-8 one by its bytes, so it is
@@ -202,6 +204,14 @@ class FileNoteStore(MemoryNoteStore):
                 f"{self.path}: the file holds a lone surrogate in {where}, which UTF-8 cannot carry; "
                 "repair it by hand"
             )
+        # a row's seq is an int, not a bool, as `put` writes it: a file holding another kind is refused
+        # whole, not loaded and carried by the next write
+        for k, v in data.get("notes", {}).items():
+            seq = v.get("seq") if isinstance(v, dict) else None
+            if isinstance(seq, bool) or not isinstance(seq, int):
+                raise ValueError(
+                    f"{self.path}: the seq of note {k!r} is not an integer: {seq!r}; repair it by hand"
+                )
         self._version = int(data.get("version", 0))
         self._notes = {k: Note(**v) for k, v in data.get("notes", {}).items()}
 
@@ -236,9 +246,9 @@ class FileNoteStore(MemoryNoteStore):
     def put(self, key: str, value: Any, *, run: str, seq: int) -> Note:
         try:
             # a value the file cannot carry, or would carry changed, is refused before the write, never
-            # coerced: standard JSON (no NaN or Infinity), UTF-8 (a lone surrogate passes `json.dumps`
-            # escaped and fails at the file), and read back equal (a tuple comes back a list, a key that
-            # is not a string comes back as text, and two keys can come back as one)
+            # coerced: standard JSON (no NaN or Infinity), UTF-8 (a lone surrogate passes `json.dumps` raw
+            # and would fail at the file's encode), and read back equal (a tuple comes back a list, a key
+            # that is not a string comes back as text, and two keys can come back as one)
             text = json.dumps(value, ensure_ascii=False, allow_nan=False)
             # every string the row persists, the key and the run beside the value's text: the flush fails
             # on any of them, and by then the store has changed

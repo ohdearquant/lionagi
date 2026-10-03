@@ -502,11 +502,30 @@ def test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_a
 
 
 @pytest.mark.parametrize(
+    "seq, text",
+    [("True", _notes_file(seq="true")), ("2.0", _notes_file(seq="2.0")), ("'2'", _notes_file(seq='"2"'))],
+    ids=["bool", "float", "text"],
+)
+def test_a_file_whose_seq_is_not_an_integer_is_refused_on_load_naming_the_file_and_the_note(
+    tmp_path, seq, text
+):
+    # a row an older version wrote with a bool or a float seq: loaded as it stands, the next unrelated
+    # write would carry it back; the load refuses it as `put` refuses the same seq
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)
+    path.write_text(text)
+    said = re.escape(f"{path}: the seq of note 'k' is not an integer: {seq}")
+    _refused_on_every_path(path, store, said, text)
+    path.write_text(_notes_file())  # repaired by hand: the store reads it again
+    assert store.get("k").value == "x"
+
+
+@pytest.mark.parametrize(
     "text",
     [_notes_file(value="1" * 5000), _notes_file(seq="1" * 5000), _notes_file(version="9" * 4301)],
     ids=["value", "seq", "version"],
 )
-def test_an_integer_past_the_digit_limit_is_refused_on_load_naming_the_file(tmp_path, text):
+def test_an_integer_past_the_digit_limit_is_refused_on_load_naming_the_file(tmp_path, text, int_digit_limit):
     # valid JSON whose integer int() refuses past its digit limit: bare, the error names no file
     path = tmp_path / "n.json"
     store = FileNoteStore(path)
