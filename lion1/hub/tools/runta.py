@@ -527,8 +527,9 @@ class RuntaSandbox(BoxBase):
             await self.stop()
         except Exception as left:
             what = "was deleted, then a client did not close" if self._deleted else "was not deleted"
+            more = "".join(f"; {note}" for note in getattr(left, "__notes__", ()))
             if isinstance(e, Exception):
-                raise SandboxDead(f"{e}; and runtime {self.runtime_id} {what}: {left!r}") from e
+                raise SandboxDead(f"{e}; and runtime {self.runtime_id} {what}: {left!r}{more}") from e
             raise e from left
 
     async def _gone(self, error: BaseException) -> bool:
@@ -645,9 +646,11 @@ class RuntaSandbox(BoxBase):
         await self._rt.pause()
 
     async def resume(self, *, timeout: float = 300.0) -> None:
-        """Resume a suspended runtime; one that fails to resume or comes back reporting another policy
-        is deleted."""
+        """Resume a suspended runtime. Its policy is read before the resume, so a mismatch, or no read,
+        deletes it with its processes never woken, and again after, the read that holds. A runtime that
+        fails to resume is deleted too."""
         try:
+            await self._own_policy("before the resume")
             await self._rt.resume(timeout=timeout)
             await self._own_policy("resumed")
         except BaseException as e:  # no resume, another policy or no read of it: not shown to be a box
@@ -661,7 +664,10 @@ class RuntaSandbox(BoxBase):
         return await events(self.runtime_id, **filters)
 
     async def stop(self) -> None:
-        """Delete the runtime (Runta's `rm`) and close the clients."""
+        """Delete the runtime (Runta's `rm`) and close the clients. Both clients are closed whatever
+        happens; a failed deletion is the error raised, with each close failure noted on it, else the
+        first close failure."""
+        deleting: BaseException | None = None
         try:
             if self._rt is not None:
                 await self._rt.delete()
@@ -670,22 +676,26 @@ class RuntaSandbox(BoxBase):
                 # made but never resolved: the id is all there is to delete it by
                 await self._api.call("DELETE", f"/v2/runtimes/{self.runtime_id}")
                 self._deleted = True
-        finally:
-            self._rt = None
-            self.started = False
-            client, self._client = self._client, None
-            api, self._api = self._api, None
-            first: BaseException | None = None  # both clients are closed; the first failure is raised
-            for held in (client, api):
-                if held is None:
-                    continue
-                try:
-                    await held.close()
-                except BaseException as e:
-                    if first is None:
-                        first = e
-            if first is not None:
-                raise first
+        except BaseException as e:
+            deleting = e
+        self._rt = None
+        self.started = False
+        client, self._client = self._client, None
+        api, self._api = self._api, None
+        closing: list[BaseException] = []
+        for held in (client, api):
+            if held is None:
+                continue
+            try:
+                await held.close()
+            except BaseException as e:
+                closing.append(e)
+        if deleting is not None:
+            for failure in closing:
+                deleting.add_note(f"closing a client also failed: {failure!r}")
+            raise deleting
+        if closing:
+            raise closing[0]
 
 
 def _policy_json(policy: Any) -> dict[str, Any] | None:

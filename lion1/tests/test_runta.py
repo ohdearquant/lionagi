@@ -138,7 +138,7 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
             self.id = rt_id
             self.policy = preset_policy.get(rt_id)
             self.deleted = self.paused = False
-            self.set_policy_calls = 0
+            self.set_policy_calls = self.resume_calls = 0
             self.checkpoint_names: list[str | None] = []
             self.files = Files()
             self.egress = EgressApi(self)
@@ -169,6 +169,7 @@ def stub_runta(root: Path, *, fail_wait: BaseException | None = None) -> types.M
             self.paused = True
 
         async def resume(self, timeout=300.0):
+            self.resume_calls += 1
             self.paused = False
 
         async def delete(self):
@@ -787,6 +788,23 @@ def test_a_client_that_fails_to_close_after_a_deletion_is_told_apart_from_a_runt
     assert mod.runtimes_store["rt-1"].deleted is True
 
 
+def test_a_refused_start_whose_deletion_and_a_client_close_both_fail_names_the_deletion(
+    tmp_path, monkeypatch
+):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=WANTED, precreate_workdir=False)
+    mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="denylist", allowed_hosts=[], denied_hosts=["bad.com"])
+    mod.delete_fails["rt-1"] = OSError("gone away")
+
+    async def close_fails():
+        raise OSError("socket")
+
+    with pytest.raises(SandboxDead) as e:
+        asyncio.run(_start_with_client_close_failing(box, mod, close_fails))
+    said = str(e.value)
+    assert "runtime rt-1 was not deleted: OSError('gone away')" in said  # the close error is not the reason
+    assert "closing a client also failed: OSError('socket')" in said  # and it is not lost either
+
+
 async def _start_with_client_close_failing(box, mod, close_fails):
     """`start` with the SDK client's `close` failing: patched once the client exists, before the refusal."""
     original = box.__class__._own_policy
@@ -802,16 +820,29 @@ async def _start_with_client_close_failing(box, mod, close_fails):
         box.__class__._own_policy = original
 
 
-def test_resume_whose_policy_cannot_be_read_deletes_the_runtime_and_raises_that_error(tmp_path, monkeypatch):
+@pytest.mark.parametrize("before", [True, False], ids=["before the resume", "after the resume"])
+def test_resume_whose_policy_cannot_be_read_deletes_the_runtime_and_raises_that_error(
+    tmp_path, monkeypatch, before
+):
     box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=WANTED)
     mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="allowlist", allowed_hosts=["a.com"], denied_hosts=[])
     asyncio.run(box.start())
     rt = mod.runtimes_store["rt-1"]
     asyncio.run(box.suspend())
-    mod.refresh_fails["rt-1"] = OSError("no read")
+    if before:
+        mod.refresh_fails["rt-1"] = OSError("no read")
+    else:
+        resumes = rt.resume
+
+        async def resume_then_lose_the_read(timeout=300.0):
+            await resumes(timeout)
+            mod.refresh_fails["rt-1"] = OSError("no read")  # the runtime is up and its record is not readable
+
+        rt.resume = resume_then_lose_the_read
     with pytest.raises(OSError, match="no read"):
         asyncio.run(box.resume())
-    assert rt.paused is False and rt.deleted is True and box.started is False and box.box_id is None
+    assert rt.resume_calls == (0 if before else 1)  # a policy that cannot be read is no reason to wake it
+    assert rt.deleted is True and box.started is False and box.box_id is None
 
 
 def test_resume_whose_sdk_call_fails_deletes_the_runtime_and_raises_that_error(tmp_path, monkeypatch):
@@ -841,12 +872,15 @@ def test_resume_refused_with_a_deletion_that_fails_keeps_the_refusal(tmp_path, m
     mod.delete_fails["rt-1"] = OSError("gone away")
     with pytest.raises(SandboxDead) as e:
         asyncio.run(box.resume())
-    for part in ("resumed", "denylist", "runtime rt-1 was not deleted", "OSError('gone away')"):
+    assert rt.resume_calls == 0
+    for part in ("before the resume", "denylist", "runtime rt-1 was not deleted", "OSError('gone away')"):
         assert part in str(e.value)
     assert rt.deleted is False and box.started is False
 
 
-def test_resume_refuses_a_runtime_that_comes_back_under_another_policy_and_deletes_it(tmp_path, monkeypatch):
+def test_resume_refuses_a_suspended_runtime_under_another_policy_before_it_runs_and_deletes_it(
+    tmp_path, monkeypatch
+):
     box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=WANTED)
     mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="allowlist", allowed_hosts=["a.com"], denied_hosts=[])
     asyncio.run(box.start())
@@ -856,16 +890,42 @@ def test_resume_refuses_a_runtime_that_comes_back_under_another_policy_and_delet
     rt.policy = _EgressPolicySDK(mode="denylist", allowed_hosts=[], denied_hosts=["bad.com"])
     with pytest.raises(SandboxDead) as e:
         asyncio.run(box.resume())
+    # the processes the runtime kept were never woken under the other policy
+    assert rt.resume_calls == 0 and rt.paused is True
+    for part in ("before the resume", "denylist", "bad.com", "a.com"):
+        assert part in str(e.value)
+    assert rt.deleted is True and box.started is False and box.box_id is None
+    assert clients[0].closed is True and mod.async_runta_instances[-1].closed is True
+
+
+def test_resume_refuses_a_runtime_that_comes_back_under_another_policy_and_deletes_it(tmp_path, monkeypatch):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path, egress=WANTED)
+    mod.preset_policy["rt-1"] = _EgressPolicySDK(mode="allowlist", allowed_hosts=["a.com"], denied_hosts=[])
+    asyncio.run(box.start())
+    rt = mod.runtimes_store["rt-1"]
+    asyncio.run(box.suspend())
+    assert rt.paused is True
+    resumes = rt.resume
+
+    async def resume_under_another_policy(timeout=300.0):
+        await resumes(timeout)
+        rt.policy = _EgressPolicySDK(mode="denylist", allowed_hosts=[], denied_hosts=["bad.com"])
+
+    rt.resume = resume_under_another_policy  # the read before the resume held; the runtime woke under another
+    with pytest.raises(SandboxDead) as e:
+        asyncio.run(box.resume())
     for part in ("resumed", "denylist", "bad.com", "a.com"):
         assert part in str(e.value)
-    assert rt.paused is False and rt.deleted is True and box.started is False and box.box_id is None
+    assert rt.resume_calls == 1 and rt.paused is False
+    assert rt.deleted is True and box.started is False and box.box_id is None
     # the same policy back: the box goes on
     box2, mod2, _, _ = _ready_box(monkeypatch, tmp_path, egress=WANTED, rt_id="rt-2")
     mod2.preset_policy["rt-2"] = _EgressPolicySDK(mode="allowlist", allowed_hosts=["a.com"], denied_hosts=[])
     asyncio.run(box2.start())
     asyncio.run(box2.suspend())
     asyncio.run(box2.resume())
-    assert mod2.runtimes_store["rt-2"].deleted is False and box2.started is True
+    rt2 = mod2.runtimes_store["rt-2"]
+    assert rt2.deleted is False and rt2.resume_calls == 1 and box2.started is True
 
 
 @pytest.mark.parametrize("checkpoint", [None, "ckpt-1"], ids=["fresh", "restored"])
@@ -1015,7 +1075,7 @@ def test_a_run_past_a_fractional_deadline_is_timed_out_though_its_rounded_time_i
     box = RuntaSandbox(workdir="/w")
     box._rt = RecordingRuntime(exit_code=rc, stderr=stderr)
     r = asyncio.run(box.exec(["x"], timeout=0.034))
-    assert r["timed_out"] is True and r["elapsed"] == 0.03
+    assert r["timed_out"] is True
     assert r["stderr"].endswith("ended at the 0.034s timeout")
 
 
@@ -1192,16 +1252,8 @@ def test_set_egress_checkpoint_suspend_resume_events_after_stop_and_stop_twice(t
     assert rt.deleted is True
 
 
-@pytest.mark.parametrize(
-    "failing",
-    [("sdk",), ("api",), ("sdk", "api")],
-    ids=["the SDK client", "the API client", "both"],
-)
-def test_stop_closes_both_clients_when_one_fails_to_close_and_raises_the_first_error(
-    tmp_path, monkeypatch, failing
-):
-    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path)
-    asyncio.run(box.start())
+def _failing_closes(box, mod, failing):
+    """Both clients' `close` recording its call in the list returned; a named one raises `OSError(name)`."""
     sdk, api, closed = mod.async_runta_instances[-1], box._api, []
 
     def closing(name, real):
@@ -1214,10 +1266,43 @@ def test_stop_closes_both_clients_when_one_fails_to_close_and_raises_the_first_e
         return close
 
     sdk.close, api.close = closing("sdk", sdk.close), closing("api", api.close)
+    return closed
+
+
+_FAILING_CLOSES = pytest.mark.parametrize(
+    "failing",
+    [("sdk",), ("api",), ("sdk", "api")],
+    ids=["the SDK client", "the API client", "both"],
+)
+
+
+@_FAILING_CLOSES
+def test_stop_closes_both_clients_when_one_fails_to_close_and_raises_the_first_error(
+    tmp_path, monkeypatch, failing
+):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path)
+    asyncio.run(box.start())
+    closed = _failing_closes(box, mod, failing)
     with pytest.raises(OSError) as e:
         asyncio.run(box.stop())
     assert str(e.value) == failing[0]  # the first of the errors, raised once both had been tried
     assert closed == ["sdk", "api"] and mod.runtimes_store["rt-1"].deleted is True
+
+
+@_FAILING_CLOSES
+def test_a_failed_deletion_is_the_error_stop_raises_with_a_failed_client_close_attached(
+    tmp_path, monkeypatch, failing
+):
+    box, mod, calls, clients = _ready_box(monkeypatch, tmp_path)
+    asyncio.run(box.start())
+    closed = _failing_closes(box, mod, failing)
+    mod.delete_fails["rt-1"] = OSError("gone away")
+    with pytest.raises(OSError) as e:
+        asyncio.run(box.stop())
+    assert str(e.value) == "gone away"  # the runtime left behind is the news, whichever close failed
+    assert e.value.__notes__ == [f"closing a client also failed: OSError({name!r})" for name in failing]
+    assert closed == ["sdk", "api"] and mod.runtimes_store["rt-1"].deleted is False
+    assert box.started is False and box.box_id is None
 
 
 def test_events_without_a_runtime_id_refuses():

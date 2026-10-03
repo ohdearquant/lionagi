@@ -216,9 +216,13 @@ need `capture` set.
 - **Landing evidence**: `tests/test_runta.py` (the SDK and the HTTP client stubbed; the real service
   under an opt-in flag, listed in `tests/test_shell.py`'s opt-in test), among them
   `test_start_refuses_a_runtime_that_reports_another_policy_naming_both_and_deletes_it`,
+  `test_resume_refuses_a_suspended_runtime_under_another_policy_before_it_runs_and_deletes_it`,
+  `test_resume_refuses_a_runtime_that_comes_back_under_another_policy_and_deletes_it`,
   `test_resume_whose_sdk_call_fails_deletes_the_runtime_and_raises_that_error`,
   `test_a_run_past_a_fractional_deadline_is_timed_out_though_its_rounded_time_is_under_it`,
-  `test_stop_closes_both_clients_when_one_fails_to_close_and_raises_the_first_error` and
+  `test_stop_closes_both_clients_when_one_fails_to_close_and_raises_the_first_error`,
+  `test_a_failed_deletion_is_the_error_stop_raises_with_a_failed_client_close_attached`,
+  `test_a_refused_start_whose_deletion_and_a_client_close_both_fail_names_the_deletion` and
   `test_a_runtime_that_ends_before_its_workdir_is_made_raises_sandbox_dead`.
 
 ## Alternatives
@@ -291,11 +295,12 @@ need `capture` set.
 - **S15**: A process the model runs in the box reads anywhere already (S6), so the tree's bound is
   no boundary against one: a link it swaps between the resolve and the read reaches what that
   process could read itself.
-- **S16**: A box given a policy sends it with the create and starts, or resumes, only a runtime that
-  reports it. A policy set after a restore leaves its processes a window under another (S17); the
-  service gates what ran before the read. A runtime that reports another policy, whose policy is
-  unreadable, or that fails to resume is deleted and the call raises `SandboxDead` naming both
-  policies, else the error itself; a failed deletion is named in it. A box with no policy sends none
-  and checks none.
-- **S17**: A policy change on a running runtime can read back before it holds. A closure that
-  matters is proven from inside the box.
+- **S16**: A box given a policy sends it with the create and starts only a runtime that reports it.
+  A resume reads a suspended runtime's policy first, so a mismatch is deleted with nothing woken,
+  and again after, the read that holds (S17). A runtime that reports another policy, whose policy
+  cannot be read, or that fails to resume is deleted, and the call raises `SandboxDead` naming both
+  policies, else the error; a failed deletion is named in it. A box with no policy sends none and
+  checks none.
+- **S17**: A policy set on a running runtime, as after a restore, leaves its processes a window
+  under the old one, and the change can read back before it holds. A resume that changes the policy
+  itself is caught only by the read after it. A closure that matters is proven from inside the box.

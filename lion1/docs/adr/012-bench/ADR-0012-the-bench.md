@@ -218,8 +218,8 @@ Serves C1 and C4. `grade` mirrors the harness's `run_instance` in the box: reset
 attempts, the eval script under a timeout, the harness's report function, a status on every early
 stop. `close_code_hosts` writes marked `/etc/hosts` lines and probes from inside; `open_code_hosts`
 rewrites the file in place, since it is a bind mount, and proves no marked line is left. An unaided
-Runta runtime carries the code hosts as its policy, which `open_code_hosts` empties and proves open.
-The codex arm installs from `github.com`: unaided on Runta it is refused.
+Runta runtime carries the code hosts as its policy; reopening empties it, waits until the probed
+hosts answer, else refuses the grade. The codex arm is refused there.
 
 - **Landing evidence**: `tests/test_swe_sandbox.py`: `test_failed_reset_is_not_graded`, the probe
   test refusing a reachable or elsewhere-resolving host. `tests/test_swe_runta.py`:
@@ -301,3 +301,6 @@ model has no cost.
   `test_the_harness_grades_the_bytes_the_digest_names_whatever_rewrites_the_predictions`,
   `test_the_snapshot_the_harness_reads_is_whole_or_absent`,
   `test_a_report_that_does_not_name_the_predictions_handed_in_is_refused`).
+- **S10**: Only on Runta is the unaided closure enforced outside the box. An unaided Daytona or
+  Docker run carries the `/etc/hosts` closure alone, which a root shell in the box can undo: the
+  closure is written through that shell, and the Daytona box runs as root.
