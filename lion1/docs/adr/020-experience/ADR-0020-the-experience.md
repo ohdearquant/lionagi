@@ -247,13 +247,15 @@ Serves C4 and C7. The handler checks the text (1 to 1,024 characters, not blank)
 the hits this run was shown, returns the proposal as its result, and settles like any command
 ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]). The terminal commit reads the last ok proposal by
 sequence from the captured request; `OUT{}` does not wait for an unsettled one, so a proposal the
-model wants kept is awaited in an earlier turn or pointed at.
+model wants kept is awaited in an earlier turn or pointed at. Its first docstring line and field
+descriptions, all the guidance shows, carry these rules.
 
 - **Landing evidence**: `tests/test_actor_experience.py`:
   `test_the_last_ok_proposal_by_sequence_is_the_lesson`,
   `test_used_ids_name_only_what_this_run_was_shown`,
   `test_a_hook_rewrite_keeps_the_entered_request_as_provenance`,
-  `test_out_cancels_an_unawaited_proposal_and_nothing_of_it_persists`.
+  `test_out_cancels_an_unawaited_proposal_and_nothing_of_it_persists`,
+  `test_the_lesson_guidance_shows_a_whole_first_sentence_and_the_limits_the_handler_holds_it_to`.
 
 ### D5: The terminal phase: commit, persist, closure, emit, deliver ^d5
 
