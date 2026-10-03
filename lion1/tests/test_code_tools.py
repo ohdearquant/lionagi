@@ -48,7 +48,7 @@ def test_read_lines_search_and_edit_over_a_tree(tmp_path):
         '<lact e3>edit(path="pkg/m.py", old="return", new="yield")</lact>',
         "done",
     )
-    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=3), backend))
+    run = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=3), backend))
     r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
     assert r["r1"].value == "pkg/m.py lines 5-6 of 6\n5: def g():\n6:     return f() + 1"
     assert r["s1"].value.splitlines() == ["pkg/m.py:6:    return f() + 1"]  # build/ is ignored
@@ -57,7 +57,7 @@ def test_read_lines_search_and_edit_over_a_tree(tmp_path):
     assert r["s3"].ok is False and any(
         w in r["s3"].error.lower() for w in ("unclosed", "unmatched", "balanced")
     )
-    assert r["e1"].ok and r["e2"].ok  # two edits of one file in one round: both land
+    assert r["e1"].ok and r["e2"].ok  # two edits of one file in one turn: both land
     assert r["e3"].ok is False and "occurs 2 times" in r["e3"].error
     assert (
         tmp_path / "pkg" / "m.py"
@@ -71,7 +71,7 @@ def test_search_over_a_single_file_still_prints_the_filename(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact s>search(pattern="return f", path="pkg/m.py")</lact>', "done"),
         )
     )
@@ -87,7 +87,7 @@ def test_read_lines_on_an_empty_file_says_so(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact r>read_lines(path="empty.py")</lact>', "done"),
         )
     )
@@ -102,7 +102,7 @@ def test_an_edit_keeps_a_crlf_files_other_bytes(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact e>edit(path="win.txt", old="b = 1", new="b = 2")</lact>', "done"),
         )
     )
@@ -121,7 +121,7 @@ def test_an_edit_keeps_each_line_of_a_mixed_endings_file(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact e>edit(path="mixed.txt", old="c = 1", new="c = 2\nc2 = 3")</lact>', "done"),
         )
     )
@@ -140,7 +140,7 @@ def test_an_edit_leaves_a_bare_carriage_return_where_it_was(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted(
                 '<lact e1>edit(path="one.txt", old="a", new="A")</lact>'
                 '<lact e2>edit(path="two.txt", old="y", new="Y")</lact>',
@@ -162,7 +162,7 @@ def test_read_lines_shows_a_bare_carriage_return_as_text(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted(
                 '<lact r1>read_lines(path="one.txt")</lact><lact r2>read_lines(path="two.txt")</lact>',
                 "done",
@@ -264,7 +264,7 @@ def test_search_reaches_hidden_files_but_never_the_git_directory(tmp_path):
     run = asyncio.run(
         actor.run(
             profile,
-            RunRequest(inputs=("go",), max_rounds=2),
+            RunRequest(inputs=("go",), max_turns=2),
             scripted('<lact s>search(pattern="needle", path=".")</lact>', "done"),
         )
     )

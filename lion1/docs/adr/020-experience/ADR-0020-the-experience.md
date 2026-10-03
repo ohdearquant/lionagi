@@ -221,7 +221,7 @@ is a tuple right below the imports.
 
 ### D2: `Actor.run`: the recall before the first notification, the persist after the reap ^d2
 
-Serves C2 and C5. After `_take_inbox` on round 1 the run picks its first new INPUT and calls the
+Serves C2 and C5. After `_take_inbox` on turn 1 the run picks its first new INPUT and calls the
 store once under `io_timeout`; the hits and the receipt are held on the run for `_notify`. After
 `_reap` returns and the outcome is set, the persist runs under the same bound, then `_closure`
 carries its receipt; a cancellation in that phase is re-raised after `_deliver`. Nothing of this
@@ -234,10 +234,10 @@ runs for a profile with no `experience`.
 
 ### D3: `_notify`: the `experience:` section on the first turn, counted before the first call ^d3
 
-Serves C3. On round 1 `_notify` renders the held hits as quoted data under `experience:` after
-`notes kept:`, writes the receipt into the entry's `meta["experience"]`, and includes the block in
-the view estimate the context check reads. A lesson is escaped onto its lines; a hit that would
-cross `max_chars` is left out whole and counted.
+Serves C3. On turn 1 `_notify` renders the held hits as quoted data under `experience:` after `notes
+kept:`, writes the receipt into the entry's `meta["experience"]`, and includes the block in the view
+estimate the context check reads. A lesson is escaped onto its lines; a hit that would cross
+`max_chars` is left out whole and counted.
 
 - **Landing evidence**: `tests/test_actor_experience.py`:
   `test_the_first_backend_call_sees_the_hits_and_the_role_prompt_is_unchanged`,

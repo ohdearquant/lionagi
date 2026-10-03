@@ -47,7 +47,7 @@ from hub.khive import KhiveError, lit
 
 TODAY = "2026-09-22"
 WAKE_LINE = (
-    "2026-09-23 20:14:46 wake 1: Success after 1 rounds, 1 mail, 1 sent; 1 model call(s), 512345 in, "
+    "2026-09-23 20:14:46 wake 1: Success after 1 turns, 1 mail, 1 sent; 1 model call(s), 512345 in, "
     "4321 out, $0.1234; 39 idle poll(s) before it at 0 tokens"
 )
 RESTART = "serving lambda:x:desk from /x as pid 4321; ticks created: []; programs gh=/g git=/t"
@@ -225,7 +225,7 @@ def test_wakes_read_the_serve_log_keep_restarts_and_odd_wake_lines_and_a_missing
         "at": "2026-09-23 20:14:46",
         "wake": 1,
         "outcome": "Success",
-        "rounds": 1,
+        "turns": 1,
         "mail": 1,
         "sent": 1,
         "calls": 1,
@@ -516,7 +516,7 @@ class FailingKhive(FakeKhive):
 
 
 def test_the_wake_pattern_reads_a_line_with_and_without_the_context_suffixes_and_each_alone(tmp_path):
-    base = {"wake": 45, "outcome": "Quiet", "rounds": 1, "mail": ["a", "b"], "sent": 0, "idle_polls": 0}
+    base = {"wake": 45, "outcome": "Quiet", "turns": 1, "mail": ["a", "b"], "sent": 0, "idle_polls": 0}
     tokens = {"calls": 1, "in": 56129, "out": 1038, "cost": 0.0624}
     at = "2026-09-24 10:52:43"  # serve prints each line after the time (apps/cli/lion_cli/agent.py)
     old = f"{at} {_line({**base, 'tokens': tokens})}"
@@ -535,6 +535,9 @@ def test_the_wake_pattern_reads_a_line_with_and_without_the_context_suffixes_and
         m = _WAKE.match(line)
         assert m and (m["wake"], m["tokens_in"], m["cost"]) == ("45", "56129", "0.0624"), line
         assert (m["context"], m["restarts"]) == (context, restarts), line
+        # a line written before the rename counts rounds: the same wake, the same count
+        was = _WAKE.match(line.replace(" turns, ", " rounds, "))
+        assert " turns, " in line and was and was.groupdict() == m.groupdict(), line
     d = tmp_path / "r"
     d.mkdir()
     (d / "serve.log").write_text("\n".join([old, ctx, both, alone]) + "\n")
@@ -544,7 +547,7 @@ def test_the_wake_pattern_reads_a_line_with_and_without_the_context_suffixes_and
         "at": at,
         "wake": 45,
         "outcome": "Quiet",
-        "rounds": 1,
+        "turns": 1,
         "mail": 2,
         "sent": 0,
         "calls": 1,
@@ -574,7 +577,7 @@ def test_a_days_cost_that_misses_calls_of_unknown_cost_is_marked_partial_in_ever
     assert f"today 2 run(s), 2 mail, {mark}\n" in text and text.endswith("today 1 run(s), 1 mail, $0.3000")
     html = page([area], [r, whole])
     assert f"<td>2 run(s), 2 mail, {mark}</td>" in html and "<td>1 run(s), 1 mail, $0.3000</td>" in html
-    base = {"wake": 2, "outcome": "Success", "rounds": 1, "mail": ["a"], "sent": 1, "idle_polls": 4}
+    base = {"wake": 2, "outcome": "Success", "turns": 1, "mail": ["a"], "sent": 1, "idle_polls": 4}
     tokens = {"calls": 2, "in": 900, "out": 40, "cost": 0.3, "unknown": 1, "context": 800}
     line = f"{TODAY} 11:09:15 {_line({**base, 'tokens': tokens})}"
     m = _WAKE.match(line)
@@ -1074,7 +1077,7 @@ def test_events_open_with_the_rows_then_the_history_and_deliver_a_new_line_withi
     history = [x for e, x in got[1:]]
     assert [x["line"] for x in history] == old[-20:]  # the last 20, the partial line not among them
     assert all(x["dir"] == str(d) and x["history"] is True for x in history)
-    new = "2026-09-24 11:00:00 wake 46: Quiet after 1 rounds, 1 mail, 0 sent; 1 model call(s), 1 in, 1 out"
+    new = "2026-09-24 11:00:00 wake 46: Quiet after 1 turns, 1 mail, 0 sent; 1 model call(s), 1 in, 1 out"
     started = time.monotonic()
     with open(d / "serve.log", "a") as f:
         f.write(" line\n" + new + "\n")
@@ -1294,7 +1297,7 @@ def test_the_log_tail_reads_history_then_whole_new_lines_and_starts_over_on_a_sh
 
 
 def test_the_wake_pattern_reads_the_task_suffix_with_and_without_the_other_two(tmp_path):
-    base = {"wake": 46, "outcome": "Quiet", "rounds": 1, "mail": [], "sent": 0, "idle_polls": 3}
+    base = {"wake": 46, "outcome": "Quiet", "turns": 1, "mail": [], "sent": 0, "idle_polls": 3}
     tokens = {"calls": 1, "in": 40000, "out": 900, "cost": 0.05}
     at = "2026-09-24 12:00:00"
     only = f"{at} {_line({**base, 'tokens': tokens, 'tasks': ['t1', 't2']})}"

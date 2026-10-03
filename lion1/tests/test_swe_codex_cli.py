@@ -19,7 +19,7 @@ def test_a_run_is_harvested_into_the_ledger_shape_and_the_key_rides_only_in_the_
         codex_cli.solve(ROW, "deepseek/deepseek-v4.1-flash", tmp_path, box=box, time_budget=100)
     )
     assert rec["outcome"] == "Success" and rec["codex_version"] == "codex-cli 0.153.4"
-    assert rec["rounds"] == 2 and rec["commands"] == ["ls", "pytest -q"]
+    assert rec["turns"] == 2 and rec["commands"] == ["ls", "pytest -q"]
     assert rec["tokens"] == {"input": 600, "cache_read": 400, "cache_create": 0, "output": 200}
     assert rec["cost_usd"] == codex_cli.cost_of(
         "deepseek/deepseek-v4.1-flash",
@@ -46,7 +46,7 @@ def test_a_run_killed_at_the_budget_is_exhausted_and_its_diff_is_still_the_patch
     rec = asyncio.run(
         codex_cli.solve(ROW, "deepseek/deepseek-v4.1-flash", tmp_path, box=CodexBox(rc=137), time_budget=5)
     )
-    assert rec["outcome"] == "Exhausted:time" and rec["model_patch"] == DIFF and rec["rounds"] == 2
+    assert rec["outcome"] == "Exhausted:time" and rec["model_patch"] == DIFF and rec["turns"] == 2
 
 
 def test_an_unpriced_model_has_no_cost_and_a_failed_turn_is_named():

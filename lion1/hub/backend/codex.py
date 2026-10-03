@@ -1,4 +1,4 @@
-"""Codex CLI as a chat-completion backend (ADR-0009): `codex exec`, one call per round.
+"""Codex CLI as a chat-completion backend (ADR-0009): `codex exec`, one call per turn.
 
 The view goes in as one prompt with its roles marked, the model's final message comes out. The
 CLI is an agent, so every feature that lets the model act is switched off by flag (shell, exec,
@@ -6,16 +6,16 @@ web search, sub-agents, images, apps, browser, computer use, plugins, hooks); me
 what is left cannot run a command, search, or spawn. Every command the model wants goes through
 this runtime's handlers as LNDL. Without those flags a read-only sandbox still let the model read
 this machine and search the web for the upstream fix: 34 commands and 850k input tokens in one
-round. Usage comes from the `turn.completed` event, whose input count is handed back as the prompt
+turn. Usage comes from the `turn.completed` event, whose input count is handed back as the prompt
 count; there is no cost on a subscription, so `total_cost_usd` stays None and the bench records the
 spend as unknown, never as zero.
 
 The CLI's own base instructions describe an agent with a shell in a read-only workspace; with the
-tools off, a reasoning model reads that as a broken interface and, one turn in three at round one,
+tools off, a reasoning model reads that as a broken interface and, one reply in three at turn one,
 answers "unable to access repository tools" instead of writing LNDL. `model_instructions_file`
 replaces those instructions with a chat framing and `include_environment_context=false` drops the
-cwd and sandbox lines; measured on gpt-5.6-luna, the round-one prompt falls from 7.4k to 3.6k tokens
-and the refusals stop (0 of 12 round-one samples; 4 of 12 before). The shared `~/.codex` home
+cwd and sandbox lines; measured on gpt-5.6-luna, the turn-one prompt falls from 7.4k to 3.6k tokens
+and the refusals stop (0 of 12 turn-one samples; 4 of 12 before). The shared `~/.codex` home
 injects its own AGENTS.md and every plugin's skill list into the prompt, so a call runs from a
 private home when one is given (`home`): a directory holding only `auth.json` as a symlink to the
 real one. The login crate writes that file in place (`OpenOptions` truncate+write, no rename), so

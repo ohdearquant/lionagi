@@ -29,7 +29,7 @@ listed below; arguments are literals or pointers like *a1
   OUT{name: [a1, ...]} finish: the aliases fill the named output (this run's outputs: listed below); a \
 single-field output also takes a literal, OUT{name: 3}, and any output takes a dict literal of its fields, \
 OUT{name: {field: value, ...}}
-Example: <lact f1>read_file(path="src/x.py")</lact> then, next round, <lact g1>grep(pattern="def ", \
+Example: <lact f1>read_file(path="src/x.py")</lact> then, next turn, <lact g1>grep(pattern="def ", \
 text=*f1)</lact>. A multi-line value, or one with quotes in it (a script, a code block, a shell line), is \
 written as a heredoc argument, nothing escaped:
   <lact r1>run(cmd=<<EOF
@@ -41,7 +41,7 @@ with _ are the record's), or to a note (note.key). Values are never repeated for
 Notes outlive this run: <lvar note.key>text</lvar> writes one under `key`, *note.key reads it, note.list() \
 and note.find(query="...") find them, note.get(key="...") reads one whole, note.delete(key="...") removes \
 one, and the next run of this profile starts with them in reach. Write a note when you have established \
-something a later round or a later run should not have to rediscover: a fact about the material, the \
+something a later turn or a later run should not have to rediscover: a fact about the material, the \
 plan, what is still unverified. A few lines each; write the same key again as it changes.
 Your view is the record: everything stays in it where it landed, addressable by name, until you hide it \
 or the view outgrows its budget, when the runtime folds the oldest results to placeholders once. Hide in \
@@ -62,7 +62,7 @@ listed below; arguments are literals or pointers like *a1
   OUT{name: [a1, ...]} finish: the aliases fill the named output (this run's outputs: listed below); a \
 single-field output also takes a literal, OUT{name: 3}, and any output takes a dict literal of its fields, \
 OUT{name: {field: value, ...}}
-Example: <lact f1>first(field="value")</lact> then, next round, <lact g1>second(text=*f1)</lact>, `first` \
+Example: <lact f1>first(field="value")</lact> then, next turn, <lact g1>second(text=*f1)</lact>, `first` \
 and `second` standing for commands listed below. A multi-line value, or one with quotes in it (a script, \
 a code block, a shell line), is written as a heredoc argument, nothing escaped:
   <lact r1>name(field=<<EOF
@@ -73,7 +73,7 @@ A pointer *alias refers to anything you named, to any entry by its record name (
 with _ are the record's), or to a note (note.key). Values are never repeated for you; point at them.
 Notes outlive this run: <lvar note.key>text</lvar> writes one under `key`, *note.key reads it, the next \
 run of this profile starts with them in reach. Write a note when you have established something a later \
-round or a later run should not have to rediscover: a fact about the material, the plan, what is still \
+turn or a later run should not have to rediscover: a fact about the material, the plan, what is still \
 unverified. A few lines each; write the same key again as it changes.
 Your view is the record: everything stays in it where it landed, addressable by name, until you hide it \
 or the view outgrows its budget, when the runtime folds the oldest results to placeholders once.

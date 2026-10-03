@@ -131,7 +131,7 @@ def test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_poi
     khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
     later = mail("lambda:a", "one more", mid="c3d4e5f6")
     lines: list[str] = []
-    # aliases are unique for the whole run, bursts included; a command's result comes back next round
+    # aliases are unique for the whole run, bursts included; a command's result comes back next turn
     # and a turn of plain text, the posture, ends the burst
     again = REPLY.replace("<lact s1>", "<lact s2>")
     backend = Scripted(REPLY, "answered hello", again, "answered again", khive=khive)
@@ -147,8 +147,8 @@ def test_a_continuous_chair_keeps_one_run_across_bursts_and_books_each_quiet_poi
     asyncio.run(agent.serve(until=until, log=lines.append))
     (run,) = agent.runs  # one run, two wakes
     assert agent.wakes == 2 and khive.sent == [SENT, SENT]
-    assert lines[0].startswith("wake 1: Quiet after 2 rounds, 1 mail, 1 sent; 2 model call(s)")
-    assert lines[1].startswith("wake 2: Quiet after 2 rounds, 1 mail, 1 sent; 2 model call(s)")
+    assert lines[0].startswith("wake 1: Quiet after 2 turns, 1 mail, 1 sent; 2 model call(s)")
+    assert lines[1].startswith("wake 2: Quiet after 2 turns, 1 mail, 1 sent; 2 model call(s)")
     inputs = [e.content for e in run.record if e.kind is Kind.INPUT]
     assert len(inputs) == 2 and "one more" in inputs[1] and "same conversation" in inputs[1]
     assert "'outcome': 'Quiet'" in inputs[1]  # the second burst is told how the first ended
@@ -226,7 +226,7 @@ def test_an_empty_turn_ending_a_burst_leaves_an_empty_posture_of_that_burst(tmp_
     asyncio.run(agent.serve(until=lambda: len(lines) >= 1, log=lines.append))
     (run,) = agent.runs
     note, cursor = agent.actor.notes_for(ACTING).get("posture"), agent.state.get("cursor")
-    assert lines[0].startswith("wake 1: Quiet after 2 rounds") and khive.sent == [SENT]
+    assert lines[0].startswith("wake 1: Quiet after 2 turns") and khive.sent == [SENT]
     assert (note.value, note.run, note.seq) == ("", run.id, cursor.seq) and cursor.run == run.id
 
 
@@ -275,7 +275,7 @@ def test_a_failed_take_inside_the_conversation_is_a_logged_failure_the_run_outli
     asyncio.run(agent.serve(until=until, log=lines.append))
     (run,) = agent.runs
     assert lines[1] == "wake 1 failed: RuntimeError: AdmissionDeadlineExpired"
-    assert lines[2].startswith("wake 2: Quiet after 2 rounds, 1 mail, 1 sent; 2 model call(s)")
+    assert lines[2].startswith("wake 2: Quiet after 2 turns, 1 mail, 1 sent; 2 model call(s)")
     spend = agent.state.get("spend").value
     assert spend["runs"] == 2 and spend["mail"] == 2 and spend["calls"] == 4  # nothing booked twice
     owed = [m for m in khive.sent if m["to"] == "lambda:owner"]
@@ -299,7 +299,7 @@ def test_mail_for_another_profile_ends_the_conversation_and_runs_fresh(tmp_path)
     assert "read this" not in "".join(str(e.content) for e in first.record)
     # the second run's OUT{} is the model's stop: its end is checkpointed before the wake's line
     assert lines[1] == f"checkpoint {load_from(context_dir(tmp_path)).id} (end) at seq {second.record.seq}"
-    assert lines[2].startswith("wake 2: Success after 1 rounds, 1 mail, 0 sent")
+    assert lines[2].startswith("wake 2: Success after 1 turns, 1 mail, 0 sent")
 
 
 def test_a_profile_changed_under_the_same_name_ends_the_conversation_and_runs_fresh(tmp_path):
@@ -346,13 +346,13 @@ def test_two_sends_of_a_turn_wait_on_one_lock_under_every_loop_that_drives_the_a
 
 def test_a_refused_command_does_not_end_the_batch(tmp_path):
     """A turn of commands never ends the batch: their results, a refusal among them, come back next
-    round, and the turn of plain text after them ends it."""
+    turn, and the turn of plain text after them ends it."""
     khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
     lines: list[str] = []
     slip = REPLY + "<lact x1>frobnicate()</lact>"  # the send lands, the second command is unknown
     agent = build(khive, slip, "sent once; the second was a slip", continuous=True, poll_ms=20)
     asyncio.run(agent.serve(until=lambda: len(lines) >= 1, log=lines.append))
-    assert lines[0].startswith("wake 1: Quiet after 2 rounds, 1 mail, 1 sent; 2 model call(s)")
+    assert lines[0].startswith("wake 1: Quiet after 2 turns, 1 mail, 1 sent; 2 model call(s)")
     assert agent.actor.notes_for(ACTING).get("posture").value == "sent once; the second was a slip"
 
 
@@ -595,7 +595,7 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
         "wake": 3,
         "at": "2026-09-22 11:09:15",
         "outcome": "Success",
-        "rounds": 2,
+        "turns": 2,
         "mail": ["a1b2c3d4", "b2c3d4e5"],
         "sent": 1,
         "tokens": {"calls": 2, "in": 5000, "out": 300, "cost": 0.004, "unknown": 0, "context": 2400},
@@ -618,7 +618,7 @@ def test_stats_prints_the_spend_row_the_last_wake_and_the_ledgers_as_this_text(t
         "day 2026-09-22: 5 model call(s), 12000 in, 800 out, $0.0123; 3 wake(s) with 4 mail; "
         "17 idle poll(s) at 0 tokens\n"
         "per handled message: 3200 tokens\n"
-        "last wake 3 at 2026-09-22 11:09:15: Success after 2 round(s), 2 mail, 1 sent; 2 call(s), 5000 in, "
+        "last wake 3 at 2026-09-22 11:09:15: Success after 2 turn(s), 2 mail, 1 sent; 2 call(s), 5000 in, "
         "300 out, $0.0040; 2 idle poll(s) before it\n"
         "ledger: 3 check(s), 2 answered, 1 not\n"
         "desk: 2 of the owner's message(s) read today, 1 answered, 1 left"
@@ -1011,7 +1011,7 @@ def test_new_failure_preserves_older_owed_batch():
 
 
 def test_the_rerun_flag_takes_read_mail_through_one_wake_by_id(tmp_path, monkeypatch):
-    """--rerun ID...: the batch a killed round left read and unanswered, back through Agent.rerun."""
+    """--rerun ID...: the batch a killed turn left read and unanswered, back through Agent.rerun."""
     from types import SimpleNamespace
 
     seen: dict = {}
@@ -1642,7 +1642,7 @@ def test_the_wake_line_carries_the_last_turns_context_and_the_sessions_started_o
     cursor = {
         "wake": 44,
         "outcome": "Quiet",
-        "rounds": 1,
+        "turns": 1,
         "mail": [1],
         "sent": 0,
         "tokens": {"calls": 1, "in": 188926, "out": 601, "cost": 0.1, "context": 31895, "restarts": 1},

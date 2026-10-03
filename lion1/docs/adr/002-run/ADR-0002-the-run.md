@@ -1,7 +1,7 @@
 ---
 adr: ADR-0002
 status: draft
-liveness: operating (two OUT{} refusing the message whole, a repeated accept refusal told with its count and a generated alias freed past a value are pinned by tests; the code still says round, S3; the opt-in wait for the whole turn is not built, S4)
+liveness: operating (two OUT{} refusing the message whole, a repeated accept refusal told with its count and a generated alias freed past a value are pinned by tests; the opt-in wait for the whole turn is not built, S4)
 date: "2026-09-23"
 area: run
 kind: new
@@ -61,7 +61,7 @@ Source: `Actor.run` in `src/lion1/actor.py`.
 | a bound is spent at the turn's start                      | nothing                                             | `Exhausted(reason)`, unless `run.more` was granted in an earlier turn (ADR-0003) |
 | under `wait`, after a reply or a pause with no command pending, `wait` answers false at the turn's start | nothing, not even the notification | `Stopped(n)`                                     |
 | `stop()` is true after the notification                   | nothing                                             | `Stopped(n)`                                                     |
-| the message carries the loop's own `<system round=` frame, two `OUT{}`, an unreadable call or program (ADR-0008/C1) or a backend's refusal | nothing | a retry; the error rides the next notification |
+| the message carries the loop's own `<system turn=` frame, two `OUT{}`, an unreadable call or program (ADR-0008/C1) or a backend's refusal | nothing | a retry; the error rides the next notification |
 | under `wait`, the turn launched no command and reached no `OUT{}`: in the tag form none is in the parsed program; in the program form its walk (ADR-0008) did neither, computing an earlier turn's value included | no command; a value or note it declares is taken   | the run continues as a reply; `wait` is asked at the next turn's start |
 | the message has no LNDL, in a run without `wait`          | nothing                                             | the run continues, with an idle note                             |
 | the message's commands or `OUT{}` lie only where control flow does not reach: an untaken branch, after a `return`, a short-circuited expression | what is reached; no output | the run continues once they settle |
@@ -117,10 +117,10 @@ turn.
 - **Violated when**: `run.outcome` ends outside the four, or a retry, a refusal or a fold is
   reported as one.
 
-`Success(output)`, `Exhausted(rounds, reason)` with the reason rounds or time today (idle, cost and
+`Success(output)`, `Exhausted(turns, reason)` with the reason turns or time today (idle, cost and
 context land with their bounds, [[ADR-0003-the-bounds#^c2|ADR-0003/C2]]), `Refused(why, times)` and
-`Stopped(round)`. `Continue` is the `Outcome` value a settled turn without `OUT{}` leaves in
-`run.outcome`; a retry shows as `retry_error` and the `round.retry` event, never as an outcome.
+`Stopped(turn)`. `Continue` is the `Outcome` value a settled turn without `OUT{}` leaves in
+`run.outcome`; a retry shows as `retry_error` and the `turn.retry` event, never as an outcome.
 
 Open asks are cancelled when the run ends, whichever value it ends in, or an abort; a command still
 pending then is cancelled and reaped, its RESULT on the record before `run` returns or raises (S4).
@@ -153,7 +153,7 @@ pins the three `wait` rows. The caller reads `run.outcome` after the loop return
 ### D2: A retry is no outcome, so `Retry` is removed ^d2
 
 Serves C4. `Retry` was among the exports of `lion1` and `lion1.actor` and sat in the `Outcome`
-union, yet no run ever constructed one: a retry is the `round.retry` event and `run.retry_error`
+union, yet no run ever constructed one: a retry is the `turn.retry` event and `run.retry_error`
 (S1). It is removed with no compatibility shim: the package is alpha and the name never carried a
 value.
 
@@ -172,7 +172,7 @@ value.
 ## Consequences
 
 - **S1**: A retry costs a turn; its message stays on the record as TEXT, and the retry itself is the
-  `round.retry` event on the actor's bus and `run.retry_error`. Its reason rides the next turn's
+  `turn.retry` event on the actor's bus and `run.retry_error`. Its reason rides the next turn's
   notification, so a retry on the run's last turn surfaces none. A backend's refusal, a reason on
   its reply, is persisted at once in the TEXT entry's metadata; an empty reason is no refusal. A
   caller counting outcomes sees no retry. Pinned: the notification by
@@ -180,9 +180,10 @@ value.
   `test_a_native_tool_call_beside_text_refuses_the_turn_whole_and_the_model_is_told`; no test pins
   the event.
 - **S2**: The idle row keeps a talking model alive; `max_idle` (ADR-0003) is what ends it.
-- **S3**: The code still says round where this corpus says turn: `max_rounds`, `Exhausted(rounds)`,
-  `<system round=`, "rounds running", the `round.*` events, `Stopped(round)`. The rename is owed
-  with the first change that touches them. A retry is no outcome: the run has no `Retry` class.
+- **S3**: The code says turn as this corpus does: `max_turns`, `Exhausted(turns)`, `<system turn=`,
+  the `turn.*` events, `Stopped(turn)`, an entry's `turn`. The earlier spelling, round, is gone with
+  no alias: `max_rounds` is refused as no bound. A log written before the rename still reads, its
+  entries' `round` taken as their turn. A retry is no outcome: the run has no `Retry` class.
 - **S4**: The gather of every command of the turn before `OUT{}` assembled is gone: `OUT{}` waits
   for what it references, and an assembly that fails or an output refused settles the rest of the
   turn. What is pending when the run ends, by an outcome or an abort, is cancelled and reaped before

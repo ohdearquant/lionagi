@@ -60,14 +60,14 @@ def test_seq_is_the_number_the_next_append_takes():
     assert r.seq == 2
 
 
-def test_append_keeps_content_alias_round_and_meta():
+def test_append_keeps_content_alias_turn_and_meta():
     r = Record("run-1")
     plain = r.append(Kind.TEXT, "hello")
-    assert (plain.alias, plain.round, plain.meta) == (None, 0, {})
-    e = r.append(Kind.RESULT, {"lines": 3}, alias="f", round=2, request="read_file", ok=True)
+    assert (plain.alias, plain.turn, plain.meta) == (None, 0, {})
+    e = r.append(Kind.RESULT, {"lines": 3}, alias="f", turn=2, request="read_file", ok=True)
     assert e.kind is Kind.RESULT
     assert e.content == {"lines": 3}
-    assert (e.alias, e.round) == ("f", 2)
+    assert (e.alias, e.turn) == ("f", 2)
     assert e.meta == {"request": "read_file", "ok": True}
 
 

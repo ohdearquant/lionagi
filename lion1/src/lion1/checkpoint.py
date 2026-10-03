@@ -134,7 +134,7 @@ def entry_of(row: dict) -> Entry | None:
         kind=kind,
         content=content,
         alias=row.get("alias"),
-        round=row.get("round", 0),
+        turn=row.get("turn", row.get("round", 0)),  # a log written before the rename says `round`
         meta=meta,
     )
 
@@ -156,7 +156,7 @@ def _record_view(record: Record | Iterable[Entry], budget: int, fold_inputs: boo
     if not isinstance(record, Record):
         replayed = Record("replay")
         for e in record:
-            replayed.append(e.kind, e.content, alias=e.alias, round=e.round, **e.meta)
+            replayed.append(e.kind, e.content, alias=e.alias, turn=e.turn, **e.meta)
         record = replayed
     view = fold(record, protect_input=not fold_inputs)
     shown = [v.entry for v in view if v.summary is None and not v.hidden]

@@ -1,6 +1,6 @@
 """The system watches the thing being worked on, not the model's claims.
 
-Three pieces, each one function. A section is called every round and its text is appended to the
+Three pieces, each one function. A section is called every turn and its text is appended to the
 notification: it reports the artifact (here a draft in a dict) and how long it has stood
 unchanged. A stop rule ends the run when the artifact has stood long enough; the loop asks it right
 after the section has looked, so it decides on what the model was just told. An accept gate refuses
@@ -66,7 +66,7 @@ async def main() -> None:
             state["stood"] += 1
         else:
             state["last"], state["stood"] = state["draft"], 0
-        line = f"draft: {len(state['draft'])} characters, unchanged for {state['stood']} rounds"
+        line = f"draft: {len(state['draft'])} characters, unchanged for {state['stood']} turns"
         if state["stood"] >= 1:
             line += "; finish with OUT{} if it is done, or name what is missing"
         return line
@@ -82,16 +82,16 @@ async def main() -> None:
     print("=== a model that declares done too early is refused, then finishes")
     run = await actor.run(
         Profile("p"),
-        RunRequest(inputs=("write a haiku",), emits=(Done,), max_rounds=6, accept=accept),
+        RunRequest(inputs=("write a haiku",), emits=(Done,), max_turns=6, accept=accept),
         scripted(
             '<lact w1>write(text="loop goes round")</lact>',
             'OUT{done: {title: "loop"}}',
-            '<lact w2>write(text="loop goes round again and every round is one message")</lact>',
+            '<lact w2>write(text="loop goes round again and every turn is one message")</lact>',
             'OUT{done: {title: "loop"}}',
         ),
     )
     for e in run.record:
-        if e.kind is Kind.SYSTEM and e.round > 1:
+        if e.kind is Kind.SYSTEM and e.turn > 1:
             print(
                 f"[{e.name}] "
                 + " | ".join(ln for ln in e.content.splitlines()[1:-1] if not ln.startswith("context:"))
@@ -102,15 +102,15 @@ async def main() -> None:
     state.update(draft="", last=None, stood=0)
     run = await actor.run(
         Profile("p"),
-        RunRequest(inputs=("write a haiku",), emits=(Done,), max_rounds=10, accept=accept),
+        RunRequest(inputs=("write a haiku",), emits=(Done,), max_turns=10, accept=accept),
         scripted(
-            '<lact w1>write(text="loop goes round again and every round is one message")</lact>',
+            '<lact w1>write(text="loop goes round again and every turn is one message")</lact>',
             *[f"<lact c{i}>check()</lact>" for i in range(1, 8)],
         ),
         stop=settled,
     )
     for e in run.record:
-        if e.kind is Kind.SYSTEM and e.round > 1:
+        if e.kind is Kind.SYSTEM and e.turn > 1:
             print(f"[{e.name}] " + e.content.splitlines()[-2])
     print(run.outcome)
 

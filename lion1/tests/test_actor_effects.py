@@ -59,7 +59,7 @@ def test_a_settled_commands_wait_row_is_released():
     actor = _actor("waits-released", log, released)
     turns = ["".join(f'<lact {t}{i}>put(name="w{i}")</lact>' for i in range(3)) for t in ("a", "b")]
     run = asyncio.run(
-        actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=3), scripted(*turns, "done"))
+        actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=3), scripted(*turns, "done"))
     )
     assert [n for at, n in log if at == "end"].count("w2") == 2  # two turns of three writes each ran
     assert run.pending == {} and run.waits == {}  # nothing reads a settled command's row
@@ -75,7 +75,7 @@ def test_each_class_waits_for_what_c6_says_and_reads_overlap():
 
     async def main():
         actor = _actor("effects-order", log, asyncio.Event())
-        return await asyncio.wait_for(actor.run(Profile("p"), RunRequest(max_rounds=1), scripted(turn)), 5)
+        return await asyncio.wait_for(actor.run(Profile("p"), RunRequest(max_turns=1), scripted(turn)), 5)
 
     run = asyncio.run(main())
     assert all(e.content.ok for e in run.record if e.kind is Kind.RESULT)
@@ -112,7 +112,7 @@ def test_a_write_pointing_at_a_later_write_is_a_circle_and_a_pure_one_resolves()
         '<lact a>put(name=*b)</lact><lact b>put(name="b")</lact>'
         '<lact c>calc(name=*d)</lact><lact d>calc(name="d")</lact>'
     )
-    run = asyncio.run(asyncio.wait_for(actor.run(Profile("p"), RunRequest(max_rounds=1), scripted(turn)), 5))
+    run = asyncio.run(asyncio.wait_for(actor.run(Profile("p"), RunRequest(max_turns=1), scripted(turn)), 5))
     r = {e.alias: e.content for e in run.record if e.kind is Kind.RESULT}
     assert r["a"].reason == "invalid" and r["a"].error == (
         "*b waits on a: a circle of pointers never settles, and a command that writes or reads waits for "

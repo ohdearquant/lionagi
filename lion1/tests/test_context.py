@@ -980,13 +980,13 @@ def test_the_resident_checkpoints_at_its_fold_and_its_next_process_resumes_the_s
 def test_the_resident_checkpoints_when_stop_ends_its_run(tmp_path):
     backend = Growing((FAILS.format("g1"), 1_000), ("never read", 1_000))
     khive = FakeKhive(mail("lambda:a", "say hi back"), cwd=tmp_path)
-    agent = resident(khive, backend, max_rounds=1)
+    agent = resident(khive, backend, max_turns=1)
     serve_one(agent)
     (run,) = agent.runs
     ckpt = load(tmp_path)
     # taken by the stop, so it holds everything but the closure the run appends when it returns
     assert ckpt.why == "end" and ckpt.source["seq"] == run.record.seq - 1 and agent.errors == []
-    assert len(backend.calls) == 1  # the second round's notification ended the run before the model
+    assert len(backend.calls) == 1  # the second turn's notification ended the run before the model
 
 
 def test_a_resident_whose_repository_would_commit_its_checkpoint_takes_none_and_says_so(
@@ -998,7 +998,7 @@ def test_a_resident_whose_repository_would_commit_its_checkpoint_takes_none_and_
 
     def one_run() -> Agent:
         backend = Growing((FAILS.format("g1"), 1_000), ("never read", 1_000))
-        agent = resident(FakeKhive(mail("lambda:a", "say hi back"), cwd=repo), backend, max_rounds=1)
+        agent = resident(FakeKhive(mail("lambda:a", "say hi back"), cwd=repo), backend, max_turns=1)
         serve_one(agent)
         return agent
 
@@ -1020,7 +1020,7 @@ def test_the_residents_record_and_vars_hold_a_model_value_as_its_fields_and_repl
     serve_one(agent)
     (run,) = agent.runs
     book = Book(title="Dune", year=1965)
-    e = run.record.append(Kind.RESULT, Result("fetch", True, book), alias="b", round=run.round)
+    e = run.record.append(Kind.RESULT, Result("fetch", True, book), alias="b", turn=run.turn)
     run.values["v"] = (e.seq, book)
     agent._checkpoint(run, "manual")
     ckpt, fields = load(tmp_path), {"title": "Dune", "year": 1965}
@@ -1236,7 +1236,7 @@ def test_a_claude_code_checkpoint_in_a_residents_directory_is_refused_by_its_nex
     agent = resident(
         FakeKhive(mail("lambda:a", "say hi back"), cwd=d),
         Growing((FAILS.format("g1"), 1_000), ("never read", 1_000)),
-        max_rounds=1,
+        max_turns=1,
     )
     serve_one(agent)
     own = load(d)

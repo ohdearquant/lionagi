@@ -647,7 +647,7 @@ def test_a_scripted_run_searches_and_reads_the_hits():
     backend = scripted(
         '<lact a>web_search(query="q one", count=3, site="docs.python.org", recency="week")</lact>', "done"
     )
-    result = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), backend))
+    result = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=2), backend))
     r = {e.alias: e.content for e in result.record if e.kind is Kind.RESULT}
     assert r["a"].ok and r["a"].value == [
         {"title": "T", "url": "https://e.example/", "snippet": "s", "published": "2024"}
@@ -659,8 +659,8 @@ def test_no_hits_and_a_provider_error_are_results_not_crashes():
     ok, profile = web_actor(Canned())
     bad, _ = web_actor(Canned(error=WebError("brave: HTTP 429, rate limited; try again later")))
     turns = '<lact a>web_search(query="q")</lact>', "done"
-    first = asyncio.run(ok.run(profile, RunRequest(inputs=("go",), max_rounds=2), scripted(*turns)))
-    second = asyncio.run(bad.run(profile, RunRequest(inputs=("go",), max_rounds=2), scripted(*turns)))
+    first = asyncio.run(ok.run(profile, RunRequest(inputs=("go",), max_turns=2), scripted(*turns)))
+    second = asyncio.run(bad.run(profile, RunRequest(inputs=("go",), max_turns=2), scripted(*turns)))
     a = {e.alias: e.content for e in first.record if e.kind is Kind.RESULT}["a"]
     b = {e.alias: e.content for e in second.record if e.kind is Kind.RESULT}["a"]
     assert a.ok and a.value == "(no results)"
@@ -673,7 +673,7 @@ def test_a_search_whose_every_result_has_no_usable_link_is_no_results(wire, make
     wire.answers = [Resp(json.dumps({"results": rows, "web": {"results": rows}, "data": rows}))]
     actor, profile = web_actor(make())
     turns = '<lact a>web_search(query="q")</lact>', "done"
-    result = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), scripted(*turns)))
+    result = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=2), scripted(*turns)))
     a = {e.alias: e.content for e in result.record if e.kind is Kind.RESULT}["a"]
     assert a.ok and a.value == "(no results)"
 
@@ -681,7 +681,7 @@ def test_a_search_whose_every_result_has_no_usable_link_is_no_results(wire, make
 def test_a_search_provider_given_to_web_is_called_as_it_is_and_owes_its_own_failures():
     actor, profile = web_actor(Canned(error=RuntimeError("boom")))
     turns = '<lact a>web_search(query="q")</lact>', "done"
-    result = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), scripted(*turns)))
+    result = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=2), scripted(*turns)))
     a = {e.alias: e.content for e in result.record if e.kind is Kind.RESULT}["a"]
     # the runtime's failed result for what it raised: not a `WebError`, no provider name, nothing blanked
     assert a.ok is False and a.error == "RuntimeError: boom"
@@ -701,7 +701,7 @@ def test_a_scripted_fetch_reads_a_page_and_a_private_address_is_a_failed_result(
         '<lact q>web_fetch(url="http://169.254.169.254/latest/meta-data/")</lact>',
         "done",
     )
-    result = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_rounds=2), backend))
+    result = asyncio.run(actor.run(profile, RunRequest(inputs=("go",), max_turns=2), backend))
     r = {e.alias: e.content for e in result.record if e.kind is Kind.RESULT}
     assert r["p"].ok and r["p"].value == "Hello web"
     assert r["q"].ok is False and "not a public address" in r["q"].error

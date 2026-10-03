@@ -172,7 +172,7 @@ long-running agent is the something outside the loop that runs the actor.
 - **S7**: The ask stays on the table until read only since 2026-09-20; before, a handler that
   yielded after starting the peer got its handle back as the value. The early-answer test pins it.
 - **S8**: The peer's end in C2 is the end of the run that took the request. A peer run that ends
-  before its first turn, at `max_rounds` 0 or with its time budget already spent, never took it, and
+  before its first turn, at `max_turns` 0 or with its time budget already spent, never took it, and
   the request stays on the peer's inbox with its ask open. The asking command waits, and its turn
   with it, until the next run of that actor takes the request.
   `test_a_request_no_peer_run_took_waits_on_the_peers_inbox_for_its_next_run` pins both bounds.

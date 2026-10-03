@@ -90,7 +90,7 @@ def test_the_default_commands_get_delete_and_find_with_size_and_version(tmp_path
         '<lact f2>note.find(query="")</lact>'
         "<lact l1>note.list()</lact>",
     )
-    run = asyncio.run(actor.run(profile, RunRequest(max_rounds=2), backend))
+    run = asyncio.run(actor.run(profile, RunRequest(max_turns=2), backend))
     got = [r for r in results(run) if r.spec == "note.get" and r.ok]
     assert got and got[0].value == {"key": "plan", "value": "step one\nstep two", "run": run.id, "version": 1}
     found = [r for r in results(run) if r.spec == "note.find" and r.ok]
@@ -136,7 +136,7 @@ def test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_na
         "<lact p1>pair(a=*note.plan, b=*note.plan)</lact>",
         '<lact g1>note.get(key="plan")</lact>',
     )
-    run = asyncio.run(actor.run(Profile("p", notes=store), RunRequest(max_rounds=2), backend))
+    run = asyncio.run(actor.run(Profile("p", notes=store), RunRequest(max_turns=2), backend))
     seen = run.record.get("p1")
     assert seen.content.value == ["first", "first", "first"] and seen.meta["notes"] == {"plan": 1}
     assert entry_of(entry_row(seen)).meta["notes"] == {"plan": 1}  # the log keeps the versions read
@@ -148,11 +148,11 @@ def test_a_command_reads_a_note_once_whatever_is_put_meanwhile_and_its_result_na
 def test_note_read_reads_another_profiles_note_only_under_its_privilege(monkeypatch):
     actor = Actor("n-other", privileges={"note.read"})
     keeper = asyncio.run(
-        actor.run(Profile("keeper"), RunRequest(max_rounds=1), scripted("<lvar note.plan>kept</lvar>"))
+        actor.run(Profile("keeper"), RunRequest(max_turns=1), scripted("<lvar note.plan>kept</lvar>"))
     )
     brought = MemoryNoteStore()
     courier = Profile("courier", notes=brought)
-    asyncio.run(actor.run(courier, RunRequest(max_rounds=1), scripted("<lvar note.plan>carried</lvar>")))
+    asyncio.run(actor.run(courier, RunRequest(max_turns=1), scripted("<lvar note.plan>carried</lvar>")))
     store = actor.notes_for(Profile("keeper"))
     reads = []
     monkeypatch.setattr(store, "get", lambda key: reads.append(key) or MemoryNoteStore.get(store, key))
@@ -162,12 +162,12 @@ def test_note_read_reads_another_profiles_note_only_under_its_privilege(monkeypa
         '<lact r3>note.read(profile="../keeper", key="plan")</lact>'
         '<lact r4>note.read(profile="courier", key="plan")</lact>'
     )
-    lacking = asyncio.run(actor.run(Profile("stranger"), RunRequest(max_rounds=1), scripted(turn)))
+    lacking = asyncio.run(actor.run(Profile("stranger"), RunRequest(max_turns=1), scripted(turn)))
     refused = lacking.record.get("r1")
     assert refused.content.reason == "privilege" and "note.read" in refused.content.error
     assert refused.meta["execution"] == "not executed" and reads == []
     reader = Profile("reader", privileges=frozenset({"note.read"}))
-    allowed = asyncio.run(actor.run(reader, RunRequest(max_rounds=1), scripted(turn)))
+    allowed = asyncio.run(actor.run(reader, RunRequest(max_turns=1), scripted(turn)))
     assert allowed.record.get("r1").content.value == {
         "profile": "keeper",
         "key": "plan",
@@ -189,7 +189,7 @@ def test_reading_profiles_that_have_no_notes_leaves_the_actors_stores_and_files_
     actor = Actor("n-absent", privileges={"note.read"}, notes_dir=tmp_path if on_disk else None)
     reader = Profile("reader", privileges=frozenset({"note.read"}))
     turn = "".join(f'<lact r{i}>note.read(profile="ghost{i}", key="plan")</lact>' for i in range(50))
-    run = asyncio.run(actor.run(reader, RunRequest(max_rounds=1), scripted(turn)))
+    run = asyncio.run(actor.run(reader, RunRequest(max_turns=1), scripted(turn)))
     for i in range(50):
         assert f"no note 'plan' in the notes of ghost{i}" in run.record.get(f"r{i}").content.error
     assert sorted(actor._notes) == ["reader"]  # the reader's own; none made for a name only read
@@ -206,7 +206,7 @@ def test_note_read_reads_a_profiles_file_this_actor_never_opened_and_keeps_no_st
         '<lact r2>note.read(profile="keeper", key="absent")</lact>'
         '<lact r3>note.read(profile="broken", key="plan")</lact>'
     )
-    run = asyncio.run(actor.run(reader, RunRequest(max_rounds=1), scripted(turn)))
+    run = asyncio.run(actor.run(reader, RunRequest(max_turns=1), scripted(turn)))
     assert run.record.get("r1").content.value == {
         "profile": "keeper",
         "key": "plan",
@@ -226,18 +226,18 @@ def test_a_dotted_alias_without_the_note_prefix_is_named_as_a_missed_note_in_the
 
     async def backend(messages):
         seen.append(messages)
-        return ["<lvar qa.smoke>round two ready</lvar>", "<lvar note.qa.smoke>round two ready</lvar>"][
+        return ["<lvar qa.smoke>turn two ready</lvar>", "<lvar note.qa.smoke>turn two ready</lvar>"][
             len(seen) - 1
         ]
 
-    run = asyncio.run(actor.run(Profile(name="p"), RunRequest(max_rounds=2), backend))
+    run = asyncio.run(actor.run(Profile(name="p"), RunRequest(max_turns=2), backend))
     notice = "\n".join(m.content for m in seen[1])
     assert "<lvar qa.smoke> names an output `qa` this run does not emit" in notice
     assert "a note is written as <lvar note.qa.smoke>" in notice
     assert [n.key for n in FileNoteStore(tmp_path / "p.json").list()] == [
         "qa.smoke"
     ]  # the second turn wrote it
-    assert run.values["qa.smoke"][1] == "round two ready"  # the first turn's value is still a plain value
+    assert run.values["qa.smoke"][1] == "turn two ready"  # the first turn's value is still a plain value
 
 
 def test_the_guidance_names_get_and_delete_only_when_the_profile_has_them():
@@ -847,7 +847,7 @@ def test_note_find_and_note_list_render_a_value_that_refers_to_itself():
     assert [n.key for n in store.find("LOOP")] == ["ring"]
     turn = '<lact f>note.find(query="loop")</lact><lact l>note.list()</lact>'
     run = asyncio.run(
-        Actor("notes-ring").run(Profile("p", notes=store), RunRequest(max_rounds=1), scripted(turn))
+        Actor("notes-ring").run(Profile("p", notes=store), RunRequest(max_turns=1), scripted(turn))
     )
     found, listed = (run.record.get(a).content for a in ("f", "l"))
     assert found.ok and [h["key"] for h in found.value] == ["ring"], found
@@ -864,7 +864,7 @@ def test_the_first_notice_names_the_notes_already_kept_and_later_ones_do_not(
     actor = Actor("t", notes_dir=tmp_path / "notes")
     turn = "<lact l>note.list()</lact>"
     run = asyncio.run(
-        actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=2), scripted(turn, "still"))
+        actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=2), scripted(turn, "still"))
     )
     first, second = [e.content for e in run.record.of_kind(Kind.SYSTEM)][:2]
     assert "\nnotes kept: plan (8 chars, run old1), todo (10 chars, run old2)\n" in first, first
@@ -877,14 +877,14 @@ def test_the_first_notice_names_the_notes_already_kept_and_later_ones_do_not(
     again = asyncio.run(
         actor.run(
             Profile("p"),
-            RunRequest(inputs=("again",), max_rounds=1, history=run.record.entries),
+            RunRequest(inputs=("again",), max_turns=1, history=run.record.entries),
             scripted("ok"),
         )
     )
     resumed = [e for e in again.record.of_kind(Kind.SYSTEM) if e.seq >= len(run.record.entries)]
     assert "\nnotes kept: plan (8 chars, run old1), todo (10 chars, run old2)\n" in resumed[0].content
     # none kept: no line
-    run = asyncio.run(Actor("t").run(Profile("q"), RunRequest(inputs=("go",), max_rounds=1), scripted("hm")))
+    run = asyncio.run(Actor("t").run(Profile("q"), RunRequest(inputs=("go",), max_turns=1), scripted("hm")))
     assert "notes kept" not in run.record.of_kind(Kind.SYSTEM)[0].content
 
 
@@ -895,7 +895,7 @@ def test_the_first_notice_names_ten_notes_counts_the_rest_and_says_an_unreadable
     for i in range(12):
         store.put(f"k{i:02d}", "v", run="r0", seq=i)
     run = asyncio.run(
-        Actor("t").run(Profile("p", notes=store), RunRequest(inputs=("go",), max_rounds=1), scripted("hm"))
+        Actor("t").run(Profile("p", notes=store), RunRequest(inputs=("go",), max_turns=1), scripted("hm"))
     )
     notice = run.record.of_kind(Kind.SYSTEM)[0].content
     told = ", ".join(f"k{i:02d} (1 chars, run r0)" for i in range(10))
@@ -904,7 +904,7 @@ def test_the_first_notice_names_ten_notes_counts_the_rest_and_says_an_unreadable
     (tmp_path / "notes" / "p.json").write_text("{not json")
     run = asyncio.run(
         Actor("t", notes_dir=tmp_path / "notes").run(
-            Profile("p"), RunRequest(inputs=("go",), max_rounds=1), scripted("hm")
+            Profile("p"), RunRequest(inputs=("go",), max_turns=1), scripted("hm")
         )
     )
     notice = run.record.of_kind(Kind.SYSTEM)[0].content
@@ -935,7 +935,7 @@ def test_a_note_declared_into_a_store_the_loader_refuses_ends_the_run_with_the_l
         return await turn(messages)
 
     with pytest.raises(ValueError, match=said):
-        asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1), backend))
+        asyncio.run(actor.run(Profile("p"), RunRequest(inputs=("go",), max_turns=1), backend))
     (run,) = started
     told = "\nnotes kept: unknown, the store could not be read: ValueError: "
     assert told in run.record.of_kind(Kind.SYSTEM)[0].content  # the same file, read for the first notice
@@ -966,7 +966,7 @@ def test_the_notes_kept_line_sorts_quotes_what_a_store_supplies_and_survives_wha
             raise RuntimeError("no text")
 
     def kept(store):
-        run = asyncio.run(Actor("t").run(Profile("p", notes=store), RunRequest(max_rounds=1), scripted("hm")))
+        run = asyncio.run(Actor("t").run(Profile("p", notes=store), RunRequest(max_turns=1), scripted("hm")))
         assert run.record.of_kind(Kind.TEXT)  # the run went on
         notice = run.record.of_kind(Kind.SYSTEM)[0].content
         lines = [x for x in notice.splitlines() if x.startswith("notes kept:")]

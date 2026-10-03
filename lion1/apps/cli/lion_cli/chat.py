@@ -59,7 +59,7 @@ def console(
     name: str = "console",
     system: str = "",
     model: str = "an unnamed model",
-    rounds: int = 200,
+    turns: int = 200,
     sandbox: Box | None = None,
     coding: bool = False,
     notify: Callable[[str], None] | None = None,
@@ -117,7 +117,7 @@ def console(
                     f"{SPAWN_SALIENCE})"
                 )
     if not system:
-        system = guidance("console", model=model, tools=tools, rounds=rounds, sandbox=about_sandbox)
+        system = guidance("console", model=model, tools=tools, turns=turns, sandbox=about_sandbox)
         for path, text in instructions(directory):
             system += f"\n\n{_shown(path, directory)} says:\n{text}"
     profile = Profile(name=name, specs=frozenset(specs) | {h.name for h in DEFAULT_HANDLERS}, system=system)
@@ -253,7 +253,7 @@ def status_line(
     actor: Actor, profile: Profile, runs: list[Run], backend: Any, model: str = "", who: str | None = None
 ) -> str:
     """`model · actor · inbox N · ctx ~F/B (last call P) · notes N (S chars) · $C`, read off the live
-    objects each time: inbound not yet taken into a round, the context figure the round notice told
+    objects each time: inbound not yet taken into a turn, the context figure the turn notice told
     against its budget (and the prompt the backend last reported), the profile's notes, what was
     billed. Before a run starts there is no context to tell."""
     parts = [f"inbox {len(actor.inbox) + sum(len(r.inbox) for r in runs)}"]
@@ -338,7 +338,7 @@ def fresh_log(chats: Path, chat_id: str) -> tuple[str, Path]:
 
 def unsettled(history: tuple[Entry, ...]) -> list[str]:
     """The commands a logged session asked for and never saw settle: their aliases, in order. A
-    session that ended mid-round leaves them; the model is told, and nothing runs again on its own."""
+    session that ended mid-turn leaves them; the model is told, and nothing runs again on its own."""
     asked: list[str] = []
     settled = {e.alias for e in history if e.kind is Kind.RESULT}
     for e in history:
@@ -353,7 +353,7 @@ def unsettled(history: tuple[Entry, ...]) -> list[str]:
 
 class Interrupt:
     """Ctrl-C. Mid-run, the first one cuts the model's call short and hands the turn back now (or,
-    with no call in flight, at the round's end once its results land); the second one, or one at the
+    with no call in flight, at the turn's end once its results land); the second one, or one at the
     prompt, ends the conversation now. The counter resets each time the person is asked."""
 
     def __init__(self, runs: list[Run], task: asyncio.Task, say: Console):
@@ -366,7 +366,7 @@ class Interrupt:
             if self.runs[0].interrupt():
                 self.say.notice("cut: the model's call was abandoned; Ctrl-C again to quit")
             else:
-                self.say.notice("stopping after this round; Ctrl-C again to quit now")
+                self.say.notice("stopping after this turn; Ctrl-C again to quit now")
             return
         self.task.cancel()
 
@@ -469,7 +469,7 @@ async def _chat_main(
     actor, profile = console(
         directory,
         model=a.model,
-        rounds=a.rounds,
+        turns=a.turns,
         sandbox=sandbox,
         coding=a.code,
         notify=degraded.append,
@@ -524,7 +524,7 @@ async def _chat_main(
         say.notice(f"sandbox {sandbox.name}: a VM over {directory}" + (", no network" if a.offline else ""))
         await sandbox.start()
     off = actor.bus.subscribe("run.started", lambda ev: runs.append(actor.runs[ev.payload["run"]]))
-    off_round = actor.bus.subscribe("round.started", lambda ev: say.working("thinking"))
+    off_turn = actor.bus.subscribe("turn.started", lambda ev: say.working("thinking"))
     interrupt = Interrupt(runs, asyncio.current_task(), say)
     asyncio.get_running_loop().add_signal_handler(signal.SIGINT, interrupt)
 
@@ -544,11 +544,11 @@ async def _chat_main(
             ask,
             say=say,
             first=a.say,
-            max_rounds=a.rounds,
+            max_turns=a.turns,
             history=history,
             notice=notice,
         )
-        ended = f"ended {type(run.outcome).__name__} after {run.round} round(s)"
+        ended = f"ended {type(run.outcome).__name__} after {run.turn} turn(s)"
     except (KeyboardInterrupt, asyncio.CancelledError):
         ended, interrupted = "interrupted", True
     except (ClaudeCodeError, CodexError, OpenRouterError) as e:
@@ -558,7 +558,7 @@ async def _chat_main(
         ended, failed = "failed", True
     finally:
         off()
-        off_round()
+        off_turn()
         if sandbox is not None:
             try:
                 if boxed and sandbox.dead is not None:

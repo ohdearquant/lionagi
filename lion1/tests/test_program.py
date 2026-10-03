@@ -107,7 +107,7 @@ EXAMPLE = (
 
 def _run(actor: Actor, *turns: str, profile: Profile = PROGRAM, seen: list | None = None, **request):
     request.setdefault("inputs", ("go",))
-    request.setdefault("max_rounds", len(turns))
+    request.setdefault("max_turns", len(turns))
     return asyncio.run(actor.run(profile, RunRequest(**request), scripted(*turns, seen=seen)))
 
 
@@ -120,7 +120,7 @@ def test_the_records_example_resolves_in_one_turn():
     actor = _actor("example", calls)
     seen: list = []
     run = _run(actor, fenced(*EXAMPLE), history=HISTORY, seen=seen)
-    assert isinstance(run.outcome, Success) and run.round == 1 and len(seen) == 1
+    assert isinstance(run.outcome, Success) and run.turn == 1 and len(seen) == 1
     assert run.output == {
         "similar_books": [
             {"title": "Dune Messiah", "similarity": 1.0},
@@ -326,7 +326,7 @@ def test_a_value_nothing_read_stays_bound_into_later_turns_and_its_name_stays_ta
     assert run.record.get("consumer").content.value == "kept" and run.values["later"] == (2, "kept")
     assert run.record.get("first").content.value == "deferred"
     # the DO in the value ran once, when the second turn first read it
-    assert [e.round for e in run.record if e.kind is Kind.RESULT and e.content.value == "deferred"] == [2, 2]
+    assert [e.turn for e in run.record if e.kind is Kind.RESULT and e.content.value == "deferred"] == [2, 2]
     assert sorted(calls) == [("echo", "deferred"), ("echo", "deferred"), ("echo", "kept")]
     assert "later is bound already: a name is bound once for the whole run" in _notices(run)
 
@@ -494,7 +494,7 @@ def test_an_assignment_into_a_store_the_loader_refuses_is_told_not_written_and_t
     offset = next(i for i, byte in enumerate(encoded) if byte >= 0x80)
     run = _run(Actor("loader-refuses", notes_dir=notes), fenced('note.k = "new"'), "idle")
     # the tag form ends the run on this file (ADR-0007/D7); a program's write is caught at settle
-    assert run.outcome is not None and run.round == 2 and run.notes_written == []
+    assert run.outcome is not None and run.turn == 2 and run.notes_written == []
     assert (
         f"note.k: not written: ValueError: {path}: the file is not UTF-8 "
         f"(the byte at offset {offset} cannot be decoded); re-encode it as UTF-8 by hand"
@@ -566,7 +566,7 @@ def test_a_result_the_output_names_is_never_consumed():
     # `b` read `a` and settled ok, but OUT{} points at `a`: the refused candidate's next turn sees it whole
     notices = [e for e in run.record if e.kind is Kind.SYSTEM and not e.content.startswith("<system closure")]
     assert [e.meta.get("consumed") for e in notices] == [None, None]
-    assert run.round == 2 and run.output == {"x": "again"}
+    assert run.turn == 2 and run.output == {"x": "again"}
 
 
 def test_the_consumed_hide_survives_the_log_as_a_directive():
@@ -650,13 +650,13 @@ def test_a_value_nothing_read_is_bound_again_after_the_log_replays_it_and_reads_
 )
 def test_an_arithmetic_result_too_large_for_a_number_is_a_language_error_not_a_crash_or_infinity(expr, sign):
     run = _run(_actor("overflow", []), fenced(f"OUT{{x: {expr}}}"), "idle")
-    assert run.outcome == Exhausted(2, "rounds")
+    assert run.outcome == Exhausted(2, "turns")
     assert f"line 1: the result of {sign} is too large for a number" in _notices(run)
 
 
 def test_a_number_too_large_to_write_is_refused_with_the_message():
     run = _run(_actor("inf-literal", []), fenced("OUT{x: 1e999}"), "idle")
-    assert run.outcome == Exhausted(2, "rounds")
+    assert run.outcome == Exhausted(2, "turns")
     assert "line 1: inf is not a value: a number is finite" in _notices(run)
 
 
@@ -748,7 +748,7 @@ def test_a_write_that_reads_a_value_comes_after_the_value_so_a_later_reader_neve
     calls: list = []
     actor = _actor("write-reads-value", calls)
     actor.notes_for(PROGRAM).put("k", "old", run="r0", seq=0)
-    request = RunRequest(inputs=("go",), max_rounds=len(turns) + 1)
+    request = RunRequest(inputs=("go",), max_turns=len(turns) + 1)
     # bounded: a wait cycle between the write and the value fails here, never hangs the suite
     asyncio.run(asyncio.wait_for(actor.run(PROGRAM, request, scripted(*turns, "idle")), 5))
     assert calls == [("echo", "old")] and actor.notes_for(PROGRAM).get("k").value == written
@@ -984,7 +984,7 @@ def test_a_turn_without_a_block_is_idle_and_under_a_conversation_is_the_reply():
     replies: list = []
 
     async def wait(run):
-        replies.append(run.round)
+        replies.append(run.turn)
         return False
 
     run = _run(_actor("chat", []), "hello there", "unused", wait=wait)
@@ -995,7 +995,7 @@ def _asking():
     asked: list = []
 
     async def wait(run):
-        asked.append(run.round)
+        asked.append(run.turn)
         return False
 
     return asked, wait
@@ -1059,8 +1059,8 @@ def test_reading_an_earlier_turns_value_that_runs_a_command_makes_the_turn_act_u
     asked: list = []
 
     async def wait(run):  # the other side answers the binding turn's reply, and nothing after it
-        asked.append(run.round)
-        return run.round == 2
+        asked.append(run.turn)
+        return run.turn == 2
 
     bind, read = fenced('x = DO echo(text="x") if true else 0'), fenced('note["k"] = *x')
     seen: list = []
@@ -1584,7 +1584,7 @@ def test_an_output_field_that_runs_past_the_deadline_between_two_yields_commits_
         return real(value)
 
     monkeypatch.setattr(actor_module, "_size", size)
-    request = RunRequest(inputs=("go",), time_budget=0.1, max_rounds=1)
+    request = RunRequest(inputs=("go",), time_budget=0.1, max_turns=1)
     actor = _actor("out-past-deadline-unyielded", [])
     run = asyncio.run(actor.run(PROGRAM, request, scripted(fenced('note.k = "w"', 'OUT{a: "slow"}'))))
     # the field's evaluation runs on to its end with no yield to cut it, and what it built commits nothing:
@@ -1726,7 +1726,7 @@ LONG = "(x for x in *outer if (y for y in *inner if false))"
 
 
 def _spent(turn: str, inner: int = LIMIT // 100):
-    """A one-round request over two listings and a backend whose turn arrives once its 0.2 s time
+    """A one-turn request over two listings and a backend whose turn arrives once its 0.2 s time
     budget is spent."""
     history = (
         Entry(seq=0, kind=Kind.RESULT, content=Result("listing", True, [0] * 300), alias="outer"),
@@ -1737,7 +1737,7 @@ def _spent(turn: str, inner: int = LIMIT // 100):
         await asyncio.sleep(0.3)
         return turn
 
-    return RunRequest(inputs=("go",), history=history, time_budget=0.2, max_rounds=1), late
+    return RunRequest(inputs=("go",), history=history, time_budget=0.2, max_turns=1), late
 
 
 def test_the_runs_deadline_cancels_a_command_whose_argument_is_still_a_long_comprehension():
@@ -1819,7 +1819,7 @@ def test_a_write_refused_for_the_spent_budget_consumes_none_of_the_results_it_re
 
     turn = fenced("n = nap(seconds=0.3)", "note.k = *n")
     run = asyncio.run(
-        actor.run(PROGRAM, RunRequest(inputs=("go",), time_budget=0.2, max_rounds=1), scripted(turn))
+        actor.run(PROGRAM, RunRequest(inputs=("go",), time_budget=0.2, max_turns=1), scripted(turn))
     )
     # the result is ok and the write that read it is reached after the budget: nothing is written, and the
     # result stays in view for the next notification, which only a note that took it would have hidden
@@ -1865,7 +1865,7 @@ def test_a_write_queued_with_time_left_is_refused_as_spent_whatever_its_evaluati
         return req.seconds
 
     turn = fenced("n = nap(seconds=0.3)", 'note.k = note["missing"]')
-    request = RunRequest(inputs=("go",), time_budget=0.2, max_rounds=1)
+    request = RunRequest(inputs=("go",), time_budget=0.2, max_turns=1)
     run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
     # the budget was ahead when the write was reached and gone when its task began: reading the note the
     # store does not hold would have refused it as "not written", and the turn would not have said so
@@ -1931,7 +1931,7 @@ def test_a_walk_whose_settle_raises_stops_a_value_waiting_on_something_no_budget
 @pytest.mark.parametrize("budget", [60.0, None])
 def test_a_timeout_error_from_a_store_read_is_that_error_not_the_time_budget_spent(budget):
     profile = Profile("p", language="program", notes=Faulty(TimeoutError("the store did not answer")))
-    request = RunRequest(inputs=("go",), time_budget=budget, max_rounds=1)
+    request = RunRequest(inputs=("go",), time_budget=budget, max_turns=1)
     # the deadline is far off or there is none: nothing here expired, so the walk's error is the error
     # raised, never a refusal telling the budget is spent and never a format of a budget that is None
     with pytest.raises(TimeoutError, match="the store did not answer"):
@@ -1948,7 +1948,7 @@ def test_a_time_extension_granted_inside_the_walk_moves_the_deadline_the_walk_ru
 
     grant = 'DO run.more(bound="time_budget", amount=5, reason="one more step")'
     turn = fenced(f"OUT{{granted: {grant}, after: DO nap(seconds=0.8)}}")
-    request = RunRequest(inputs=("go",), time_budget=0.4, max_rounds=1)
+    request = RunRequest(inputs=("go",), time_budget=0.4, max_turns=1)
     run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
     # the nap after the grant ends 0.8 s in, past the 0.4 s the run began with: the walk's deadline moved
     # with the bound, so the output is built where the old deadline would have cut it
@@ -1958,7 +1958,7 @@ def test_a_time_extension_granted_inside_the_walk_moves_the_deadline_the_walk_ru
 
 
 def test_the_same_walk_without_the_grant_is_cut_at_the_deadline_it_began_with():
-    request = RunRequest(inputs=("go",), time_budget=0.4, max_rounds=1)
+    request = RunRequest(inputs=("go",), time_budget=0.4, max_turns=1)
     run = asyncio.run(
         _nap_actor("unextended").run(PROGRAM, request, scripted(fenced("OUT{after: DO nap(seconds=0.8)}")))
     )
@@ -1969,7 +1969,7 @@ def test_the_same_walk_without_the_grant_is_cut_at_the_deadline_it_began_with():
 
 
 def test_a_write_the_settlement_cut_while_it_waited_for_its_command_is_refused_as_spent_once():
-    request = RunRequest(inputs=("go",), time_budget=0.1, max_rounds=1)
+    request = RunRequest(inputs=("go",), time_budget=0.1, max_turns=1)
     actor = _nap_actor("settle-cut-write")
     run = asyncio.run(actor.run(PROGRAM, request, scripted(fenced("note.k = nap(seconds=1)"))))
     # the walk ends at once and the write, a task of its own, waits for the nap: the settlement's deadline
@@ -1986,7 +1986,7 @@ def test_a_write_the_settlement_cut_after_a_grant_names_the_budget_the_settlemen
         'a = echo(text=DO run.more(bound="time_budget", amount=0.2, reason="a little more"))',
         "note.k = nap(seconds=2)",
     )
-    request = RunRequest(inputs=("go",), time_budget=0.3, max_rounds=1)
+    request = RunRequest(inputs=("go",), time_budget=0.3, max_turns=1)
     actor = _nap_actor("settle-cut-granted")
     run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
     # the grant landed while the settlement waited and moved its deadline: the cut is at 0.5 s, and the
@@ -2005,7 +2005,7 @@ def test_a_write_the_settlement_cut_names_the_budget_it_ran_under_when_a_grant_l
         return True
 
     turn = fenced('g = run.more(bound="time_budget", amount=5, reason="too late")', "note.k = nap(seconds=2)")
-    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=extend)
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
     actor = _nap_actor("settle-cut-late-grant")
     run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
     # the cut at 0.5 s cancels the write's command and the request; the request lands the grant after it, so
@@ -2025,7 +2025,7 @@ def test_an_output_built_before_a_late_grant_commits_under_the_raised_bound_when
         return True
 
     turn = fenced('g = run.more(bound="time_budget", amount=5, reason="too late")', 'OUT{k: "v"}')
-    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=extend)
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
     actor = _nap_actor("settle-late-grant-output")
     run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
     # the cut cancels the request and no write waited on it: nothing is refused, and the output the walk had
@@ -2047,7 +2047,7 @@ def test_an_output_built_before_a_late_grant_commits_nothing_when_the_settlement
         "note.k = nap(seconds=2)",
         'OUT{k: "v"}',
     )
-    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=extend)
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
     actor = _nap_actor("settle-cut-late-grant-output")
     run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
     # the cut cancels the write's command and the request, and the grant lands after it and raises the
@@ -2066,7 +2066,7 @@ def test_a_write_queued_behind_a_grant_that_held_the_settlement_past_its_deadlin
         return True
 
     turn = fenced('g = run.more(bound="time_budget", amount=5, reason="held")', 'note.k = "v"', 'OUT{k: "v"}')
-    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=extend)
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
     actor = _nap_actor("settle-held-grant-write")
     run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
     # the walk ends in time and the settlement runs the grant first: it holds the loop past the settlement's
@@ -2094,7 +2094,7 @@ def test_a_command_a_write_queued_behind_a_held_grant_names_never_enters_its_han
         return req.seconds
 
     turn = fenced('g = run.more(bound="time_budget", amount=5, reason="held")', "note.k = nap(seconds=0)")
-    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=extend)
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
     run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
     # the write launched its command before the grant held the loop past the settlement's deadline: the
     # command reaches its handler after the grant raised the bound, and the walk's fired deadline, not the
@@ -2124,7 +2124,7 @@ def test_a_command_queued_behind_a_held_grant_is_refused_alone_and_the_output_co
     turn = fenced(
         'g = run.more(bound="time_budget", amount=5, reason="held")', "n = nap(seconds=0)", 'OUT{k: "v"}'
     )
-    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=extend)
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
     run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
     # no write waits on the command: its refusal is its own result, as a cut command's cancellation is,
     # and the output the walk built commits under the raised bound
@@ -2142,7 +2142,7 @@ def test_a_grant_landing_as_the_settlements_deadline_fires_is_named_beside_the_b
     turn = fenced(
         'g = run.more(bound="time_budget", amount=5, reason="as it fires")', "note.k = nap(seconds=2)"
     )
-    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=extend)
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=extend)
     actor = _nap_actor("settle-cut-fired-grant")
     run = asyncio.run(actor.run(PROGRAM, request, scripted(turn)))
     # the grant raised the bound to 5.5 between the deadline firing and the settlement noticing: the budget
@@ -2154,7 +2154,7 @@ def test_a_grant_landing_as_the_settlements_deadline_fires_is_named_beside_the_b
 
 
 def test_a_command_the_settlement_cut_is_a_cancelled_result_and_not_a_refusal_of_the_turn():
-    request = RunRequest(inputs=("go",), time_budget=0.1, max_rounds=1)
+    request = RunRequest(inputs=("go",), time_budget=0.1, max_turns=1)
     actor = _nap_actor("settle-cut-command")
     run = asyncio.run(actor.run(PROGRAM, request, scripted(fenced("n = nap(seconds=1)"))))
     # only a write the budget cut is the turn's spent budget: a command the settlement cancels settles as
@@ -2181,7 +2181,7 @@ def _nap_actor(name: str) -> Actor:
 
 def test_a_grant_of_time_by_a_commands_argument_moves_the_deadline_its_turns_settle_waits_under():
     turn = fenced(*GRANT_IN_AN_ARGUMENT, 'OUT{done: "yes"}')
-    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1)
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1)
     run = asyncio.run(_nap_actor("settle-grant").run(PROGRAM, request, scripted(turn)))
     # the output is a literal, so the walk waits for no command: its own limit is gone when the turn's
     # commands settle, and the argument of `a` grants during that wait: the grant extended the settle, so
@@ -2193,7 +2193,7 @@ def test_a_grant_of_time_by_a_commands_argument_moves_the_deadline_its_turns_set
 
 
 def test_a_refused_grant_during_settlement_leaves_the_deadline_and_the_late_command_cancelled():
-    request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1, extend=lambda *ask: False)
+    request = RunRequest(inputs=("go",), time_budget=0.5, max_turns=1, extend=lambda *ask: False)
     run = asyncio.run(
         _nap_actor("settle-refused").run(PROGRAM, request, scripted(fenced(*GRANT_IN_AN_ARGUMENT)))
     )
@@ -2208,7 +2208,7 @@ def test_a_refused_grant_during_settlement_leaves_the_deadline_and_the_late_comm
 )
 def test_a_walk_leaves_no_time_limit_behind_however_it_ends_so_a_later_grant_of_time_lands(first):
     grant = 'DO run.more(bound="time_budget", amount=5, reason="one more step")'
-    request = RunRequest(inputs=("go",), time_budget=60.0, max_rounds=2)
+    request = RunRequest(inputs=("go",), time_budget=60.0, max_turns=2)
     turns = scripted(fenced(*first), fenced(f"OUT{{granted: {grant}}}"))
     run = asyncio.run(_actor("limits", []).run(PROGRAM, request, turns))
     # a limit left over from the first turn cannot be moved, and the grant would fail on it

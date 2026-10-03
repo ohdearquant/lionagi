@@ -123,7 +123,7 @@ def build(
         Scripted(*turns),
         lambda mail: profile,
         admit=lambda m: chores.admit(m),
-        max_rounds=6,
+        max_turns=6,
         budget=Budget(hops_per_thread=2),
     )
     chores = Chores(agent, OWNER, STEWARD, dict(probes), tmp_path / "ledger.jsonl")
@@ -755,7 +755,7 @@ def over_state(tmp_path, inner: FakeKhive, *rows: dict, body: str = TASK_BODY) -
 def run_turns(desk: Desk, agent: Agent, *turns: str):
     """One run of the real actor over `turns`, the sweep's tick its input, OUT gated by the desk."""
     profile, _ = desk.chores.profiles()
-    req = RunRequest(inputs=("tick: sweep",), emits=(Posture,), max_rounds=len(turns), accept=desk._accept)
+    req = RunRequest(inputs=("tick: sweep",), emits=(Posture,), max_turns=len(turns), accept=desk._accept)
     return asyncio.run(agent.actor.run(profile, req, Scripted(*turns)))
 
 
@@ -1445,7 +1445,7 @@ def test_out_waits_while_a_listed_message_is_neither_answered_nor_left(tmp_path)
         ],
     )
     run = asyncio.run(agent.wake())
-    assert type(run.outcome).__name__ == "Success" and len(run.record) == 15  # 5 rounds, the closure
+    assert type(run.outcome).__name__ == "Success" and len(run.record) == 15  # 5 turns, the closure
     retries = [str(e.content) for e in run.record if e.kind is Kind.SYSTEM]
     assert any(
         "listed 2 message(s) you have not answered or left: ['m-n1', 'm-q1']; call answer(" in str(r)
@@ -1457,7 +1457,7 @@ def test_out_waits_while_a_listed_message_is_neither_answered_nor_left(tmp_path)
     # a wake whose sweep listed nothing, and a wake with no sweep at all, end on their first OUT
     khive.mail.append(mail(SELF, "tick: sweep", mid="b2c3d4e5"))
     run = asyncio.run(agent.wake())
-    assert type(run.outcome).__name__ == "Success" and len(run.record) == 7  # 2 rounds, no retry
+    assert type(run.outcome).__name__ == "Success" and len(run.record) == 7  # 2 turns, no retry
 
 
 CQ = inbox_row(ASKER, "disk or pr?", "is it the disk under the roots or PR 12 that is red?", "m-c1", "t-c1")

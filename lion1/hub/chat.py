@@ -5,7 +5,7 @@ The record is the memory. Every message and every turn is in it, the model reads
 its view, and the view folds itself once past the request's budget; nothing is summarized into a
 cursor between messages. A turn without a command is the reply: the loop waits for the next message
 instead of nagging about idleness (`RunRequest.wait`). A turn with commands runs them and the model
-reads the results before it replies; the other side sees each round as it lands.
+reads the results before it replies; the other side sees each turn as it lands.
 
 `entry_row` and `load_log` are the log's two directions: one JSON object per entry, and a log read
 back as a run's history (`RunRequest.history`), so a conversation continues from its own record.
@@ -41,7 +41,7 @@ async def chat(
     *,
     say: Callable[[Entry], None] = lambda e: print(line(e)),
     first: str | None = None,
-    max_rounds: int = 200,
+    max_turns: int = 200,
     origin: str = "console",
     history: tuple[Entry, ...] = (),
     notice: str | None = None,
@@ -49,7 +49,7 @@ async def chat(
     """Run one conversation. `ask` returns the next message, or None to end; `say` gets each record
     entry once, in order, as the run grows, the replayed `history` included, and whatever the record
     holds when the run ends however it ends. The first message is asked for when `first` is None. A
-    `notice` reaches the model as an inbound INPUT from `origin` in the first round: what the console
+    `notice` reaches the model as an inbound INPUT from `origin` in the first turn: what the console
     knows and the model must hear (a previous session that ended with commands unsettled)."""
     printed = -1  # the last seq said; the record starts at 0
     runs: list[Run] = []
@@ -86,9 +86,9 @@ async def chat(
 
     offs = (
         actor.bus.subscribe("run.started", started),
-        actor.bus.subscribe("round.started", lambda ev: flush(actor.runs[ev.payload["run"]])),
+        actor.bus.subscribe("turn.started", lambda ev: flush(actor.runs[ev.payload["run"]])),
         # each command's request and result publish the entries as they land: a slow tool no longer
-        # holds the round's turn and its settled siblings back from the log until the next round
+        # holds the turn's message and its settled siblings back from the log until the next turn
         actor.bus.subscribe("command.", lambda ev: flush(actor.runs[ev.payload["run"]])),
     )
     try:
@@ -98,7 +98,7 @@ async def chat(
         if notice:
             inbound(notice)
         request = RunRequest(
-            inputs=(opening,), max_rounds=max_rounds, wait=wait, history=history, accept=_no_out
+            inputs=(opening,), max_turns=max_turns, wait=wait, history=history, accept=_no_out
         )
         run = await actor.run(profile, request, backend)
     finally:
@@ -110,11 +110,11 @@ async def chat(
 
 
 def line(e: Entry) -> str:
-    """The record's own line for an entry: `[seq name round] content`, a notice cut at 600 chars."""
+    """The record's own line for an entry: `[seq name turn] content`, a notice cut at 600 chars."""
     text = str(e.content)
     if e.kind is Kind.SYSTEM:
         text = text[:600]
-    head = f"[{e.seq:>3} {e.name:>6} r{e.round}]"
+    head = f"[{e.seq:>3} {e.name:>6} t{e.turn}]"
     if e.kind is Kind.INPUT and e.meta.get("inbound"):
         head += f" {e.meta['origin']}:"
     return head + " " + text.replace("\n", "\n" + " " * 18)
@@ -149,7 +149,7 @@ def entry_row(e: Entry) -> dict:
         "seq": e.seq,
         "kind": e.kind.name,
         "name": e.name,
-        "round": e.round,
+        "turn": e.turn,
         "alias": e.alias,
         "meta": meta,
         "content": content,

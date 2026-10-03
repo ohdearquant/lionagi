@@ -69,8 +69,8 @@ def build(directory: Path, backend) -> tuple[Chores, Agent]:
         if isinstance(cfg.get("chair"), dict) and cfg["chair"].get("admit") == "all"
         else (lambda m: m is not None and chores.admit(m)),
         owner=cfg["owner"],
-        # sweep, route, OUT is three clean rounds; a slip (measured: an unquoted dict key) costs one each
-        max_rounds=6,
+        # sweep, route, OUT is three clean turns; a slip (measured: an unquoted dict key) costs one each
+        max_turns=6,
         batch=int(cfg.get("batch", 5)),
         budget=budget,
         # the chair is one conversation for the life of the process: a burst of mail, a plain reply,
@@ -258,7 +258,7 @@ def stats(directory: Path) -> str:
             else "per handled message: no mail handled today"
         ),
         f"last wake {cursor.get('wake')} at {cursor.get('at')}: {cursor.get('outcome')} after "
-        f"{cursor.get('rounds')} round(s), {len(cursor.get('mail') or [])} mail, {cursor.get('sent')} sent; "
+        f"{cursor.get('turns')} turn(s), {len(cursor.get('mail') or [])} mail, {cursor.get('sent')} sent; "
         f"{tokens.get('calls', 0)} call(s), {tokens.get('in', 0)} in, {tokens.get('out', 0)} out, "
         f"${tokens.get('cost', 0.0):.4f}"
         + partial(tokens.get("unknown", 0))
@@ -287,9 +287,9 @@ def backend_for(
     """The console and agent backend: DeepSeek models route to CoreWeave, then DeepInfra or Fireworks,
     never the first-party endpoint; other models take OpenRouter's own routing. `claude_code` or
     `claude_code/<model>` is the claude CLI on the subscription, never an API key, on one resumed
-    session per run: each round sends only what the view gained, so the prefix caches (the chat shape
-    resent the whole transcript every round). `options` is the config's `[claude_code]` table:
-    `timeout` seconds a round may take (a round of real work can run past the default, 300), `effort`
+    session per run: each turn sends only what the view gained, so the prefix caches (the chat shape
+    resent the whole transcript every turn). `options` is the config's `[claude_code]` table:
+    `timeout` seconds a turn may take (a turn of real work can run past the default, 300), `effort`
     the CLI's effort level, `cli` the binary. The model gets no tools of its own, as in the chat: one
     turn per call in `cwd`, and everything it does is a command the runtime runs, gates and records.
     Any other key, `tools` among them, is refused by name whatever the model, never ignored."""
@@ -316,7 +316,7 @@ def backend_for(
             else None
         ),
         reasoning={"max_tokens": 2000},
-        stop=["<system round="],
+        stop=["<system turn="],
     )
 
 
@@ -349,14 +349,14 @@ async def agent_main(a: argparse.Namespace) -> None:
             raise SystemExit(rc)
         if a.once or a.rerun:
             # one wake: the mail that arrives, or (--rerun) mail already read, back through a wake by id,
-            # the batch a killed round left unanswered
+            # the batch a killed turn left unanswered
             run = await agent.rerun(list(a.rerun)) if a.rerun else await agent.wake(wait_ms=a.wait * 1000)
             if run is None:
                 print(f"no mail within {a.wait}s")
                 return
             for e in run.record:
                 print(
-                    f"[{e.seq:>3} {e.name:>6} r{e.round}]",
+                    f"[{e.seq:>3} {e.name:>6} t{e.turn}]",
                     str(e.content)[:600].replace("\n", "\n" + " " * 18),
                 )
             return

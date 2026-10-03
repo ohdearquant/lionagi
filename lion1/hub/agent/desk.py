@@ -207,7 +207,7 @@ class Desk:
 
     def _accept(self, run: Run, output: Any) -> str | None:
         """OUT{} waits while a message this wake's sweep listed has no ledger row: a model can write
-        OUT{} in the sweep's own round, and the listed message is then never routed. A delivery
+        OUT{} in the sweep's own turn, and the listed message is then never routed. A delivery
         unresolved may wait: the next discovery replays it."""
         listed_run, listed = self._listed
         if listed_run != run.id:
