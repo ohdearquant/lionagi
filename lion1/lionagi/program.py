@@ -51,6 +51,7 @@ __all__ = (
     "Script",
     "read",
     "pointers",
+    "note_keys",
     "check",
     "Env",
     "evaluate",
@@ -344,6 +345,11 @@ def pointers(*exprs: ast.expr) -> frozenset[str]:
         for n in ast.walk(e)
         if isinstance(n, ast.Name) and n.id.startswith(_PTR) and n.id not in _NOTE
     )
+
+
+def note_keys(*exprs: ast.expr) -> frozenset[str]:
+    """The notes the expressions read, `note["k"].a` as `k`: every key `evaluate` can ask for."""
+    return frozenset(p[0] for e in exprs for n in ast.walk(e) if (p := _note_path(n)) is not None)
 
 
 def _command(call: ast.Call) -> str:

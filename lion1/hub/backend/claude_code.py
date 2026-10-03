@@ -154,7 +154,8 @@ class ClaudeCodeSession:
     # the gate over an acting session (ADR-0009/C6): with `actor`, every tool call the CLI makes asks
     # the CLI's pre-tool hook, which asks that actor's privilege check (`requires`: a tool's privileges
     # by tool name) and before hooks for the run named on the messages; a refusal stops the tool, and
-    # the call lands on the run's record as a RESULT under the CLI's tool-use id
+    # the call lands on the run's record as a RESULT under the CLI's tool-use id. An admission allows
+    # only a tool `tools` or `allowed` names; any other admitted call the CLI's own rules decide
     actor: Actor | None = None
     requires: dict[str, tuple[str, ...]] = field(default_factory=dict)
     calls: list[dict] = field(default_factory=list)
@@ -349,7 +350,11 @@ class ClaudeCodeSession:
                             raise asyncio.CancelledError
 
                 stack.push_async_callback(settle)
-                hook = {"type": "command", "command": shlex.join([sys.executable, "-I", "-c", _HOOK, sock])}
+                listed = json.dumps(list(self.tools + self.allowed))  # what --allowedTools names
+                hook = {
+                    "type": "command",
+                    "command": shlex.join([sys.executable, "-I", "-c", _HOOK, listed, sock]),
+                }
                 hook["timeout"] = math.ceil(self.timeout)  # the call's deadline, never the hook's, ends it
                 settings = {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}}
                 args += ["--settings", json.dumps(settings)]
@@ -788,14 +793,18 @@ def _prompt(messages: list[Message]) -> str:
 
 # the CLI's pre-tool hook, run by this interpreter isolated: the tool call on stdin goes to the gate's
 # socket and the verdict comes back. Exit 2 stops the tool with the reason; the CLI runs a tool whose
-# hook failed any other way, so a failure to ask exits 2 too
+# hook failed any other way, so a failure to ask exits 2 too. An admitted call goes back with its
+# input, and with `allow` only when the CLI's own allowed list (argv 1) names its tool: the CLI runs a
+# tool its hook allowed whatever that list says, so for any other tool its own rules decide
 _READ_S = 5.0  # how long a hook has to finish sending its request, once it has connected
 _JOIN_S = 5.0  # how long the call's end waits for its cancelled asks to end before abandoning them
 _HOOK = """import json, socket, sys
 try:
     s = socket.socket(socket.AF_UNIX)
-    s.connect(sys.argv[1])
-    s.sendall(sys.stdin.buffer.read())
+    s.connect(sys.argv[2])
+    call = sys.stdin.buffer.read()
+    listed = json.loads(call)["tool_name"] in json.loads(sys.argv[1])
+    s.sendall(call)
     s.shutdown(socket.SHUT_WR)
     answer = json.loads(b"".join(iter(lambda: s.recv(65536), b"")))
 except Exception as e:
@@ -803,7 +812,9 @@ except Exception as e:
 if "refuse" in answer:
     sys.stderr.write(answer["refuse"])
     sys.exit(2)
-out = {"hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": answer["allow"]}
+out = {"hookEventName": "PreToolUse", "updatedInput": answer["allow"]}
+if listed:
+    out["permissionDecision"] = "allow"
 print(json.dumps({"hookSpecificOutput": out}))
 """
 
@@ -878,9 +889,11 @@ def _repeat(la: Lact) -> Result:
 
 
 def _land(live: Run, la: Lact, verdict: Result) -> Result:
-    """The tool call on the run's record: started when admitted, else not executed. A twin that landed
-    while this one was at the gate holds the id: this one lands as a repeat, under the id suffixed by
-    the record's next seq, so an id is admitted no more than once. What landed is returned."""
+    """The tool call on the run's record: admitted, else not executed. Admitted is the gate's verdict,
+    written before the CLI acts on it, never that the tool ran (a log written before says started). A
+    twin that landed while this one was at the gate holds the id: this one lands as a repeat, under the
+    id suffixed by the record's next seq, so an id is admitted no more than once. What landed is
+    returned."""
     alias = la.alias
     if live.record.has_alias(alias):
         if verdict.ok:
@@ -888,7 +901,7 @@ def _land(live: Run, la: Lact, verdict: Result) -> Result:
         alias = f"{alias}_{live.record.seq}"
         while live.record.get(alias) is not None:  # the CLI named one like the suffix
             alias += "_"
-    execution = "started" if verdict.ok else "not executed"
+    execution = "admitted" if verdict.ok else "not executed"
     live.record.append(Kind.RESULT, verdict, alias=alias, round=live.round, execution=execution)
     return verdict
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import re
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import pytest
 
 from hub.backend import claude_code
 from hub.backend.claude_code import ClaudeCodeSession
+from hub.chat import entry_row, load_log
 from lionagi import Actor, Kind, Message, Profile, RunRequest
 
 
@@ -438,6 +440,47 @@ def test_a_failed_session_call_lands_its_envelope_and_the_next_call_bills_only_i
     )
 
 
+# a CLI that answers a session's first call and fails its second, exiting 1 with the envelope it printed:
+# the session's running totals, as a failed turn prints them
+FAILS_SECOND = """import json, sys
+from pathlib import Path
+
+here = Path(sys.argv[0]).parent
+sys.stdin.read()
+n = len(list(here.glob("argv-*.json"))) + 1
+(here / f"argv-{n}.json").write_text(json.dumps(sys.argv[1:]))
+totals = {1: (0.1, 100, 500, 4), 2: (0.25, 250, 700, 9)}[n]
+print(json.dumps({
+    "type": "result", "subtype": "success" if n == 1 else "error_during_execution", "is_error": n != 1,
+    "result": "ok" if n == 1 else "", "total_cost_usd": totals[0], "duration_api_ms": totals[1],
+    "usage": {"input_tokens": totals[2], "output_tokens": totals[3]},
+}))
+sys.exit(0 if n == 1 else 1)
+"""
+
+
+def test_a_session_call_the_cli_fails_lands_its_envelope_with_its_own_share(tmp_path, monkeypatch):
+    """No faked exec: the CLI on PATH answers the session's first call and fails its second. The failed
+    call lands on `calls` before the error goes on, its running totals read as its share over the point
+    it resumed."""
+    cli = tmp_path / "claude"
+    cli.write_text(f"#!{sys.executable}\n{FAILS_SECOND}")
+    cli.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    s = ClaudeCodeSession()
+    assert s.cli == str(cli)
+    asyncio.run(s([SYSTEM, IN0, SYS1]))
+    with pytest.raises(claude_code.ClaudeCodeError, match="claude exited 1") as raised:
+        asyncio.run(s([SYSTEM, IN0, M2, R3, SYS4]))
+    _, failed = s.calls
+    assert failed["error"] == str(raised.value) and "result" not in failed
+    assert failed["usage"] == {"input_tokens": 700, "output_tokens": 9}
+    assert (failed["total_cost_usd"], failed["duration_api_ms"]) == (pytest.approx(0.15), 150)
+    assert failed["cumulative"] == {"total_cost_usd": 0.25, "duration_api_ms": 250}
+    one, two = (json.loads((tmp_path / f"argv-{n}.json").read_text()) for n in (1, 2))
+    assert _after(two, "--resume") == _after(one, "--session-id")  # the point the share is read over
+
+
 def test_both_chat_backends_hand_back_this_calls_prompt_count(monkeypatch):
     # fresh input, cache read and cache write together are the prompt this call sent, the CLI's own
     # context included; the actor anchors its context figure on it (ADR-0009/C2)
@@ -767,15 +810,62 @@ def test_an_acting_sessions_tool_calls_ask_the_gate_and_land_on_the_record(tmp_p
     assert all(e.round == 1 for e in acts.values())
     ran = acts["toolu_a"]
     assert (ran.content.spec, ran.content.ok, ran.content.value) == ("Bash", True, {"command": "git status"})
-    assert ran.meta["execution"] == "started"
+    assert ran.meta["execution"] == "admitted"  # the gate's verdict, written before the CLI acts
     assert acts["toolu_b"].content.value == {"file_path": "notes/today.txt"}  # what the CLI was told to run
     for alias, reason in (("toolu_c", "refused"), ("toolu_d", "privilege")):
         e = acts[alias]
         assert (e.content.ok, e.content.reason, e.meta["execution"]) == (False, reason, "not executed")
     assert acts["toolu_d"].content.error == "Edit requires ['edit']"
+    # the log keeps the receipt as written, and a log written before, whose receipt reads started, loads
+    rows = [entry_row(e) for e in run.record]
+    older = [
+        {**r, "meta": {**r["meta"], "execution": "started"}} if r["alias"] == "toolu_a" else r for r in rows
+    ]
+    for name, logged, fact in (("run.jsonl", rows, "admitted"), ("old.jsonl", older, "started")):
+        (tmp_path / name).write_text("".join(json.dumps(r, default=str) + "\n" for r in logged))
+        back = {e.alias: e for e in load_log(tmp_path / name) if e.kind is Kind.RESULT}
+        assert (back["toolu_a"].content.ok, back["toolu_a"].meta["execution"]) == (True, fact)
     # the next turn's view carries the acts, so the model reads them after a restart drops the session
     rendered = "\n".join(m.content for m in actor._render(run, actor.subset(profile)))
     assert f"[{ran.name} toolu_a Bash]" in rendered and "error: refused: no rm here" in rendered
+
+
+def test_the_hook_allows_only_a_tool_the_clis_allowed_list_names(tmp_path):
+    """The CLI runs a tool its hook allowed whatever its --allowedTools says, so the hook answers allow
+    only for a tool that list names, exactly; any other admitted call goes back with its input, the
+    before hooks' replacement included, and no decision, for the CLI's own rules. Each lands admitted."""
+    cli = _scripted(
+        tmp_path,
+        _tool("Read", "toolu_a", file_path="a.txt"),  # one of the session's tools
+        _tool("mcp__probe__mark", "toolu_b"),  # named in `allowed`
+        _tool("mcp__notes__search", "toolu_c", ops="x"),  # its server named, not itself: the CLI's rule
+        _tool("mcp__other__mark", "toolu_d"),  # named nowhere; a before hook replaces its input
+        _tool("Bash", "toolu_e", command="ls"),  # a built-in the session was not given
+    )
+    actor = Actor("gated")
+
+    @actor.before
+    def tag(run, la, request):
+        return type(request).model_validate({"tag": "set"}) if la.name == "mcp__other__mark" else None
+
+    backend = ClaudeCodeSession(
+        cli=cli, tools=("Read",), allowed=("mcp__probe__mark", "mcp__notes"), actor=actor
+    )
+    run = asyncio.run(actor.run(Profile("worker"), RunRequest(inputs=("go",), max_rounds=1), backend))
+    seen = json.loads((tmp_path / "seen.json").read_text())["seen"]
+    assert [s["rc"] for s in seen] == [0] * 5
+    outs = [json.loads(s["out"])["hookSpecificOutput"] for s in seen]
+    assert [o.get("permissionDecision") for o in outs] == ["allow", "allow", None, None, None]
+    assert [o["updatedInput"] for o in outs] == [
+        {"file_path": "a.txt"},
+        {},
+        {"ops": "x"},
+        {"tag": "set"},
+        {"command": "ls"},
+    ]
+    assert all(o["hookEventName"] == "PreToolUse" for o in outs)
+    acts = [(e.alias, e.content.ok, e.meta["execution"]) for e in run.record.of_kind(Kind.RESULT)]
+    assert acts == [(f"toolu_{x}", True, "admitted") for x in "abcde"]
 
 
 def test_the_gate_admits_nothing_when_it_cannot_decide(tmp_path):
@@ -865,7 +955,7 @@ time.sleep(30)
 def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_returned(monkeypatch):
     """The CLI's hook connects, then the CLI exits a few event-loop turns later, before the gate's task
     for that connection has run: the gate does not run after the call returned, the hook is refused,
-    and the call lands once in the call's own round, whatever the window (0 to 7 turns): started when the
+    and the call lands once in the call's own round, whatever the window (0 to 7 turns): admitted when the
     hooks ran inside the call, not executed when the call ended first, its hook accepted at the end."""
     import shlex
     import socket
@@ -913,8 +1003,8 @@ def test_a_hook_that_connects_as_the_call_ends_runs_no_gate_after_the_call_retur
     for k in range(8):
         hooks, landed = asyncio.run(window(k))
         assert all(returned == 0 for _, returned in hooks), (k, hooks)  # no hook after the call returned
-        # the call lands once, in the call's own round: started when its hooks ran, else not executed
-        assert landed == [(f"toolu_{k}", 1, "started" if hooks else "not executed")], (k, landed)
+        # the call lands once, in the call's own round: admitted when its hooks ran, else not executed
+        assert landed == [(f"toolu_{k}", 1, "admitted" if hooks else "not executed")], (k, landed)
 
 
 def test_a_request_still_being_sent_when_the_call_ends_lands_not_executed_once_it_arrives(monkeypatch):
@@ -1257,7 +1347,9 @@ def test_two_requests_with_one_tool_use_id_at_the_gate_together_admit_it_once(mo
         return landed, answers
 
     landed, answers = asyncio.run(twins(False))
-    assert landed[0] == ("toolu_d", True, None, "started") and answers[0] == b'{"allow": {"file_path": "n0"}}'
+    assert (
+        landed[0] == ("toolu_d", True, None, "admitted") and answers[0] == b'{"allow": {"file_path": "n0"}}'
+    )
     assert landed[1] == (f"toolu_d_{landed[1][0][8:]}", False, "refused", "not executed") and len(landed) == 2
     assert answers[1] == b'{"refuse": "refused: tool-use id \'toolu_d\' is already on the record"}'
     landed, answers = asyncio.run(twins(True))

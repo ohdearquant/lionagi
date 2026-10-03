@@ -144,7 +144,8 @@ pins the three `wait` rows. The caller reads `run.outcome` after the loop return
   `Exhausted`, `Refused` and `Stopped` by value and `Success` by type; the reap by
   `test_out_waits_for_what_it_names_and_the_reap_lands_the_rest_cancelled_before_run_returns`; the
   closure by `test_a_run_that_ends_by_an_outcome_closes_its_record_with_the_outcome`. One cancelled
-  before it entered is recorded by `_never_started`.
+  before it entered is recorded by `_never_started`; the clock after `wait` by
+  `test_a_wait_that_outlasts_the_time_budget_admits_no_further_call`.
 
 ## Alternatives
 

@@ -837,6 +837,116 @@ def test_rerun_is_a_wake_the_caps_hold_and_it_needs_ids():
     assert khive.log.count("backend") == 2  # the one wake's two turns; nothing ran again
 
 
+class Gate:
+    """A gate that counts its calls per message and answers with the sender's trust. A message in
+    `flip` gets the other answer from any later call, so a path asking twice puts it in both lists or
+    in neither; the gate raises on the message `fail` names."""
+
+    def __init__(self, flip: frozenset[str] = frozenset(), fail: str | None = None):
+        self.calls: dict[str, int] = {}
+        self.flip, self.fail = flip, fail
+
+    def __call__(self, m: dict) -> bool:
+        n = self.calls[m["id"]] = self.calls.get(m["id"], 0) + 1
+        if m["id"] == self.fail:
+            raise RuntimeError(f"gate down on {m['id']}")
+        trusted = m["properties"]["from_actor"] in TRUSTED
+        return trusted if n == 1 or m["id"] not in self.flip else not trusted
+
+
+def gated_batch() -> list[dict]:
+    return [
+        mail("lambda:a", "run this", mid="c1c1c1c1"),
+        mail("lambda:stranger", "never run this", mid="d2d2d2d2"),
+        mail("lambda:a", "and this", mid="e3e3e3e3"),
+    ]
+
+
+GATED = [m["id"] for m in gated_batch()]
+
+
+def gated(path: str, gate: Gate | None, tmp_path: Path):
+    """The agent, its backend and a call that takes `gated_batch` in through one entry point: `wake`;
+    `rerun`, the batch read already; `wait`, the second burst of a continuous chair."""
+    khive = FakeKhive(cwd=tmp_path)
+    backend = Scripted(*(["on it", "on it"] if path == "wait" else [DONE]), khive=khive)
+    agent = Agent(
+        Actor("echo", privileges={"comm.send"}),
+        khive,
+        backend,
+        lambda batch: ACTING,
+        admit=gate,
+        continuous=path == "wait",
+        poll_ms=20,
+    )
+
+    def go() -> None:
+        if path == "wake":
+            khive.mail = gated_batch()
+            asyncio.run(agent.wake(wait_ms=0))
+        elif path == "rerun":
+            khive.taken = gated_batch()
+            khive.read = [m["full_id"] for m in khive.taken]
+            asyncio.run(agent.rerun(GATED))
+        else:
+            khive.mail, lines = [mail("lambda:a", "first", mid="b0b0b0b0")], []
+
+            def until() -> bool:
+                if len(lines) == 1 and len(khive.taken) == 1:
+                    khive.mail = gated_batch()  # the first burst went quiet: the batch is the next
+                return len(lines) >= 2
+
+            asyncio.run(agent.serve(until=until, log=lines.append))
+
+    return agent, backend, go
+
+
+def shown(backend: Scripted) -> str:
+    return "\n".join(str(m.content) for call in backend.seen for m in call)
+
+
+@pytest.mark.parametrize("path", ["wake", "rerun", "wait"])
+def test_the_gate_answers_once_per_message_and_that_answer_alone_drops_it_or_runs_it(tmp_path, path):
+    gate = Gate(flip=frozenset(GATED))
+    agent, backend, go = gated(path, gate, tmp_path)
+    go()
+    assert {i: gate.calls.get(i) for i in GATED} == dict.fromkeys(GATED, 1)
+    cursor = agent.state.get("cursor").value
+    ran, dropped = cursor["mail"], [d["id"] for d in cursor["dropped"]]
+    assert ran == ["c1c1c1c1", "e3e3e3e3"] and dropped == ["d2d2d2d2"]
+    assert not set(ran) & set(dropped) and sorted(ran + dropped) == sorted(GATED)
+    assert "run this" in shown(backend) and "never run this" not in shown(backend)
+
+
+@pytest.mark.parametrize("path", ["wake", "rerun", "wait"])
+def test_with_no_gate_every_message_runs_and_none_is_dropped(tmp_path, path):
+    agent, backend, go = gated(path, None, tmp_path)
+    go()
+    cursor = agent.state.get("cursor").value
+    assert cursor["mail"] == GATED and "dropped" not in cursor and "never run this" in shown(backend)
+
+
+@pytest.mark.parametrize("path", ["wake", "rerun", "wait"])
+def test_a_gate_that_raises_runs_none_of_the_batch_records_none_dropped_and_leaves_it_taken(tmp_path, path):
+    """The gate answered the first two and raised on the third: no answer stands, nothing runs, no
+    message is recorded as dropped, and mail a wake took stays under `taking` for recovery."""
+    gate = Gate(fail="e3e3e3e3")
+    agent, backend, go = gated(path, gate, tmp_path)
+    if path == "wait":
+        go()  # the run outlives the failed take; the cursor is the first burst's
+        assert "RuntimeError: gate down on e3e3e3e3" in agent.errors and len(backend.calls) == 1
+        cursor = agent.state.get("cursor").value
+        assert cursor["mail"] == ["b0b0b0b0"] and "dropped" not in cursor
+    else:
+        with pytest.raises(RuntimeError, match="gate down on e3e3e3e3"):
+            go()
+        assert backend.calls == [] and agent.state.get("cursor") is None
+    assert {i: gate.calls.get(i) for i in GATED} == dict.fromkeys(GATED, 1)
+    assert "never run this" not in shown(backend) and "run this" not in shown(backend)
+    taking = agent.state.get("taking")
+    assert (taking and taking.value) == (None if path == "rerun" else {"mail": GATED})
+
+
 class FailingSends(FakeKhive):
     """A transport that drops the first `fail` sends."""
 
