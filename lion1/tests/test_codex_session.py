@@ -479,6 +479,8 @@ def test_the_envelope_carries_the_window_and_the_rate_limits_the_cli_wrote_for_t
             {"type": "event_msg", "payload": {"type": "token_count", "info": {"model_context_window": True}}}
         ),
         json.dumps({"payload": 3}),
+        json.dumps({"payload": {"type": "token_count", "info": "unknown", "rate_limits": "none"}}),
+        json.dumps({"payload": {"type": "token_count", "info": [1]}}),
     ],
 )
 def test_a_session_file_with_no_readable_count_adds_nothing_and_fails_nothing(
