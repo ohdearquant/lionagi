@@ -1900,6 +1900,35 @@ def test_a_grant_of_time_while_the_turns_commands_settle_moves_the_deadline_they
     assert run.timeouts == set()
 
 
+@pytest.mark.parametrize("effect", ["pure", "write"])
+def test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_handler(effect):
+    def extend(run, bound, amount, reason) -> bool:
+        time.sleep(0.7)  # a synchronous grant: the settle's deadline passes under it, unfired
+        return True
+
+    ran: list[float] = []
+    actor = _echo_actor(f"b-settle-held-grant-{effect}")
+
+    @actor.handler(Nap, effect=effect)
+    async def nap(req: Nap, ctx) -> float:
+        ran.append(req.seconds)  # the effect the command has on the world
+        return req.seconds
+
+    turn = (
+        '<lact m1>run.more(bound="time_budget", amount=5, reason="held")</lact><lact n1>nap(seconds=0)</lact>'
+    )
+    request = RunRequest(inputs=("go",), max_rounds=1, time_budget=0.5, extend=extend)
+    run = asyncio.run(actor.run(Profile("p"), request, scripted(turn)))
+    # n1 reaches its handler after the grant raised the bound and before the settle's cut lands, side by
+    # side with m1 or behind it as a write: the settle's fired deadline, not the raised bound, decides it
+    assert run.resolve("m1") == "time_budget raised from 0.5 to 5.5"
+    assert ran == [] and run.bounds["time_budget"] == 5.5
+    assert ("n1", HALTED) in run.refused
+
+
+HALTED = "refused: the time budget its turn ran under is spent; a later grant does not reach it"
+
+
 def test_a_settle_cancelled_while_it_waits_leaves_no_time_limit_on_the_run():
     async def main():
         run = actor_module.Run(_echo_actor("b-settle-cancelled"), Profile("p"), RunRequest(time_budget=100))

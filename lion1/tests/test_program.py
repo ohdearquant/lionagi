@@ -2037,7 +2037,7 @@ def test_a_command_a_write_queued_behind_a_held_grant_names_never_enters_its_han
     assert run.refused == [("r2.1", HALTED), ("turn", f"{late}; nothing after it ran")]
 
 
-HALTED = "refused: the time budget its program ran under is spent; a later grant does not reach it"
+HALTED = "refused: the time budget its turn ran under is spent; a later grant does not reach it"
 
 
 def test_a_command_queued_behind_a_held_grant_is_refused_alone_and_the_output_commits():

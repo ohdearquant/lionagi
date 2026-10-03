@@ -221,3 +221,8 @@ refuse, and the caller receives the value it judged.
   cost that is not a number reads as spent, never as room
   (`test_a_reported_cost_that_is_not_a_number_reads_as_spent`). `RunRequest` takes every field by
   name, so a new bound never shifts another (`test_a_run_request_takes_its_fields_by_name_only`).
+- **S5**: A deadline that fired cuts the commands its wait held, whatever a later grant raised. A
+  synchronous grant can hold the loop past the deadline of the turn's wait, fire it and raise the
+  bound; a command queued behind it then reaches its handler before the cut lands, and the C2
+  re-read finds room. It is refused there instead, as a program's command is (ADR-0008/S15).
+  `test_a_command_queued_behind_a_held_grant_in_a_tag_turn_never_enters_its_handler` pins it.
