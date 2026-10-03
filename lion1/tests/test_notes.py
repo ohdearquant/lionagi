@@ -521,6 +521,35 @@ def test_a_file_whose_seq_is_not_an_integer_is_refused_on_load_naming_the_file_a
 
 
 @pytest.mark.parametrize(
+    "version, text",
+    [
+        ("True", _notes_file(version="true")),
+        ("2.0", _notes_file(version="2.0")),
+        ("'2'", _notes_file(version='"2"')),
+    ],
+    ids=["bool", "float", "text"],
+)
+def test_a_file_whose_version_is_not_an_integer_is_refused_on_load_naming_the_file(tmp_path, version, text):
+    # int() would read true as 1 and "2" as 2: the file's version is refused as a row's seq is
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)
+    path.write_text(text)
+    said = re.escape(f"{path}: the file's version is not an integer: {version}")
+    _refused_on_every_path(path, store, said, text)
+    path.write_text(_notes_file())  # repaired by hand: the store reads it again
+    assert store.version == 1
+
+
+def test_a_negative_integer_past_the_digit_limit_is_counted_without_its_sign(tmp_path, int_digit_limit):
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)
+    text = _notes_file(value="-" + "7" * 5000)
+    path.write_text(text)
+    said = re.escape(f"{path}: the file holds an integer of 5000 digits, past the limit")
+    _refused_on_every_path(path, store, said, text)
+
+
+@pytest.mark.parametrize(
     "text",
     [_notes_file(value="1" * 5000), _notes_file(seq="1" * 5000), _notes_file(version="9" * 4301)],
     ids=["value", "seq", "version"],

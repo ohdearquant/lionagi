@@ -244,16 +244,18 @@ on writing, when decided, sits on those two.
 
 Serves C7. `FileNoteStore.put` renders the value and an int `seq`, not a bool, with
 `json.dumps(allow_nan=False)`, encodes key, run and text as UTF-8, reads it back with `json.loads`,
-and stores that copy: a later change, even during the lock wait, reaches nothing stored. Writes
-render the same way: every file is standard JSON. `_load` refuses NaN, Infinity, overflowing floats,
-integers past the digit limit, a `seq` that is not an int, non-UTF-8 bytes and a lone surrogate,
-naming the file and the place, repairing nothing. Underflow loads as a signed zero.
+and stores that copy: a later change, even during the lock wait, reaches nothing stored. Every write
+renders the same way. `_load` refuses NaN, Infinity, overflowing floats, integers past the digit
+limit, a `seq` or a file `version` that is not an int, non-UTF-8 bytes and a lone surrogate, naming
+the file and the place, repairing nothing. Underflow loads as a signed zero.
 
 - **Landing evidence**:
   `test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal`,
   `test_a_value_changed_while_put_waits_for_the_lock_leaves_what_was_checked_in_the_file`,
   `test_a_value_changed_after_put_returns_changes_nothing_stored`,
   `test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_and_the_constant`,
+  `test_a_file_whose_version_is_not_an_integer_is_refused_on_load_naming_the_file`,
+  `test_a_negative_integer_past_the_digit_limit_is_counted_without_its_sign`,
   `test_a_number_too_large_for_a_float_is_refused_on_load_naming_the_file_and_the_number`,
   `test_a_file_holding_the_largest_finite_floats_loads_and_a_later_write_keeps_them`,
   `test_a_write_never_renders_a_non_finite_number_wherever_it_sits`,

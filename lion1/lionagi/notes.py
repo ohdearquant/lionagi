@@ -204,15 +204,20 @@ class FileNoteStore(MemoryNoteStore):
                 f"{self.path}: the file holds a lone surrogate in {where}, which UTF-8 cannot carry; "
                 "repair it by hand"
             )
-        # a row's seq is an int, not a bool, as `put` writes it: a file holding another kind is refused
-        # whole, not loaded and carried by the next write
+        # a row's seq and the file's version are ints, not bools, as `put` writes them: a file holding
+        # another kind is refused whole, not loaded and carried by the next write
+        version = data.get("version", 0)
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise ValueError(
+                f"{self.path}: the file's version is not an integer: {version!r}; repair it by hand"
+            )
         for k, v in data.get("notes", {}).items():
             seq = v.get("seq") if isinstance(v, dict) else None
             if isinstance(seq, bool) or not isinstance(seq, int):
                 raise ValueError(
                     f"{self.path}: the seq of note {k!r} is not an integer: {seq!r}; repair it by hand"
                 )
-        self._version = int(data.get("version", 0))
+        self._version = version
         self._notes = {k: Note(**v) for k, v in data.get("notes", {}).items()}
 
     @contextlib.contextmanager
