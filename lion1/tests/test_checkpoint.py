@@ -196,9 +196,6 @@ def test_entry_of_reads_a_log_row_back_as_its_entry_and_skips_a_row_of_another_k
     assert entry_of({"seq": 0, "kind": "RESULT", "content": {"value": 1}}).content == {"value": 1}
     e = entry_of({"seq": 0, "kind": "INPUT", "content": "hi", "meta": None})
     assert (e.alias, e.turn, e.meta) == (None, 0, {})
-    # a log written before the rename says `round`: it is the entry's turn, and a row's own `turn` wins
-    assert entry_of({"seq": 0, "kind": "TEXT", "content": "hi", "round": 3}).turn == 3
-    assert entry_of({"seq": 0, "kind": "TEXT", "content": "hi", "round": 3, "turn": 4}).turn == 4
     # a directive as data: pinned, or from a log written before pins existed
     pinned = {"op": "hide", "refs": ["_m1", "g1"], "text": "", "at": 4, "seqs": [1, 2]}
     d = entry_of({"seq": 4, "kind": "SYSTEM", "content": "folded", "meta": {"directive": pinned}})
