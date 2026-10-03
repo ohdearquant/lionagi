@@ -666,6 +666,103 @@ def test_sh_raises_any_other_cleanup_failure_and_still_closes_its_pipes(monkeypa
     assert child._transport.closed
 
 
+class Start:
+    """The start of a command, replaced: it waits `delay` seconds, or on a future nobody sets when there is
+    no `delay`, then fails with `fault` when it has one. A cancel is recorded in `seen`; a start with
+    `child` has begun that process before the cancel reaches it, and hands it back instead of raising."""
+
+    def __init__(self, monkeypatch, delay=None, fault=None, child=None):
+        self.delay, self.fault, self.child, self.seen, self.gate = delay, fault, child, [], None
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", self.spawn)
+        if child is not None:
+            monkeypatch.setattr(os, "killpg", child.killpg)
+
+    async def spawn(self, *argv, **kw):
+        try:
+            if self.delay is None:
+                self.gate = asyncio.get_running_loop().create_future()
+                await self.gate
+            await asyncio.sleep(self.delay)
+        except asyncio.CancelledError:
+            self.seen.append("cancelled")
+            if self.child is not None:
+                return self.child
+            raise
+        if self.fault is not None:
+            raise self.fault
+
+    def release(self):
+        """Ends a start that never lands, so that a runner stuck waiting for it can return."""
+        if self.gate is not None and not self.gate.done():
+            self.gate.set_exception(RuntimeError("released"))
+
+
+STUB_BOUND = 3.0  # seconds: a call over a stubbed start still running then is a regression that fails
+
+
+def sh_over(start, *, timeout, cancel_after=None):
+    """sh over a stubbed start: (what it gave or the exception it raised, "cancelled", or "hung" past
+    STUB_BOUND; the seconds it took, counted from the cancel when there is one). A call that does not end
+    is released and cancelled, so that it fails the test and does not hang it."""
+
+    async def go():
+        task = asyncio.create_task(instr.sh(["/bin/x"], timeout=timeout))
+        t0 = time.monotonic()
+        if cancel_after is not None:
+            await asyncio.sleep(cancel_after)
+            t0 = time.monotonic()
+            task.cancel()
+        done, _ = await asyncio.wait([task], timeout=STUB_BOUND)
+        took = time.monotonic() - t0
+        if task not in done:
+            start.release()
+            task.cancel()
+            _, pending = await asyncio.wait([task], timeout=STUB_BOUND)
+            assert not pending, "sh outlived its release and a cancel"
+            return "hung", took
+        if task.cancelled():
+            return "cancelled", took
+        return (task.exception() or task.result()), took
+
+    return asyncio.run(go())
+
+
+def test_sh_cancels_a_start_that_never_lands_at_its_grace_and_gives_the_timeouts_answer(monkeypatch):
+    # the start's future is never set: it is waited for the grace past the timeout, so that a process it
+    # began can land and be ended, and then cancelled
+    monkeypatch.setattr(instr, "_GRACE", 0.2)
+    start = Start(monkeypatch)
+    got, took = sh_over(start, timeout=0.05)
+    assert got == (124, "", "/bin/x did not finish within 0.05s")
+    assert start.seen == ["cancelled"] and 0.2 <= took < 0.05 + 0.2 + 0.2 + 1
+
+
+def test_a_cancel_in_the_wait_for_a_start_that_never_lands_is_raised_after_its_cancel(monkeypatch):
+    monkeypatch.setattr(instr, "_GRACE", 0.2)
+    start = Start(monkeypatch)
+    got, took = sh_over(start, timeout=0.05, cancel_after=0.1)  # inside the wait for the landing
+    assert got == "cancelled" and start.seen == ["cancelled"] and took < 0.2 + 0.2 + 1
+
+
+def test_a_process_a_cancelled_start_had_begun_is_stopped_like_one_that_landed(monkeypatch):
+    # the cancel reaches a start that has begun its process: the start hands it back, and it is ended
+    monkeypatch.setattr(instr, "_GRACE", 0.2)
+    child = Child()
+    start = Start(monkeypatch, child=child)
+    got, _ = sh_over(start, timeout=0.05)
+    assert got == (124, "", "/bin/x did not finish within 0.05s")
+    assert start.seen == ["cancelled"] and child.drained and child.kills == 1 and child._transport.closed
+
+
+@pytest.mark.parametrize("delay", [0.0, 0.15], ids=["before-the-timeout", "after-the-timeout"])
+def test_a_start_that_failed_is_raised_on_either_side_of_the_timeout(monkeypatch, delay):
+    # a start that failed is a failure and not a timeout, whichever side of the deadline it failed on
+    fault = FileNotFoundError(errno.ENOENT, "No such file or directory", "/bin/x")
+    monkeypatch.setattr(instr, "_GRACE", 1)
+    got, _ = sh_over(Start(monkeypatch, delay=delay, fault=fault), timeout=0.05)
+    assert got is fault
+
+
 # a command writing without end: past its timeout its pipe stays full until something reads it
 FLOOD = "import os, sys\nb = b'y' * 65536\nwhile True:\n    os.write(int(sys.argv[1]), b)"
 # a command that starts a sleeping descendant on its own stdout and stderr and writes the
@@ -705,26 +802,37 @@ def delay_connect(monkeypatch, seconds):
     monkeypatch.setattr(base_subprocess.BaseSubprocessTransport, "_connect_pipes", late)
 
 
-def real_sh(monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, settle=5.0):
+def real_sh(monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, settle=5.0, hold=False):
     """sh on a real command under the test's own clock: (what it gave, "cancelled", or "hung" past
     BOUND; the seconds it took, counted from the first cancel, which comes `pause` seconds in, when
     there is one; whether the descendant in `pidfile` still runs; whether the pipes of every command
     it started are closing; whether each was reaped). The last two are read the moment the call
-    ended, before this helper cleans up after it: the descendant is then killed and each command's
-    pipes are read to their end."""
+    ended, before this helper cleans up after it: the descendant is then killed and each command is
+    closed and killed. A command is recorded where its process comes to exist, before anything is
+    awaited, so a start cut short is counted too, and a call that started none fails. With `hold` the
+    start of every command never connects its pipes, unless the call is hung: that frees it."""
     started = []
-    spawn = asyncio.create_subprocess_exec
+    create = base_subprocess.BaseSubprocessTransport.__init__
+    gate = asyncio.Event()
 
-    async def spy(*args, **kwargs):
-        started.append(await spawn(*args, **kwargs))
-        return started[-1]
+    def record(self, *args, **kwargs):
+        create(self, *args, **kwargs)
+        started.append(self)
+
+    monkeypatch.setattr(base_subprocess.BaseSubprocessTransport, "__init__", record)
+    if hold:
+        connect = base_subprocess.BaseSubprocessTransport._connect_pipes
+
+        async def held(self, waiter):
+            await gate.wait()
+            await connect(self, waiter)
+
+        monkeypatch.setattr(base_subprocess.BaseSubprocessTransport, "_connect_pipes", held)
 
     async def written() -> int:
         while not (pidfile.exists() and pidfile.read_text()):
             await asyncio.sleep(0.01)
         return int(pidfile.read_text())
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
 
     async def go():
         t0 = time.monotonic()
@@ -739,24 +847,35 @@ def real_sh(monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, s
             await asyncio.sleep(0.05)
         done, _ = await asyncio.wait([task], timeout=BOUND)
         took = time.monotonic() - t0
-        closed = all(p._transport.get_pipe_transport(fd).is_closing() for p in started for fd in (1, 2))
-        reaped = all(p.returncode is not None for p in started)
+        pipes = [t._pipes.get(fd) for t in started for fd in (1, 2)]  # None: never connected
+        closed = all(pipe is not None and pipe.pipe.is_closing() for pipe in pipes)
+        reaped = all(t.get_returncode() is not None for t in started)
         if task in done:
             got = "cancelled" if task.cancelled() else task.result()
         else:
             got = "hung"
+            gate.set()
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            _, pending = await asyncio.wait([task], timeout=BOUND)
+            assert not pending, "sh outlived its release and a cancel"
+        assert started, "no command was started"
         left = None
         if pid is not None:
             left = alive(pid, settle)
             if left:
                 os.kill(pid, signal.SIGKILL)
-        for proc in started:
+        for t in started:
             with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            await asyncio.wait_for(proc.communicate(), 5)
+                t.kill()
+            t.close()
+            if t._proc is not None:
+                for fd, end in ((1, t._proc.stdout), (2, t._proc.stderr)):
+                    if t._pipes.get(fd) is None:  # never connected: this end is still open
+                        end.close()
+        stop = time.monotonic() + 5
+        while any(t.get_returncode() is None for t in started):
+            assert time.monotonic() < stop, "a killed command was not reaped"
+            await asyncio.sleep(0.01)
         return got, took, left, closed, reaped
 
     return asyncio.run(go())
@@ -799,15 +918,29 @@ def test_sh_counts_the_start_of_its_command_inside_its_timeout(monkeypatch):
     assert took < 1.2 + 0.5 and closed and reaped
 
 
-def test_a_cancel_after_the_timeout_while_the_start_still_connects_is_not_turned_into_the_timeouts_answer(
-    monkeypatch,
+def test_a_cancel_after_the_timeout_while_the_start_connects_is_not_the_timeouts_answer(
+    monkeypatch, tmp_path
 ):
-    # the deadline passed while the start was held: the command is ended once it has started, and the
-    # cancel that came in meanwhile is raised then
-    delay_connect(monkeypatch, 0.6)
+    # the deadline passed while the start was held: the command and its group are ended once it has
+    # started, and the cancel that came in meanwhile is raised then
+    delay_connect(monkeypatch, 1.0)
+    pidfile = tmp_path / "descendant.pid"
+    argv = [sys.executable, "-c", FAMILY, str(pidfile), "running", "in-group"]
+    got, took, left, closed, reaped = real_sh(
+        monkeypatch, argv, timeout=0.2, cancels=1, pause=0.3, pidfile=pidfile
+    )
+    assert got == "cancelled" and took < 3
+    assert left is False and closed and reaped
+
+
+def test_sh_gives_up_at_its_grace_on_a_command_whose_pipes_never_connect_and_ends_it(monkeypatch):
+    # the start is stuck connecting for good with its process begun: past the timeout and the grace the
+    # start is cancelled, which ends the process, and the call returns the timeout's answer
+    monkeypatch.setattr(instr, "_GRACE", 0.5)
     argv = [sys.executable, "-c", "import time; time.sleep(30)"]
-    got, took, _, closed, reaped = real_sh(monkeypatch, argv, timeout=0.2, cancels=1, pause=0.4)
-    assert got == "cancelled" and took < 3 and closed and reaped
+    got, took, _, _, reaped = real_sh(monkeypatch, argv, timeout=0.2, hold=True)
+    assert got == (124, "", f"{sys.executable} did not finish within 0.2s")
+    assert reaped and 0.2 + 0.5 <= took < 0.2 + 0.5 + 0.5 + 2
 
 
 def test_a_cancel_that_lands_over_a_start_that_failed_is_still_the_cancel():

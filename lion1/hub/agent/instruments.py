@@ -95,8 +95,10 @@ async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) ->
     """One read-only command: rc, stdout, stderr. Every program path is the caller's; nothing here
     is a shell. The `timeout` runs from the call and covers the command's start. Past it, or on a
     cancel, the command's process group is killed and its pipes drained for up to `_GRACE` seconds
-    and then closed. A descendant that left the group is not killed, and its pipe is abandoned at
-    the grace. A group that cannot be signalled, or a pipe that fails to drain, raises."""
+    and then closed. A start still unlanded at the timeout gets `_GRACE` seconds to land, and is
+    then cancelled. A descendant that left the group is not killed, and its pipe is abandoned at
+    the grace. A start that failed, a group that cannot be signalled, or a pipe that fails to
+    drain raises."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     # the start is a task of its own: cut short while asyncio connects the pipes, it would end the
@@ -119,6 +121,8 @@ async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) ->
         raise
     if not launch.done():
         await _landed(launch)
+        if launch.done() and not launch.cancelled():
+            launch.result()  # a start that failed is a failure, whenever it failed, and not a timeout
         return lapsed
     proc = launch.result()
     try:
@@ -133,16 +137,21 @@ async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) ->
 
 
 async def _landed(launch: asyncio.Future[asyncio.subprocess.Process]) -> None:
-    """Stop what a start still running has begun: it is waited out, a second cancel too (it takes
-    loop turns), and the group it started is ended once it has landed. A cancel that came in while
+    """Stop what a start still running has begun. It is given `_GRACE` seconds to land, then is
+    cancelled and given `_GRACE` more to take the cancel; a second cancel of the caller is absorbed
+    meanwhile. A start that landed is stopped, the group it began ended. A cancel that came in while
     waiting is raised after that."""
+    loop = asyncio.get_running_loop()
     cancelled = False
-    while not launch.done():
-        try:
-            await asyncio.wait([launch])
-        except asyncio.CancelledError:
-            cancelled = True
-    if not launch.cancelled() and launch.exception() is None:
+    for _ in range(2):
+        end = loop.time() + _GRACE
+        while not launch.done() and (left := end - loop.time()) > 0:
+            try:
+                await asyncio.wait([launch], timeout=left)
+            except asyncio.CancelledError:
+                cancelled = True
+        launch.cancel()  # a start that has not landed is cancelled; one that has is left as it is
+    if launch.done() and not launch.cancelled() and launch.exception() is None:
         await _stop(launch.result())
     if cancelled:
         raise asyncio.CancelledError

@@ -152,18 +152,17 @@ one default floor of 300 GiB; an empty list declines every floor.
 ### C7: An instrument reads and acts on nothing _(enforced: process)_ ^c7
 
 An instrument reads: `gh` reads, `git` reads, `ps`, `lsof`, `launchctl print`, `df`, `find` and
-`du`, and the store through the agent's bounded client, which admits only the verbs on its list
-([[ADR-0015-chores|ADR-0015]], chores). It writes only its snapshot or cursor to the agent's note
-store ([[ADR-0007-the-record#^d3|ADR-0007/D3]]) and sends nothing; the report is the handler's. A
-remedy, a restart or a removal, is the owner's.
+`du`. It reads files directly: an agent's pid and note files, the bench's note file and result
+ledgers, verdict files, local CI logs and a scheduled job's artifact. It reads the store through the
+agent's bounded client, which admits only the verbs on its list ([[ADR-0015-chores|ADR-0015]],
+chores).
+
+It writes only its snapshot or cursor to the agent's note store
+([[ADR-0007-the-record#^d3|ADR-0007/D3]]) and sends nothing; the report is the handler's. A remedy,
+a restart or a removal, is the owner's.
 
 The command runner has no read list of its own, and `verdict-freshness` may run an enumerator
 command from the config as given. The gate is review of each instrument's commands.
-
-Each command starts in a process group of its own. Past the timeout, or on a cancel, the runner
-kills the group, drains its pipes for up to five seconds and closes them, so the call ends within
-that grace of the later of the timeout and the start. A descendant that left the group is not
-killed. A kill or a drain that fails raises.
 
 ### C8: The model sees one line; the owner gets the measurement _(enforced: mechanical)_ ^c8
 
@@ -177,6 +176,21 @@ evidence, control, escalate, answered, error direction, population, predicate, c
 known-positive, the evidence capped at `evidence_cap` characters with the cap stated. The structured
 rows are neither sent nor kept. The model's system text lists each instrument's `about`, error
 direction, cadence and question.
+
+### C9: A command is stopped within a bound of its timeout or its cancel _(enforced: mechanical)_ ^c9
+
+- **Subject**: every command run through `sh`.
+- **Violated when**: a call outlives its bounds, a command or its group survives it, a pipe stays
+  open past it, or a failure to start or stop reads as a timeout.
+
+Each command starts in a process group of its own, and the timeout counts from the call, the start
+included. Past it, or on a cancel, the runner kills the group, drains its pipes for up to five
+seconds, the grace, and closes them. A start unlanded by then gets one grace to land and one to take
+its cancel; one that lands in either is stopped like any other.
+
+A group the runner may not signal and a drain that fails raise. A start that fails raises too,
+unless a cancel is in flight. A descendant outside the group, or of a start that never landed, is
+not killed, and a pipe it holds is abandoned at the grace.
 
 ## Decisions
 
@@ -290,6 +304,32 @@ refused at build.
   `test_scheduled_job_fails_its_control_on_an_absent_directory_or_a_row_without_its_exit`,
   `test_scheduled_job_an_artifact_that_is_not_a_regular_file_is_a_finding_never_fresh`,
   `test_scheduled_job_a_supervisor_read_that_did_not_finish_is_unread_not_unloaded` (S9).
+
+### D8: `sh` starts a command as a task of its own and stops it by one path ^d8
+
+Serves C9. The start is a task waited for up to the timeout. One still unlanded then is waited for
+one grace, cancelled, and given one more grace to take the cancel. What landed goes to `_stop`:
+`killpg` of the group, a drain of up to the grace, then the pipe transports closed in a `finally`.
+An `EPERM` from `killpg` is read again once the drain has reaped the leader, and only a second
+refusal raises.
+
+- **Landing evidence**: in `tests/test_instruments.py`,
+  `test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation`,
+  `test_sh_raises_when_a_live_group_cannot_be_signalled_and_still_closes_its_pipes`,
+  `test_sh_raises_any_other_cleanup_failure_and_still_closes_its_pipes`,
+  `test_sh_returns_at_its_timeout_when_the_command_filled_its_pipe`,
+  `test_sh_ends_the_descendant_holding_its_pipe_at_the_timeout`,
+  `test_a_cancelled_sh_ends_the_descendant_holding_its_pipe_and_stays_cancelled`,
+  `test_sh_counts_the_start_of_its_command_inside_its_timeout`,
+  `test_a_cancel_after_the_timeout_while_the_start_connects_is_not_the_timeouts_answer`,
+  `test_a_cancel_that_lands_over_a_start_that_failed_is_still_the_cancel`,
+  `test_a_cancel_while_the_start_connects_its_pipes_leaves_no_child_running`,
+  `test_sh_returns_within_its_grace_when_a_descendant_that_left_the_group_holds_the_pipe`,
+  `test_sh_cancels_a_start_that_never_lands_at_its_grace_and_gives_the_timeouts_answer`,
+  `test_a_cancel_in_the_wait_for_a_start_that_never_lands_is_raised_after_its_cancel`,
+  `test_a_process_a_cancelled_start_had_begun_is_stopped_like_one_that_landed`,
+  `test_a_start_that_failed_is_raised_on_either_side_of_the_timeout` and
+  `test_sh_gives_up_at_its_grace_on_a_command_whose_pipes_never_connect_and_ends_it`.
 
 ## Alternatives
 
