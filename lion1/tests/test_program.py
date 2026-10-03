@@ -1293,6 +1293,9 @@ def test_a_container_already_past_the_size_limit_is_counted_and_not_walked():
         def __iter__(self):
             raise AssertionError("walked")
 
+        def __getitem__(self, item):  # a slice of it is a walk too
+            raise AssertionError("walked")
+
     assert lndl._size(Dict({"k" * (LIMIT + 1): 1})) == LIMIT + 2
     assert lndl._size(List([0] * (LIMIT + 1))) == LIMIT + 1
 
