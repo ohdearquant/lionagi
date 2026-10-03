@@ -183,15 +183,15 @@ direction, cadence and question.
 - **Violated when**: a call outlives its bounds, a command or its group survives it, a pipe stays
   open past it, or a failure reads as a timeout.
 
-Each command starts in its own process group, timed from the call, start included. Past it or on a
-cancel, the group is killed, its pipes drained and closed within a five-second grace. A start
-unlanded is given a grace to land, cancelled, given another to take it, cancelled again and given as
-long; the group of any process it began is killed by its pid.
+Each command starts in its own process group. Its deadline is taken at the call, before the start,
+so a stall in fork and exec on the loop counts against the timeout, and an expired deadline is due
+once the loop resumes. Past the deadline or on a cancel, the group is killed, its pipes drained and
+closed within a five-second grace.
 
-A start that fails raises, unless a cancel is in flight. A descendant outside the group is not
-killed, and holds an unlanded start's pipe ends, which asyncio's connection task closes when the
-loop runs it, until it exits. A start blocked in fork and exec on the loop is not interrupted; the
-deadline runs from when the loop returns.
+An unlanded start is given three graces, cancelled after the first and the second; one landing in
+the last adds a drain grace, so the stop ends within twenty seconds of the timeout or cancel. A
+start that fails raises, unless a cancel is in flight. A descendant outside the group is not killed,
+and holds an unlanded start's pipe ends until it exits.
 
 ## Decisions
 
@@ -308,12 +308,12 @@ refused at build.
 
 ### D8: `sh` starts a command as a task of its own and stops it by one path ^d8
 
-Serves C9. The start is a task whose `extra` dict holds the Popen from the fork. One unlanded at the
-timeout takes C9's graces, and its Popen's pid has its group killed. `_stop` takes what landed:
-`killpg`, a drain within the grace, then the pipes closed in a `finally`, which first retries a
-refused signal (`EPERM`), whatever ended the drain. A second refusal, another signal error and a
-failed drain raise; the pipes close whichever raised. An unlanded start's pipe ends stay asyncio's:
-closing them from outside races its reader.
+Serves C9. The start is a task whose `extra` dict holds the Popen from the fork, so one unlanded
+takes C9's graces and its Popen's group is killed. `_stop` takes what landed: `killpg`, a drain,
+then a `finally` that retries an `EPERM` refusal, whatever ended the drain, and closes the pipes. A
+drain whose grace expires is no error: `sh` returns its timeout answer or raises its cancel. A
+second refusal and any other error raise. An unlanded start's pipe ends stay asyncio's: closing them
+from outside races its reader.
 
 - **Landing evidence**: in `tests/test_instruments.py`,
   `test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation`,

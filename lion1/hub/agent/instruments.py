@@ -98,7 +98,9 @@ async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) ->
     and then closed. A start still unlanded at the timeout gets `_GRACE` seconds to land, and is
     then cancelled, twice if it must be, and the group of the process it began, if it began one, is
     killed. A descendant that left the group is not killed, and its pipe is abandoned at the grace.
-    A start that failed, a group that cannot be signalled, or a pipe that fails to drain raises."""
+    A drain that outlasts the grace is no error: the call returns its timeout answer or raises its
+    cancel. A start that failed, a second `EPERM` (the only refusal retried) and any other error while
+    signalling, draining or closing the pipes raise."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     # asyncio keeps this dict as the transport's extra info and puts the Popen in it as it forks the
