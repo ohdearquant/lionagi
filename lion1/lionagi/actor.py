@@ -2150,6 +2150,15 @@ class _Walk:
         spent = f"the time_budget of {budget:g} is spent{late}"
         self.run.refused.append(("turn", f"{spent}; nothing after it ran"))
 
+    def spent(self) -> bool:
+        """Whether nothing the walk still holds may commit: its own limit has expired, or the time
+        budget is spent. A grant that landed after the limit expired raised the bound for what follows
+        the walk and leaves the walk expired. The refusal is told, once."""
+        if not (self.limit.expired() or _left(self.run) == 0.0):
+            return False
+        self.out_of_time(self.limit.budget)
+        return True
+
     async def execute(self, script: Script) -> dict[str, Any] | None:
         # what the walk computes itself, a branch's test and OUT{}'s fields, the time budget bounds
         # as it bounds a command's arguments: one still computing at the deadline stops there
@@ -2321,6 +2330,10 @@ class _Walk:
         async def put() -> None:
             if prior is not None:  # two assignments to one note are two writes, in the order written
                 await asyncio.shield(prior)
+            # a write reached after the walk expired or the budget is spent is refused as spent, whatever
+            # its evaluation would have raised
+            if self.spent():
+                return
             try:
                 # a write that names a value comes after it, whether or not evaluating reaches the
                 # pointer (`false and *v`): the value reads the note before this write lands
@@ -2333,9 +2346,8 @@ class _Walk:
                 self.run.refused.append((target, f"not written: {e}"))
                 return
             # the deadline cuts the walk at its next yield, and a write that reached the store with none
-            # in between is past it: once the budget is spent nothing is committed, the store as it was
-            if _left(self.run) == 0.0:
-                self.out_of_time(self.limit.budget)
+            # in between is past it: once it is spent nothing is committed, the store as it was
+            if self.spent():
                 return
             try:
                 old = self.run.notes.get(node.key)

@@ -313,8 +313,9 @@ computation binds its failure.
   `test_a_long_comprehension_lets_other_tasks_run_every_limit_items_it_examines_rejected_ones_too`,
   `test_the_runs_deadline_cancels_a_command_whose_argument_is_still_a_long_comprehension`,
   `test_the_runs_deadline_stops_a_branch_test_or_an_output_field_still_in_a_long_comprehension`,
-  `test_a_value_whose_reader_the_deadline_cancelled_stops_computing_before_the_run_returns` and
-  `test_a_walk_whose_settle_raises_still_stops_the_value_it_was_computing` pin it.
+  `test_a_value_whose_reader_the_deadline_cancelled_stops_computing_before_the_run_returns`,
+  `test_a_walk_whose_settle_raises_still_stops_the_value_it_was_computing` and
+  `test_a_walk_whose_settle_raises_stops_a_value_waiting_on_something_no_budget_ends` pin it.
 - **S8**: The run's time budget is the only bound on a comprehension's total work: a run without one
   is unbounded by design, so no number of rejected items stops a comprehension in it, while the
   items it keeps stop it at the size limit. The deadline is cooperative: a comprehension is cut at a
@@ -322,8 +323,9 @@ computation binds its failure.
   past it is under two such intervals, not zero.
 - **S9**: A `run.more` that raises the time budget moves the deadline of a walk computing its own
   expressions and of the settlement of the turn's commands, argument evaluation included, so what
-  follows the grant runs to the new deadline. A refused grant moves nothing and the late command is
-  cancelled. The reap at the run's end has no deadline.
+  follows runs to the new deadline. A refused grant moves nothing and the late command is cancelled.
+  A grant after the walk's own deadline fired raises the bound for what follows the walk; nothing
+  the walk held commits. The reap at the run's end has no deadline.
   `test_a_time_extension_granted_inside_the_walk_moves_the_deadline_the_walk_runs_under`,
   `test_a_grant_of_time_by_a_commands_argument_moves_the_deadline_its_turns_settle_waits_under`,
   `test_a_grant_of_time_while_the_turns_commands_settle_moves_the_deadline_they_settle_under`,
@@ -340,11 +342,15 @@ computation binds its failure.
   cancelled commands, no refusal.
   `test_a_timeout_error_from_a_store_read_is_that_error_not_the_time_budget_spent`,
   `test_the_runs_deadline_stops_a_branch_test_or_an_output_field_still_in_a_long_comprehension`,
-  `test_a_walk_a_grant_missed_names_the_budget_it_ran_under_and_the_late_grant` and
+  `test_a_walk_a_grant_missed_names_the_budget_it_ran_under_and_the_late_grant`,
+  `test_the_same_walk_without_the_grant_is_cut_at_the_deadline_it_began_with` and
   `test_a_walk_a_grant_reached_in_time_names_the_raised_budget_when_it_runs_out` pin it.
-- **S11**: The deadline lands at the walk's next yield. A write reached after the budget is spent
-  commits nothing, consumes no result it read and leaves the store as it was; the turn is refused as
-  the budget spent, once however many writes were cut.
-  `test_a_write_reached_past_the_deadline_with_nothing_yielding_commits_nothing`,
+- **S11**: The deadline lands at the walk's next yield. A write reached after the walk's own
+  deadline fired, or the budget is spent, commits nothing whatever a later grant did, consumes no
+  result it read and leaves the store as it was. It is refused before it evaluates, so a value that
+  would raise is still refused as spent; the turn is refused as the budget spent, once however many
+  writes were cut. `test_a_write_reached_past_the_deadline_with_nothing_yielding_commits_nothing`,
+  `test_a_write_reached_past_the_deadline_is_refused_as_spent_whatever_its_evaluation_would_raise`,
+  `test_a_write_waiting_when_the_walk_expired_commits_nothing_whatever_a_late_grant_did`,
   `test_a_write_refused_for_the_spent_budget_consumes_none_of_the_results_it_read` and
   `test_a_write_queued_before_the_walk_was_cut_commits_nothing_and_the_turn_is_refused_once` pin it.

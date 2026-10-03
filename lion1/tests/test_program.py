@@ -9,6 +9,7 @@ import time
 import pytest
 from pydantic import BaseModel
 
+import lionagi.actor as actor_module
 from hub.chat import entry_row
 from lionagi import Actor, Entry, Exhausted, Kind, Message, Profile, RunRequest, Success, program
 from lionagi.actor import ProfileError, Result
@@ -1359,6 +1360,15 @@ def test_a_write_refused_for_the_spent_budget_consumes_none_of_the_results_it_re
     assert run.notes_written == [] and run.intermediates == {} and run.refused == [SPENT]
 
 
+def test_a_write_reached_past_the_deadline_is_refused_as_spent_whatever_its_evaluation_would_raise():
+    actor = _actor("late-failing-write", [])
+    run = asyncio.run(actor.run(PROGRAM, *_spent(fenced('note.k = note["missing"]'))))
+    # reading a note the store does not hold would have refused the write as "not written", and the turn
+    # would have carried no word of the spent budget: the write is refused as spent before it reads
+    assert actor.notes_for(PROGRAM).get("k") is None and run.notes_written == []
+    assert run.refused == [SPENT]
+
+
 class Faulty(MemoryNoteStore):
     """A store whose reads raise `error`."""
 
@@ -1377,17 +1387,41 @@ class Nap(BaseModel):
 def test_a_walk_whose_settle_raises_still_stops_the_value_it_was_computing():
     profile = Profile("p", language="program", notes=Faulty(RuntimeError("the store is down")))
     turn = fenced(f"v = {LONG}", "n = echo(text=*v)", 'note.k = note["j"]')
+    request, _ = _spent(turn, inner=LIMIT // 10)  # the listings and the 0.2 s budget; the backend is prompt
 
     async def main():
         actor = _actor("settle-raises", [])
         with pytest.raises(RuntimeError, match="the store is down"):
-            await actor.run(profile, *_spent(turn, inner=LIMIT // 10))
+            await actor.run(profile, request, scripted(turn))
         return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
 
-    # the write reads the store and fails in its own task, which the settle raises after waiting for the
-    # turn's commands; the value *v, computed in a task of its own for the command reading it, was
-    # left computing for nobody once the walk raised
+    # the write reads the store, with the budget still ahead, and fails in its own task, which the settle
+    # raises after the deadline cancelled the command reading *v; the value, computed in a task of its own,
+    # was left computing for nobody once the walk raised. A comprehension is the one computation that
+    # yields on its own account, and so the one that outlives the readers a spent budget cancels: a value
+    # of commands ends at its next step, which the spent budget refuses
     assert asyncio.run(main()) == []
+
+
+def test_a_walk_whose_settle_raises_stops_a_value_waiting_on_something_no_budget_ends():
+    profile = Profile("p", language="program", notes=Faulty(RuntimeError("the store is down")))
+
+    async def main():
+        actor = _actor("settle-raises-waiting", [])
+        run = actor_module.Run(actor, profile, RunRequest(inputs=("go",), time_budget=100))
+        walk = actor_module._Walk(actor, run, actor.operable, 1)
+        waiting = walk.computed["v"] = asyncio.ensure_future(asyncio.Event().wait())
+        try:
+            with pytest.raises(RuntimeError, match="the store is down"):
+                await walk.execute(read(fenced('note.k = note["j"]')))
+            await asyncio.sleep(0)
+            return waiting.cancelled()
+        finally:
+            waiting.cancel()
+
+    # the value was computing when the walk began, and awaits an event that never comes: what outlives
+    # its readers does not depend on what a comprehension yields, and the walk stops it as it raises
+    assert asyncio.run(main())
 
 
 @pytest.mark.parametrize("budget", [60.0, None])
@@ -1419,6 +1453,17 @@ def test_a_time_extension_granted_inside_the_walk_moves_the_deadline_the_walk_ru
     assert run.output == {"granted": "time_budget raised from 0.4 to 5.4", "after": 0.8}
 
 
+def test_the_same_walk_without_the_grant_is_cut_at_the_deadline_it_began_with():
+    request = RunRequest(inputs=("go",), time_budget=0.4, max_rounds=1)
+    run = asyncio.run(
+        _nap_actor("unextended").run(PROGRAM, request, scripted(fenced("OUT{after: DO nap(seconds=0.8)}")))
+    )
+    # the walk waits on the same nap and nothing moved its deadline: it is cut at 0.4 s with the budget
+    # refusal, and no output is built, where a walk with no deadline would have built it at 0.8 s
+    assert run.refused == [("turn", "the time_budget of 0.4 is spent; nothing after it ran")]
+    assert run.output is None and not isinstance(run.outcome, Success) and run.elapsed < 0.8
+
+
 GRANT_IN_AN_ARGUMENT = (
     'a = echo(text=DO run.more(bound="time_budget", amount=5, reason="one more nap"))',
     "b = nap(seconds=1)",
@@ -1441,8 +1486,8 @@ def test_a_grant_of_time_by_a_commands_argument_moves_the_deadline_its_turns_set
     request = RunRequest(inputs=("go",), time_budget=0.5, max_rounds=1)
     run = asyncio.run(_nap_actor("settle-grant").run(PROGRAM, request, scripted(turn)))
     # the output is a literal, so the walk waits for no command: its own limit is gone when the turn's
-    # commands settle, and the argument of `a` grants during that wait. The nap, running at the 0.5 s the
-    # run began with, was cancelled there though the budget had risen to 5.5 s
+    # commands settle, and the argument of `a` grants during that wait: the grant extended the settle, so
+    # the nap finished that the 0.5 s the run began with would have cancelled
     assert run.bounds["time_budget"] == 5.5
     assert run.resolve("b") == 1 and run.elapsed > 0.5
     assert isinstance(run.outcome, Success) and run.output == {"done": "yes"}

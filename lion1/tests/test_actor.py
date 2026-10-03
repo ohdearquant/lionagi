@@ -1741,6 +1741,35 @@ def test_a_walk_a_grant_reached_in_time_names_the_raised_budget_when_it_runs_out
     assert run.refused == [("turn", "the time_budget of 0.5 is spent; nothing after it ran")]
 
 
+def test_a_write_waiting_when_the_walk_expired_commits_nothing_whatever_a_late_grant_did():
+    actor = _echo_actor("b-late-write")
+
+    @actor.handler(Nap)
+    async def nap(req: Nap, ctx) -> str:
+        await asyncio.sleep(req.seconds)
+        return "rested"
+
+    async def extend(run, bound, amount, reason) -> bool:
+        while not any(limit.expired() for limit in run.timeouts):
+            await asyncio.sleep(0)  # the walk's deadline has not fired
+        return True  # it has: the grant lands after it
+
+    grant = 'OUT{granted: DO run.more(bound="time_budget", amount=5, reason="late")}'
+    turn = f"```\nnote.k = nap(seconds=0.4)\n{grant}\n```"
+    profile = Profile("p", language="program")
+    run = asyncio.run(
+        actor.run(
+            profile, RunRequest(inputs=("go",), time_budget=0.2, max_rounds=1, extend=extend), scripted(turn)
+        )
+    )
+    # the write waits on the nap, which ends at 0.4 s: after the walk's deadline fired and the grant raised
+    # the bound to 5.2 s, so the budget has time left and the walk has not: nothing it queued commits
+    late = "the time_budget of 0.2 is spent, and a grant of 5 landed after the deadline"
+    assert run.bounds["time_budget"] == 5.2 and run.elapsed < 5.2
+    assert actor.notes_for(profile).get("k") is None and run.notes_written == []
+    assert run.refused == [("turn", f"{late}; nothing after it ran")]
+
+
 def test_a_grant_of_time_moves_the_deadline_of_every_limit_a_run_has_registered():
     more = next(h for h in actor_module.DEFAULT_HANDLERS if h.name == "run.more")
     ask = actor_module.RunMore(bound="time_budget", amount=0.5, reason="r")
@@ -1775,8 +1804,9 @@ def test_a_grant_of_time_while_the_turns_commands_settle_moves_the_deadline_they
     run = asyncio.run(
         actor.run(Profile("p"), RunRequest(inputs=("go",), max_rounds=1, time_budget=0.5), scripted(turn))
     )
-    # the turn's commands settle once: the nap, running at the 0.5 s the run began with, was cancelled there
-    # though m1 had raised the budget to 5.5 s meanwhile; the settle waits to the deadline as it stands
+    # the turn's commands settle once, and m1 raised the budget to 5.5 s meanwhile: the grant extended the
+    # settle, which waits to the deadline as it stands, so the nap finished that the 0.5 s the run began
+    # with would have cancelled
     assert run.resolve("m1") == "time_budget raised from 0.5 to 5.5"
     assert run.resolve("n1") == "rested" and run.elapsed > 0.5
     assert run.timeouts == set()
