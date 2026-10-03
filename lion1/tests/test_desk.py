@@ -1753,6 +1753,37 @@ def test_a_clarify_past_the_cap_is_left_by_the_first_sweep_whose_read_fits_one_p
     assert "1 clarify unanswered past -1h, left: ['m-c1']" in said and desk._open_clarifies() == {}
 
 
+def test_a_clarify_whose_cap_passes_during_the_sweeps_own_work_waits_for_the_next_read(tmp_path, monkeypatch):
+    """The box is read half an hour before the cap, and the sweep's work after the read runs past it:
+    an answer sent in between is one the read was too early for, not one that never came, so the
+    clarify stays open. The next sweep reads after the cap, finds no answer, and leaves it."""
+    desk, khive, reader, agent = clarified(tmp_path, [])
+    agent.state.put("desk_watch", LIVE, run="-", seq=0)
+    clock = [time.time() + 1800]
+
+    class Ticking:  # the desk's `time`, its `time()` ours
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+        def time(self):
+            return clock[0]
+
+    monkeypatch.setattr(desk_module, "time", Ticking())
+    read = reader.exec
+
+    async def the_cap_passes_after_the_read(ops: str):
+        page = await read(ops)
+        clock[0] += 3600
+        return page
+
+    reader.exec = the_cap_passes_after_the_read
+    desk.clarify_hours = 1
+    said = asyncio.run(desk.sweep(sweep_run("r1")))
+    assert "unanswered" not in said and list(desk._open_clarifies()) == ["m-c1"]
+    said = asyncio.run(desk.sweep(sweep_run("r2")))  # read at +2.5h: the cap had passed, no answer
+    assert "1 clarify unanswered past 1h, left: ['m-c1']" in said and desk._open_clarifies() == {}
+
+
 @pytest.mark.parametrize(
     "sender, thread, close, admit_replies",
     [

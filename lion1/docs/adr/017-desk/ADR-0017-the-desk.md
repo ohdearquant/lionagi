@@ -456,12 +456,11 @@ least two and at most all of them.
 - **S2**: The desk handles mail that arrives after it went live; the backlog is the owner's. A row
   the owner marks read before discovery reads it is never pending, since discovery lists unread
   rows.
-- **S3**: A clarify asks the sender to answer the owner on the thread. A reply mailed to the desk's
-  own actor meets C3's gate and is dropped unless its sender is trusted or S8's gate lets it
-  through. An answer or a leave of a later message on the thread, from any sender, resolves the
-  clarify; a route, task or escalation does not. Otherwise `clarify_hours` leaves it as unanswered,
-  unless any message on its thread is pending or the sweep's scan paged, which may skip the answer
-  (C2).
+- **S3**: A clarify asks the sender to answer on the thread. A reply mailed to the desk's own actor
+  is dropped at C3's gate unless its sender is trusted or S8 admits it. An answer or a leave of a
+  later message there resolves it; a route, task or escalation does not. Otherwise `clarify_hours`,
+  judged at the sweep's read instant, leaves it unanswered, unless a message on its thread is
+  pending (a route or task of it leaves the cap to the next sweep) or the scan paged (C2).
 - **S4**: Nothing checks a desk's owner against its area's chair, and the registry's `desks` lists
   every resident's directory whatever its role; only a directory whose `chores.toml` has `[desk]`
   runs a desk.
