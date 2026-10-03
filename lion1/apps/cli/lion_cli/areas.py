@@ -218,14 +218,18 @@ def make_server(
     control_lock = threading.Lock()
     # the registry and the residents are read through one source, under one lock: `/events` serves the
     # snapshot of the last read for every connection (each read runs a pgrep per serving resident) and
-    # `/api/areas` makes a read of its own, which becomes the snapshot. Every read takes the next
-    # revision, so of two payloads the one with the higher revision is the later read
+    # `/api/areas` makes a read of its own, which becomes the snapshot. A read whose rows differ from the
+    # snapshot's takes the next revision and one whose rows are the same keeps it, so of two payloads the
+    # one with the higher revision is the later change
     snapshot: dict[str, Any] = {"at": float("-inf"), "areas": [], "rows": None, "rev": 0}
     snapshot_lock = threading.Lock()
 
     def read_rows() -> None:  # with `snapshot_lock` held
         areas = load_areas(registry)
         rows = area_rows(status(areas))
+        if rows == snapshot["rows"]:  # nothing changed: the revision stays, and so does what was sent for it
+            snapshot.update(at=time.monotonic(), areas=areas)
+            return
         # the wall clock in microseconds, above the last revision given. The count starts at 0 with each
         # server, so it is the wall clock that keeps a restarted server's revisions above the earlier one's,
         # unless the clock stepped back, which the page's stream epoch covers
@@ -390,10 +394,11 @@ def make_server(
 
         def _events(self) -> None:
             """SSE, one thread per connection (ThreadingHTTPServer's). Every `_POLL_S` re-read the
-            registry and the residents: `areas` on connect and whenever a row changed, its `id` the
-            revision of the read; per desk the last `_HISTORY` serve.log lines as history on first
-            sight, then each new line; `ping` every `_PING_S`. A write the client is gone for, or
-            stalled on, ends the thread."""
+            registry and the residents: `areas` on connect and whenever the last read, a poll's
+            included, has a revision above the last sent, its rows changed or not, its `id` that
+            revision; per desk the last `_HISTORY` serve.log lines as history on first sight, then
+            each new line; `ping` every `_PING_S`. A write the client is gone for, or stalled on,
+            ends the thread."""
             try:
                 self.connection.settimeout(_WRITE_S)
                 self.send_response(200)
@@ -413,14 +418,14 @@ def make_server(
                     return False
 
             tails: dict[str, tuple[int, bytes, int]] = {}
-            said: str | None = None
+            sent = 0  # the revision of the last `areas` event
             next_ping = time.monotonic() + _PING_S
             while True:
                 areas, rows, revision = poll_rows()
-                if rows is not None and (sig := json.dumps(rows)) != said:
+                if rows is not None and revision > sent:
                     if not emit("areas", rows, revision):
                         return
-                    said = sig
+                    sent = revision
                 for a in areas:
                     for listed in a.desks:
                         d = str(Path(listed))  # as the row's `dir` prints it, so the app can join them

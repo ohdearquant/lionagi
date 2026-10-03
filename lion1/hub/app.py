@@ -117,6 +117,7 @@ var POLL_MS = 5000;
 var pollTimer = null, polling = null;  // polling: the abort controller of the poll in flight
 var shown = 0;  // the revision of the last read shown, a poll's or the stream's
 var streamLive = false;  // an `open` since the last error, and no error since
+var replaying = {};  // the residents whose history batch this connection has begun
 // the server stamps each `areas` event and `/api/areas` answer with the revision of the read it came from.
 // A stream connection is a server epoch, as a restarted server may count below the rows shown: the page
 // forgets them when the stream opens, and within it a read not above the last one shown is refused.
@@ -157,6 +158,7 @@ function connect() {
     streamLive = true;
     if (polling) polling.abort();  // a poll out may have asked the server before its restart: given up
     shown = 0;
+    replaying = {};
   });
   es.addEventListener('areas', function (ev) {
     // a connection's first rows end the polling, shown or not
@@ -167,9 +169,19 @@ function connect() {
   es.addEventListener('log', function (ev) {
     var d = JSON.parse(ev.data);
     var buf = state.logs[d.dir] || (state.logs[d.dir] = []);
+    var showing = state.mode === 'detail' && state.dir === d.dir;
+    if (d.history && !replaying[d.dir]) {
+      // a history batch is the server's tail when the stream connected: it replaces the buffer, and the box
+      // on show is emptied to be filled again from it
+      replaying[d.dir] = true;
+      buf = state.logs[d.dir] = [];
+      state.shed[d.dir] = 0;
+      var box = showing && document.getElementById('log-box');
+      if (box) box.innerHTML = '';
+    }
     buf.push(d.line);
     if (buf.length > LOG_LINES) { buf.shift(); state.shed[d.dir] = (state.shed[d.dir] || 0) + 1; }
-    if (state.mode === 'detail' && state.dir === d.dir && !d.history) appendLogLine(d.line);
+    if (showing) appendLogLine(d.line);
   });
   es.onerror = function () { streamLive = false; startPoll(); };
 }

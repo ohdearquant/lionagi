@@ -367,6 +367,53 @@ const scenarios = {
     return { refreshed, renewed };
   },
 
+  // a `history` batch is the server's tail when the stream connects: it shows in the box of the page already
+  // on that resident, and a batch for another resident leaves that box alone
+  async logHistory(page) {
+    await page.open(DIR);
+    page.streamOpen();
+    for (const line of ['h1', 'h2', 'h3']) page.emit('log', { dir: DIR, line, history: true });
+    const shown = lines(page.byId('log-box'));
+    page.emit('log', { dir: OTHER, line: 'o1', history: true });
+    page.emit('log', { dir: DIR, line: 'live' });
+    return { shown, afterOther: lines(page.byId('log-box')) };
+  },
+
+  // a reconnect replays the tail as history over a buffer that already holds those lines: the batch replaces
+  // the buffer, so in the box on the page and in the box a later visit builds each line stands once
+  async logReplay(page) {
+    await page.open(DIR);
+    page.streamOpen();
+    for (const line of ['a', 'b', 'c']) page.emit('log', { dir: DIR, line, history: true });
+    page.emit('log', { dir: DIR, line: 'd' });
+    page.streamError();
+    page.streamOpen();  // reconnected: the tail is now a, b, c, d
+    for (const line of ['a', 'b', 'c', 'd']) page.emit('log', { dir: DIR, line, history: true });
+    page.emit('log', { dir: DIR, line: 'e' });
+    const onPage = lines(page.byId('log-box'));
+    await page.go('#');
+    await page.open(DIR);
+    return { onPage, rebuilt: lines(page.byId('log-box')) };
+  },
+
+  // the batch that replaces a buffer restarts its count of dropped lines: a reader 50 lines up in a full box,
+  // the page reloading, a batch of three and 402 lines after it drop five from the new buffer, and the place
+  // taken before the batch moves by those five less the five the old buffer had dropped
+  async logReplayShed(page) {
+    await page.open(DIR);
+    for (let i = 0; i < 405; i++) page.emit('log', { dir: DIR, line: 'line ' + i });  // five dropped
+    page.byId('log-box').scrollTop = 50 * LINE;
+    page.click(page.act('wake'));
+    await page.answer(page.requests('/control')[0], { ok: true, detail: 'woken' });  // the place is taken here
+    page.streamError();
+    page.streamOpen();
+    for (const line of ['h0', 'h1', 'h2']) page.emit('log', { dir: DIR, line, history: true });
+    for (let i = 0; i < 402; i++) page.emit('log', { dir: DIR, line: 'm' + i });
+    await page.answer(page.requests('/api/resident').at(-1), detail(DIR));
+    const box = page.byId('log-box');
+    return { nodes: box.children.length, view: inView(box), scrollTop: box.scrollTop };
+  },
+
   // words typed while a send is out are in the composer after the send's answer and the reload
   async sending(page) {
     await page.open(DIR);
@@ -535,6 +582,22 @@ const scenarios = {
     seen.refused = page.actors();
     page.emit('areas', [row('after')], 1000);
     seen.shown = page.actors();
+    return seen;
+  },
+
+  // the stream's rows are shown at a revision above the one shown, whatever they are: rows the stream sent,
+  // other rows a poll brought above them, and the stream's first rows again, at a revision above the poll's
+  async pollThenStreamAgain(page) {
+    const seen = {};
+    page.streamError();
+    page.streamOpen();  // reconnected and no rows yet, so the poll timer still runs
+    await page.advance(5000);
+    const out = page.requests('/api/areas').at(-1);
+    page.emit('areas', [row('a')], 100);
+    await page.answer(out, [row('b')], 120);
+    seen.polled = page.actors();
+    page.emit('areas', [row('a')], 130);
+    seen.streamed = page.actors();
     return seen;
   },
 

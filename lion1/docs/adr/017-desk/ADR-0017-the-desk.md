@@ -314,6 +314,9 @@ one scrolled up keeps the lines in view, except those the oldest-first eviction 
 of the same page, after a control or a send, restores the reader's place the same way; a navigation
 starts at the bottom.
 
+A `history` batch, the server's tail when the stream connects, replaces that resident's buffer and
+dropped-line count; a box on show is rebuilt from it, so a reconnect repeats no line.
+
 The composer's text is the page's draft: a re-render restores it, a send's accepted answer clears it
 unless an edit followed the send, and a navigation clears it.
 
@@ -322,18 +325,17 @@ unless an edit followed the send, and a navigation clears it.
 - **Subject**: `/api/areas`, the `areas` events of `/events` and the script `/app` serves.
 - **Violated when**: older rows replace newer ones shown, or later rows are refused.
 
-Every read behind `/api/areas` and the `areas` events of `/events` takes the larger of the
-microsecond wall clock and the last plus one as its revision, an event's `id` and an answer's
-`X-Areas-Revision`. The root page and `/api/resident` carry none. `/events` serves the last read;
-`/api/areas` makes its own, which becomes the last.
+A read whose rows differ from the last takes the larger of the microsecond wall clock and the last
+plus one as its revision, an event's `id` and an answer's `X-Areas-Revision`; an unchanged read
+keeps the revision. The root page and `/api/resident` carry none. `/api/areas` makes its own read,
+which becomes the last; `/events` sends the last read whenever its revision exceeds the one last
+sent.
 
-Within a stream connection, an epoch that `open` begins, a read not above the last one shown is
-refused; with the stream down, a poll's answer is taken as it arrives. The read taken becomes the
-one shown.
+From a stream's `open`, a read not above the last shown is refused; with the stream down, a poll's
+answer is taken as it arrives. The read taken becomes the one shown.
 
-Polls run one at a time from a stream error until a connection's first rows, so one may start after
-`open`. `open` or ten seconds aborts the poll out and drops its answer; an aborted or failed poll
-frees the next.
+Polls run one at a time from a stream error until a connection's first rows. `open` or ten seconds
+aborts the poll out and drops its answer; an aborted or failed poll frees the next.
 
 ## Decisions
 
@@ -429,16 +431,21 @@ adding a name it answers to; the phone shell is `hub/app.py`. The registry defau
 `.lionagi/areas.toml` under the home directory. `--file` names the registry, `--host` the address,
 `--refresh` the pages' reload in seconds (5), and `--json` prints the areas and rows as JSON.
 
-- **Landing evidence**: `tests/test_areas.py` (registry, rows, guards, stream), among them
+- **Landing evidence**: `tests/test_areas.py`:
   `test_a_residents_row_reads_its_own_files_and_serving_is_the_lock_not_the_pid_file`,
   `test_the_guards_refuse_a_peer_off_the_tailnet_a_foreign_host_or_origin_and_admit_a_native_post`,
   `test_a_stream_opened_after_a_poll_carries_rows_no_older_than_the_poll`,
-  `test_the_api_and_the_stream_stamp_their_rows_with_one_rising_revision` and
+  `test_the_api_and_the_stream_stamp_their_rows_with_one_rising_revision`,
+  `test_the_stream_sends_a_read_above_the_last_it_sent_though_its_rows_are_those_it_sent`,
+  `test_a_read_whose_rows_are_unchanged_keeps_the_revision_and_the_stream_stays_quiet` and
   `test_the_revision_continues_above_the_last_when_the_clock_stands_still_or_steps_back`;
   `tests/app_page_harness.js` runs the served script under node:
   `test_the_app_log_box_holds_400_nodes_after_405_lines_and_a_reader_scrolled_up_stays_put`,
   `test_the_app_re_render_of_the_page_a_reader_is_on_keeps_a_scrolled_up_readers_lines_in_view`,
   `test_the_app_re_render_follows_a_reader_at_the_bottom_and_a_new_page_starts_there`,
+  `test_the_app_shows_a_history_batch_in_the_box_of_the_page_already_open`,
+  `test_the_app_replaces_a_residents_log_with_the_tail_a_reconnect_replays`,
+  `test_the_app_restarts_the_dropped_line_count_of_a_log_a_history_batch_replaces`,
   `test_the_app_takes_an_event_or_a_live_poll_answer_only_above_the_revision_shown`,
   `test_the_app_refuses_an_event_under_a_poll_answer_shown_and_shows_one_above_it`,
   `test_the_app_shows_an_event_above_a_restarted_servers_poll_though_below_the_old_rows`,
@@ -446,6 +453,7 @@ adding a name it answers to; the phone shell is `hub/app.py`. The registry defau
   `test_the_app_takes_a_poll_answer_above_the_stream_rows_shown_while_it_was_out`,
   `test_the_app_refuses_a_poll_answer_not_above_the_revision_shown_while_the_stream_is_live`,
   `test_the_app_takes_a_poll_answer_whatever_its_revision_while_the_stream_is_down`,
+  `test_the_app_shows_the_streams_rows_again_above_a_poll_answer_that_showed_others`,
   `test_the_app_takes_the_first_rows_after_the_stream_opens_whatever_their_revision`,
   `test_the_app_still_drops_rows_older_than_those_shown_while_no_stream_opens_between`,
   `test_the_app_log_box_drops_the_oldest_lines_under_a_reader_at_its_top`,

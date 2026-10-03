@@ -1133,21 +1133,106 @@ def test_the_api_and_the_stream_stamp_their_rows_with_one_rising_revision(tmp_pa
     started = time.time_ns() // 1000
     polled = api_revision(port)
     assert polled >= started  # the count starts at the wall clock in microseconds
-    assert api_revision(port) > polled
+    (d / "hold").write_text("held by person from the app at now: r\n")
+    assert api_revision(port) > polled  # a read of rows that changed is a later read
     polled = api_revision(port)
     conn, resp = open_stream(port)
     ids: list = []
     read_events(resp, lambda ev: bool(ev), 5, ids)
     streamed = int(ids[0][1])
     assert ids[0][0] == "areas" and streamed >= polled  # the stream serves the read the poll last made
-    (d / "hold").write_text("held by person from the app at now: r\n")
+    (d / "hold").unlink()
     read_events(resp, lambda ev: {"areas", "ping"} <= {e for e, _ in ev}, 5, ids)
     changed = [int(i) for e, i in ids if e == "areas"]
     assert changed[-1] > streamed  # a changed row is a later read
     assert all(i is None for e, i in ids if e != "areas")  # only an `areas` event is stamped
-    assert api_revision(port) > changed[-1]  # and a poll after the stream is later than it
+    (d / "hold").write_text("held by person from the app at now: r\n")
+    assert api_revision(port) > changed[-1]  # and a poll of rows that changed after the stream is later
     resp.close()
     conn.close()
+
+
+def test_the_stream_sends_a_read_above_the_last_it_sent_though_its_rows_are_those_it_sent(
+    tmp_path, monkeypatch
+):
+    # the stream waits on a gate between its passes, so the polls come between two of them; a `ping` ends each
+    # pass, and with the poll interval long the stream's read is the last read, whichever request made it
+    gate = threading.Semaphore(0)
+    clock = types.SimpleNamespace(
+        monotonic=time.monotonic, time_ns=time.time_ns, sleep=lambda _s: gate.acquire(timeout=10)
+    )
+    monkeypatch.setattr(areas_cli, "time", clock)
+    monkeypatch.setattr(areas_cli, "_POLL_S", 3600.0)
+    monkeypatch.setattr(areas_cli, "_PING_S", 0.0)
+    d = app_dir(tmp_path)
+    port = serve_on(registry(tmp_path, d))
+    conn, resp = open_stream(port)
+
+    def a_pass() -> list[tuple[str, object, str | None]]:
+        ids: list = []
+        got = read_events(resp, lambda ev: ev[-1][0] == "ping", 5, ids)
+        return [(e, x, i) for (e, x), (_, i) in zip(got, ids, strict=True)]
+
+    try:
+        sent = a_pass()[0]
+        assert sent[0] == "areas" and sent[1][0]["controls"]["held_by_file"] is False
+        (d / "hold").write_text("held by person from the app at now: r\n")
+        code, text, _ = call(port, "GET", "/api/areas")  # a read that sees the change...
+        assert code == 200 and json.loads(text)[0]["controls"]["held_by_file"] is True
+        (d / "hold").unlink()
+        code, text, head = call(port, "GET", "/api/areas")  # ...and one that sees it undone
+        assert code == 200 and json.loads(text) == sent[1]  # the rows the stream sent, at a higher revision
+        assert int(head["X-Areas-Revision"]) > int(sent[2])
+        gate.release()
+        again = a_pass()
+        assert again[0] == ("areas", sent[1], head["X-Areas-Revision"])  # sent for its revision, not its rows
+        gate.release()
+        assert [e for e, _, _ in a_pass()] == ["ping"]  # a revision it has sent is not sent twice
+    finally:
+        resp.close()
+        conn.close()
+        gate.release(5)  # the stream's next writes find the client gone
+
+
+def test_a_read_whose_rows_are_unchanged_keeps_the_revision_and_the_stream_stays_quiet(tmp_path, monkeypatch):
+    # the same gated stream: the reads come between two of its passes, and a `ping` ends each pass
+    gate = threading.Semaphore(0)
+    clock = types.SimpleNamespace(
+        monotonic=time.monotonic, time_ns=time.time_ns, sleep=lambda _s: gate.acquire(timeout=10)
+    )
+    monkeypatch.setattr(areas_cli, "time", clock)
+    monkeypatch.setattr(areas_cli, "_POLL_S", 3600.0)
+    monkeypatch.setattr(areas_cli, "_PING_S", 0.0)
+    d = app_dir(tmp_path)
+    port = serve_on(registry(tmp_path, d))
+    conn, resp = open_stream(port)
+
+    def a_pass() -> list[tuple[str, object, str | None]]:
+        ids: list = []
+        got = read_events(resp, lambda ev: ev[-1][0] == "ping", 5, ids)
+        return [(e, x, i) for (e, x), (_, i) in zip(got, ids, strict=True)]
+
+    try:
+        sent = a_pass()[0]
+        assert sent[0] == "areas" and sent[1][0]["controls"]["held_by_file"] is False
+        for _ in range(2):  # two reads of rows that have not changed answer at the revision the stream sent
+            code, text, head = call(port, "GET", "/api/areas")
+            assert code == 200 and json.loads(text) == sent[1]
+            assert head["X-Areas-Revision"] == sent[2]
+        gate.release()
+        assert [e for e, _, _ in a_pass()] == ["ping"]  # so the stream has nothing to send
+        (d / "hold").write_text("held by person from the app at now: r\n")
+        code, text, head = call(port, "GET", "/api/areas")  # a read whose rows differ takes a later revision
+        assert code == 200 and json.loads(text)[0]["controls"]["held_by_file"] is True
+        assert int(head["X-Areas-Revision"]) > int(sent[2])
+        gate.release()
+        again = a_pass()
+        assert again[0] == ("areas", json.loads(text), head["X-Areas-Revision"])  # and the stream sends it
+        assert [e for e, _, _ in again] == ["areas", "ping"]
+    finally:
+        resp.close()
+        conn.close()
+        gate.release(5)  # the stream's next writes find the client gone
 
 
 def test_the_revision_continues_above_the_last_when_the_clock_stands_still_or_steps_back(
@@ -1158,13 +1243,22 @@ def test_the_revision_continues_above_the_last_when_the_clock_stands_still_or_st
     monkeypatch.setattr(areas_cli, "time", clock)
     d = app_dir(tmp_path)
     port = serve_on(registry(tmp_path, d))
+    hold = d / "hold"
+
+    def changed() -> int:  # a read of rows that changed: the hold file toggles one of them
+        if hold.exists():
+            hold.unlink()
+        else:
+            hold.write_text("held by person from the app at now: r\n")
+        return api_revision(port)
+
     first = api_revision(port)
     assert first == now[0]  # the first read is stamped with the clock
-    assert api_revision(port) == first + 1  # a clock that stood still still gives a later revision
+    assert changed() == first + 1  # a clock that stood still still gives a later revision
     now[0] -= 5_000_000
-    assert api_revision(port) == first + 2  # and one that stepped back
+    assert changed() == first + 2  # and one that stepped back
     now[0] += 50_000_000
-    assert api_revision(port) == now[0]  # the clock ahead again leads
+    assert changed() == now[0]  # the clock ahead again leads
 
 
 def test_the_log_tail_reads_history_then_whole_new_lines_and_starts_over_on_a_shrunk_log(tmp_path):
@@ -1397,6 +1491,32 @@ def test_the_app_gives_up_a_poll_that_never_settles_and_the_next_tick_polls_agai
     # holding the latch, so the tick after it starts none; that poll's own answer is applied
     assert seen["afterLate"] == [] and seen["whileOut"] == 2
     assert seen["actors"] == ["next"]
+
+
+def test_the_app_shows_a_history_batch_in_the_box_of_the_page_already_open(tmp_path):
+    seen = app_session(tmp_path, "logHistory")
+    # the batch arrives after the page rendered its box, and shows there without another navigation
+    assert seen["shown"] == ["h1", "h2", "h3"]
+    # another resident's batch leaves this box alone, and a live line still follows the batch
+    assert seen["afterOther"] == ["h1", "h2", "h3", "live"]
+
+
+def test_the_app_replaces_a_residents_log_with_the_tail_a_reconnect_replays(tmp_path):
+    seen = app_session(tmp_path, "logReplay")
+    # the replayed tail replaces the buffer: each line stands once, on the page and in a box built again
+    assert seen == {"onPage": list("abcde"), "rebuilt": list("abcde")}
+
+
+def test_the_app_restarts_the_dropped_line_count_of_a_log_a_history_batch_replaces(tmp_path):
+    seen = app_session(tmp_path, "logReplayShed")
+    # the new buffer dropped five lines as the old one had: the place taken before the batch does not move
+    assert seen == {"nodes": 400, "view": "m52", "scrollTop": 50 * 20}
+
+
+def test_the_app_shows_the_streams_rows_again_above_a_poll_answer_that_showed_others(tmp_path):
+    seen = app_session(tmp_path, "pollThenStreamAgain")
+    # a poll's answer above the stream's rows is shown; the stream's rows again, above it, are shown too
+    assert seen == {"polled": ["b"], "streamed": ["a"]}
 
 
 def test_the_app_log_box_drops_the_oldest_lines_under_a_reader_at_its_top(tmp_path):
