@@ -11,6 +11,7 @@ import io
 import ipaddress
 import json
 import os
+import re
 import socket
 import ssl
 import threading
@@ -364,6 +365,22 @@ def test_a_timeout_in_either_of_its_two_forms(wire, make, _body):
             run(make().search(WebSearch(query="x")))
 
 
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda t: SearXNG("https://searx.example/", timeout=t),
+        lambda t: Brave(KEY, timeout=t),
+        lambda t: Tavily(KEY, timeout=t),
+        lambda t: Jina(KEY, timeout=t),
+    ],
+    ids=["searxng", "brave", "tavily", "jina"],
+)
+def test_a_search_adapter_built_with_a_timeout_gives_it_to_its_request(wire, make):
+    wire.answers = [TimeoutError("timed out")]
+    with pytest.raises(WebError, match="timed out after 7s"):
+        run(make(7.0).search(WebSearch(query="x")))
+
+
 @pytest.mark.parametrize(("make", "_body"), PROVIDERS)
 def test_a_network_failure_and_a_cut_body_name_the_provider(wire, make, _body):
     wire.answers = [urllib.error.URLError("name or service not known"), ConnectionResetError("reset")]
@@ -371,6 +388,16 @@ def test_a_network_failure_and_a_cut_body_name_the_provider(wire, make, _body):
         run(make().search(WebSearch(query="x")))
     with pytest.raises(WebError, match="request failed: ConnectionResetError"):
         run(make().search(WebSearch(query="x")))
+
+
+def test_a_key_of_eight_characters_is_blanked_and_a_shorter_one_is_left():
+    def carrying(**header):
+        return urllib.request.Request("https://p.example/", headers=header)
+
+    assert w._credentials(carrying(Authorization="Bearer 12345678")) == (b"12345678",)
+    assert w._credentials(carrying(**{"X-Subscription-Token": "12345678"})) == (b"12345678",)
+    assert w._credentials(carrying(Authorization="Bearer 1234567")) == ()
+    assert w._credentials(carrying(**{"X-Subscription-Token": "1234567"})) == ()
 
 
 @pytest.mark.parametrize(("make", "_body"), PROVIDERS)
@@ -920,6 +947,41 @@ def test_fetch_errors_are_failed_results_that_name_the_cause(wire, public_dns):
             w._fetch("https://pages.example/a", 100)
 
 
+def test_a_status_that_arrives_after_the_deadline_is_a_timeout(public_dns, monkeypatch):
+    def late(req, timeout, guard=False):
+        w._current.clock._expire()  # the timer fired while the head was read; the status still came back
+        raise http_error(404)
+
+    monkeypatch.setattr(w, "_urlopen", late)
+    with pytest.raises(WebError, match="web_fetch: timed out after 20s"):
+        w._fetch("https://pages.example/a", 100)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://[::1/",
+        "http://[",
+        "http://a]b/",
+        f"http://pages.example{chr(0xFF03)}x/",  # fullwidth number sign: reads as `#` once normalized
+        "http://pages.example:80a/",
+        "http://pages.example:99999/",
+    ],
+    ids=[
+        "open-bracket",
+        "lone-bracket",
+        "close-bracket",
+        "normalized-netloc",
+        "port-not-a-number",
+        "port-range",
+    ],
+)
+def test_a_url_the_parser_refuses_is_a_failed_result_that_names_it(wire, url):
+    with pytest.raises(WebError, match=r"web_fetch: .*" + re.escape(url)):
+        w._fetch(url, 100)
+    assert wire.requests == []
+
+
 # --- the connection: a direct fetch dials an address that was checked ---------------------------------
 
 
@@ -1217,6 +1279,42 @@ def test_a_socket_is_watched_before_it_connects_and_closed_when_it_does_not(monk
     ]
 
 
+def test_a_direct_socket_is_watched_before_it_connects_and_closed_when_it_does_not(monkeypatch):
+    events: list[tuple] = []
+
+    class Raw:
+        def __init__(self, family, kind, proto):
+            events.append(("socket", family))
+
+        def settimeout(self, timeout):
+            events.append(("timeout", timeout))
+
+        def connect(self, address):
+            events.append(("connect", address))
+            if address[0] == "192.0.2.1":
+                raise ConnectionRefusedError("refused")
+
+        def close(self):
+            events.append(("close",))
+
+    answers = [(2, 1, 6, "", ("192.0.2.1", 443)), (10, 1, 6, "", ("2001:db8::1", 443, 0, 0))]
+    monkeypatch.setattr(w, "_public_addresses", lambda host, port: answers)
+    monkeypatch.setattr(w.socket, "socket", Raw)
+    monkeypatch.setattr(w, "_watch", lambda sock: events.append(("watch", type(sock))))
+    assert isinstance(w._connect_public("pages.example", 443, 5.0), Raw)
+    assert events == [
+        ("socket", 2),
+        ("watch", Raw),
+        ("timeout", 5.0),  # read last before the connect
+        ("connect", ("192.0.2.1", 443)),
+        ("close",),
+        ("socket", 10),
+        ("watch", Raw),
+        ("timeout", 5.0),
+        ("connect", ("2001:db8::1", 443, 0, 0)),
+    ]
+
+
 @pytest.fixture
 def stepping(fake_time, monkeypatch):
     """Sockets that move the fake clock: `before` seconds pass as one is made, after the dial read what
@@ -1257,19 +1355,20 @@ def stepping(fake_time, monkeypatch):
     return step
 
 
+class Unwrapped:
+    """A TLS context that wraps nothing, so what a request sends is what the socket stub records."""
+
+    verify_mode, check_hostname = ssl.CERT_REQUIRED, True
+
+    def wrap_socket(self, sock, server_hostname, do_handshake_on_connect=True):
+        return sock
+
+
 def timed(https: bool):
-    """A provider's connection of either kind; the TLS one's context wraps nothing, so what the request
-    sends is what the socket stub records."""
+    """A provider's connection of either kind."""
     if not https:
         return w._Timed("search.example", 80, timeout=20.0)
-
-    class Wraps:
-        verify_mode, check_hostname = ssl.CERT_REQUIRED, True
-
-        def wrap_socket(self, sock, server_hostname, do_handshake_on_connect=True):
-            return sock
-
-    return w._TimedTLS("search.example", 443, timeout=20.0, context=Wraps())
+    return w._TimedTLS("search.example", 443, timeout=20.0, context=Unwrapped())
 
 
 @pytest.mark.parametrize("https", [False, True], ids=["http", "https"])
@@ -1297,6 +1396,52 @@ def test_a_dial_paused_to_the_deadline_never_connects(stepping, https):
     with w._Clock(10), pytest.raises(TimeoutError, match="deadline passed"):
         timed(https).connect()
     (sock,) = stepping.made
+    assert sock.address is None and sock.closed
+
+
+# the same three over a page's own connection, which dials the one answer that was checked
+
+PAGE = {False: ("pages.example", 80), True: ("pages.example", 443)}
+
+
+@pytest.fixture
+def pinned(stepping, monkeypatch):
+    monkeypatch.setattr(w, "_public_addresses", lambda host, port: [(2, 1, 6, "", ("192.0.2.1", port))])
+    monkeypatch.setattr(w, "_tls", Unwrapped)
+    return stepping
+
+
+def direct(https: bool):
+    """A page's connection of either kind."""
+    if not https:
+        return w._Pinned(*PAGE[False], timeout=20.0)
+    return w._PinnedTLS(*PAGE[True], timeout=20.0, context=Unwrapped())
+
+
+@pytest.mark.parametrize("https", [False, True], ids=["http", "https"])
+def test_a_direct_connect_that_returns_after_the_deadline_is_closed_and_no_request_follows(pinned, https):
+    pinned.during = 11.0  # the 10 s request's connect comes back a second late
+    with w._Clock(10), pytest.raises(TimeoutError, match="deadline passed"):
+        direct(https).request("GET", "/")
+    (sock,) = pinned.made
+    assert sock.address == ("192.0.2.1", PAGE[https][1]) and sock.closed and sock.sent == []
+
+
+@pytest.mark.parametrize("https", [False, True], ids=["http", "https"])
+def test_a_direct_connect_paused_before_it_connects_connects_with_what_is_left_then(pinned, https):
+    pinned.before = 4.0  # paused after the dial read its 10 s, before the connect
+    with w._Clock(10):
+        direct(https).connect()
+    (sock,) = pinned.made
+    assert sock.address == ("192.0.2.1", PAGE[https][1]) and sock.timeout == 6.0 and not sock.closed
+
+
+@pytest.mark.parametrize("https", [False, True], ids=["http", "https"])
+def test_a_direct_connect_paused_to_the_deadline_never_connects(pinned, https):
+    pinned.before = 10.0
+    with w._Clock(10), pytest.raises(TimeoutError, match="deadline passed"):
+        direct(https).connect()
+    (sock,) = pinned.made
     assert sock.address is None and sock.closed
 
 
@@ -1522,6 +1667,14 @@ def test_a_page_that_sends_a_byte_now_and_then_is_cut_at_the_deadline(drip, monk
 
 
 def test_past_the_deadline_no_socket_is_opened_and_one_watched_late_is_shut(monkeypatch):
+    with w._Clock(5) as clock:  # a socket handed to a clock after its deadline is shut at once
+        clock._expire()
+        mine, theirs = socket.socketpair()
+        clock.watch(mine)
+        theirs.settimeout(2)
+        assert theirs.recv(1) == b""
+        mine.close()
+        theirs.close()
     server = socket.create_server(("127.0.0.1", 0))
     port = server.getsockname()[1]
     dialed: list[tuple] = []
@@ -1545,13 +1698,13 @@ def test_past_the_deadline_no_socket_is_opened_and_one_watched_late_is_shut(monk
                 pinned.connect()
         assert dialed == []  # the deadline passed during the resolution: nothing was dialed
         late = w._Pinned("late.example", port, timeout=5.0)
-        with w._Clock(0.05):
-            late.connect()
+        with w._Clock(0.05), pytest.raises(TimeoutError, match="deadline passed"):
+            late.connect()  # it connects, but after the deadline: closed, never handed back
+        assert late.sock is None
         peer, _ = server.accept()
         peer.settimeout(2)
-        assert peer.recv(1) == b""  # a socket that arrives after the deadline is shut at once
+        assert peer.recv(1) == b""  # the connection that arrived late was closed
         peer.close()
-        late.close()
     finally:
         server.close()
     assert w._left(5.0) == 5.0  # outside a request, a socket keeps its own timeout

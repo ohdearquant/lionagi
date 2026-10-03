@@ -236,8 +236,7 @@ class _TimedTLS(http.client.HTTPSConnection):
 class _Pinned(http.client.HTTPConnection):
     def connect(self) -> None:
         sys.audit("http.client.connect", self, self.host, self.port)  # as the connect it replaces
-        self.sock = _connect_public(self.host, self.port, self.timeout)
-        _watch(self.sock)
+        self.sock = _connect_public(self.host, self.port, self.timeout)  # watched from its creation
 
 
 class _PinnedTLS(http.client.HTTPSConnection):
@@ -550,9 +549,11 @@ class Tavily:
 # the shape of one result (the OpenAPI names the envelope, `data[]`, but not the entry's fields).
 # GET https://s.jina.ai/search, header `Authorization: Bearer <key>`, `Accept: application/json`,
 # parameters `q`, `num` (0 to 20) and `site`. It documents no recency parameter, so `recency`
-# raises. Each entry is read for `title`, `url`, `description` (else `content`) and
-# `publishedTime`, the OpenAPI's name (else `date`, the tutorial's); the entry's page content is
-# long, so the snippet is cut.
+# raises. The OpenAPI lists two search routes with one envelope: the route used is `/search` with `q`
+# in the query, its `searchIndex`; the reader page's `/?q=` form is its `search`, `/{q}` with `q` in
+# the path. The opt-in live test is what tells them apart. Each entry is read for `title`, `url`,
+# `description` (else `content`) and `publishedTime`, the OpenAPI's name (else `date`, the tutorial's);
+# the entry's page content is long, so the snippet is cut.
 class Jina:
     name = "jina"
     URL = "https://s.jina.ai/search"
@@ -671,7 +672,10 @@ def _check_url(url: str) -> None:
     environment proxy the proxy resolves the name itself, and what the proxy may reach is the proxy's
     to restrict; nor does any of it stop a public host from serving what it likes. Run the tool
     where reaching the open internet, and only that, is acceptable."""
-    parts = urllib.parse.urlsplit(url)
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError as e:  # an unmatched bracket, a netloc that normalizes into a delimiter
+        raise WebError(f"web_fetch: {url!r}: {e}") from None
     if parts.scheme not in ("http", "https"):
         raise WebError(f"web_fetch reads http and https addresses, not {parts.scheme or 'a bare path'!r}")
     host = parts.hostname
@@ -725,19 +729,15 @@ def _public_addresses(host: str, port: int) -> list[tuple]:
 
 def _connect_public(host: str, port: int, timeout: float | None) -> socket.socket:
     """A socket connected to `host`: the name is resolved once here, every answer is checked, and the
-    socket dials one of those answers by its address, never the name again."""
+    socket dials one of those answers by its address, never the name again. Each try is `_connect`'s,
+    so it is under the request's clock as a provider's is."""
     failure: OSError | None = None
-    for family, kind, proto, _, address in _public_addresses(host, port):
+    for info in _public_addresses(host, port):
         left = _left(timeout)  # the resolution may have outlasted the request's deadline: then no dial
-        sock = socket.socket(family, kind, proto)
         try:
-            sock.settimeout(left)
-            sock.connect(address)
+            return _connect(info, left)
         except OSError as e:
-            sock.close()
             failure = e
-            continue
-        return sock
     raise failure or OSError(f"{host!r} resolves to no address")
 
 
@@ -758,6 +758,8 @@ def _fetch(url: str, max_chars: int, timeout: float = TIMEOUT) -> str:
                 body = _read(resp)
         except urllib.error.HTTPError as e:
             e.close()
+            if clock.expired:  # a status that came back after the deadline is a timeout, as `_send` reads it
+                raise WebError(f"web_fetch: timed out after {timeout:g}s") from None
             raise WebError(f"web_fetch: {_http(e.code)}") from None
         except WebError:  # a head the deadline cut short parses, and then reads as the wrong page
             if clock.expired:

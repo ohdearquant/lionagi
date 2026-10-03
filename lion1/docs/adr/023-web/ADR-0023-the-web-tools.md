@@ -78,21 +78,21 @@ text and never instructions. A hit or a page enters the record as the RESULT of 
 ([[ADR-0007-the-record#^c1|ADR-0007/C1]]) and nowhere else. The line is a frame, not a proof that a
 model will not follow what a page says (S3).
 
-### C3: Every failure is a failed result the model can read, and never carries the key _(enforced: mechanical)_ ^c3
+### C3: Every failure is a failed result the model can read, and never carries a key of 8 or more characters _(enforced: mechanical)_ ^c3
 
 - **Subject**: every call of the four search provider adapters (S12) and every fetch.
 - **Violated when**: a refused key, a rate limit, a timeout, a network failure, a cut body or a body
-  that D2 or D3 refuses raises anything but `WebError` or ends the run; or the key reaches the model
-  in an error or a hit.
+  D2 or D3 refuses raises anything but `WebError` or ends the run; or a key of 8 or more characters
+  reaches the model.
 
-Each of those is raised as `WebError` with the search provider's name or `web_fetch` first, which
-the runtime settles as a failed command ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]). A search
-with no results, one whose every result D3 drops included, is a result that says so.
+Each is a `WebError` opening with the search provider's name or `web_fetch`, which the runtime
+settles as a failed command ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]). A search with no
+results, every result D3 drops included, is a result that says so.
 
 A key is sent only in the header its search provider documents, and a search provider's redirect is
-an error, never followed: it would carry that header to another host. A provider that echoes the
-key, in an error, a result or the text of any failure, has it replaced by `[credential]` before
-anything is read (S8).
+an error, never followed: it would carry that header elsewhere. A provider that echoes a key of 8 or
+more characters, in an error, a result or a failure's text, has it replaced by `[credential]` before
+anything is read; a shorter key is left, and S8 says why.
 
 ### C4: An argument a search provider does not document is refused, never guessed _(enforced: mechanical)_ ^c4
 
@@ -147,10 +147,10 @@ is the proxy's to restrict.
   2,000,001 bytes of a body are read; a fetch returns a body that is not a text type, or page text
   past `max_chars`; or a cut is not marked.
 
-A request has a 20-second deadline, from its first connection to the last byte read, however the
-bytes arrive: a peer that sends a byte now and then is cut at the deadline as one that sends
-nothing. A provider's answer past 2,000,000 bytes is refused. A fetch reads text types only, at most
-2,000,001 bytes whatever `max_chars` asks.
+A request has a deadline, 20 seconds or its adapter's `timeout`, from its first connection to its
+last byte: a peer that sends a byte now and then is cut at the deadline as one that sends nothing. A
+provider's answer past 2,000,000 bytes is refused. A fetch reads text types only, at most 2,000,001
+bytes whatever `max_chars` asks.
 
 HTML becomes text without scripts, styles or markup. The page's text is cut at `max_chars`, at most
 100,000, and a line after it says where; that line is not counted. The run's own bounds apply as to
@@ -184,6 +184,7 @@ or non-list result list.
   `test_a_bad_key_and_a_rate_limit_are_errors_the_model_reads`,
   `test_a_provider_that_echoes_the_key_has_it_blanked_in_errors_and_hits`,
   `test_a_failure_whose_text_carries_the_key_has_it_blanked`,
+  `test_a_key_of_eight_characters_is_blanked_and_a_shorter_one_is_left`,
   `test_a_provider_answer_past_the_cap_is_refused_and_never_read_whole`,
   `test_a_body_that_is_not_json_or_not_the_documented_shape`,
   `test_a_provider_redirect_is_an_error_and_never_followed`,
@@ -205,15 +206,17 @@ section reads as no hits when absent. An unsupported argument raises before any 
   `test_a_search_whose_every_result_has_no_usable_link_is_no_results`,
   `test_tavily_sends_only_the_filters_it_was_given`, `test_a_site_that_is_not_a_domain_is_refused`,
   `test_a_site_is_dns_labels_none_starting_or_ending_with_a_hyphen`,
+  `test_a_search_adapter_built_with_a_timeout_gives_it_to_its_request`,
   `test_provider_from_env_takes_the_first_configured_in_order`.
 
 ### D4: `_check_url`, `_public_addresses`, `_carried_v4` and the redirect handler ^d4
 
-Serves C5. `_check_url` takes the scheme, the host and the port from the address and calls
+Serves C3 and C5. `_check_url` takes the scheme, the host and the port from the address and calls
 `_public_addresses`, which resolves the host and refuses on the first answer that is not a public
-address; C5's five ranges are `_DISPUTED`. `_carried_v4` returns the low 32 bits of a mapped,
-compatible, `::ffff:0:0:0/96` or `64:ff9b::/96` address. `_Redirects` runs `_check_url` on each
-redirect's target before it is followed.
+address; C5's five ranges are `_DISPUTED`. An address `urlsplit` refuses is a `WebError` that names
+it. `_carried_v4` returns the low 32 bits of a mapped, compatible, `::ffff:0:0:0/96` or
+`64:ff9b::/96` address. `_Redirects` runs `_check_url` on each redirect's target before it is
+followed.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_fetch_refuses_loopback_link_local_and_private_addresses`,
@@ -222,13 +225,15 @@ redirect's target before it is followed.
   `test_every_address_gets_one_verdict_whichever_table_the_interpreter_has`,
   `test_fetch_refuses_a_name_that_resolves_to_a_private_address`,
   `test_fetch_refuses_other_schemes_and_hosts_that_do_not_resolve`,
+  `test_a_url_the_parser_refuses_is_a_failed_result_that_names_it`,
   `test_a_redirect_is_followed_only_to_a_public_address`.
 
 ### D5: `_connect_public`, the two pinned connections and `_via_proxy` ^d5
 
-Serves C6. `_connect_public` resolves, checks and connects to an address, never to the name.
-`_Pinned` and `_PinnedTLS` use it as their `connect`; the TLS one verifies the host asked for
-against the default trust store. The two handlers are always installed for a fetch and pick the
+Serves C6 and C7. `_connect_public` resolves, checks and connects to an address, never to the name,
+trying each checked address through `_connect` (D8), so the clock watches the socket from its
+creation. `_Pinned` and `_PinnedTLS` use it as their `connect`; the TLS one verifies the host asked
+for against the default trust store. The two handlers are always installed for a fetch and pick the
 pinned connection unless `_via_proxy` reads the request as taken by the proxy.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
@@ -236,7 +241,8 @@ pinned connection unless `_via_proxy` reads the request as taken by the proxy.
   `test_a_direct_fetch_follows_a_redirect_through_checked_connections`,
   `test_the_tls_connection_verifies_the_name_it_was_asked_for`,
   `test_proxy_settings_that_change_between_two_readings_open_no_unchecked_connection`,
-  `test_behind_an_environment_proxy_the_request_is_the_proxys_to_open`.
+  `test_behind_an_environment_proxy_the_request_is_the_proxys_to_open`,
+  `test_a_direct_socket_is_watched_before_it_connects_and_closed_when_it_does_not`.
 
 ### D6: `_fetch` and `html_text` ^d6
 
@@ -260,7 +266,7 @@ socket to the clock before a handshake or a proxy reads from it: `_TimedTLS`, fo
 TLS, as `_dial` connects. When the deadline passes a timer shuts each socket, which ends a read
 blocked on it, and `_left` refuses a later connection, a checked dial whose resolution outlasted the
 deadline included. A request whose clock expired is a timeout whatever its read returned, an HTTP
-error's detail included.
+error and its detail included.
 
 - **Landing evidence**: `tests/test_web_tools.py`:
   `test_a_provider_that_sends_a_byte_now_and_then_is_cut_at_the_deadline`,
@@ -268,9 +274,10 @@ error's detail included.
   headers), `test_past_the_deadline_no_socket_is_opened_and_one_watched_late_is_shut`,
   `test_a_timed_tls_connection_is_watched_from_its_dial_and_before_its_handshake`,
   `test_a_proxy_that_answers_connect_a_byte_now_and_then_is_cut_at_the_deadline`,
-  `test_an_error_whose_detail_outlasts_the_deadline_is_a_timeout`.
+  `test_an_error_whose_detail_outlasts_the_deadline_is_a_timeout`,
+  `test_a_status_that_arrives_after_the_deadline_is_a_timeout`.
 
-### D8: `_dial` and `_connect`: a provider's or a proxy's connection, one address at a time ^d8
+### D8: `_dial` and `_connect`: one address at a time under the request's clock ^d8
 
 Serves C7. `_Timed` and `_TimedTLS` connect through `_dial`, which resolves the name and tries each
 address through `_connect` in order. Each try gets what is left of the request's clock, and none is
@@ -287,7 +294,10 @@ is raised when no address answers.
   `test_a_socket_is_watched_before_it_connects_and_closed_when_it_does_not`,
   `test_a_connect_that_returns_after_the_deadline_is_closed_and_no_request_follows`,
   `test_a_dial_paused_before_its_connect_connects_with_what_is_left_then`,
-  `test_a_dial_paused_to_the_deadline_never_connects`.
+  `test_a_dial_paused_to_the_deadline_never_connects`,
+  `test_a_direct_connect_that_returns_after_the_deadline_is_closed_and_no_request_follows`,
+  `test_a_direct_connect_paused_before_it_connects_connects_with_what_is_left_then`,
+  `test_a_direct_connect_paused_to_the_deadline_never_connects`.
 
 ## Alternatives
 
@@ -325,9 +335,9 @@ is raised when no address answers.
   outside names only through its proxy refuses every fetch as unresolvable, and says so.
 - **S7**: A redirect between http and https is followed. A fetch sends no credential, so the change
   exposes the address asked for and nothing else.
-- **S8**: The key is blanked as its exact bytes. An answer that escapes or encodes it, and a key
-  under 8 characters, are not caught; a provider that reflects its own key back is the provider's
-  defect, and this is a backstop.
+- **S8**: The key is blanked as its exact bytes. An answer that escapes or encodes it is not caught.
+  A key under 8 characters is left, because blanking it would blank ordinary text. A provider that
+  reflects its own key back is the provider's defect, and this is a backstop.
 - **S9**: Not under the deadline: name resolution, which the system's resolver bounds.
 - **S10**: The pinned connections replace the standard `connect` and raise its audit event,
   `http.client.connect`, themselves; they do not set `TCP_NODELAY`, which changes latency only.
@@ -340,6 +350,12 @@ is raised when no address answers.
   C7's deadline and body bound cover the four adapters, so a provider of another make owes its own;
   what it raises reaches the model as the runtime's failed result
   ([[ADR-0005-command-handling#^c1|ADR-0005/C1]]).
-- **S13**: In `_connect`, removing the read of the time left before the connect turns the two
-  paused-dial tests red, and removing the read after it turns the late-connect test red. Each is run
-  as an http and as an https connection.
+- **S13**: A provider's or a proxy's connection and a page's connect through `_connect`. Removing
+  its read of the time left before the connect turns
+  `test_a_dial_paused_before_its_connect_connects_with_what_is_left_then`,
+  `test_a_dial_paused_to_the_deadline_never_connects` and the direct pair,
+  `test_a_direct_connect_paused_before_it_connects_connects_with_what_is_left_then` and
+  `test_a_direct_connect_paused_to_the_deadline_never_connects`, red. Removing the read after it
+  turns `test_a_connect_that_returns_after_the_deadline_is_closed_and_no_request_follows` and
+  `test_a_direct_connect_that_returns_after_the_deadline_is_closed_and_no_request_follows` red. Each
+  is run as an http and as an https connection.
