@@ -179,18 +179,19 @@ direction, cadence and question.
 
 ### C9: A command is stopped within a bound of its timeout or its cancel _(enforced: mechanical)_ ^c9
 
-- **Subject**: every command run through `sh`.
+- **Subject**: every command `sh` runs.
 - **Violated when**: a call outlives its bounds, a command or its group survives it, a pipe stays
-  open past it, or a failure to start or stop reads as a timeout.
+  open past it, or a failure reads as a timeout.
 
-Each command starts in a process group of its own, and the timeout counts from the call, the start
-included. Past it, or on a cancel, the runner kills the group, drains its pipes for up to five
-seconds, the grace, and closes them. A start unlanded by then gets one grace to land and one to take
-its cancel; one that lands in either is stopped like any other.
+Each command starts in its own process group; the timeout counts from the call, start included. Past
+it, or on a cancel, the runner kills the group, drains its pipes for up to five seconds, the grace,
+and closes them. A start unlanded by then is cancelled after a grace; one that lands is stopped as
+above.
 
-A group the runner may not signal and a drain that fails raise. A start that fails raises too,
-unless a cancel is in flight. A descendant outside the group, or of a start that never landed, is
-not killed, and a pipe it holds is abandoned at the grace.
+A group the runner may not signal and a drain that fails raise. A start that fails raises, unless a
+cancel is in flight. A descendant outside the group, or of a start that never landed, is not killed,
+and its pipe is abandoned at the grace. Such a start's pipe ends stay with asyncio's connection
+task, which closes them at end of file once the loop runs it.
 
 ## Decisions
 
@@ -307,11 +308,12 @@ refused at build.
 
 ### D8: `sh` starts a command as a task of its own and stops it by one path ^d8
 
-Serves C9. The start is a task waited for up to the timeout. One still unlanded then is waited for
-one grace, cancelled, and given one more grace to take the cancel. What landed goes to `_stop`:
-`killpg` of the group, a drain of up to the grace, then the pipe transports closed in a `finally`.
-An `EPERM` from `killpg` is read again once the drain has reaped the leader, and only a second
-refusal raises.
+Serves C9. The start is a task waited for up to the timeout. One unlanded then is cancelled after a
+grace, again after another, and abandoned after a third. `_stop` takes what landed: `killpg` of the
+group, a drain of up to the grace, then the pipe transports closed in a `finally`. An `EPERM` is
+read again once the drain has reaped the leader; only a second refusal raises. The pipe ends of a
+start that never landed stay asyncio's: a close from outside races its connection task's queued
+reader.
 
 - **Landing evidence**: in `tests/test_instruments.py`,
   `test_sh_stops_and_joins_its_child_on_a_timeout_and_on_a_cancellation`,
@@ -328,8 +330,9 @@ refusal raises.
   `test_sh_cancels_a_start_that_never_lands_at_its_grace_and_gives_the_timeouts_answer`,
   `test_a_cancel_in_the_wait_for_a_start_that_never_lands_is_raised_after_its_cancel`,
   `test_a_process_a_cancelled_start_had_begun_is_stopped_like_one_that_landed`,
-  `test_a_start_that_failed_is_raised_on_either_side_of_the_timeout` and
-  `test_sh_gives_up_at_its_grace_on_a_command_whose_pipes_never_connect_and_ends_it`.
+  `test_a_start_that_failed_is_raised_on_either_side_of_the_timeout`,
+  `test_sh_returns_once_a_start_has_taken_its_second_cancel_and_gives_up_on_one_that_takes_neither`
+  and `test_sh_gives_up_at_its_grace_on_a_command_whose_pipes_never_connect_and_ends_it`.
 
 ## Alternatives
 

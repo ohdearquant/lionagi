@@ -669,10 +669,12 @@ def test_sh_raises_any_other_cleanup_failure_and_still_closes_its_pipes(monkeypa
 class Start:
     """The start of a command, replaced: it waits `delay` seconds, or on a future nobody sets when there is
     no `delay`, then fails with `fault` when it has one. A cancel is recorded in `seen`; a start with
-    `child` has begun that process before the cancel reaches it, and hands it back instead of raising."""
+    `child` has begun that process before the cancel reaches it, and hands it back instead of raising; one
+    that `ignores` n cancels goes on waiting through them, and takes the next. `ended` says it is over."""
 
-    def __init__(self, monkeypatch, delay=None, fault=None, child=None):
+    def __init__(self, monkeypatch, delay=None, fault=None, child=None, ignores=0):
         self.delay, self.fault, self.child, self.seen, self.gate = delay, fault, child, [], None
+        self.ignores, self.ended = ignores, False
         monkeypatch.setattr(asyncio, "create_subprocess_exec", self.spawn)
         if child is not None:
             monkeypatch.setattr(os, "killpg", child.killpg)
@@ -685,11 +687,19 @@ class Start:
             await asyncio.sleep(self.delay)
         except asyncio.CancelledError:
             self.seen.append("cancelled")
+            while len(self.seen) <= self.ignores:
+                try:
+                    await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    self.seen.append("cancelled")
             if self.child is not None:
                 return self.child
             raise
-        if self.fault is not None:
-            raise self.fault
+        else:
+            if self.fault is not None:
+                raise self.fault
+        finally:
+            self.ended = True
 
     def release(self):
         """Ends a start that never lands, so that a runner stuck waiting for it can return."""
@@ -735,6 +745,41 @@ def test_sh_cancels_a_start_that_never_lands_at_its_grace_and_gives_the_timeouts
     got, took = sh_over(start, timeout=0.05)
     assert got == (124, "", "/bin/x did not finish within 0.05s")
     assert start.seen == ["cancelled"] and 0.2 <= took < 0.05 + 0.2 + 0.2 + 1
+
+
+@pytest.mark.parametrize("ignores", [1, 2], ids=["takes-the-second-cancel", "takes-neither"])
+def test_sh_returns_once_a_start_has_taken_its_second_cancel_and_gives_up_on_one_that_takes_neither(
+    monkeypatch, ignores
+):
+    # on 3.11 and 3.12 a cancelled start that began its process waits for its pipes, and takes the second
+    # cancel: the call returns with that start over, not one loop turn short of it. A start that takes
+    # neither is given up on after a grace of its own, and the call is not held by it
+    monkeypatch.setattr(instr, "_GRACE", 0.3)
+    start = Start(monkeypatch, ignores=ignores)
+
+    async def call():
+        t0 = time.monotonic()
+        got = await instr.sh(["/bin/x"], timeout=0.05)
+        return got, time.monotonic() - t0, start.ended, list(start.seen)  # read in the step it returned
+
+    async def go():
+        task = asyncio.create_task(call())
+        done, _ = await asyncio.wait([task], timeout=STUB_BOUND)
+        if task not in done:  # a regression that fails this test and does not hang it
+            start.ignores = 0
+            start.release()
+            task.cancel()
+            await asyncio.wait([task], timeout=STUB_BOUND)
+            pytest.fail("sh outlived its bound")
+        return task.result()
+
+    got, took, ended, seen = asyncio.run(go())
+    assert got == (124, "", "/bin/x did not finish within 0.05s")
+    assert seen == ["cancelled", "cancelled"]  # two cancels, and none from the runner after the call
+    if ignores == 1:
+        assert ended and 0.05 + 0.3 + 0.3 <= took < 0.05 + 0.3 + 0.3 + 0.2
+    else:
+        assert not ended and 0.05 + 0.3 + 0.3 + 0.3 <= took < 0.05 + 0.3 + 0.3 + 0.3 + 1
 
 
 def test_a_cancel_in_the_wait_for_a_start_that_never_lands_is_raised_after_its_cancel(monkeypatch):
@@ -790,6 +835,24 @@ def alive(pid: int, settle: float = 0.0) -> bool:
         time.sleep(0.02)
 
 
+def open_fds() -> set[int]:
+    """The descriptors this process has open (the listing's own is closed by the time it is read)."""
+    fds = set()
+    for name in os.listdir("/dev/fd"):
+        with contextlib.suppress(OSError):
+            os.fstat(int(name))
+            fds.add(int(name))
+    return fds
+
+
+def other_tasks(*skip: asyncio.Task) -> list[str]:
+    """The coroutines of every task still pending beside the running one and `skip`."""
+    running = asyncio.current_task()
+    return sorted(
+        t.get_coro().__qualname__ for t in asyncio.all_tasks() if t is not running and t not in skip
+    )
+
+
 def delay_connect(monkeypatch, seconds):
     """Hold open the start of every command: asyncio connects a new process's pipes in loop turns after
     it has forked, and a loaded machine stretches them."""
@@ -802,7 +865,9 @@ def delay_connect(monkeypatch, seconds):
     monkeypatch.setattr(base_subprocess.BaseSubprocessTransport, "_connect_pipes", late)
 
 
-def real_sh(monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, settle=5.0, hold=False):
+def real_sh(
+    monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, settle=5.0, hold=False, census=None
+):
     """sh on a real command under the test's own clock: (what it gave, "cancelled", or "hung" past
     BOUND; the seconds it took, counted from the first cancel, which comes `pause` seconds in, when
     there is one; whether the descendant in `pidfile` still runs; whether the pipes of every command
@@ -810,8 +875,15 @@ def real_sh(monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, s
     ended, before this helper cleans up after it: the descendant is then killed and each command is
     closed and killed. A command is recorded where its process comes to exist, before anything is
     awaited, so a start cut short is counted too, and a call that started none fails. With `hold` the
-    start of every command never connects its pipes, unless the call is hung: that frees it."""
+    start of every command never connects its pipes, until the helper releases it: right after the census
+    below, or when the call is hung. A `census` dict is filled in the step in which the call returns, before
+    its caller's next turn: `tasks`, the coroutines still pending beside the call; `fds`, the descriptors
+    open that were not before it; `ends`, the parent's pipe ends of the commands started. With `hold` it
+    is then filled with `released`, the same two once the held connection has run, which nothing in the
+    helper helps to close."""
     started = []
+    before: set[int] = set()
+    runner: list[asyncio.Task] = []  # this helper's own task, which waits beside the call
     create = base_subprocess.BaseSubprocessTransport.__init__
     gate = asyncio.Event()
 
@@ -834,9 +906,23 @@ def real_sh(monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, s
             await asyncio.sleep(0.01)
         return int(pidfile.read_text())
 
+    async def call():
+        try:
+            return await instr.sh(argv, timeout=timeout)
+        finally:
+            if census is not None:
+                census["tasks"] = other_tasks(*runner)
+                census["fds"] = open_fds() - before
+                procs = [t._proc for t in started if t._proc is not None]
+                ends = [end for proc in procs for end in (proc.stdout, proc.stderr)]
+                census["ends"] = {end.fileno() for end in ends if not end.closed}
+
     async def go():
+        nonlocal before
         t0 = time.monotonic()
-        task = asyncio.create_task(instr.sh(argv, timeout=timeout))
+        before = open_fds()
+        runner.append(asyncio.current_task())
+        task = asyncio.create_task(call())
         # the descendant runs before the call is timed out or cancelled
         pid = await asyncio.wait_for(written(), BOUND) if pidfile is not None else None
         if cancels:
@@ -852,6 +938,12 @@ def real_sh(monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, s
         reaped = all(t.get_returncode() is not None for t in started)
         if task in done:
             got = "cancelled" if task.cancelled() else task.result()
+            if census is not None and hold:
+                gate.set()
+                stop = time.monotonic() + BOUND
+                while (open_fds() - before or other_tasks(task)) and time.monotonic() < stop:
+                    await asyncio.sleep(0.01)
+                census["released"] = open_fds() - before, other_tasks(task)
         else:
             got = "hung"
             gate.set()
@@ -868,10 +960,6 @@ def real_sh(monkeypatch, argv, *, timeout, cancels=0, pause=0.0, pidfile=None, s
             with contextlib.suppress(ProcessLookupError):
                 t.kill()
             t.close()
-            if t._proc is not None:
-                for fd, end in ((1, t._proc.stdout), (2, t._proc.stderr)):
-                    if t._pipes.get(fd) is None:  # never connected: this end is still open
-                        end.close()
         stop = time.monotonic() + 5
         while any(t.get_returncode() is None for t in started):
             assert time.monotonic() < stop, "a killed command was not reaped"
@@ -938,9 +1026,16 @@ def test_sh_gives_up_at_its_grace_on_a_command_whose_pipes_never_connect_and_end
     # start is cancelled, which ends the process, and the call returns the timeout's answer
     monkeypatch.setattr(instr, "_GRACE", 0.5)
     argv = [sys.executable, "-c", "import time; time.sleep(30)"]
-    got, took, _, _, reaped = real_sh(monkeypatch, argv, timeout=0.2, hold=True)
+    census = {}
+    got, took, _, _, reaped = real_sh(monkeypatch, argv, timeout=0.2, hold=True, census=census)
     assert got == (124, "", f"{sys.executable} did not finish within 0.2s")
     assert reaped and 0.2 + 0.5 <= took < 0.2 + 0.5 + 0.5 + 2
+    # the start has taken its cancel on every interpreter: what is left pending is asyncio's own connection
+    # of the pipes, held by this test, and its two parent ends are the only descriptors open
+    assert census["tasks"] == ["real_sh.<locals>.held"]
+    assert len(census["ends"]) == 2 and census["fds"] == census["ends"]
+    # and when the connection runs it closes them, the leader already killed: nothing helps it
+    assert census["released"] == (set(), [])
 
 
 def test_a_cancel_that_lands_over_a_start_that_failed_is_still_the_cancel():

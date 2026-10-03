@@ -96,9 +96,9 @@ async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) ->
     is a shell. The `timeout` runs from the call and covers the command's start. Past it, or on a
     cancel, the command's process group is killed and its pipes drained for up to `_GRACE` seconds
     and then closed. A start still unlanded at the timeout gets `_GRACE` seconds to land, and is
-    then cancelled. A descendant that left the group is not killed, and its pipe is abandoned at
-    the grace. A start that failed, a group that cannot be signalled, or a pipe that fails to
-    drain raises."""
+    then cancelled, twice if it must be, before the call returns. A descendant that left the group
+    is not killed, and its pipe is abandoned at the grace. A start that failed, a group that cannot
+    be signalled, or a pipe that fails to drain raises."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     # the start is a task of its own: cut short while asyncio connects the pipes, it would end the
@@ -138,19 +138,23 @@ async def sh(argv: list[str], *, timeout: float = 60, cwd: str | None = None) ->
 
 async def _landed(launch: asyncio.Future[asyncio.subprocess.Process]) -> None:
     """Stop what a start still running has begun. It is given `_GRACE` seconds to land, then is
-    cancelled and given `_GRACE` more to take the cancel; a second cancel of the caller is absorbed
-    meanwhile. A start that landed is stopped, the group it began ended. A cancel that came in while
-    waiting is raised after that."""
+    cancelled and given `_GRACE` more to take the cancel, then cancelled again and given as long to
+    take that one: on 3.11 and 3.12 a start that began its process waits for its pipes after the
+    first. A cancel of the caller is absorbed meanwhile. A start that landed is stopped, the group it
+    began ended. A cancel that came in while waiting is raised after that. The pipe ends asyncio has
+    not connected by then are its own connection task's, out of the runner's reach: that task closes
+    them once the loop runs it."""
     loop = asyncio.get_running_loop()
     cancelled = False
-    for _ in range(2):
+    for attempt in range(3):
         end = loop.time() + _GRACE
         while not launch.done() and (left := end - loop.time()) > 0:
             try:
                 await asyncio.wait([launch], timeout=left)
             except asyncio.CancelledError:
                 cancelled = True
-        launch.cancel()  # a start that has not landed is cancelled; one that has is left as it is
+        if attempt < 2:
+            launch.cancel()  # a start that has not landed is cancelled; one that has is left as it is
     if launch.done() and not launch.cancelled() and launch.exception() is None:
         await _stop(launch.result())
     if cancelled:
