@@ -244,20 +244,21 @@ on writing, when decided, sits on those two.
 
 Serves C7. The file store's `put` renders the value with `json.dumps(allow_nan=False)`, encodes the
 text as UTF-8, reads it back with `json.loads`, and keeps and writes that copy: a change to the
-caller's object afterwards, or while `put` waits for the lock, reaches nothing stored. Any of
-`TypeError`, `ValueError` or `RecursionError` from a step, or a copy unequal to the value, raises
-`ValueError` before the lock. `_load` refuses a file holding NaN or Infinity, naming file and
-constant, and the write renders with `allow_nan=False`, so every file written is standard JSON.
+caller's object afterwards, or while `put` waits for the lock, reaches nothing stored. `_load`
+refuses a file holding NaN, Infinity or a number a float cannot hold, like `1e999`, naming file and
+text, and the write renders with `allow_nan=False`. The file is read and written as UTF-8, so every
+file is standard JSON.
 
-- **Landing evidence**: `test_a_file_note_store_refuses_a_value_the_file_cannot_carry`,
-  `test_a_value_the_file_cannot_carry_is_refused_before_the_store_takes_its_lock`,
-  `test_a_value_json_cannot_carry_whole_is_refused_before_the_lock`,
-  `test_a_value_nested_past_the_recursion_limit_is_refused_as_a_value_error`,
+- **Landing evidence**:
   `test_a_value_json_reads_back_equal_is_kept_and_a_fresh_store_reads_it_equal`,
   `test_a_value_changed_while_put_waits_for_the_lock_leaves_what_was_checked_in_the_file`,
   `test_a_value_changed_after_put_returns_changes_nothing_stored`,
-  `test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_and_the_constant` and
-  `test_a_write_never_renders_a_non_finite_number_wherever_it_sits`.
+  `test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_and_the_constant`,
+  `test_a_number_too_large_for_a_float_is_refused_on_load_naming_the_file_and_the_number`,
+  `test_a_file_holding_the_largest_finite_floats_loads_and_a_later_write_keeps_them`,
+  `test_a_write_never_renders_a_non_finite_number_wherever_it_sits`,
+  `test_the_file_is_written_as_utf_8_whatever_the_locale_encoding_is` and
+  `test_the_file_is_read_as_utf_8_whatever_the_locale_encoding_is`.
 
 ### D5: `_notify` lists the store on the first turn ^d5
 
@@ -274,15 +275,20 @@ or said to be unprintable. A resumed chat is a new run and is told again.
   Controls: dropping the block, the catch, the sort, the plain string, the quoting, either cut, the
   escaping or the inner catch, or skipping a resumed run, fails a test.
 
-### D6: `find` folds case in the stores that ship, and `_note_find` cuts the preview ^d6
+### D6: `put` refuses what JSON cannot carry, `find` folds case, and `_note_find` cuts the preview ^d6
 
-Serves C7. `MemoryNoteStore.put` keeps the value it is handed. `MemoryNoteStore.find`, which
-`FileNoteStore` inherits, casefolds the query, each key and each value's text, so `STRASSE` finds
-`Straße`. `_note_find` calls `find` on the profile's store, and `Actor.notes_for` returns
-`Profile.notes` before it looks for a store of its own, so a store a profile brings answers for
-itself. `_note_find` slices each value's text at 120 characters.
+Serves C7. `MemoryNoteStore.put` keeps the value it is handed; `FileNoteStore.put` raises
+`ValueError` before the lock when a step of its round trip raises `TypeError`, `ValueError` or
+`RecursionError`, or the copy is unequal to the value. `MemoryNoteStore.find`, which `FileNoteStore`
+inherits, casefolds the query, each key and each value's text, so `STRASSE` finds `Straße`.
+`_note_find` calls `find` on the profile's store, and `Actor.notes_for` returns `Profile.notes`
+before it looks for a store of its own, so a store a profile brings answers for itself. `_note_find`
+slices each value's text at 120 characters.
 
-- **Landing evidence**:
+- **Landing evidence**: `test_a_file_note_store_refuses_a_value_the_file_cannot_carry`,
+  `test_a_value_the_file_cannot_carry_is_refused_before_the_store_takes_its_lock`,
+  `test_a_value_json_cannot_carry_whole_is_refused_before_the_lock`,
+  `test_a_value_nested_past_the_recursion_limit_is_refused_as_a_value_error` and
   `test_a_blank_find_is_refused_and_a_letter_query_is_case_insensitive_while_list_prefix_is_exact`.
 
 ## Alternatives

@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import math
 import os
 import tempfile
 from dataclasses import asdict, dataclass
@@ -125,14 +126,23 @@ class FileNoteStore(MemoryNoteStore):
             self._version, self._notes = 0, {}
             return
 
-        # every file this store writes is standard JSON: one that holds NaN or Infinity is refused here,
-        # not loaded and written back by the next put
+        # every file this store writes is standard JSON: one that holds NaN or Infinity, or a number a
+        # float cannot hold (`1e999` reads as infinity), is refused here, not loaded and written back by
+        # the next put
         def refuse(constant: str):
             raise ValueError(
                 f"{self.path}: the file holds {constant}, which is not standard JSON; repair it by hand"
             )
 
-        data = json.loads(self.path.read_text(), parse_constant=refuse)
+        def finite(number: str) -> float:
+            value = float(number)
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"{self.path}: the file holds {number}, which is not a finite number; repair it by hand"
+                )
+            return value
+
+        data = json.loads(self.path.read_text(encoding="utf-8"), parse_constant=refuse, parse_float=finite)
         self._version = int(data.get("version", 0))
         self._notes = {k: Note(**v) for k, v in data.get("notes", {}).items()}
 
@@ -194,7 +204,7 @@ class FileNoteStore(MemoryNoteStore):
         payload = {"version": self._version, "notes": {k: n.to_dict() for k, n in self._notes.items()}}
         fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name, suffix=".tmp")
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, allow_nan=False, indent=1)
             os.replace(tmp, self.path)
         except BaseException:

@@ -5,6 +5,7 @@ through note.get; list prefixes are exact while find is case-insensitive."""
 import asyncio
 import copy
 import fcntl
+import io
 import json
 import os
 import re
@@ -377,15 +378,12 @@ def test_a_value_changed_after_put_returns_changes_nothing_stored(tmp_path):
     assert store.get("k").value == checked and FileNoteStore(tmp_path / "n.json").get("k").value == checked
 
 
-@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
-def test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_and_the_constant(
-    tmp_path, constant
-):
-    path = tmp_path / "n.json"
-    store = FileNoteStore(path)  # built before the file holds anything
-    row = f'{{"key": "k", "value": {constant}, "run": "r", "seq": 1, "version": 1}}'
-    path.write_text(f'{{"version": 1, "notes": {{"k": {row}}}}}')
-    said = re.escape(f"{path}: the file holds {constant}, which is not standard JSON")
+def _notes_file(value: str = '"x"', seq: str = "1", version: str = "1") -> str:
+    row = f'{{"key": "k", "value": {value}, "run": "r", "seq": {seq}, "version": 1}}'
+    return f'{{"version": {version}, "notes": {{"k": {row}}}}}'
+
+
+def _refused_on_every_path(path: Path, store: FileNoteStore, said: str, text: str) -> None:
     for read_or_write in (
         lambda: FileNoteStore(path),
         lambda: store.get("k"),
@@ -397,8 +395,86 @@ def test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_a
     ):
         with pytest.raises(ValueError, match=said):
             read_or_write()
-    assert path.read_text() == f'{{"version": 1, "notes": {{"k": {row}}}}}'
+    assert path.read_text() == text
+    assert not list(path.parent.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_a_file_holding_a_non_finite_number_is_refused_on_load_naming_the_file_and_the_constant(
+    tmp_path, constant
+):
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)  # built before the file holds anything
+    text = _notes_file(value=constant)
+    path.write_text(text)
+    said = re.escape(f"{path}: the file holds {constant}, which is not standard JSON")
+    _refused_on_every_path(path, store, said, text)
+
+
+@pytest.mark.parametrize(
+    "number, text",
+    [
+        ("1e999", _notes_file(value="1e999")),
+        ("-1e999", _notes_file(value="-1e999")),
+        ("1E+400", _notes_file(value="1E+400")),
+        ("1.8e308", _notes_file(value="1.8e308")),  # just past the largest float
+        ("1e999", _notes_file(value='{"a": [1, 1e999]}')),
+        ("1e999", _notes_file(seq="1e999")),
+        ("1e999", _notes_file(version="1e999")),
+    ],
+    ids=["value", "negative", "capital-exponent", "just-past-max", "nested", "seq", "version"],
+)
+def test_a_number_too_large_for_a_float_is_refused_on_load_naming_the_file_and_the_number(
+    tmp_path, number, text
+):
+    # valid JSON that Python reads as infinity: a read would hand the value out and the next unrelated
+    # write would stop at the flush
+    path = tmp_path / "n.json"
+    store = FileNoteStore(path)  # built before the file holds anything
+    path.write_text(text)
+    said = re.escape(f"{path}: the file holds {number}, which is not a finite number")
+    _refused_on_every_path(path, store, said, text)
+    path.write_text(_notes_file())  # repaired by hand: the store reads it and a write goes through
+    assert store.get("k").value == "x"
+    store.put("other", "y", run="r", seq=2)
+    assert sorted(json.loads(path.read_text())["notes"]) == ["k", "other"]
+
+
+def test_a_file_holding_the_largest_finite_floats_loads_and_a_later_write_keeps_them(tmp_path):
+    path = tmp_path / "n.json"
+    path.write_text(
+        _notes_file(value="[1.7976931348623157e308, -1.7976931348623157e308, 1e-999, 5e-324, -0.0]")
+    )
+    store = FileNoteStore(path)
+    kept = [1.7976931348623157e308, -1.7976931348623157e308, 0.0, 5e-324, -0.0]
+    assert store.get("k").value == kept
+    store.put("other", "y", run="r", seq=2)
+    assert FileNoteStore(path).get("k").value == kept
+
+
+_NARROW = pytest.mark.parametrize(
+    "encoding, value",
+    [("latin-1", "Crème Brûlée"), ("ascii", "Crème Brûlée"), ("cp1252", "東京")],
+    ids=["latin-1", "ascii", "cp1252-cjk"],
+)
+
+
+@_NARROW
+def test_the_file_is_written_as_utf_8_whatever_the_locale_encoding_is(tmp_path, monkeypatch, encoding, value):
+    # an open() given no encoding takes the locale's; os.fdopen and Path.read_text ask io.text_encoding
+    monkeypatch.setattr(io, "text_encoding", lambda given, stacklevel=2: encoding if given is None else given)
+    path = tmp_path / "n.json"
+    FileNoteStore(path).put("k", value, run="r", seq=1)
+    assert json.loads(path.read_bytes().decode("utf-8"))["notes"]["k"]["value"] == value
     assert not list(tmp_path.glob("*.tmp"))
+
+
+@_NARROW
+def test_the_file_is_read_as_utf_8_whatever_the_locale_encoding_is(tmp_path, monkeypatch, encoding, value):
+    monkeypatch.setattr(io, "text_encoding", lambda given, stacklevel=2: encoding if given is None else given)
+    path = tmp_path / "n.json"
+    path.write_bytes(_notes_file(value=json.dumps(value, ensure_ascii=False)).encode("utf-8"))
+    assert FileNoteStore(path).get("k").value == value
 
 
 def test_a_write_never_renders_a_non_finite_number_wherever_it_sits(tmp_path):
