@@ -1712,7 +1712,8 @@ class VerdictFreshness:
         unread: set[str] = (
             set()
         )  # repos, and PRs as `_pr_id`, whose last row is kept: this run did not read them
-        prev = _snapshot(self.state, "verdict-freshness") or {}
+        incomplete = False  # an enumerated list that does not reach its TOTAL
+        closed: set[str] = set()  # PRs, as `_pr_id`, whose own read says they are no longer open
         if self.enumerator:
             rc, out, err = await self.sh(list(self.enumerator), timeout=180)
             last = next((ln for ln in reversed(out.splitlines()) if ln.strip()), "")
@@ -1751,9 +1752,7 @@ class VerdictFreshness:
                     f"enumerator: TOTAL {m.group(1)} beside {len(parsed)} PR line(s) parsed"
                     + (f", {len(listed)} distinct" if len(listed) != len(parsed) else "")
                 )
-                unread.update(
-                    _pr_id(k) for k in prev
-                )  # an incomplete list closes nothing it did not read closed
+                incomplete = True
             positives.append(
                 f"enumerator TOTAL {m.group(1)} open PR(s) by {m.group(2)}; closed-PR control {m.group(3)}"
             )
@@ -1762,7 +1761,7 @@ class VerdictFreshness:
                 pr = json.loads(out) if rc == 0 else {}
                 if pr.get("state") not in (None, "OPEN"):  # closed since the search indexed it
                     table.append(f"{repo}#{n}: listed open, {pr['state']} now; not judged")
-                    unread.discard(_pr_id(f"{repo}#{n}"))
+                    closed.add(_pr_id(f"{repo}#{n}"))
                     continue
                 if not re.fullmatch(r"[0-9a-f]{40}", pr.get("headRefOid") or ""):
                     control = False
@@ -1783,6 +1782,12 @@ class VerdictFreshness:
                 prs += [(repo, p["number"], p["headRefOid"]) for p in rows]
                 if len(rows) >= PR_PAGE:  # absent from a full page is not closed: its last row is kept
                     unread.add(repo.lower())
+        # The snapshot is read here, after the last awaited call, and put below with no await between the
+        # two: a run that overlapped this one has written whole before this read, or writes whole after
+        # the put. Read earlier, the rows kept for an unread repo would be the ones this run began with.
+        prev = _snapshot(self.state, "verdict-freshness") or {}
+        if incomplete:  # an incomplete list closes nothing it did not read closed
+            unread.update(_pr_id(k) for k in prev if _pr_id(k) not in closed)
         now = {_pr_id(f"{repo}#{n}"): (f"{repo}#{n}", head[:8]) for repo, n, head in prs}
 
         def rank(k: str) -> tuple[bool, bool, str]:

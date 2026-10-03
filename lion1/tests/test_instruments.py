@@ -2489,6 +2489,101 @@ def test_verdict_freshness_control_fails_when_a_repo_does_not_resolve_as_itself(
         VerdictFreshness(MemoryNoteStore(), every=None, repos=["o/r"], enumerator=["x"])
 
 
+class GatedSh(FakeSh):
+    """A runner that says it began and then waits to be released before it answers: a GitHub read still in
+    flight while another run finishes."""
+
+    def __init__(self, **answers: tuple[int, str, str] | str):
+        super().__init__(**answers)
+        self.began, self.release = asyncio.Event(), asyncio.Event()
+
+    async def __call__(self, argv: list[str], *, timeout: float = 60, cwd: str | None = None):
+        self.began.set()
+        await self.release.wait()
+        return await super().__call__(argv, timeout=timeout, cwd=cwd)
+
+
+async def overlap(paused: VerdictFreshness, gate: GatedSh, other: VerdictFreshness):
+    """Run `paused` into its first GitHub read, run `other` to its end, then let the read answer."""
+    first = asyncio.create_task(paused.run({}))
+    await gate.began.wait()
+    out_other = await other.run({})
+    gate.release.set()
+    return await first, out_other
+
+
+@pytest.mark.parametrize("moved", ["a PR closed", "a PR opened"])
+def test_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote(tmp_path, moved):
+    """Run A begins on a snapshot of #7 and #8 and waits on GitHub; run B writes the snapshot with #7
+    closed (or #9 opened); A's read then fails for its repo, so it keeps every row it holds. The rows A
+    keeps are the snapshot as it stands then, not the copy it began with."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    store.put(
+        "verdict-freshness",
+        {"o/r#7": "o/r#7 77777777: NEVER-REVIEWED", "o/r#8": "o/r#8 88888888: NEVER-REVIEWED"},
+        run="-",
+        seq=0,
+    )
+    now = ((8, HEAD8),) if moved == "a PR closed" else ((7, HEAD7), (8, HEAD8), (9, HEAD9))
+
+    async def both():
+        gate = GatedSh()  # no answer to give: A's read of o/r fails
+        a = VerdictFreshness(store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=gate)
+        b = VerdictFreshness(
+            store, every=None, verdict_dir=str(tmp_path), repos=["o/r"], run=freshness_sh(prs=now)
+        )
+        return await overlap(a, gate, b)
+
+    out_a, out_b = asyncio.run(both())
+    assert out_b.control and not out_a.control  # B read o/r; A did not, and kept what it held
+    snap = store.get("verdict-freshness").value
+    assert set(snap) == {f"o/r#{n}" for n, _ in now}  # what B wrote, whole
+    assert ("o/r#7" in snap) is (moved == "a PR opened")  # a closed #7 is not written back
+    assert ("o/r#9" in snap) is (moved == "a PR opened")  # an opened #9 is not written over
+
+
+def test_a_run_whose_enumerator_list_is_incomplete_keeps_the_rows_a_concurrent_run_wrote(tmp_path):
+    """An incomplete enumerated list keeps every prior row. Run A waits on its enumerator while run B
+    opens #9; the rows A keeps include #9."""
+    verdict(tmp_path, 7, HEAD7, head8="77777777", mtime=1000)
+    store = MemoryNoteStore()
+    store.put(
+        "verdict-freshness",
+        {"o/r#7": "o/r#7 77777777: NEVER-REVIEWED", "o/r#8": "o/r#8 88888888: NEVER-REVIEWED"},
+        run="-",
+        seq=0,
+    )
+    total = "TOTAL 3 open PRs authored by bot (control: closed-PR search returned 5, an empty list is real)\n"
+
+    async def both():
+        gate = GatedSh(
+            **{
+                "/x/my_open_prs.sh": "o/r#7 draft=false  a title\n" + total,  # 3 counted, 1 listed
+                "pr view 7 -R o/r": json.dumps({"headRefOid": HEAD7, "state": "OPEN"}),
+            }
+        )
+        a = VerdictFreshness(
+            store, every=None, verdict_dir=str(tmp_path), enumerator=["/x/my_open_prs.sh"], run=gate
+        )
+        b = VerdictFreshness(
+            store,
+            every=None,
+            verdict_dir=str(tmp_path),
+            repos=["o/r"],
+            run=freshness_sh(prs=((7, HEAD7), (8, HEAD8), (9, HEAD9))),
+        )
+        return await overlap(a, gate, b)
+
+    out_a, out_b = asyncio.run(both())
+    assert (
+        out_b.control and not out_a.control and out_a.findings[0].startswith("enumerator: TOTAL 3 beside 1")
+    )
+    snap = store.get("verdict-freshness").value
+    assert set(snap) == {"o/r#7", "o/r#8", "o/r#9"}  # #8 and #9 are B's rows, kept; #7 is A's own read
+    assert snap["o/r#7"].startswith("o/r#7 77777777: AT-HEAD")
+
+
 WORKFLOW_IDS = {"ci": 501, "lint": 502, "docs": 503, "bench": 504}
 
 

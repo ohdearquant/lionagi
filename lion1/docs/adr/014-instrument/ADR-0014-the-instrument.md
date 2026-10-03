@@ -369,3 +369,7 @@ refused at build.
   it (`test_verdict_freshness_a_prs_malformed_json_is_never_hidden_behind_its_md_copy`). The
   case-blind, unpadded identity of S12 and S13 is this instrument's; the desk's triage of a verdict
   notice still compares the repo spelling exactly and escalates a mismatch, so it fails closed.
+- **S15**: `verdict-freshness` reads its snapshot after its last GitHub call and puts it with no
+  await between the two, so the write of a run that overlapped it lands whole before the read or
+  after the put. Pinned by `test_a_retaining_run_merges_the_snapshot_a_concurrent_run_wrote` and
+  `test_a_run_whose_enumerator_list_is_incomplete_keeps_the_rows_a_concurrent_run_wrote`.
