@@ -325,17 +325,17 @@ unless an edit followed the send, and a navigation clears it.
 - **Subject**: `/api/areas`, the `areas` events of `/events` and the script `/app` serves.
 - **Violated when**: older rows replace newer ones shown, or later rows are refused.
 
-A read whose rows differ from the last takes the larger of the microsecond wall clock and the last
-plus one as its revision, an event's `id` and an answer's `X-Areas-Revision`; an unchanged read
-keeps the revision. The root page and `/api/resident` carry none. `/api/areas` makes its own read,
-which becomes the last; `/events` sends the last read whenever its revision exceeds the one last
-sent.
+A read whose rows differ from the last takes as its revision the microsecond wall clock, or the last
+plus one if larger, the event `id` and the `X-Areas-Revision` header. An unchanged read keeps the
+revision; a read after a failed one is changed. Other pages carry none. `/api/areas` reads for
+itself; `/events` sends the last read when its revision exceeds the last sent.
 
-From a stream's `open`, a read not above the last shown is refused; with the stream down, a poll's
-answer is taken as it arrives. The read taken becomes the one shown.
+Each stream `open` starts the comparison over: its first rows are shown whatever their revision, and
+after them a read not above the last shown is refused. Stream down, a poll's answer is shown as it
+arrives.
 
-Polls run one at a time from a stream error until a connection's first rows. `open` or ten seconds
-aborts the poll out and drops its answer; an aborted or failed poll frees the next.
+Polls run one at a time from a stream error until a connection's first rows; `open` or ten seconds
+aborts the one out, and an aborted or failed poll frees the next.
 
 ## Decisions
 
